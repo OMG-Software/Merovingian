@@ -1,3 +1,51 @@
+## 0.12.44
+
+Email pushers are delivered. With an SMTP relay configured (`server.email.*`), `kind: "email"`
+pushers send a delayed, throttled digest of the unread count to the account's own email address;
+without one they are refused as before (ADR-0219, ADR-0220).
+
+- **ADDED:** `server.email.*` config: `smtp_url` (`smtps://` or `smtp://` with mandatory
+  STARTTLS), `require_tls` (`false` only for a cleartext relay at a loopback IP literal, never with
+  credentials), `from`, `username` and `password_file` (an owner-only secret file read for each
+  email), connect and total timeouts, `notification_delay_seconds` (600) and
+  `notification_throttle_seconds` (3600). Every key requires a restart; startup refuses a relay
+  whose scheme the linked libcurl cannot speak.
+- **ADDED:** `src/email/`, a module for outbound email: `is_safe_mailbox_address` (refuses, never
+  repairs, any address that could inject an SMTP command or header), `parse_smtp_url`,
+  `build_unread_notification_email` (RFC 5322, US-ASCII, the unread count and server name only)
+  and `send_smtp_message` (one libcurl SMTP session: TLS 1.2 or later, verification on, no proxy,
+  no connection reuse).
+- **ADDED:** `push::EmailDigestQueue` and the `email-push` job thread (`homeserver/email_push.cpp`).
+  A notification schedules one email per pusher after the delay, never sooner than the throttle
+  after the last; more notifications fold into it; an email that finds nothing unread when due is
+  not sent. A failed send is retried after 1 minute, doubling to 30, six attempts in all. The
+  queue is in memory and holds at most 4096 pushers.
+- **CHANGED:** `POST /_matrix/client/v3/pushers/set` accepts `kind: "email"` when `smtp_url` is
+  set, with `app_id` `m.email` (spec) and a `pushkey` that is an email 3PID already on the account
+  (compared case-insensitively); anything else is 400 `M_INVALID_PARAM`. Without a relay the
+  0.12.3 refusal is unchanged. Deleting an email pusher also drops any email due to it.
+- **CHANGED:** `POST /_matrix/client/v3/account/3pid/delete` deletes the account's email pushers for
+  the address it removes. The email job re-checks the pusher, the 3PID and the account before each
+  send, deletes a pusher whose address has left the account, and never mails a deactivated account.
+- **CHANGED:** push delivery computes the Push Gateway badge count only when an `http` pusher will
+  carry it.
+- **SECURITY:** the federation worker clears `server.email` in its config copy, so no worker code
+  path can send email or open the SMTP password file.
+- **CHANGED:** `src/meson.build` builds `http`, `platform` and the new `email` module before
+  `config`, whose validation calls email's address and URL checks.
+- **TESTS (new):** `tests/unit/test_email.cpp`, `tests/unit/test_push_email_digest_queue.cpp`,
+  `tests/unit/test_config_email.cpp`, `tests/integration/test_email_push_flow.cpp` (real SMTP
+  sessions against a loopback mock relay: implicit TLS with AUTH, STARTTLS, a relay without
+  STARTTLS, cleartext loopback; read-before-due; address removed). **TESTS (changed):**
+  `tests/conformance/test_client_server_conformance.cpp` gains the relay-configured
+  `[email-pusher]` scenario.
+- **DOCS:** ADR-0219, ADR-0220; `docs/user-manual.md` (`server.email.*`),
+  `config/merovingian.conf.example`, `docs/architecture.md`, `docs/threat-model.md`,
+  `docs/observability-audit.md` (`push.email.*` events), `docs/security-coding-rules.md`,
+  `docs/dependencies/libcurl.md`, `src/email/AGENTS.md`. `docs/todos/production-milestone.md` no
+  longer lists email pushers as a 1.0.0 blocker: the refusal in 0.12.3 already met that row, which
+  stayed listed by mistake. `docs/todos/capability-gaps.md` marks email pushers `runtime-wired`.
+
 ## 0.12.43
 
 Meson wrap pins brought up to date; unused wraps for OS-supplied dependencies removed.

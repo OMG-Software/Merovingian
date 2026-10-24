@@ -166,6 +166,7 @@ The one exception is `bootstrap/`, which is header-only.
 │   ├── core/              #   Error, file_descriptor, socket_handle, not_null, query_params, secret_buffer
 │   ├── crypto/            #   Ed25519, signing service, secret box, master key, IPC cipher, constant-time ops
 │   ├── database/          #   Connection, statement, schema, migrations, persistent_store, postgresql/sqlite
+│   ├── email/             #   SMTP client (libcurl), mailbox-address and relay-URL checks, notification email
 │   ├── events/            #   Event, event_id, event_signer, authorization, state_resolution, redaction, limits
 │   ├── federation/        #   Inbound/outbound, transactions, key cache/query, server_discovery, membership, ACLs
 │   ├── federation_worker/ #   Out-of-process federation worker (argument parsing; entry point in src/)
@@ -231,6 +232,7 @@ More specific guidance lives alongside the code it governs. Read the relevant fi
 | `src/core/AGENTS.md` | Core primitives: `SecretBuffer`, `FileDescriptor`, `Error`, `query_params` |
 | `src/crypto/AGENTS.md` | Crypto security boundary: libsodium isolation, constant-time, key validation |
 | `src/database/AGENTS.md` | Database: prepared statements, backend abstraction, migration rules |
+| `src/email/AGENTS.md` | Outbound email: refuse-never-repair address checks, TLS-required SMTP, password read per send, main process only |
 | `src/events/AGENTS.md` | Event pipeline: canonical JSON, signing, auth rules, state resolution, redaction |
 | `src/federation/AGENTS.md` | Federation security rules: X-Matrix auth, PDU verification, key cache |
 | `src/federation_worker/AGENTS.md` | Federation worker process: no signing secret, relay-to-main rules, thread pools, hardening |

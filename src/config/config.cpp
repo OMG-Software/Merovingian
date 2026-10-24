@@ -5,6 +5,8 @@
 
 #include "merovingian/auth/identity.hpp"
 #include "merovingian/config/config_parser.hpp"
+#include "merovingian/email/mailbox_address.hpp"
+#include "merovingian/email/smtp_endpoint.hpp"
 #include "merovingian/http/keep_alive.hpp"
 
 #include <algorithm>
@@ -972,6 +974,78 @@ auto validate(Config const& config) -> std::vector<ConfigValidationFinding>
     if (push.total_timeout_seconds < push.connect_timeout_seconds)
     {
         findings.push_back({"server.push.total_timeout_seconds", "total timeout must be >= connect timeout"});
+    }
+
+    // Email pushers. The ranges and the timeout ordering are checked whether or not smtp_url is
+    // set, so a config that later sets it does not inherit an invalid value. Everything that
+    // depends on the relay is checked only when one is configured. No finding quotes a value.
+    auto const& email_config = config.server().email;
+    if (email_config.connect_timeout_seconds < 1U || email_config.connect_timeout_seconds > 300U)
+    {
+        findings.push_back({"server.email.connect_timeout_seconds", "expected 1 to 300 seconds"});
+    }
+    if (email_config.total_timeout_seconds < 1U || email_config.total_timeout_seconds > 600U)
+    {
+        findings.push_back({"server.email.total_timeout_seconds", "expected 1 to 600 seconds"});
+    }
+    if (email_config.total_timeout_seconds < email_config.connect_timeout_seconds)
+    {
+        findings.push_back({"server.email.total_timeout_seconds", "total timeout must be >= connect timeout"});
+    }
+    if (email_config.notification_delay_seconds > 86400U)
+    {
+        findings.push_back({"server.email.notification_delay_seconds", "expected at most 86400 seconds"});
+    }
+    if (email_config.notification_throttle_seconds > 604800U)
+    {
+        findings.push_back({"server.email.notification_throttle_seconds", "expected at most 604800 seconds"});
+    }
+    if (!email_config.smtp_url.empty())
+    {
+        auto const endpoint = merovingian::email::parse_smtp_url(email_config.smtp_url);
+        if (!endpoint.has_value())
+        {
+            findings.push_back({"server.email.smtp_url",
+                                "expected smtps://host[:port] or smtp://host[:port] with no userinfo, path or query"});
+        }
+        if (email_config.from.empty() || !merovingian::email::is_safe_mailbox_address(email_config.from))
+        {
+            findings.push_back(
+                {"server.email.from", "a plain address (local@domain) is required when smtp_url is set"});
+        }
+        if (email_config.username.empty() != email_config.password_file.empty())
+        {
+            findings.push_back({"server.email.password_file", "username and password_file must be set together"});
+        }
+        if (!email_config.username.empty())
+        {
+            auto const printable = [](char const character) {
+                auto const byte = static_cast<unsigned char>(character);
+                return byte >= 0x21U && byte <= 0x7EU;
+            };
+            if (email_config.username.size() > 256U || !std::ranges::all_of(email_config.username, printable))
+            {
+                findings.push_back(
+                    {"server.email.username", "expected printable ASCII with no spaces, at most 256 bytes"});
+            }
+        }
+        if (endpoint.has_value() && !email_config.require_tls)
+        {
+            if (endpoint->implicit_tls)
+            {
+                findings.push_back({"server.email.require_tls", "require_tls=false applies only to a smtp:// relay"});
+            }
+            if (!endpoint->loopback_literal)
+            {
+                findings.push_back({"server.email.require_tls",
+                                    "a cleartext SMTP relay must be a loopback IP literal (127.0.0.0/8 or [::1])"});
+            }
+            if (!email_config.username.empty())
+            {
+                findings.push_back(
+                    {"server.email.username", "credentials are never sent without TLS; set require_tls=true"});
+            }
+        }
     }
 
     // SSO login: when enabled, both the external authorization endpoint and

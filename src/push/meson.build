@@ -1,4 +1,5 @@
 push_sources = files(
+  'email_digest_queue.cpp',
   'gateway_circuit_breaker.cpp',
   'push_gateway_client.cpp',
   'push_retry_queue.cpp',

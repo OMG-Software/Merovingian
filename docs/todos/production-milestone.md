@@ -18,7 +18,6 @@ and what has been deliberately dropped.
 | Blocker | Why it blocks | Done when |
 | --- | --- | --- |
 | Federation conformance is entirely self-attested | Every conformance claim rests on this project's own tests. Complement is the only external check on whether the federation implementation is actually correct. | Complement runs green against a release candidate — see "Release evidence" for why this is a pre-tag run, not a per-PR gate. |
-| Push silently discards email pushers | `kind: "email"` is accepted at registration, persisted, and then never delivered. Silent acceptance is worse than either alternative: an operator believes email push works. Gateway retry/backoff (a spec SHOULD) was added in 0.12.40 (R14, ADR-0206). | Either email delivery is implemented, or `kind: "email"` is rejected at registration with a clear error. |
 
 ## Release evidence, not CI gates
 
@@ -119,6 +118,14 @@ blocker for the silent-discard behaviour specifically, not for retry/backoff.
 ## Closed
 
 Retained as the record of what was verified and when.
+
+- ~~Push silently discards email pushers.~~ Closed in two steps. 0.12.3 refused `kind: "email"`
+  at registration instead of storing a pusher that never delivered (this row stayed listed as a
+  blocker after that by mistake). 0.12.44 delivers them when `server.email.smtp_url` names an
+  SMTP relay, and still refuses them without one: only to an email 3PID the account holds, as a
+  delayed, throttled digest that carries the unread count alone, over libcurl with TLS required
+  except to a loopback literal (ADR-0219, ADR-0220). `tests/integration/test_email_push_flow.cpp`
+  drives real SMTP sessions against a loopback relay.
 
 - ~~No tested upgrade path across releases.~~ Closed (0.12.42, ADR-0216):
   `tests/integration/test_database_upgrade_flow.cpp` opens the SQLite database and

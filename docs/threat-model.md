@@ -32,6 +32,7 @@
   SSRF-filtered; namespace matching; masquerading)
 - Identity Service client (outbound `store-invite`/`bind`/`unbind`/`requestToken`)
 - Push gateway delivery (outbound, client-supplied URL, no operator allowlist)
+- Email pushers (outbound SMTP to an operator-configured relay; a client-supplied recipient address)
 - Federation worker IPC channel (local process boundary)
 - MSC4186 sliding-sync connection state (client-chosen `conn_id`)
 - Config parsing
@@ -1007,6 +1008,28 @@ threat it closes; the controls above are the standing defences these reinforce.
   removing it means either encrypting the column or moving to homeserver-signed
   unbind (auth mode 1), both of which are schema/protocol changes rather than a
   binding fix.
+
+- **Outbound email for email pushers (0.12.44, ADR-0219, ADR-0220):** the
+  relay is the operator's (`server.email.smtp_url`), but the recipient comes
+  from a client's `pushkey`. Threats and mitigations: (1) **open relay** — an
+  account naming a stranger's address. `POST /pushers/set` accepts only an
+  email 3PID the account already holds, and the email job checks again before
+  each send, deleting a pusher whose address has left the account; a
+  deactivated account is never mailed. (2) **SMTP command and header
+  injection** — every address and the server name are checked
+  (`email::is_safe_mailbox_address`) and refused, never repaired, before they
+  reach libcurl or a header. (3) **disclosure** — an email carries only the
+  unread count and the server name, never room, sender or message content.
+  (4) **cleartext interception and STARTTLS stripping** — `smtp://` requires
+  STARTTLS (`CURLUSESSL_ALL`), verification is on, TLS 1.2 minimum; cleartext
+  is allowed only to a loopback IP literal by explicit `require_tls=false`, and
+  never with credentials. (5) **credential exposure** — the SMTP password is in
+  an owner-only secret file read for each send; it never enters the config
+  file, logs, or the federation worker, whose config copy has `server.email`
+  cleared. (6) **flooding** — one delayed, throttled digest per pusher, a
+  bounded in-memory queue, and the per-user pusher cap. Residual: libcurl's
+  copy of the password is freed but not wiped; a relay with a private CA is
+  not supported (system trust store only).
 
 - **Outbound Push Gateway `notify` SSRF surface (v0.11.11, routed):** a
   pusher's gateway URL (`data.url` on `POST /_matrix/client/v3/pushers/set`)

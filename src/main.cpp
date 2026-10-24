@@ -7,12 +7,15 @@
 #include "merovingian/config/reload_plan.hpp"
 #include "merovingian/config/reload_policy.hpp"
 #include "merovingian/database/runtime_database.hpp"
+#include "merovingian/email/smtp_client.hpp"
+#include "merovingian/email/smtp_endpoint.hpp"
 #include "merovingian/federation/runtime_federation.hpp"
 #include "merovingian/homeserver/appservice_delivery.hpp"
 #include "merovingian/homeserver/auth_service.hpp"
 #include "merovingian/homeserver/client_outbound_proxy.hpp"
 #include "merovingian/homeserver/client_server.hpp"
 #include "merovingian/homeserver/deferred_pdu_retry.hpp"
+#include "merovingian/homeserver/email_push.hpp"
 #include "merovingian/homeserver/federation_proxy.hpp"
 #include "merovingian/homeserver/http_server.hpp"
 #include "merovingian/homeserver/local_http_router.hpp"
@@ -57,7 +60,7 @@
 namespace
 {
 
-constexpr auto version = std::string_view{"0.12.43"};
+constexpr auto version = std::string_view{"0.12.44"};
 
 struct BootstrapConfigResult final
 {
@@ -218,6 +221,17 @@ struct BootstrapConfigResult final
         }
     }
 
+    // server.email.password_file holds the SMTP AUTH password: owner-only like every other secret.
+    if (!config.server().email.password_file.empty())
+    {
+        auto email_password_validation = validate_existing_secret_file_metadata(config.server().email.password_file,
+                                                                                "server.email.password_file", false);
+        if (!email_password_validation.parsed.findings.empty())
+        {
+            return email_password_validation;
+        }
+    }
+
     auto database_validation =
         validate_existing_secret_file_metadata(config.database().uri_file, "database.uri_file", true);
     if (!database_validation.parsed.findings.empty())
@@ -319,6 +333,15 @@ struct BootstrapConfigResult final
     if (!secret_validation.parsed.findings.empty())
     {
         return secret_validation;
+    }
+
+    // ADR-0220: with a relay this build's libcurl cannot speak, email pushers would be accepted
+    // and never delivered. Refuse to start instead.
+    if (auto const relay = merovingian::email::parse_smtp_url(result.parsed.config.server().email.smtp_url);
+        relay.has_value() && !merovingian::email::smtp_protocol_available(relay->implicit_tls))
+    {
+        return reject_config(merovingian::bootstrap::ExitCode::config_validation_error, "server.email.smtp_url",
+                             "the libcurl this server is built with cannot speak this relay's protocol");
     }
 
     result.config_path = path;
@@ -840,6 +863,22 @@ struct ListenerBinding final
         sync_pool.request_stop();
         return std::nullopt;
     }
+    // Sends kind "email" pushers' notification emails (ADR-0219, ADR-0220): push delivery notes a
+    // notification in memory and this one thread sends the delayed, throttled digests, never under
+    // the runtime lock across the SMTP session. Started whether or not a relay is configured (it
+    // sends nothing without one). Declared after the pools so it stops, and clears the queue's
+    // wake hook, before they are torn down. Its thread starts here, after process hardening
+    // (ADR-0082).
+    auto email_push_job = merovingian::homeserver::EmailPushJob{runtime.homeserver};
+    if (!email_push_job.start())
+    {
+        LOG_CRITICAL("Email push job failed to start; refusing to serve");
+        dispatcher.request_stop();
+        pool.request_stop();
+        media_fetch_pool.request_stop();
+        sync_pool.request_stop();
+        return std::nullopt;
+    }
     {
         auto const guard = std::unique_lock<merovingian::homeserver::RuntimeMutex>{runtime.homeserver.mutex};
         runtime.homeserver.typing_expiry_wake = [&typing_expiry_job]() {
@@ -910,6 +949,9 @@ struct ListenerBinding final
     // Clears the retry queue's wake hook, then stops; a retry in progress ends within the gateway
     // client's own timeout. Retries still queued are dropped with the process (ADR-0206).
     push_retry_job.stop();
+    // Clears the email queue's wake hook, then stops; an email in progress ends within the SMTP
+    // timeouts. Emails still due are dropped with the process (ADR-0219).
+    email_push_job.stop();
     {
         auto const guard = std::unique_lock<merovingian::homeserver::RuntimeMutex>{runtime.homeserver.mutex};
         runtime.homeserver.typing_expiry_wake = nullptr;

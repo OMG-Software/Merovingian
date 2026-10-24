@@ -1,5 +1,5 @@
 Name:           merovingian
-Version:        0.12.43
+Version:        0.12.44
 Release:        1%{?dist}
 Summary:        Secure Matrix Protocol homeserver
 
@@ -112,6 +112,9 @@ fi
 %{_sysconfdir}/merovingian/merovingian.conf.example
 
 %changelog
+* Sat Oct 24 2026 James Chapman <claude@ping.me.uk> - 0.12.44-1
+- Deliver email pushers through an optional SMTP relay (server.email.*): the account's own address, an unread count, a delayed and throttled digest.
+
 * Fri Oct 23 2026 James Chapman <claude@ping.me.uk> - 0.12.43-1
 - Update the SQLite, yyjson, Catch2 and curl wrap pins; remove the unused OpenSSL, LibSodium and libpq wraps.
 

@@ -31,6 +31,7 @@
 #include "merovingian/homeserver/appservice_delivery.hpp"
 #include "merovingian/homeserver/appservice_ephemeral.hpp"
 #include "merovingian/homeserver/auth_service.hpp"
+#include "merovingian/homeserver/email_push.hpp"
 #include "merovingian/homeserver/federation_proxy.hpp"
 #include "merovingian/homeserver/local_http_router.hpp"
 #include "merovingian/homeserver/local_services.hpp"
@@ -6092,6 +6093,23 @@ namespace
         return serialize_canonical_string(canonicaljson::Value{std::move(actions)}).value_or(R"(["notify"])");
     }
 
+    // Notes a notification for one email pusher (ADR-0219). A full queue drops it, as push
+    // delivery past its caps does (ADR-0028): the notification is still in GET /notifications.
+    auto note_email_notification(push::EmailDigestQueue& queue, std::string const& user_id, std::string const& pushkey,
+                                 push::EmailDigestPolicy const& policy) -> void
+    {
+        if (queue.note_notification(push::EmailDigestKey{user_id, pushkey}, std::chrono::steady_clock::now(), policy) ==
+            push::EmailDigestAdmission::queue_full)
+        {
+            log_diagnostic("push.email.dropped",
+                           {
+                               {"recipient", user_id,      false},
+                               {"reason",    "queue full", false}
+            },
+                           observability::LogEventSeverity::warning);
+        }
+    }
+
     // Evaluates push rules for `composed` against every local, joined,
     // eligible (not ignoring the sender) recipient of `room` (everyone except
     // `sender`), plus anyone named in `extra_recipients`, and:
@@ -6102,13 +6120,12 @@ namespace
     //      endpoint returns events the user "has been, or would have been
     //      notified about" — a user with push turned off must still see this
     //      history when they open the client.
-    //   2. Returns one PendingPushDelivery per (recipient, pusher) pair for
-    //      actual Push Gateway delivery — but only when push.enabled is set
-    //      and the recipient has a registered pusher. Only "http" pushers are
-    //      returned — Merovingian's Push Gateway API client only speaks the
-    //      HTTP pusher protocol; "email" pushers are accepted and persisted by
-    //      POST /pushers/set but are not yet deliverable (see
-    //      docs/todos/capability-gaps.md).
+    //   2. Returns one PendingPushDelivery per (recipient, "http" pusher) pair
+    //      for Push Gateway delivery — only when push.enabled is set.
+    //   3. Notes the notification for each of the recipient's "email" pushers
+    //      in runtime.email_digest_queue_ — only when server.email.smtp_url is
+    //      set (ADR-0219). Nothing is sent here: the email job sends a delayed,
+    //      throttled digest that carries only the unread count.
     //
     // `extra_recipients` exists for membership transitions: an invitee is
     // not a joined member of `room` (store_or_update_membership only adds to
@@ -6138,6 +6155,12 @@ namespace
         // deliveries — but rule evaluation and notification-history recording
         // are not: see this function's doc comment above.
         auto const push_delivery_enabled = runtime.config.server().push.enabled;
+        // Email pushers have their own switch: an SMTP relay is configured (ADR-0219).
+        auto const email_delivery_enabled =
+            email_push_configured(runtime.config) && runtime.email_digest_queue_ != nullptr;
+        auto const email_policy =
+            push::EmailDigestPolicy{std::chrono::seconds{runtime.config.server().email.notification_delay_seconds},
+                                    std::chrono::seconds{runtime.config.server().email.notification_throttle_seconds}};
 
         auto event_parsed = canonicaljson::parse_lossless(composed.json);
         if (event_parsed.error != canonicaljson::ParseError::none)
@@ -6275,7 +6298,7 @@ namespace
                     push_notification_actions_json(result), std::string{}, result.tweak_highlight},
                 static_cast<std::size_t>(runtime.config.server().client_api.max_notifications_retained_per_user));
 
-            if (!push_delivery_enabled)
+            if (!push_delivery_enabled && !email_delivery_enabled)
             {
                 continue;
             }
@@ -6304,17 +6327,31 @@ namespace
                 pushers.resize(max_pushers_per_delivery);
             }
 
-            auto const unread = push_badge_unread_count(runtime, member, ruleset);
+            // The badge count walks the event table (ADR-0207): only count when an http pusher
+            // will carry it. An email reports the count it finds when it is sent.
+            auto unread = std::optional<std::uint32_t>{};
             for (auto const& pusher : pushers)
             {
-                if (pusher.kind != "http" || pusher.data_url.empty())
+                if (pusher.kind == "email")
+                {
+                    if (email_delivery_enabled)
+                    {
+                        note_email_notification(*runtime.email_digest_queue_, member, pusher.pushkey, email_policy);
+                    }
+                    continue;
+                }
+                if (!push_delivery_enabled || pusher.kind != "http" || pusher.data_url.empty())
                 {
                     continue;
+                }
+                if (!unread.has_value())
+                {
+                    unread = push_badge_unread_count(runtime, member, ruleset);
                 }
                 auto notification = push::PushGatewayNotification{};
                 notification.event_id = composed.event_id;
                 notification.room_id = room.room_id;
-                notification.counts = {unread, 0U};
+                notification.counts = {*unread, 0U};
                 notification.prio = "high";
                 auto const event_id_only = pusher.data_format == "event_id_only";
                 if (!event_id_only)

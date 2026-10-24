@@ -158,6 +158,7 @@ shell = find_program('sh')
       'unit/test_canonicaljson_limits.cpp',
       'unit/test_client_server.cpp',
       'unit/test_config_defaults.cpp',
+      'unit/test_config_email.cpp',
       'unit/test_token_lifetime_policy.cpp',
       'unit/test_config_login_throttle.cpp',
       'unit/test_config_operational_limits.cpp',
@@ -223,6 +224,7 @@ shell = find_program('sh')
       'unit/test_file_metadata.cpp',
       'unit/test_secure_secret_loading.cpp',
       'unit/test_elf_probe.cpp',
+      'unit/test_email.cpp',
       'unit/test_seccomp_hardening.cpp',
       'unit/test_worker_landlock.cpp',
       'unit/test_worker_hardening_threads.cpp',
@@ -332,6 +334,7 @@ shell = find_program('sh')
       'unit/test_user_push_rules.cpp',
       'unit/test_push_retry_queue.cpp',
       'unit/test_push_badge_count.cpp',
+      'unit/test_push_email_digest_queue.cpp',
       'unit/test_push_rule_unread_classifier.cpp',
       'unit/test_push_room_facts.cpp',
       'unit/test_push_gateway_client.cpp',
@@ -347,7 +350,7 @@ shell = find_program('sh')
     # locating sibling test binaries. Never defined for a production target.
     cpp_args: ['-DMEROVINGIAN_TEST_SOURCE_ROOT="' + meson.project_source_root() + '"'],
     dependencies: [catch2_dep, thread_dep, libsodium_dep, openssl_dep, libpq_dep, sqlite_dep, libcurl_dep, resolv_dep],
-    link_with: [appservice_lib, auth_lib, canonicaljson_lib, core_lib, config_lib, crypto_lib, database_lib, events_lib, federation_lib, federation_worker_lib, homeserver_lib, http_lib, identity_lib, ipc_lib, media_lib, net_lib, observability_lib, platform_lib, push_lib, rooms_lib, sync_lib, trust_safety_lib],
+    link_with: [appservice_lib, auth_lib, canonicaljson_lib, core_lib, config_lib, crypto_lib, database_lib, email_lib, events_lib, federation_lib, federation_worker_lib, homeserver_lib, http_lib, identity_lib, ipc_lib, media_lib, net_lib, observability_lib, platform_lib, push_lib, rooms_lib, sync_lib, trust_safety_lib],
   )
 
   test('unit-tests', unit_tests, timeout: 600)
@@ -418,7 +421,7 @@ shell = find_program('sh')
     ),
     include_directories: inc,
     dependencies: [catch2_dep, thread_dep, libsodium_dep, openssl_dep, libpq_dep, sqlite_dep, libcurl_dep, resolv_dep],
-    link_with: [appservice_lib, auth_lib, canonicaljson_lib, core_lib, config_lib, crypto_lib, database_lib, events_lib, federation_lib, homeserver_lib, http_lib, identity_lib, ipc_lib, media_lib, net_lib, observability_lib, platform_lib, push_lib, rooms_lib, sync_lib, trust_safety_lib],
+    link_with: [appservice_lib, auth_lib, canonicaljson_lib, core_lib, config_lib, crypto_lib, database_lib, email_lib, events_lib, federation_lib, homeserver_lib, http_lib, identity_lib, ipc_lib, media_lib, net_lib, observability_lib, platform_lib, push_lib, rooms_lib, sync_lib, trust_safety_lib],
   )
 
   test('conformance-tests', conformance_tests, timeout: 600)
@@ -466,6 +469,7 @@ shell = find_program('sh')
       'integration/test_appservice_query_hooks_flow.cpp',
       'integration/test_client_outbound_proxy_flow.cpp',
       'integration/test_client_server_flow.cpp',
+      'integration/test_email_push_flow.cpp',
       'integration/test_federation_cross_signing_flow.cpp',
       'integration/test_federation_inbound_flow.cpp',
       'integration/test_federation_outbound_flow.cpp',
@@ -525,7 +529,7 @@ shell = find_program('sh')
     ),
     include_directories: inc,
     dependencies: [catch2_dep, thread_dep, libsodium_dep, openssl_dep, libpq_dep, sqlite_dep, libcurl_dep, resolv_dep],
-    link_with: [appservice_lib, auth_lib, canonicaljson_lib, core_lib, config_lib, crypto_lib, database_lib, events_lib, federation_lib, federation_worker_lib, homeserver_lib, http_lib, identity_lib, ipc_lib, media_lib, net_lib, observability_lib, platform_lib, push_lib, rooms_lib, sync_lib, trust_safety_lib],
+    link_with: [appservice_lib, auth_lib, canonicaljson_lib, core_lib, config_lib, crypto_lib, database_lib, email_lib, events_lib, federation_lib, federation_worker_lib, homeserver_lib, http_lib, identity_lib, ipc_lib, media_lib, net_lib, observability_lib, platform_lib, push_lib, rooms_lib, sync_lib, trust_safety_lib],
     cpp_args: [thumbnail_test_args, thumbnail_gate_test_args, federation_worker_test_args, server_test_args,
                '-DMEROVINGIAN_TEST_SOURCE_ROOT="' + meson.project_source_root() + '"'],
   )
@@ -544,7 +548,7 @@ shell = find_program('sh')
       ),
       include_directories: inc,
       dependencies: [catch2_dep, thread_dep, libsodium_dep, openssl_dep, libpq_dep, sqlite_dep, libcurl_dep, resolv_dep],
-      link_with: [appservice_lib, auth_lib, canonicaljson_lib, core_lib, config_lib, crypto_lib, database_lib, events_lib, federation_lib, homeserver_lib, http_lib, identity_lib, ipc_lib, media_lib, net_lib, observability_lib, platform_lib, push_lib, rooms_lib, sync_lib, trust_safety_lib],
+      link_with: [appservice_lib, auth_lib, canonicaljson_lib, core_lib, config_lib, crypto_lib, database_lib, email_lib, events_lib, federation_lib, homeserver_lib, http_lib, identity_lib, ipc_lib, media_lib, net_lib, observability_lib, platform_lib, push_lib, rooms_lib, sync_lib, trust_safety_lib],
     )
 
     test('live-integration-tests', live_integration_tests)
@@ -559,7 +563,7 @@ shell = find_program('sh')
       ),
       include_directories: inc,
       dependencies: [catch2_dep, thread_dep, libsodium_dep, openssl_dep, libpq_dep, sqlite_dep, libcurl_dep, resolv_dep],
-      link_with: [auth_lib, canonicaljson_lib, core_lib, config_lib, crypto_lib, database_lib, events_lib, federation_lib, federation_worker_lib, homeserver_lib, http_lib, identity_lib, ipc_lib, media_lib, net_lib, observability_lib, platform_lib, push_lib, rooms_lib, sync_lib, trust_safety_lib],
+      link_with: [auth_lib, canonicaljson_lib, core_lib, config_lib, crypto_lib, database_lib, email_lib, events_lib, federation_lib, federation_worker_lib, homeserver_lib, http_lib, identity_lib, ipc_lib, media_lib, net_lib, observability_lib, platform_lib, push_lib, rooms_lib, sync_lib, trust_safety_lib],
     )
 
 #The harness's own default duration is short (2 s, MEROVINGIAN_LOCK_SOAK_SECONDS

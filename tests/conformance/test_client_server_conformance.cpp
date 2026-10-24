@@ -17104,6 +17104,121 @@ SCENARIO("POST /pushers/set refuses email pushers rather than silently discardin
     }
 }
 
+// Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#post_matrixclientv3pushersset
+// kind "email" "makes a pusher that emails the user with unread notifications"; app_id: "If the
+// kind is "email", this is "m.email""; pushkey: "If the kind is "email", this is the email address
+// to send notifications to". With an SMTP relay configured, this server accepts an email pusher for
+// an address the account already holds as a 3PID, and only such an address (ADR-0219).
+SCENARIO("POST /pushers/set accepts an email pusher for the account's own address when a relay is configured",
+         "[conformance][client-server][push][email-pusher]")
+{
+    GIVEN("a homeserver with an SMTP relay and a user holding the email 3PID alice@example.net")
+    {
+        auto config = conformance_config();
+        config.server().email.smtp_url = "smtps://smtp.example.org";
+        config.server().email.from = "matrix@example.org";
+        auto started = merovingian::homeserver::start_client_server(std::move(config));
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        auto const token = logged_in_token(runtime);
+        auto binding = merovingian::database::PersistentThreePidBinding{};
+        binding.user_id = "@alice:example.org";
+        binding.medium = "email";
+        binding.address = "alice@example.net";
+        binding.added_at_ms = 1700000000000U;
+        binding.validated_at_ms = 1700000000000U;
+        REQUIRE(merovingian::database::store_account_threepid(runtime.homeserver.database.persistent_store, binding));
+
+        auto const set_email_pusher = [&](std::string const& app_id, std::string const& pushkey) {
+            return merovingian::homeserver::handle_client_server_request(
+                runtime, {"POST", "/_matrix/client/v3/pushers/set", token,
+                          R"({"app_display_name":"Mail","app_id":")" + app_id +
+                              R"(","data":{},"device_display_name":"Inbox","kind":"email","lang":"en","pushkey":")" +
+                              pushkey + R"("})"});
+        };
+        auto const listed_pushers = [&]() {
+            auto const listed = merovingian::homeserver::handle_client_server_request(
+                runtime, {"GET", "/_matrix/client/v3/pushers", token, {}});
+            REQUIRE(listed.response.status == 200U);
+            return listed.response.body;
+        };
+
+        WHEN("an email pusher is set for that address, written in another case")
+        {
+            auto const response = set_email_pusher("m.email", "Alice@Example.net");
+
+            THEN("it is accepted and listed back as an email pusher with the pushkey as given")
+            {
+                REQUIRE(response.response.status == 200U);
+                auto const body = listed_pushers();
+                REQUIRE(body.find(R"("kind":"email")") != std::string::npos);
+                REQUIRE(body.find(R"("pushkey":"Alice@Example.net")") != std::string::npos);
+            }
+
+            AND_WHEN("the address is removed from the account")
+            {
+                auto const deleted = merovingian::homeserver::handle_client_server_request(
+                    runtime, {"POST", "/_matrix/client/v3/account/3pid/delete", token,
+                              R"({"medium":"email","address":"alice@example.net"})"});
+
+                THEN("the email pusher is removed with it")
+                {
+                    REQUIRE(deleted.response.status == 200U);
+                    REQUIRE(listed_pushers().find("Alice@Example.net") == std::string::npos);
+                }
+            }
+        }
+
+        WHEN("an email pusher is set for an address the account does not hold")
+        {
+            auto const response = set_email_pusher("m.email", "stranger@example.org");
+
+            THEN("it is refused with 400 and nothing is stored")
+            {
+                REQUIRE(response.response.status == 400U);
+                REQUIRE(response.response.body.find("M_INVALID_PARAM") != std::string::npos);
+                REQUIRE(listed_pushers().find("stranger@example.org") == std::string::npos);
+            }
+        }
+
+        WHEN("an email pusher names an app_id other than m.email")
+        {
+            auto const response = set_email_pusher("org.example.mail", "alice@example.net");
+
+            THEN("it is refused with 400 and nothing is stored")
+            {
+                REQUIRE(response.response.status == 400U);
+                REQUIRE(listed_pushers().find("alice@example.net") == std::string::npos);
+            }
+        }
+
+        WHEN("an email pusher's pushkey carries an SMTP command injection")
+        {
+            auto const response = set_email_pusher("m.email", R"(alice@example.net\r\nRCPT TO:<mallory@example.org>)");
+
+            THEN("it is refused with 400")
+            {
+                REQUIRE(response.response.status == 400U);
+            }
+        }
+
+        WHEN("an email pusher is set and then deleted with kind null")
+        {
+            REQUIRE(set_email_pusher("m.email", "alice@example.net").response.status == 200U);
+            auto const deleted = merovingian::homeserver::handle_client_server_request(
+                runtime, {"POST", "/_matrix/client/v3/pushers/set", token,
+                          R"({"app_id":"m.email","kind":null,"pushkey":"alice@example.net"})"});
+
+            THEN("it is gone and no email is due to it")
+            {
+                REQUIRE(deleted.response.status == 200U);
+                REQUIRE(listed_pushers().find("alice@example.net") == std::string::npos);
+                REQUIRE_FALSE(runtime.homeserver.email_digest_queue_->next_due().has_value());
+            }
+        }
+    }
+}
+
 // --- Media download security headers ---
 // Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#content-repository
 //

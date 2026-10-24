@@ -15,6 +15,7 @@ Spec authority:
 | `push_gateway_client.cpp` | `PushGatewayClient::notify`: builds and sends `POST /_matrix/push/v1/notify`, parses `rejected_pushkeys` |
 | `gateway_circuit_breaker.cpp` | `GatewayCircuitBreaker`: per-host consecutive-failure circuit with a cooldown and one probe per window (OUT-3) |
 | `push_retry_queue.cpp` | `PushRetryQueue`, `push_retry_backoff`, `push_delivery_should_retry`: the bounded queue of notifications to send again, and when (R14, ADR-0206) |
+| `email_digest_queue.cpp` | `EmailDigestQueue`, `email_digest_backoff`: which kind `"email"` pushers have a digest email due, and when; the delay, throttle, fold and retry policy (ADR-0219) |
 
 The server-default ruleset is in `homeserver/default_push_ruleset.cpp`; delivery scheduling and the
 concurrency caps are in `homeserver/room_service.cpp`; every attempt and the retry job are in
@@ -74,8 +75,16 @@ concurrency caps are in `homeserver/room_service.cpp`; every attempt and the ret
     which keeps the circuit breaker and rejection handling in one place; never sleep in a delivery
     task to retry, which would hold an in-flight slot (ADR-0028).
 
+14. **Email pushers send a delayed, throttled digest of the unread count, to the account's own
+    email 3PID only** (ADR-0219). `EmailDigestQueue` decides when; `homeserver/email_push.cpp`
+    re-checks the pusher, the address and the count before each send, and `src/email/` sends.
+    Push delivery only notes the notification, under `runtime.mutex`, and never sends. The queue
+    is bounded (`email_digest_queue_capacity`) and drops past it.
+
 ## Testing
 
+- `tests/unit/test_push_email_digest_queue.cpp` — email digest delay, fold, throttle, retry, bounds and concurrency
+- `tests/integration/test_email_push_flow.cpp` — email pushers end to end against a mock SMTP relay
 - `tests/unit/test_push_rules.cpp`, `tests/unit/test_default_push_ruleset.cpp` — evaluation and default ruleset
 - `tests/unit/test_user_push_rules.cpp` — user rules over the defaults: ordering, refusals, bounds, round trip
 - `tests/conformance/test_push_rules_api_conformance.cpp` — Push Rules API and `m.push_rules`
