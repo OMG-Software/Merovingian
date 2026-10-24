@@ -45,6 +45,12 @@ without one they are refused as before (ADR-0219, ADR-0220).
   assertion that a session happened now waits, at most ten seconds, for it to be recorded, and
   every assertion that the relay was never contacted reads a count of connections taken as
   `accept()` returns (found in review: the recorded sessions could miss one still in progress).
+- **FIXED (found by this PR's CI):** `rhel-build-and-test` failed every email scenario that needs an
+  SMTP session: AlmaLinux 10 links `libcurl-minimal`, built without SMTP, so no session could
+  start. The server already refuses to start with such a relay; the scenarios now skip, naming
+  the reason, when the linked libcurl lacks the protocol. `docs/user-manual.md`,
+  `docs/platform-support.md` and `docs/dependencies/libcurl.md` tell RHEL operators to install
+  the full `libcurl` for email.
 - **TESTS (new):** `tests/unit/test_email.cpp`, `tests/unit/test_push_email_digest_queue.cpp`,
   `tests/unit/test_config_email.cpp`, `tests/integration/test_email_push_flow.cpp` (real SMTP
   sessions against a loopback mock relay: implicit TLS with AUTH, STARTTLS, a relay without

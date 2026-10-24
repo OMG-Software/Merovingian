@@ -708,6 +708,11 @@ Email pushers (`kind: "email"` in `POST /pushers/set`) are **refused unless
 3PID can receive notification emails, and an email carries only an unread count,
 never message content, room names or sender names. Every key requires a restart.
 
+The libcurl the server links must support `smtp`/`smtps`; the server refuses to start with a
+relay it cannot speak. RHEL 10, AlmaLinux 10 and Fedora install `libcurl-minimal` by default,
+which has no SMTP: replace it with the full library (`dnf swap libcurl-minimal libcurl`) before
+setting `smtp_url`. `curl --version` lists the protocols on its `Protocols:` line.
+
 | Key | Default | When to change |
 |---|---|---|
 | `server.email.smtp_url` | empty | `smtps://host[:port]` (TLS from the first byte, port 465) or `smtp://host[:port]` (STARTTLS, port 587). No userinfo, path or query. Empty disables email pushers. |

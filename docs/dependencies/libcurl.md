@@ -50,7 +50,9 @@ operator chose a cleartext loopback relay, peer and host verification on,
 refuses a configured relay whose scheme `curl_version_info` does not list, so the
 static build's default protocol set (SMTP included) is now relied on; a
 `--disable-smtp` build would refuse to start with a relay configured rather than
-accept email pushers it cannot deliver. See ADR-0220.
+accept email pushers it cannot deliver. See ADR-0220. RHEL-compatible distributions install
+`libcurl-minimal` (no SMTP) by default; operators who want email install the full `libcurl`,
+and the integration scenarios that need an SMTP session skip where it is missing.
 
 ## Maintenance and platform posture
 

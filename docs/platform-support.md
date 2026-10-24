@@ -81,6 +81,12 @@ only direct dependencies built from vendored subprojects when absent.
 | libpng | `libpng-dev` | `libpng-devel` | `libpng16-devel` | `png` | `png` | `png` |
 | libjpeg-turbo | `libturbojpeg0-dev` | `turbojpeg-devel` | `libjpeg8-devel` | `libjpeg-turbo` | `jpeg-turbo` | `libjpeg-turbo` |
 
+Email pushers (`server.email.smtp_url`) need a libcurl with SMTP. On RHEL-compatible hosts the
+default `libcurl-minimal` has none; install the full `libcurl` (`dnf swap libcurl-minimal
+libcurl`) to use email, or the server refuses to start with a relay configured. Without SMTP the
+email integration scenarios that need an SMTP session are skipped, as on the
+`rhel-build-and-test` job.
+
 Runtime package dependencies are declared in the OS packaging metadata
 (`packaging/deb/control` `Depends`, the rpm spec, `packaging/freebsd/+MANIFEST`
 `deps`, `packaging/openbsd/PLIST` `@depend`, `packaging/netbsd/Makefile`

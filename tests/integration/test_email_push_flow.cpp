@@ -408,6 +408,19 @@ private:
     std::thread thread_{};
 };
 
+// Builds of libcurl without SMTP exist: RHEL and its rebuilds link libcurl-minimal by default (no
+// smtp or smtps). The server refuses to start with a relay its libcurl cannot speak (ADR-0220), so
+// a scenario that needs a real SMTP session has nothing to test against one; it is skipped, with
+// the reason, rather than passing or failing for the wrong reason.
+[[nodiscard]] auto smtp_supported(RelayMode mode) noexcept -> bool
+{
+    return merovingian::email::smtp_protocol_available(mode == RelayMode::implicit_tls);
+}
+
+constexpr auto smtp_unsupported =
+    "the linked libcurl was built without SMTP (e.g. RHEL's libcurl-minimal); the server refuses to start "
+    "with a relay it cannot speak, so there is no SMTP session to test";
+
 [[nodiscard]] auto email_test_config() -> merovingian::config::Config
 {
     auto security = merovingian::config::SecurityConfig{};
@@ -520,6 +533,11 @@ auto run_email_job(ClientServerRuntime& runtime) -> void
 SCENARIO("A notification for an email pusher is mailed, as an unread count only, after the delay",
          "[integration][push][email]")
 {
+    if (!smtp_supported(RelayMode::implicit_tls))
+    {
+        SKIP(smtp_unsupported);
+    }
+
     GIVEN("an implicit-TLS relay with SMTP AUTH and Alice's email pusher")
     {
         auto const relay = MockSmtpRelay{RelayMode::implicit_tls};
@@ -704,6 +722,11 @@ SCENARIO("A deactivated account is never mailed", "[integration][push][email][se
 SCENARIO("An unreadable SMTP password file sends nothing and keeps the email due",
          "[integration][push][email][security]")
 {
+    if (!smtp_supported(RelayMode::implicit_tls))
+    {
+        SKIP(smtp_unsupported);
+    }
+
     GIVEN("a relay with SMTP AUTH whose password file has gone, and a notification due")
     {
         auto const relay = MockSmtpRelay{RelayMode::implicit_tls};
@@ -759,6 +782,11 @@ SCENARIO("An email job asked to stop sends nothing and keeps the email due", "[i
 
 SCENARIO("A submission relay must start TLS before mail is sent to it", "[integration][push][email][security]")
 {
+    if (!smtp_supported(RelayMode::starttls))
+    {
+        SKIP(smtp_unsupported);
+    }
+
     GIVEN("a relay that offers STARTTLS")
     {
         auto const relay = MockSmtpRelay{RelayMode::starttls};
@@ -820,6 +848,11 @@ SCENARIO("A submission relay must start TLS before mail is sent to it", "[integr
 SCENARIO("A cleartext relay at a loopback literal is used when TLS is explicitly not required",
          "[integration][push][email]")
 {
+    if (!smtp_supported(RelayMode::cleartext))
+    {
+        SKIP(smtp_unsupported);
+    }
+
     GIVEN("a local cleartext relay with require_tls=false")
     {
         auto const relay = MockSmtpRelay{RelayMode::cleartext};
