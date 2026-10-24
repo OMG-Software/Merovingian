@@ -162,6 +162,12 @@ NetBSD is the remaining gap. Until one exists, run the worker under whatever
 confinement the service manager provides; the rlimits (address space, CPU, file
 size, descriptor count) still apply.
 
+The library report the server requests at startup (0.12.45) and `--version` are
+answered inside the same sandbox: the worker applies its hardening first and only
+then calls libpng or describes either library, and it writes the answer with
+`write(2)` as it does a thumbnail, never through iostreams (whose first write makes
+the C library `fstat` stdout).
+
 **The Linux profile is its own allowlist, not the general server filter or
 the federation worker's filter (fixed 0.12.7).** Before this fix, the
 decoder's `harden()` called `platform::apply_seccomp_filter()` — the general

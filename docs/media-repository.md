@@ -268,6 +268,13 @@ surface), so it runs in a short-lived, sandboxed child process:
   `frame_thumbnail_request` and `frame_thumbnail_response` return
   `std::optional<std::string>` and produce `nullopt` when the payload exceeds
   `UINT32_MAX` — callers treat this as a 413 or internal error respectively.
+  A second request kind, the library report (`MLQ1`, answered `MLR1`), carries no
+  image: the server sends it once at startup (`media::query_thumbnail_worker_libraries`)
+  to log the worker's libpng and libjpeg-turbo versions and linkage. It travels
+  the same spawn path (`exchange_with_worker`), and the worker answers it only
+  after its hardening, like a thumbnail. The report is at most eight lines of
+  five tab-separated printable-ASCII fields; `parse_library_report` refuses
+  anything else.
 - The parent (`media::generate_thumbnail`) creates its worker pipes with
   `O_CLOEXEC`, closes every non-stdio descriptor in the child after `dup2()`-ing
   the pipe ends to stdin/stdout, and sets `PR_SET_NO_NEW_PRIVS` before `execve()`.

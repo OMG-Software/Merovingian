@@ -5,6 +5,7 @@ crypto_sources = files(
   'generic_hash.cpp',
   'ipc_auth_key.cpp',
   'ipc_stream_cipher.cpp',
+  'library_versions.cpp',
   'master_key.cpp',
   'random.cpp',
   'refusing_ed25519_provider.cpp',

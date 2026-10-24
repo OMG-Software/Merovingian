@@ -4,6 +4,7 @@ http_sources = files(
   'connection_limiter.cpp',
   'in_flight_budget.cpp',
   'keep_alive.cpp',
+  'library_versions.cpp',
   'outbound_client.cpp',
   'rate_limit.cpp',
   'request.cpp',

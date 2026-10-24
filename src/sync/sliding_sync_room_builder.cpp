@@ -536,14 +536,28 @@ auto build_room_response(homeserver::HomeserverRuntime const& rt, std::string_vi
                          SlidingSyncRoomSubscription const& sub, std::uint64_t room_since_event_ordering,
                          bool is_initial, database::PersistentStore const& store,
                          std::unordered_set<std::string> const& lazy_members_already_sent,
-                         std::unordered_set<std::string> const& ignored_senders) -> SlidingSyncRoomResponse
+                         std::unordered_set<std::string> const& ignored_senders, TimelineExpansion expansion,
+                         std::optional<std::uint64_t> room_last_sent_ordering) -> SlidingSyncRoomResponse
 {
     // One filter for the request: the classifier borrows it, so both share its lazy indexes.
     auto visibility = HistoryVisibility{store, user};
     auto const unread = homeserver::PushRuleUnreadClassifier{
         store, user, static_cast<std::size_t>(rt.config.server().client_api.max_push_rules_per_user), visibility};
     return build_room_response(rt, room_id, user, sub, room_since_event_ordering, is_initial, store,
-                               lazy_members_already_sent, ignored_senders, visibility, unread);
+                               lazy_members_already_sent, ignored_senders, visibility, unread, expansion,
+                               room_last_sent_ordering);
+}
+
+auto timeline_limit_expands(SlidingSyncConnectionState const& conn, std::string_view room_id,
+                            std::uint64_t timeline_limit) -> bool
+{
+    auto const key = std::string{room_id};
+    if (!conn.rooms_seen.contains(key))
+    {
+        return false;
+    }
+    auto const recorded = conn.room_timeline_limits.find(key);
+    return recorded == conn.room_timeline_limits.end() || timeline_limit > recorded->second;
 }
 
 auto combine_room_configs(SlidingSyncList const& list, SlidingSyncRoomSubscription const& sub)
@@ -609,7 +623,8 @@ auto build_room_response(homeserver::HomeserverRuntime const& rt, std::string_vi
                          bool is_initial, database::PersistentStore const& store,
                          std::unordered_set<std::string> const& lazy_members_already_sent,
                          std::unordered_set<std::string> const& ignored_senders, HistoryVisibility& visibility,
-                         UnreadEventClassifier const& unread) -> SlidingSyncRoomResponse
+                         UnreadEventClassifier const& unread, TimelineExpansion expansion,
+                         std::optional<std::uint64_t> room_last_sent_ordering) -> SlidingSyncRoomResponse
 {
     auto resp = SlidingSyncRoomResponse{};
 
@@ -681,6 +696,10 @@ auto build_room_response(homeserver::HomeserverRuntime const& rt, std::string_vi
     // Computed before required_state: resolving required_state's "$LAZY"
     // member sentinel needs to know which senders/subjects appear in the
     // timeline this response is about to return.
+    // An initial room has no floor; an expanded one (MSC4186 "Changes to
+    // `timeline_limit`") ignores it for the timeline and resends the latest
+    // events, while required_state below keeps it.
+    bool const timeline_has_floor = !is_initial && expansion == TimelineExpansion::none;
     auto timeline_events = std::vector<std::pair<std::uint64_t, std::string>>{};
     for (auto const& ev : store.events)
     {
@@ -697,7 +716,7 @@ auto build_room_response(homeserver::HomeserverRuntime const& rt, std::string_vi
         {
             continue;
         }
-        if (!is_initial && ev.stream_ordering <= room_since_event_ordering)
+        if (timeline_has_floor && ev.stream_ordering <= room_since_event_ordering)
         {
             continue;
         }
@@ -727,13 +746,48 @@ auto build_room_response(homeserver::HomeserverRuntime const& rt, std::string_vi
 
     auto const limit = static_cast<std::size_t>(sub.timeline_limit);
     bool const timeline_limited = timeline_events.size() > limit;
+    // MSC4186 §rooms[roomId] `prev_batch`: a /messages `from` that pages back to the
+    // events before this timeline. /messages?dir=b returns events strictly older than
+    // `from`, so it is the oldest returned event's ordering (as /v3/sync's prev_batch),
+    // or, when nothing is returned, one past the newest event withheld.
+    if (!timeline_events.empty())
+    {
+        auto const oldest_kept = timeline_limited ? timeline_events.size() - limit : std::size_t{0U};
+        resp.prev_batch = limit == 0U ? std::to_string(timeline_events.back().first + 1U)
+                                      : std::to_string(timeline_events[oldest_kept].first);
+    }
     if (timeline_limited)
     {
-        // Keep the last `limit` events; MSC4186 returns timeline as a plain
-        // [Event] array without a per-room prev_batch or limited flag.
+        // Keep the newest `limit` events. MSC4186 `limited`: "True if there are more
+        // events since the previous sync than were included in the `timeline` field,
+        // or that the client should paginate to fetch more events." Without it a
+        // client takes the truncated timeline for the room's whole history.
+        resp.limited = true;
         auto const drop_count = timeline_events.size() - limit;
         timeline_events.erase(timeline_events.begin(),
                               timeline_events.begin() + static_cast<std::ptrdiff_t>(drop_count));
+    }
+    // A room's first send on the connection has no previous send and no "previous
+    // sync", so it is neither expanded nor live.
+    auto const last_sent = room_last_sent_ordering.value_or(room_since_event_ordering);
+    for (auto const& [ordering, json] : timeline_events)
+    {
+        std::ignore = json;
+        if (is_initial)
+        {
+            break;
+        }
+        if (ordering <= last_sent)
+        {
+            // MSC4186: "If the server does return events that predate the last time
+            // the room was sent to the client, it MUST set the `expanded_timeline`".
+            resp.expanded_timeline = true;
+        }
+        if (ordering > room_since_event_ordering)
+        {
+            // `num_live`: events "that have happened since the previous sync request".
+            ++resp.num_live;
+        }
     }
 
     // ── required_state ──────────────────────────────────────────────────────

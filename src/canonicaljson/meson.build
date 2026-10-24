@@ -1,4 +1,5 @@
 canonicaljson_sources = files(
+  'library_versions.cpp',
   'parser.cpp',
   'serializer.cpp',
   'signable.cpp',

@@ -11,6 +11,7 @@
 [![Documentation](https://github.com/OMG-Software/Merovingian/actions/workflows/pages.yml/badge.svg)](https://omg-software.github.io/Merovingian/)
 [![Coverage](https://codecov.io/gh/OMG-Software/Merovingian/graph/badge.svg)](https://codecov.io/gh/OMG-Software/Merovingian)
 [![Code scanning](https://img.shields.io/badge/code%20scanning-CodeQL-blue)](https://github.com/OMG-Software/Merovingian/security/code-scanning)
+[![CodeRabbit Pull Request Reviews](https://img.shields.io/coderabbit/prs/github/OMG-Software/Merovingian?utm_source=oss&utm_medium=github&utm_campaign=OMG-Software%2FMerovingian&labelColor=171717&color=FF570A&link=https%3A%2F%2Fcoderabbit.ai&label=CodeRabbit+Reviews)](https://coderabbit.ai)
 [![License: GPL-3.0-or-later](https://img.shields.io/badge/license-GPL--3.0--or--later-blue.svg)](LICENSE)
 [![C++26](https://img.shields.io/badge/C%2B%2B-26-blue.svg)]()
 [![Meson](https://img.shields.io/badge/build-Meson-blue.svg)]()

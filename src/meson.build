@@ -58,6 +58,10 @@ if thumbnail_worker_available
     include_directories: inc,
     dependencies: [libpng_dep, turbojpeg_dep],
     link_with: [core_lib, platform_lib],
+    # --version and the library report (0.12.45): the TurboJPEG API has no runtime version call,
+    # so the worker reports the libjpeg-turbo version pkg-config found.
+    cpp_args: ['-DMEROVINGIAN_VERSION="' + meson.project_version() + '"',
+               '-DMEROVINGIAN_TURBOJPEG_BUILD_VERSION="' + turbojpeg_dep.version() + '"'],
     install: true,
     install_dir: get_option('libexecdir') / 'merovingian',
   )

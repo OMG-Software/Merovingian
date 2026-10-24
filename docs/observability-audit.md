@@ -20,6 +20,14 @@ an `info` threshold.
 
 ## Included now
 
+Startup logs every library each process runs (0.12.45, ADR-0222), at `INFO`, as plain text with no
+structured fields: `Library <name> <version> (static)` or `Library <name> <version> (dynamic,
+<shared object path>; built against <version>)` from the server, `Thumbnail worker library …` for
+libpng and libjpeg-turbo (or `Thumbnail worker libraries not reported: <reason>`, at warning when
+thumbnailing is enabled) and `Federation worker library …` from the federation worker. The lines
+carry library names, versions and loader paths only. The thumbnail worker's report reaches the
+server with every byte outside printable ASCII replaced by `?`, so it cannot add a log line.
+
 Push overload emits `push.delivery.dropped` at warning severity. Its `scope` is
 `global` or `recipient` for capacity drops, and `allocation` or `admission` for
 resource/launch failures. `in_flight`, `cap` and `deliveries` are numeric counts;

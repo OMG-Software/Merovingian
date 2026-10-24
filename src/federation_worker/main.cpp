@@ -3,7 +3,9 @@
 
 #include "merovingian/config/config_parser.hpp"
 #include "merovingian/core/file_descriptor.hpp"
+#include "merovingian/core/library_version.hpp"
 #include "merovingian/federation_worker/args.hpp"
+#include "merovingian/homeserver/library_versions.hpp"
 #include "merovingian/observability/logger.hpp"
 #include "merovingian/platform/landlock_hardening.hpp"
 #include "merovingian/platform/runtime_hardening.hpp"
@@ -146,6 +148,12 @@ auto main(int argc, char const* const* argv) -> int
     LOG_INFO("Federation worker starting: shard=" + std::to_string(args.shard_index) + " config=" + *args.config_path +
              " ipc_fd=" + std::to_string(raw_fd) + " ipc_key_fd=" + std::to_string(raw_key_fd) +
              (args.db_uri_fd.has_value() ? " db_uri_fd=" + std::to_string(raw_db_uri_fd) : ""));
+    // The worker is a separate executable and may load other copies of the libraries than the
+    // server does, so it logs its own (0.12.45).
+    for (auto const& library : merovingian::homeserver::linked_library_versions())
+    {
+        LOG_INFO("Federation worker library " + merovingian::core::library_version_log_line(library));
+    }
 
 #ifdef __linux__
     // Ask the kernel to terminate this child automatically if the parent thread

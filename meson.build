@@ -2,7 +2,7 @@ project(
   'merovingian',
   'cpp',
   'c',
-  version: '0.12.44',
+  version: '0.12.45',
   license: 'GPL-3.0-or-later',
   meson_version: '>=1.1.0',
   default_options: [
@@ -14,12 +14,18 @@ project(
 
 cpp = meson.get_compiler('cpp')
 thread_dep = dependency('threads')
+# dladdr(3), which core::describe_library uses to tell a statically linked library from a
+# shared object at runtime. In libc on glibc 2.34+, musl and the BSDs; libdl on older glibc.
+dl_dep = dependency('dl', required: false)
 libsodium_dep = dependency('libsodium', include_type: 'system', allow_fallback: false)
 openssl_dep = dependency('openssl', include_type: 'system', allow_fallback: false)
 # libpq.a requires pgcommon and pgport symbols that libpq.pc omits from
 # Libs.private. Alpine ships the frontend (_shlib) variant separately;
 # other distros use the plain library name. Prefer _shlib, fall back to plain.
 _libpq          = dependency('libpq', include_type: 'system', allow_fallback: false)
+# libpq's headers carry no version macro, so the version it was built against is the one
+# pkg-config reported (database::library_versions).
+libpq_build_version = _libpq.version()
 # libpq.a requires pgcommon/pgport symbols that libpq.pc omits from Libs.private.
 # Use static:true so we only add them when a .a file physically exists â€” this
 # prevents false-positive detection of dynamic-only stubs on FreeBSD that the

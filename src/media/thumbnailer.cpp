@@ -3,8 +3,11 @@
 
 #include "merovingian/media/thumbnailer.hpp"
 
+#include "merovingian/core/error.hpp"
 #include "merovingian/core/file_descriptor.hpp"
+#include "merovingian/core/library_version.hpp"
 
+#include <algorithm>
 #include <array>
 #include <cerrno>
 #include <chrono>
@@ -36,6 +39,53 @@ namespace
 
     constexpr std::string_view request_magic{"MTH1"};
     constexpr std::string_view response_magic{"MTR1"};
+    constexpr std::string_view library_request_magic{"MLQ1"};
+    constexpr std::string_view library_report_magic{"MLR1"};
+
+    // Library report fields: printable ASCII only, at most this long (a shared-object path is the
+    // longest), five per line.
+    constexpr std::size_t max_library_field_bytes{512U};
+    constexpr std::size_t library_report_fields{5U};
+    constexpr std::size_t max_library_report_bytes{max_library_report_entries * library_report_fields *
+                                                   (max_library_field_bytes + 1U)};
+
+    [[nodiscard]] constexpr auto is_report_byte(char byte) noexcept -> bool
+    {
+        return byte >= 0x20 && byte <= 0x7E;
+    }
+
+    // A field as the report carries it: anything outside printable ASCII (tabs and newlines
+    // included) becomes '?', and an over-long field is cut.
+    [[nodiscard]] auto report_field(std::string_view value) -> std::string
+    {
+        auto field = std::string{value.substr(0U, max_library_field_bytes)};
+        for (auto& byte : field)
+        {
+            if (!is_report_byte(byte))
+            {
+                byte = '?';
+            }
+        }
+        return field;
+    }
+
+    [[nodiscard]] auto linkage_name(core::Linkage linkage) -> std::string_view
+    {
+        return linkage == core::Linkage::dynamic ? "dynamic" : "static";
+    }
+
+    [[nodiscard]] auto parse_linkage(std::string_view name) -> std::optional<core::Linkage>
+    {
+        if (name == "dynamic")
+        {
+            return core::Linkage::dynamic;
+        }
+        if (name == "static")
+        {
+            return core::Linkage::static_linked;
+        }
+        return std::nullopt;
+    }
 
     [[nodiscard]] auto open_worker_stderr_sink() noexcept -> core::FileDescriptor
     {
@@ -359,6 +409,90 @@ auto parse_thumbnail_response(std::string_view frame) -> std::optional<Thumbnail
     return response;
 }
 
+auto frame_library_report_request() -> std::string
+{
+    return std::string{library_request_magic};
+}
+
+auto is_library_report_request(std::string_view frame) noexcept -> bool
+{
+    return frame == library_request_magic;
+}
+
+auto frame_library_report(std::span<core::LibraryVersion const> libraries) -> std::string
+{
+    auto text = std::string{};
+    for (auto const& library : libraries)
+    {
+        text += report_field(library.name) + '\t' + std::string{linkage_name(library.linkage)} + '\t' +
+                report_field(library.runtime_version) + '\t' + report_field(library.build_version) + '\t' +
+                report_field(library.shared_object) + '\n';
+    }
+    auto frame = std::string{library_report_magic};
+    append_u32(frame, static_cast<std::uint32_t>(text.size()));
+    return frame + text;
+}
+
+auto parse_library_report(std::string_view frame) -> std::optional<std::vector<core::LibraryVersion>>
+{
+    constexpr auto header_bytes = library_report_magic.size() + 4U;
+    if (frame.size() < header_bytes || frame.substr(0U, library_report_magic.size()) != library_report_magic)
+    {
+        return std::nullopt;
+    }
+    auto const length = read_u32(frame, library_report_magic.size());
+    auto text = frame.substr(header_bytes);
+    if (length > max_library_report_bytes || text.size() != length || (!text.empty() && text.back() != '\n'))
+    {
+        return std::nullopt;
+    }
+    auto libraries = std::vector<core::LibraryVersion>{};
+    while (!text.empty())
+    {
+        if (libraries.size() == max_library_report_entries)
+        {
+            return std::nullopt;
+        }
+        auto const line_end = text.find('\n');
+        auto line = text.substr(0U, line_end);
+        text.remove_prefix(line_end + 1U);
+
+        auto fields = std::vector<std::string_view>{};
+        while (fields.size() < library_report_fields)
+        {
+            auto const tab = line.find('\t');
+            fields.push_back(line.substr(0U, tab));
+            if (tab == std::string_view::npos)
+            {
+                line = {};
+                break;
+            }
+            line.remove_prefix(tab + 1U);
+        }
+        if (fields.size() != library_report_fields || !line.empty())
+        {
+            return std::nullopt;
+        }
+        for (auto const field : fields)
+        {
+            if (field.size() > max_library_field_bytes || !std::ranges::all_of(field, [](char byte) {
+                    return is_report_byte(byte);
+                }))
+            {
+                return std::nullopt;
+            }
+        }
+        auto const linkage = parse_linkage(fields[1]);
+        if (!linkage.has_value())
+        {
+            return std::nullopt;
+        }
+        libraries.push_back(core::LibraryVersion{std::string{fields[0]}, *linkage, std::string{fields[2]},
+                                                 std::string{fields[3]}, std::string{fields[4]}});
+    }
+    return libraries;
+}
+
 auto normalise_thumbnail_dimensions(ThumbnailerConfig const& config, std::uint32_t width, std::uint32_t height)
     -> std::optional<std::pair<std::uint32_t, std::uint32_t>>
 {
@@ -373,6 +507,154 @@ auto normalise_thumbnail_dimensions(ThumbnailerConfig const& config, std::uint32
     }
     return std::pair{width, height};
 }
+
+namespace
+{
+
+    // One round trip with a freshly spawned worker: `frame` in, its whole stdout back. Every
+    // request takes this path, so a library report runs under the same environment, descriptor
+    // sweep, NO_NEW_PRIVS and deadline as a thumbnail.
+    struct WorkerExchange final
+    {
+        // Non-empty when the worker never ran (no pipe, no fork, no stderr sink).
+        std::string setup_failure{};
+        bool wrote{false};
+        bool read_ok{false};
+        std::string response_bytes{};
+        std::string write_detail{};
+        std::string worker_status{};
+    };
+
+    [[nodiscard]] auto exchange_with_worker(ThumbnailerConfig const& config, std::string const& frame,
+                                            std::size_t max_response_bytes) -> WorkerExchange
+    {
+        auto exchange = WorkerExchange{};
+        if (!worker_stderr_sink.valid())
+        {
+            exchange.setup_failure = "thumbnail worker stderr sink unavailable";
+            return exchange;
+        }
+
+        // stdin: parent writes -> child reads; stdout: child writes -> parent reads.
+        auto to_child = std::array<int, 2>{-1, -1};
+        auto from_child = std::array<int, 2>{-1, -1};
+        if (!create_cloexec_pipe(to_child))
+        {
+            exchange.setup_failure = "failed to create worker input pipe";
+            return exchange;
+        }
+        auto child_stdin_read = core::FileDescriptor{to_child[0]};
+        auto child_stdin_write = core::FileDescriptor{to_child[1]};
+        if (!create_cloexec_pipe(from_child))
+        {
+            exchange.setup_failure = "failed to create worker output pipe";
+            return exchange;
+        }
+        auto child_stdout_read = core::FileDescriptor{from_child[0]};
+        auto child_stdout_write = core::FileDescriptor{from_child[1]};
+
+        // Construct the exec environment before fork; never inherit parent-only or
+        // dynamic-loader entries, and do not allocate in the fork-to-exec window.
+        char minimal_path[] = "PATH=/usr/bin:/bin";
+        char* const exec_env[] = {minimal_path, nullptr};
+        auto const pid = ::fork();
+        if (pid < 0)
+        {
+            exchange.setup_failure = "failed to fork worker";
+            return exchange;
+        }
+        if (pid == 0)
+        {
+            // Child: wire pipes to stdio, drop every other descriptor, then exec.
+            ::dup2(child_stdin_read.get(), STDIN_FILENO);
+            ::dup2(child_stdout_write.get(), STDOUT_FILENO);
+            if (::dup2(worker_stderr_sink.get(), STDERR_FILENO) < 0)
+            {
+                ::_exit(127); // Never execute a worker with inherited diagnostic access.
+            }
+
+            // The parent write-end and child read-end are not needed after dup2.
+            // Close them explicitly before the sweep so the sweep does not need to
+            // know about them and we avoid double-close on the FileDescriptor reset.
+            child_stdin_write.reset();
+            child_stdout_read.reset();
+
+            char* const exec_argv[] = {const_cast<char*>(config.worker_path.c_str()), nullptr};
+
+#ifdef __FreeBSD__
+            // In FreeBSD Capsicum capability mode the process cannot open files by path;
+            // use a pre-opened binary fd with fexecve(3) instead of execv(3).
+            if (config.worker_binary_fd >= 0)
+            {
+                // Include the pre-opened binary fd in the keep-open set so the fd
+                // sweep does not close it before the fexecve call.
+                auto const keep_open_caps = std::array<int, 5>{STDIN_FILENO, STDOUT_FILENO, child_stdin_read.get(),
+                                                               child_stdout_write.get(), config.worker_binary_fd};
+                core::close_all_file_descriptors_except(std::span<int const>{keep_open_caps});
+                child_stdin_read.reset();
+                child_stdout_write.reset();
+                ::fexecve(config.worker_binary_fd, exec_argv, exec_env);
+                ::_exit(127); // fexecve failed
+            }
+#endif // __FreeBSD__
+
+            // Standard path: close everything except stdio and the pipe ends, then exec.
+            // Use the allocation-free span overload: between fork() and exec() the
+            // child must not touch the heap because another thread in the parent may
+            // hold a malloc lock, which would deadlock and leave the parent waiting
+            // until the worker timeout fires.
+            auto const keep_open =
+                std::array<int, 4>{STDIN_FILENO, STDOUT_FILENO, child_stdin_read.get(), child_stdout_write.get()};
+            core::close_all_file_descriptors_except(std::span<int const>{keep_open});
+
+            // Prevent privilege escalation through setuid/setcap helpers before exec.
+            // PR_SET_NO_NEW_PRIVS is Linux-specific; other platforms rely on the
+            // fork/exec model and the worker's own hardening.
+#if defined(__linux__)
+            std::ignore = ::prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0);
+#endif
+
+            child_stdin_read.reset();
+            child_stdout_write.reset();
+            ::execve(config.worker_path.c_str(), exec_argv, exec_env);
+            ::_exit(127); // exec failed
+        }
+
+        // Parent: close the child's ends so EOF propagates correctly.
+        child_stdin_read.reset();
+        child_stdout_write.reset();
+        // A worker that dies mid-write must not raise SIGPIPE in the parent.
+        ::signal(SIGPIPE, SIG_IGN);
+        set_nonblocking(child_stdin_write.get());
+        set_nonblocking(child_stdout_read.get());
+
+        auto const timeout_ms =
+            static_cast<std::int64_t>(config.timeout_seconds == 0U ? 10U : config.timeout_seconds) * 1000;
+        auto const deadline_ms = monotonic_ms() + timeout_ms;
+
+        exchange.wrote = write_all_deadline(child_stdin_write.get(), frame, deadline_ms, exchange.write_detail);
+        child_stdin_write.reset(); // signal EOF to the worker
+        if (exchange.wrote)
+        {
+            exchange.response_bytes =
+                read_all_deadline(child_stdout_read.get(), deadline_ms, max_response_bytes, exchange.read_ok);
+        }
+
+        // Reap the worker; kill it if it is still alive (timeout or protocol error).
+        // `alive_at_deadline` distinguishes a hung worker (we had to SIGKILL it) from
+        // one that exited or was signalled on its own, which the diagnostics surface.
+        auto status = 0;
+        auto const alive_at_deadline = ::waitpid(pid, &status, WNOHANG) == 0;
+        if (alive_at_deadline)
+        {
+            ::kill(pid, SIGKILL);
+            std::ignore = ::waitpid(pid, &status, 0);
+        }
+        exchange.worker_status = describe_worker_status(!alive_at_deadline, status);
+        return exchange;
+    }
+
+} // namespace
 
 auto generate_thumbnail(ThumbnailerConfig const& config, ThumbnailRequest const& request) -> ThumbnailResult
 {
@@ -415,129 +697,14 @@ auto generate_thumbnail(ThumbnailerConfig const& config, ThumbnailRequest const&
     // LCOV_EXCL_STOP
     auto const& frame = *frame_opt;
 
-    if (!worker_stderr_sink.valid())
+    auto const exchange = exchange_with_worker(
+        config, frame, config.max_output_bytes == 0U ? 0U : static_cast<std::size_t>(config.max_output_bytes) + 32U);
+    if (!exchange.setup_failure.empty())
     {
-        return {false, 500U, {}, {}, 0U, 0U, "thumbnail worker stderr sink unavailable"};
+        return {false, 500U, {}, {}, 0U, 0U, exchange.setup_failure};
     }
-
-    // stdin: parent writes -> child reads; stdout: child writes -> parent reads.
-    auto to_child = std::array<int, 2>{-1, -1};
-    auto from_child = std::array<int, 2>{-1, -1};
-    if (!create_cloexec_pipe(to_child))
-    {
-        return {false, 500U, {}, {}, 0U, 0U, "failed to create worker input pipe"};
-    }
-    auto child_stdin_read = core::FileDescriptor{to_child[0]};
-    auto child_stdin_write = core::FileDescriptor{to_child[1]};
-    if (!create_cloexec_pipe(from_child))
-    {
-        return {false, 500U, {}, {}, 0U, 0U, "failed to create worker output pipe"};
-    }
-    auto child_stdout_read = core::FileDescriptor{from_child[0]};
-    auto child_stdout_write = core::FileDescriptor{from_child[1]};
-
-    // Construct the exec environment before fork; never inherit parent-only or
-    // dynamic-loader entries, and do not allocate in the fork-to-exec window.
-    char minimal_path[] = "PATH=/usr/bin:/bin";
-    char* const exec_env[] = {minimal_path, nullptr};
-    auto const pid = ::fork();
-    if (pid < 0)
-    {
-        return {false, 500U, {}, {}, 0U, 0U, "failed to fork worker"};
-    }
-    if (pid == 0)
-    {
-        // Child: wire pipes to stdio, drop every other descriptor, then exec.
-        ::dup2(child_stdin_read.get(), STDIN_FILENO);
-        ::dup2(child_stdout_write.get(), STDOUT_FILENO);
-        if (::dup2(worker_stderr_sink.get(), STDERR_FILENO) < 0)
-        {
-            ::_exit(127); // Never execute a worker with inherited diagnostic access.
-        }
-
-        // The parent write-end and child read-end are not needed after dup2.
-        // Close them explicitly before the sweep so the sweep does not need to
-        // know about them and we avoid double-close on the FileDescriptor reset.
-        child_stdin_write.reset();
-        child_stdout_read.reset();
-
-        char* const exec_argv[] = {const_cast<char*>(config.worker_path.c_str()), nullptr};
-
-#ifdef __FreeBSD__
-        // In FreeBSD Capsicum capability mode the process cannot open files by path;
-        // use a pre-opened binary fd with fexecve(3) instead of execv(3).
-        if (config.worker_binary_fd >= 0)
-        {
-            // Include the pre-opened binary fd in the keep-open set so the fd
-            // sweep does not close it before the fexecve call.
-            auto const keep_open_caps = std::array<int, 5>{STDIN_FILENO, STDOUT_FILENO, child_stdin_read.get(),
-                                                           child_stdout_write.get(), config.worker_binary_fd};
-            core::close_all_file_descriptors_except(std::span<int const>{keep_open_caps});
-            child_stdin_read.reset();
-            child_stdout_write.reset();
-            ::fexecve(config.worker_binary_fd, exec_argv, exec_env);
-            ::_exit(127); // fexecve failed
-        }
-#endif // __FreeBSD__
-
-        // Standard path: close everything except stdio and the pipe ends, then exec.
-        // Use the allocation-free span overload: between fork() and exec() the
-        // child must not touch the heap because another thread in the parent may
-        // hold a malloc lock, which would deadlock and leave the parent waiting
-        // until the worker timeout fires.
-        auto const keep_open =
-            std::array<int, 4>{STDIN_FILENO, STDOUT_FILENO, child_stdin_read.get(), child_stdout_write.get()};
-        core::close_all_file_descriptors_except(std::span<int const>{keep_open});
-
-        // Prevent privilege escalation through setuid/setcap helpers before exec.
-        // PR_SET_NO_NEW_PRIVS is Linux-specific; other platforms rely on the
-        // fork/exec model and the worker's own hardening.
-#if defined(__linux__)
-        std::ignore = ::prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0);
-#endif
-
-        child_stdin_read.reset();
-        child_stdout_write.reset();
-        ::execve(config.worker_path.c_str(), exec_argv, exec_env);
-        ::_exit(127); // exec failed
-    }
-
-    // Parent: close the child's ends so EOF propagates correctly.
-    child_stdin_read.reset();
-    child_stdout_write.reset();
-    // A worker that dies mid-write must not raise SIGPIPE in the parent.
-    ::signal(SIGPIPE, SIG_IGN);
-    set_nonblocking(child_stdin_write.get());
-    set_nonblocking(child_stdout_read.get());
-
-    auto const timeout_ms =
-        static_cast<std::int64_t>(config.timeout_seconds == 0U ? 10U : config.timeout_seconds) * 1000;
-    auto const deadline_ms = monotonic_ms() + timeout_ms;
-
-    auto write_detail = std::string{};
-    auto const wrote = write_all_deadline(child_stdin_write.get(), frame, deadline_ms, write_detail);
-    child_stdin_write.reset(); // signal EOF to the worker
-    auto read_ok = false;
-    auto const response_bytes =
-        wrote
-            ? read_all_deadline(
-                  child_stdout_read.get(), deadline_ms,
-                  config.max_output_bytes == 0U ? 0U : static_cast<std::size_t>(config.max_output_bytes) + 32U, read_ok)
-            : std::string{};
-
-    // Reap the worker; kill it if it is still alive (timeout or protocol error).
-    // `alive_at_deadline` distinguishes a hung worker (we had to SIGKILL it) from
-    // one that exited or was signalled on its own, which the diagnostics surface.
-    auto status = 0;
-    auto const alive_at_deadline = ::waitpid(pid, &status, WNOHANG) == 0;
-    if (alive_at_deadline)
-    {
-        ::kill(pid, SIGKILL);
-        std::ignore = ::waitpid(pid, &status, 0);
-    }
-    auto const worker_status = describe_worker_status(!alive_at_deadline, status);
-
-    if (!wrote)
+    auto const& worker_status = exchange.worker_status;
+    if (!exchange.wrote)
     {
         return {false,
                 504U,
@@ -545,13 +712,13 @@ auto generate_thumbnail(ThumbnailerConfig const& config, ThumbnailRequest const&
                 {},
                 0U,
                 0U,
-                "timed out sending media to worker" + worker_status + " [" + write_detail + "]"};
+                "timed out sending media to worker" + worker_status + " [" + exchange.write_detail + "]"};
     }
-    if (!read_ok)
+    if (!exchange.read_ok)
     {
         return {false, 504U, {}, {}, 0U, 0U, "worker timed out or output too large" + worker_status};
     }
-    auto const response = parse_thumbnail_response(response_bytes);
+    auto const response = parse_thumbnail_response(exchange.response_bytes);
     if (!response.has_value())
     {
         return {false, 502U, {}, {}, 0U, 0U, "malformed worker response" + worker_status};
@@ -578,6 +745,46 @@ auto generate_thumbnail(ThumbnailerConfig const& config, ThumbnailRequest const&
         break;
     }
     return {false, 502U, {}, {}, 0U, 0U, "worker internal error"};
+}
+
+auto query_thumbnail_worker_libraries(ThumbnailerConfig const& config) -> ThumbnailWorkerLibraries
+{
+    if (config.worker_path.empty())
+    {
+        return {
+            {},
+            core::Error{core::ErrorCode::invalid_argument, "thumbnail worker not configured"}
+        };
+    }
+    auto const exchange = exchange_with_worker(config, frame_library_report_request(),
+                                               library_report_magic.size() + 4U + max_library_report_bytes);
+    if (!exchange.setup_failure.empty())
+    {
+        return {
+            {},
+            core::Error{core::ErrorCode::io_failure, exchange.setup_failure}
+        };
+    }
+    // A worker that could not exec exits 127 with nothing written, which reads as an empty answer,
+    // not a malformed one.
+    if (!exchange.wrote || !exchange.read_ok || exchange.response_bytes.empty())
+    {
+        return {
+            {},
+            core::Error{core::ErrorCode::io_failure,
+             "thumbnail worker " + config.worker_path + " did not answer" + exchange.worker_status}
+        };
+    }
+    auto report = parse_library_report(exchange.response_bytes);
+    if (!report.has_value())
+    {
+        return {
+            {},
+            core::Error{core::ErrorCode::parse_failure,
+             "malformed thumbnail worker library report" + exchange.worker_status}
+        };
+    }
+    return {std::move(report), {}};
 }
 
 } // namespace merovingian::media

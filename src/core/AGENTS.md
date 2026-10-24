@@ -9,6 +9,7 @@ Low-level utilities used across all other modules. No module-specific logic live
 | `file_descriptor.cpp` | RAII wrapper for OS file descriptors; closes on destruction, not moveable after close |
 | `secret_buffer.cpp` | Zeroing buffer for sensitive data (tokens, keys); calls `sodium_memzero` on destruction |
 | `query_params.cpp` | Percent-decode and parse `?key=value&...` query strings from request URIs |
+| `library_version.cpp` | `LibraryVersion`, `describe_library` (static or dynamic, from `dladdr(3)` on an address inside the library, ADR-0222) and the startup log line. Each module reports its own library; core never calls a third-party library's version function |
 
 ## Headers-only (no .cpp)
 

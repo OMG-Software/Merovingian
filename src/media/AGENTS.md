@@ -87,6 +87,12 @@ unconfined was a real, shipped bug (0.12.13 audit). The real syscalls sit behind
 fail-closed sequencing is unit-testable (`tests/unit/test_media_decoder_hardening.cpp`)
 without actually installing a broken sandbox inside the test binary.
 
+Every request to the worker goes through `exchange_with_worker` in `thumbnailer.cpp`, including
+the library report the server asks for at startup (`query_thumbnail_worker_libraries`, 0.12.45).
+Do not spawn the worker any other way: the environment, descriptor sweep, `NO_NEW_PRIVS`, FreeBSD
+`fexecve` and deadline live there once. The worker answers the report request, and `--version`,
+only after `apply_decoder_hardening()`, and writes them with `write(2)`, never iostreams.
+
 ## Key spec section
 
 - [Content Repository](../../docs/matrix-v1.19-spec/client-server-api.md#content-repository)

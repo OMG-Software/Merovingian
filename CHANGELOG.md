@@ -1,3 +1,81 @@
+## 0.12.45
+
+Sliding sync tells the client when a room's timeline is truncated. Element X, whose room list asks
+for `timeline_limit: 1`, showed only the newest message of a conversation written on another
+client: the server cut each timeline to its limit but sent neither MSC4186 `limited` nor
+`prev_batch`, so the client took the one event for the room's whole history and had no token to
+page back from. Opening the room raised the limit, but the server resent nothing older than the
+room's delta floor.
+
+- **FIXED:** a sliding sync room whose timeline holds fewer events than are visible to the user
+  (an initial or expanded room) or than arrived since its last send (an incremental one) carries
+  `limited: true`. Every non-empty timeline carries `prev_batch`, the stream ordering of its oldest
+  event, which `GET /rooms/{roomId}/messages?dir=b&from=` pages back from without a gap or repeat;
+  a `timeline_limit` of 0 gives one past the newest event withheld.
+- **FIXED:** when a request raises a seen room's `timeline_limit` past the limit the connection
+  last built it with (or no limit is recorded), the room's latest events are resent, flagged
+  `expanded_timeline: true` when any predates its last send (MSC4186 "Changes to
+  `timeline_limit`"). Such a request answers without long-polling, once per request `pos`, so a
+  repeat at a `pos` no stream advanced cannot spin the client (ADR-0221). A list that is new or
+  whose config changed is windowed before that decision, so a sent room it newly holds with a
+  larger limit is answered at once too (PR #530 review); an unchanged list uses its previous window.
+  A connection keeps only the lists of its last request (MSC4186 lists are not sticky), so a list
+  dropped and sent again is windowed afresh and list names cannot grow the connection state.
+- **FIXED:** `num_live` counts the timeline's events since the previous request (it was always 0);
+  a room's first send on a connection has none. `expanded_timeline` is judged against the room's
+  own last send, so an event that arrived after it but before the request's `pos` does not set it
+  (PR #530 review).
+- **CHANGED:** `SlidingSyncConnectionState` and `SlidingSyncPendingResponse` record each room's
+  effective `timeline_limit` (`room_timeline_limits`); the pending response records the expansions
+  it answered at once (`expansions_answered`). `sync::build_room_response` takes a
+  `TimelineExpansion`, and `sync::timeline_limit_expands` decides it from the connection.
+- **TESTS (new):** `tests/unit/test_sliding_sync_timeline_gap.cpp` (`[timeline-gap]`: `limited` and
+  `prev_batch` on initial, incremental, expanded and zero-limit timelines; `num_live`;
+  `expanded_timeline`; when a limit grows). `tests/integration/test_sliding_sync_flow.cpp` gains
+  "Element X can show the latest 50 messages of a conversation another client wrote" (60 messages
+  from another device: Element X's room list gets the newest with `limited` and a `prev_batch`
+  that `/messages` pages back from) and "Opening a room in Element X sends its latest 50 messages
+  at once" (a `room_subscriptions` limit of 50 on a long-poll answers at once with the latest 50,
+  `expanded_timeline`, and a `prev_batch` to the other ten; the same request repeated long-polls).
+  It also gains "A list added on a long-poll that grows a sent room's timeline_limit sends its
+  history at once" and "A list dropped and sent again unchanged is windowed afresh before the
+  long-poll decision".
+  **TESTS (changed):** "MSC4186 timeline_limit caps the number of timeline events returned per
+  room" looked for a `/v3/sync`-shaped `timeline.events` object and so asserted nothing; it now
+  requires the `timeline` array to hold exactly one event.
+
+Every process also logs the libraries it runs at startup, each marked static or dynamic
+(ADR-0222).
+
+- **ADDED:** startup `INFO` lines `Library <name> <version> (static)` and `Library <name> <version>
+  (dynamic, <shared object>; built against <version>)` for libsodium, OpenSSL, libpq, SQLite,
+  libcurl and yyjson, in the server log (and `--dry-run`) and, prefixed `Federation worker
+  library`, in the federation worker's. Linkage is read from the loader (`dladdr(3)`), so it is what
+  the process runs; a dynamic library's line names the shared object and the version the binary was
+  built against.
+- **ADDED:** the server asks the thumbnail worker once at startup for its libpng and libjpeg-turbo
+  versions and logs them as `Thumbnail worker library …`, or why it could not
+  (`Thumbnail worker libraries not reported: …`, a warning when thumbnailing is enabled). The
+  request (`MLQ1`, answered `MLR1`) takes the same sandboxed spawn as a thumbnail, and the worker
+  answers it after its hardening. `merovingian-thumbnail-worker --version` prints the same lines.
+  libjpeg-turbo has no runtime version call, so it reports the version it was built against.
+- **CHANGED:** `media::generate_thumbnail`'s spawn and exchange moved, unchanged, into
+  `exchange_with_worker`, which the library report shares. `core::LibraryVersion`,
+  `core::describe_library` and `core::library_version_log_line` are new; each owning module reports
+  its library (`crypto`, `database`, `http`, `canonicaljson::library_versions`,
+  `homeserver::linked_library_versions`). Meson gains `dl_dep`, and passes libpq's and
+  libjpeg-turbo's pkg-config versions, whose headers carry none.
+- **TESTS (new):** `tests/unit/test_library_versions.cpp` (`[library-versions]`: static detection,
+  every server library reported with its linkage, log line forms, libpq and yyjson version
+  numbers, the worker report's framing and refusals). `tests/integration/test_media_thumbnail_flow.cpp`
+  gains "the sandboxed worker reports the image libraries it runs" and "a thumbnail worker that
+  cannot run reports no libraries". Smoke: `server-library-versions-log-smoke-test` and
+  `thumbnail-worker-version-smoke-test` (which, in a `-Db_coverage=true` build, checks only the
+  output: the decoder sandbox refuses the coverage data written at exit, so the worker ends with
+  SIGSYS after printing).
+- **CHANGED:** the README shows a CodeRabbit pull-request reviews badge, linked to coderabbit.ai,
+  beside the code-scanning badge.
+
 ## 0.12.44
 
 Email pushers are delivered. With an SMTP relay configured (`server.email.*`), `kind: "email"`
