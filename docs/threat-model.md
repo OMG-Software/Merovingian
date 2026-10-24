@@ -1026,7 +1026,9 @@ threat it closes; the controls above are the standing defences these reinforce.
   never with credentials. (5) **credential exposure** — the SMTP password is in
   an owner-only secret file read for each send; it never enters the config
   file, logs, or the federation worker, whose config copy has `server.email`
-  cleared. (6) **flooding** — one delayed, throttled digest per pusher, a
+  cleared; and the worker's Landlock secret-path guard
+  (`worker_landlock_secret_paths`) refuses to start the worker if a rule, such
+  as the SQLite database directory grant, would cover the password file. (6) **flooding** — one delayed, throttled digest per pusher, a
   bounded in-memory queue, and the per-user pusher cap. Residual: libcurl's
   copy of the password is freed but not wiped; a relay with a private CA is
   not supported (system trust store only).

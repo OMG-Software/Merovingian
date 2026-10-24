@@ -26,8 +26,9 @@ struct EmailDigestPolicy final
     std::chrono::seconds throttle{3600};
 };
 
-// A failed send is tried again after 1 minute, doubling to at most 30 minutes, and given up after
-// 6 failed attempts: about an hour and a half after the first.
+// A failed send is tried again after 1 minute, then 2, 4, 8 and 16, and given up at the 6th failed
+// attempt: about half an hour (31 minutes of backoff) after the first. The 30-minute ceiling is
+// not reached at 6 attempts; it bounds each wait if email_digest_max_attempts is raised.
 inline constexpr auto email_digest_initial_backoff = std::chrono::minutes{1};
 inline constexpr auto email_digest_max_backoff = std::chrono::minutes{30};
 inline constexpr auto email_digest_max_attempts = std::uint32_t{6U};

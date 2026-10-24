@@ -49,7 +49,9 @@ Chosen:
   send, so a rotated password takes effect without a restart. libcurl keeps its own copy for the
   life of the handle, which is destroyed when the send ends.
 * **Only the main process sends.** The federation worker clears `server.email` in its own config
-  copy before starting its runtime, as it clears the master-key path. The email job thread runs
+  copy before starting its runtime, as it clears the master-key path. The password file is also
+  one of `worker_landlock_secret_paths`, so the worker refuses to start if a Landlock rule (such as
+  the SQLite directory grant) would let it read the file. The email job thread runs
   only in main, starts after process hardening (ADR-0082), and never holds `runtime.mutex` across
   the SMTP session.
 

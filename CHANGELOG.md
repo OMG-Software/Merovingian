@@ -18,8 +18,9 @@ without one they are refused as before (ADR-0219, ADR-0220).
 - **ADDED:** `push::EmailDigestQueue` and the `email-push` job thread (`homeserver/email_push.cpp`).
   A notification schedules one email per pusher after the delay, never sooner than the throttle
   after the last; more notifications fold into it; an email that finds nothing unread when due is
-  not sent. A failed send is retried after 1 minute, doubling to 30, six attempts in all. The
-  queue is in memory and holds at most 4096 pushers.
+  not sent. A failed send is retried after 1, 2, 4, 8 and 16 minutes and given up at the sixth
+  failed attempt, about half an hour after the first. The queue is in memory and holds at most
+  4096 pushers.
 - **CHANGED:** `POST /_matrix/client/v3/pushers/set` accepts `kind: "email"` when `smtp_url` is
   set, with `app_id` `m.email` (spec) and a `pushkey` that is an email 3PID already on the account
   (compared case-insensitively); anything else is 400 `M_INVALID_PARAM`. Without a relay the
@@ -30,7 +31,9 @@ without one they are refused as before (ADR-0219, ADR-0220).
 - **CHANGED:** push delivery computes the Push Gateway badge count only when an `http` pusher will
   carry it.
 - **SECURITY:** the federation worker clears `server.email` in its config copy, so no worker code
-  path can send email or open the SMTP password file.
+  path can send email or open the SMTP password file. `server.email.password_file` is also in
+  `platform::worker_landlock_secret_paths`, so the worker refuses to start when a Landlock rule
+  (such as the SQLite database directory grant) would cover it (found in review).
 - **CHANGED:** `src/meson.build` builds `http`, `platform` and the new `email` module before
   `config`, whose validation calls email's address and URL checks.
 - **FIXED (found by this PR's CI):** `src/email/smtp_endpoint.cpp` did not compile on FreeBSD or
@@ -41,7 +44,8 @@ without one they are refused as before (ADR-0219, ADR-0220).
   sessions against a loopback mock relay: implicit TLS with AUTH, STARTTLS, a relay without
   STARTTLS, cleartext loopback; read-before-due; address removed). **TESTS (changed):**
   `tests/conformance/test_client_server_conformance.cpp` gains the relay-configured
-  `[email-pusher]` scenario.
+  `[email-pusher]` scenario; `tests/unit/test_worker_landlock.cpp` gains an SMTP password file
+  beside the SQLite database scenario, and the shipped layout lists seven secrets.
 - **DOCS:** ADR-0219, ADR-0220; `docs/user-manual.md` (`server.email.*`),
   `config/merovingian.conf.example`, `docs/architecture.md`, `docs/threat-model.md`,
   `docs/observability-audit.md` (`push.email.*` events), `docs/security-coding-rules.md`,

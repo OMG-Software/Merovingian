@@ -917,6 +917,32 @@ SCENARIO("A Landlock rule on a directory holding a configured secret is detected
     }
 }
 
+SCENARIO("A Landlock rule on a directory holding the SMTP password file is detected",
+         "[platform][security][worker_landlock][email]")
+{
+    GIVEN("an operator who put the SMTP password file next to the SQLite database")
+    {
+        auto config = merovingian::config::Config{};
+        config.database().backend = merovingian::config::DatabaseBackend::sqlite;
+        config.database().sqlite_path = "/srv/merovingian/merovingian.sqlite3";
+        config.server().email.password_file = "/srv/merovingian/smtp-password";
+
+        WHEN("the worker's rules are checked against its secret paths")
+        {
+            auto const rules = merovingian::platform::build_worker_landlock_rules(config);
+            auto const exposure = merovingian::platform::find_landlock_rule_covering_secret(
+                rules, merovingian::platform::worker_landlock_secret_paths(config));
+
+            THEN("the exposure is reported, naming the rule and the password file")
+            {
+                REQUIRE(exposure.has_value());
+                REQUIRE(exposure->rule_path == "/srv/merovingian");
+                REQUIRE(exposure->secret_path == "/srv/merovingian/smtp-password");
+            }
+        }
+    }
+}
+
 SCENARIO("The shipped secret layout is not covered by any worker Landlock rule",
          "[platform][security][worker_landlock]")
 {
@@ -931,6 +957,7 @@ SCENARIO("The shipped secret layout is not covered by any worker Landlock rule",
         config.listeners().client.tls_private_key_file = "/etc/merovingian/client.key";
         config.listeners().federation.tls_private_key_file = "/etc/merovingian/federation.key";
         config.federation_worker().database_uri_file = "/etc/merovingian/fed-worker-db-uri";
+        config.server().email.password_file = "/etc/merovingian/smtp-password";
 
         WHEN("the worker's rules are checked against its secret paths")
         {
@@ -939,7 +966,7 @@ SCENARIO("The shipped secret layout is not covered by any worker Landlock rule",
 
             THEN("every configured secret is listed and none is covered")
             {
-                REQUIRE(secrets.size() == 6U);
+                REQUIRE(secrets.size() == 7U);
                 REQUIRE_FALSE(merovingian::platform::find_landlock_rule_covering_secret(rules, secrets).has_value());
             }
         }

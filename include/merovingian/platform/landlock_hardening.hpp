@@ -169,7 +169,7 @@ struct LandlockSecretExposure final
 // Every non-empty secret file path in `config` the worker must never be able
 // to open: the master key, both TLS private keys, main's database URI file,
 // the worker's own database URI file (delivered over an fd, never opened),
-// and the registration token file.
+// the registration token file, and the SMTP password file (ADR-0220).
 [[nodiscard]] auto worker_landlock_secret_paths(config::Config const& config) -> std::vector<std::string>;
 
 // Returns the first rule whose path is, or is an ancestor directory of, one
