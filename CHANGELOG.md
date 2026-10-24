@@ -66,6 +66,8 @@ Every process also logs the libraries it runs at startup, each marked static or 
   gains "the sandboxed worker reports the image libraries it runs" and "a thumbnail worker that
   cannot run reports no libraries". Smoke: `server-library-versions-log-smoke-test` and
   `thumbnail-worker-version-smoke-test`.
+- **CHANGED:** the README shows a CodeRabbit pull-request reviews badge beside the code-scanning
+  badge.
 
 ## 0.12.44
 
