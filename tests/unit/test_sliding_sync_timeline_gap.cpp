@@ -237,6 +237,50 @@ SCENARIO("Sliding sync resends the latest room events when the timeline_limit gr
     }
 }
 
+// MSC4186: `expanded_timeline` is for events that "predate the last time the room was sent to the
+// client"; `num_live` counts those "that have happened since the previous sync request". The two
+// floors differ when the room was last sent before the request's pos (PR #530 review).
+SCENARIO("Sliding sync flags an expanded timeline against the room's last send, and counts live events "
+         "against the request",
+         "[sync][sliding-sync][room-builder][timeline-gap]")
+{
+    GIVEN("a room last sent at $m150 on a connection whose request pos is at $m160")
+    {
+        auto runtime = merovingian::homeserver::HomeserverRuntime{};
+        auto const store = sixty_message_room();
+
+        WHEN("the expanded timeline returns only events after the room's last send")
+        {
+            auto const resp = merovingian::sync::build_room_response(
+                runtime, room_id, alice, with_limit(5U), 160U, false, store, {}, {},
+                merovingian::sync::TimelineExpansion::expand, std::optional<std::uint64_t>{150U});
+
+            THEN("it is not flagged as expanded, and none of its events is live")
+            {
+                REQUIRE(resp.timeline_json.size() == 5U);
+                REQUIRE(holds(resp.timeline_json.front(), "$m156"));
+                REQUIRE_FALSE(resp.expanded_timeline);
+                REQUIRE(resp.num_live == 0U);
+            }
+        }
+
+        WHEN("the expanded timeline reaches back past the room's last send")
+        {
+            auto const resp = merovingian::sync::build_room_response(
+                runtime, room_id, alice, with_limit(20U), 160U, false, store, {}, {},
+                merovingian::sync::TimelineExpansion::expand, std::optional<std::uint64_t>{150U});
+
+            THEN("it is flagged as expanded")
+            {
+                REQUIRE(resp.timeline_json.size() == 20U);
+                REQUIRE(holds(resp.timeline_json.front(), "$m141"));
+                REQUIRE(resp.expanded_timeline);
+                REQUIRE(resp.num_live == 0U);
+            }
+        }
+    }
+}
+
 SCENARIO("Sliding sync flags a room timeline_limit of 0 as limited with a prev_batch past the newest event",
          "[sync][sliding-sync][room-builder][timeline-gap]")
 {

@@ -536,15 +536,16 @@ auto build_room_response(homeserver::HomeserverRuntime const& rt, std::string_vi
                          SlidingSyncRoomSubscription const& sub, std::uint64_t room_since_event_ordering,
                          bool is_initial, database::PersistentStore const& store,
                          std::unordered_set<std::string> const& lazy_members_already_sent,
-                         std::unordered_set<std::string> const& ignored_senders, TimelineExpansion expansion)
-    -> SlidingSyncRoomResponse
+                         std::unordered_set<std::string> const& ignored_senders, TimelineExpansion expansion,
+                         std::optional<std::uint64_t> room_last_sent_ordering) -> SlidingSyncRoomResponse
 {
     // One filter for the request: the classifier borrows it, so both share its lazy indexes.
     auto visibility = HistoryVisibility{store, user};
     auto const unread = homeserver::PushRuleUnreadClassifier{
         store, user, static_cast<std::size_t>(rt.config.server().client_api.max_push_rules_per_user), visibility};
     return build_room_response(rt, room_id, user, sub, room_since_event_ordering, is_initial, store,
-                               lazy_members_already_sent, ignored_senders, visibility, unread, expansion);
+                               lazy_members_already_sent, ignored_senders, visibility, unread, expansion,
+                               room_last_sent_ordering);
 }
 
 auto timeline_limit_expands(SlidingSyncConnectionState const& conn, std::string_view room_id,
@@ -622,7 +623,8 @@ auto build_room_response(homeserver::HomeserverRuntime const& rt, std::string_vi
                          bool is_initial, database::PersistentStore const& store,
                          std::unordered_set<std::string> const& lazy_members_already_sent,
                          std::unordered_set<std::string> const& ignored_senders, HistoryVisibility& visibility,
-                         UnreadEventClassifier const& unread, TimelineExpansion expansion) -> SlidingSyncRoomResponse
+                         UnreadEventClassifier const& unread, TimelineExpansion expansion,
+                         std::optional<std::uint64_t> room_last_sent_ordering) -> SlidingSyncRoomResponse
 {
     auto resp = SlidingSyncRoomResponse{};
 
@@ -765,19 +767,25 @@ auto build_room_response(homeserver::HomeserverRuntime const& rt, std::string_vi
         timeline_events.erase(timeline_events.begin(),
                               timeline_events.begin() + static_cast<std::ptrdiff_t>(drop_count));
     }
+    // A room's first send on the connection has no previous send and no "previous
+    // sync", so it is neither expanded nor live.
+    auto const last_sent = room_last_sent_ordering.value_or(room_since_event_ordering);
     for (auto const& [ordering, json] : timeline_events)
     {
         std::ignore = json;
-        if (!is_initial && ordering <= room_since_event_ordering)
+        if (is_initial)
+        {
+            break;
+        }
+        if (ordering <= last_sent)
         {
             // MSC4186: "If the server does return events that predate the last time
             // the room was sent to the client, it MUST set the `expanded_timeline`".
             resp.expanded_timeline = true;
         }
-        else if (!is_initial)
+        if (ordering > room_since_event_ordering)
         {
-            // `num_live`: events after the connection's last send of the room. A
-            // room's first send on the connection has no "previous sync", so none.
+            // `num_live`: events "that have happened since the previous sync request".
             ++resp.num_live;
         }
     }

@@ -21,8 +21,10 @@ room's delta floor.
   larger limit is answered at once too (PR #530 review); an unchanged list uses its previous window.
   A connection keeps only the lists of its last request (MSC4186 lists are not sticky), so a list
   dropped and sent again is windowed afresh and list names cannot grow the connection state.
-- **FIXED:** `num_live` counts the timeline's events after the connection's last send of the room
-  (it was always 0); a room's first send on a connection has none.
+- **FIXED:** `num_live` counts the timeline's events since the previous request (it was always 0);
+  a room's first send on a connection has none. `expanded_timeline` is judged against the room's
+  own last send, so an event that arrived after it but before the request's `pos` does not set it
+  (PR #530 review).
 - **CHANGED:** `SlidingSyncConnectionState` and `SlidingSyncPendingResponse` record each room's
   effective `timeline_limit` (`room_timeline_limits`); the pending response records the expansions
   it answered at once (`expansions_answered`). `sync::build_room_response` takes a
