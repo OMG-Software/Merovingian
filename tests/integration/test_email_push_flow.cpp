@@ -615,6 +615,38 @@ SCENARIO("An email pusher whose address has left the account sends nothing and i
     }
 }
 
+SCENARIO("Deleting an email pusher drops the email due to it", "[integration][push][email]")
+{
+    GIVEN("a relay and Alice's email pusher with a notification due")
+    {
+        auto const relay = MockSmtpRelay{RelayMode::implicit_tls};
+        auto started = merovingian::homeserver::start_client_server(email_test_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        relay.install(runtime);
+        auto const fixture = alice_with_email_pusher(runtime);
+        std::ignore = bob_says(runtime, fixture, "txn1", "hello");
+        auto const due_before_delete = runtime.homeserver.email_digest_queue_->next_due().has_value();
+
+        WHEN("Alice deletes the pusher with kind null and the email job runs")
+        {
+            auto const deleted = merovingian::homeserver::handle_client_server_request(
+                runtime, {"POST", "/_matrix/client/v3/pushers/set", fixture.alice,
+                          R"({"app_id":"m.email","kind":null,"pushkey":")" + std::string{alice_address} + R"("})"});
+            auto const due_after_delete = runtime.homeserver.email_digest_queue_->next_due().has_value();
+            run_email_job(runtime);
+
+            THEN("the email that was due is dropped and the relay is never contacted")
+            {
+                REQUIRE(due_before_delete);
+                REQUIRE(deleted.response.status == 200U);
+                REQUIRE_FALSE(due_after_delete);
+                REQUIRE(relay.sessions().empty());
+            }
+        }
+    }
+}
+
 SCENARIO("A submission relay must start TLS before mail is sent to it", "[integration][push][email][security]")
 {
     GIVEN("a relay that offers STARTTLS")

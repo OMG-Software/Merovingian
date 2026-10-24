@@ -39,7 +39,6 @@
 #include "merovingian/homeserver/auth_service.hpp"
 #include "merovingian/homeserver/client_server.hpp"
 #include "merovingian/homeserver/local_http_router.hpp"
-#include "merovingian/push/email_digest_queue.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -17203,24 +17202,20 @@ SCENARIO("POST /pushers/set accepts an email pusher for the account's own addres
             }
         }
 
-        WHEN("an email pusher with an email due is deleted with kind null")
+        WHEN("an email pusher is set and then deleted with kind null")
         {
             REQUIRE(set_email_pusher("m.email", "alice@example.net").response.status == 200U);
-            // A notification for this pusher, as push delivery notes one.
-            std::ignore = runtime.homeserver.email_digest_queue_->note_notification(
-                merovingian::push::EmailDigestKey{"@alice:example.org", "alice@example.net"},
-                std::chrono::steady_clock::now(), merovingian::push::EmailDigestPolicy{});
-            auto const due_before_delete = runtime.homeserver.email_digest_queue_->next_due().has_value();
             auto const deleted = merovingian::homeserver::handle_client_server_request(
                 runtime, {"POST", "/_matrix/client/v3/pushers/set", token,
                           R"({"app_id":"m.email","kind":null,"pushkey":"alice@example.net"})"});
 
-            THEN("it is gone and the email that was due to it is dropped")
+            // Spec: "If kind is null, the pusher with this app_id and pushkey for this user is
+            // deleted." That a due email is dropped with it is tested in
+            // tests/integration/test_email_push_flow.cpp.
+            THEN("it is gone")
             {
-                REQUIRE(due_before_delete);
                 REQUIRE(deleted.response.status == 200U);
                 REQUIRE(listed_pushers().find("alice@example.net") == std::string::npos);
-                REQUIRE_FALSE(runtime.homeserver.email_digest_queue_->next_due().has_value());
             }
         }
     }
