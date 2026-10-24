@@ -16,7 +16,9 @@ room's delta floor.
   last built it with (or no limit is recorded), the room's latest events are resent, flagged
   `expanded_timeline: true` when any predates its last send (MSC4186 "Changes to
   `timeline_limit`"). Such a request answers without long-polling, once per request `pos`, so a
-  repeat at a `pos` no stream advanced cannot spin the client (ADR-0221).
+  repeat at a `pos` no stream advanced cannot spin the client (ADR-0221). A list that is new or
+  whose config changed is windowed before that decision, so a sent room it newly holds with a
+  larger limit is answered at once too (PR #530 review); an unchanged list uses its previous window.
 - **FIXED:** `num_live` counts the timeline's events after the connection's last send of the room
   (it was always 0); a room's first send on a connection has none.
 - **CHANGED:** `SlidingSyncConnectionState` and `SlidingSyncPendingResponse` record each room's
@@ -30,7 +32,9 @@ room's delta floor.
   from another device: Element X's room list gets the newest with `limited` and a `prev_batch`
   that `/messages` pages back from) and "Opening a room in Element X sends its latest 50 messages
   at once" (a `room_subscriptions` limit of 50 on a long-poll answers at once with the latest 50,
-  `expanded_timeline`, and a `prev_batch` to the other ten; the same request repeated long-polls).
+  `expanded_timeline`, and a `prev_batch` to the other ten; the same request repeated long-polls)
+  and "A list added on a long-poll that grows a sent room's timeline_limit sends its history at
+  once".
   **TESTS (changed):** "MSC4186 timeline_limit caps the number of timeline events returned per
   room" looked for a `/v3/sync`-shaped `timeline.events` object and so asserted nothing; it now
   requires the `timeline` array to hold exactly one event.

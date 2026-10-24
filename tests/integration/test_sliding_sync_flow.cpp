@@ -685,6 +685,54 @@ SCENARIO("Opening a room in Element X sends its latest 50 messages at once",
     }
 }
 
+// MSC4186 "Changes to `timeline_limit`" applies to a room however its combined config grew: here a
+// list the request adds puts an already-sent room in a window with a larger timeline_limit. The
+// list had no previous window, so only its window as of this request shows the room expanding
+// (PR #530 review).
+SCENARIO("A list added on a long-poll that grows a sent room's timeline_limit sends its history at once",
+         "[homeserver][sliding-sync][integration][timeline-gap]")
+{
+    GIVEN("Element X has synced a 60-message room through its room list, with timeline_limit 1")
+    {
+        auto const config = sliding_sync_config();
+        auto started = merovingian::homeserver::start_client_server(config);
+        REQUIRE(started.started);
+        auto& rt = started.runtime;
+        auto const desktop = register_and_login(rt, "alice", "CorrectHorse7!", "DESKTOP");
+        auto const room_id = create_room(rt, desktop);
+        send_numbered_messages(rt, desktop, room_id, 60);
+        auto const mobile = login(rt, "alice", "CorrectHorse7!", "ELEMENTX");
+
+        auto const first = sliding_sync(rt, mobile, element_x_room_list_body());
+        REQUIRE(first.response.status == 200U);
+        auto const pos = sliding_sync_pos(first.response.body);
+
+        WHEN("a long-poll adds a list whose window holds the room, with timeline_limit 50")
+        {
+            auto body = element_x_room_list_body();
+            auto const lists_start = body.find(R"("lists":{)");
+            REQUIRE(lists_start != std::string::npos);
+            body.insert(lists_start + std::string_view{R"("lists":{)"}.size(),
+                        R"("recent":{"ranges":[[0,0]],"timeline_limit":50},)");
+            auto const result = merovingian::homeserver::handle_client_server_request(
+                rt,
+                {"POST", "/_matrix/client/unstable/org.matrix.msc4186/sync?pos=" + pos + "&timeout=30000", mobile,
+                 body},
+                /*can_wait=*/true);
+
+            THEN("it answers at once with the room's latest 50 messages, flagged as an expanded timeline")
+            {
+                REQUIRE(result.status == merovingian::homeserver::DispatchResult::Status::complete);
+                REQUIRE(result.response.status == 200U);
+                auto const room = synced_room(result.response.body, room_id);
+                REQUIRE(message_bodies(room.timeline) == numbered_bodies(11, 60));
+                REQUIRE(room.expanded_timeline);
+                REQUIRE(room.limited);
+            }
+        }
+    }
+}
+
 // ── Incremental sync ──────────────────────────────────────────────────────────
 
 SCENARIO("MSC4186 incremental sync does not mark a previously-seen room as initial",

@@ -5424,15 +5424,15 @@ namespace
 
     // MSC4186 "Changes to `timeline_limit`": the joined rooms whose timeline this request will resend
     // because it asks for a larger timeline_limit than the connection last built them with, each with
-    // the largest limit asked for. A list contributes the rooms of its previous window, a subscription
-    // the room it names. "The server should return rooms that have expanded timelines immediately,
-    // rather than waiting for the next update to the room", so a non-empty result skips the long-poll.
-    // Membership is classified through one index, built only when a room would expand: this runs
-    // under runtime.mutex, and a scan of the memberships per window room would not be bounded.
-    [[nodiscard]] auto requested_timeline_expansions(sync::SlidingSyncConnectionState const& conn,
-                                                     sync::SlidingSyncRequest const& ssreq,
-                                                     database::PersistentStore const& store, std::string_view user)
-        -> std::unordered_map<std::string, std::uint64_t>
+    // the largest limit asked for. A list contributes the rooms of its window in `list_windows`, a
+    // subscription the room it names. "The server should return rooms that have expanded timelines
+    // immediately, rather than waiting for the next update to the room", so a non-empty result skips
+    // the long-poll. Membership is classified through one index, built only when a room would expand:
+    // this runs under runtime.mutex, and a scan of the memberships per window room would not be bounded.
+    [[nodiscard]] auto requested_timeline_expansions(
+        sync::SlidingSyncConnectionState const& conn, sync::SlidingSyncRequest const& ssreq,
+        std::map<std::string, std::vector<std::string>> const& list_windows, database::PersistentStore const& store,
+        std::string_view user) -> std::unordered_map<std::string, std::uint64_t>
     {
         auto expansions = std::unordered_map<std::string, std::uint64_t>{};
         auto const consider = [&](std::string const& room_id, std::uint64_t timeline_limit) {
@@ -5444,8 +5444,8 @@ namespace
         };
         for (auto const& [list_name, list] : ssreq.lists)
         {
-            auto const window = conn.list_prev_windows.find(list_name);
-            if (window == conn.list_prev_windows.end())
+            auto const window = list_windows.find(list_name);
+            if (window == list_windows.end())
             {
                 continue;
             }
@@ -5562,6 +5562,7 @@ namespace
                 conn.rooms_seen = std::move(conn.pending_response->rooms_seen);
                 conn.lazy_members_sent = std::move(conn.pending_response->lazy_members_sent);
                 conn.room_timeline_limits = std::move(conn.pending_response->room_timeline_limits);
+                conn.list_configs = std::move(conn.pending_response->list_configs);
                 conn.last_event_ordering = conn.pending_response->last_event_ordering;
                 conn.last_sync_stream_id = conn.pending_response->last_sync_stream_id;
                 conn.pending_response.reset();
@@ -5594,7 +5595,42 @@ namespace
             conn.pending_response.has_value() && conn.pending_response->request_pos == requested_pos
                 ? conn.pending_response->expansions_answered
                 : std::unordered_map<std::string, std::uint64_t>{};
-        auto expansions_to_answer = requested_timeline_expansions(conn, ssreq, store, user);
+
+        // R15 (ADR-0205): one push-rule classifier for every count and the notification sort. It and
+        // the list windows are built after the M_UNKNOWN_POS return, and after the long-poll decision
+        // unless a list is new or its config changed: such a list can window a room its previous
+        // window lacked, so only its window as of this request says whether a sent room's
+        // timeline_limit grew (PR #530 review). A list whose config is unchanged moves only with
+        // changes that end the long-poll anyway (see SlidingSyncConnectionState::list_configs), so
+        // an idle long-poll still loads neither the user's rules nor the room list.
+        auto unread_classifier = std::optional<PushRuleUnreadClassifier>{};
+        auto list_results = std::map<std::string, sync::RoomListResult>{};
+        auto const build_list_windows = [&]() {
+            unread_classifier.emplace(store, user, rt.limits.max_push_rules_per_user, history_visibility);
+            for (auto const& [list_name, list] : ssreq.lists)
+            {
+                auto const empty_prev = std::vector<std::string>{};
+                auto const it = conn.list_prev_windows.find(list_name);
+                auto const& prev_win = (it != conn.list_prev_windows.end()) ? it->second : empty_prev;
+                list_results[list_name] =
+                    sync::compute_room_list(rt.homeserver, user, list, prev_win, store, *unread_classifier);
+            }
+        };
+        bool const list_config_changed = std::ranges::any_of(ssreq.lists, [&conn](auto const& entry) {
+            auto const seen = conn.list_configs.find(entry.first);
+            return seen == conn.list_configs.end() || seen->second != entry.second;
+        });
+        auto current_windows = std::map<std::string, std::vector<std::string>>{};
+        if (list_config_changed)
+        {
+            build_list_windows();
+            for (auto const& [list_name, result] : list_results)
+            {
+                current_windows[list_name] = result.windowed_room_ids;
+            }
+        }
+        auto const& expansion_windows = list_config_changed ? current_windows : conn.list_prev_windows;
+        auto expansions_to_answer = requested_timeline_expansions(conn, ssreq, expansion_windows, store, user);
         std::erase_if(expansions_to_answer, [&](auto const& entry) {
             auto const answered = answered_for_this_pos.find(entry.first);
             return answered != answered_for_this_pos.end() && answered->second >= entry.second;
@@ -5691,20 +5727,10 @@ namespace
 
         // ── Build list windows ───────────────────────────────────────────────
 
-        // R15 (ADR-0205): one push-rule classifier for every count and the notification sort, built
-        // after the M_UNKNOWN_POS and long-poll returns so a request that takes either does not load
-        // the user's rules.
-        auto const unread_classifier =
-            PushRuleUnreadClassifier{store, user, rt.limits.max_push_rules_per_user, history_visibility};
-
-        auto list_results = std::map<std::string, sync::RoomListResult>{};
-        for (auto const& [list_name, list] : ssreq.lists)
+        // Unless a changed list config already built them before the long-poll decision.
+        if (!unread_classifier.has_value())
         {
-            auto const empty_prev = std::vector<std::string>{};
-            auto const it = conn.list_prev_windows.find(list_name);
-            auto const& prev_win = (it != conn.list_prev_windows.end()) ? it->second : empty_prev;
-            list_results[list_name] =
-                sync::compute_room_list(rt.homeserver, user, list, prev_win, store, unread_classifier);
+            build_list_windows();
         }
 
         // Collect ordered unique room IDs: lists first, then explicit subscriptions.
@@ -5826,7 +5852,7 @@ namespace
             room_timeline_limits_built[room_id] = sub.timeline_limit;
             auto room = sync::build_room_response(rt.homeserver, room_id, user, sub, room_since, is_initial, store,
                                                   lazy_already_sent, ignored_senders, history_visibility,
-                                                  unread_classifier, expansion);
+                                                  *unread_classifier, expansion);
             if (!room.lazy_members_included.empty())
             {
                 lazy_members_included_by_room[room_id] = room.lazy_members_included;
@@ -6021,6 +6047,11 @@ namespace
         next_state.rooms_seen = conn.rooms_seen;
         next_state.lazy_members_sent = conn.lazy_members_sent;
         next_state.room_timeline_limits = conn.room_timeline_limits;
+        next_state.list_configs = conn.list_configs;
+        for (auto const& [list_name, list] : ssreq.lists)
+        {
+            next_state.list_configs[list_name] = list;
+        }
         for (auto const& [room_id, limit] : room_timeline_limits_built)
         {
             next_state.room_timeline_limits[room_id] = limit;

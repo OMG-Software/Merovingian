@@ -61,6 +61,8 @@ struct SlidingSyncRange final
 {
     std::uint64_t start{0U};
     std::uint64_t end{0U};
+
+    [[nodiscard]] auto operator==(SlidingSyncRange const&) const -> bool = default;
 };
 
 // MSC4186 §lists[*].filters — predicates for narrowing the room list.
@@ -72,6 +74,8 @@ struct SlidingSyncFilters final
     std::optional<bool> is_favourite{};
     std::vector<std::string> room_types{};     // m.room.create content.type allowlist
     std::vector<std::string> not_room_types{}; // m.room.create content.type denylist
+
+    [[nodiscard]] auto operator==(SlidingSyncFilters const&) const -> bool = default;
 };
 
 // MSC4186 §lists[*] — one named room list with windowing and sort criteria.
@@ -88,6 +92,10 @@ struct SlidingSyncList final
     // Only events whose type appears here advance a room's recency position.
     // Empty means all event types count.
     std::vector<std::string> bump_event_types{};
+
+    // Compared with the config a list was last computed under: a list that is new or changed may
+    // window rooms its previous window lacks (see SlidingSyncConnectionState::list_configs).
+    [[nodiscard]] auto operator==(SlidingSyncList const&) const -> bool = default;
 };
 
 // MSC4186 §room_subscriptions[roomId] — subscribe to a specific room regardless of list membership.
@@ -309,8 +317,9 @@ struct SlidingSyncPendingResponse final
     // Candidate lazy-loaded ("$LAZY") member user_ids per room; see
     // SlidingSyncConnectionState::lazy_members_sent.
     std::unordered_map<std::string, std::unordered_set<std::string>> lazy_members_sent{};
-    // See SlidingSyncConnectionState::room_timeline_limits.
+    // See SlidingSyncConnectionState::room_timeline_limits and list_configs.
     std::unordered_map<std::string, std::uint64_t> room_timeline_limits{};
+    std::map<std::string, SlidingSyncList> list_configs{};
     // Rooms whose grown timeline_limit this response answered at once instead of long-polling,
     // with the limit it answered. A request carrying the same pos as this response's request may
     // be a retry, so the expansion is still built from the committed state, but it does not skip
@@ -345,6 +354,12 @@ struct SlidingSyncConnectionState final
     // "Changes to `timeline_limit`": when a request asks for more than this, the room's latest
     // events are resent (expanded_timeline) rather than only those after its delta floor.
     std::unordered_map<std::string, std::uint64_t> room_timeline_limits{};
+    // The config each list in list_prev_windows was computed under. While a list's config is
+    // unchanged its window moves only when its rooms change (events, memberships, or receipts
+    // under the unread sort), and the request is answered when that change ends the long-poll,
+    // or at its timeout; so its previous window says which of its rooms a grown timeline_limit
+    // expands. A list that is new or changed is computed before the long-poll decision instead.
+    std::map<std::string, SlidingSyncList> list_configs{};
     // Stream position at the end of the last acknowledged response.
     std::uint64_t last_event_ordering{0U};
     std::uint64_t last_sync_stream_id{0U};

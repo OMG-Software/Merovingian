@@ -43,6 +43,13 @@ room is still built from the committed state, so a request that does go on to an
 event or at the timeout, carries the expansion again. Each room's effective limit is recorded in
 `room_timeline_limits` and committed with the rest of the state when the client acknowledges.
 
+The rooms a list contributes to that check come from its previous window while its config is
+unchanged (`list_configs`): such a window moves only with changes that end the long-poll anyway.
+A list that is new or changed is computed before the long-poll decision, because its window can
+hold an already-sent room its previous window lacked. Computing every list there instead would
+rank the room list, unread counts included, under `runtime.mutex` on every wake of every idle
+long-poll.
+
 ### Positive Consequences
 
 * Opening a room answers at once with its latest events (`expanded_timeline`, `limited`,

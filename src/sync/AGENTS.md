@@ -58,6 +58,12 @@ a request, but only once per request `pos` (`expansions_answered`, ADR-0221). A 
 advanced is not acknowledged by a repeat, so skipping again would spin the client. Record the
 effective limit of every room built, or the next request expands it again.
 
+Which list rooms can expand is read from each list's previous window while its config is
+unchanged (`list_configs`). A list that is new or changed is computed before the long-poll
+decision, because its window can hold a sent room its previous window lacked. Do not compute
+every list before that decision: ranking the room list walks the unread counts under
+`runtime.mutex`, and an idle long-poll is woken by every unrelated stream bump.
+
 ## Sliding sync room access
 
 A sliding sync request names rooms in `room_subscriptions` and in the `receipts`/`typing`
