@@ -175,6 +175,8 @@ SCENARIO("libpq and yyjson version numbers are rendered as their releases are na
     }
 }
 
+// The worker's report crosses a pipe into the server's log, so every field must arrive as sent, and
+// no byte a library or the loader chose may split a field or start a log line of its own.
 SCENARIO("The thumbnail worker's library report survives its wire format", "[media][library-versions]")
 {
     GIVEN("the thumbnail worker's two libraries")
@@ -215,7 +217,12 @@ SCENARIO("The thumbnail worker's library report survives its wire format", "[med
             }
         }
     }
+}
 
+// The server treats the worker's answer as untrusted input: anything the framing would never produce
+// is refused whole rather than logged in part.
+SCENARIO("The server refuses a library report the thumbnail worker would never send", "[media][library-versions]")
+{
     GIVEN("frames a worker should never send")
     {
         auto const valid = merovingian::media::frame_library_report(
@@ -257,7 +264,12 @@ SCENARIO("The thumbnail worker's library report survives its wire format", "[med
             }
         }
     }
+}
 
+// The worker reads one frame from stdin and must never mistake a report request for an image to
+// decode, or a thumbnail job for a report request.
+SCENARIO("A library report request is told apart from a thumbnail job", "[media][library-versions]")
+{
     GIVEN("a library report request")
     {
         auto const request = merovingian::media::frame_library_report_request();
