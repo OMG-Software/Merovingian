@@ -35,6 +35,34 @@ room's delta floor.
   room" looked for a `/v3/sync`-shaped `timeline.events` object and so asserted nothing; it now
   requires the `timeline` array to hold exactly one event.
 
+Every process also logs the libraries it runs at startup, each marked static or dynamic
+(ADR-0222).
+
+- **ADDED:** startup `INFO` lines `Library <name> <version> (static)` and `Library <name> <version>
+  (dynamic, <shared object>; built against <version>)` for libsodium, OpenSSL, libpq, SQLite,
+  libcurl and yyjson, in the server log (and `--dry-run`) and, prefixed `Federation worker
+  library`, in the federation worker's. Linkage is read from the loader (`dladdr(3)`), so it is what
+  the process runs; a dynamic library's line names the shared object and the version the binary was
+  built against.
+- **ADDED:** the server asks the thumbnail worker once at startup for its libpng and libjpeg-turbo
+  versions and logs them as `Thumbnail worker library …`, or why it could not
+  (`Thumbnail worker libraries not reported: …`, a warning when thumbnailing is enabled). The
+  request (`MLQ1`, answered `MLR1`) takes the same sandboxed spawn as a thumbnail, and the worker
+  answers it after its hardening. `merovingian-thumbnail-worker --version` prints the same lines.
+  libjpeg-turbo has no runtime version call, so it reports the version it was built against.
+- **CHANGED:** `media::generate_thumbnail`'s spawn and exchange moved, unchanged, into
+  `exchange_with_worker`, which the library report shares. `core::LibraryVersion`,
+  `core::describe_library` and `core::library_version_log_line` are new; each owning module reports
+  its library (`crypto`, `database`, `http`, `canonicaljson::library_versions`,
+  `homeserver::linked_library_versions`). Meson gains `dl_dep`, and passes libpq's and
+  libjpeg-turbo's pkg-config versions, whose headers carry none.
+- **TESTS (new):** `tests/unit/test_library_versions.cpp` (`[library-versions]`: static detection,
+  every server library reported with its linkage, log line forms, libpq and yyjson version
+  numbers, the worker report's framing and refusals). `tests/integration/test_media_thumbnail_flow.cpp`
+  gains "the sandboxed worker reports the image libraries it runs" and "a thumbnail worker that
+  cannot run reports no libraries". Smoke: `server-library-versions-log-smoke-test` and
+  `thumbnail-worker-version-smoke-test`.
+
 ## 0.12.44
 
 Email pushers are delivered. With an SMTP relay configured (`server.email.*`), `kind: "email"`

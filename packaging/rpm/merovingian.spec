@@ -103,6 +103,7 @@ fi
 %changelog
 * Sat Oct 24 2026 James Chapman <claude@ping.me.uk> - 0.12.45-1
 - Sliding sync reports limited and prev_batch on a truncated room timeline, and resends history when timeline_limit grows (expanded_timeline).
+- Log every library each process runs at startup, marked static or dynamic, including the thumbnail worker's libpng and libjpeg-turbo.
 
 * Sat Oct 24 2026 James Chapman <claude@ping.me.uk> - 0.12.44-1
 - Deliver email pushers through an optional SMTP relay (server.email.*): the account's own address, an unread count, a delayed and throttled digest.

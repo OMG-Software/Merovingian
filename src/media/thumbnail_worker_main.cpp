@@ -19,18 +19,25 @@
 //
 // A decoder exploit is therefore contained: the worker holds no secrets, no
 // sockets, and no filesystem access beyond the inherited stdio pipes.
+//
+// The server also sends it a library report request once at startup (0.12.45),
+// answered after the same hardening with the libpng and libjpeg-turbo versions
+// it runs; `--version` prints the same report, also after hardening.
 
+#include "merovingian/core/library_version.hpp"
 #include "merovingian/media/decoder_hardening.hpp"
 #include "merovingian/media/thumbnailer.hpp"
 #include "merovingian/platform/signal_hardening.hpp"
 
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <cstdint>
 #include <cstring>
 #include <iostream>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <tuple>
 #include <vector>
 
@@ -39,8 +46,27 @@
 #include <turbojpeg.h>
 #include <unistd.h>
 
+#if !defined(MEROVINGIAN_VERSION) || !defined(MEROVINGIAN_TURBOJPEG_BUILD_VERSION)
+#error "MEROVINGIAN_VERSION and MEROVINGIAN_TURBOJPEG_BUILD_VERSION must be defined by the build (src/meson.build)"
+#endif
+
 namespace
 {
+
+// libpng and libjpeg-turbo as this worker runs them. Called only after hardening: the worker
+// touches neither library before its sandbox is in place (src/media/AGENTS.md).
+[[nodiscard]] auto decoder_library_versions() -> std::vector<merovingian::core::LibraryVersion>
+{
+    // png_get_libpng_ver() returns libpng's own copy of its version string. The TurboJPEG API
+    // has no runtime version call, so libjpeg-turbo reports the pkg-config version it was built
+    // against and is located through one of its functions.
+    auto const* const png_running = ::png_get_libpng_ver(nullptr);
+    return {
+        merovingian::core::describe_library("libpng", png_running, PNG_LIBPNG_VER_STRING, png_running),
+        merovingian::core::describe_library("libjpeg-turbo", "", MEROVINGIAN_TURBOJPEG_BUILD_VERSION,
+                                            std::bit_cast<void const*>(&::tjInitDecompress)),
+    };
+}
 
 using merovingian::media::ThumbnailMethod;
 using merovingian::media::ThumbnailSourceFormat;
@@ -324,9 +350,10 @@ auto write_all_stdout(std::string const& bytes) -> void
 
 } // namespace
 
-auto main() -> int
+auto main(int argc, char** argv) -> int
 {
     std::ignore = ::umask(0077);
+    auto const version_requested = argc == 2 && std::string_view{argv[1]} == "--version";
     auto error_frame = std::optional<std::string>{};
     try
     {
@@ -352,6 +379,19 @@ auto main() -> int
             return 1;
         }
 
+        if (version_requested)
+        {
+            // Written as the thumbnail response is: iostreams would make the C library stat stdout
+            // on its first write, a call the decoder sandbox need not admit.
+            auto text = std::string{"merovingian-thumbnail-worker "} + MEROVINGIAN_VERSION + '\n';
+            for (auto const& library : decoder_library_versions())
+            {
+                text += merovingian::core::library_version_log_line(library) + '\n';
+            }
+            write_all_stdout(text);
+            return 0;
+        }
+
         // Prepare the fixed empty failure frame before reading untrusted bytes.
         // The exception path can then report internal_error without allocating
         // another string after a decoder, resampler, or framing allocation fails.
@@ -363,6 +403,11 @@ auto main() -> int
         }
 
         auto const input = read_all_stdin();
+        if (merovingian::media::is_library_report_request(input))
+        {
+            write_all_stdout(merovingian::media::frame_library_report(decoder_library_versions()));
+            return 0;
+        }
         auto const request = merovingian::media::parse_thumbnail_request(input);
         auto image = Rgba{};
         auto response = ThumbnailWorkerResponse{};

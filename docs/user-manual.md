@@ -85,6 +85,35 @@ OS security updates:
 SQLite, yyjson, and Catch2 are vendored as Meson subprojects and built from
 source-pinned wraps.
 
+#### Library versions in the startup log
+
+At startup, before it binds a listener (and in `--dry-run`), the server logs one
+`INFO` line per library it runs:
+
+```text
+Library libsodium 1.0.18 (dynamic, /lib/x86_64-linux-gnu/libsodium.so.23; built against 1.0.18)
+Library SQLite 3.54.1 (static)
+Thumbnail worker library libpng 1.6.43 (dynamic, /lib/x86_64-linux-gnu/libpng16.so.16; built against 1.6.43)
+Thumbnail worker library libjpeg-turbo version not reported (dynamic, /lib/x86_64-linux-gnu/libturbojpeg.so.0; built against 2.1.5)
+```
+
+- **static**: compiled into the binary. It changes only when Merovingian is
+  rebuilt, so a security fix in it needs a new Merovingian release.
+- **dynamic**: a shared object the loader opened, named by its path. An OS
+  package update replaces it under the binary at the next start. The line also
+  gives the version the binary was built against; when the two differ, the
+  library was updated after the build.
+- The linkage is read from the dynamic loader at runtime (`dladdr(3)`), not from
+  the build configuration, so it is what the process actually runs.
+- libpng and libjpeg-turbo are linked only into the sandboxed thumbnail worker,
+  so the server runs the worker once to ask it. If thumbnailing is disabled, or
+  the worker cannot run, a `Thumbnail worker libraries not reported: <reason>`
+  line says so (a warning when thumbnailing is enabled). libjpeg-turbo's TurboJPEG
+  API has no runtime version call, so its version is the one it was built
+  against.
+- The federation worker logs its own libraries as `Federation worker library …`,
+  and `merovingian-thumbnail-worker --version` prints the worker's.
+
 ### Minimum platform versions
 
 | Platform | Minimum version |
@@ -1690,6 +1719,12 @@ merovingian-server --version
 | `--plan-config-reload <current> <next>` | Compare two configs and report reloadability. |
 | `--debug` | Enable debug-level console diagnostics. |
 | `--log-file <path>` | Write trace/debug diagnostics to a file. |
+
+The thumbnail worker (`libexecdir/merovingian/merovingian-thumbnail-worker`) takes
+one flag of its own: `--version` prints its version and its libpng and
+libjpeg-turbo lines in the form shown in
+[Library versions in the startup log](#library-versions-in-the-startup-log),
+after entering its sandbox as it does for every request.
 
 ### Start the server
 

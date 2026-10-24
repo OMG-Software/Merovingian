@@ -35,6 +35,7 @@ homeserver_sources = files(
   'space_hierarchy.cpp',
   'state_bookkeeping.cpp',
   'stored_push_rules.cpp',
+  'library_versions.cpp',
   'tls.cpp',
   'worker_env.cpp',
   'worker_pool.cpp',

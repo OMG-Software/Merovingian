@@ -291,7 +291,73 @@ SCENARIO("the sandboxed worker resamples a PNG to the requested size", "[media][
     }
 }
 
+// 0.12.45: the server logs the thumbnail worker's libraries at startup. libpng and libjpeg-turbo are
+// linked only into the worker, so the server asks it, over the same sandboxed spawn as a thumbnail;
+// the worker answers only after its hardening is in place, so this also proves the sandbox admits it.
+SCENARIO("the sandboxed worker reports the image libraries it runs",
+         "[media][thumbnail][integration][library-versions]")
+{
+    GIVEN("the built thumbnail worker")
+    {
+        auto config = merovingian::media::ThumbnailerConfig{};
+        config.worker_path = MEROVINGIAN_TEST_THUMBNAIL_WORKER;
+        config.timeout_seconds = 60U;
+
+        WHEN("the server asks it for its library report")
+        {
+            auto const report = merovingian::media::query_thumbnail_worker_libraries(config);
+            INFO(report.error.message());
+
+            THEN("it names libpng and libjpeg-turbo, how each is linked, and what each was built against")
+            {
+                REQUIRE(report.libraries.has_value());
+                auto names = std::vector<std::string>{};
+                for (auto const& library : *report.libraries)
+                {
+                    CAPTURE(library.name, library.runtime_version, library.build_version, library.shared_object);
+                    names.push_back(library.name);
+                    REQUIRE_FALSE(library.build_version.empty());
+                    REQUIRE(library.shared_object.empty() ==
+                            (library.linkage == merovingian::core::Linkage::static_linked));
+                }
+                REQUIRE(names == std::vector<std::string>{"libpng", "libjpeg-turbo"});
+                // libpng has a runtime version call; libjpeg-turbo's TurboJPEG API has none.
+                REQUIRE_FALSE(report.libraries->front().runtime_version.empty());
+            }
+        }
+    }
+}
+
 #endif // MEROVINGIAN_TEST_THUMBNAIL_WORKER
+
+SCENARIO("a thumbnail worker that cannot run reports no libraries", "[media][thumbnail][integration][library-versions]")
+{
+    GIVEN("a thumbnailer whose worker is not configured, and one whose worker cannot be executed")
+    {
+        auto const unconfigured = merovingian::media::ThumbnailerConfig{};
+        auto missing = merovingian::media::ThumbnailerConfig{};
+        missing.worker_path = "/nonexistent/merovingian-thumbnail-worker";
+        missing.timeout_seconds = 5U;
+
+        WHEN("each is asked for its library report")
+        {
+            auto const not_configured = merovingian::media::query_thumbnail_worker_libraries(unconfigured);
+            auto const not_run = merovingian::media::query_thumbnail_worker_libraries(missing);
+
+            THEN("each fails with a reason instead of an empty report")
+            {
+                REQUIRE_FALSE(not_configured.libraries.has_value());
+                REQUIRE(not_configured.error.message() == "thumbnail worker not configured");
+                REQUIRE_FALSE(not_run.libraries.has_value());
+                // A worker that never ran is not a malformed report: the reason says it did not
+                // answer and names the path, which is what an operator checks.
+                INFO(not_run.error.message());
+                REQUIRE(not_run.error.message().starts_with(
+                    "thumbnail worker /nonexistent/merovingian-thumbnail-worker did not answer"));
+            }
+        }
+    }
+}
 
 SCENARIO("a failed worker surfaces how it died in the result reason", "[media][thumbnail][integration][diagnostics]")
 {

@@ -6,6 +6,7 @@
 #include "merovingian/config/config_parser.hpp"
 #include "merovingian/config/reload_plan.hpp"
 #include "merovingian/config/reload_policy.hpp"
+#include "merovingian/core/library_version.hpp"
 #include "merovingian/database/runtime_database.hpp"
 #include "merovingian/email/smtp_client.hpp"
 #include "merovingian/email/smtp_endpoint.hpp"
@@ -18,12 +19,14 @@
 #include "merovingian/homeserver/email_push.hpp"
 #include "merovingian/homeserver/federation_proxy.hpp"
 #include "merovingian/homeserver/http_server.hpp"
+#include "merovingian/homeserver/library_versions.hpp"
 #include "merovingian/homeserver/local_http_router.hpp"
 #include "merovingian/homeserver/local_services.hpp"
 #include "merovingian/homeserver/periodic_job.hpp"
 #include "merovingian/homeserver/push_retry.hpp"
 #include "merovingian/homeserver/tls.hpp"
 #include "merovingian/media/runtime_media.hpp"
+#include "merovingian/media/thumbnailer.hpp"
 #include "merovingian/net/listener.hpp"
 #include "merovingian/net/shutdown_signal.hpp"
 #include "merovingian/net/tcp_acceptor.hpp"
@@ -611,6 +614,36 @@ auto log_hardening_summary(merovingian::platform::HardeningSelfCheck const& self
              " blockers=" + std::to_string(self_check.production_blocker_count()));
 }
 
+// Every library the server runs (0.12.45): its version, whether it is compiled in (static) or a
+// shared object an OS update can replace (dynamic), and what it was built against. libpng and
+// libjpeg-turbo are linked only into the thumbnail worker, so the worker is asked, through the
+// same sandboxed spawn as a thumbnail. Runs before the server's own hardening.
+auto log_library_versions(merovingian::media::RuntimeMediaConfig const& media) -> void
+{
+    for (auto const& library : merovingian::homeserver::linked_library_versions())
+    {
+        LOG_INFO("Library " + merovingian::core::library_version_log_line(library));
+    }
+    if (!media.thumbnailing_enabled || media.thumbnail_worker_path.empty())
+    {
+        LOG_INFO("Thumbnail worker libraries not reported: thumbnailing is disabled");
+        return;
+    }
+    auto worker = merovingian::media::ThumbnailerConfig{};
+    worker.worker_path = media.thumbnail_worker_path;
+    worker.timeout_seconds = media.thumbnail_timeout_seconds;
+    auto const report = merovingian::media::query_thumbnail_worker_libraries(worker);
+    if (!report.libraries.has_value())
+    {
+        LOG_WARNING("Thumbnail worker libraries not reported: " + report.error.message());
+        return;
+    }
+    for (auto const& library : *report.libraries)
+    {
+        LOG_INFO("Thumbnail worker library " + merovingian::core::library_version_log_line(library));
+    }
+}
+
 auto log_startup_summary(BootstrapConfigResult const& result) -> void
 {
     auto const& config = result.parsed.config;
@@ -637,6 +670,7 @@ auto log_startup_summary(BootstrapConfigResult const& result) -> void
     LOG_INFO("Registration enabled: " + std::string{config.security().registration.enabled ? "true" : "false"});
     LOG_INFO("Federation enabled: " + std::string{config.security().federation.enabled ? "true" : "false"});
     LOG_INFO("Media upload limit: " + config.security().media.max_upload_size);
+    log_library_versions(runtime_media);
 }
 
 struct BindEndpoint final

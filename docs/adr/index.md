@@ -206,6 +206,7 @@
 * [0219 - Email pushers mail only the account's own addresses, an unread count, in a delayed digest](0219-email-pushers-mail-only-the-accounts-own-addresses-an-unread-count-in-a-delayed-digest.md)
 * [0220 - SMTP goes through libcurl, with TLS required except to a loopback literal](0220-smtp-goes-through-libcurl-with-tls-required-except-to-a-loopback-literal.md)
 * [0221 - A grown sliding sync timeline_limit skips the long-poll once per request pos](0221-a-grown-sliding-sync-timeline-limit-skips-the-long-poll-once-per-request-pos.md)
+* [0222 - Library linkage is read from the loader at runtime, not from the build](0222-library-linkage-is-read-from-the-loader-at-runtime.md)
 
 ## Proposed Records
 

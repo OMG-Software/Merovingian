@@ -171,6 +171,39 @@ test(
   ],
 )
 
+# 0.12.45: every library the server links is logged at startup with its running version and
+# whether it is linked statically or dynamically, and the thumbnail worker's libraries are
+# reported, or the reason they could not be.
+server_library_log_checks = []
+foreach library_name : ['libsodium', 'OpenSSL', 'libpq', 'SQLite', 'libcurl', 'yyjson']
+  server_library_log_checks += ('echo "$output" | grep -qE "^.*Library ' + library_name
+    + ' .*\\((static|dynamic)[,)]"')
+endforeach
+test(
+  'server-library-versions-log-smoke-test',
+  smoke_test,
+  args: [
+    '-c',
+    'output=$(' + server_executable + ' --dry-run 2>&1) && '
+      + ' && '.join(server_library_log_checks)
+      + ' && echo "$output" | grep -qE "Thumbnail worker (library|libraries not reported)"',
+  ],
+)
+
+if thumbnail_worker_available
+  test(
+    'thumbnail-worker-version-smoke-test',
+    smoke_test,
+    args: [
+      '-c',
+      'output=$(' + thumbnail_worker_exe.full_path() + ' --version 2>&1) && '
+        + 'echo "$output" | grep -q "^merovingian-thumbnail-worker ' + meson.project_version() + '$" && '
+        + 'echo "$output" | grep -qE "^libpng .*\\((static|dynamic)[,)]" && '
+        + 'echo "$output" | grep -qE "^libjpeg-turbo .*\\((static|dynamic)[,)]"',
+    ],
+  )
+endif
+
 test(
   'server-config-validation-smoke-test',
   smoke_test,
