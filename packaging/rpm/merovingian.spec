@@ -1,5 +1,5 @@
 Name:           merovingian
-Version:        0.12.48
+Version:        0.12.51
 Release:        1%{?dist}
 Summary:        Secure Matrix Protocol homeserver
 
@@ -101,6 +101,9 @@ fi
 %{_sysconfdir}/merovingian/merovingian.conf.example
 
 %changelog
+* Sun Oct 25 2026 James Chapman <claude@ping.me.uk> - 0.12.51-1
+- SonarQube Cloud ignores test code and developer tooling; the server, packaging and CI workflows stay analysed.
+
 * Sun Oct 25 2026 James Chapman <claude@ping.me.uk> - 0.12.48-1
 - Leaving a room no longer fails with 500 when the room's state cannot be resolved locally; every persistence failure on the leave path is logged at warning level.
 
