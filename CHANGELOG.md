@@ -27,8 +27,8 @@ CodeQL no longer reports every Catch2 test scenario as an unused static function
   `tests/tooling/test_security_workflows.py` gains "CodeQL filters Catch2 false positives before
   upload" (analyze, filter, upload in that order; no `query-filters`), reading each step's own `with:`
   values so `upload: never`, the output, the SARIF file and the category must sit on the right step,
-  and "CodeQL upload check binds each value to its step" (four misplaced variants are each caught;
-  PR #534 review).
+  and the three steps in one job (separate jobs share no workspace), and "CodeQL upload check binds
+  each value to its step" (five misplaced variants are each caught; PR #534 review).
 
 ## 0.12.48
 

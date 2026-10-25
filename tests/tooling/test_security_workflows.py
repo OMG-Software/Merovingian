@@ -22,7 +22,8 @@ SMOKE_TESTS = REPO_ROOT / "tests" / "smoke" / "meson.build"
 
 
 def workflow_steps(workflow: str) -> list[dict[str, object]]:
-    """Each step of every job: its top-level `key: value` pairs, plus a `with` dict.
+    """Each step of every job: its top-level `key: value` pairs, a `with` dict, and `job`,
+    the index of the `steps:` list it belongs to.
 
     A deliberately small reader for this repository's workflows (no PyYAML on
     every CI image): steps are the `- ` items under a `steps:` key, comment
@@ -33,6 +34,7 @@ def workflow_steps(workflow: str) -> list[dict[str, object]]:
     step_indent = None  # indentation of that key's `- ` items
     current: dict[str, object] | None = None
     in_with = False
+    job = -1
     for raw in workflow.splitlines():
         if not raw.strip() or raw.lstrip().startswith("#"):
             continue
@@ -40,6 +42,7 @@ def workflow_steps(workflow: str) -> list[dict[str, object]]:
         text = raw.strip()
         if text == "steps:":
             steps_key_indent, step_indent, current, in_with = indent, None, None, False
+            job += 1
             continue
         if steps_key_indent is None:
             continue
@@ -52,7 +55,7 @@ def workflow_steps(workflow: str) -> list[dict[str, object]]:
         if step_indent is None:
             continue
         if indent == step_indent and text.startswith("- "):
-            current = {"with": {}}
+            current = {"with": {}, "job": job}
             steps.append(current)
             text, indent, in_with = text[2:], indent + 2, False
         if current is None:
@@ -88,6 +91,9 @@ def codeql_upload_problems(workflow: str) -> list[str]:
         return problems
     analyze_with = steps[analyze[0]]["with"]
     upload_with = steps[upload[0]]["with"]
+    if len({steps[index]["job"] for index in (analyze[0], filtered[0], upload[0])}) != 1:
+        # Separate jobs do not share a workspace, so the filter could not see the report.
+        problems.append("analyze, filter and upload are not steps of one job")
     if not analyze[0] < filtered[0] < upload[0]:
         problems.append("steps are not analyze, then filter, then upload")
     if analyze_with.get("upload") != "never":  # type: ignore[union-attr]
@@ -217,6 +223,11 @@ class SecurityWorkflowTests(unittest.TestCase):
                 sarif + "          category: '/language:c-cpp'", sarif + "          category: '/language:other'", 1
             ),
             "filter after upload": move_step_after(workflow, "Filter Catch2 false positives", "Upload CodeQL results"),
+            "filter and upload in another job": workflow.replace(
+                "      # Drops only cpp/unused-static-function",
+                "  publish:\n    runs-on: ubuntu-latest\n    steps:\n      # Drops only cpp/unused-static-function",
+                1,
+            ),
         }
 
         for name, variant in variants.items():
