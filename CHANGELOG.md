@@ -1,3 +1,53 @@
+## 0.12.48
+
+Leaving a public room joined over federation answered `500 Internal Server Error`, logged only
+at debug as "membership event persistence failed", the only reason the log gave. Traced from
+the code, and from the 750 ms it took, the step that most likely failed is the state before the
+leave: the resolution of the room's forward extremities' states fails closed, and
+`store_local_event` refused the event without saying why; every other step it might have been
+now logs its own warning. The likeliest way a room gets there: a federated join made the join event an
+extremity but never retired the ones an earlier stay in the room had left, though the code said
+it did, so every later local event had to resolve the old stay's state against the new one. The
+state across the extremities was also resolved only after the event was signed, so nothing could
+choose differently.
+
+- **FIXED:** a federated join retires every forward extremity recorded before it, making the
+  join event the room's sole extremity as intended.
+- **FIXED:** a local event whose forward extremities' states cannot be resolved together is
+  built on the newest extremity (by this server's stream order) whose state reads alone, and
+  storing it retires the others (ADR-0225). A room already stuck in that state, like the one
+  that failed the leave, heals on its next local event; the leave itself now succeeds. The
+  event is refused (500) only when no extremity has a readable state.
+- **CHANGED:** the prev_events of a local event and the state before it are chosen together,
+  once, while it is composed (`homeserver::basis_for_new_event`, carried in `ComposedEvent` as a
+  `NewEventBasis`); `store_local_event` takes the basis instead of resolving again.
+  `StateBeforeResult` gains a `reason`.
+- **ADDED:** warning-level diagnostics for every non-fatal failure on this path, so a 500 leaves
+  its cause in a default log: `room.leave.failed` (a leave answering 5xx; a refusal the client
+  caused stays a debug-level `room.leave.rejected`), `room.join.failed`,
+  `event.prev_events.fallback`, `event.prev_events.unresolvable`, `event.store.failed` (with the
+  failing `step`) and `event.persist.failed` (`docs/debug-logging.md`).
+- **FIXED:** a local event or a federated join that answers 500 has written nothing (ADR-0228,
+  PR #533 review). The event, its `current_state` row and membership, its after-state group, the
+  group mapping, the forward-extremity change and the current state those extremities resolve to
+  now commit in one transaction (`homeserver::store_event_with_bookkeeping`), mirrored in memory
+  only once it commits. Before, each committed on its own: a refused `current_state` write left
+  the event stored and the room's tip moved, so a client retrying the 500 could store it twice,
+  and a refused state-group write left a user joined with no state to build the room's next event
+  on. The store gains prepared forms (`prepare_state_group`, `prepare_event_state_group`,
+  `prepare_forward_extremities_update`, `prepare_current_state`, `state_matches_stored_event`)
+  with their `apply_*`; the single-step functions are now prepare, commit, apply. A join's
+  after-state is one snapshot group instead of a delta on a separate `join-snapshot:` group.
+  The ADR-0064 guard now also counts `database::prepare_store_event_with_state` callers.
+- **TESTS:** the failure branches are covered directly: each reason `compute_state_before` fails
+  closed for, `basis_for_new_event` skipping a newer extremity with no recorded state and finding
+  none, each step `store_local_event` refuses at (through the in-memory store's
+  `force_failure_statement_names`), and a federated join whose state snapshot or join state group
+  cannot be stored (PR #533 coverage report). Each asserts nothing of the refused event is left,
+  and a SQLite scenario fails the last write of the transaction (a trigger on
+  `forward_extremities`) and reopens the database to show the event, its group, its mapping and
+  its `current_state` row were rolled back on disk too (PR #533 review).
+
 ## 0.12.47
 
 Every database migration is collapsed into one v1 schema for the release (ADR-0224). The schema

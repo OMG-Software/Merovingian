@@ -56,6 +56,8 @@ struct StateBeforeResult final
     // federation::PduIngestionStatus::missing_prev_state.
     bool ok{false};
     std::vector<database::PersistentStateGroupStateEntry> state{};
+    // Why `ok` is false, for the caller's log; empty when it is true.
+    std::string reason{};
 };
 
 // State before an event = the state resolution of the states after each of
@@ -164,22 +166,81 @@ struct StateBeforeResult final
 [[nodiscard]] auto forward_extremities_for_new_event(database::PersistentStore const& store, std::string_view room_id)
     -> std::vector<std::string>;
 
+// What a new local event is built on: the prev_events it declares and the
+// state before it, resolved once, before the event is signed.
+struct NewEventBasis final
+{
+    // False when no forward extremity has a state this server can compute;
+    // the event must not be stored. `reason` says why.
+    bool ok{false};
+    std::vector<std::string> prev_event_ids{};
+    std::vector<database::PersistentStateGroupStateEntry> state_before{};
+    // Forward extremities the event does not cite because the state across
+    // them could not be resolved. Storing the event removes them from the
+    // room's extremities along with `prev_event_ids` (ADR-0225).
+    std::vector<std::string> retired_extremities{};
+    std::string reason{};
+};
+
+// Chooses the prev_events of a NEW local event and computes the state before
+// it. Normally that is forward_extremities_for_new_event and the resolution of
+// their states. When that resolution fails (an extremity with no recorded
+// state, a missing auth-chain event, the state-resolution budget), it logs a
+// warning and falls back to the newest extremity, by this server's stream
+// order, whose state can be read alone, retiring every other extremity
+// (ADR-0225). `ok` is false, with a warning logged, only when no extremity has
+// a readable state. Call it under runtime.mutex, before composing and signing
+// the event, and hand the result to store_local_event under the same hold.
+[[nodiscard]] auto basis_for_new_event(database::PersistentStore const& store, std::string_view room_id,
+                                       rooms::RoomVersionPolicy const& policy,
+                                       events::StateResolutionLimits const& limits = {}) -> NewEventBasis;
+
+// How an event this server places itself is recorded: the state after it, the
+// group that state is a delta of (nullopt: a full snapshot), and the forward
+// extremities it replaces as the room's tip.
+struct EventBookkeeping final
+{
+    std::vector<database::PersistentStateGroupStateEntry> state_after{};
+    std::optional<std::string> parent_state_group_id{};
+    std::vector<std::string> replaced_extremities{};
+};
+
+// Whether store_event_with_bookkeeping stored the event, and if not, the step
+// that refused it (`event`, `state_group`, `current_state` or `commit`) and why.
+struct StoredWithBookkeeping final
+{
+    bool ok{false};
+    std::string step{};
+    std::string reason{};
+};
+
+// Stores an event this server places itself (a local event, or the join event
+// of a federated join) with all of its bookkeeping in ONE transaction
+// (ADR-0228): the event and its current_state row, `membership` (DB-4), its
+// after-state group, its mapping to that group, the forward-extremity change,
+// and whatever the resolution of the resulting extremities changes in current
+// state. Nothing is written unless all of it is, so a refusal leaves no event,
+// membership, group or tip behind. Call it under runtime.mutex.
+[[nodiscard]] auto store_event_with_bookkeeping(
+    database::PersistentStore& store, rooms::RoomVersionPolicy const& policy, database::PersistentEvent event,
+    std::optional<database::PersistentStateEvent> state, std::optional<database::MembershipProjection> membership,
+    EventBookkeeping const& bookkeeping, events::StateResolutionLimits const& limits = {}) -> StoredWithBookkeeping;
+
 // Stores a locally created, already-composed-and-signed `event` (and its
 // `state` row, if it is a state event) and performs the same bookkeeping
-// homeserver::ingest_pdu_event runs for inbound PDUs: computes the state
-// before the event (from event.prev_event_ids, which the caller must
-// already have set from forward_extremities_for_new_event), stores the
-// event via database::store_event_with_state, records its after-state
-// group and forward-extremity update, and recomputes current_state.
+// homeserver::ingest_pdu_event runs for inbound PDUs: stores the event via
+// database::store_event_with_state, records its after-state group (from
+// `basis.state_before`) and forward-extremity update (`basis.prev_event_ids`
+// and `basis.retired_extremities` drop out), and recomputes current_state.
+// `event.prev_event_ids` must be `basis.prev_event_ids`, which the caller
+// signed into the event.
 //
 // Unlike ingest_pdu_event, every failure here is a HARD failure (returns
-// false): a local event has not yet been told "success" to any client or
-// peer by the time this runs, so it is safe — and preferable — to fail the
-// whole request rather than leave the store with an event whose
-// bookkeeping is broken. `event.prev_event_ids` must already resolve (a
-// state group must exist for each), since the caller chose them from the
-// room's own recorded extremities; a failure here indicates real
-// corruption, not a legitimate gap to await backfill for.
+// false, with a warning naming the step): a local event has not yet been told
+// "success" to any client or peer by the time this runs, so it is safe — and
+// preferable — to fail the whole request rather than leave the store with an
+// event whose bookkeeping is broken. A basis that is not `ok` stores nothing,
+// and the rest commits in one transaction (store_event_with_bookkeeping).
 //
 // Local events are authorised by the caller's own checks
 // (events::authorize_event_against_auth_events, already run during
@@ -190,7 +251,7 @@ struct StateBeforeResult final
 // database::MembershipProjection).
 [[nodiscard]] auto store_local_event(database::PersistentStore& store, rooms::RoomVersionPolicy const& policy,
                                      database::PersistentEvent event,
-                                     std::optional<database::PersistentStateEvent> state,
+                                     std::optional<database::PersistentStateEvent> state, NewEventBasis const& basis,
                                      events::StateResolutionLimits const& limits = {},
                                      std::optional<database::MembershipProjection> membership = std::nullopt) -> bool;
 
