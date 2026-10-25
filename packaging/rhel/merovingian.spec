@@ -1,5 +1,5 @@
 Name:           merovingian
-Version:        0.12.47
+Version:        0.12.48
 Release:        1%{?dist}
 Summary:        Secure Matrix Protocol homeserver
 
@@ -97,6 +97,9 @@ fi
 %{_sysconfdir}/merovingian/merovingian.conf.example
 
 %changelog
+* Sun Oct 25 2026 James Chapman <claude@ping.me.uk> - 0.12.48-1
+- Leaving a room no longer fails with 500 when the room's state cannot be resolved locally; every persistence failure on the leave path is logged at warning level.
+
 * Sun Oct 25 2026 James Chapman <claude@ping.me.uk> - 0.12.47-1
 - Collapse every database migration into one v1 initial schema; a database created by an earlier build is refused, not upgraded.
 
