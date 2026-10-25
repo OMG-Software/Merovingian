@@ -25,7 +25,9 @@ upgraded and must be recreated.
   every table now in v1, the first post-1.0 migration would have failed its `ALTER`.
 - **REMOVED:** the 0.11.13 upgrade fixture (`tests/fixtures/upgrade/0.11.13/`) and its scenarios,
   as ADR-0216 planned; the next fixture comes from the last 1.0.x release when 1.1 starts. The
-  generator, the seam and the synthetic scenarios stay.
+  generator, the seam and the synthetic scenarios stay. `docs/release-process.md` requires a
+  previous-series fixture only when a supported series starts, from 1.1 on; a pre-1.0 series start
+  such as 0.13.0 adds none (PR #532 review).
 - **TESTS (new):** `tests/unit/test_database_persistence.cpp`: "The v1 schema step creates every
   table in its final shape and every index" (`[collapse]`), "A schema ledger naming a migration
   this build does not have is refused" (`[collapse][security]`) and "Checked-in migrations hold
