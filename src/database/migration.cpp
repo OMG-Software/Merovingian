@@ -24,6 +24,7 @@ namespace
     }
 
     constexpr auto initial_schema_version = std::uint32_t{1U};
+    constexpr auto initial_schema_name = std::string_view{"initial_schema"};
 
     [[nodiscard]] auto make_create_table_statement(SchemaTableDefinition const& table)
         -> std::optional<PreparedStatement>
@@ -34,6 +35,17 @@ namespace
             return std::nullopt;
         }
         return PreparedStatement{"create_" + std::string{table.name}, std::move(*sql), {}};
+    }
+
+    [[nodiscard]] auto make_create_index_statement(SchemaIndexDefinition const& index)
+        -> std::optional<PreparedStatement>
+    {
+        auto sql = create_index_sql(index);
+        if (!sql.has_value())
+        {
+            return std::nullopt;
+        }
+        return PreparedStatement{"create_" + std::string{index.name}, std::move(*sql), {}};
     }
 
     [[nodiscard]] auto make_drop_table_statement(std::string_view table_name) -> std::optional<PreparedStatement>
@@ -153,8 +165,7 @@ namespace
         // Indexes are not part of the table set SchemaState tracks (they are
         // neither created nor dropped from `state.tables`), so a CREATE
         // INDEX/DROP INDEX statement -- like an ALTER TABLE -- is a no-op
-        // schema-state transition. First introduced by migration 015
-        // (event_edges_prev_event_id, ADR-0064).
+        // schema-state transition.
         if (statement.sql.starts_with("CREATE INDEX ") || statement.sql.starts_with("DROP INDEX "))
         {
             return true;
@@ -254,10 +265,9 @@ auto migration_plan_summary(MigrationPlan const& plan) -> std::string
 
 auto initial_schema_migration() -> MigrationStep
 {
-    // The schema deploys at version 1. Later numbered migrations bring the
-    // store up to current_schema_version(). Fresh installs create the v1 shape
-    // first so that the same migration chain upgrades both new and existing
-    // databases.
+    // The whole schema, tables then indexes. Every pre-1.0 migration was folded
+    // into this one step (ADR-0224); migrations/001_initial_schema.sql records it
+    // statement for statement, and from 1.0.0 neither may change.
     auto statements = std::vector<PreparedStatement>{};
     for (auto const& table : initial_schema_definitions())
     {
@@ -265,7 +275,13 @@ auto initial_schema_migration() -> MigrationStep
         // generated CREATE TABLE SQL is always valid.
         statements.push_back(make_create_table_statement(table).value());
     }
-    return {initial_schema_version, "initial_schema", std::move(statements), MigrationDirection::upgrade};
+    for (auto const& index : initial_schema_indexes())
+    {
+        // Likewise for the registered indexes.
+        statements.push_back(make_create_index_statement(index).value());
+    }
+    return {initial_schema_version, std::string{initial_schema_name}, std::move(statements),
+            MigrationDirection::upgrade};
 }
 
 auto downgrade_initial_schema_migration() -> MigrationStep
@@ -273,7 +289,7 @@ auto downgrade_initial_schema_migration() -> MigrationStep
     auto statements = std::vector<PreparedStatement>{};
     auto definitions = initial_schema_definitions();
     // Drop in reverse declaration order so dependent tables come down
-    // before the ones they reference.
+    // before the ones they reference. Each table's indexes go with it.
     for (auto iterator = definitions.rbegin(); iterator != definitions.rend(); ++iterator)
     {
         // Core table names are allowlisted at compile time, so the generated
@@ -283,684 +299,16 @@ auto downgrade_initial_schema_migration() -> MigrationStep
     return {0U, "drop_initial_schema", std::move(statements), MigrationDirection::downgrade};
 }
 
-[[nodiscard]] auto upgrade_sync_stream_watermark_migration() -> MigrationStep
-{
-    auto statements = std::vector<PreparedStatement>{};
-    statements.push_back(make_create_table_statement(schema_table_definition("sync_stream_watermark").value()).value());
-    return {2U, "sync_stream_watermark", std::move(statements), MigrationDirection::upgrade};
-}
-
-[[nodiscard]] auto upgrade_event_stream_watermark_migration() -> MigrationStep
-{
-    auto statements = std::vector<PreparedStatement>{};
-    statements.push_back(
-        make_create_table_statement(schema_table_definition("event_stream_watermark").value()).value());
-    return {3U, "event_stream_watermark", std::move(statements), MigrationDirection::upgrade};
-}
-
-[[nodiscard]] auto upgrade_state_transitions_migration() -> MigrationStep
-{
-    auto statements = std::vector<PreparedStatement>{};
-    statements.push_back(make_create_table_statement(schema_table_definition("state_transitions").value()).value());
-    return {4U, "state_transitions", std::move(statements), MigrationDirection::upgrade};
-}
-
-[[nodiscard]] auto upgrade_backfill_state_transitions_migration() -> MigrationStep
-{
-    auto statements = std::vector<PreparedStatement>{};
-    // Populate state_transitions with one row per existing current_state entry so
-    // already-created rooms do not silently lack transition history. Previous
-    // event IDs are left empty because the old deployment did not record them;
-    // only future replacements will have an accurate predecessor.
-    statements.push_back(
-        PreparedStatement{"backfill_state_transitions",
-                          "INSERT INTO state_transitions (room_id, event_type, state_key, event_id, previous_event_id) "
-                          "SELECT c.room_id, c.event_type, c.state_key, c.event_id, '' FROM current_state c "
-                          "LEFT JOIN state_transitions t ON t.room_id = c.room_id AND t.event_type = c.event_type AND "
-                          "t.state_key = c.state_key AND t.event_id = c.event_id "
-                          "WHERE t.room_id IS NULL",
-                          {}});
-    return {5U, "backfill_state_transitions", std::move(statements), MigrationDirection::upgrade};
-}
-
-[[nodiscard]] auto upgrade_account_threepids_migration() -> MigrationStep
-{
-    auto statements = std::vector<PreparedStatement>{};
-    statements.push_back(make_create_table_statement(schema_table_definition("account_threepids").value()).value());
-    return {6U, "account_threepids", std::move(statements), MigrationDirection::upgrade};
-}
-
-// v7: add the IS validation pair (`client_secret`, `sid`) to account_threepids.
-// Populated only for 3PIDs bound via a remote identity server, so a later unbind
-// can drive IS auth mode 2 (sid + client_secret) without HS-signed requests. The
-// base table is created at v6; this step ALTERs the columns onto it so the v6
-// migration stays historically intact and fresh installs (which run every
-// upgrade step in order) end at the same v7 shape.
-[[nodiscard]] auto upgrade_account_threepids_columns_migration() -> MigrationStep
-{
-    auto statements = std::vector<PreparedStatement>{};
-    statements.push_back(
-        PreparedStatement{"add_client_secret_column",
-                          "ALTER TABLE account_threepids ADD COLUMN client_secret TEXT NOT NULL DEFAULT ''",
-                          {}});
-    statements.push_back(PreparedStatement{
-        "add_sid_column", "ALTER TABLE account_threepids ADD COLUMN sid TEXT NOT NULL DEFAULT ''", {}});
-    return {7U, "account_threepids_columns", std::move(statements), MigrationDirection::upgrade};
-}
-
-// v8: durable pushers table (Matrix v1.19 CS API Push Notifications module).
-// Persists the pusher fields the spec defines — pushkey, kind, app_id,
-// app_display_name, device_display_name, profile_tag, lang, and the `data`
-// dictionary's `url`/`format` keys — keyed on (user_id, app_id, pushkey) per
-// the spec's "same app_id and pushkey for this user is updated" rule.
-[[nodiscard]] auto upgrade_pushers_migration() -> MigrationStep
-{
-    auto statements = std::vector<PreparedStatement>{};
-    statements.push_back(make_create_table_statement(schema_table_definition("pushers").value()).value());
-    return {8U, "pushers", std::move(statements), MigrationDirection::upgrade};
-}
-
-// v9: durable notification history for `GET /_matrix/client/v3/notifications`
-// (Matrix v1.19 CS API §push-notifications). Recorded whenever push rule
-// evaluation resolves `notify: true` for a local recipient -- independent of
-// whether that recipient has a registered pusher or `server.push.enabled` is
-// set (see room_service.cpp's build_pending_push_deliveries), so a user with
-// push notifications turned off still sees their notification history.
-// `stream_ordering` mirrors the triggering event's stream position and
-// doubles as this table's pagination key, exactly like `events.stream_
-// ordering` already does for GET /messages. Retention: pruned per-user at
-// write time (see database::store_notification), so the table cannot grow
-// without bound.
-[[nodiscard]] auto upgrade_notifications_migration() -> MigrationStep
-{
-    auto statements = std::vector<PreparedStatement>{};
-    statements.push_back(make_create_table_statement(schema_table_definition("notifications").value()).value());
-    return {9U, "notifications", std::move(statements), MigrationDirection::upgrade};
-}
-
-// v10: durable OpenID token store for `POST
-// /_matrix/client/v3/user/{userId}/openid/request_token` (Matrix v1.19 CS
-// API §OpenID). Deliberately a table of its own, never the `access_tokens`
-// table: an OpenID token is a narrow, short-lived credential that is only
-// ever redeemed by `GET /_matrix/federation/v1/openid/userinfo` (SS API
-// §OpenID) and must never be usable to authenticate an ordinary
-// client-server request (see docs/threat-model.md). Every row has a finite
-// `expires_at`; expired rows are pruned at write time (see
-// database::store_openid_token), so the table cannot grow without bound.
-[[nodiscard]] auto upgrade_openid_tokens_migration() -> MigrationStep
-{
-    auto statements = std::vector<PreparedStatement>{};
-    statements.push_back(make_create_table_statement(schema_table_definition("openid_tokens").value()).value());
-    return {10U, "openid_tokens", std::move(statements), MigrationDirection::upgrade};
-}
-
-// v11: add `data_extra_json` onto `pushers` (Matrix v1.19 Push Gateway API,
-// PR #479 review finding P1). The Push Gateway API's notify Device object
-// carries "the data dictionary passed in at pusher creation minus the url
-// key" -- previously only `url`/`format` were persisted, so any other
-// custom member a client's `data` dictionary carried at registration was
-// discarded before it ever reached the gateway. This ALTERs the existing
-// `pushers` table (created at v8) exactly like v7's `account_threepids_
-// columns` step ALTERs `account_threepids` (created at v6) -- the base
-// CREATE TABLE stays historically intact and fresh installs, which run
-// every upgrade step in order, still end at the same v11 shape.
-[[nodiscard]] auto upgrade_pushers_data_extra_migration() -> MigrationStep
-{
-    auto statements = std::vector<PreparedStatement>{};
-    statements.push_back(PreparedStatement{
-        "add_data_extra_json_column", "ALTER TABLE pushers ADD COLUMN data_extra_json TEXT NOT NULL DEFAULT ''", {}});
-    return {11U, "pushers_data_extra", std::move(statements), MigrationDirection::upgrade};
-}
-
-// v12: durable single-use SSO login token store for the `m.login.token`
-// exchange (Matrix v1.19 CS API §"Client login via SSO"). Deliberately a
-// table of its own, never `access_tokens`: a login token is a narrow,
-// short-lived credential whose only valid use is a single `POST /login`
-// exchange for an access token, so it must never itself authenticate a
-// client-server request (see docs/threat-model.md). Every row has a finite
-// `expires_at` (spec recommends ~5s lifetime) and a `used` flag enforcing
-// single use; consumed/expired rows are pruned at write time (see
-// database::store_login_token), so the table cannot grow without bound.
-[[nodiscard]] auto upgrade_login_tokens_migration() -> MigrationStep
-{
-    auto statements = std::vector<PreparedStatement>{};
-    statements.push_back(make_create_table_statement(schema_table_definition("login_tokens").value()).value());
-    return {12U, "login_tokens", std::move(statements), MigrationDirection::upgrade};
-}
-
-// v13: add the appservice_txn_cursor table (Matrix v1.19 Application
-// Service API, outbound PUT /_matrix/app/v1/transactions/{txnId} delivery).
-// One row per registered appservice, tracking the delivery cursor and any
-// currently in-flight (unacknowledged) batch -- see
-// PersistentAppserviceTxnCursor's doc comment
-// (include/merovingian/database/persistent_store.hpp) for the full field
-// semantics and docs/database-persistence.md.
-[[nodiscard]] auto upgrade_appservice_txn_cursor_migration() -> MigrationStep
-{
-    auto statements = std::vector<PreparedStatement>{};
-    statements.push_back(make_create_table_statement(schema_table_definition("appservice_txn_cursor").value()).value());
-    return {13U, "appservice_txn_cursor", std::move(statements), MigrationDirection::upgrade};
-}
-
-// v14: add the users.deactivated column (Matrix v1.19 CS API
-// POST /_matrix/client/v3/account/deactivate). Deliberately distinct from the
-// existing reversible `locked`/`suspended` admin flags: a deactivated account can
-// never log in again and its row is retained so the localpart is never reissued.
-// The base table is created at v1; this step ALTERs the column onto it so the v1
-// migration stays historically intact and fresh installs (which run every upgrade
-// step in order) end at the same v14 shape.
-[[nodiscard]] auto upgrade_user_deactivation_migration() -> MigrationStep
-{
-    auto statements = std::vector<PreparedStatement>{};
-    statements.push_back(PreparedStatement{
-        "add_deactivated_column", "ALTER TABLE users ADD COLUMN deactivated TEXT NOT NULL DEFAULT 'false'", {}});
-    return {14U, "user_deactivation", std::move(statements), MigrationDirection::upgrade};
-}
-
-// v15: Phase A of spec-conformant PDU ingestion with delta state groups
-// (ADR-0064, docs/adr/0064-spec-conformant-pdu-ingestion-with-delta-state-
-// groups.md). Adds `events.status` ('accepted'/'soft_failed'/'rejected'/
-// 'outlier', existing rows default to 'accepted'); extends the pre-existing
-// but vestigial `state_groups` table (created at v1, never populated by any
-// code path before this) with `parent_state_group_id` and `delta_depth` so
-// it can anchor a delta chain; and adds three brand-new tables:
-// `state_group_state` (a group's own delta/snapshot rows),
-// `event_state_groups` (which group holds the state after a given event),
-// and `forward_extremities` (a room's current DAG leaves). The base
-// `state_groups`/`events` tables are created at v1; this step ALTERs the
-// new columns onto them exactly like v14 ALTERs `users`, so those migrations
-// stay historically intact. Every existing room is seeded with one snapshot
-// state group (deterministic id `'seed:' || room_id`) built from its
-// `current_state`, attached to the room's current forward extremities
-// (event_edges' childless events); older events get no state group and are
-// treated as outliers by a later phase. This step is data plumbing only —
-// it does not change how PDUs are ingested or what clients see.
-[[nodiscard]] auto upgrade_event_graph_state_migration() -> MigrationStep
-{
-    auto statements = std::vector<PreparedStatement>{};
-    statements.push_back(PreparedStatement{
-        "events_add_status_column", "ALTER TABLE events ADD COLUMN status TEXT NOT NULL DEFAULT 'accepted'", {}});
-    statements.push_back(PreparedStatement{"state_groups_add_parent_column",
-                                           "ALTER TABLE state_groups ADD COLUMN parent_state_group_id TEXT NOT NULL "
-                                           "DEFAULT ''",
-                                           {}});
-    statements.push_back(PreparedStatement{"state_groups_add_delta_depth_column",
-                                           "ALTER TABLE state_groups ADD COLUMN delta_depth TEXT NOT NULL DEFAULT '0'",
-                                           {}});
-    statements.push_back(make_create_table_statement(schema_table_definition("state_group_state").value()).value());
-    statements.push_back(make_create_table_statement(schema_table_definition("event_state_groups").value()).value());
-    statements.push_back(make_create_table_statement(schema_table_definition("forward_extremities").value()).value());
-    // event_edges' primary key is (event_id, prev_event_id), which cannot
-    // serve a lookup keyed on prev_event_id alone -- without this index,
-    // seed_forward_extremities below (and phase B's future children-of-event
-    // lookup on the ingest path) is a full table scan per probe. The
-    // project's first index; placed before the seed statements so seeding
-    // itself benefits.
-    statements.push_back(PreparedStatement{"create_event_edges_prev_event_id_index",
-                                           "CREATE INDEX event_edges_prev_event_id ON event_edges (prev_event_id)",
-                                           {}});
-    statements.push_back(PreparedStatement{
-        "seed_state_group_snapshots",
-        "INSERT INTO state_groups (state_group_id, room_id, parent_state_group_id, delta_depth) SELECT 'seed:' || "
-        "r.room_id, r.room_id, '', '0' FROM rooms r WHERE NOT EXISTS (SELECT 1 FROM state_groups g WHERE "
-        "g.state_group_id = 'seed:' || r.room_id)",
-        {}});
-    statements.push_back(PreparedStatement{
-        "seed_state_group_state",
-        "INSERT INTO state_group_state (state_group_id, event_type, state_key, event_id) SELECT 'seed:' || "
-        "c.room_id, c.event_type, c.state_key, c.event_id FROM current_state c WHERE NOT EXISTS (SELECT 1 FROM "
-        "state_group_state s WHERE s.state_group_id = 'seed:' || c.room_id AND s.event_type = c.event_type AND "
-        "s.state_key = c.state_key)",
-        {}});
-    statements.push_back(PreparedStatement{
-        "seed_forward_extremities",
-        "INSERT INTO forward_extremities (room_id, event_id) SELECT e.room_id, e.event_id FROM events e WHERE NOT "
-        "EXISTS (SELECT 1 FROM event_edges g WHERE g.prev_event_id = e.event_id) AND NOT EXISTS (SELECT 1 FROM "
-        "forward_extremities f WHERE f.room_id = e.room_id AND f.event_id = e.event_id)",
-        {}});
-    statements.push_back(PreparedStatement{
-        "seed_event_state_groups",
-        "INSERT INTO event_state_groups (event_id, state_group_id) SELECT f.event_id, 'seed:' || f.room_id FROM "
-        "forward_extremities f WHERE NOT EXISTS (SELECT 1 FROM event_state_groups m WHERE m.event_id = f.event_id)",
-        {}});
-    return {15U, "event_graph_state", std::move(statements), MigrationDirection::upgrade};
-}
-
-// v16: M05 authenticated-media upgrade (ADR-0068). Adds a boolean marker to
-// each media row so legacy unauthenticated `/_matrix/media/v3/download` and
-// `/thumbnail` endpoints can be frozen for uploads created after this upgrade
-// while authenticated `/_matrix/client/v1/media/...` routes keep serving them.
-// The column is added by ALTER rather than being baked into the v1 media table
-// definition, keeping the v1 CREATE TABLE historically intact exactly like
-// v14's `users.deactivated` addition.
-[[nodiscard]] auto upgrade_media_legacy_endpoint_visibility_migration() -> MigrationStep
-{
-    auto statements = std::vector<PreparedStatement>{};
-    statements.push_back(
-        PreparedStatement{"add_legacy_endpoint_visible_column",
-                          "ALTER TABLE media ADD COLUMN legacy_endpoint_visible TEXT NOT NULL DEFAULT 'true'",
-                          {}});
-    return {16U, "media_legacy_endpoint_visibility", std::move(statements), MigrationDirection::upgrade};
-}
-
-// v17: refresh-token rotation lineage (0.12.13 audit item 6, ADR-0074). Each
-// refresh and access token minted by POST /refresh records the refresh token it
-// replaced, so the old one stays valid until the new pair is first used (Matrix
-// v1.19 CS API, POST /refresh) and is revoked then. Columns are added by ALTER,
-// keeping the v1 CREATE TABLEs historically intact.
-[[nodiscard]] auto upgrade_token_rotation_lineage_migration() -> MigrationStep
-{
-    auto statements = std::vector<PreparedStatement>{};
-    statements.push_back(
-        PreparedStatement{"add_refresh_token_predecessor_column",
-                          "ALTER TABLE refresh_tokens ADD COLUMN predecessor_hash TEXT NOT NULL DEFAULT ''",
-                          {}});
-    statements.push_back(
-        PreparedStatement{"add_access_token_predecessor_column",
-                          "ALTER TABLE access_tokens ADD COLUMN predecessor_refresh_hash TEXT NOT NULL DEFAULT ''",
-                          {}});
-    return {17U, "token_rotation_lineage", std::move(statements), MigrationDirection::upgrade};
-}
-
-// Published directory visibility is independent of room join rules. Older
-// rooms default private because their publication intent was not persisted.
-[[nodiscard]] auto upgrade_room_directory_visibility_migration() -> MigrationStep
-{
-    return {18U,
-            "room_directory_visibility",
-            {{"add_room_directory_public_column",
-              "ALTER TABLE rooms ADD COLUMN directory_public TEXT NOT NULL DEFAULT 'false'",
-              {}}},
-            MigrationDirection::upgrade};
-}
-
-[[nodiscard]] auto downgrade_room_directory_visibility_migration() -> MigrationStep
-{
-    return {17U,
-            "drop_room_directory_visibility",
-            {{"drop_room_directory_public_column", "ALTER TABLE rooms DROP COLUMN directory_public", {}}},
-            MigrationDirection::downgrade};
-}
-
-// CSAZ-10 (2026-09-29 audit): bound and TTL the per-recipient to-device queue.
-[[nodiscard]] auto upgrade_to_device_queue_age_bound_migration() -> MigrationStep
-{
-    auto statements = std::vector<PreparedStatement>{};
-    statements.push_back(
-        PreparedStatement{"add_to_device_created_at_ms_column",
-                          "ALTER TABLE to_device_messages ADD COLUMN created_at_ms TEXT NOT NULL DEFAULT '0'",
-                          {}});
-    statements.push_back(PreparedStatement{"create_to_device_recipient_age_index",
-                                           "CREATE INDEX idx_to_device_messages_recipient_age ON to_device_messages "
-                                           "(target_user_id, target_device_id, created_at_ms)",
-                                           {}});
-    return {19U, "to_device_queue_age_bound", std::move(statements), MigrationDirection::upgrade};
-}
-
-[[nodiscard]] auto downgrade_to_device_queue_age_bound_migration() -> MigrationStep
-{
-    auto statements = std::vector<PreparedStatement>{};
-    statements.push_back(
-        PreparedStatement{"drop_to_device_recipient_age_index", "DROP INDEX idx_to_device_messages_recipient_age", {}});
-    statements.push_back(PreparedStatement{
-        "drop_to_device_created_at_ms_column", "ALTER TABLE to_device_messages DROP COLUMN created_at_ms", {}});
-    return {18U, "drop_to_device_queue_age_bound", std::move(statements), MigrationDirection::downgrade};
-}
-
-// ADR-0119: remote media is stored like local media, so the cache that maps a
-// remote (server_name, media_id) to its stored local record must survive a
-// restart. remote_media gains the local record's ID and the fetch time.
-[[nodiscard]] auto upgrade_remote_media_cache_mapping_migration() -> MigrationStep
-{
-    auto statements = std::vector<PreparedStatement>{};
-    statements.push_back(
-        PreparedStatement{"add_remote_media_local_media_id_column",
-                          "ALTER TABLE remote_media ADD COLUMN local_media_id TEXT NOT NULL DEFAULT ''",
-                          {}});
-    statements.push_back(
-        PreparedStatement{"add_remote_media_fetched_at_ms_column",
-                          "ALTER TABLE remote_media ADD COLUMN fetched_at_ms TEXT NOT NULL DEFAULT '0'",
-                          {}});
-    return {20U, "remote_media_cache_mapping", std::move(statements), MigrationDirection::upgrade};
-}
-
-[[nodiscard]] auto downgrade_remote_media_cache_mapping_migration() -> MigrationStep
-{
-    auto statements = std::vector<PreparedStatement>{};
-    statements.push_back(PreparedStatement{
-        "drop_remote_media_fetched_at_ms_column", "ALTER TABLE remote_media DROP COLUMN fetched_at_ms", {}});
-    statements.push_back(PreparedStatement{
-        "drop_remote_media_local_media_id_column", "ALTER TABLE remote_media DROP COLUMN local_media_id", {}});
-    return {19U, "drop_remote_media_cache_mapping", std::move(statements), MigrationDirection::downgrade};
-}
-
-// CSAZ-12: an alias records the user who created it, so DELETE
-// /directory/room/{roomAlias} can let its creator remove it. Aliases created
-// before this migration have an empty creator: only a user with
-// canonical-alias power in the room, or a server administrator, may delete them.
-[[nodiscard]] auto upgrade_room_alias_creator_migration() -> MigrationStep
-{
-    auto statements = std::vector<PreparedStatement>{};
-    statements.push_back(
-        PreparedStatement{"add_room_aliases_creator_user_id_column",
-                          "ALTER TABLE room_aliases ADD COLUMN creator_user_id TEXT NOT NULL DEFAULT ''",
-                          {}});
-    return {21U, "room_alias_creator", std::move(statements), MigrationDirection::upgrade};
-}
-
-[[nodiscard]] auto downgrade_room_alias_creator_migration() -> MigrationStep
-{
-    auto statements = std::vector<PreparedStatement>{};
-    statements.push_back(PreparedStatement{
-        "drop_room_aliases_creator_user_id_column", "ALTER TABLE room_aliases DROP COLUMN creator_user_id", {}});
-    return {20U, "drop_room_alias_creator", std::move(statements), MigrationDirection::downgrade};
-}
-
-// Audit R01: the Application Service API transaction queue. One row per event
-// queued for an appservice, written when the event is dispatched and deleted
-// in the same transaction that advances the appservice cursor on delivery. See
-// database::enqueue_appservice_event.
-[[nodiscard]] auto upgrade_appservice_outbox_migration() -> MigrationStep
-{
-    auto statements = std::vector<PreparedStatement>{};
-    statements.push_back(make_create_table_statement(schema_table_definition("appservice_outbox").value()).value());
-    return {22U, "appservice_outbox", std::move(statements), MigrationDirection::upgrade};
-}
-
-[[nodiscard]] auto downgrade_appservice_outbox_migration() -> MigrationStep
-{
-    auto statements = std::vector<PreparedStatement>{};
-    statements.push_back(make_drop_table_statement("appservice_outbox").value());
-    return {21U, "drop_appservice_outbox", std::move(statements), MigrationDirection::downgrade};
-}
-
-// R03 (ADR-0165): federation PDUs main could not yet place are kept in a table
-// so a restart does not lose them. Main-process only.
-[[nodiscard]] auto upgrade_deferred_pdus_migration() -> MigrationStep
-{
-    auto statements = std::vector<PreparedStatement>{};
-    statements.push_back(PreparedStatement{
-        "create_deferred_pdus",
-        "CREATE TABLE deferred_pdus (event_id TEXT PRIMARY KEY, room_id TEXT NOT NULL, origin TEXT NOT NULL, "
-        "pdu_json TEXT NOT NULL, received_at_ms TEXT NOT NULL DEFAULT '0', attempts TEXT NOT NULL DEFAULT '0')",
-        {}});
-    statements.push_back(PreparedStatement{
-        "create_deferred_pdus_room_index", "CREATE INDEX idx_deferred_pdus_room_id ON deferred_pdus (room_id)", {}});
-    return {23U, "deferred_pdus", std::move(statements), MigrationDirection::upgrade};
-}
-
-// v23 -> v22: drop the deferred_pdus table (and with it its index).
-[[nodiscard]] auto downgrade_deferred_pdus_migration() -> MigrationStep
-{
-    auto statements = std::vector<PreparedStatement>{};
-    statements.push_back(make_drop_table_statement("deferred_pdus").value());
-    return {22U, "drop_deferred_pdus", std::move(statements), MigrationDirection::downgrade};
-}
-
-// ADR-0169: read receipts are kept in a table so a restart does not mark every
-// room unread again. Main-process only.
-[[nodiscard]] auto upgrade_receipts_migration() -> MigrationStep
-{
-    auto statements = std::vector<PreparedStatement>{};
-    statements.push_back(make_create_table_statement(schema_table_definition("receipts").value()).value());
-    return {24U, "receipts", std::move(statements), MigrationDirection::upgrade};
-}
-
-// v24 -> v23: drop the receipts table.
-[[nodiscard]] auto downgrade_receipts_migration() -> MigrationStep
-{
-    auto statements = std::vector<PreparedStatement>{};
-    statements.push_back(make_drop_table_statement("receipts").value());
-    return {23U, "drop_receipts", std::move(statements), MigrationDirection::downgrade};
-}
-
-// ADR-0192: rooms an appservice has published to the directory of one of its networks, so the
-// published directory survives a restart. Main-process only.
-[[nodiscard]] auto upgrade_appservice_directory_migration() -> MigrationStep
-{
-    auto statements = std::vector<PreparedStatement>{};
-    statements.push_back(make_create_table_statement(schema_table_definition("appservice_directory").value()).value());
-    return {25U, "appservice_directory", std::move(statements), MigrationDirection::upgrade};
-}
-
-// v25 -> v24: drop the appservice_directory table.
-[[nodiscard]] auto downgrade_appservice_directory_migration() -> MigrationStep
-{
-    auto statements = std::vector<PreparedStatement>{};
-    statements.push_back(make_drop_table_statement("appservice_directory").value());
-    return {24U, "drop_appservice_directory", std::move(statements), MigrationDirection::downgrade};
-}
-
-// Migration 026 (025 on its own branch; renumbered after 025_appservice_directory).
-// ADR-0211: the filename an upload was made with, served back in
-// Content-Disposition. ADR-0212: the mxc:// URIs POST /_matrix/media/v1/create
-// reserves.
-[[nodiscard]] auto upgrade_media_upload_names_and_pending_uploads_migration() -> MigrationStep
-{
-    auto statements = std::vector<PreparedStatement>{};
-    statements.push_back(PreparedStatement{
-        "add_media_upload_name_column", "ALTER TABLE media ADD COLUMN upload_name TEXT NOT NULL DEFAULT ''", {}});
-    statements.push_back(make_create_table_statement(schema_table_definition("media_pending_uploads").value()).value());
-    statements.push_back(
-        PreparedStatement{"create_media_pending_uploads_owner_index",
-                          "CREATE INDEX idx_media_pending_uploads_owner ON media_pending_uploads (owner_user_id)",
-                          {}});
-    return {26U, "media_upload_names_and_pending_uploads", std::move(statements), MigrationDirection::upgrade};
-}
-
-// v26 -> v25: drop the pending uploads table and the upload_name column.
-[[nodiscard]] auto downgrade_media_upload_names_and_pending_uploads_migration() -> MigrationStep
-{
-    auto statements = std::vector<PreparedStatement>{};
-    statements.push_back(make_drop_table_statement("media_pending_uploads").value());
-    statements.push_back(
-        PreparedStatement{"drop_media_upload_name_column", "ALTER TABLE media DROP COLUMN upload_name", {}});
-    return {25U, "drop_media_upload_names_and_pending_uploads", std::move(statements), MigrationDirection::downgrade};
-}
+// The next migration is v2: add its upgrade step here and its downgrade (to v1)
+// at the front of the downgrade catalog, and leave v1 exactly as it is.
 auto upgrade_migration_catalog() -> std::vector<MigrationStep>
 {
-    return {initial_schema_migration(),
-            upgrade_sync_stream_watermark_migration(),
-            upgrade_event_stream_watermark_migration(),
-            upgrade_state_transitions_migration(),
-            upgrade_backfill_state_transitions_migration(),
-            upgrade_account_threepids_migration(),
-            upgrade_account_threepids_columns_migration(),
-            upgrade_pushers_migration(),
-            upgrade_notifications_migration(),
-            upgrade_openid_tokens_migration(),
-            upgrade_pushers_data_extra_migration(),
-            upgrade_login_tokens_migration(),
-            upgrade_appservice_txn_cursor_migration(),
-            upgrade_user_deactivation_migration(),
-            upgrade_event_graph_state_migration(),
-            upgrade_media_legacy_endpoint_visibility_migration(),
-            upgrade_token_rotation_lineage_migration(),
-            upgrade_room_directory_visibility_migration(),
-            upgrade_to_device_queue_age_bound_migration(),
-            upgrade_remote_media_cache_mapping_migration(),
-            upgrade_room_alias_creator_migration(),
-            upgrade_appservice_outbox_migration(),
-            upgrade_deferred_pdus_migration(),
-            upgrade_receipts_migration(),
-            upgrade_appservice_directory_migration(),
-            upgrade_media_upload_names_and_pending_uploads_migration()};
-}
-
-// v17 -> v16: drop the token-rotation lineage columns added by v17.
-[[nodiscard]] auto downgrade_token_rotation_lineage_migration() -> MigrationStep
-{
-    auto statements = std::vector<PreparedStatement>{};
-    statements.push_back(PreparedStatement{
-        "drop_access_token_predecessor_column", "ALTER TABLE access_tokens DROP COLUMN predecessor_refresh_hash", {}});
-    statements.push_back(PreparedStatement{
-        "drop_refresh_token_predecessor_column", "ALTER TABLE refresh_tokens DROP COLUMN predecessor_hash", {}});
-    return {16U, "drop_token_rotation_lineage", std::move(statements), MigrationDirection::downgrade};
-}
-
-// v16 -> v15: drop the media legacy-endpoint visibility column added by v16.
-[[nodiscard]] auto downgrade_media_legacy_endpoint_visibility_migration() -> MigrationStep
-{
-    auto statements = std::vector<PreparedStatement>{};
-    statements.push_back(PreparedStatement{
-        "drop_legacy_endpoint_visible_column", "ALTER TABLE media DROP COLUMN legacy_endpoint_visible", {}});
-    return {15U, "drop_media_legacy_endpoint_visibility", std::move(statements), MigrationDirection::downgrade};
-}
-
-// v15 -> v14: drop the three v15 tables, the event_edges_prev_event_id
-// index, and the columns ALTERed onto `events`/`state_groups`. The seeded
-// rows live only in the dropped tables, so no separate data-undo step is
-// needed.
-[[nodiscard]] auto downgrade_event_graph_state_migration() -> MigrationStep
-{
-    auto statements = std::vector<PreparedStatement>{};
-    statements.push_back(make_drop_table_statement("forward_extremities").value());
-    statements.push_back(make_drop_table_statement("event_state_groups").value());
-    statements.push_back(make_drop_table_statement("state_group_state").value());
-    statements.push_back(
-        PreparedStatement{"drop_event_edges_prev_event_id_index", "DROP INDEX event_edges_prev_event_id", {}});
-    statements.push_back(
-        PreparedStatement{"drop_delta_depth_column", "ALTER TABLE state_groups DROP COLUMN delta_depth", {}});
-    statements.push_back(PreparedStatement{
-        "drop_parent_state_group_id_column", "ALTER TABLE state_groups DROP COLUMN parent_state_group_id", {}});
-    statements.push_back(PreparedStatement{"drop_status_column", "ALTER TABLE events DROP COLUMN status", {}});
-    return {14U, "drop_event_graph_state", std::move(statements), MigrationDirection::downgrade};
-}
-
-[[nodiscard]] auto downgrade_backfill_state_transitions_migration() -> MigrationStep
-{
-    auto statements = std::vector<PreparedStatement>{};
-    // Undo the v5 backfill. The state_transitions table itself is owned by the v4
-    // migration and is dropped by the v4 downgrade.
-    statements.push_back(PreparedStatement{"clear_state_transitions", "DELETE FROM state_transitions", {}});
-    return {4U, "drop_backfill_state_transitions", std::move(statements), MigrationDirection::downgrade};
-}
-
-[[nodiscard]] auto downgrade_account_threepids_migration() -> MigrationStep
-{
-    auto statements = std::vector<PreparedStatement>{};
-    statements.push_back(make_drop_table_statement("account_threepids").value());
-    return {5U, "drop_account_threepids", std::move(statements), MigrationDirection::downgrade};
-}
-
-// v7 → v6: drop the IS validation pair before the v6 → v5 table-drop. The
-// downgrade plan walks one version at a time, so this step (target v6) is
-// selected before drop_account_threepids (target v5) when downgrading from v7.
-[[nodiscard]] auto downgrade_account_threepids_columns_migration() -> MigrationStep
-{
-    auto statements = std::vector<PreparedStatement>{};
-    statements.push_back(PreparedStatement{"drop_sid_column", "ALTER TABLE account_threepids DROP COLUMN sid", {}});
-    statements.push_back(
-        PreparedStatement{"drop_client_secret_column", "ALTER TABLE account_threepids DROP COLUMN client_secret", {}});
-    return {6U, "drop_account_threepids_columns", std::move(statements), MigrationDirection::downgrade};
-}
-
-// v8 -> v7: drop the pushers table.
-[[nodiscard]] auto downgrade_pushers_migration() -> MigrationStep
-{
-    auto statements = std::vector<PreparedStatement>{};
-    statements.push_back(make_drop_table_statement("pushers").value());
-    return {7U, "drop_pushers", std::move(statements), MigrationDirection::downgrade};
-}
-
-// v9 -> v8: drop the notifications table.
-[[nodiscard]] auto downgrade_notifications_migration() -> MigrationStep
-{
-    auto statements = std::vector<PreparedStatement>{};
-    statements.push_back(make_drop_table_statement("notifications").value());
-    return {8U, "drop_notifications", std::move(statements), MigrationDirection::downgrade};
-}
-
-// v10 -> v9: drop the openid_tokens table.
-[[nodiscard]] auto downgrade_openid_tokens_migration() -> MigrationStep
-{
-    auto statements = std::vector<PreparedStatement>{};
-    statements.push_back(make_drop_table_statement("openid_tokens").value());
-    return {9U, "drop_openid_tokens", std::move(statements), MigrationDirection::downgrade};
-}
-
-// v11 -> v10: drop the data_extra_json column added onto pushers.
-[[nodiscard]] auto downgrade_pushers_data_extra_migration() -> MigrationStep
-{
-    auto statements = std::vector<PreparedStatement>{};
-    statements.push_back(
-        PreparedStatement{"drop_data_extra_json_column", "ALTER TABLE pushers DROP COLUMN data_extra_json", {}});
-    return {10U, "drop_pushers_data_extra", std::move(statements), MigrationDirection::downgrade};
-}
-
-// v13 -> v12: drop the appservice_txn_cursor table.
-[[nodiscard]] auto downgrade_appservice_txn_cursor_migration() -> MigrationStep
-{
-    auto statements = std::vector<PreparedStatement>{};
-    statements.push_back(make_drop_table_statement("appservice_txn_cursor").value());
-    return {12U, "drop_appservice_txn_cursor", std::move(statements), MigrationDirection::downgrade};
-}
-
-[[nodiscard]] auto downgrade_sync_stream_watermark_migration() -> MigrationStep
-{
-    auto statements = std::vector<PreparedStatement>{};
-    statements.push_back(make_drop_table_statement("sync_stream_watermark").value());
-    return {1U, "drop_sync_stream_watermark", std::move(statements), MigrationDirection::downgrade};
-}
-
-// v12 -> v11: drop the login_tokens table.
-[[nodiscard]] auto downgrade_login_tokens_migration() -> MigrationStep
-{
-    auto statements = std::vector<PreparedStatement>{};
-    statements.push_back(make_drop_table_statement("login_tokens").value());
-    return {11U, "drop_login_tokens", std::move(statements), MigrationDirection::downgrade};
-}
-
-[[nodiscard]] auto downgrade_event_stream_watermark_migration() -> MigrationStep
-{
-    auto statements = std::vector<PreparedStatement>{};
-    statements.push_back(make_drop_table_statement("event_stream_watermark").value());
-    return {2U, "drop_event_stream_watermark", std::move(statements), MigrationDirection::downgrade};
-}
-
-[[nodiscard]] auto downgrade_state_transitions_migration() -> MigrationStep
-{
-    auto statements = std::vector<PreparedStatement>{};
-    statements.push_back(make_drop_table_statement("state_transitions").value());
-    return {3U, "drop_state_transitions", std::move(statements), MigrationDirection::downgrade};
-}
-
-// v14 -> v13: drop the users.deactivated column.
-[[nodiscard]] auto downgrade_user_deactivation_migration() -> MigrationStep
-{
-    auto statements = std::vector<PreparedStatement>{};
-    statements.push_back(PreparedStatement{"drop_deactivated_column", "ALTER TABLE users DROP COLUMN deactivated", {}});
-    return {13U, "drop_user_deactivation", std::move(statements), MigrationDirection::downgrade};
+    return {initial_schema_migration()};
 }
 
 auto downgrade_migration_catalog() -> std::vector<MigrationStep>
 {
-    return {downgrade_media_upload_names_and_pending_uploads_migration(),
-            downgrade_appservice_directory_migration(),
-            downgrade_receipts_migration(),
-            downgrade_deferred_pdus_migration(),
-            downgrade_appservice_outbox_migration(),
-            downgrade_room_alias_creator_migration(),
-            downgrade_remote_media_cache_mapping_migration(),
-            downgrade_to_device_queue_age_bound_migration(),
-            downgrade_room_directory_visibility_migration(),
-            downgrade_token_rotation_lineage_migration(),
-            downgrade_media_legacy_endpoint_visibility_migration(),
-            downgrade_event_graph_state_migration(),
-            downgrade_user_deactivation_migration(),
-            downgrade_appservice_txn_cursor_migration(),
-            downgrade_login_tokens_migration(),
-            downgrade_pushers_data_extra_migration(),
-            downgrade_openid_tokens_migration(),
-            downgrade_notifications_migration(),
-            downgrade_pushers_migration(),
-            downgrade_account_threepids_columns_migration(),
-            downgrade_account_threepids_migration(),
-            downgrade_backfill_state_transitions_migration(),
-            downgrade_state_transitions_migration(),
-            downgrade_event_stream_watermark_migration(),
-            downgrade_sync_stream_watermark_migration(),
-            downgrade_initial_schema_migration()};
+    return {downgrade_initial_schema_migration()};
 }
 
 auto migration_plan_between(std::uint32_t current_version, std::uint32_t target_version) -> MigrationPlan
@@ -1078,8 +426,39 @@ auto apply_migration_plan(SchemaState state, MigrationPlan const& plan) -> Migra
     return {true, {}, std::move(state)};
 }
 
+auto schema_ledger_is_known(SchemaState const& state) -> MigrationValidationResult
+{
+    // A version number alone cannot tell this build's v1 from another build's:
+    // every pre-1.0 build up to 0.12.46 wrote a v1 row too, followed by rows
+    // for 25 migrations that no longer exist. So every upgrade row must name
+    // the step this build has at that version.
+    auto const catalog = upgrade_migration_catalog();
+    for (auto const& record : state.applied_migrations)
+    {
+        if (record.direction != MigrationDirection::upgrade)
+        {
+            continue;
+        }
+        auto const step = std::ranges::find_if(catalog, [&record](MigrationStep const& known) {
+            return known.version == record.version;
+        });
+        if (step == catalog.end() || step->name != record.name)
+        {
+            return {false, "schema ledger records a migration this build does not have: version " +
+                               std::to_string(record.version) + " (" + record.name +
+                               "); it was written by a newer build, or by a pre-1.0 build from before the "
+                               "0.12.47 schema collapse, and this build cannot open it"};
+        }
+    }
+    return {true, {}};
+}
+
 auto schema_state_is_compatible(SchemaState const& state) -> MigrationValidationResult
 {
+    if (auto known = schema_ledger_is_known(state); !known.valid)
+    {
+        return known;
+    }
     if (state.version != current_schema_version())
     {
         return {false, "schema version is not compatible"};
@@ -1100,8 +479,8 @@ auto schema_state_is_compatible(SchemaState const& state) -> MigrationValidation
 
 auto migration_rollback_policy() noexcept -> std::string_view
 {
-    return "schema deploys at v1 in its final shape; downgrade plans exist for completeness "
-           "and remain operator-controlled, paired with backup/restore validation";
+    return "schema deploys at v1 in its final shape; the only downgrade drops it, exists for completeness, "
+           "and remains operator-controlled, paired with backup/restore validation";
 }
 
 } // namespace merovingian::database

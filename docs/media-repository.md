@@ -216,9 +216,8 @@ unauthenticated. To prevent new uploads from being enumerable or retrieved
 without a token, every new upload is persisted with
 `legacy_endpoint_visible = false`. The legacy routes treat that value as a
 404, while authenticated `/_matrix/client/v1/media/download` and
-`/thumbnail` routes continue to serve the media. Pre-upgrade rows default to
-`legacy_endpoint_visible = 'true'` via migration 016, so existing
-unauthenticated links keep working. Hydration restores the persisted visibility
+`/thumbnail` routes continue to serve the media. The column is part of the v1
+schema and defaults to `'true'`. Hydration restores the persisted visibility
 flag on every restart; a record without an explicit flag defaults to private.
 See
 [ADR-0068](adr/0068-random-media-ids-and-legacy-endpoint-freeze.md).
@@ -383,7 +382,7 @@ a header, so nothing that writes a local-router response to the wire can leak it
 
 `POST /_matrix/media/v1/create` reserves an `mxc://` URI and returns it with `unused_expires_at`
 (now plus `security.media.pending_upload_ttl_seconds`, 24 hours by default). The reservation is a
-`media_pending_uploads` row (migration 026) and lives in memory in
+`media_pending_uploads` row (part of the v1 schema) and lives in memory in
 `LocalMediaRepository::pending_uploads`. One user may hold `max_pending_uploads_per_user` (10) live
 reservations and the server `max_pending_uploads` (10000); past either, `create` answers
 `429 M_LIMIT_EXCEEDED`. `create` is also rate limited per user (30 a minute). Expired reservations
@@ -499,9 +498,9 @@ See [ADR-0094](adr/0094-revive-removed-media-storage-identities.md).
 
 ## Persistence
 
-The collapsed initial schema includes `media` metadata, `remote_media`
-metadata, and `media_blobs` durable byte storage. Migration 026 adds `media.upload_name` (the
-upload's filename) and the `media_pending_uploads` table of reserved media IDs. New local uploads use
+The v1 schema includes `media` metadata (with `media.upload_name`, the
+upload's filename), `remote_media` metadata, `media_blobs` durable byte storage,
+and the `media_pending_uploads` table of reserved media IDs. New local uploads use
 LibSodium `crypto_generichash` (`blake2b`) for deduplication digests, store the
 blob bytes through `media_blobs`, and hydrate the runtime repository from those
 rows after a SQLite/PostgreSQL restart.

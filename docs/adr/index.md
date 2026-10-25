@@ -208,6 +208,7 @@
 * [0221 - A grown sliding sync timeline_limit skips the long-poll once per request pos](0221-a-grown-sliding-sync-timeline-limit-skips-the-long-poll-once-per-request-pos.md)
 * [0222 - Library linkage is read from the loader at runtime, not from the build](0222-library-linkage-is-read-from-the-loader-at-runtime.md)
 * [0223 - The documentation site wears the OMG Software theme, dark first, with system fonts](0223-the-documentation-site-wears-the-omg-software-theme-dark-first-with-system-fonts.md)
+* [0224 - Pre-1.0 migrations collapse into one v1 schema, frozen at 1.0.0, and an unknown ledger is refused](0224-pre-1-0-migrations-collapse-into-one-frozen-v1-schema.md)
 * [0226 - CodeQL drops cpp/unused-static-function on Catch2 tests before upload, and nowhere else](0226-codeql-drops-unused-static-function-on-catch2-tests-before-upload.md)
 
 ## Proposed Records
@@ -239,3 +240,4 @@
 * [0126 - Local membership is projected once, at the local-event choke point](0126-local-membership-is-projected-once-at-the-local-event-choke-point.md) — Refined by ADR-0149: the projection commits in the event's own transaction, and a row is realigned if resolution leaves another member event current
 * [0163 - Appservice delivery is a durable outbox drained by one thread](0163-appservice-delivery-is-a-durable-outbox-drained-by-one-thread.md) — Refined by ADR-0191: the queue of one appservice is capped at `appservice.max_queued_events`, and ADR-0190: ephemeral data rides the same transactions but is not durable
 * [0173 - Cap a user's global account-data types; room account data stays bounded by membership](0173-cap-global-account-data-types-per-user.md) — Refined by ADR-0197: room account data also needs a membership row and is capped per room
+* [0216 - The upgrade path is tested from a forward-only schema seam and a database the previous release wrote](0216-upgrade-path-is-tested-from-a-forward-only-seam-and-a-real-previous-release-fixture.md) — Refined by ADR-0224: the migrations collapsed in 0.12.47, before 1.0.0, and the 0.11.13 fixture is gone; the seam and synthetic scenarios stay

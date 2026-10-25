@@ -72,6 +72,9 @@ struct MigrationApplyResult final
 [[nodiscard]] auto migration_plan_for(SchemaState const& state) -> MigrationPlan;
 [[nodiscard]] auto migration_plan_between(std::uint32_t current_version, std::uint32_t target_version) -> MigrationPlan;
 [[nodiscard]] auto apply_migration_plan(SchemaState state, MigrationPlan const& plan) -> MigrationApplyResult;
+// Refuses a ledger with an upgrade row that does not name this build's step at
+// that version, such as one a pre-1.0 build wrote before the v1 collapse.
+[[nodiscard]] auto schema_ledger_is_known(SchemaState const& state) -> MigrationValidationResult;
 [[nodiscard]] auto schema_state_is_compatible(SchemaState const& state) -> MigrationValidationResult;
 [[nodiscard]] auto migration_rollback_policy() noexcept -> std::string_view;
 

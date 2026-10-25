@@ -1330,7 +1330,7 @@ threat it closes; the controls above are the standing defences these reinforce.
   token kinds are byte-for-byte indistinguishable opaque strings, so nothing
   short of a structural separation prevents one being presented as the
   other. Mitigated by keeping OpenID tokens in a table (`openid_tokens`,
-  migration `010_openid_tokens.sql`) and a lookup path
+  part of the v1 schema) and a lookup path
   (`homeserver::federation_openid_userinfo`) fully disjoint from
   `access_tokens` and `authenticated_user` — see `docs/auth-identity.md`
   ("OpenID tokens") for the full design and `docs/database-persistence.md`

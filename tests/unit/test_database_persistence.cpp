@@ -13,6 +13,7 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cstddef>
 #include <filesystem>
@@ -20,9 +21,11 @@
 #include <latch>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <tuple>
 #include <type_traits>
+#include <utility>
 #include <vector>
 
 #include <sqlite3.h>
@@ -1161,7 +1164,7 @@ SCENARIO("Database migration plans are contiguous and direction-aware", "[databa
     }
 }
 
-SCENARIO("Database migration runner applies the current schema and the matching explicit downgrade",
+SCENARIO("Database migration runner applies the single v1 schema step and its explicit downgrade",
          "[database][migration]")
 {
     GIVEN("an empty schema state")
@@ -1177,145 +1180,25 @@ SCENARIO("Database migration runner applies the current schema and the matching 
             auto const downgrade_plan = merovingian::database::migration_plan_between(upgraded.state.version, 0U);
             auto const downgraded = merovingian::database::apply_migration_plan(upgraded.state, downgrade_plan);
 
-            THEN("the upgrade chain reaches the current schema version and is reversible")
+            THEN("one step builds the whole current schema at v1, and one step takes it away")
             {
+                REQUIRE(merovingian::database::current_schema_version() == 1U);
                 REQUIRE(upgrade_plan.direction == merovingian::database::MigrationDirection::upgrade);
                 REQUIRE(upgrade_plan.current_version == 0U);
-                REQUIRE(upgrade_plan.target_version == merovingian::database::current_schema_version());
-                REQUIRE(upgrade_plan.steps.size() == 26U);
-                REQUIRE(upgrade_plan.steps[0].version == 1U);
-                REQUIRE(upgrade_plan.steps[0].name == "initial_schema");
-                REQUIRE(upgrade_plan.steps[1].version == 2U);
-                REQUIRE(upgrade_plan.steps[1].name == "sync_stream_watermark");
-                REQUIRE(upgrade_plan.steps[2].version == 3U);
-                REQUIRE(upgrade_plan.steps[2].name == "event_stream_watermark");
-                REQUIRE(upgrade_plan.steps[3].version == 4U);
-                REQUIRE(upgrade_plan.steps[3].name == "state_transitions");
-                REQUIRE(upgrade_plan.steps[4].version == 5U);
-                REQUIRE(upgrade_plan.steps[4].name == "backfill_state_transitions");
-                REQUIRE(upgrade_plan.steps[5].version == 6U);
-                REQUIRE(upgrade_plan.steps[5].name == "account_threepids");
-                REQUIRE(upgrade_plan.steps[6].version == 7U);
-                REQUIRE(upgrade_plan.steps[6].name == "account_threepids_columns");
-                REQUIRE(upgrade_plan.steps[7].version == 8U);
-                REQUIRE(upgrade_plan.steps[7].name == "pushers");
-                REQUIRE(upgrade_plan.steps[8].version == 9U);
-                REQUIRE(upgrade_plan.steps[8].name == "notifications");
-                REQUIRE(upgrade_plan.steps[9].version == 10U);
-                REQUIRE(upgrade_plan.steps[9].name == "openid_tokens");
-                REQUIRE(upgrade_plan.steps[10].version == 11U);
-                REQUIRE(upgrade_plan.steps[10].name == "pushers_data_extra");
-                REQUIRE(upgrade_plan.steps[11].version == 12U);
-                REQUIRE(upgrade_plan.steps[11].name == "login_tokens");
+                REQUIRE(upgrade_plan.target_version == 1U);
+                REQUIRE(upgrade_plan.steps.size() == 1U);
+                REQUIRE(upgrade_plan.steps.front().version == 1U);
+                REQUIRE(upgrade_plan.steps.front().name == "initial_schema");
                 REQUIRE(upgraded.ok);
-                REQUIRE(upgraded.state.version == merovingian::database::current_schema_version());
-                REQUIRE(upgraded.state.applied_migrations.size() == 26U);
-                // v12 (login_tokens) belongs to a sibling branch (SSO login);
-                // registered here only for chain contiguity — see
-                // migrations/AGENTS.md and schema.cpp's v12_table_names comment.
-                REQUIRE(upgrade_plan.steps[11].version == 12U);
-                REQUIRE(upgrade_plan.steps[11].name == "login_tokens");
-                REQUIRE(upgrade_plan.steps[12].version == 13U);
-                REQUIRE(upgrade_plan.steps[12].name == "appservice_txn_cursor");
-                REQUIRE(upgrade_plan.steps[13].version == 14U);
-                REQUIRE(upgrade_plan.steps[13].name == "user_deactivation");
-                REQUIRE(upgrade_plan.steps[14].version == 15U);
-                REQUIRE(upgrade_plan.steps[14].name == "event_graph_state");
-                REQUIRE(upgrade_plan.steps[15].version == 16U);
-                REQUIRE(upgrade_plan.steps[15].name == "media_legacy_endpoint_visibility");
-                REQUIRE(upgrade_plan.steps[16].version == 17U);
-                REQUIRE(upgrade_plan.steps[16].name == "token_rotation_lineage");
-                REQUIRE(upgrade_plan.steps[17].version == 18U);
-                REQUIRE(upgrade_plan.steps[17].name == "room_directory_visibility");
-                REQUIRE(upgrade_plan.steps[18].version == 19U);
-                REQUIRE(upgrade_plan.steps[18].name == "to_device_queue_age_bound");
-                REQUIRE(upgrade_plan.steps[19].version == 20U);
-                REQUIRE(upgrade_plan.steps[19].name == "remote_media_cache_mapping");
-                REQUIRE(upgrade_plan.steps[20].version == 21U);
-                REQUIRE(upgrade_plan.steps[20].name == "room_alias_creator");
-                REQUIRE(upgrade_plan.steps[21].version == 22U);
-                REQUIRE(upgrade_plan.steps[21].name == "appservice_outbox");
-                REQUIRE(upgrade_plan.steps[22].version == 23U);
-                REQUIRE(upgrade_plan.steps[22].name == "deferred_pdus");
-                REQUIRE(upgrade_plan.steps[23].version == 24U);
-                REQUIRE(upgrade_plan.steps[23].name == "receipts");
-                REQUIRE(upgrade_plan.steps[24].version == 25U);
-                REQUIRE(upgrade_plan.steps[24].name == "appservice_directory");
-                // v26 (ADR-0211, ADR-0212): upload filenames and pending uploads.
-                REQUIRE(upgrade_plan.steps[25].version == 26U);
-                REQUIRE(upgrade_plan.steps[25].name == "media_upload_names_and_pending_uploads");
-                REQUIRE(upgraded.ok);
-                REQUIRE(upgraded.state.version == merovingian::database::current_schema_version());
-                REQUIRE(upgraded.state.applied_migrations.size() == 26U);
-                REQUIRE(upgraded.state.applied_migrations[0].name == "initial_schema");
-                REQUIRE(upgraded.state.applied_migrations[1].name == "sync_stream_watermark");
-                REQUIRE(upgraded.state.applied_migrations[2].name == "event_stream_watermark");
-                REQUIRE(upgraded.state.applied_migrations[3].name == "state_transitions");
-                REQUIRE(upgraded.state.applied_migrations[4].name == "backfill_state_transitions");
-                REQUIRE(upgraded.state.applied_migrations[5].name == "account_threepids");
-                REQUIRE(upgraded.state.applied_migrations[6].name == "account_threepids_columns");
-                REQUIRE(upgraded.state.applied_migrations[7].name == "pushers");
-                REQUIRE(upgraded.state.applied_migrations[8].name == "notifications");
-                REQUIRE(upgraded.state.applied_migrations[9].name == "openid_tokens");
-                REQUIRE(upgraded.state.applied_migrations[10].name == "pushers_data_extra");
-                REQUIRE(upgraded.state.applied_migrations[11].name == "login_tokens");
-                REQUIRE(upgraded.state.applied_migrations[12].name == "appservice_txn_cursor");
-                REQUIRE(upgraded.state.applied_migrations[13].name == "user_deactivation");
-                REQUIRE(upgraded.state.applied_migrations[14].name == "event_graph_state");
-                REQUIRE(upgraded.state.applied_migrations[15].name == "media_legacy_endpoint_visibility");
-                REQUIRE(upgraded.state.applied_migrations[16].name == "token_rotation_lineage");
-                REQUIRE(upgraded.state.applied_migrations[17].name == "room_directory_visibility");
-                REQUIRE(upgraded.state.applied_migrations[18].name == "to_device_queue_age_bound");
-                REQUIRE(upgraded.state.applied_migrations[19].name == "remote_media_cache_mapping");
-                REQUIRE(upgraded.state.applied_migrations[20].name == "room_alias_creator");
-                REQUIRE(upgraded.state.applied_migrations[21].name == "appservice_outbox");
-                REQUIRE(upgraded.state.applied_migrations[22].name == "deferred_pdus");
-                REQUIRE(upgraded.state.applied_migrations[23].name == "receipts");
-                REQUIRE(upgraded.state.applied_migrations[24].name == "appservice_directory");
+                REQUIRE(upgraded.state.version == 1U);
+                REQUIRE(upgraded.state.applied_migrations.size() == 1U);
+                REQUIRE(upgraded.state.applied_migrations.front().name == "initial_schema");
                 REQUIRE(upgraded.state.tables.size() == merovingian::database::current_schema_tables().size());
                 REQUIRE(compatible.valid);
                 REQUIRE(second_plan.steps.empty());
                 REQUIRE(downgrade_plan.direction == merovingian::database::MigrationDirection::downgrade);
-                REQUIRE(downgrade_plan.steps.size() == 26U);
-                // Downgrade walks v26->v0; the v26 media upload names and pending
-                // uploads drop first, then the appservice_directory table, then the receipts
-                // table, then deferred_pdus, then the
-                // appservice outbox, then the alias creator column,
-                // then the remote media cache mapping, then the to-device queue
-                // age bound, then directory publication, then the v17 token-rotation
-                // columns, then the v16 media column, then the v15 tables/columns
-                // (state groups, forward extremities, event status), then the
-                // users.deactivated column, then the appservice_txn_cursor
-                // table, then login_tokens, then the pushers_data_extra column,
-                // then the openid_tokens table, then notifications, then
-                // pushers, then the account_threepids column drop must precede
-                // the account_threepids table drop.
-                REQUIRE(downgrade_plan.steps[0].name == "drop_media_upload_names_and_pending_uploads");
-                REQUIRE(downgrade_plan.steps[1].name == "drop_appservice_directory");
-                REQUIRE(downgrade_plan.steps[2].name == "drop_receipts");
-                REQUIRE(downgrade_plan.steps[3].name == "drop_deferred_pdus");
-                REQUIRE(downgrade_plan.steps[4].name == "drop_appservice_outbox");
-                REQUIRE(downgrade_plan.steps[5].name == "drop_room_alias_creator");
-                REQUIRE(downgrade_plan.steps[6].name == "drop_remote_media_cache_mapping");
-                REQUIRE(downgrade_plan.steps[7].name == "drop_to_device_queue_age_bound");
-                REQUIRE(downgrade_plan.steps[8].name == "drop_room_directory_visibility");
-                REQUIRE(downgrade_plan.steps[9].name == "drop_token_rotation_lineage");
-                REQUIRE(downgrade_plan.steps[10].name == "drop_media_legacy_endpoint_visibility");
-                REQUIRE(downgrade_plan.steps[11].name == "drop_event_graph_state");
-                REQUIRE(downgrade_plan.steps[12].name == "drop_user_deactivation");
-                REQUIRE(downgrade_plan.steps[13].name == "drop_appservice_txn_cursor");
-                REQUIRE(downgrade_plan.steps[14].name == "drop_login_tokens");
-                REQUIRE(downgrade_plan.steps[15].name == "drop_pushers_data_extra");
-                REQUIRE(downgrade_plan.steps[16].name == "drop_openid_tokens");
-                REQUIRE(downgrade_plan.steps[17].name == "drop_notifications");
-                REQUIRE(downgrade_plan.steps[18].name == "drop_pushers");
-                REQUIRE(downgrade_plan.steps[19].name == "drop_account_threepids_columns");
-                REQUIRE(downgrade_plan.steps[20].name == "drop_account_threepids");
-                REQUIRE(downgrade_plan.steps[21].name == "drop_backfill_state_transitions");
-                REQUIRE(downgrade_plan.steps[22].name == "drop_state_transitions");
-                REQUIRE(downgrade_plan.steps[23].name == "drop_event_stream_watermark");
-                REQUIRE(downgrade_plan.steps[24].name == "drop_sync_stream_watermark");
-                REQUIRE(downgrade_plan.steps[25].name == "drop_initial_schema");
+                REQUIRE(downgrade_plan.steps.size() == 1U);
+                REQUIRE(downgrade_plan.steps.front().name == "drop_initial_schema");
                 REQUIRE(downgraded.ok);
                 REQUIRE(downgraded.state.version == 0U);
                 REQUIRE(downgraded.state.tables.empty());
@@ -1324,161 +1207,169 @@ SCENARIO("Database migration runner applies the current schema and the matching 
     }
 }
 
-SCENARIO("migration 013_appservice_txn_cursor applies cleanly on top of a database already at v12",
-         "[database][migration][appservice]")
+SCENARIO("The v1 schema step creates every table in its final shape and every index", "[database][migration][collapse]")
 {
-    // v12 (login_tokens) is owned by a sibling branch and merges separately
-    // from this one; this scenario proves THIS branch's v13 step is the
-    // exact, sole, self-consistent continuation from a v12 database,
-    // independent of that branch's own C++ feature code (which this
-    // codebase does not carry — see schema.cpp's v12_table_names comment).
-    GIVEN("a schema state already at version 12, with every table up to and including login_tokens")
+    GIVEN("the v1 schema step and the current table inventory")
     {
-        auto const state_at_v12 = merovingian::database::SchemaState{
-            12U,
-            {"schema_migrations", "login_tokens"}, // abbreviated; only presence of "login_tokens" matters here
-            {{12U, "login_tokens", merovingian::database::MigrationDirection::upgrade}}
+        auto const step = merovingian::database::initial_schema_migration();
+        auto const tables = merovingian::database::current_schema_definitions();
+
+        WHEN("its statements are inspected")
+        {
+            auto const statement_sql = [&step](std::string_view name) -> std::string {
+                auto const found = std::ranges::find_if(step.statements, [name](auto const& statement) {
+                    return statement.name == name;
+                });
+                return found == step.statements.end() ? std::string{} : found->sql;
+            };
+
+            THEN("each current table is created whole, by exactly the DDL the registry describes")
+            {
+                REQUIRE(merovingian::database::upgrade_migration_catalog().size() == 1U);
+                REQUIRE(merovingian::database::downgrade_migration_catalog().size() == 1U);
+                for (auto const& table : tables)
+                {
+                    INFO("table " << table.name);
+                    REQUIRE(statement_sql("create_" + std::string{table.name}) ==
+                            merovingian::database::create_table_sql(table).value());
+                }
+                // The v1 step's own table set is the current one: nothing is left to a later step.
+                auto const initial = merovingian::database::initial_schema_definitions();
+                REQUIRE(initial.size() == tables.size());
+                for (auto index = std::size_t{0U}; index < tables.size(); ++index)
+                {
+                    REQUIRE(initial[index].name == tables[index].name);
+                    REQUIRE(initial[index].columns_sql == tables[index].columns_sql);
+                }
+            }
+
+            AND_THEN("every column the pre-1.0 chain ALTERed on is part of its table's CREATE")
+            {
+                auto const folded = std::vector<std::pair<std::string_view, std::string_view>>{
+                    {"account_threepids",  "client_secret TEXT NOT NULL DEFAULT ''"              },
+                    {"account_threepids",  "sid TEXT NOT NULL DEFAULT ''"                        },
+                    {"pushers",            "data_extra_json TEXT NOT NULL DEFAULT ''"            },
+                    {"users",              "deactivated TEXT NOT NULL DEFAULT 'false'"           },
+                    {"events",             "status TEXT NOT NULL DEFAULT 'accepted'"             },
+                    {"state_groups",       "parent_state_group_id TEXT NOT NULL DEFAULT ''"      },
+                    {"state_groups",       "delta_depth TEXT NOT NULL DEFAULT '0'"               },
+                    {"media",              "legacy_endpoint_visible TEXT NOT NULL DEFAULT 'true'"},
+                    {"media",              "upload_name TEXT NOT NULL DEFAULT ''"                },
+                    {"refresh_tokens",     "predecessor_hash TEXT NOT NULL DEFAULT ''"           },
+                    {"access_tokens",      "predecessor_refresh_hash TEXT NOT NULL DEFAULT ''"   },
+                    {"rooms",              "directory_public TEXT NOT NULL DEFAULT 'false'"      },
+                    {"to_device_messages", "created_at_ms TEXT NOT NULL DEFAULT '0'"             },
+                    {"remote_media",       "local_media_id TEXT NOT NULL DEFAULT ''"             },
+                    {"remote_media",       "fetched_at_ms TEXT NOT NULL DEFAULT '0'"             },
+                    {"room_aliases",       "creator_user_id TEXT NOT NULL DEFAULT ''"            },
+                };
+                for (auto const& [table, column] : folded)
+                {
+                    INFO("table " << table << " column " << column);
+                    REQUIRE(statement_sql("create_" + std::string{table}).find(column) != std::string::npos);
+                }
+            }
+
+            AND_THEN("every index the store's lookups rely on is created, and nothing alters or seeds data")
+            {
+                auto const indexes = std::vector<std::string_view>{
+                    "CREATE INDEX event_edges_prev_event_id ON event_edges (prev_event_id)",
+                    "CREATE INDEX idx_to_device_messages_recipient_age ON to_device_messages (target_user_id, "
+                    "target_device_id, created_at_ms)",
+                    "CREATE INDEX idx_deferred_pdus_room_id ON deferred_pdus (room_id)",
+                    "CREATE INDEX idx_media_pending_uploads_owner ON media_pending_uploads (owner_user_id)",
+                };
+                for (auto const& index : indexes)
+                {
+                    INFO("index " << index);
+                    REQUIRE(std::ranges::any_of(step.statements, [index](auto const& statement) {
+                        return statement.sql == index;
+                    }));
+                }
+                REQUIRE(step.statements.size() == tables.size() + indexes.size());
+                for (auto const& statement : step.statements)
+                {
+                    INFO("statement " << statement.name);
+                    REQUIRE((statement.sql.starts_with("CREATE TABLE ") || statement.sql.starts_with("CREATE INDEX ")));
+                }
+            }
+        }
+    }
+}
+
+SCENARIO("A schema ledger naming a migration this build does not have is refused",
+         "[database][migration][collapse][security]")
+{
+    GIVEN("the ledger a database created before the v1 collapse carries, at schema version 26")
+    {
+        auto const pre_collapse_names = std::array{
+            std::string_view{"initial_schema"},
+            std::string_view{"sync_stream_watermark"},
+            std::string_view{"event_stream_watermark"},
+            std::string_view{"state_transitions"},
+            std::string_view{"backfill_state_transitions"},
+            std::string_view{"account_threepids"},
+            std::string_view{"account_threepids_columns"},
+            std::string_view{"pushers"},
+            std::string_view{"notifications"},
+            std::string_view{"openid_tokens"},
+            std::string_view{"pushers_data_extra"},
+            std::string_view{"login_tokens"},
+            std::string_view{"appservice_txn_cursor"},
+            std::string_view{"user_deactivation"},
+            std::string_view{"event_graph_state"},
+            std::string_view{"media_legacy_endpoint_visibility"},
+            std::string_view{"token_rotation_lineage"},
+            std::string_view{"room_directory_visibility"},
+            std::string_view{"to_device_queue_age_bound"},
+            std::string_view{"remote_media_cache_mapping"},
+            std::string_view{"room_alias_creator"},
+            std::string_view{"appservice_outbox"},
+            std::string_view{"deferred_pdus"},
+            std::string_view{"receipts"},
+            std::string_view{"appservice_directory"},
+            std::string_view{"media_upload_names_and_pending_uploads"},
         };
-
-        WHEN("the plan to the current schema version is built and applied")
+        auto pre_collapse = merovingian::database::SchemaState{};
+        for (auto const table : merovingian::database::current_schema_tables())
         {
-            auto const plan = merovingian::database::migration_plan_between(12U, 13U);
-            auto const applied = merovingian::database::apply_migration_plan(state_at_v12, plan);
-
-            THEN("exactly one step runs: 013_appservice_txn_cursor, taking the database to v13")
-            {
-                REQUIRE(plan.direction == merovingian::database::MigrationDirection::upgrade);
-                REQUIRE(plan.current_version == 12U);
-                REQUIRE(plan.target_version == 13U);
-                REQUIRE(plan.steps.size() == 1U);
-                REQUIRE(plan.steps[0].version == 13U);
-                REQUIRE(plan.steps[0].name == "appservice_txn_cursor");
-                REQUIRE(applied.ok);
-                REQUIRE(applied.state.version == 13U);
-                REQUIRE(std::ranges::find(applied.state.tables, "appservice_txn_cursor") != applied.state.tables.end());
-                // The v12 table this branch does not own is left completely
-                // untouched by the v13 step.
-                REQUIRE(std::ranges::find(applied.state.tables, "login_tokens") != applied.state.tables.end());
-            }
+            pre_collapse.tables.emplace_back(table);
         }
-    }
-}
-
-SCENARIO("migration 022_appservice_outbox adds the outbox table on top of v21 and removes it on downgrade",
-         "[database][migration][appservice][r01]")
-{
-    GIVEN("a database already migrated to v21")
-    {
-        auto const bootstrap_plan = merovingian::database::migration_plan_between(0U, 21U);
-        auto const bootstrapped =
-            merovingian::database::apply_migration_plan(merovingian::database::SchemaState{}, bootstrap_plan);
-        REQUIRE(bootstrapped.ok);
-        REQUIRE(std::ranges::find(bootstrapped.state.tables, "appservice_outbox") == bootstrapped.state.tables.end());
-
-        WHEN("the v21 -> v22 step is applied and then reverted")
+        for (auto index = std::size_t{0U}; index < pre_collapse_names.size(); ++index)
         {
-            auto const plan = merovingian::database::migration_plan_between(21U, 22U);
-            auto const applied = merovingian::database::apply_migration_plan(bootstrapped.state, plan);
-            auto const downgrade_plan = merovingian::database::migration_plan_between(22U, 21U);
-            auto const reverted = merovingian::database::apply_migration_plan(applied.state, downgrade_plan);
-
-            THEN("exactly one step runs each way and the table is present only at v22")
-            {
-                REQUIRE(plan.steps.size() == 1U);
-                REQUIRE(plan.steps[0].version == 22U);
-                REQUIRE(plan.steps[0].name == "appservice_outbox");
-                REQUIRE(applied.ok);
-                REQUIRE(applied.state.version == 22U);
-                REQUIRE(std::ranges::find(applied.state.tables, "appservice_outbox") != applied.state.tables.end());
-                REQUIRE(std::ranges::find(applied.state.tables, "appservice_txn_cursor") != applied.state.tables.end());
-                REQUIRE(downgrade_plan.steps.size() == 1U);
-                REQUIRE(downgrade_plan.steps[0].name == "drop_appservice_outbox");
-                REQUIRE(reverted.ok);
-                REQUIRE(reverted.state.version == 21U);
-                REQUIRE(std::ranges::find(reverted.state.tables, "appservice_outbox") == reverted.state.tables.end());
-            }
+            pre_collapse.applied_migrations.push_back({static_cast<std::uint32_t>(index + 1U),
+                                                       std::string{pre_collapse_names[index]},
+                                                       merovingian::database::MigrationDirection::upgrade});
         }
-    }
-}
+        pre_collapse.version = static_cast<std::uint32_t>(pre_collapse_names.size());
 
-SCENARIO("migration 014_user_deactivation applies cleanly on top of a database already at v13",
-         "[database][migration][deactivate]")
-{
-    GIVEN("a database already migrated to v13")
-    {
-        // Pinned, not derived from current_schema_version(): this scenario is
-        // about migration 014 specifically, so it must keep testing the
-        // v13 -> v14 step as later migrations are added.
-        auto const previous_version = std::uint32_t{13U};
-        auto const deactivation_version = std::uint32_t{14U};
-        auto const bootstrap_plan = merovingian::database::migration_plan_between(0U, previous_version);
-        auto const bootstrapped =
-            merovingian::database::apply_migration_plan(merovingian::database::SchemaState{}, bootstrap_plan);
-        REQUIRE(bootstrapped.ok);
-        REQUIRE(bootstrapped.state.version == previous_version);
+        auto renamed_v1 = merovingian::database::open_persistent_store().store.schema;
+        REQUIRE_FALSE(renamed_v1.applied_migrations.empty());
+        auto current = renamed_v1;
+        renamed_v1.applied_migrations.front().name = "initial_schema_of_another_build";
 
-        WHEN("the incremental upgrade to v14 is planned and applied")
+        WHEN("the ledgers are checked against this build's migrations")
         {
-            auto const plan = merovingian::database::migration_plan_between(previous_version, deactivation_version);
-            auto const applied = merovingian::database::apply_migration_plan(bootstrapped.state, plan);
+            auto const pre_collapse_known = merovingian::database::schema_ledger_is_known(pre_collapse);
+            auto const pre_collapse_compatible = merovingian::database::schema_state_is_compatible(pre_collapse);
+            auto const renamed_known = merovingian::database::schema_ledger_is_known(renamed_v1);
+            auto const renamed_compatible = merovingian::database::schema_state_is_compatible(renamed_v1);
+            auto const current_known = merovingian::database::schema_ledger_is_known(current);
 
-            THEN("exactly one step runs and it adds no new table")
+            THEN("a ledger with a step this build lacks, or a v1 step under another name, is refused")
             {
-                REQUIRE(plan.direction == merovingian::database::MigrationDirection::upgrade);
-                REQUIRE(plan.steps.size() == 1U);
-                REQUIRE(plan.steps[0].version == 14U);
-                REQUIRE(plan.steps[0].name == "user_deactivation");
-                REQUIRE(merovingian::database::migration_plan_is_valid(plan).valid);
-                REQUIRE(applied.ok);
-                REQUIRE(applied.state.version == deactivation_version);
-                // v14 ALTERs a column onto `users`; the table inventory is
-                // unchanged by it.
-                REQUIRE(applied.state.tables.size() == bootstrapped.state.tables.size());
+                REQUIRE_FALSE(pre_collapse_known.valid);
+                REQUIRE(pre_collapse_known.reason.find("migration this build does not have") != std::string::npos);
+                REQUIRE_FALSE(pre_collapse_compatible.valid);
+                REQUIRE(pre_collapse_compatible.reason == pre_collapse_known.reason);
+                REQUIRE_FALSE(renamed_known.valid);
+                REQUIRE(renamed_known.reason.find("initial_schema_of_another_build") != std::string::npos);
+                REQUIRE_FALSE(renamed_compatible.valid);
             }
-        }
-    }
-}
 
-SCENARIO("migration 015_event_graph_state applies cleanly on top of a database already at v14",
-         "[database][migration][state_groups]")
-{
-    GIVEN("a database already migrated to v14")
-    {
-        // Pinned, not derived from current_schema_version(): this scenario is
-        // about migration 015 specifically, so it must keep testing the
-        // v14 -> v15 step as later migrations are added.
-        auto const previous_version = std::uint32_t{14U};
-        auto const event_graph_state_version = std::uint32_t{15U};
-        auto const bootstrap_plan = merovingian::database::migration_plan_between(0U, previous_version);
-        auto const bootstrapped =
-            merovingian::database::apply_migration_plan(merovingian::database::SchemaState{}, bootstrap_plan);
-        REQUIRE(bootstrapped.ok);
-        REQUIRE(bootstrapped.state.version == previous_version);
-
-        WHEN("the incremental upgrade to v15 is planned and applied")
-        {
-            auto const plan =
-                merovingian::database::migration_plan_between(previous_version, event_graph_state_version);
-            auto const applied = merovingian::database::apply_migration_plan(bootstrapped.state, plan);
-
-            THEN("exactly one step runs and it adds exactly three new tables")
+            AND_THEN("the ledger this build writes is accepted")
             {
-                REQUIRE(plan.direction == merovingian::database::MigrationDirection::upgrade);
-                REQUIRE(plan.steps.size() == 1U);
-                REQUIRE(plan.steps[0].version == 15U);
-                REQUIRE(plan.steps[0].name == "event_graph_state");
-                REQUIRE(merovingian::database::migration_plan_is_valid(plan).valid);
-                REQUIRE(applied.ok);
-                REQUIRE(applied.state.version == event_graph_state_version);
-                // v15 ALTERs three columns (events.status,
-                // state_groups.parent_state_group_id,
-                // state_groups.delta_depth) and adds three brand-new tables
-                // (state_group_state, event_state_groups,
-                // forward_extremities).
-                REQUIRE(applied.state.tables.size() == bootstrapped.state.tables.size() + 3U);
-                REQUIRE(std::ranges::find(applied.state.tables, "state_group_state") != applied.state.tables.end());
-                REQUIRE(std::ranges::find(applied.state.tables, "event_state_groups") != applied.state.tables.end());
-                REQUIRE(std::ranges::find(applied.state.tables, "forward_extremities") != applied.state.tables.end());
+                REQUIRE(current_known.valid);
             }
         }
     }
@@ -2149,9 +2040,11 @@ SCENARIO("PostgreSQL schema bootstrap statements quote every core table identifi
         {
             auto const statements = merovingian::database::postgresql_schema_bootstrap_statements();
 
-            THEN("one quoted CREATE TABLE statement is produced per core table, plus the migration record")
+            THEN("one quoted CREATE TABLE statement is produced per core table, plus the indexes and the migration "
+                 "record")
             {
-                REQUIRE(statements.size() == tables.size() + 1U);
+                REQUIRE(statements.size() ==
+                        tables.size() + merovingian::database::initial_schema_indexes().size() + 1U);
                 for (auto const& table : tables)
                 {
                     auto const quoted_name = "\"" + std::string{table.name} + "\"";
@@ -2195,16 +2088,26 @@ SCENARIO("PostgreSQL schema bootstrap exposes current schema statements", "[data
         WHEN("PostgreSQL bootstrap statements are created")
         {
             auto const statements = merovingian::database::postgresql_schema_bootstrap_statements();
+            auto const v1 = merovingian::database::initial_schema_migration();
+            auto const index_count = static_cast<std::size_t>(
+                std::ranges::count_if(v1.statements, [](merovingian::database::PreparedStatement const& statement) {
+                    return statement.sql.starts_with("CREATE INDEX ");
+                }));
 
-            THEN("the bootstrap can create every core table and record the initial migration")
+            THEN("the bootstrap creates every core table and index and records the v1 migration")
             {
-                // One CREATE TABLE per core table plus one INSERT-on-conflict
-                // row that records the initial_schema migration ledger entry.
-                REQUIRE(statements.size() == merovingian::database::initial_schema_tables().size() + 1U);
+                // One CREATE TABLE per core table, one CREATE INDEX per v1 index,
+                // plus one INSERT-on-conflict row recording the v1 ledger entry.
+                REQUIRE(index_count > 0U);
+                REQUIRE(statements.size() == merovingian::database::initial_schema_tables().size() + index_count + 1U);
                 REQUIRE(statements.front().name == "postgresql_create_schema_migrations");
                 // #442: the table identifier is now quoted (and validated as
                 // a core table) rather than concatenated raw.
                 REQUIRE(statements.front().sql.find(R"(CREATE TABLE IF NOT EXISTS "schema_migrations")") == 0U);
+                REQUIRE(static_cast<std::size_t>(std::ranges::count_if(
+                            statements, [](merovingian::database::PreparedStatement const& statement) {
+                                return statement.sql.starts_with("CREATE INDEX IF NOT EXISTS ");
+                            })) == index_count);
                 REQUIRE(statements.back().sql.find("ON CONFLICT") != std::string::npos);
             }
         }
@@ -2245,7 +2148,10 @@ SCENARIO("Physical migration files load into validated migration plans", "[datab
     }
 }
 
-SCENARIO("Checked-in migrations cover the v1 bootstrap and the v2/v3 stream watermarks", "[database][migration][files]")
+// The checked-in file is the frozen record of v1. Once 1.0.0 ships it must
+// never change, and neither may the step the build runs: a change to a table
+// that breaks this scenario belongs in a new numbered migration instead.
+SCENARIO("Checked-in migrations hold exactly the v1 step this build runs", "[database][migration][files]")
 {
     GIVEN("the repository migration directory")
     {
@@ -2255,112 +2161,22 @@ SCENARIO("Checked-in migrations cover the v1 bootstrap and the v2/v3 stream wate
         {
             REQUIRE_FALSE(directory.empty());
             auto const loaded = merovingian::database::load_migration_files(directory.string());
+            auto const built = merovingian::database::initial_schema_migration();
 
-            THEN("the v1 bootstrap creates the initial schema and numbered migrations add post-v1 tables")
+            THEN("there is one file, v1, statement for statement the same as the build's v1 step")
             {
                 REQUIRE(loaded.ok);
-                REQUIRE(loaded.steps.size() == 26U);
-                REQUIRE(loaded.steps[0].version == 1U);
-                REQUIRE(loaded.steps[0].name == "initial_schema");
-                REQUIRE(loaded.steps[0].statements.size() == merovingian::database::initial_schema_tables().size());
-                REQUIRE(loaded.steps[1].version == 2U);
-                REQUIRE(loaded.steps[1].name == "sync_stream_watermark");
-                REQUIRE(loaded.steps[1].statements.size() == 1U);
-                REQUIRE(loaded.steps[2].version == 3U);
-                REQUIRE(loaded.steps[2].name == "event_stream_watermark");
-                REQUIRE(loaded.steps[2].statements.size() == 1U);
-                REQUIRE(loaded.steps[3].version == 4U);
-                REQUIRE(loaded.steps[3].name == "state_transitions");
-                REQUIRE(loaded.steps[3].statements.size() == 1U);
-                REQUIRE(loaded.steps[4].version == 5U);
-                REQUIRE(loaded.steps[4].name == "backfill_state_transitions");
-                REQUIRE(loaded.steps[4].statements.size() == 1U);
-                REQUIRE(loaded.steps[5].version == 6U);
-                REQUIRE(loaded.steps[5].name == "account_threepids");
-                REQUIRE(loaded.steps[5].statements.size() == 1U);
-                REQUIRE(loaded.steps[6].version == 7U);
-                REQUIRE(loaded.steps[6].name == "account_threepids_columns");
-                // v7 ALTERs two columns onto the v6 account_threepids table.
-                REQUIRE(loaded.steps[6].statements.size() == 2U);
-                REQUIRE(loaded.steps[7].version == 8U);
-                REQUIRE(loaded.steps[7].name == "pushers");
-                REQUIRE(loaded.steps[7].statements.size() == 1U);
-                REQUIRE(loaded.steps[8].version == 9U);
-                REQUIRE(loaded.steps[8].name == "notifications");
-                REQUIRE(loaded.steps[8].statements.size() == 1U);
-                REQUIRE(loaded.steps[9].version == 10U);
-                REQUIRE(loaded.steps[9].name == "openid_tokens");
-                REQUIRE(loaded.steps[9].statements.size() == 1U);
-                REQUIRE(loaded.steps[10].version == 11U);
-                REQUIRE(loaded.steps[10].name == "pushers_data_extra");
-                // v11 ALTERs one column onto the v8 pushers table.
-                REQUIRE(loaded.steps[10].statements.size() == 1U);
-                REQUIRE(loaded.steps[11].version == 12U);
-                REQUIRE(loaded.steps[11].name == "login_tokens");
-                REQUIRE(loaded.steps[11].statements.size() == 1U);
-                // v12 (login_tokens) belongs to a sibling branch (SSO login);
-                // present on disk here only for migration-chain contiguity.
-                REQUIRE(loaded.steps[11].version == 12U);
-                REQUIRE(loaded.steps[11].name == "login_tokens");
-                REQUIRE(loaded.steps[11].statements.size() == 1U);
-                REQUIRE(loaded.steps[12].version == 13U);
-                REQUIRE(loaded.steps[12].name == "appservice_txn_cursor");
-                REQUIRE(loaded.steps[12].statements.size() == 1U);
-                REQUIRE(loaded.steps[13].version == 14U);
-                REQUIRE(loaded.steps[13].name == "user_deactivation");
-                REQUIRE(loaded.steps[13].statements.size() == 1U);
-                REQUIRE(loaded.steps[14].version == 15U);
-                REQUIRE(loaded.steps[14].name == "event_graph_state");
-                // 3 ALTER (events.status, state_groups.parent_state_group_id,
-                // state_groups.delta_depth) + 3 CREATE TABLE
-                // (state_group_state, event_state_groups,
-                // forward_extremities) + 1 CREATE INDEX
-                // (event_edges_prev_event_id, the project's first index) + 4
-                // seed INSERT...SELECT statements.
-                REQUIRE(loaded.steps[14].statements.size() == 11U);
-                REQUIRE(loaded.steps[15].version == 16U);
-                REQUIRE(loaded.steps[15].name == "media_legacy_endpoint_visibility");
-                // ALTER TABLE media ADD COLUMN legacy_endpoint_visible ...
-                REQUIRE(loaded.steps[15].statements.size() == 1U);
-                REQUIRE(loaded.steps[16].version == 17U);
-                REQUIRE(loaded.steps[16].name == "token_rotation_lineage");
-                // ALTERs a predecessor column onto refresh_tokens and access_tokens.
-                REQUIRE(loaded.steps[16].statements.size() == 2U);
-                REQUIRE(loaded.steps[17].version == 18U);
-                REQUIRE(loaded.steps[17].name == "room_directory_visibility");
-                REQUIRE(loaded.steps[17].statements.size() == 1U);
-                REQUIRE(loaded.steps[18].version == 19U);
-                REQUIRE(loaded.steps[18].name == "to_device_queue_age_bound");
-                REQUIRE(loaded.steps[18].statements.size() == 2U);
-                REQUIRE(loaded.steps[19].version == 20U);
-                REQUIRE(loaded.steps[19].name == "remote_media_cache_mapping");
-                REQUIRE(loaded.steps[19].statements.size() == 2U);
-                REQUIRE(loaded.steps[20].version == 21U);
-                REQUIRE(loaded.steps[20].name == "room_alias_creator");
-                REQUIRE(loaded.steps[20].statements.size() == 1U);
-                REQUIRE(loaded.steps[21].version == 22U);
-                REQUIRE(loaded.steps[22].version == 23U);
-                REQUIRE(loaded.steps[22].name == "deferred_pdus");
-                // CREATE TABLE deferred_pdus + CREATE INDEX on room_id.
-                REQUIRE(loaded.steps[22].statements.size() == 2U);
-                REQUIRE(loaded.steps[23].version == 24U);
-                REQUIRE(loaded.steps[23].name == "receipts");
-                REQUIRE(loaded.steps[23].statements.size() == 1U);
-                REQUIRE(loaded.steps[24].version == 25U);
-                REQUIRE(loaded.steps[24].name == "appservice_directory");
-                REQUIRE(loaded.steps[24].statements.size() == 1U);
-                REQUIRE(loaded.steps[25].version == 26U);
-                REQUIRE(loaded.steps[25].name == "media_upload_names_and_pending_uploads");
-                // ALTER (upload_name) + CREATE TABLE media_pending_uploads + CREATE
-                // INDEX on its owner.
-                REQUIRE(loaded.steps[25].statements.size() == 3U);
-
-                for (auto const& statement : loaded.steps[0].statements)
+                REQUIRE(loaded.steps.size() == 1U);
+                auto const& file = loaded.steps.front();
+                REQUIRE(file.version == 1U);
+                REQUIRE(file.name == built.name);
+                REQUIRE(file.direction == merovingian::database::MigrationDirection::upgrade);
+                REQUIRE(file.statements.size() == built.statements.size());
+                for (auto index = std::size_t{0U}; index < built.statements.size(); ++index)
                 {
-                    // Before v1.0.0 there are no live databases to migrate; the
-                    // checked-in v1 file must create the whole schema directly.
-                    REQUIRE(statement.sql.find("CREATE TABLE ") == 0U);
-                    REQUIRE(statement.sql.find("ALTER TABLE ") == std::string::npos);
+                    INFO("statement " << built.statements[index].name);
+                    REQUIRE(file.statements[index].name == built.statements[index].name);
+                    REQUIRE(file.statements[index].sql == built.statements[index].sql);
                 }
             }
         }
@@ -2413,47 +2229,10 @@ SCENARIO("Database schema inventory covers the core Matrix tables", "[database][
 
             THEN("required Matrix storage areas have table-specific definitions")
             {
-                // 45 = the 37 baseline tables plus four sync-surface tables,
-                // plus durable media blob storage plus the user profiles table
-                // plus the durable room-alias registry plus client_txn_ids
-                // (room_account_data, to_device_messages, device_list_changes,
-                // presence_state) folded into the v1 initial schema.
-                // sync_stream_watermark arrives in migration v2,
-                // event_stream_watermark in migration v3, state_transitions
-                // in migration v4, the state_transitions backfill in migration v5,
-                // and account_threepids in migration v6; migration v7 adds the
-                // client_secret/sid columns onto account_threepids (no new table),
-                // migration v8 adds the pushers table, migration v9 adds
-                // the notifications table, migration v10 adds the
-                // openid_tokens table, migration v11 adds the
-                // data_extra_json column onto pushers (no new table), and
-                // migration v12 adds the login_tokens table.
-                // The post-v1 tables (v2/v3/v4/v6/v8/v9/v10/v12) are counted
-                // in the current schema inventory, while v5, v7, v11 and v14
-                // add no tables -- v14 adds only the users.deactivated column.
-                // v15 (ADR-0064) adds three more brand-new tables
-                // (state_group_state, event_state_groups,
-                // forward_extremities) -- state_groups itself is a v1 table
-                // extended in place with two ALTERed columns, not a new
-                // table, so it does not add to this count.
-                // v16 (ADR-0068) also adds no new table; it ALTERs the
-                // `legacy_endpoint_visible` column onto the existing `media` table.
-                // v17 (ADR-0074) adds no new table either; it ALTERs a
-                // predecessor column onto refresh_tokens and access_tokens.
-                REQUIRE(tables.size() == 45U);
-                REQUIRE(merovingian::database::current_schema_version() == 26U);
-                REQUIRE(merovingian::database::current_schema_tables().size() == 62U);
-                // data_extra_json column onto pushers (no new table),
-                // migration v12 adds the login_tokens table (a sibling
-                // branch's SSO login work, registered here only for
-                // migration-chain contiguity — see schema.cpp's
-                // v12_table_names comment), and migration v13 adds the
-                // appservice_txn_cursor table. The post-v1 tables
-                // (v2/v3/v4/v6/v8/v9/v10/v12/v13) are counted in the current
-                // schema inventory, while v5, v7, v11 and v14 add no tables --
-                // v14 adds only the users.deactivated column.
-                REQUIRE(tables.size() == 45U);
-                REQUIRE(merovingian::database::current_schema_version() == 26U);
+                // Every table belongs to the v1 schema: the pre-1.0 migration chain
+                // collapsed into it, so the initial and current inventories match.
+                REQUIRE(tables.size() == 62U);
+                REQUIRE(merovingian::database::current_schema_version() == 1U);
                 REQUIRE(merovingian::database::current_schema_tables().size() == 62U);
                 REQUIRE(users_definition.has_value());
                 REQUIRE(current_state_definition.has_value());

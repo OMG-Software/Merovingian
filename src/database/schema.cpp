@@ -11,148 +11,38 @@ namespace merovingian::database
 namespace
 {
 
-    constexpr auto schema_version = std::uint32_t{26U};
-
-    // Tables introduced after the v1 initial schema are listed here so the
-    // bootstrap path can create the original v1 shape and then apply numbered
-    // migrations to reach the current version.
-    constexpr auto v2_table_names = std::array{
-        std::string_view{"sync_stream_watermark"},
-    };
-
-    constexpr auto v3_table_names = std::array{
-        std::string_view{"event_stream_watermark"},
-    };
-
-    constexpr auto v4_table_names = std::array{
-        std::string_view{"state_transitions"},
-    };
-
-    constexpr auto v6_table_names = std::array{
-        std::string_view{"account_threepids"},
-    };
-
-    constexpr auto v8_table_names = std::array{
-        std::string_view{"pushers"},
-    };
-
-    constexpr auto v9_table_names = std::array{
-        std::string_view{"notifications"},
-    };
-
-    constexpr auto v10_table_names = std::array{
-        std::string_view{"openid_tokens"},
-    };
-
-    // v12 (login_tokens) is owned by a sibling branch (SSO login,
-    // migrations/012_login_tokens.sql) not implemented here — this repo
-    // carries only the table registration so the migration chain stays
-    // contiguous; no login_tokens feature code (store/find/hydration)
-    // exists in this module.
-    constexpr auto v12_table_names = std::array{
-        std::string_view{"login_tokens"},
-    };
-
-    constexpr auto v13_table_names = std::array{
-        std::string_view{"appservice_txn_cursor"},
-    };
-
-    // v15 (015_event_graph_state.sql, ADR-0064): three brand-new tables.
-    // `state_groups`/`state_group_edges` are NOT here — they are v1 (core)
-    // tables; v15 only ALTERs two columns onto the pre-existing
-    // `state_groups` shape, exactly like v14 ALTERs `users`.
-    constexpr auto v15_table_names = std::array{
-        std::string_view{"state_group_state"},
-        std::string_view{"event_state_groups"},
-        std::string_view{"forward_extremities"},
-    };
-
-    // v22 (022_appservice_outbox.sql, audit R01): the Application Service API
-    // transaction queue. Main process only (not in the federation worker allowlist).
-    constexpr auto v22_table_names = std::array{
-        std::string_view{"appservice_outbox"},
-    };
-
-    // v23 (023_deferred_pdus.sql, R03, ADR-0165): federation PDUs main retains
-    // for a retry. Main-process only; not in the federation worker allowlist.
-    constexpr auto v23_table_names = std::array{
-        std::string_view{"deferred_pdus"},
-    };
-
-    // v24 (024_receipts.sql, ADR-0169): read receipts, so unread counts survive a
-    // restart. Main-process only; not in the federation worker allowlist.
-    constexpr auto v24_table_names = std::array{
-        std::string_view{"receipts"},
-    };
-
-    // v25 (025_appservice_directory.sql, ADR-0192): rooms an appservice has published to one of its
-    // networks' directories. Main-process only; not in the federation worker allowlist.
-    constexpr auto v25_table_names = std::array{
-        std::string_view{"appservice_directory"},
-    };
-
-    // v26 (026_media_upload_names_and_pending_uploads.sql, ADR-0212): mxc:// URIs
-    // reserved by POST /_matrix/media/v1/create. Main-process only; not in the
-    // federation worker allowlist.
-    constexpr auto v26_table_names = std::array{
-        std::string_view{"media_pending_uploads"},
-    };
-
-    [[nodiscard]] auto table_is_post_v1(std::string_view table_name) noexcept -> bool
-    {
-        return std::ranges::find(v2_table_names, table_name) != v2_table_names.end() ||
-               std::ranges::find(v3_table_names, table_name) != v3_table_names.end() ||
-               std::ranges::find(v4_table_names, table_name) != v4_table_names.end() ||
-               std::ranges::find(v6_table_names, table_name) != v6_table_names.end() ||
-               std::ranges::find(v8_table_names, table_name) != v8_table_names.end() ||
-               std::ranges::find(v9_table_names, table_name) != v9_table_names.end() ||
-               std::ranges::find(v10_table_names, table_name) != v10_table_names.end() ||
-               std::ranges::find(v12_table_names, table_name) != v12_table_names.end() ||
-               std::ranges::find(v13_table_names, table_name) != v13_table_names.end() ||
-               std::ranges::find(v15_table_names, table_name) != v15_table_names.end() ||
-               std::ranges::find(v22_table_names, table_name) != v22_table_names.end() ||
-               std::ranges::find(v23_table_names, table_name) != v23_table_names.end() ||
-               std::ranges::find(v24_table_names, table_name) != v24_table_names.end() ||
-               std::ranges::find(v25_table_names, table_name) != v25_table_names.end() ||
-               std::ranges::find(v26_table_names, table_name) != v26_table_names.end();
-    }
-
-    constexpr auto post_v1_table_count = v2_table_names.size() + v3_table_names.size() + v4_table_names.size() +
-                                         v6_table_names.size() + v8_table_names.size() + v9_table_names.size() +
-                                         v10_table_names.size() + v12_table_names.size() + v13_table_names.size() +
-                                         v15_table_names.size() + v22_table_names.size() + v23_table_names.size() +
-                                         v24_table_names.size() + v25_table_names.size() + v26_table_names.size();
+    // Every pre-1.0 migration was collapsed into v1 in 0.12.47 (ADR-0224). From
+    // 1.0.0 the v1 step is frozen: a schema change is a new numbered migration,
+    // never an edit to core_tables that changes what v1 creates.
+    constexpr auto schema_version = std::uint32_t{1U};
 
     constexpr auto core_tables = std::array{
         SchemaTableDefinition{"schema_migrations",
                               "version TEXT PRIMARY KEY, name TEXT NOT NULL, direction TEXT NOT NULL"                                                                   },
-        // Deliberately the v1-era column shape: `deactivated` is added by
-        // migration 014, not listed here. core_tables feeds
-        // initial_schema_migration(), so a column that a later ALTER migration
-        // adds must NOT also appear here — the v1 CREATE would make it, and the
-        // ALTER would then fail with a duplicate column and abort the whole
-        // chain. `account_threepids` omits its v7 client_secret/sid columns for
-        // exactly this reason.
-        SchemaTableDefinition{"users",                   "user_id TEXT PRIMARY KEY, password_hash TEXT NOT NULL, locked TEXT NOT NULL, "
-                                       "suspended TEXT NOT NULL, admin TEXT NOT NULL"                                             },
+        SchemaTableDefinition{
+                              "users",                   "user_id TEXT PRIMARY KEY, password_hash TEXT NOT NULL, locked TEXT NOT NULL, "
+                     "suspended TEXT NOT NULL, admin TEXT NOT NULL, deactivated TEXT NOT NULL DEFAULT 'false'"                    },
         SchemaTableDefinition{"devices",                 "user_id TEXT NOT NULL, device_id TEXT NOT NULL, display_name TEXT NOT NULL, "
                                          "PRIMARY KEY (user_id, device_id)"                                                     },
         SchemaTableDefinition{
                               "access_tokens",           "user_id TEXT NOT NULL, device_id TEXT NOT NULL, token_hash TEXT PRIMARY KEY, revoked TEXT NOT NULL, "
-            "expires_at TEXT NOT NULL DEFAULT ''"                                                                         },
+            "expires_at TEXT NOT NULL DEFAULT '', predecessor_refresh_hash TEXT NOT NULL DEFAULT ''"                      },
         SchemaTableDefinition{
                               "refresh_tokens",          "token_hash TEXT PRIMARY KEY, user_id TEXT NOT NULL, device_id TEXT NOT NULL, revoked TEXT NOT NULL, "
-            "expires_at TEXT NOT NULL DEFAULT ''"                                                                        },
+            "expires_at TEXT NOT NULL DEFAULT '', predecessor_hash TEXT NOT NULL DEFAULT ''"                             },
         SchemaTableDefinition{"server_signing_keys",
                               "server_name TEXT NOT NULL, key_id TEXT NOT NULL, public_key TEXT NOT NULL, "
                               "valid_until_ts TEXT NOT NULL, secret_key BLOB NOT NULL DEFAULT '', "
                               "PRIMARY KEY (server_name, key_id)"                                                                                                       },
-        SchemaTableDefinition{"rooms",                   "room_id TEXT PRIMARY KEY, creator_user_id TEXT NOT NULL"                                                      },
-        SchemaTableDefinition{"room_aliases",            "room_alias TEXT PRIMARY KEY, room_id TEXT NOT NULL"                                                           },
+        SchemaTableDefinition{
+                              "rooms",                   "room_id TEXT PRIMARY KEY, creator_user_id TEXT NOT NULL, directory_public TEXT NOT NULL DEFAULT 'false'"      },
+        SchemaTableDefinition{
+                              "room_aliases",            "room_alias TEXT PRIMARY KEY, room_id TEXT NOT NULL, creator_user_id TEXT NOT NULL DEFAULT ''"                 },
         SchemaTableDefinition{"room_versions",           "room_id TEXT PRIMARY KEY, version TEXT NOT NULL"                                                              },
         SchemaTableDefinition{
                               "events",                  "event_id TEXT PRIMARY KEY, room_id TEXT NOT NULL, sender_user_id TEXT NOT NULL, json TEXT "
-                      "NOT NULL, depth TEXT NOT NULL, stream_ordering TEXT NOT NULL DEFAULT '0'"                                 },
+            "NOT NULL, depth TEXT NOT NULL, stream_ordering TEXT NOT NULL DEFAULT '0', status TEXT NOT NULL DEFAULT "
+            "'accepted'"                                                                                                         },
         SchemaTableDefinition{"event_json",              "event_id TEXT PRIMARY KEY, json TEXT NOT NULL"                                                                },
         SchemaTableDefinition{
                               "event_edges",             "event_id TEXT NOT NULL, prev_event_id TEXT NOT NULL, PRIMARY KEY (event_id, prev_event_id)"                   },
@@ -171,8 +61,11 @@ namespace
                               "user_id TEXT NOT NULL, medium TEXT NOT NULL, address TEXT NOT NULL, "
                               "country TEXT NOT NULL DEFAULT '', id_server TEXT NOT NULL DEFAULT '', "
                               "added_at_ms TEXT NOT NULL DEFAULT '0', validated_at_ms TEXT NOT NULL DEFAULT '0', "
-                              "bound TEXT NOT NULL DEFAULT '0', PRIMARY KEY (user_id, medium, address)"                                                                 },
-        SchemaTableDefinition{"state_groups",            "state_group_id TEXT PRIMARY KEY, room_id TEXT NOT NULL"                                                       },
+                              "bound TEXT NOT NULL DEFAULT '0', client_secret TEXT NOT NULL DEFAULT '', "
+                              "sid TEXT NOT NULL DEFAULT '', PRIMARY KEY (user_id, medium, address)"                                                                    },
+        SchemaTableDefinition{
+                              "state_groups",            "state_group_id TEXT PRIMARY KEY, room_id TEXT NOT NULL, parent_state_group_id TEXT NOT NULL DEFAULT '', "
+            "delta_depth TEXT NOT NULL DEFAULT '0'"                                                                        },
         SchemaTableDefinition{"state_group_edges",       "state_group_id TEXT NOT NULL, prev_state_group_id TEXT NOT NULL, "
                                                    "PRIMARY KEY (state_group_id, prev_state_group_id)"                },
         SchemaTableDefinition{"membership",
@@ -212,15 +105,18 @@ namespace
         SchemaTableDefinition{
                               "key_backup_sessions",     "user_id TEXT NOT NULL, version TEXT NOT NULL, room_id TEXT NOT NULL, session_id TEXT NOT NULL, "
             "json TEXT NOT NULL, PRIMARY KEY (user_id, version, room_id, session_id)"                               },
-        SchemaTableDefinition{"media",                   "media_id TEXT PRIMARY KEY, owner_user_id TEXT NOT NULL, content_type TEXT NOT "
-                                       "NULL, size_bytes TEXT NOT NULL, hash_algorithm TEXT NOT NULL, digest TEXT NOT "
-                                       "NULL, quarantined TEXT NOT NULL, removed TEXT NOT NULL"                                   },
+        SchemaTableDefinition{
+                              "media",                   "media_id TEXT PRIMARY KEY, owner_user_id TEXT NOT NULL, content_type TEXT NOT "
+                     "NULL, size_bytes TEXT NOT NULL, hash_algorithm TEXT NOT NULL, digest TEXT NOT "
+                     "NULL, quarantined TEXT NOT NULL, removed TEXT NOT NULL, legacy_endpoint_visible TEXT NOT NULL "
+                     "DEFAULT 'true', upload_name TEXT NOT NULL DEFAULT ''"                                                       },
         SchemaTableDefinition{"media_blobs",
                               "storage_id TEXT PRIMARY KEY, hash_algorithm TEXT NOT NULL, digest TEXT NOT NULL, "
                               "size_bytes TEXT NOT NULL, bytes BLOB NOT NULL, ref_count TEXT NOT NULL"                                                                  },
         SchemaTableDefinition{
                               "remote_media",            "server_name TEXT NOT NULL, media_id TEXT NOT NULL, content_type TEXT NOT NULL, size_bytes "
-                            "TEXT NOT NULL, quarantined TEXT NOT NULL, PRIMARY KEY (server_name, media_id)"                },
+            "TEXT NOT NULL, quarantined TEXT NOT NULL, local_media_id TEXT NOT NULL DEFAULT '', fetched_at_ms "
+            "TEXT NOT NULL DEFAULT '0', PRIMARY KEY (server_name, media_id)"                                               },
         SchemaTableDefinition{"federation_destinations",
                               "server_name TEXT PRIMARY KEY, state TEXT NOT NULL, retry_after_ts TEXT NOT NULL, "
                               "last_success_ts TEXT NOT NULL, consecutive_failures TEXT NOT NULL"                                                                       },
@@ -237,12 +133,11 @@ namespace
                                               "action TEXT NOT NULL, reason TEXT NOT NULL"                                 },
         SchemaTableDefinition{"admin_actions",
                               "admin_user_id TEXT NOT NULL, action TEXT NOT NULL, target TEXT NOT NULL"                                                                 },
-        // v1-era column shape: `created_at_ms` is added by migration 019, not
-        // listed here, so the v1 CREATE does not clash with the ALTER.
         SchemaTableDefinition{"to_device_messages",
                               "stream_id TEXT NOT NULL, sender_user_id TEXT NOT NULL, target_user_id TEXT NOT NULL, "
                               "target_device_id TEXT NOT NULL DEFAULT '', message_type TEXT NOT NULL, content TEXT "
-                              "NOT NULL, PRIMARY KEY (stream_id, target_user_id, target_device_id)"                                                                     },
+                              "NOT NULL, created_at_ms TEXT NOT NULL DEFAULT '0', "
+                              "PRIMARY KEY (stream_id, target_user_id, target_device_id)"                                                                               },
         SchemaTableDefinition{"device_list_changes",
                               "stream_id TEXT NOT NULL, observer_user_id TEXT NOT NULL, "
                               "subject_user_id TEXT NOT NULL, change_type TEXT NOT NULL DEFAULT 'changed', "
@@ -266,7 +161,8 @@ namespace
                               "kind TEXT NOT NULL, app_display_name TEXT NOT NULL DEFAULT '', "
                               "device_display_name TEXT NOT NULL DEFAULT '', profile_tag TEXT NOT NULL DEFAULT '', "
                               "lang TEXT NOT NULL DEFAULT '', data_url TEXT NOT NULL DEFAULT '', "
-                              "data_format TEXT NOT NULL DEFAULT '', PRIMARY KEY (user_id, app_id, pushkey)"                                                            },
+                              "data_format TEXT NOT NULL DEFAULT '', data_extra_json TEXT NOT NULL DEFAULT '', "
+                              "PRIMARY KEY (user_id, app_id, pushkey)"                                                                                                  },
         SchemaTableDefinition{"notifications",
                               "user_id TEXT NOT NULL, room_id TEXT NOT NULL, event_id TEXT NOT NULL, "
                               "stream_ordering TEXT NOT NULL DEFAULT '0', ts TEXT NOT NULL DEFAULT '0', "
@@ -274,8 +170,6 @@ namespace
                               "highlight TEXT NOT NULL DEFAULT 'false', PRIMARY KEY (user_id, event_id)"                                                                },
         SchemaTableDefinition{"openid_tokens",           "user_id TEXT NOT NULL, token_hash TEXT PRIMARY KEY, "
                                                "expires_at TEXT NOT NULL DEFAULT '0'"                                     },
-        // Owned by the sibling SSO-login branch — see the v12_table_names
-        // comment above.
         SchemaTableDefinition{"login_tokens",
                               "user_id TEXT NOT NULL, token_hash TEXT PRIMARY KEY, expires_at TEXT NOT NULL "
                               "DEFAULT '0', used TEXT NOT NULL DEFAULT 'false'"                                                                                         },
@@ -283,46 +177,75 @@ namespace
                               "appservice_id TEXT NOT NULL PRIMARY KEY, next_txn_id TEXT NOT NULL DEFAULT '1', "
                               "delivered_stream_ordering TEXT NOT NULL DEFAULT '0', pending_txn_id TEXT NOT NULL "
                               "DEFAULT '0', pending_stream_ordering TEXT NOT NULL DEFAULT '0'"                                                                          },
-        // v15 (ADR-0064): a state group's own delta rows (or, for a snapshot
+        // ADR-0064: a state group's own delta rows (or, for a snapshot
         // group, its full state). See database::create_or_reuse_state_group.
         SchemaTableDefinition{"state_group_state",
                               "state_group_id TEXT NOT NULL, event_type TEXT NOT NULL, state_key TEXT NOT NULL, "
                               "event_id TEXT NOT NULL, PRIMARY KEY (state_group_id, event_type, state_key)"                                                             },
-        // v15 (ADR-0064): maps an event to the state group holding the
+        // ADR-0064: maps an event to the state group holding the
         // room's state immediately after it.
         SchemaTableDefinition{"event_state_groups",      "event_id TEXT PRIMARY KEY, state_group_id TEXT NOT NULL"                                                      },
-        // v15 (ADR-0064): a room's current forward extremities (DAG leaves).
+        // ADR-0064: a room's current forward extremities (DAG leaves).
         SchemaTableDefinition{"forward_extremities",
                               "room_id TEXT NOT NULL, event_id TEXT NOT NULL, PRIMARY KEY (room_id, event_id)"                                                          },
-        // v22 (audit R01): one row per event queued for an appservice. stream_ordering is TEXT like every
+        // Audit R01: one row per event queued for an appservice. stream_ordering is TEXT like every
         // other numeric column here (BoundValue is text); the store orders numerically in memory.
         SchemaTableDefinition{"appservice_outbox",
                               "appservice_id TEXT NOT NULL, stream_ordering TEXT NOT NULL, event_id TEXT NOT NULL, "
                               "PRIMARY KEY (appservice_id, stream_ordering)"                                                                                            },
-        // v23 (R03, ADR-0165): a federation PDU main could not yet place and keeps
+        // R03, ADR-0165: a federation PDU main could not yet place and keeps
         // for a retry. Numbers are TEXT like every other numeric column here.
         SchemaTableDefinition{"deferred_pdus",
                               "event_id TEXT PRIMARY KEY, room_id TEXT NOT NULL, origin TEXT NOT NULL, "
                               "pdu_json TEXT NOT NULL, received_at_ms TEXT NOT NULL DEFAULT '0', "
                               "attempts TEXT NOT NULL DEFAULT '0'"                                                                                                      },
-        // v24 (ADR-0169): one read receipt per (room, type, user, thread). An
+        // ADR-0169: one read receipt per (room, type, user, thread). An
         // unthreaded receipt has thread_id ''. Numbers are TEXT like every other
         // numeric column here.
         SchemaTableDefinition{
                               "receipts",                "room_id TEXT NOT NULL, receipt_type TEXT NOT NULL, user_id TEXT NOT NULL, "
                         "thread_id TEXT NOT NULL DEFAULT '', event_id TEXT NOT NULL, ts TEXT NOT NULL DEFAULT '0', "
                         "stream_id TEXT NOT NULL DEFAULT '0', PRIMARY KEY (room_id, receipt_type, user_id, thread_id)"         },
-        // v25 (ADR-0192): a room an appservice published to the directory of one of its networks.
+        // ADR-0192: a room an appservice published to the directory of one of its networks.
         SchemaTableDefinition{"appservice_directory",
                               "appservice_id TEXT NOT NULL, network_id TEXT NOT NULL, room_id TEXT NOT NULL, "
                               "PRIMARY KEY (appservice_id, network_id, room_id)"                                                                                        },
-        // v26 (ADR-0212): one row per mxc:// URI reserved by POST
+        // ADR-0212: one row per mxc:// URI reserved by POST
         // /_matrix/media/v1/create and not yet uploaded. Times are Unix
         // milliseconds, TEXT like every other numeric column here.
         SchemaTableDefinition{"media_pending_uploads",
                               "media_id TEXT PRIMARY KEY, owner_user_id TEXT NOT NULL, created_at_ms TEXT NOT NULL, "
                               "expires_at_ms TEXT NOT NULL"                                                                                                             },
     };
+
+    // The secondary indexes v1 creates, after every table. Each serves a lookup
+    // outside its table's primary key: an event's children (ADR-0064), a
+    // device's to-device queue by age (ADR-0117), a room's deferred PDUs
+    // (ADR-0165), and a user's pending uploads (ADR-0212).
+    constexpr auto core_indexes = std::array{
+        SchemaIndexDefinition{"event_edges_prev_event_id",            "event_edges",           "prev_event_id"},
+        SchemaIndexDefinition{"idx_to_device_messages_recipient_age", "to_device_messages",
+                              "target_user_id, target_device_id, created_at_ms"                               },
+        SchemaIndexDefinition{"idx_deferred_pdus_room_id",            "deferred_pdus",         "room_id"      },
+        SchemaIndexDefinition{"idx_media_pending_uploads_owner",      "media_pending_uploads", "owner_user_id"},
+    };
+
+    [[nodiscard]] auto index_sql(SchemaIndexDefinition const& index, std::string_view prefix)
+        -> std::optional<std::string>
+    {
+        // Only registered indexes on core tables may participate in generated
+        // DDL; names are checked against the same identifier rule as tables.
+        auto const registered = std::ranges::any_of(core_indexes, [&index](SchemaIndexDefinition const& known) {
+            return known.name == index.name && known.table == index.table && known.columns_sql == index.columns_sql;
+        });
+        if (!registered || !schema_table_is_core(index.table) || !quote_sqlite_identifier(index.name).has_value() ||
+            !quote_sqlite_identifier(index.table).has_value())
+        {
+            return std::nullopt;
+        }
+        return std::string{prefix} + std::string{index.name} + " ON " + std::string{index.table} + " (" +
+               std::string{index.columns_sql} + ")";
+    }
 
 } // namespace
 
@@ -331,44 +254,32 @@ auto current_schema_version() noexcept -> std::uint32_t
     return schema_version;
 }
 
+// While v1 is the only version, the shape v1 creates is the current one. The
+// first post-1.0 migration must split them again: initial_* keeps returning
+// exactly what v1 created (migrations/001_initial_schema.sql is that record),
+// and only current_* gains what the later migration adds.
 auto initial_schema_definitions() -> std::vector<SchemaTableDefinition>
 {
-    auto definitions = std::vector<SchemaTableDefinition>{};
-    definitions.reserve(core_tables.size() - post_v1_table_count);
-    for (auto const& table : core_tables)
-    {
-        if (!table_is_post_v1(table.name))
-        {
-            definitions.push_back(table);
-        }
-    }
-    return definitions;
+    return {core_tables.begin(), core_tables.end()};
 }
 
 auto current_schema_definitions() -> std::vector<SchemaTableDefinition>
 {
-    auto definitions = std::vector<SchemaTableDefinition>{core_tables.begin(), core_tables.end()};
-    for (auto& table : definitions)
-    {
-        if (table.name == "rooms")
-        {
-            table.columns_sql = "room_id TEXT PRIMARY KEY, creator_user_id TEXT NOT NULL, "
-                                "directory_public TEXT NOT NULL DEFAULT 'false'";
-        }
-    }
-    return definitions;
+    return {core_tables.begin(), core_tables.end()};
+}
+
+auto initial_schema_indexes() -> std::vector<SchemaIndexDefinition>
+{
+    return {core_indexes.begin(), core_indexes.end()};
 }
 
 auto initial_schema_tables() -> std::vector<std::string_view>
 {
     auto tables = std::vector<std::string_view>{};
-    tables.reserve(core_tables.size() - post_v1_table_count);
+    tables.reserve(core_tables.size());
     for (auto const& table : core_tables)
     {
-        if (!table_is_post_v1(table.name))
-        {
-            tables.push_back(table.name);
-        }
+        tables.push_back(table.name);
     }
     return tables;
 }
@@ -386,11 +297,6 @@ auto current_schema_tables() -> std::vector<std::string_view>
 
 auto schema_table_definition(std::string_view table_name) noexcept -> std::optional<SchemaTableDefinition>
 {
-    if (table_name == "rooms")
-    {
-        return SchemaTableDefinition{"rooms", "room_id TEXT PRIMARY KEY, creator_user_id TEXT NOT NULL, "
-                                              "directory_public TEXT NOT NULL DEFAULT 'false'"};
-    }
     auto const iterator = std::ranges::find_if(core_tables, [table_name](SchemaTableDefinition const& table) {
         return table.name == table_name;
     });
@@ -445,6 +351,16 @@ auto create_table_sql(SchemaTableDefinition const& table) -> std::optional<std::
     }
 
     return "CREATE TABLE " + std::move(*quoted) + " (" + std::string{table.columns_sql} + ")";
+}
+
+auto create_index_sql(SchemaIndexDefinition const& index) -> std::optional<std::string>
+{
+    return index_sql(index, "CREATE INDEX ");
+}
+
+auto create_index_if_missing_sql(SchemaIndexDefinition const& index) -> std::optional<std::string>
+{
+    return index_sql(index, "CREATE INDEX IF NOT EXISTS ");
 }
 
 } // namespace merovingian::database

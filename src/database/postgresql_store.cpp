@@ -2001,9 +2001,18 @@ auto postgresql_schema_bootstrap_statements() -> std::vector<PreparedStatement>
         }
         statements.push_back({"postgresql_create_" + std::string{table.name}, std::move(*sql), {}});
     }
-    // Bootstrap records only the initial schema row. Runtime startup can
-    // then apply newer numbered migrations against the freshly created
-    // tables when current_schema_version() is greater than 1.
+    for (auto const& index : initial_schema_indexes())
+    {
+        auto sql = create_index_if_missing_sql(index);
+        if (!sql.has_value())
+        {
+            continue;
+        }
+        statements.push_back({"postgresql_create_" + std::string{index.name}, std::move(*sql), {}});
+    }
+    // Bootstrap builds exactly what the v1 migration builds and records only
+    // its row. Runtime startup then applies any later numbered migration on
+    // top, as it would for a database a previous release left at v1.
     statements.push_back(migration_record_statement(1U, "initial_schema"));
     return statements;
 }
@@ -2111,6 +2120,10 @@ auto migrate_postgresql_schema_to(std::string_view conninfo, std::uint32_t targe
     {
         return {false, "unable to hydrate PostgreSQL schema state", {}};
     }
+    if (auto const known = schema_ledger_is_known(*schema); !known.valid)
+    {
+        return {false, known.reason, std::move(*schema)};
+    }
     if (schema->version > target_version)
     {
         return {false, "schema is newer than the target version; migrations never move a schema backwards",
@@ -2156,7 +2169,20 @@ auto open_postgresql_persistent_store(std::string_view conninfo, std::string_vie
     }
     if (!*has_schema)
     {
-        log_diagnostic("store.schema_bootstrapping", {});
+        log_diagnostic("store.schema_bootstrapping", {
+                                                         {"role", std::string{migration_role}, false}
+        });
+        // The bootstrap is the v1 migration, so it runs as the migration role
+        // like every other migration (0.12.5 audit, finding 18): that role then
+        // owns every table, and the next migration may ALTER them. Fail closed
+        // if it cannot be assumed, exactly as a pending migration does.
+        if (!migration_role.empty() && !set_postgresql_role(connection, migration_role))
+        {
+            log_diagnostic("store.rejected", {
+                                                 {"reason", "unable to assume migration role", false}
+            });
+            return {false, "unable to assume PostgreSQL migration role", {}};
+        }
         auto const bootstrap = postgresql_schema_bootstrap_statements();
         if (!connection.execute_transaction(bootstrap))
         {
@@ -2164,6 +2190,13 @@ auto open_postgresql_persistent_store(std::string_view conninfo, std::string_vie
                                                  {"reason", "schema bootstrap failed", false}
             });
             return {false, "unable to initialize PostgreSQL schema", {}};
+        }
+        if (!migration_role.empty() && !reset_postgresql_role(connection))
+        {
+            log_diagnostic("store.rejected", {
+                                                 {"reason", "unable to reset role after bootstrap", false}
+            });
+            return {false, "unable to reset PostgreSQL role after bootstrap", {}};
         }
         log_diagnostic("store.schema_bootstrapped", {});
     }
@@ -2186,6 +2219,15 @@ auto open_postgresql_persistent_store(std::string_view conninfo, std::string_vie
     store.postgresql_conninfo = std::string{conninfo};
     store.postgresql_write_pool = std::make_shared<detail::PostgresqlWritePool>(store.write_connection_limit);
     store.schema = std::move(*schema);
+    // Before migrating or hydrating anything: a ledger this build does not
+    // recognise describes tables it must not read or alter (ADR-0224).
+    if (auto const known = schema_ledger_is_known(store.schema); !known.valid)
+    {
+        log_diagnostic("store.rejected", {
+                                             {"reason", known.reason, false}
+        });
+        return {false, known.reason, {}};
+    }
     // 0.12.5 audit, finding 18: DDL runs as migration_role, not as the login
     // role. Until then the login role -- which carries every privilege both
     // sibling roles have -- was what executed CREATE TABLE and ALTER TABLE,
