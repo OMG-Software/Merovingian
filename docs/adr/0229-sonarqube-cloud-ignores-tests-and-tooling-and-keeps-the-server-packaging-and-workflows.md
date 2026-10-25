@@ -11,8 +11,9 @@ required A) failed PR #534 on findings in a CI script
 
 SonarQube Cloud was added to the repository with Automatic Analysis and no configuration, so it
 analysed every tracked file and gated each pull request on the security rating of its new code.
-On `main` it reported 170 vulnerabilities: 83 in `tests/`, 68 in `.github/`, 14 in `src/`, 5 in
-`scripts/`, and 7 in the root `llvm.sh`. PR #534 failed the gate on three path-traversal findings
+On `main` it reported 170 vulnerabilities: 83 in `tests/`, 68 in `.github/`, 14 in `src/` and 5 in
+`scripts/`. The root `llvm.sh`, a tooling script, carried 7 further issues of other types. PR #534
+failed the gate on three path-traversal findings
 in `scripts/filter_codeql_sarif.py`, a CI script that reads the SARIF path CI hands it.
 
 The test findings are what tests do on purpose: world-writable temporary directories, hard-coded
