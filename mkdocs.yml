@@ -51,21 +51,26 @@ theme:
     - search.suggest
     - content.code.copy
     - content.action.edit
+  # The OMG Software theme: the site opens dark, as the organisation's site
+  # does, whatever the system preference; the toggle offers a light scheme.
+  # Both take their colours from stylesheets/extra.css (ADR-0223).
   palette:
-    - media: "(prefers-color-scheme: light)"
-      scheme: default
-      primary: black
-      accent: indigo
-      toggle:
-        icon: material/brightness-7
-        name: Switch to dark mode
-    - media: "(prefers-color-scheme: dark)"
-      scheme: slate
-      primary: black
-      accent: indigo
+    - scheme: slate
+      primary: custom
+      accent: custom
       toggle:
         icon: material/brightness-4
         name: Switch to light mode
+    - scheme: default
+      primary: custom
+      accent: custom
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+  # System fonts only, so no page view is reported to a font host.
+  font: false
+  logo: assets/omg-logo.svg
+  favicon: assets/omg-favicon.svg
   icon:
     repo: fontawesome/brands/github
 

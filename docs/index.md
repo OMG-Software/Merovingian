@@ -2,6 +2,8 @@
 
 <div class="hero" markdown>
 
+<p class="omg-eyebrow">OMG SOFTWARE / MEROVINGIAN</p>
+
 ## A security-first Matrix homeserver
 
 Merovingian is a Matrix homeserver written in modern C++26. Its design treats containment, fail-closed validation, narrow trust boundaries, and continuous security verification as core requirements rather than post-hoc hardening.
