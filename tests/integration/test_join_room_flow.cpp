@@ -1105,6 +1105,9 @@ SCENARIO("A federated join seeds the join event's after-state group and forward 
                 return s.room_id == room_id && s.event_type == "m.room.member" && s.state_key == alice;
             }));
             REQUIRE(merovingian::database::find_forward_extremities(store, room_id).empty());
+            REQUIRE_FALSE(std::ranges::any_of(store.state_groups, [&](auto const& group) {
+                return group.room_id == room_id;
+            }));
         };
 
         WHEN("join_room cannot store the join event's after-state group")

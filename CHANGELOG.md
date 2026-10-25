@@ -43,7 +43,10 @@ choose differently.
   closed for, `basis_for_new_event` skipping a newer extremity with no recorded state and finding
   none, each step `store_local_event` refuses at (through the in-memory store's
   `force_failure_statement_names`), and a federated join whose state snapshot or join state group
-  cannot be stored (PR #533 coverage report).
+  cannot be stored (PR #533 coverage report). Each asserts nothing of the refused event is left,
+  and a SQLite scenario fails the last write of the transaction (a trigger on
+  `forward_extremities`) and reopens the database to show the event, its group, its mapping and
+  its `current_state` row were rolled back on disk too (PR #533 review).
 
 ## 0.12.47
 

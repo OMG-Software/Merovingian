@@ -604,10 +604,16 @@ SCENARIO("store_local_event refuses a local event it cannot place, and leaves th
         // ADR-0228: the event, its after-state group, its mapping to that
         // group, the forward-extremity change and current state commit in one
         // transaction, so a write refused at any of them leaves none of them.
-        auto const nothing_left_of = [&store, &tips_before](std::string const& event_id) {
+        auto const state_rows_before = store.state.size();
+        auto const state_transitions_before = store.state_transitions.size();
+        auto const nothing_left_of = [&store, &tips_before, state_rows_before,
+                                      state_transitions_before](std::string const& event_id) {
             REQUIRE_FALSE(event_is_stored(store, event_id));
             REQUIRE_FALSE(merovingian::database::find_event_state_group(store, event_id).has_value());
+            REQUIRE_FALSE(merovingian::database::find_state_group(store, "sg:" + event_id).has_value());
             REQUIRE(merovingian::database::find_forward_extremities(store, room_id) == tips_before);
+            REQUIRE(store.state.size() == state_rows_before);
+            REQUIRE(store.state_transitions.size() == state_transitions_before);
         };
 
         WHEN("the write mapping it to its after-state group is refused")
