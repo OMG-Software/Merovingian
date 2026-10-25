@@ -6,6 +6,7 @@
 #include "merovingian/canonicaljson/value.hpp"
 #include "merovingian/config/config.hpp"
 #include "merovingian/events/limits.hpp"
+#include "merovingian/observability/logger.hpp"
 
 #include <algorithm>
 #include <functional>
@@ -174,7 +175,7 @@ auto compute_state_before(database::PersistentStore const& store, std::string_vi
     }
     if (prev_event_ids.size() > 1U && prev_event_ids.size() > limits.max_state_groups)
     {
-        return {false, {}};
+        return {false, {}, "more prev_events than the state-resolution budget allows"};
     }
 
     auto total_state_events = std::size_t{0U};
@@ -183,12 +184,12 @@ auto compute_state_before(database::PersistentStore const& store, std::string_vi
         auto const group_id = database::find_event_state_group(store, prev_event_ids.front());
         if (!group_id.has_value())
         {
-            return {false, {}};
+            return {false, {}, "prev_event " + prev_event_ids.front() + " has no recorded state"};
         }
         auto full_state = database::read_state_group_full_state(store, *group_id);
         if (!full_state.has_value())
         {
-            return {false, {}};
+            return {false, {}, "state group " + *group_id + " could not be read"};
         }
         return {true, std::move(*full_state)};
     }
@@ -201,21 +202,21 @@ auto compute_state_before(database::PersistentStore const& store, std::string_vi
         auto const group_id = database::find_event_state_group(store, prev_event_id);
         if (!group_id.has_value())
         {
-            return {false, {}};
+            return {false, {}, "prev_event " + prev_event_id + " has no recorded state"};
         }
         auto full_state = database::read_state_group_full_state(store, *group_id);
         if (!full_state.has_value())
         {
-            return {false, {}};
+            return {false, {}, "state group " + *group_id + " could not be read"};
         }
         if (!add_state_group_budget(full_state->size(), limits, total_state_events))
         {
-            return {false, {}};
+            return {false, {}, "state groups exceed the state-resolution budget"};
         }
         auto refs = to_state_event_references(*full_state, lookup);
         if (!refs.has_value())
         {
-            return {false, {}};
+            return {false, {}, "state group " + *group_id + " names an event missing from the store"};
         }
         groups.push_back(events::StateGroup{*group_id, std::move(*refs)});
     }
@@ -230,9 +231,9 @@ auto compute_state_before(database::PersistentStore const& store, std::string_vi
     auto const result = events::resolve_state_v2(request, policy);
     if (!result.resolved)
     {
-        return {false, {}};
+        return {false, {}, "state resolution failed: " + result.reason};
     }
-    return {true, to_state_group_entries(result.resolved_state)};
+    return {true, to_state_group_entries(result.resolved_state), {}};
 }
 
 auto compute_state_after(std::vector<database::PersistentStateGroupStateEntry> const& state_before,
@@ -423,24 +424,93 @@ auto forward_extremities_for_new_event(database::PersistentStore const& store, s
     return result;
 }
 
+auto basis_for_new_event(database::PersistentStore const& store, std::string_view room_id,
+                         rooms::RoomVersionPolicy const& policy, events::StateResolutionLimits const& limits)
+    -> NewEventBasis
+{
+    auto extremities = forward_extremities_for_new_event(store, room_id);
+    auto all = compute_state_before(store, room_id, policy, extremities, limits);
+    if (all.ok)
+    {
+        return {true, std::move(extremities), std::move(all.state), {}, {}};
+    }
+
+    // ADR-0225: the state across every extremity cannot be computed, so build
+    // on one alone, the newest this server stored, and retire the rest. Every
+    // later local event would otherwise fail on the same resolution.
+    if (extremities.size() > 1U)
+    {
+        auto newest_first = std::vector<std::pair<std::uint64_t, std::string>>{};
+        newest_first.reserve(extremities.size());
+        for (auto const& extremity : extremities)
+        {
+            auto const event = store.events.find(extremity);
+            newest_first.emplace_back(event == store.events.end() ? 0U : event->stream_ordering, extremity);
+        }
+        std::ranges::sort(newest_first, std::greater{}, [](auto const& entry) {
+            return entry.first;
+        });
+        for (auto const& [stream_ordering, candidate] : newest_first)
+        {
+            std::ignore = stream_ordering;
+            auto alone = compute_state_before(store, room_id, policy, {candidate}, limits);
+            if (!alone.ok)
+            {
+                continue;
+            }
+            auto retired = database::find_forward_extremities(store, room_id);
+            std::erase(retired, candidate);
+            observability::log_diagnostic("rooms", "event.prev_events.fallback",
+                                          {
+                                              {"room_id",     std::string{room_id},               false},
+                                              {"extremities", std::to_string(extremities.size()), false},
+                                              {"prev_event",  candidate,                          false},
+                                              {"retired",     std::to_string(retired.size()),     false},
+                                              {"reason",      all.reason,                         false}
+            },
+                                          observability::LogEventSeverity::warning);
+            return {true, {candidate}, std::move(alone.state), std::move(retired), {}};
+        }
+    }
+
+    observability::log_diagnostic("rooms", "event.prev_events.unresolvable",
+                                  {
+                                      {"room_id",     std::string{room_id},               false},
+                                      {"extremities", std::to_string(extremities.size()), false},
+                                      {"reason",      all.reason,                         false}
+    },
+                                  observability::LogEventSeverity::warning);
+    return {false, std::move(extremities), {}, {}, std::move(all.reason)};
+}
+
 auto store_local_event(database::PersistentStore& store, rooms::RoomVersionPolicy const& policy,
                        database::PersistentEvent event, std::optional<database::PersistentStateEvent> state,
-                       events::StateResolutionLimits const& limits,
+                       NewEventBasis const& basis, events::StateResolutionLimits const& limits,
                        std::optional<database::MembershipProjection> membership) -> bool
 {
     auto const room_id = event.room_id;
     auto const event_id = event.event_id;
-    auto const prev_event_ids = event.prev_event_ids;
-
-    auto const state_before = compute_state_before(store, room_id, policy, prev_event_ids, limits);
-    if (!state_before.ok)
-    {
-        // A local event's own prev_events were just chosen from this same
-        // room's recorded forward extremities (forward_extremities_for_new_event),
-        // so this should always resolve; a failure here is real corruption,
-        // not a legitimate gap — fail the whole request rather than store an
-        // event with no usable state.
+    auto const failed = [&room_id, &event_id](std::string_view step, std::string reason) {
+        observability::log_diagnostic("rooms", "event.store.failed",
+                                      {
+                                          {"room_id",  room_id,           false},
+                                          {"event_id", event_id,          false},
+                                          {"step",     std::string{step}, false},
+                                          {"reason",   std::move(reason), false}
+        },
+                                      observability::LogEventSeverity::warning);
         return false;
+    };
+
+    // A local event's state before was resolved while its prev_events were
+    // chosen (basis_for_new_event); without one it is never stored.
+    if (!basis.ok)
+    {
+        return failed("state_before", basis.reason);
+    }
+    if (event.prev_event_ids != basis.prev_event_ids)
+    {
+        return failed("state_before", "prev_events differ from the ones the state before was resolved for");
     }
 
     auto const event_type = state.has_value() ? state->event_type : std::string{};
@@ -449,16 +519,27 @@ auto store_local_event(database::PersistentStore& store, rooms::RoomVersionPolic
 
     if (!database::store_event_with_state(store, event, state, std::move(membership)))
     {
-        return false;
+        return failed("event", "the event, its state row or its membership could not be stored");
     }
 
-    auto const state_after = compute_state_after(state_before.state, event_id, event_type, state_key);
-    auto const group = record_event_state(store, room_id, event_id, prev_event_ids, state_after);
+    auto const state_after = compute_state_after(basis.state_before, event_id, event_type, state_key);
+    auto replaced_extremities = basis.prev_event_ids;
+    replaced_extremities.insert(replaced_extremities.end(), basis.retired_extremities.begin(),
+                                basis.retired_extremities.end());
+    auto const parent = basis.prev_event_ids.empty()
+                            ? std::optional<std::string>{}
+                            : database::find_event_state_group(store, basis.prev_event_ids.front());
+    auto const group =
+        record_event_state_with_parent(store, room_id, event_id, replaced_extremities, parent, state_after);
     if (!group.has_value())
     {
-        return false;
+        return failed("state_group", "the after-state group or forward extremities could not be recorded");
     }
-    return recompute_current_state(store, room_id, policy, limits);
+    if (!recompute_current_state(store, room_id, policy, limits))
+    {
+        return failed("current_state", "current state could not be written");
+    }
+    return true;
 }
 
 } // namespace merovingian::homeserver

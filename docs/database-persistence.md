@@ -603,7 +603,12 @@ value. Test fixtures that do not exercise persistence select it through
     `store.events`" heuristic. `persist_composed_event` (`room_service.cpp`
     — used by `create_room`'s initial-state chain, invite/join composition,
     and every ordinary send/state-send/redaction) calls it instead of
-    `database::store_event_with_state` directly.
+    `database::store_event_with_state` directly. Since 0.12.48 the state
+    before is resolved once, while the event is composed
+    (`homeserver::basis_for_new_event`), and handed to `store_local_event`
+    as a `NewEventBasis`; when the extremities' states do not resolve, the
+    basis cites the newest extremity alone and its `retired_extremities`
+    leave the `forward_extremities` table with the event (ADR-0225).
   - `local_http_router.cpp`'s `membership_acceptor` (a remote user's
     `send_join`/`send_leave`/`send_knock` into a room we are resident in —
     the same trust boundary as `ingest_pdu_event`) gets the identical
@@ -617,7 +622,9 @@ value. Test fixtures that do not exercise persistence select it through
     the joined-members list), gives the join event an after-state group
     chained off that snapshot (`homeserver::record_event_state_with_parent`,
     `record_event_state` generalised to an explicit parent group), and
-    makes it the room's sole forward extremity — so the first inbound PDU
+    makes it the room's sole forward extremity (since 0.12.48 it also
+    retires every extremity an earlier stay left; before, a rejoin kept
+    them) — so the first inbound PDU
     after a join no longer hits `missing_prev_state`. Since FED-1
     (ADR-0083) only entries whose room is the joined room are stored, and
     `auth_chain` events are stored as outliers with no `current_state` row;

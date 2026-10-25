@@ -1,3 +1,33 @@
+## 0.12.48
+
+Leaving a public room joined over federation answered `500 Internal Server Error`, logged only
+at debug as "membership event persistence failed", the only reason the log gave. Traced from
+the code, and from the 750 ms it took, the step that most likely failed is the state before the
+leave: the resolution of the room's forward extremities' states fails closed, and
+`store_local_event` refused the event without saying why; every other step it might have been
+now logs its own warning. The likeliest way a room gets there: a federated join made the join event an
+extremity but never retired the ones an earlier stay in the room had left, though the code said
+it did, so every later local event had to resolve the old stay's state against the new one. The
+state across the extremities was also resolved only after the event was signed, so nothing could
+choose differently.
+
+- **FIXED:** a federated join retires every forward extremity recorded before it, making the
+  join event the room's sole extremity as intended.
+- **FIXED:** a local event whose forward extremities' states cannot be resolved together is
+  built on the newest extremity (by this server's stream order) whose state reads alone, and
+  storing it retires the others (ADR-0225). A room already stuck in that state, like the one
+  that failed the leave, heals on its next local event; the leave itself now succeeds. The
+  event is refused (500) only when no extremity has a readable state.
+- **CHANGED:** the prev_events of a local event and the state before it are chosen together,
+  once, while it is composed (`homeserver::basis_for_new_event`, carried in `ComposedEvent` as a
+  `NewEventBasis`); `store_local_event` takes the basis instead of resolving again.
+  `StateBeforeResult` gains a `reason`.
+- **ADDED:** warning-level diagnostics for every non-fatal failure on this path, so a 500 leaves
+  its cause in a default log: `room.leave.failed` (a leave answering 5xx; a refusal the client
+  caused stays a debug-level `room.leave.rejected`), `room.join.failed`,
+  `event.prev_events.fallback`, `event.prev_events.unresolvable`, `event.store.failed` (with the
+  failing `step`) and `event.persist.failed` (`docs/debug-logging.md`).
+
 ## 0.12.47
 
 Every database migration is collapsed into one v1 schema for the release (ADR-0224). The schema
