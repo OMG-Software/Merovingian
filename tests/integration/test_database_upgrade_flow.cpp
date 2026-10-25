@@ -14,6 +14,7 @@
 #include "merovingian/database/persistent_store.hpp"
 #include "merovingian/database/postgresql_store.hpp"
 #include "merovingian/database/schema.hpp"
+#include "scratch_postgresql_database.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -28,7 +29,6 @@
 #include <memory>
 #include <string>
 #include <string_view>
-#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -188,62 +188,6 @@ struct PgClear final
     auto const* value = std::getenv("MEROVINGIAN_TEST_POSTGRESQL_URI");
     return value == nullptr ? std::string{} : std::string{value};
 }
-
-// The same server, another database. The store only looks for its schema in
-// `public`, and the shared test database is already at the current version,
-// so a scenario that needs a schema of its own needs a database of its own.
-[[nodiscard]] auto conninfo_for_database(std::string const& conninfo, std::string const& database) -> std::string
-{
-    auto const scheme = conninfo.find("://");
-    if (scheme == std::string::npos)
-    {
-        // Keyword/value form: a later keyword overrides an earlier one.
-        return conninfo + " dbname=" + database;
-    }
-    auto const path = conninfo.find('/', scheme + 3U);
-    auto const query = conninfo.find('?', scheme + 3U);
-    auto const authority_end = std::min(path, query);
-    auto const rest = query == std::string::npos ? std::string{} : conninfo.substr(query);
-    return conninfo.substr(0U, authority_end) + "/" + database + rest;
-}
-
-// Drops the scenario's database when the scenario ends, however it ends.
-class ScratchPostgresqlDatabase final
-{
-public:
-    explicit ScratchPostgresqlDatabase(std::string admin_conninfo)
-        : admin_conninfo_{std::move(admin_conninfo)}
-        , name_{"merovingian_upgrade_" + std::to_string(std::chrono::system_clock::now().time_since_epoch().count())}
-        , created_{pg_execute(admin_conninfo_, "CREATE DATABASE " + name_)}
-    {
-    }
-    ScratchPostgresqlDatabase(ScratchPostgresqlDatabase const& other) = delete;
-    auto operator=(ScratchPostgresqlDatabase const& other) -> ScratchPostgresqlDatabase& = delete;
-    ScratchPostgresqlDatabase(ScratchPostgresqlDatabase&& other) = delete;
-    auto operator=(ScratchPostgresqlDatabase&& other) -> ScratchPostgresqlDatabase& = delete;
-    ~ScratchPostgresqlDatabase()
-    {
-        if (created_)
-        {
-            std::ignore = pg_execute(admin_conninfo_, "DROP DATABASE IF EXISTS " + name_ + " WITH (FORCE)");
-        }
-    }
-
-    [[nodiscard]] auto created() const noexcept -> bool
-    {
-        return created_;
-    }
-
-    [[nodiscard]] auto conninfo() const -> std::string
-    {
-        return conninfo_for_database(admin_conninfo_, name_);
-    }
-
-private:
-    std::string admin_conninfo_{};
-    std::string name_{};
-    bool created_{false};
-};
 
 [[nodiscard]] auto has_table(merovingian::database::SchemaState const& state, std::string_view table) -> bool
 {
@@ -565,7 +509,7 @@ SCENARIO("A PostgreSQL schema is built at v1 and stops there", "[database][upgra
             SUCCEED("skipped: MEROVINGIAN_TEST_POSTGRESQL_URI is not set");
             return;
         }
-        auto const scratch = ScratchPostgresqlDatabase{uri};
+        auto const scratch = merovingian::tests::ScratchPostgresqlDatabase{uri};
         REQUIRE(scratch.created());
 
         WHEN("the schema is migrated to v1")
@@ -597,7 +541,7 @@ SCENARIO("A PostgreSQL schema is never migrated past this build", "[database][up
             SUCCEED("skipped: MEROVINGIAN_TEST_POSTGRESQL_URI is not set");
             return;
         }
-        auto const scratch = ScratchPostgresqlDatabase{uri};
+        auto const scratch = merovingian::tests::ScratchPostgresqlDatabase{uri};
         REQUIRE(scratch.created());
         REQUIRE(merovingian::database::migrate_postgresql_schema_to(scratch.conninfo(),
                                                                     merovingian::database::current_schema_version())
@@ -652,7 +596,7 @@ SCENARIO("A fresh PostgreSQL database has every column and index of the v1 schem
             SUCCEED("skipped: MEROVINGIAN_TEST_POSTGRESQL_URI is not set");
             return;
         }
-        auto const scratch = ScratchPostgresqlDatabase{uri};
+        auto const scratch = merovingian::tests::ScratchPostgresqlDatabase{uri};
         REQUIRE(scratch.created());
 
         WHEN("it is opened as a persistent store")
@@ -698,7 +642,7 @@ SCENARIO("A PostgreSQL database a pre-1.0 build created is refused, not upgraded
             SUCCEED("skipped: MEROVINGIAN_TEST_POSTGRESQL_URI is not set");
             return;
         }
-        auto const scratch = ScratchPostgresqlDatabase{uri};
+        auto const scratch = merovingian::tests::ScratchPostgresqlDatabase{uri};
         REQUIRE(scratch.created());
         REQUIRE(merovingian::database::migrate_postgresql_schema_to(scratch.conninfo(), 1U).ok);
         for (auto index = std::size_t{0U}; index < pre_collapse_step_names.size(); ++index)

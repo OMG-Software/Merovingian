@@ -3,6 +3,7 @@
 #include "../support/master_key.hpp"
 #include "../support/remote_room_fixture.hpp"
 #include "../support/temp_directory.hpp"
+#include "scratch_postgresql_database.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -1784,14 +1785,21 @@ private:
 SCENARIO("DB-6 PostgreSQL inbound admission rejects escaped NUL state keys before any write",
          "[database][postgresql][integration][db6][db6-postgresql-admission]")
 {
-    GIVEN("an explicitly configured PostgreSQL runtime with a persisted locally joined room")
+    GIVEN("an explicitly configured PostgreSQL runtime on a database of its own, with a persisted locally joined room")
     {
-        auto const uri = postgresql_uri_from_environment();
-        if (uri.empty())
+        auto const server_uri = postgresql_uri_from_environment();
+        if (server_uri.empty())
         {
             SUCCEED("skipped: MEROVINGIAN_TEST_POSTGRESQL_URI is not set");
             return;
         }
+        // Not the shared test database: the runtime would replay the outbound
+        // federation transactions earlier scenarios left there, and the dispatch
+        // worker's retries would then land in the capture window below. Declared
+        // first, so it outlives the runtime's connections.
+        auto const scratch = merovingian::tests::ScratchPostgresqlDatabase{std::string{server_uri}};
+        REQUIRE(scratch.created());
+        auto const uri = scratch.conninfo();
         auto const connection_file = PgAdmissionUriFile{uri};
         auto started = merovingian::homeserver::start_runtime(pg_admission_config(connection_file.path()));
         REQUIRE(started.started);
@@ -1840,6 +1848,10 @@ SCENARIO("DB-6 PostgreSQL inbound admission rejects escaped NUL state keys befor
                         REQUIRE(reopened.ok);
                         durable_before = pg_admission_snapshot(reopened.store);
                     }
+                    // Capture sees every writer of the store, so nothing may be queued
+                    // for the dispatch worker to retry while it is on: a background
+                    // write would be charged to the rejection.
+                    REQUIRE((runtime.dispatch_worker == nullptr || runtime.dispatch_worker->summary().pending == 0U));
                     db::enable_statement_capture(runtime.database.persistent_store, 256U);
                     auto const rejected =
                         merovingian::homeserver::handle_pdu_ingest_request(runtime, pg_admission_frame(room_id, json));

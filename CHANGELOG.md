@@ -1,3 +1,28 @@
+## 0.12.50
+
+The live PostgreSQL scenario "DB-6 PostgreSQL inbound admission rejects escaped NUL state keys
+before any write" no longer fails at random (ADR-0227). It ran on the database every live
+PostgreSQL scenario shares, so its runtime replayed the outbound federation transactions earlier
+scenarios had left there; the dispatch worker's retries of those deliveries re-persisted them from
+its own thread, and one landing inside the scenario's store-wide statement capture was charged to
+the rejection (`statements written while rejecting: upsert_federation_transaction`, seen on PR #534
+while `main` with the same C++ passed). The production rejection path was not at fault.
+
+- **FIXED:** the scenario runs on a PostgreSQL database of its own, created before its runtime and
+  dropped when it ends, so nothing is replayed and its assertion that a rejection writes nothing,
+  from any thread, is unchanged. Before each capture window it also requires that the dispatch
+  worker, if started, holds nothing pending, so background outbound work added later fails it at
+  once instead of at random.
+- **CHANGED:** `ScratchPostgresqlDatabase` and `conninfo_for_database` move from
+  `tests/integration/test_database_upgrade_flow.cpp` to `tests/integration/scratch_postgresql_database.hpp`
+  (`merovingian::tests`), shared by both files; the upgrade scenarios' databases are now named
+  `merovingian_scratch_*`.
+- **DOCS:** `docs/testing-standards.md` gains "Live PostgreSQL scenarios that need a quiet store".
+- **TESTS (changed):** "DB-6 PostgreSQL inbound admission rejects escaped NUL state keys before any
+  write" (own database; no pending dispatch work before each capture). The PostgreSQL upgrade
+  scenarios use the shared fixture. **TESTS (new):** none; the race is timing-dependent and is
+  removed at its cause rather than reproduced.
+
 ## 0.12.47
 
 Every database migration is collapsed into one v1 schema for the release (ADR-0224). The schema

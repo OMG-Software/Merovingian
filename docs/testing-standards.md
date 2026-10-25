@@ -53,6 +53,20 @@ timeout kills it. Connect with `merovingian::tests::connect_within`
 OpenBSD 7.9 a blocking connect to the test's own in-process listener never
 returned. Bound reads and writes with `poll` or `SO_RCVTIMEO`/`SO_SNDTIMEO`.
 
+## Live PostgreSQL scenarios that need a quiet store
+
+The live PostgreSQL scenarios share one database (`MEROVINGIAN_TEST_POSTGRESQL_URI`),
+and a runtime started on it replays the durable queues earlier scenarios left there
+(the dispatch worker's `federation_transactions`, the retry job's `deferred_pdus`). Those
+background workers then write to the store whenever a retry falls due. A scenario that asserts
+on every write the store commits (`enable_statement_capture` and an empty
+`captured_statements`), or that needs an empty schema, runs on a database of its own:
+`merovingian::tests::ScratchPostgresqlDatabase`
+(`tests/integration/scratch_postgresql_database.hpp`), declared before anything that
+connects to it so it is dropped last. Do not narrow the assertion instead, by
+filtering statement names, stopping a worker or capturing one thread only: each of
+those also hides a write the code under test makes (ADR-0227).
+
 ## Live client-server probes
 
 Tests that exercise an authenticated endpoint on a deployed Merovingian server

@@ -1,5 +1,5 @@
 Name:           merovingian
-Version:        0.12.47
+Version:        0.12.50
 Release:        1%{?dist}
 Summary:        Secure Matrix Protocol homeserver
 
@@ -97,6 +97,9 @@ fi
 %{_sysconfdir}/merovingian/merovingian.conf.example
 
 %changelog
+* Sun Oct 25 2026 James Chapman <claude@ping.me.uk> - 0.12.50-1
+- The DB-6 PostgreSQL admission test runs on a database of its own, so a background federation retry can no longer write during its capture window.
+
 * Sun Oct 25 2026 James Chapman <claude@ping.me.uk> - 0.12.47-1
 - Collapse every database migration into one v1 initial schema; a database created by an earlier build is refused, not upgraded.
 
