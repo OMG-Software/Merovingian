@@ -30,6 +30,7 @@
 #include <algorithm>
 #include <cstdint>
 #include <string>
+#include <vector>
 
 // --- quote_sqlite_identifier -------------------------------------------------
 
@@ -236,6 +237,58 @@ SCENARIO("create_table_sql generates DDL for core tables and fails closed for no
             THEN("nullopt is returned to prevent arbitrary table creation")
             {
                 REQUIRE_FALSE(sql.has_value());
+            }
+        }
+    }
+}
+
+// --- create_index_sql --------------------------------------------------------
+
+SCENARIO("create_index_sql generates DDL only for registered indexes", "[database][schema][ddl][security]")
+{
+    GIVEN("a registered index and definitions that differ from it in one field each")
+    {
+        auto const indexes = merovingian::database::initial_schema_indexes();
+        REQUIRE_FALSE(indexes.empty());
+        auto const registered = indexes.front();
+
+        auto unknown_name = registered;
+        unknown_name.name = "idx_attacker";
+        auto unregistered_table = registered;
+        unregistered_table.table = "attacker_table";
+        auto injected_columns = registered;
+        injected_columns.columns_sql = "prev_event_id); DROP TABLE users; --";
+        auto injected_name = registered;
+        injected_name.name = "event_edges_prev_event_id ON users (user_id); --";
+
+        WHEN("DDL is generated for the registered index")
+        {
+            auto const sql = merovingian::database::create_index_sql(registered);
+            auto const if_missing = merovingian::database::create_index_if_missing_sql(registered);
+
+            THEN("CREATE INDEX SQL names the index, its table and its columns")
+            {
+                REQUIRE(sql.has_value());
+                REQUIRE(*sql == "CREATE INDEX " + std::string{registered.name} + " ON " +
+                                    std::string{registered.table} + " (" + std::string{registered.columns_sql} + ")");
+                REQUIRE(if_missing.has_value());
+                REQUIRE(if_missing->starts_with("CREATE INDEX IF NOT EXISTS " + std::string{registered.name} + " ON "));
+            }
+        }
+
+        WHEN("DDL is requested for a definition that is not registered")
+        {
+            auto const definitions = std::vector{unknown_name, unregistered_table, injected_columns, injected_name};
+
+            THEN("nullopt is returned for every one, by both generators")
+            {
+                for (auto const& definition : definitions)
+                {
+                    INFO("index " << definition.name << " on " << definition.table << " (" << definition.columns_sql
+                                  << ")");
+                    REQUIRE_FALSE(merovingian::database::create_index_sql(definition).has_value());
+                    REQUIRE_FALSE(merovingian::database::create_index_if_missing_sql(definition).has_value());
+                }
             }
         }
     }

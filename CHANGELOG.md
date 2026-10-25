@@ -31,7 +31,9 @@ upgraded and must be recreated.
 - **TESTS (new):** `tests/unit/test_database_persistence.cpp`: "The v1 schema step creates every
   table in its final shape and every index" (`[collapse]`), "A schema ledger naming a migration
   this build does not have is refused" (`[collapse][security]`) and "Checked-in migrations hold
-  exactly the v1 step this build runs" (`[files]`). `tests/integration/test_database_upgrade_flow.cpp`:
+  exactly the v1 step this build runs" (`[files]`). `tests/unit/test_database_schema.cpp`:
+  "create_index_sql generates DDL only for registered indexes" (`[ddl][security]`: an unknown name,
+  table, injected columns or injected name gets no DDL). `tests/integration/test_database_upgrade_flow.cpp`:
   "A fresh SQLite/PostgreSQL database has every column and index of the v1 schema", "A
   SQLite/PostgreSQL database a pre-1.0 build created is refused, not upgraded" and "A SQLite
   database holding tables but no schema ledger is refused, not adopted".
