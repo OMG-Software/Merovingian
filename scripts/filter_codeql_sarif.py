@@ -20,8 +20,8 @@ step that follows fails instead of publishing an unfiltered report.
 from __future__ import annotations
 
 import json
+import os
 import sys
-from pathlib import Path
 from urllib.parse import unquote
 
 # (rule, top-level directory) pairs whose results are dropped.
@@ -129,10 +129,41 @@ def filter_report(document: object) -> int:
     return dropped
 
 
-def reports_in(target: Path) -> list[Path]:
-    if target.is_dir():
-        return sorted(path for path in target.iterdir() if path.is_file() and path.suffix == ".sarif")
-    return [target] if target.is_file() else []
+class Refused(Exception):
+    pass
+
+
+def confined(path: str, base: str) -> str:
+    """`path` resolved, provided it is a real file or directory under `base`.
+
+    The script rewrites what it is given in place, so it touches nothing outside
+    the directory it is run from (the checkout, in CI), and no symbolic link,
+    which could point anywhere.
+    """
+    if os.path.islink(path):
+        raise Refused(f"{path} is a symbolic link")
+    resolved = os.path.realpath(path)
+    try:
+        inside = os.path.commonpath([resolved, base]) == base
+    except ValueError:
+        # Different drives (Windows), or a mix of absolute and relative paths.
+        inside = False
+    if not inside:
+        raise Refused(f"{path} is outside the working directory {base}")
+    return resolved
+
+
+def reports_in(target: str, base: str) -> list[str]:
+    resolved = confined(os.path.join(base, target), base)
+    if not os.path.isdir(resolved):
+        return [resolved] if os.path.isfile(resolved) else []
+    reports = []
+    for name in sorted(os.listdir(resolved)):
+        entry = os.path.join(resolved, name)
+        # A link is passed on so confined() refuses it; anything else that is not a file is skipped.
+        if name.endswith(".sarif") and (os.path.islink(entry) or os.path.isfile(entry)):
+            reports.append(confined(entry, base))
+    return reports
 
 
 def main(arguments: list[str]) -> int:
@@ -140,22 +171,28 @@ def main(arguments: list[str]) -> int:
         print(__doc__.strip().splitlines()[0], file=sys.stderr)
         print("usage: filter_codeql_sarif.py <report.sarif | directory>", file=sys.stderr)
         return 64
-    target = Path(arguments[0])
-    reports = reports_in(target)
+    base = os.path.realpath(os.getcwd())
+    try:
+        reports = reports_in(arguments[0], base)
+    except Refused as error:
+        print(f"filter_codeql_sarif: refused: {error}", file=sys.stderr)
+        return 1
     if not reports:
-        print(f"filter_codeql_sarif: no SARIF report at {target}", file=sys.stderr)
+        print(f"filter_codeql_sarif: no SARIF report at {arguments[0]}", file=sys.stderr)
         return 1
     # Parse and filter every report before writing any, so a bad one leaves all untouched.
     filtered = []
     for report in reports:
         try:
-            document = json.loads(report.read_text(encoding="utf-8"))
+            with open(report, encoding="utf-8") as source:
+                document = json.load(source)
             filtered.append((report, document, filter_report(document)))
         except (OSError, ValueError, NotSarif) as error:
             print(f"filter_codeql_sarif: {report} is not a SARIF report: {error}", file=sys.stderr)
             return 1
     for report, document, dropped in filtered:
-        report.write_text(json.dumps(document), encoding="utf-8")
+        with open(report, "w", encoding="utf-8") as output:
+            json.dump(document, output)
         rules = ", ".join(f"{rule} under {directory}/" for rule, directory in EXCLUSIONS)
         print(f"{report}: dropped {dropped} result(s) of {rules}")
     return 0

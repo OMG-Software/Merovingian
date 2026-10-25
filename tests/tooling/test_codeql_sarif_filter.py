@@ -75,10 +75,58 @@ class FilterCodeqlSarifTests(unittest.TestCase):
         self.root = Path(tempfile.mkdtemp(prefix="sarif-filter-"))
         self.addCleanup(shutil.rmtree, self.root, True)
 
-    def run_filter(self, target: Path) -> subprocess.CompletedProcess[str]:
+    def run_filter(self, target: Path | str) -> subprocess.CompletedProcess[str]:
+        # The filter only touches files under its working directory, as the
+        # workflow runs it from the checkout; here that is the scenario's root.
         return subprocess.run(
-            [sys.executable, str(SCRIPT), str(target)], capture_output=True, text=True, check=False
+            [sys.executable, str(SCRIPT), str(target)], capture_output=True, text=True, check=False, cwd=self.root
         )
+
+    def outside_root(self) -> Path:
+        outside = Path(tempfile.mkdtemp(prefix="sarif-outside-"))
+        self.addCleanup(shutil.rmtree, outside, True)
+        return outside
+
+    def test_a_target_outside_the_working_directory_is_refused(self) -> None:
+        # GIVEN a report in a directory that is not under the filter's working
+        # directory, reached by an absolute path and by a relative ../ path.
+        outside = self.outside_root()
+        report = outside / "cpp.sarif"
+        report.write_text(json.dumps(sarif([result(RULE, "tests/unit/a.cpp")])), encoding="utf-8")
+        before = report.read_bytes()
+
+        for target in (report, Path("..") / outside.name / "cpp.sarif", outside):
+            with self.subTest(target=str(target)):
+                # WHEN it is filtered.
+                completed = self.run_filter(target)
+
+                # THEN the filter refuses and the report is unchanged.
+                self.assertNotEqual(completed.returncode, 0)
+                self.assertIn("outside", completed.stderr)
+                self.assertEqual(report.read_bytes(), before)
+
+    def test_a_symlinked_report_is_refused(self) -> None:
+        # GIVEN a report under the working directory that is a symbolic link to a
+        # file elsewhere, which an in-place rewrite would overwrite.
+        outside = self.outside_root()
+        real = outside / "cpp.sarif"
+        real.write_text(json.dumps(sarif([result(RULE, "tests/unit/a.cpp")])), encoding="utf-8")
+        before = real.read_bytes()
+        reports = self.root / "results"
+        reports.mkdir()
+        try:
+            (reports / "cpp.sarif").symlink_to(real)
+        except (OSError, NotImplementedError):
+            self.skipTest("symbolic links are not available")
+
+        for target in (reports, reports / "cpp.sarif"):
+            with self.subTest(target=target.name):
+                # WHEN the directory, or the link itself, is filtered.
+                completed = self.run_filter(target)
+
+                # THEN the filter refuses and the file the link points at is unchanged.
+                self.assertNotEqual(completed.returncode, 0)
+                self.assertEqual(real.read_bytes(), before)
 
     def write(self, name: str, document: dict) -> Path:
         path = self.root / name

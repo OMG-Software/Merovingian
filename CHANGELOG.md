@@ -17,10 +17,12 @@ CodeQL no longer reports every Catch2 test scenario as an unused static function
   rule is never mistaken for the driver's; a rule it cannot resolve is kept. It refuses a report that
   is not SARIF 2.1.0 or has no runs (uploading one would close every alert), a missing path, or a
   directory with no report, without writing anything, so the upload fails rather than publishing an
-  unfiltered report.
+  unfiltered report. Since it rewrites reports in place, it touches only real files under its working
+  directory: a target or report outside it, or a symbolic link, is refused (PR #534 review).
 - **TESTS (new):** `tests/tooling/test_codeql_sarif_filter.py` (`codeql-sarif-filter-tooling`): only the
   rule under `tests/` is dropped; a rule named by index is recognised; `src/tests/`, `contests/` and
-  `testsuite/` do not match; a location with a parent segment (plain or percent-encoded), a
+  `testsuite/` do not match; a target outside the working directory (absolute or `../`) and a
+  symlinked report are refused and left unchanged; a location with a parent segment (plain or percent-encoded), a
   backslash, another base or none is kept; a top-level `ruleIndex` is recognised; an index is read
   in the tool component it names; every report in a directory is filtered; input that is not SARIF fails
   and is left as it was; a missing target or empty directory fails.

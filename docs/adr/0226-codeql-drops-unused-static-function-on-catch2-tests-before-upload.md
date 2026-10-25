@@ -52,7 +52,8 @@ scheme-qualified URI) and anything that might resolve outside `tests/`: a locati
 segment or a backslash (PR #534 review). A rule named by index is read in the rules of the
 tool component the result names (CodeQL puts query-pack rules in `tool.extensions`), and a
 result whose rule cannot be resolved is kept. It refuses a report that is not SARIF 2.1.0, or has no runs (an empty upload would close every open
-alert as fixed), without writing anything,
+alert as fixed), or a path outside its working directory or a symbolic link (it rewrites
+reports in place; PR #534 review), without writing anything,
 so the upload step fails rather than publishing an unfiltered report.
 
 Rules this sets for future work:
