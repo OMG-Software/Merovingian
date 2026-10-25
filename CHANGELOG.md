@@ -10,12 +10,15 @@ CodeQL no longer reports every Catch2 test scenario as an unused static function
   `/language:c-cpp` category. The rule still covers `src/` and `include/`, and every other rule still
   covers `tests/`; the alerts already open on `main` close at its next analysis.
 - **ADDED:** `scripts/filter_codeql_sarif.py` drops only `cpp/unused-static-function` results whose
-  file is under the top-level `tests/` directory. It keeps any result it cannot place, and refuses a
+  file is under the top-level `tests/` directory. It keeps any result it cannot place, and any whose
+  location might resolve elsewhere: a base other than `%SRCROOT%`, or a `..` segment or backslash
+  after percent-decoding (PR #534 review). It refuses a
   report that is not SARIF (or a missing path, or a directory with no report) without writing
   anything, so the upload fails rather than publishing an unfiltered report.
 - **TESTS (new):** `tests/tooling/test_codeql_sarif_filter.py` (`codeql-sarif-filter-tooling`): only the
   rule under `tests/` is dropped; a rule named by index is recognised; `src/tests/`, `contests/` and
-  `testsuite/` do not match; every report in a directory is filtered; input that is not SARIF fails
+  `testsuite/` do not match; a location with a parent segment (plain or percent-encoded), a
+  backslash, another base or none is kept; every report in a directory is filtered; input that is not SARIF fails
   and is left as it was; a missing target or empty directory fails.
   `tests/tooling/test_security_workflows.py` gains "CodeQL filters Catch2 false positives before
   upload" (analyze, filter, upload in that order; no `query-filters`).

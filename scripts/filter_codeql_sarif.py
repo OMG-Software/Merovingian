@@ -22,9 +22,13 @@ from __future__ import annotations
 import json
 import sys
 from pathlib import Path
+from urllib.parse import unquote
 
 # (rule, top-level directory) pairs whose results are dropped.
 EXCLUSIONS = (("cpp/unused-static-function", "tests"),)
+
+# The uriBaseId CodeQL gives locations relative to the checkout it analysed.
+SOURCE_ROOT_BASE = "%SRCROOT%"
 
 
 class NotSarif(Exception):
@@ -46,16 +50,28 @@ def rule_of(result: dict, rules: list) -> str | None:
 
 
 def top_directory_of(result: dict) -> str | None:
+    """The first directory of a location relative to the source root, or None.
+
+    None (the result is kept) unless the location is plainly inside the source
+    root: CodeQL's %SRCROOT% base, a relative path, and after percent-decoding
+    no parent segment or backslash that could make "tests/..." resolve elsewhere.
+    """
     locations = result.get("locations")
     if not isinstance(locations, list) or not locations or not isinstance(locations[0], dict):
         return None
-    artifact = locations[0].get("physicalLocation", {}).get("artifactLocation", {})
-    uri = artifact.get("uri") if isinstance(artifact, dict) else None
-    if not isinstance(uri, str) or "://" in uri or uri.startswith("/"):
-        # Absolute or scheme-qualified locations are not under the source root
-        # in a way this can check, so they are kept.
+    physical = locations[0].get("physicalLocation")
+    artifact = physical.get("artifactLocation") if isinstance(physical, dict) else None
+    if not isinstance(artifact, dict) or artifact.get("uriBaseId") != SOURCE_ROOT_BASE:
         return None
-    parts = [part for part in uri.split("/") if part not in ("", ".")]
+    uri = artifact.get("uri")
+    if not isinstance(uri, str):
+        return None
+    path = unquote(uri)
+    if "://" in path or path.startswith("/") or "\\" in path:
+        return None
+    parts = [part for part in path.split("/") if part not in ("", ".")]
+    if ".." in parts:
+        return None
     return parts[0] if len(parts) > 1 else None
 
 

@@ -25,16 +25,19 @@ SCRIPT = REPO_ROOT / "scripts" / "filter_codeql_sarif.py"
 RULE = "cpp/unused-static-function"
 
 
-def result(rule_id: str | None, uri: str | None, *, rule_index: int | None = None) -> dict:
+def result(
+    rule_id: str | None, uri: str | None, *, rule_index: int | None = None, base: str | None = "%SRCROOT%"
+) -> dict:
     entry: dict = {"message": {"text": "finding"}}
     if rule_id is not None:
         entry["ruleId"] = rule_id
     if rule_index is not None:
         entry["rule"] = {"index": rule_index}
     if uri is not None:
-        entry["locations"] = [
-            {"physicalLocation": {"artifactLocation": {"uri": uri, "uriBaseId": "%SRCROOT%"}}}
-        ]
+        artifact = {"uri": uri}
+        if base is not None:
+            artifact["uriBaseId"] = base
+        entry["locations"] = [{"physicalLocation": {"artifactLocation": artifact}}]
     return entry
 
 
@@ -140,6 +143,41 @@ class FilterCodeqlSarifTests(unittest.TestCase):
         self.assertEqual(
             [uri for _, uri in kept_locations(json.loads(path.read_text(encoding="utf-8")))],
             ["src/tests/helper.cpp", "contests/entry.cpp", "testsuite/main.cpp", None],
+        )
+
+    def test_a_location_that_may_not_resolve_under_tests_is_kept(self) -> None:
+        # GIVEN the rule on locations that start with tests/ but may resolve elsewhere:
+        # a parent segment (plain or percent-encoded), a backslash, a base other than
+        # the source root, or no base at all; and two that plainly resolve under tests/.
+        path = self.write(
+            "cpp.sarif",
+            sarif(
+                [
+                    result(RULE, "tests/../src/example.cpp"),
+                    result(RULE, "tests/%2E%2E/src/example.cpp"),
+                    result(RULE, "tests\\..\\src\\example.cpp"),
+                    result(RULE, "tests/unit/a.cpp", base="%HOME%"),
+                    result(RULE, "tests/unit/a.cpp", base=None),
+                    result(RULE, "tests//unit/./b.cpp"),
+                    result(RULE, "tests/unit/test%5Fc.cpp"),
+                ]
+            ),
+        )
+
+        # WHEN the report is filtered.
+        completed = self.run_filter(path)
+
+        # THEN only the two that resolve under the source root's tests/ are dropped.
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertEqual(
+            [uri for _, uri in kept_locations(json.loads(path.read_text(encoding="utf-8")))],
+            [
+                "tests/../src/example.cpp",
+                "tests/%2E%2E/src/example.cpp",
+                "tests\\..\\src\\example.cpp",
+                "tests/unit/a.cpp",
+                "tests/unit/a.cpp",
+            ],
         )
 
     def test_every_report_in_a_directory_is_filtered(self) -> None:

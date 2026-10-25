@@ -47,7 +47,9 @@ directory; `upload-sarif` publishes the rest under the same `/language:c-cpp` ca
 Alerts already open on `main` close as fixed at the next analysis there.
 
 The filter keeps anything it cannot place (a result with no location, or an absolute or
-scheme-qualified URI), and refuses a report that is not SARIF without writing anything,
+scheme-qualified URI) and anything that might resolve outside `tests/`: a location whose
+`uriBaseId` is not CodeQL's `%SRCROOT%`, or whose path, once percent-decoded, holds a `..`
+segment or a backslash (PR #534 review). It refuses a report that is not SARIF without writing anything,
 so the upload step fails rather than publishing an unfiltered report.
 
 Rules this sets for future work:
