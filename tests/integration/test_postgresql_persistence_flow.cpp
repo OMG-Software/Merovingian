@@ -1848,10 +1848,13 @@ SCENARIO("DB-6 PostgreSQL inbound admission rejects escaped NUL state keys befor
                         REQUIRE(reopened.ok);
                         durable_before = pg_admission_snapshot(reopened.store);
                     }
-                    // Capture sees every writer of the store, so nothing may be queued
-                    // for the dispatch worker to retry while it is on: a background
-                    // write would be charged to the rejection.
-                    REQUIRE((runtime.dispatch_worker == nullptr || runtime.dispatch_worker->summary().pending == 0U));
+                    // Capture sees every writer of the store, so the dispatch worker must
+                    // never have had work: then nothing is queued, replayed or in flight
+                    // (`pending` alone drops to 0 while an attempt is in flight, before
+                    // it re-persists the transaction). Not shut down instead: enqueue then
+                    // refuses without persisting, which would hide a rejection that queues
+                    // outbound work (PR #536 review, ADR-0227).
+                    REQUIRE((runtime.dispatch_worker == nullptr || runtime.dispatch_worker->summary().enqueued == 0U));
                     db::enable_statement_capture(runtime.database.persistent_store, 256U);
                     auto const rejected =
                         merovingian::homeserver::handle_pdu_ingest_request(runtime, pg_admission_frame(room_id, json));

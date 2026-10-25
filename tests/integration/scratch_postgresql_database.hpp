@@ -12,13 +12,14 @@
 // runtime on one of these instead. The database is dropped when the object goes,
 // however the scenario ends, so declare it before anything that connects to it.
 
+#include <catch2/catch_test_macros.hpp>
+
 #include <algorithm>
 #include <chrono>
 #include <cstddef>
 #include <memory>
 #include <string>
 #include <string_view>
-#include <tuple>
 #include <utility>
 
 #include <libpq-fe.h>
@@ -116,8 +117,12 @@ public:
     {
         if (created_)
         {
-            // FORCE ends any session a runtime still holds open on it.
-            std::ignore = execute(admin_conninfo_, "DROP DATABASE IF EXISTS " + name_ + " WITH (FORCE)");
+            // FORCE ends any session a runtime still holds open on it. A database
+            // left behind is a failure, reported without throwing from here.
+            if (!execute(admin_conninfo_, "DROP DATABASE IF EXISTS " + name_ + " WITH (FORCE)"))
+            {
+                FAIL_CHECK("could not drop scratch PostgreSQL database " << name_);
+            }
         }
     }
 

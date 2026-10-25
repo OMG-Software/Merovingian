@@ -11,19 +11,22 @@ while `main` with the same C++ passed). The production rejection path was not at
 - **FIXED:** the scenario runs on a PostgreSQL database of its own, created before its runtime and
   dropped when it ends, so nothing is replayed and its assertion that a rejection writes nothing,
   from any thread, is unchanged. Before each capture window it also requires that the dispatch
-  worker, if started, holds nothing pending, so background outbound work added later fails it at
-  once instead of at random.
+  worker, if started, has never been given work (`enqueued == 0`; `pending` drops to 0 while an
+  attempt is in flight, PR #536 review), so background outbound work added later fails it at once
+  instead of at random. The worker is not shut down for the window: `enqueue` then refuses without
+  persisting, which would hide a rejection that queues outbound work.
 - **CHANGED:** `ScratchPostgresqlDatabase` and `conninfo_for_database` move from
   `tests/integration/test_database_upgrade_flow.cpp` to `tests/integration/scratch_postgresql_database.hpp`
   (`merovingian::tests`), shared by both files; the upgrade scenarios' databases are now named
   `merovingian_scratch_*`. `conninfo_for_database` drops a `dbname` query parameter (also
   percent-encoded) from a URI, since libpq reads the query after the path and would otherwise
-  connect to the original database (PR #536 review). A string is treated as a URI only when it
+  connect to the original database (PR #536 review). A failed `DROP DATABASE` when the fixture
+  goes is reported as a test failure instead of being ignored. A string is treated as a URI only when it
   starts with `postgresql://` or `postgres://`, as libpq does, so a keyword/value string whose value
   holds `://` (`application_name=ci://worker`) still gets the scratch `dbname`.
 - **DOCS:** `docs/testing-standards.md` gains "Live PostgreSQL scenarios that need a quiet store".
 - **TESTS (changed):** "DB-6 PostgreSQL inbound admission rejects escaped NUL state keys before any
-  write" (own database; no pending dispatch work before each capture). The PostgreSQL upgrade
+  write" (own database; the dispatch worker has had no work before each capture). The PostgreSQL upgrade
   scenarios use the shared fixture. **TESTS (new):** "A scratch database's connection string names
   only the scratch database" (`[scratch]`, no live server needed). The race itself is
   timing-dependent and is removed at its cause rather than reproduced.

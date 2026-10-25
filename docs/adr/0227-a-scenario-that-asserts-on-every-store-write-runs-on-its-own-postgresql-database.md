@@ -44,10 +44,11 @@ the cause, the foreign rows, and keeps the store-wide assertion exactly as stric
 scenario creates `merovingian::tests::ScratchPostgresqlDatabase`
 (`tests/integration/scratch_postgresql_database.hpp`, moved there from
 `test_database_upgrade_flow.cpp`, its first user) before its runtime, so the database
-outlives every connection and is dropped when the scenario ends. Before each capture
-window it also requires that the dispatch worker, if it was started, holds nothing
-pending, so background outbound work reintroduced later fails the scenario at once
-instead of at random.
+outlives every connection and is dropped when the scenario ends (a failed drop fails the
+scenario). Before each capture window it also requires that the dispatch worker, if it was
+started, has never been given work (`summary().enqueued == 0`), so nothing is queued,
+replayed or in flight; `pending` alone drops to 0 while an attempt is in flight. Background
+outbound work reintroduced later then fails the scenario at once instead of at random.
 
 Rule for future work: a live PostgreSQL scenario that asserts on every write the store
 commits, or that needs an empty schema, runs on its own database. Do not narrow the
