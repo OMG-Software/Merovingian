@@ -320,7 +320,10 @@ itself; projecting twice allocates a second stream ordering and duplicates devic
 
 The `memberships` row and invite change are never written in a transaction of their own after the event: pass
 a `database::MembershipProjection` to `store_event_with_state` / `prepare_store_event_with_state` (or
-`store_local_event`), so they commit with the event and its `current_state` row. A membership change with no
+`store_local_event`, or `store_event_with_bookkeeping` for a federated join), so they commit with the event and its
+`current_state` row. An event this server places itself commits with all of its bookkeeping (state group, mapping,
+forward extremities, resulting current state) in that one transaction (ADR-0228); do not add a write after it that a
+500 could leave behind. A membership change with no
 event stored here (a federated leave, `/invite` for a room whose state this server holds) uses
 `store_membership_projection`. Writing the row separately is how a ban became durable while the row still
 said `join` (DB-4). Hydration reconciles the rows from current state before building the roster.
