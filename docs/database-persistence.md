@@ -607,7 +607,7 @@ value. Test fixtures that do not exercise persistence select it through
     before is resolved once, while the event is composed
     (`homeserver::basis_for_new_event`), and handed to `store_local_event`
     as a `NewEventBasis`; when the extremities' states do not resolve, the
-    basis cites the newest extremity alone and its `retired_extremities`
+    basis cites only the newest extremity whose state reads alone, and its `retired_extremities`
     leave the `forward_extremities` table with the event (ADR-0225).
   - `local_http_router.cpp`'s `membership_acceptor` (a remote user's
     `send_join`/`send_leave`/`send_knock` into a room we are resident in —

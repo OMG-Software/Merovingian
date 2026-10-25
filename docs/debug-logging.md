@@ -57,8 +57,9 @@ local send leaves its cause in a default log. All are module `rooms`, except
 - `room.join.failed`: a federated join's state seeding failed after
   `send_join` (500), with `actor`, `room_id`, `status` and `reason`.
 - `event.prev_events.fallback`: the state across a room's forward extremities
-  could not be resolved, so the new local event cites only the newest one and
-  retires the rest (ADR-0225). Fields `room_id`, `extremities` (how many),
+  could not be resolved, so the new local event cites only the newest one whose
+  state can be read on its own (not necessarily the newest overall) and retires
+  the rest (ADR-0225). Fields `room_id`, `extremities` (how many),
   `prev_event` (the one cited), `retired` (how many) and `reason`.
 - `event.prev_events.unresolvable`: no forward extremity has a readable state;
   the local event is refused. Fields `room_id`, `extremities`, `reason`.
