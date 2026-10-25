@@ -63,7 +63,7 @@
 namespace
 {
 
-constexpr auto version = std::string_view{"0.12.45"};
+constexpr auto version = std::string_view{"0.12.46"};
 
 struct BootstrapConfigResult final
 {
@@ -614,7 +614,7 @@ auto log_hardening_summary(merovingian::platform::HardeningSelfCheck const& self
              " blockers=" + std::to_string(self_check.production_blocker_count()));
 }
 
-// Every library the server runs (0.12.45): its version, whether it is compiled in (static) or a
+// Every library the server runs (0.12.46): its version, whether it is compiled in (static) or a
 // shared object an OS update can replace (dynamic), and what it was built against. libpng and
 // libjpeg-turbo are linked only into the thumbnail worker, so the worker is asked, through the
 // same sandboxed spawn as a thumbnail. Runs before the server's own hardening.

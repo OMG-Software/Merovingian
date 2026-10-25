@@ -228,6 +228,87 @@ class SiteNavigationTests(unittest.TestCase):
         self.assertRegex(self.config, r"validation:\n(?:\s+.*\n)*?\s+not_found: warn")
 
 
+def scheme_colours(stylesheet: str, scheme: str) -> dict[str, str]:
+    # The custom properties a colour scheme's rule block sets in extra.css.
+    block = re.search(
+        rf'\[data-md-color-scheme="{re.escape(scheme)}"\]\s*\{{([^}}]*)\}}', stylesheet
+    )
+    assert block is not None, f"extra.css has no {scheme} colour scheme block"
+    return dict(re.findall(r"(--[\w-]+):\s*(#[0-9a-fA-F]{6})\s*;", block.group(1)))
+
+
+def contrast_ratio(foreground: str, background: str) -> float:
+    # WCAG 2.2 contrast ratio between two #rrggbb colours.
+    def luminance(colour: str) -> float:
+        channels = [int(colour[index : index + 2], 16) / 255 for index in (1, 3, 5)]
+        linear = [c / 12.92 if c <= 0.04045 else ((c + 0.055) / 1.055) ** 2.4 for c in channels]
+        return 0.2126 * linear[0] + 0.7152 * linear[1] + 0.0722 * linear[2]
+
+    lighter, darker = sorted((luminance(foreground), luminance(background)), reverse=True)
+    return (lighter + 0.05) / (darker + 0.05)
+
+
+class SiteThemeTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.config = MKDOCS_CONFIG.read_text(encoding="utf-8")
+        self.stylesheet = (DOCS_DIR / "stylesheets" / "extra.css").read_text(encoding="utf-8")
+
+    def test_site_opens_in_the_dark_omg_scheme_whatever_the_system_preference(self) -> None:
+        # GIVEN the theme palette in the site configuration.
+        palette = re.search(r"\n  palette:\n((?:    .*\n)+)", self.config)
+        assert palette is not None, "mkdocs.yml has no theme palette"
+
+        # WHEN Material picks the scheme a first visit opens in.
+        schemes = re.findall(r"scheme: (\w+)", palette.group(1))
+
+        # THEN it is the dark scheme, as on the OMG Software site, because no
+        # media query hands the choice to the system; the reader can still
+        # toggle to the light scheme, and both take their colours from extra.css.
+        self.assertEqual(schemes, ["slate", "default"])
+        self.assertNotIn("media:", palette.group(1))
+        self.assertEqual(re.findall(r"primary: (\w+)", palette.group(1)), ["custom", "custom"])
+        self.assertEqual(re.findall(r"accent: (\w+)", palette.group(1)), ["custom", "custom"])
+
+    def test_site_fetches_no_fonts_from_a_third_party(self) -> None:
+        # GIVEN the theme and the extra stylesheet.
+        # WHEN a page is rendered.
+        # THEN it uses the system's own fonts, as the OMG Software site does, so
+        # no reader's visit is reported to a font host.
+        self.assertRegex(self.config, r"\n  font: false\n")
+        self.assertNotIn("@import", self.stylesheet)
+        self.assertNotRegex(self.stylesheet, r"https?://")
+
+    def test_logo_and_favicon_are_inert_svg_files_in_the_site(self) -> None:
+        # GIVEN the logo and favicon the theme names.
+        for key in ("logo", "favicon"):
+            with self.subTest(asset=key):
+                match = re.search(rf"\n  {key}: (\S+)\n", self.config)
+                assert match is not None, f"mkdocs.yml names no theme {key}"
+                asset = DOCS_DIR / match.group(1)
+
+                # WHEN the file is read.
+                self.assertTrue(asset.is_file(), f"{asset} is missing")
+                svg = asset.read_text(encoding="utf-8")
+
+                # THEN it is an SVG image with no script, event handler or
+                # external reference, so serving it cannot run code.
+                self.assertTrue(svg.startswith("<svg"))
+                self.assertNotRegex(svg, r"(?i)<script|\son\w+\s*=|href\s*=|<foreignObject")
+
+    def test_text_and_links_are_readable_in_both_schemes(self) -> None:
+        for scheme in ("slate", "default"):
+            with self.subTest(scheme=scheme):
+                # GIVEN the colours a scheme sets.
+                colours = scheme_colours(self.stylesheet, scheme)
+
+                # WHEN body text and links are drawn on the page background.
+                background = colours["--md-default-bg-color"]
+
+                # THEN each meets the WCAG AA contrast ratio for body text.
+                for role in ("--md-default-fg-color", "--md-typeset-a-color"):
+                    self.assertGreaterEqual(contrast_ratio(colours[role], background), 4.5, role)
+
+
 class SiteHookLinkTests(unittest.TestCase):
     REPO_URL = "https://github.com/OMG-Software/Merovingian"
 
