@@ -26,13 +26,23 @@ RULE = "cpp/unused-static-function"
 
 
 def result(
-    rule_id: str | None, uri: str | None, *, rule_index: int | None = None, base: str | None = "%SRCROOT%"
+    rule_id: str | None,
+    uri: str | None,
+    *,
+    rule_index: int | None = None,
+    top_rule_index: int | None = None,
+    tool_component: dict | None = None,
+    base: str | None = "%SRCROOT%",
 ) -> dict:
     entry: dict = {"message": {"text": "finding"}}
     if rule_id is not None:
         entry["ruleId"] = rule_id
+    if top_rule_index is not None:
+        entry["ruleIndex"] = top_rule_index
     if rule_index is not None:
         entry["rule"] = {"index": rule_index}
+        if tool_component is not None:
+            entry["rule"]["toolComponent"] = tool_component
     if uri is not None:
         artifact = {"uri": uri}
         if base is not None:
@@ -41,11 +51,14 @@ def result(
     return entry
 
 
-def sarif(results: list[dict], rules: list[str] | None = None) -> dict:
+def sarif(results: list[dict], rules: list[str] | None = None, extensions: list[list[str]] | None = None) -> dict:
     driver: dict = {"name": "CodeQL"}
     if rules is not None:
         driver["rules"] = [{"id": rule} for rule in rules]
-    return {"version": "2.1.0", "runs": [{"tool": {"driver": driver}, "results": results}]}
+    tool: dict = {"driver": driver}
+    if extensions is not None:
+        tool["extensions"] = [{"name": f"pack-{n}", "rules": [{"id": r} for r in ids]} for n, ids in enumerate(extensions)]
+    return {"version": "2.1.0", "runs": [{"tool": tool, "results": results}]}
 
 
 def kept_locations(document: dict) -> list[tuple[str | None, str | None]]:
@@ -119,6 +132,55 @@ class FilterCodeqlSarifTests(unittest.TestCase):
         self.assertEqual(completed.returncode, 0, completed.stderr)
         remaining = json.loads(path.read_text(encoding="utf-8"))["runs"][0]["results"]
         self.assertEqual([entry["rule"]["index"] for entry in remaining], [0])
+
+    def test_a_rule_named_only_by_the_top_level_rule_index_is_recognised(self) -> None:
+        # GIVEN results that name their rule by the result's own ruleIndex (SARIF 2.1.0 3.27.6).
+        path = self.write(
+            "cpp.sarif",
+            sarif(
+                [result(None, "tests/unit/a.cpp", top_rule_index=1), result(None, "tests/unit/b.cpp", top_rule_index=0)],
+                rules=["cpp/path-injection", RULE],
+            ),
+        )
+
+        # WHEN the report is filtered.
+        completed = self.run_filter(path)
+
+        # THEN the one whose index names the rule is dropped.
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        remaining = json.loads(path.read_text(encoding="utf-8"))["runs"][0]["results"]
+        self.assertEqual([entry["ruleIndex"] for entry in remaining], [0])
+
+    def test_a_rule_index_is_resolved_against_the_tool_component_it_names(self) -> None:
+        # GIVEN a driver whose first rule is the excluded one, an extension (a query
+        # pack) whose first rule is another, and results indexing into each, or into
+        # a component that does not exist.
+        path = self.write(
+            "cpp.sarif",
+            sarif(
+                [
+                    result(None, "tests/unit/a.cpp", rule_index=0, tool_component={"index": 0}),
+                    result(None, "tests/unit/b.cpp", rule_index=0, tool_component={"index": 1}),
+                    result(None, "tests/unit/c.cpp", rule_index=0, tool_component={"index": 7}),
+                    result(None, "tests/unit/d.cpp", rule_index=0, tool_component={"name": "pack-1"}),
+                    result(None, "tests/unit/e.cpp", rule_index=0),
+                ],
+                rules=[RULE],
+                extensions=[["cpp/path-injection"], [RULE]],
+            ),
+        )
+
+        # WHEN the report is filtered.
+        completed = self.run_filter(path)
+
+        # THEN each index is read in its own component: the extension's other rule is
+        # kept, its excluded rule and the driver's are dropped, and a reference this
+        # cannot resolve is kept.
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertEqual(
+            [uri for _, uri in kept_locations(json.loads(path.read_text(encoding="utf-8")))],
+            ["tests/unit/a.cpp", "tests/unit/c.cpp", "tests/unit/d.cpp"],
+        )
 
     def test_only_a_top_level_tests_directory_matches(self) -> None:
         # GIVEN the rule on paths that merely contain "tests", and on a result with no location.
@@ -197,12 +259,17 @@ class FilterCodeqlSarifTests(unittest.TestCase):
         self.assertEqual(untouched.read_text(encoding="utf-8"), "not a report")
 
     def test_input_that_is_not_sarif_fails_and_is_left_as_it_was(self) -> None:
-        # GIVEN a file that is not JSON, and JSON that has no runs.
+        # GIVEN a file that is not JSON, JSON with no runs or an empty runs array, and
+        # a report that is not SARIF 2.1.0.
         broken = self.root / "broken.sarif"
         broken.write_text("{not json", encoding="utf-8")
         no_runs = self.write("no-runs.sarif", {"version": "2.1.0"})
+        empty_runs = self.write("empty-runs.sarif", {"version": "2.1.0", "runs": []})
+        no_version = self.write("no-version.sarif", {"runs": sarif([result(RULE, "tests/unit/a.cpp")])["runs"]})
+        old_version = self.write("old-version.sarif", {**sarif([result(RULE, "tests/unit/a.cpp")]), "version": "2.0.0"})
 
-        for path in (broken, no_runs):
+        # An empty runs array is refused too: uploading it would close every open alert.
+        for path in (broken, no_runs, empty_runs, no_version, old_version):
             with self.subTest(path=path.name):
                 before = path.read_bytes()
 

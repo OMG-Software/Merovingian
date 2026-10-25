@@ -35,18 +35,46 @@ class NotSarif(Exception):
     pass
 
 
-def rule_of(result: dict, rules: list) -> str | None:
+def component_rules(tool: dict, reference: object) -> list | None:
+    """The rules array of the tool component `reference` names, or None.
+
+    No reference means the driver. A reference is followed only by its index
+    into tool.extensions (CodeQL's query packs); one that names a component any
+    other way, or an index that is out of range, cannot be resolved here.
+    """
+    if reference is None:
+        component = tool.get("driver")
+    elif isinstance(reference, dict) and isinstance(reference.get("index"), int):
+        extensions = tool.get("extensions")
+        index = reference["index"]
+        if not isinstance(extensions, list) or not 0 <= index < len(extensions):
+            return None
+        component = extensions[index]
+    else:
+        return None
+    rules = component.get("rules") if isinstance(component, dict) else None
+    return rules if isinstance(rules, list) else None
+
+
+def rule_of(result: dict, tool: dict) -> str | None:
+    """The result's rule ID, or None when it cannot be determined (the result is kept).
+
+    SARIF 2.1.0 names a result's rule by ruleId, by rule.id, or by an index
+    (rule.index, else ruleIndex) into the rules of the component rule.toolComponent
+    names, the driver when it names none (3.27.5 to 3.27.7).
+    """
     if isinstance(result.get("ruleId"), str):
         return result["ruleId"]
     rule = result.get("rule")
-    if isinstance(rule, dict):
-        if isinstance(rule.get("id"), str):
-            return rule["id"]
-        index = rule.get("index")
-        if isinstance(index, int) and 0 <= index < len(rules) and isinstance(rules[index], dict):
-            identifier = rules[index].get("id")
-            return identifier if isinstance(identifier, str) else None
-    return None
+    rule = rule if isinstance(rule, dict) else {}
+    if isinstance(rule.get("id"), str):
+        return rule["id"]
+    index = rule.get("index", result.get("ruleIndex"))
+    rules = component_rules(tool, rule.get("toolComponent"))
+    if not isinstance(index, int) or rules is None or not 0 <= index < len(rules):
+        return None
+    identifier = rules[index].get("id") if isinstance(rules[index], dict) else None
+    return identifier if isinstance(identifier, str) else None
 
 
 def top_directory_of(result: dict) -> str | None:
@@ -76,21 +104,23 @@ def top_directory_of(result: dict) -> str | None:
 
 
 def filter_report(document: object) -> int:
-    if not isinstance(document, dict) or not isinstance(document.get("runs"), list):
-        raise NotSarif("no runs array")
-    dropped = 0
-    for run in document["runs"]:
-        if not isinstance(run, dict):
-            raise NotSarif("a run is not an object")
-        results = run.get("results", [])
-        if not isinstance(results, list):
+    # Validated before anything changes. An empty runs array is refused too:
+    # uploading it would close every open alert as fixed.
+    if not isinstance(document, dict) or document.get("version") != "2.1.0":
+        raise NotSarif("not a SARIF 2.1.0 report")
+    runs = document.get("runs")
+    if not isinstance(runs, list) or not runs:
+        raise NotSarif("no runs")
+    for run in runs:
+        if not isinstance(run, dict) or not isinstance(run.get("tool"), dict):
+            raise NotSarif("a run is not an object with a tool")
+        if not isinstance(run.get("results", []), list):
             raise NotSarif("results is not an array")
-        driver = run.get("tool", {}).get("driver", {}) if isinstance(run.get("tool"), dict) else {}
-        rules = driver.get("rules", []) if isinstance(driver, dict) else []
-        rules = rules if isinstance(rules, list) else []
+    dropped = 0
+    for run in runs:
         kept = []
-        for result in results:
-            excluded = isinstance(result, dict) and (rule_of(result, rules), top_directory_of(result)) in EXCLUSIONS
+        for result in run.get("results", []):
+            excluded = isinstance(result, dict) and (rule_of(result, run["tool"]), top_directory_of(result)) in EXCLUSIONS
             if excluded:
                 dropped += 1
             else:

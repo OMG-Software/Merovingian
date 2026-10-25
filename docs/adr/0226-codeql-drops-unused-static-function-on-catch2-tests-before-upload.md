@@ -49,7 +49,10 @@ Alerts already open on `main` close as fixed at the next analysis there.
 The filter keeps anything it cannot place (a result with no location, or an absolute or
 scheme-qualified URI) and anything that might resolve outside `tests/`: a location whose
 `uriBaseId` is not CodeQL's `%SRCROOT%`, or whose path, once percent-decoded, holds a `..`
-segment or a backslash (PR #534 review). It refuses a report that is not SARIF without writing anything,
+segment or a backslash (PR #534 review). A rule named by index is read in the rules of the
+tool component the result names (CodeQL puts query-pack rules in `tool.extensions`), and a
+result whose rule cannot be resolved is kept. It refuses a report that is not SARIF 2.1.0, or has no runs (an empty upload would close every open
+alert as fixed), without writing anything,
 so the upload step fails rather than publishing an unfiltered report.
 
 Rules this sets for future work:
