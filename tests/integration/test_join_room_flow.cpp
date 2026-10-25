@@ -1034,6 +1034,44 @@ SCENARIO("A federated join seeds the join event's after-state group and forward 
                 }
             }
         }
+
+        WHEN("join_room rejoins a room whose last event from an earlier stay is still a forward extremity")
+        {
+            // An earlier stay ended with this server's own leave as the room's
+            // tip here. The resident's DAG has moved on past it, so the join's
+            // prev_events (which the make_join template chose) descend from it.
+            auto const left_behind = std::string{"$earlier_leave:"} + resident_server;
+            {
+                auto const lock = std::lock_guard{runtime.mutex};
+                REQUIRE(merovingian::database::update_forward_extremities(runtime.database.persistent_store, room_id,
+                                                                          left_behind, {}, true));
+            }
+            auto captured_requests = std::vector<std::string>{};
+            auto server_thread = std::thread{[&]() {
+                run_resident_server(acceptor, *tls_context.context, make_join_response, send_join_response,
+                                    captured_requests);
+            }};
+
+            auto const result =
+                merovingian::homeserver::join_room(runtime, login.value, room_id, {std::string{resident_server}});
+
+            server_thread.join();
+
+            THEN("the join event replaces it as the room's sole forward extremity")
+            {
+                CAPTURE(result.reason);
+                REQUIRE(result.ok);
+                auto const lock = std::lock_guard{runtime.mutex};
+                auto const& store = runtime.database.persistent_store;
+                auto const join_state_row =
+                    std::ranges::find_if(store.state, [&](merovingian::database::PersistentStateEvent const& s) {
+                        return s.room_id == room_id && s.event_type == "m.room.member" && s.state_key == alice;
+                    });
+                REQUIRE(join_state_row != store.state.end());
+                REQUIRE(merovingian::database::find_forward_extremities(store, room_id) ==
+                        std::vector<std::string>{join_state_row->event_id});
+            }
+        }
     }
 }
 

@@ -38,10 +38,13 @@
 namespace
 {
 
-[[nodiscard]] auto registration_enabled_config() -> merovingian::config::Config
+[[nodiscard]] auto registration_enabled_config(
+    std::uint32_t max_state_groups = merovingian::config::FederationStateResolutionConfig{}.max_state_groups)
+    -> merovingian::config::Config
 {
     auto security = merovingian::config::SecurityConfig{};
     security.secrets.master_key_file = merovingian::tests::shared_master_key_file();
+    security.federation.state_resolution.max_state_groups = max_state_groups;
     merovingian::tests::enable_token_registration(security);
     return merovingian::config::Config{
         merovingian::config::ServerConfig{},
@@ -79,11 +82,12 @@ struct AliceRoom final
 // uses to exercise ingest_pdu_event directly, without a real X-Matrix
 // signature (ingest_pdu_event's trust boundary does not re-verify it; see
 // the comment above ingest_pdu_event itself).
-[[nodiscard]] auto make_inbound_pdu(
-    std::string const& room_id, std::string const& event_id, std::string const& event_type,
-    std::optional<std::string> const& state_key, std::vector<std::string> const& prev_event_ids, std::int64_t ts,
-    merovingian::canonicaljson::Object content = {},
-    std::vector<std::string> const& auth_event_ids = {}) -> merovingian::federation::InboundPduEnvelope
+[[nodiscard]] auto make_inbound_pdu(std::string const& room_id, std::string const& event_id,
+                                    std::string const& event_type, std::optional<std::string> const& state_key,
+                                    std::vector<std::string> const& prev_event_ids, std::int64_t ts,
+                                    merovingian::canonicaljson::Object content = {},
+                                    std::vector<std::string> const& auth_event_ids = {})
+    -> merovingian::federation::InboundPduEnvelope
 {
     using namespace merovingian;
 
@@ -137,6 +141,76 @@ struct AliceRoom final
     env.auth_event_ids = auth_event_ids;
     env.json = serialized.output;
     return env;
+}
+
+// The room's power_levels and alice's membership: the auth_events an inbound
+// PDU "sent" by alice names (m.room.create is implicit in a v12 room ID).
+[[nodiscard]] auto alice_auth_event_ids(merovingian::homeserver::HomeserverRuntime const& runtime, AliceRoom const& ctx)
+    -> std::vector<std::string>
+{
+    auto ids = std::vector<std::string>{};
+    for (auto const& s : runtime.database.persistent_store.state)
+    {
+        if (s.room_id == ctx.room_id && ((s.event_type == "m.room.power_levels" && s.state_key.empty()) ||
+                                         (s.event_type == "m.room.member" && s.state_key == ctx.alice_id)))
+        {
+            ids.push_back(s.event_id);
+        }
+    }
+    return ids;
+}
+
+struct TopicFork final
+{
+    std::string older_tip{};
+    std::string newer_tip{};
+};
+
+// Forks the room's single tip into two inbound m.room.topic events, the second
+// received after the first.
+[[nodiscard]] auto fork_room_into_two_topics(merovingian::homeserver::HomeserverRuntime& runtime, AliceRoom const& ctx)
+    -> TopicFork
+{
+    auto const extremities =
+        merovingian::database::find_forward_extremities(runtime.database.persistent_store, ctx.room_id);
+    REQUIRE(extremities.size() == 1U);
+    auto const tip = extremities.front();
+    auto const auth_event_ids = alice_auth_event_ids(runtime, ctx);
+
+    auto const ingest_topic = [&](std::string const& event_id, std::string const& topic, std::int64_t ts) {
+        auto content = merovingian::canonicaljson::Object{};
+        content.push_back(merovingian::canonicaljson::make_member("topic", merovingian::canonicaljson::Value{topic}));
+        auto const pdu = make_inbound_pdu(ctx.room_id, event_id, "m.room.topic", std::string{}, {tip}, ts,
+                                          std::move(content), auth_event_ids);
+        REQUIRE(merovingian::homeserver::ingest_pdu_event(runtime, pdu).status ==
+                merovingian::federation::PduIngestionStatus::accepted);
+    };
+    ingest_topic("$older_topic:remote.example.org", "older", 6000);
+    ingest_topic("$newer_topic:remote.example.org", "newer", 7000);
+    REQUIRE(merovingian::database::find_forward_extremities(runtime.database.persistent_store, ctx.room_id).size() ==
+            2U);
+    return {"$older_topic:remote.example.org", "$newer_topic:remote.example.org"};
+}
+
+[[nodiscard]] auto stored_prev_event_ids(merovingian::homeserver::HomeserverRuntime const& runtime,
+                                         std::string const& event_id) -> std::vector<std::string>
+{
+    auto const& events = runtime.database.persistent_store.events;
+    auto const it = std::ranges::find_if(events, [&](merovingian::database::PersistentEvent const& e) {
+        return e.event_id == event_id;
+    });
+    REQUIRE(it != events.end());
+    return it->prev_event_ids;
+}
+
+[[nodiscard]] auto membership_of(merovingian::homeserver::HomeserverRuntime const& runtime, AliceRoom const& ctx)
+    -> std::string
+{
+    auto const& memberships = runtime.database.persistent_store.memberships;
+    auto const it = std::ranges::find_if(memberships, [&](merovingian::database::PersistentMembership const& m) {
+        return m.room_id == ctx.room_id && m.user_id == ctx.alice_id;
+    });
+    return it == memberships.end() ? std::string{} : it->membership;
 }
 
 } // namespace
@@ -360,6 +434,143 @@ SCENARIO("Room creation: every initial event has a correct after-state group, "
                 }
             }
             REQUIRE(extremities.front() == expected_tip);
+        }
+    }
+}
+
+SCENARIO("A local event whose forward extremities cannot be resolved together is built on the newest one, "
+         "which retires the rest",
+         "[pdu_ingestion][state_groups][leave]")
+{
+    GIVEN("a room forked into two inbound tips, under a state-resolution budget of one state group")
+    {
+        // The budget stands in for any resolution that fails closed (a missing
+        // auth-chain event, a walk cap): the two tips each have a state, but
+        // the state before an event citing both cannot be computed.
+        REQUIRE(sodium_init() >= 0);
+        auto started = merovingian::homeserver::start_runtime(registration_enabled_config(1U));
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        auto const ctx = make_alice_room(runtime);
+        auto const fork = fork_room_into_two_topics(runtime, ctx);
+
+        WHEN("alice sends a message")
+        {
+            auto const sent = merovingian::homeserver::send_event(
+                runtime, ctx.alice_token, ctx.room_id,
+                R"({"type":"m.room.message","content":{"msgtype":"m.text","body":"after the fork"}})");
+
+            THEN("it is stored, citing only the tip received last")
+            {
+                CAPTURE(sent.reason);
+                REQUIRE(sent.ok);
+                REQUIRE(stored_prev_event_ids(runtime, sent.value) == std::vector<std::string>{fork.newer_tip});
+            }
+
+            THEN("it is the room's sole forward extremity, so the next event needs no resolution")
+            {
+                REQUIRE(sent.ok);
+                auto const extremities =
+                    merovingian::database::find_forward_extremities(runtime.database.persistent_store, ctx.room_id);
+                REQUIRE(extremities == std::vector<std::string>{sent.value});
+            }
+
+            THEN("its state before is the newest tip's state")
+            {
+                REQUIRE(sent.ok);
+                auto const& store = runtime.database.persistent_store;
+                auto const group = merovingian::database::find_event_state_group(store, sent.value);
+                REQUIRE(group.has_value());
+                auto const full = merovingian::database::read_state_group_full_state(store, *group);
+                REQUIRE(full.has_value());
+                auto const topic = std::ranges::find_if(*full, [](auto const& e) {
+                    return e.event_type == "m.room.topic";
+                });
+                REQUIRE(topic != full->end());
+                REQUIRE(topic->event_id == fork.newer_tip);
+            }
+        }
+
+        WHEN("alice leaves the room")
+        {
+            auto const left = merovingian::homeserver::leave_room(runtime, ctx.alice_token, ctx.room_id);
+
+            THEN("the leave succeeds and alice's membership is leave")
+            {
+                CAPTURE(left.reason);
+                REQUIRE(left.ok);
+                REQUIRE(membership_of(runtime, ctx) == "leave");
+            }
+        }
+    }
+}
+
+SCENARIO("A local event skips a forward extremity with no recorded state and retires it",
+         "[pdu_ingestion][state_groups][leave]")
+{
+    GIVEN("a room whose tip sits beside a forward extremity this server holds no state for")
+    {
+        REQUIRE(sodium_init() >= 0);
+        auto started = merovingian::homeserver::start_runtime(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        auto const ctx = make_alice_room(runtime);
+        auto& store = runtime.database.persistent_store;
+        auto const extremities = merovingian::database::find_forward_extremities(store, ctx.room_id);
+        REQUIRE(extremities.size() == 1U);
+        auto const tip = extremities.front();
+        auto const stateless = std::string{"$left_behind:remote.example.org"};
+        REQUIRE(merovingian::database::update_forward_extremities(store, ctx.room_id, stateless, {}, true));
+
+        WHEN("alice leaves the room")
+        {
+            auto const left = merovingian::homeserver::leave_room(runtime, ctx.alice_token, ctx.room_id);
+
+            THEN("the leave succeeds, citing only the tip with a state, and the stateless extremity is retired")
+            {
+                CAPTURE(left.reason);
+                REQUIRE(left.ok);
+                REQUIRE(membership_of(runtime, ctx) == "leave");
+                auto const after = merovingian::database::find_forward_extremities(store, ctx.room_id);
+                REQUIRE(after.size() == 1U);
+                REQUIRE(after.front() != stateless);
+                REQUIRE(stored_prev_event_ids(runtime, after.front()) == std::vector<std::string>{tip});
+            }
+        }
+    }
+}
+
+SCENARIO("A local event is refused, not guessed, when no forward extremity has a recorded state",
+         "[pdu_ingestion][state_groups][leave]")
+{
+    GIVEN("a room whose only forward extremity is an event this server holds no state for")
+    {
+        REQUIRE(sodium_init() >= 0);
+        auto started = merovingian::homeserver::start_runtime(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        auto const ctx = make_alice_room(runtime);
+        auto& store = runtime.database.persistent_store;
+        auto const extremities = merovingian::database::find_forward_extremities(store, ctx.room_id);
+        REQUIRE(extremities.size() == 1U);
+        auto const stateless = std::string{"$left_behind:remote.example.org"};
+        REQUIRE(merovingian::database::update_forward_extremities(store, ctx.room_id, stateless, extremities, true));
+        auto const events_before = store.events.size();
+
+        WHEN("alice sends a message")
+        {
+            auto const sent = merovingian::homeserver::send_event(
+                runtime, ctx.alice_token, ctx.room_id,
+                R"({"type":"m.room.message","content":{"msgtype":"m.text","body":"nowhere to put it"}})");
+
+            THEN("it is refused as a server error, nothing is stored, and the extremity is kept")
+            {
+                REQUIRE_FALSE(sent.ok);
+                REQUIRE(sent.status == 500U);
+                REQUIRE(store.events.size() == events_before);
+                REQUIRE(merovingian::database::find_forward_extremities(store, ctx.room_id) ==
+                        std::vector<std::string>{stateless});
+            }
         }
     }
 }
