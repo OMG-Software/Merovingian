@@ -58,17 +58,29 @@ def excluded(path: str, patterns: list[re.Pattern[str]]) -> bool:
     return any(pattern.match(path) for pattern in patterns)
 
 
-def tracked_files() -> list[str]:
-    output = subprocess.run(
-        ["git", "ls-files"], cwd=REPO_ROOT, check=True, capture_output=True, text=True
-    ).stdout
-    return [line for line in output.splitlines() if line]
+def repository_files() -> list[str]:
+    """The tracked files, or, where git cannot read this checkout (a CI container
+    that does not own it, a source tarball), the files under every path this test
+    judges, read from the filesystem."""
+    try:
+        output = subprocess.run(
+            ["git", "-C", str(REPO_ROOT), "ls-files"], check=True, capture_output=True, text=True
+        ).stdout
+        return [line for line in output.splitlines() if line]
+    except (OSError, subprocess.CalledProcessError):
+        pass
+    files = [name for name in TOOLING_FILES if (REPO_ROOT / name).is_file()]
+    for top in ("tests", "scripts", *(prefix.rstrip("/") for prefix in ALWAYS_ANALYSED_PREFIXES)):
+        root = REPO_ROOT / top
+        if root.is_dir():
+            files.extend(path.relative_to(REPO_ROOT).as_posix() for path in root.rglob("*") if path.is_file())
+    return files
 
 
 class SonarCloudExclusionsTest(unittest.TestCase):
     def setUp(self) -> None:
         self.patterns = [sonar_pattern(p.strip()) for p in sonar_property("sonar.exclusions").split(",") if p.strip()]
-        self.files = tracked_files()
+        self.files = repository_files()
 
     def test_given_the_tracked_tests_and_scripts_when_matched_then_every_one_is_excluded(self) -> None:
         tooling = [f for f in self.files if f.startswith(("tests/", "scripts/")) or f in TOOLING_FILES]
