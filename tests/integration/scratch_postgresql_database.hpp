@@ -63,14 +63,18 @@ namespace merovingian::tests
 // The same server as `conninfo`, another database. Handles both libpq forms.
 [[nodiscard]] inline auto conninfo_for_database(std::string const& conninfo, std::string const& database) -> std::string
 {
-    auto const scheme = conninfo.find("://");
-    if (scheme == std::string::npos)
+    // libpq takes a string as a URI only when it starts with one of these two
+    // designators; anything else, even a value containing "://", is keyword/value.
+    auto const designator = conninfo.starts_with("postgresql://") ? std::string_view{"postgresql://"}
+                            : conninfo.starts_with("postgres://") ? std::string_view{"postgres://"}
+                                                                  : std::string_view{};
+    if (designator.empty())
     {
         // Keyword/value form: libpq uses the last value of a repeated keyword.
         return conninfo + " dbname=" + database;
     }
-    auto const path = conninfo.find('/', scheme + 3U);
-    auto const query = conninfo.find('?', scheme + 3U);
+    auto const path = conninfo.find('/', designator.size());
+    auto const query = conninfo.find('?', designator.size());
     auto const authority_end = path < query ? path : query;
     // libpq reads the query after the path, so a dbname parameter there would
     // win over the path and connect to the original database: drop it.

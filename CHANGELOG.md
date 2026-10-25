@@ -18,7 +18,9 @@ while `main` with the same C++ passed). The production rejection path was not at
   (`merovingian::tests`), shared by both files; the upgrade scenarios' databases are now named
   `merovingian_scratch_*`. `conninfo_for_database` drops a `dbname` query parameter (also
   percent-encoded) from a URI, since libpq reads the query after the path and would otherwise
-  connect to the original database (PR #536 review).
+  connect to the original database (PR #536 review). A string is treated as a URI only when it
+  starts with `postgresql://` or `postgres://`, as libpq does, so a keyword/value string whose value
+  holds `://` (`application_name=ci://worker`) still gets the scratch `dbname`.
 - **DOCS:** `docs/testing-standards.md` gains "Live PostgreSQL scenarios that need a quiet store".
 - **TESTS (changed):** "DB-6 PostgreSQL inbound admission rejects escaped NUL state keys before any
   write" (own database; no pending dispatch work before each capture). The PostgreSQL upgrade

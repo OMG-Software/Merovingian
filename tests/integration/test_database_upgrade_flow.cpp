@@ -598,6 +598,14 @@ SCENARIO("A scratch database's connection string names only the scratch database
             {
                 REQUIRE(merovingian::tests::conninfo_for_database("host=db.test dbname=shared", "scratch") ==
                         "host=db.test dbname=shared dbname=scratch");
+                // Only a postgresql:// or postgres:// prefix makes a URI (PR #536 review): a
+                // "://" inside a keyword's value does not.
+                REQUIRE(merovingian::tests::conninfo_for_database(
+                            "host=db.test dbname=shared application_name=ci://worker", "scratch") ==
+                        "host=db.test dbname=shared application_name=ci://worker dbname=scratch");
+                REQUIRE(merovingian::tests::conninfo_for_database("host=db.test dbname=shared options='x://y'",
+                                                                  "scratch") ==
+                        "host=db.test dbname=shared options='x://y' dbname=scratch");
             }
         }
     }
