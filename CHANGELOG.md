@@ -16,12 +16,15 @@ while `main` with the same C++ passed). The production rejection path was not at
 - **CHANGED:** `ScratchPostgresqlDatabase` and `conninfo_for_database` move from
   `tests/integration/test_database_upgrade_flow.cpp` to `tests/integration/scratch_postgresql_database.hpp`
   (`merovingian::tests`), shared by both files; the upgrade scenarios' databases are now named
-  `merovingian_scratch_*`.
+  `merovingian_scratch_*`. `conninfo_for_database` drops a `dbname` query parameter (also
+  percent-encoded) from a URI, since libpq reads the query after the path and would otherwise
+  connect to the original database (PR #536 review).
 - **DOCS:** `docs/testing-standards.md` gains "Live PostgreSQL scenarios that need a quiet store".
 - **TESTS (changed):** "DB-6 PostgreSQL inbound admission rejects escaped NUL state keys before any
   write" (own database; no pending dispatch work before each capture). The PostgreSQL upgrade
-  scenarios use the shared fixture. **TESTS (new):** none; the race is timing-dependent and is
-  removed at its cause rather than reproduced.
+  scenarios use the shared fixture. **TESTS (new):** "A scratch database's connection string names
+  only the scratch database" (`[scratch]`, no live server needed). The race itself is
+  timing-dependent and is removed at its cause rather than reproduced.
 
 ## 0.12.47
 

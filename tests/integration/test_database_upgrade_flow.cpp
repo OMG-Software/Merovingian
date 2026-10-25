@@ -566,6 +566,43 @@ SCENARIO("A PostgreSQL schema is never migrated past this build", "[database][up
     }
 }
 
+// libpq reads a URI's query after its path, so a dbname there would send the
+// "scratch" connection back to the shared database (PR #536 review).
+SCENARIO("A scratch database's connection string names only the scratch database", "[database][postgresql][scratch]")
+{
+    GIVEN("connection strings for the shared database, some naming it again in the query")
+    {
+        auto const cases = std::vector<std::pair<std::string, std::string>>{
+            {"postgresql://u:p@db.test:5432/shared?dbname=shared&sslmode=disable",
+             "postgresql://u:p@db.test:5432/scratch?sslmode=disable"                                                                  },
+            {"postgresql://db.test/shared?sslmode=require&%64bname=shared&connect_timeout=5",
+             "postgresql://db.test/scratch?sslmode=require&connect_timeout=5"                                                         },
+            {"postgresql://db.test/shared?dbname=shared",                                     "postgresql://db.test/scratch"          },
+            {"postgres://db.test?dbname=shared",                                              "postgres://db.test/scratch"            },
+            {"postgresql://db.test/shared",                                                   "postgresql://db.test/scratch"          },
+            {"postgresql://db.test/shared?dbnamex=1",                                         "postgresql://db.test/scratch?dbnamex=1"},
+        };
+
+        WHEN("each is pointed at the scratch database")
+        {
+            THEN("the path names it and no query parameter names another")
+            {
+                for (auto const& [shared, expected] : cases)
+                {
+                    INFO("conninfo " << shared);
+                    REQUIRE(merovingian::tests::conninfo_for_database(shared, "scratch") == expected);
+                }
+            }
+
+            AND_THEN("a keyword/value string gets the scratch dbname last, which libpq uses")
+            {
+                REQUIRE(merovingian::tests::conninfo_for_database("host=db.test dbname=shared", "scratch") ==
+                        "host=db.test dbname=shared dbname=scratch");
+            }
+        }
+    }
+}
+
 SCENARIO("A PostgreSQL server that cannot be reached is refused", "[database][upgrade][postgresql]")
 {
     GIVEN("a connection string for a loopback port with nothing listening")
