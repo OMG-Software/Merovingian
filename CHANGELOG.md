@@ -1,3 +1,11 @@
+## 0.12.49
+
+- **FIXED:** the documentation header and favicon use the angular OMG Software mark
+  published on omg-software.org, replacing the obsolete four-square symbol.
+- **ADDED:** the matching Merovingian project mark on the documentation home page.
+  All three images are served locally. The existing colours, fonts and light-mode
+  option remain in place.
+
 ## 0.12.47
 
 Every database migration is collapsed into one v1 schema for the release (ADR-0224). The schema
