@@ -207,6 +207,7 @@
 * [0220 - SMTP goes through libcurl, with TLS required except to a loopback literal](0220-smtp-goes-through-libcurl-with-tls-required-except-to-a-loopback-literal.md)
 * [0221 - A grown sliding sync timeline_limit skips the long-poll once per request pos](0221-a-grown-sliding-sync-timeline-limit-skips-the-long-poll-once-per-request-pos.md)
 * [0222 - Library linkage is read from the loader at runtime, not from the build](0222-library-linkage-is-read-from-the-loader-at-runtime.md)
+* [0223 - The documentation site wears the OMG Software theme, dark first, with system fonts](0223-the-documentation-site-wears-the-omg-software-theme-dark-first-with-system-fonts.md)
 * [0224 - Pre-1.0 migrations collapse into one v1 schema, frozen at 1.0.0, and an unknown ledger is refused](0224-pre-1-0-migrations-collapse-into-one-frozen-v1-schema.md)
 
 ## Proposed Records

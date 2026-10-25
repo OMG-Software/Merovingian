@@ -361,6 +361,11 @@ What the site expects of each branch:
   strict-mode warning.
 - **The changelog page is `CHANGELOG.md`.** The hooks publish it as
   `changelog.md`; do not create that file under `docs/`.
+- **The theme is OMG Software's.** Colours live in `docs/stylesheets/extra.css`,
+  not in Material palette names; the site opens dark, uses system fonts and
+  loads nothing from another origin
+  ([ADR-0223](adr/0223-the-documentation-site-wears-the-omg-software-theme-dark-first-with-system-fonts.md)).
+  `docs-site-tooling` checks text and link contrast in both schemes.
 
 ## Security Posture
 

@@ -41,6 +41,24 @@ upgraded and must be recreated.
   for migrations 012, 013, 014, 015, 018 and 022, and the 0.11.13 fixture and previous-series account
   scenarios.
 
+## 0.12.46
+
+The documentation site takes the theme of the OMG Software organisation site (ADR-0223).
+
+- **CHANGED:** the site opens in a dark scheme of OMG near-black (`#151616`) with the OMG orange
+  accent (`#ff8954`), whatever the system preference; the toggle offers a matching light scheme whose
+  links and hover accent use darker oranges so they stay readable (PR #531 review). Header, tabs and footer are OMG near-black with a
+  hairline rule in both schemes; buttons, cards and headings follow the organisation site's shapes
+  and weights, and the home page hero carries its mono eyebrow label.
+- **CHANGED:** the site uses Arial and Consolas from the reader's system (`font: false`) and no
+  longer loads Roboto from Google Fonts, so a page view makes no request to another origin.
+- **ADDED:** the OMG four-square mark as the site logo (`docs/assets/omg-logo.svg`) and favicon
+  (`docs/assets/omg-favicon.svg`).
+- **TESTS (new):** `tests/tooling/test_docs_site.py` gains `SiteThemeTests`: the site opens dark with
+  custom colours; it fetches no fonts from a third party; the logo and favicon are inert local SVG;
+  body text, links and the hover accent meet WCAG AA contrast on the page and on cards in both
+  schemes.
+
 ## 0.12.45
 
 Sliding sync tells the client when a room's timeline is truncated. Element X, whose room list asks

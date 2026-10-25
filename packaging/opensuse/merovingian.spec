@@ -115,6 +115,9 @@ fi
 * Sun Oct 25 2026 James Chapman <claude@ping.me.uk> - 0.12.47-1
 - Collapse every database migration into one v1 initial schema; a database created by an earlier build is refused, not upgraded.
 
+* Sun Oct 25 2026 James Chapman <claude@ping.me.uk> - 0.12.46-1
+- Documentation site takes the OMG Software theme: dark by default, OMG orange accent, system fonts, OMG logo and favicon.
+
 * Sat Oct 24 2026 James Chapman <claude@ping.me.uk> - 0.12.45-1
 - Sliding sync reports limited and prev_batch on a truncated room timeline, and resends history when timeline_limit grows (expanded_timeline).
 - Log every library each process runs at startup, marked static or dynamic, including the thumbnail worker's libpng and libjpeg-turbo.
