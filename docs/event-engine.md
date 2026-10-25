@@ -664,6 +664,30 @@ now calls) and to federated-join state seeding
 (`homeserver::record_event_state_with_parent`) — see that doc section for
 the full list of call sites.
 
+A local event's prev_events and its state before are chosen together, once,
+while it is composed (`homeserver::basis_for_new_event`, ADR-0225): the
+forward extremities and the resolution of their states. When that resolution
+fails (an extremity with no recorded state, an auth-chain event this server
+does not hold, the state-resolution budget), the event is built on the newest
+extremity, by this server's stream order, whose after-state reads alone, and
+storing it retires every other extremity. A warning
+(`event.prev_events.fallback`) names the reason. Only when no extremity has a
+readable state is the event refused (500, `event.prev_events.unresolvable`).
+Before 0.12.48 the failed resolution refused every local event in the room,
+with no log above debug.
+
+A federated join makes the join event the room's sole forward extremity: every
+extremity recorded before it, left from an earlier stay, is retired (0.12.48).
+Kept, those made every later local event resolve the old stay's state against
+the new one.
+
+A local event, or a federated join, commits in one transaction with its
+after-state group, the group mapping, the forward-extremity change and the
+current state the resulting extremities resolve to
+(`homeserver::store_event_with_bookkeeping`, ADR-0228). That resolution runs
+before the commit, with the event standing in for itself. A refusal anywhere
+writes nothing: no event, membership, group or tip.
+
 Federated-join seeding only ever takes events for the room being joined
 (FED-1, ADR-0083): `filter_send_join_events_for_room` drops every `state`
 and `auth_chain` entry of the `send_join` response whose `room_id` — for a

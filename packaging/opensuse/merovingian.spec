@@ -115,6 +115,9 @@ fi
 * Sun Oct 25 2026 James Chapman <claude@ping.me.uk> - 0.12.49-1
 - CodeQL no longer reports cpp/unused-static-function on Catch2 test sources: the SARIF is filtered before upload.
 
+* Sun Oct 25 2026 James Chapman <claude@ping.me.uk> - 0.12.48-1
+- Leaving a room no longer fails with 500 when the room's state cannot be resolved locally; every persistence failure on the leave path is logged at warning level.
+
 * Sun Oct 25 2026 James Chapman <claude@ping.me.uk> - 0.12.47-1
 - Collapse every database migration into one v1 initial schema; a database created by an earlier build is refused, not upgraded.
 

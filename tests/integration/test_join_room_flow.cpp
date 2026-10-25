@@ -1034,6 +1034,107 @@ SCENARIO("A federated join seeds the join event's after-state group and forward 
                 }
             }
         }
+
+        WHEN("join_room rejoins a room whose last event from an earlier stay is still a forward extremity")
+        {
+            // An earlier stay ended with this server's own leave as the room's
+            // tip here. The resident's DAG has moved on past it, so the join's
+            // prev_events (which the make_join template chose) descend from it.
+            auto const left_behind = std::string{"$earlier_leave:"} + resident_server;
+            {
+                auto const lock = std::lock_guard{runtime.mutex};
+                REQUIRE(merovingian::database::update_forward_extremities(runtime.database.persistent_store, room_id,
+                                                                          left_behind, {}, true));
+            }
+            auto captured_requests = std::vector<std::string>{};
+            auto server_thread = std::thread{[&]() {
+                run_resident_server(acceptor, *tls_context.context, make_join_response, send_join_response,
+                                    captured_requests);
+            }};
+
+            auto const result =
+                merovingian::homeserver::join_room(runtime, login.value, room_id, {std::string{resident_server}});
+
+            server_thread.join();
+
+            THEN("the join event replaces it as the room's sole forward extremity")
+            {
+                CAPTURE(result.reason);
+                REQUIRE(result.ok);
+                auto const lock = std::lock_guard{runtime.mutex};
+                auto const& store = runtime.database.persistent_store;
+                auto const join_state_row =
+                    std::ranges::find_if(store.state, [&](merovingian::database::PersistentStateEvent const& s) {
+                        return s.room_id == room_id && s.event_type == "m.room.member" && s.state_key == alice;
+                    });
+                REQUIRE(join_state_row != store.state.end());
+                REQUIRE(merovingian::database::find_forward_extremities(store, room_id) ==
+                        std::vector<std::string>{join_state_row->event_id});
+            }
+        }
+
+        // The state the join's after-state is recorded from cannot be stored:
+        // the join answers a server error instead of leaving a joined room
+        // with no state to build the next event on.
+        auto const join_with_failing_statement = [&](std::string const& statement_name) {
+            {
+                auto const lock = std::lock_guard{runtime.mutex};
+                runtime.database.persistent_store.force_failure_statement_names.insert(statement_name);
+            }
+            auto captured_requests = std::vector<std::string>{};
+            auto server_thread = std::thread{[&]() {
+                run_resident_server(acceptor, *tls_context.context, make_join_response, send_join_response,
+                                    captured_requests);
+            }};
+            auto const result =
+                merovingian::homeserver::join_room(runtime, login.value, room_id, {std::string{resident_server}});
+            server_thread.join();
+            return result;
+        };
+
+        // ADR-0228: the join event, alice's membership, the join's state group,
+        // its mapping, the forward extremities and current state commit in
+        // one transaction, so a refused write leaves alice not joined.
+        auto const nothing_of_the_join_is_left = [&]() {
+            auto const lock = std::lock_guard{runtime.mutex};
+            auto const& store = runtime.database.persistent_store;
+            REQUIRE_FALSE(std::ranges::any_of(store.memberships, [&](auto const& m) {
+                return m.room_id == room_id && m.user_id == alice && m.membership == "join";
+            }));
+            REQUIRE_FALSE(std::ranges::any_of(store.state, [&](auto const& s) {
+                return s.room_id == room_id && s.event_type == "m.room.member" && s.state_key == alice;
+            }));
+            REQUIRE(merovingian::database::find_forward_extremities(store, room_id).empty());
+            REQUIRE_FALSE(std::ranges::any_of(store.state_groups, [&](auto const& group) {
+                return group.room_id == room_id;
+            }));
+        };
+
+        WHEN("join_room cannot store the join event's after-state group")
+        {
+            auto const result = join_with_failing_statement("insert_state_group");
+
+            THEN("the join answers a server error and alice is not joined")
+            {
+                CAPTURE(result.reason);
+                REQUIRE_FALSE(result.ok);
+                REQUIRE(result.status == 500U);
+                nothing_of_the_join_is_left();
+            }
+        }
+
+        WHEN("join_room cannot map the join event to its after-state group")
+        {
+            auto const result = join_with_failing_statement("upsert_event_state_group");
+
+            THEN("the join answers a server error and alice is not joined")
+            {
+                CAPTURE(result.reason);
+                REQUIRE_FALSE(result.ok);
+                REQUIRE(result.status == 500U);
+                nothing_of_the_join_is_left();
+            }
+        }
     }
 }
 
