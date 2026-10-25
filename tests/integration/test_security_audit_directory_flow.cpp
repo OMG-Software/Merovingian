@@ -248,46 +248,6 @@ private:
     return *value;
 }
 
-[[nodiscard]] auto bootstrap_sqlite_to_version(sqlite3& connection, std::uint32_t target_version) -> bool
-{
-    auto const plan = merovingian::database::migration_plan_between(0U, target_version);
-    for (auto const& step : plan.steps)
-    {
-        for (auto const& statement : step.statements)
-        {
-            auto const sql = std::string{statement.sql};
-            if (sqlite3_exec(&connection, sql.c_str(), nullptr, nullptr, nullptr) != SQLITE_OK)
-            {
-                return false;
-            }
-        }
-        // The C API returns ownership through an out-parameter; wrap it
-        // immediately. Even compiled migration ledger values are bound.
-        // Bound strings outlive the statement (destroyed in reverse order),
-        // so SQLite may borrow them without a destructor callback.
-        auto const version = std::to_string(step.version);
-        auto const direction = std::string{merovingian::database::migration_direction_name(step.direction)};
-        auto* raw_statement = static_cast<sqlite3_stmt*>(nullptr);
-        auto const prepared = sqlite3_prepare_v2(&connection, "INSERT INTO schema_migrations VALUES (?1, ?2, ?3)", -1,
-                                                 &raw_statement, nullptr);
-        auto statement = std::unique_ptr<sqlite3_stmt, decltype(&sqlite3_finalize)>{raw_statement, &sqlite3_finalize};
-        if (prepared != SQLITE_OK || statement == nullptr)
-        {
-            return false;
-        }
-        if (sqlite3_bind_text(statement.get(), 1, version.c_str(), static_cast<int>(version.size()), nullptr) !=
-                SQLITE_OK ||
-            sqlite3_bind_text(statement.get(), 2, step.name.c_str(), static_cast<int>(step.name.size()), nullptr) !=
-                SQLITE_OK ||
-            sqlite3_bind_text(statement.get(), 3, direction.c_str(), static_cast<int>(direction.size()), nullptr) !=
-                SQLITE_OK ||
-            sqlite3_step(statement.get()) != SQLITE_DONE)
-        {
-            return false;
-        }
-    }
-    return true;
-}
 } // namespace
 
 // Matrix v1.19: POST /_matrix/client/v3/publicRooms requires authentication;
@@ -523,48 +483,6 @@ SCENARIO("failed directory visibility writes do not publish the room in memory o
                                          });
                 REQUIRE(reloaded_room != restarted.runtime.homeserver.database.persistent_store.rooms.end());
                 CHECK_FALSE(reloaded_room->directory_public);
-            }
-        }
-    }
-}
-
-SCENARIO("schema version 17 rooms migrate to private directory visibility",
-         "[security_audit_directory][integration][sqlite][migration]")
-{
-    GIVEN("a SQLite database at schema version 17 containing a legacy room")
-    {
-        auto const temporary_database = TemporarySqliteDatabase{};
-        auto const legacy_room_id = std::string{"!legacy-directory:example.org"};
-        {
-            auto sqlite = SqliteConnection{temporary_database.path()};
-            REQUIRE(bootstrap_sqlite_to_version(sqlite.native_handle(), 17U));
-            REQUIRE(sqlite.execute("INSERT INTO rooms (room_id, creator_user_id) "
-                                   "VALUES ('!legacy-directory:example.org', '@legacy:example.org')"));
-        }
-
-        WHEN("homeserver startup applies the next additive migration")
-        {
-            auto started = merovingian::homeserver::start_client_server(directory_config(temporary_database.path()));
-
-            THEN("the legacy room remains private and is absent from the public directory")
-            {
-                REQUIRE(started.started);
-                REQUIRE(started.runtime.homeserver.database.schema_version ==
-                        merovingian::database::current_schema_version());
-                auto const persisted_room = std::ranges::find_if(
-                    started.runtime.homeserver.database.persistent_store.rooms, [&legacy_room_id](auto const& room) {
-                        return room.room_id == legacy_room_id;
-                    });
-                REQUIRE(persisted_room != started.runtime.homeserver.database.persistent_store.rooms.end());
-                CHECK_FALSE(persisted_room->directory_public);
-                auto const local_room = std::ranges::find_if(started.runtime.homeserver.database.rooms,
-                                                             [&legacy_room_id](auto const& room) {
-                                                                 return room.room_id == legacy_room_id;
-                                                             });
-                REQUIRE(local_room != started.runtime.homeserver.database.rooms.end());
-                CHECK_FALSE(local_room->directory_public);
-                auto const listing = public_room_ids(started.runtime, {});
-                CHECK(std::ranges::find(listing, legacy_room_id) == listing.end());
             }
         }
     }

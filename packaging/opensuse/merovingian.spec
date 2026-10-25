@@ -1,5 +1,5 @@
 Name:           merovingian
-Version:        0.12.46
+Version:        0.12.47
 Release:        1%{?dist}
 Summary:        Secure Matrix Protocol homeserver
 
@@ -112,6 +112,9 @@ fi
 %{_sysconfdir}/merovingian/merovingian.conf.example
 
 %changelog
+* Sun Oct 25 2026 James Chapman <claude@ping.me.uk> - 0.12.47-1
+- Collapse every database migration into one v1 initial schema; a database created by an earlier build is refused, not upgraded.
+
 * Sun Oct 25 2026 James Chapman <claude@ping.me.uk> - 0.12.46-1
 - Documentation site takes the OMG Software theme: dark by default, OMG orange accent, system fonts, OMG logo and favicon.
 

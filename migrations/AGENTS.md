@@ -3,6 +3,33 @@
 Migrations run exactly once, in ascending numeric order, and **must never be modified
 after they have been applied to any environment**.
 
+## The v1 schema (ADR-0224)
+
+In 0.12.47 every pre-1.0 migration was collapsed into one: `001_initial_schema.sql`,
+schema version `1`. It creates all 62 tables in their final shape and the four
+secondary indexes (`event_edges_prev_event_id`, `idx_to_device_messages_recipient_age`,
+`idx_deferred_pdus_room_id`, `idx_media_pending_uploads_owner`). There are no upgrades
+from before it: a database whose `schema_migrations` ledger holds a row this build does
+not have, such as the rows 2 to 26 every build up to 0.12.46 wrote, is refused at open
+(`schema_ledger_is_known`) and must be recreated.
+
+The file is the frozen record of what the build runs. The server never reads it; the
+C++ step `initial_schema_migration()` in `src/database/migration.cpp`, generated from
+`core_tables` and `core_indexes` in `src/database/schema.cpp`, is what runs. The unit
+test "Checked-in migrations hold exactly the v1 step this build runs" requires the two
+to match statement for statement.
+
+- **Until 1.0.0 is cut**, a schema change edits `core_tables`/`core_indexes` and this
+  file together, in the same commit. Regenerate the file rather than hand-editing it.
+- **From 1.0.0, v1 is frozen.** Never edit `001_initial_schema.sql`, and never change
+  `core_tables`/`core_indexes` in a way that changes what v1 creates. A schema change is
+  a new migration: `002_<name>.sql`, plus its upgrade step in `upgrade_migration_catalog()`
+  and its downgrade at the front of `downgrade_migration_catalog()`. The first one must
+  also make `initial_schema_definitions()` keep returning the v1 shape while
+  `current_schema_definitions()` gains the change (today both return the same registry).
+- Never rename a step or reuse a version number: the ledger check identifies a step by
+  both.
+
 ## File naming
 
 ```
@@ -11,177 +38,7 @@ NNN_snake_case_description.sql
 
 `NNN` is a zero-padded three-digit integer: `001`, `002`, ..., `010`, `011`, ...
 The next migration number is always `max(existing) + 1`.
-Current highest: `025`.
-
-- Schema version `16` (`016_media_legacy_endpoint_visibility.sql`) ALTERs
-  `legacy_endpoint_visible` onto `media` (ADR-0068).
-- Schema version `17` (`017_token_rotation_lineage.sql`) ALTERs
-  `predecessor_hash` onto `refresh_tokens` and `predecessor_refresh_hash` onto
-  `access_tokens` so a refreshed token pair records the refresh token it
-  replaced (ADR-0074).
-- Schema version `18` (`018_room_directory_visibility.sql`) ALTERs
-  `directory_public` onto `rooms`, defaulting existing rooms to private
-  (ADR-0099).
-- Schema version `19` (`019_to_device_queue_age_bound.sql`) ALTERs
-  `created_at_ms` onto `to_device_messages` and indexes it by recipient
-  (CSAZ-10, ADR-0117). Rows written before it have `created_at_ms = 0`, an
-  unknown age, which the queue's TTL never treats as expired.
-- Schema version `20` (`020_remote_media_cache_mapping.sql`) ALTERs
-  `local_media_id` and `fetched_at_ms` onto `remote_media`, which had no reader
-  or writer until then, making the remote media cache durable (ADR-0119).
-- Schema version `21` (`021_room_alias_creator.sql`) ALTERs `creator_user_id`
-  onto `room_aliases`, so an alias's creator may delete it (CSAZ-12, ADR-0127).
-  Aliases created before it have an empty creator.
-
-Versions `16` to `21` add no table, so the federation worker allowlist
-classification is unchanged by them.
-
-- Schema version `22` (`022_appservice_outbox.sql`) adds the
-  `appservice_outbox` table, the Application Service API transaction queue
-  (audit R01, ADR-0163): one row per event queued for one appservice, primary
-  key `(appservice_id, stream_ordering)`. It is a new table, classified main
-  process only (not in `federation_worker_table_allowlist`), like
-  `appservice_txn_cursor`.
-
-Schema version `23` (`023_deferred_pdus.sql`, R03, ADR-0165) adds the
-`deferred_pdus` table: the federation PDUs `ingest_pdu_event` could not yet
-place and keeps for a retry. Main reads and writes it; it is deliberately not
-in `federation_worker_table_allowlist` (the worker relays every PDU to main), so
-`tests/unit/test_worker_db_uri.cpp` classifies it as a table the worker never
-reads. Numbers are `TEXT` like every other numeric column.
-
-Schema version `24` (`024_receipts.sql`, ADR-0169) adds the `receipts` table:
-read receipts, one row per `(room_id, receipt_type, user_id, thread_id)`, so
-unread counts survive a restart. Main reads and writes it; it is not in
-`federation_worker_table_allowlist` (the worker relays receipt EDUs to main),
-and `tests/unit/test_worker_db_uri.cpp` classifies it as a table the worker
-never reads.
-
-Schema version `25` (`025_appservice_directory.sql`, ADR-0192) adds the
-`appservice_directory` table: the rooms an appservice has published to
-the directory of one of its networks, one row per
-`(appservice_id, network_id, room_id)`. Main reads and writes it; it is not in
-`federation_worker_table_allowlist`, and `tests/unit/test_worker_db_uri.cpp`
-classifies it as a table the worker never reads.
-
-Schema version `26` (`026_media_upload_names_and_pending_uploads.sql`) ALTERs `upload_name`
-(ADR-0211) onto `media` and adds the `media_pending_uploads` table (ADR-0212), indexed by owner. Main reads and writes it; it is
-not in `federation_worker_table_allowlist`, and `tests/unit/test_worker_db_uri.cpp` classifies it
-as a table the worker never reads.
-
-Schema version `2` introduced the `sync_stream_watermark` table via
-`002_sync_stream_watermark.sql` to support live pre-production deployments that
-must upgrade in place. Schema version `3` adds the analogous
-`event_stream_watermark` table via `003_event_stream_watermark.sql` so the
-timeline stream_ordering counter survives restarts. Schema version `4` adds
-the `state_transitions` table via `004_state_transitions.sql` so the server can
-populate `unsigned.replaces_state` when serving state events to clients. Schema
-version `5` (`005_backfill_state_transitions.sql`) is data-only and backfills
-the `state_transitions` rows for pre-existing rooms; it adds no tables. Schema
-version `6` adds the `account_threepids` table via `006_account_threepids.sql`
-so durable 3PID bindings (medium/address, optional country and identity server,
-validation/bound timestamps) survive restarts. Schema version `7`
-(`007_account_threepids_columns.sql`) adds the `client_secret` and `sid`
-TEXT columns onto `account_threepids` so the homeserver can persist the
-identity-server credentials needed for IS-delegated unbind (auth mode 2:
-sid + client_secret); it adds no new tables. Schema version `8`
-(`008_pushers.sql`) adds the `pushers` table so push notification pushers
-registered via `POST /_matrix/client/v3/pushers/set` survive restarts, keyed
-on `(user_id, app_id, pushkey)` per the spec's uniqueness rule. Schema
-version `9` (`009_notifications.sql`) adds the `notifications` table so
-`GET /_matrix/client/v3/notifications` history survives restarts, keyed on
-`(user_id, event_id)`; `stream_ordering` doubles as the endpoint's `from`/
-`next_token` pagination key, and rows are pruned per-user at write time (see
-`docs/database-persistence.md`) so the table cannot grow without bound.
-Schema version `10` (`010_openid_tokens.sql`) adds the `openid_tokens` table
-so tokens minted by `POST /_matrix/client/v3/user/{userId}/openid/request_token`
-(Matrix v1.19 CS API §OpenID) survive restarts and can be redeemed by `GET
-/_matrix/federation/v1/openid/userinfo` (SS API §OpenID). It is deliberately
-a separate table from `access_tokens`: an OpenID token is a narrow,
-short-lived credential good only for the federation userinfo lookup, and
-must never be usable as a client-server bearer token — see
-`docs/threat-model.md`. Every row has a finite `expires_at`; expired rows
-are pruned at write time (see `docs/database-persistence.md`) so the table
-cannot grow without bound. Schema version `11` (`011_pushers_data_extra.sql`)
-ALTERs `data_extra_json` onto `pushers` (no new table): a canonical-JSON
-object holding every member of a pusher's registration-time `data`
-dictionary beyond `url`/`format`, which already have dedicated columns.
-Matrix v1.19 Push Gateway API requires forwarding the pusher's whole `data`
-dictionary minus `url` to the gateway, not just `format`; see
-`docs/database-persistence.md`. Schema version `12` (`012_login_tokens.sql`)
-adds the `login_tokens` table so short-lived, single-use SSO login tokens
-minted by `homeserver::complete_sso_login` (Matrix v1.19 CS API §"Client
-login via SSO") survive restarts and can be redeemed exactly once by `POST
-/_matrix/client/v3/login` with `type: m.login.token`. It is deliberately a
-separate table from `access_tokens`, for the same token-confusion reason
-`openid_tokens` is — see `docs/threat-model.md`. Every row has a finite
-`expires_at` and a `used` flag; expired-or-used rows are pruned at write
-time (see `docs/database-persistence.md`) so the table cannot grow without
-bound. After `v1.0.0`, deployed databases become a
-strict compatibility boundary and schema changes must be added as new
-forward migration files instead of modifying already-applied migrations.
-Schema version `12` (`012_login_tokens.sql`) adds the `login_tokens` table
-for SSO login token redemption — owned by a sibling feature branch (not
-implemented in this codebase's C++ layer); it is registered here purely so
-this branch's own migration chain has no version gap. Schema version `13`
-(`013_appservice_txn_cursor.sql`) adds the `appservice_txn_cursor` table:
-one row per registered appservice, tracking the Application Service API's
-outbound `PUT /_matrix/app/v1/transactions/{txnId}` delivery cursor
-(`next_txn_id`, `delivered_stream_ordering`) plus the currently in-flight
-(unacknowledged) batch, if any (`pending_txn_id`/`pending_stream_ordering`)
-— see `docs/database-persistence.md` and `src/homeserver/room_service.cpp`'s
-appservice delivery dispatch for how retries reuse the same `pending_txn_id`
-and event range rather than growing it, per the spec's "Homeservers MUST NOT
-alter ... events they were going to send within that transaction ID on
-retries."
-
-  Schema version `14` (`014_user_deactivation.sql`) adds a `deactivated` TEXT
-column to `users`, defaulting to `'false'`, so `POST
-/_matrix/client/v3/account/deactivate` can close an account permanently. It is
-deliberately distinct from the existing reversible `locked`/`suspended` admin
-flags: a deactivated account can never log in again, and its row is retained so
-the localpart is never reissued. Adding the column also required naming the
-columns explicitly in `insert_user` — the previous bare `INSERT INTO users
-VALUES (...)` would have broken silently on the sixth column.
-
-  Schema version `15` (`015_event_graph_state.sql`, ADR-0064) is Phase A of
-spec-conformant PDU ingestion with delta state groups: it adds the storage
-the later ingestion phases need, without changing ingestion behaviour. It
-adds `events.status` (`'accepted' | 'soft_failed' | 'rejected' | 'outlier'`,
-defaulting existing rows to `'accepted'`); extends the pre-existing but
-vestigial `state_groups` table (`state_group_id`, `room_id` only, never
-populated by any code path) with `parent_state_group_id` and `delta_depth`,
-turning it into the root of a delta chain — a group is either a full
-snapshot (`parent_state_group_id = ''`, `delta_depth = '0'`) or a delta from
-its parent, capped at `events::max_state_group_delta_depth` hops before a
-fresh snapshot is forced; and adds three new tables: `state_group_state`
-(a group's own delta or snapshot rows), `event_state_groups` (which group
-holds the state after a given event), and `forward_extremities` (a room's
-current DAG leaves). `state_group_edges` is untouched and remains vestigial.
-Like every other nullable-in-spirit column in this schema (e.g.
-`state_transitions.previous_event_id`), `parent_state_group_id` is stored as
-`TEXT NOT NULL DEFAULT ''` with the empty string as the "no parent, this is
-a snapshot" sentinel, not a SQL `NULL` — consistent with the rest of this
-file and with `database::PreparedStatement`/`BoundValue`, which has no NULL
-parameter representation. The migration seeds every pre-existing room with
-one snapshot state group (deterministic id `'seed:' || room_id`) built from
-its `current_state`, attaches it to the room's current forward extremities
-(the events `event_edges` names as nobody's `prev_event_id`), and leaves
-older events with no state group — a later phase treats those as outliers.
-That seeding step, and phase B's future per-event children lookup, filter
-`event_edges` by `prev_event_id` alone — outside the leading column of its
-`(event_id, prev_event_id)` primary key, so unindexed this was a full table
-scan per probe (O(events × edges) for the seed step alone on an upgrading
-database). `015_event_graph_state.sql` therefore also creates
-`event_edges_prev_event_id ON event_edges (prev_event_id)`, the project's
-first index, positioned before the seed statements so seeding itself uses
-it; `state_groups` gets no equivalent room_id index because no store
-function queries it by `room_id` (every lookup is by `state_group_id`, its
-primary key). Every `INSERT`/`ALTER` is idempotency-guarded (`WHERE NOT
-EXISTS` / `ADD COLUMN` is itself only run once by the migration runner's
-version tracking), so re-running the migration chain is a no-op. See
-`docs/adr/0064-spec-conformant-pdu-ingestion-with-delta-state-groups.md` and
-`docs/database-persistence.md`.
+Current highest: `001`.
 
 ## File format
 
@@ -197,16 +54,30 @@ NEXT SQL STATEMENT
 - Each statement preceded by `-- statement <name>` on its own line
 - Statement names must be unique within the file and descriptive (`events_add_stream_ordering`, not `stmt1`)
 - No trailing semicolons — the migration runner adds them
+- The v1 file names each table statement `create_<table>` and each index statement
+  `create_<index>`, and quotes table names in `CREATE TABLE`, exactly as the build's
+  generated DDL does
+
+## Federation worker classification
+
+Every table a migration creates must be classified for the federation worker: in
+`federation_worker_table_allowlist`, in `tests/unit/test_worker_db_uri.cpp`'s set of
+tables the worker never reads, or as ungated infrastructure. That test parses every
+`CREATE TABLE` in `migrations/*.sql` and fails on an unclassified or stale name, so a new
+table is classified in the commit that adds it.
 
 ## Safety rules
 
-1. **Never modify an existing production migration.** Write a new one instead.
-   Before `v1.0.0`, keep schema churn folded into `001_initial_schema.sql`
-   because there are no supported live production databases to upgrade.
+1. **Never modify an existing production migration.** Write a new one instead. Before
+   `v1.0.0` the only migration is `001_initial_schema.sql`, which changes in place
+   (see above); from `v1.0.0` it is frozen like any other.
 2. **Never drop a column or table** without explicit user approval — data loss is irreversible.
 3. **Always provide a DEFAULT when adding NOT NULL columns** to existing tables — both SQLite
    and PostgreSQL require this for non-empty tables.
-4. **Test on a populated database** before merging: run `python build.py` and verify the server
+4. **Put an added column where `ADD COLUMN` would.** Some writes are positional
+   (`INSERT INTO access_tokens VALUES (...)`), so a column's position is part of the
+   schema.
+5. **Test on a populated database** before merging: run `python build.py` and verify the server
    starts cleanly against an existing database file.
 
 ## Schema source of truth

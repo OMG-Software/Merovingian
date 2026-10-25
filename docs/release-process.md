@@ -68,22 +68,32 @@ The packaged tarballs include:
 
 ## Starting a minor series: the upgrade fixture
 
-A database written by the previous minor series must open, migrate and serve under
-every candidate (ADR-0216). When the first version of a minor series is cut (for
-example 0.13.0), add the fixture of the last release of the series before it:
+Upgrades are supported from 1.0.0 onward, so this applies to minor series from 1.1 on.
+A database written by the previous supported minor series must open, migrate and serve
+under every candidate (ADR-0216). When the first version of such a series is cut (for
+example 1.1.0), add the fixture of the last release of the series before it (there,
+the last 1.0.x release):
 
 ```bash
 python scripts/generate_upgrade_fixture.py <last-release-commit> tests/fixtures/upgrade/<last-release-version>
 ```
 
-Then set `previous_series_schema_version` and `previous_series_fixture_release` in
-`tests/integration/test_database_upgrade_flow.cpp` to that release and remove the
-previous fixture directory. Never regenerate a fixture from current code: it is
+Then add scenarios to `tests/integration/test_database_upgrade_flow.cpp` that open that
+fixture and serve it, and remove the previous fixture directory. Never regenerate a fixture from current code: it is
 evidence only because the old release wrote it.
 
-At 1.0.0 the migrations collapse into one initial schema, so a pre-1.0 database can no
-longer be opened: that change removes the 0.11.13 fixture and its scenarios, and the
-first post-1.0 fixture comes from the last 1.0.x release when 1.1 starts (ADR-0216).
+A pre-1.0 series start (such as 0.13.0) adds no fixture and no upgrade test. The
+migrations were collapsed into one initial schema in 0.12.47
+([ADR-0224](adr/0224-pre-1-0-migrations-collapse-into-one-frozen-v1-schema.md)), so a
+pre-1.0 database can no longer be opened: that change removed the 0.11.13 fixture and
+its scenarios, and there is no fixture until the 1.1 series starts.
+
+### The v1 schema is frozen from 1.0.0
+
+From 1.0.0, the v1 migration (the `initial_schema` step in `src/database/migration.cpp`)
+and `migrations/001_initial_schema.sql` never change. A schema change is a new numbered
+migration (v2 onwards) that keeps deployed databases compatible. A unit test requires the
+SQL file to match the build's v1 step statement for statement.
 
 ## Verifying release signatures
 

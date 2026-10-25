@@ -165,6 +165,16 @@ auto parse(std::vector<char const*> const& args) -> merovingian::federation_work
         {
             cursor += if_not_exists.size();
         }
+        // The v1 migration quotes every table name ("users"), as the build's
+        // generated DDL does.
+        while (cursor < sql.size() && std::isspace(static_cast<unsigned char>(sql[cursor])) != 0)
+        {
+            ++cursor;
+        }
+        if (cursor < sql.size() && sql[cursor] == '"')
+        {
+            ++cursor;
+        }
         auto name = next_identifier(sql, cursor);
         std::ranges::transform(name, name.begin(), [](unsigned char c) {
             return static_cast<char>(std::tolower(c));

@@ -17,9 +17,18 @@ struct SchemaTableDefinition final
     std::string_view columns_sql{};
 };
 
+// A secondary index: `CREATE INDEX name ON table (columns_sql)`.
+struct SchemaIndexDefinition final
+{
+    std::string_view name{};
+    std::string_view table{};
+    std::string_view columns_sql{};
+};
+
 [[nodiscard]] auto current_schema_version() noexcept -> std::uint32_t;
 [[nodiscard]] auto initial_schema_definitions() -> std::vector<SchemaTableDefinition>;
 [[nodiscard]] auto current_schema_definitions() -> std::vector<SchemaTableDefinition>;
+[[nodiscard]] auto initial_schema_indexes() -> std::vector<SchemaIndexDefinition>;
 [[nodiscard]] auto initial_schema_tables() -> std::vector<std::string_view>;
 [[nodiscard]] auto current_schema_tables() -> std::vector<std::string_view>;
 [[nodiscard]] auto schema_table_definition(std::string_view table_name) noexcept
@@ -27,5 +36,8 @@ struct SchemaTableDefinition final
 [[nodiscard]] auto schema_table_is_core(std::string_view table_name) noexcept -> bool;
 [[nodiscard]] auto quote_sqlite_identifier(std::string_view identifier) noexcept -> std::optional<std::string>;
 [[nodiscard]] auto create_table_sql(SchemaTableDefinition const& table) -> std::optional<std::string>;
+// Refuse (nullopt) any index that is not one of initial_schema_indexes().
+[[nodiscard]] auto create_index_sql(SchemaIndexDefinition const& index) -> std::optional<std::string>;
+[[nodiscard]] auto create_index_if_missing_sql(SchemaIndexDefinition const& index) -> std::optional<std::string>;
 
 } // namespace merovingian::database

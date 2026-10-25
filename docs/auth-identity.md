@@ -48,7 +48,7 @@ production-gated.
   server" below. `POST /account/3pid/add` also enforces password UIA, and the
   bind/list/unbind/delete endpoints maintain per-account 3PID records including
   `added_at` / `validated_at` metadata plus, for IS-bound 3PIDs, the stored
-  `client_secret` and `sid` (migration `007`) needed to drive a mode-2 remote
+  `client_secret` and `sid` (part of the v1 schema) needed to drive a mode-2 remote
   unbind.
 - Access-token hashes are durable and hydrate back into runtime sessions after
   restart, with their expiry (before 0.12.13 hydration dropped `expires_at`,
@@ -58,7 +58,7 @@ production-gated.
   valid until the new access token or refresh token is used, at which point
   the old refresh token is revoked", so a client whose response was lost can
   retry. The new access and refresh tokens record the refresh token they
-  replaced (`predecessor_refresh_hash` / `predecessor_hash`, migration `017`);
+  replaced (`predecessor_refresh_hash` / `predecessor_hash`, part of the v1 schema);
   the first successful use of either revokes it (`authenticated_user` for the
   access token, `refresh_local_session` for the refresh token). A retry with
   the same token supersedes the unused earlier pair. Presenting a refresh
@@ -330,10 +330,9 @@ returns `502` on transport error or a malformed IS response.
 The `server.identity_server.*` config block (`trusted_servers`,
 `default_server`, `allowed_bind_domains`, `connect_timeout_seconds`,
 `total_timeout_seconds`) is hot-reloaded and marked restart-required for
-trust-set changes. 3PID bindings are persisted via migration
-`006_account_threepids.sql` (previously in-memory); IS-bound bindings additionally
-store the `client_secret` and `sid` needed for a remote unbind via migration
-`007_account_threepids_columns.sql`.
+trust-set changes. 3PID bindings are persisted in the `account_threepids` table
+(part of the v1 schema); IS-bound bindings additionally store the `client_secret`
+and `sid` needed for a remote unbind.
 
 ### bind / unbind / requestToken IS delegation (v0.11.10)
 
@@ -431,7 +430,7 @@ authenticate nothing beyond "who is this user" to one federation endpoint —
 so it has its own, deliberately separate, lifecycle:
 
 - **Separate table.** OpenID tokens live in `openid_tokens`
-  (`migrations/010_openid_tokens.sql`, schema version 10), never
+  (part of the v1 schema), never
   `access_tokens`. See `docs/database-persistence.md` for the schema.
 - **Separate mint path.** `homeserver::request_openid_token`
   (`src/homeserver/auth_service.cpp`) is the only function that writes to
@@ -571,8 +570,8 @@ are reversible where deactivation is not.
   `auth::password_matches` can never match, so a credential leak predating
   deactivation cannot be replayed even if a future change were to soften the
   login gate.
-- **The `users` row is retained**, not deleted: `deactivated` is a new
-  column (schema version 14 — see `docs/database-persistence.md`), not a row
+- **The `users` row is retained**, not deleted: `deactivated` is a
+  column of `users` (part of the v1 schema — see `docs/database-persistence.md`), not a row
   removal, so registration's existing duplicate-`user_id` check keeps
   rejecting a re-registration of the same localpart.
 - **Both login gates check it first.** `complete_login`'s shared tail and
@@ -584,7 +583,7 @@ are reversible where deactivation is not.
 - **3PIDs are unbound from their identity servers.**
   `unbind_threepid_for_deactivation` (`src/homeserver/client_server.cpp`)
   walks every bound 3PID the account holds and drives IS unbind auth mode 2
-  with the stored `id_server` + `client_secret` + `sid` (migration `007`),
+  with the stored `id_server` + `client_secret` + `sid` (stored in the v1 schema),
   through the same `resolve_trusted_identity_base_url` SSRF gate as
   `POST /account/3pid/unbind`. The local binding is cleared either way.
 - **`id_server_unbind_result`**, required in the `200` response body, is

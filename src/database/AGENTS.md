@@ -10,7 +10,7 @@ Manages schema migrations and provides a dual-backend (SQLite / PostgreSQL) pers
 | `sqlite_store.cpp` | SQLite backend — used for development and single-node deployments |
 | `postgresql_store.cpp` | PostgreSQL backend — used for production |
 | `migration.cpp` | Runs numbered SQL migrations in order; idempotent on re-run |
-| `migration_files.cpp` | Loads migration SQL from `migrations/` at build time |
+| `migration_files.cpp` | Parses `migrations/*.sql` for `merovingian-db-migrate --migrations` and the tests; the server runs the C++ catalog |
 | `connection.cpp` | Connection lifecycle and pool management |
 | `statement.cpp` | Prepared statement wrapper; parameters are always bound, never interpolated |
 | `schema.cpp` | Schema introspection helpers |
@@ -63,7 +63,10 @@ All higher-level modules receive a `PersistentStore&` — they must not downcast
 ## Migration rules
 
 See `migrations/AGENTS.md` for the migration file format.
-Migrations run automatically at startup via `migration.hpp`; the runner is idempotent.
+Migrations run automatically at startup via `migration.hpp`; the runner is idempotent. The whole schema is one
+v1 step (ADR-0224), frozen from 1.0.0. Both stores refuse a ledger that names a migration this build does not have
+(`schema_ledger_is_known`) before migrating or hydrating anything, and the PostgreSQL bootstrap, like every migration,
+runs as `database.migration_role` when one is configured.
 
 ## Key docs
 

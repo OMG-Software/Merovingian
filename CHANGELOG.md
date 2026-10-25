@@ -1,3 +1,50 @@
+## 0.12.47
+
+Every database migration is collapsed into one v1 schema for the release (ADR-0224). The schema
+was built by 26 steps, 25 of them there only to upgrade databases nobody runs; a fresh database
+now gets every table in its final shape, and every index, from the single `initial_schema` step.
+Upgrade compatibility is promised from 1.0.0, so a database an earlier build created cannot be
+upgraded and must be recreated.
+
+- **CHANGED:** `current_schema_version()` is 1. `migrations/` holds only `001_initial_schema.sql`
+  (62 tables, 4 indexes); `002` to `026` are gone, and their columns and indexes are part of the
+  tables v1 creates, each at the position its `ADD COLUMN` gave it. The migration catalogs hold one
+  upgrade step and one downgrade (which drops the schema). The v1-era table shapes, the
+  `vN_table_names` lists and the `rooms` special case in `schema.cpp` are gone; `core_indexes` and
+  `initial_schema_indexes()`, `create_index_sql()` and `create_index_if_missing_sql()` are new.
+- **CHANGED:** from 1.0.0 the v1 step and `migrations/001_initial_schema.sql` are frozen, and a
+  schema change is a new numbered migration (`migrations/AGENTS.md`). A unit test requires the
+  file and the build's v1 step to match statement for statement.
+- **ADDED:** a database whose `schema_migrations` ledger names a migration this build does not
+  have, such as the rows 2 to 26 every build up to 0.12.46 wrote, is refused as soon as the
+  ledger is read, before anything is migrated or hydrated, with a reason naming the row
+  (`schema_ledger_is_known`). The forward-only seam (`migrate_*_schema_to`) refuses it too.
+- **FIXED:** a fresh PostgreSQL database is bootstrapped as `database.migration_role` when one is
+  configured, and startup fails if it cannot be assumed. It was bootstrapped as the login role,
+  so the migration role owned none of the v1 tables, contrary to `provision-roles.sql`; with
+  every table now in v1, the first post-1.0 migration would have failed its `ALTER`.
+- **REMOVED:** the 0.11.13 upgrade fixture (`tests/fixtures/upgrade/0.11.13/`) and its scenarios,
+  as ADR-0216 planned; the next fixture comes from the last 1.0.x release when 1.1 starts. The
+  generator, the seam and the synthetic scenarios stay. `docs/release-process.md` requires a
+  previous-series fixture only when a supported series starts, from 1.1 on; a pre-1.0 series start
+  such as 0.13.0 adds none (PR #532 review).
+- **TESTS (new):** `tests/unit/test_database_persistence.cpp`: "The v1 schema step creates every
+  table in its final shape and every index" (`[collapse]`), "A schema ledger naming a migration
+  this build does not have is refused" (`[collapse][security]`) and "Checked-in migrations hold
+  exactly the v1 step this build runs" (`[files]`). `tests/unit/test_database_schema.cpp`:
+  "create_index_sql generates DDL only for registered indexes" (`[ddl][security]`: an unknown name,
+  table, injected columns or injected name gets no DDL). `tests/integration/test_database_upgrade_flow.cpp`:
+  "A fresh SQLite/PostgreSQL database has every column and index of the v1 schema", "A
+  SQLite/PostgreSQL database a pre-1.0 build created is refused, not upgraded" and "A SQLite
+  database holding tables but no schema ledger is refused, not adopted".
+  **TESTS (changed):** the migration runner, PostgreSQL bootstrap, schema inventory and homeserver
+  bootstrap scenarios expect one step at v1; the upgrade-flow seam scenarios target v1; "PostgreSQL
+  migrations execute as the migration role, never as the login role" drops the schema instead of
+  one step and also requires the migration role to own every table it bootstrapped;
+  `test_worker_db_uri.cpp` reads quoted table names. **TESTS (removed):** the per-step scenarios
+  for migrations 012, 013, 014, 015, 018 and 022, and the 0.11.13 fixture and previous-series account
+  scenarios.
+
 ## 0.12.46
 
 The documentation site takes the theme of the OMG Software organisation site (ADR-0223).
