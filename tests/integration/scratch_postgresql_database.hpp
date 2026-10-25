@@ -46,16 +46,18 @@ namespace merovingian::tests
         return -1;
     };
     auto decoded = std::string{};
-    for (auto index = std::size_t{0U}; index < text.size(); ++index)
+    auto index = std::size_t{0U};
+    while (index < text.size())
     {
         if (text[index] == '%' && index + 2U < text.size() && hex(text[index + 1U]) >= 0 && hex(text[index + 2U]) >= 0)
         {
             decoded.push_back(static_cast<char>((hex(text[index + 1U]) * 16) + hex(text[index + 2U])));
-            index += 2U;
+            index += 3U;
         }
         else
         {
             decoded.push_back(text[index]);
+            index += 1U;
         }
     }
     return decoded;
