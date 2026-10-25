@@ -4921,84 +4921,55 @@ namespace
                 database::PersistentStateEvent{std::string{room_id}, "m.room.member", *user_id,
                                                event_id_result.event_id}
             };
-            // store_event_with_state either inserts a new state row or UPDATEs the
-            // existing one (invite → join).  Either path leaves current_state pointing
+            // The join event either inserts a new state row or UPDATEs the
+            // existing one (invite → join). Either path leaves current_state pointing
             // at the join event at membership_stream, which joined_membership_changed_since
             // then detects correctly. DB-4: the user's membership row and the end of
-            // their invite are committed in the same transaction.
+            // their invite are committed with it.
+            //
+            // ADR-0064 phase B1: the join also seeds this room's state
+            // bookkeeping, so the FIRST inbound PDU after it does not hit
+            // missing_prev_state. The send_join response's state array (stored
+            // above as outliers by ingest_send_join_state, returned here as
+            // state_entries) is the room's state immediately BEFORE the join;
+            // the join event's after-state is that plus the join itself,
+            // recorded as one snapshot group, and the join becomes the room's
+            // sole forward extremity.
+            //
+            // Sole: any extremity already recorded here is left from an earlier
+            // stay in the room (concurrent PDUs are deferred until the join
+            // commits). The resident's DAG has moved past it, and the join's
+            // real prev_events are events this server does not hold, so it is
+            // retired here. Kept, it made every later local event resolve the
+            // old stay's state against the new one, and a leave from a large
+            // public room failed with 500 (0.12.48).
+            //
+            // ADR-0228: the event, the membership, the state group, its mapping,
+            // the forward extremities and current state commit together, so a
+            // refused write leaves the user not joined rather than joined with
+            // no state to build the next event on.
             auto const join_event_id = join_pe.event_id;
-            if (!database::store_event_with_state(
-                    runtime.database.persistent_store, std::move(join_pe), join_state,
-                    database::MembershipProjection{*user_id, "join", membership_stream, std::nullopt}))
+            auto bookkeeping = EventBookkeeping{};
+            bookkeeping.state_after = compute_state_after(send_join_state.state_entries, join_event_id, "m.room.member",
+                                                          std::string{*user_id});
+            bookkeeping.replaced_extremities =
+                database::find_forward_extremities(runtime.database.persistent_store, room_id);
+            auto const stored = store_event_with_bookkeeping(
+                runtime.database.persistent_store, policy, std::move(join_pe), join_state,
+                database::MembershipProjection{*user_id, "join", membership_stream, std::nullopt}, bookkeeping,
+                state_resolution_limits(runtime.config.security().federation.state_resolution));
+            if (!stored.ok)
             {
-                log_diagnostic("room.join.rejected", {
-                                                         {"actor",   *user_id,                        false},
-                                                         {"room_id", std::string{room_id},            false},
-                                                         {"status",  "500",                           false},
-                                                         {"reason",  "join event persistence failed", false}
-                });
-                return make_operation_result(false, {}, "join event persistence failed", 500U);
-            }
-            {
-                // ADR-0064 phase B1: seed this freshly joined room's state
-                // bookkeeping so the FIRST inbound PDU after the join does
-                // not hit missing_prev_state. The send_join response's
-                // state array (already stored above as outliers by
-                // ingest_send_join_state, returned here as state_entries)
-                // is exactly the room's state immediately BEFORE the join
-                // event — build one snapshot group from it, give the join
-                // event an after-state group chained off that snapshot
-                // (snapshot + the join member event itself), and make the
-                // join event the room's sole forward extremity.
-                //
-                // Sole: any extremity already recorded here is left from an
-                // earlier stay in the room (concurrent PDUs are deferred until
-                // the join commits). The resident's DAG has moved past it, and
-                // the join's real prev_events are events this server does not
-                // hold, so it is retired here. Kept, it made every later local
-                // event resolve the old stay's state against the new one, and a
-                // leave from a large public room failed with 500 (0.12.48).
-                auto const join_failure = [&](std::string reason) {
-                    log_diagnostic("room.join.failed",
-                                   {
-                                       {"actor",   *user_id,             false},
-                                       {"room_id", std::string{room_id}, false},
-                                       {"status",  "500",                false},
-                                       {"reason",  reason,               false}
-                    },
-                                   observability::LogEventSeverity::warning);
-                    return make_operation_result(false, {}, std::move(reason), 500U);
-                };
-                auto const snapshot_group_id = database::create_or_reuse_state_group(
-                    runtime.database.persistent_store, room_id, "join-snapshot:" + join_event_id, std::nullopt,
-                    send_join_state.state_entries);
-                if (snapshot_group_id.has_value())
-                {
-                    auto const state_after = compute_state_after(send_join_state.state_entries, join_event_id,
-                                                                 "m.room.member", std::string{*user_id});
-                    auto const earlier_extremities =
-                        database::find_forward_extremities(runtime.database.persistent_store, room_id);
-                    auto const join_group =
-                        record_event_state_with_parent(runtime.database.persistent_store, room_id, join_event_id,
-                                                       earlier_extremities, snapshot_group_id, state_after);
-                    if (join_group.has_value())
-                    {
-                        if (!recompute_current_state(
-                                runtime.database.persistent_store, room_id, policy,
-                                state_resolution_limits(runtime.config.security().federation.state_resolution)))
-                        {
-                            return join_failure("join current-state persistence failed");
-                        }
-                    }
-                    else
-                    {
-                        return join_failure("join event state-group persistence failed");
-                    }
-                }
-                else
-                {
-                    return join_failure("join snapshot persistence failed");
-                }
+                log_diagnostic("room.join.failed",
+                               {
+                                   {"actor",   *user_id,             false},
+                                   {"room_id", std::string{room_id}, false},
+                                   {"status",  "500",                false},
+                                   {"step",    stored.step,          false},
+                                   {"reason",  stored.reason,        false}
+                },
+                               observability::LogEventSeverity::warning);
+                return make_operation_result(false, {}, "join event persistence failed: " + stored.reason, 500U);
             }
         }
         // GCOVR_EXCL_STOP

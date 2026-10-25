@@ -1092,30 +1092,44 @@ SCENARIO("A federated join seeds the join event's after-state group and forward 
             return result;
         };
 
-        WHEN("join_room cannot store the snapshot of the room's state before the join")
+        // ADR-0228: the join event, alice's membership, the join's state group,
+        // its mapping, the forward extremities and current state commit in
+        // one transaction, so a refused write leaves alice not joined.
+        auto const nothing_of_the_join_is_left = [&]() {
+            auto const lock = std::lock_guard{runtime.mutex};
+            auto const& store = runtime.database.persistent_store;
+            REQUIRE_FALSE(std::ranges::any_of(store.memberships, [&](auto const& m) {
+                return m.room_id == room_id && m.user_id == alice && m.membership == "join";
+            }));
+            REQUIRE_FALSE(std::ranges::any_of(store.state, [&](auto const& s) {
+                return s.room_id == room_id && s.event_type == "m.room.member" && s.state_key == alice;
+            }));
+            REQUIRE(merovingian::database::find_forward_extremities(store, room_id).empty());
+        };
+
+        WHEN("join_room cannot store the join event's after-state group")
         {
             auto const result = join_with_failing_statement("insert_state_group");
 
-            THEN("the join answers a server error")
+            THEN("the join answers a server error and alice is not joined")
             {
                 CAPTURE(result.reason);
                 REQUIRE_FALSE(result.ok);
                 REQUIRE(result.status == 500U);
+                nothing_of_the_join_is_left();
             }
         }
 
-        WHEN("join_room cannot record the join event's after-state group")
+        WHEN("join_room cannot map the join event to its after-state group")
         {
             auto const result = join_with_failing_statement("upsert_event_state_group");
 
-            THEN("the join answers a server error and the join event is not made a forward extremity")
+            THEN("the join answers a server error and alice is not joined")
             {
                 CAPTURE(result.reason);
                 REQUIRE_FALSE(result.ok);
                 REQUIRE(result.status == 500U);
-                auto const lock = std::lock_guard{runtime.mutex};
-                REQUIRE(merovingian::database::find_forward_extremities(runtime.database.persistent_store, room_id)
-                            .empty());
+                nothing_of_the_join_is_left();
             }
         }
     }

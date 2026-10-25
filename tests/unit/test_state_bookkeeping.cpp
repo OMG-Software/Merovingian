@@ -601,17 +601,38 @@ SCENARIO("store_local_event refuses a local event it cannot place, and leaves th
             }
         }
 
-        WHEN("its after-state group cannot be recorded")
+        // ADR-0228: the event, its after-state group, its mapping to that
+        // group, the forward-extremity change and current state commit in one
+        // transaction, so a write refused at any of them leaves none of them.
+        auto const nothing_left_of = [&store, &tips_before](std::string const& event_id) {
+            REQUIRE_FALSE(event_is_stored(store, event_id));
+            REQUIRE_FALSE(merovingian::database::find_event_state_group(store, event_id).has_value());
+            REQUIRE(merovingian::database::find_forward_extremities(store, room_id) == tips_before);
+        };
+
+        WHEN("the write mapping it to its after-state group is refused")
         {
             store.force_failure_statement_names.insert("upsert_event_state_group");
             auto const stored = merovingian::homeserver::store_local_event(
                 store, *policy, local_message("$no_group", basis.prev_event_ids), std::nullopt, basis);
 
-            THEN("it is refused, and the event is neither given a group nor made a tip")
+            THEN("it is refused, and nothing of it is left: no event, no group, no new tip")
             {
                 REQUIRE_FALSE(stored);
-                REQUIRE_FALSE(merovingian::database::find_event_state_group(store, "$no_group").has_value());
-                REQUIRE(merovingian::database::find_forward_extremities(store, room_id) == tips_before);
+                nothing_left_of("$no_group");
+            }
+        }
+
+        WHEN("the write moving the room's forward extremities is refused")
+        {
+            store.force_failure_statement_names.insert("insert_forward_extremity");
+            auto const stored = merovingian::homeserver::store_local_event(
+                store, *policy, local_message("$no_tip", basis.prev_event_ids), std::nullopt, basis);
+
+            THEN("it is refused, and nothing of it is left")
+            {
+                REQUIRE_FALSE(stored);
+                nothing_left_of("$no_tip");
             }
         }
 
@@ -624,9 +645,10 @@ SCENARIO("store_local_event refuses a local event it cannot place, and leaves th
             auto const stored = merovingian::homeserver::store_local_event(
                 store, *policy, local_message("$no_current_state", basis.prev_event_ids), std::nullopt, basis);
 
-            THEN("it is refused")
+            THEN("it is refused, and nothing of it is left")
             {
                 REQUIRE_FALSE(stored);
+                nothing_left_of("$no_current_state");
             }
         }
     }

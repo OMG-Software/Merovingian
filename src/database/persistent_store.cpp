@@ -2138,7 +2138,24 @@ namespace
     {
         return true;
     }
-    auto const previous_event_id = existing != store.state.end() ? existing->event_id : std::string{};
+    auto prepared =
+        prepare_current_state(std::move(state), existing != store.state.end() ? existing->event_id : std::string{});
+    if (!commit_persistent_transaction(store, prepared.statements))
+    {
+        return false;
+    }
+    apply_current_state(store, prepared);
+    return true;
+}
+
+[[nodiscard]] auto state_matches_stored_event(PersistentStore const& store, PersistentStateEvent const& state) -> bool
+{
+    return state_matches_persisted_event(store, state);
+}
+
+[[nodiscard]] auto prepare_current_state(PersistentStateEvent state, std::string previous_event_id)
+    -> PreparedCurrentState
+{
     auto statements = std::vector<PreparedStatement>{};
     if (!previous_event_id.empty())
     {
@@ -2184,10 +2201,17 @@ namespace
                              {state.event_id,    false},
                              {previous_event_id, false}
     }));
-    if (!commit_persistent_transaction(store, statements))
-    {
-        return false;
-    }
+    return {std::move(state), std::move(previous_event_id), std::move(statements)};
+}
+
+auto apply_current_state(PersistentStore& store, PreparedCurrentState const& prepared) -> void
+{
+    auto const& state = prepared.state;
+    auto const& previous_event_id = prepared.previous_event_id;
+    auto const existing = std::ranges::find_if(store.state, [&state](PersistentStateEvent const& current) {
+        return current.room_id == state.room_id && current.event_type == state.event_type &&
+               current.state_key == state.state_key;
+    });
     if (existing != store.state.end())
     {
         existing->event_id = state.event_id;
@@ -2214,7 +2238,6 @@ namespace
             {state.room_id, state.event_type, state.state_key, state.event_id, previous_event_id});
         store.state_transition_index.emplace(transition_key, store.state_transitions.size() - 1U);
     }
-    return true;
 }
 
 [[nodiscard]] auto prepare_store_event_with_state(PersistentStore& store, PersistentEvent event,
@@ -2511,6 +2534,25 @@ namespace
                                                std::vector<PersistentStateGroupStateEntry> const& full_state)
     -> std::optional<std::string>
 {
+    auto const prepared = prepare_state_group(store, room_id, new_state_group_id, parent_state_group_id, full_state);
+    if (!prepared.has_value())
+    {
+        return std::nullopt;
+    }
+    if (!commit_persistent_transaction(store, prepared->statements))
+    {
+        return std::nullopt;
+    }
+    apply_state_group(store, *prepared);
+    return prepared->state_group_id;
+}
+
+[[nodiscard]] auto prepare_state_group(PersistentStore const& store, std::string_view room_id,
+                                       std::string_view new_state_group_id,
+                                       std::optional<std::string> const& parent_state_group_id,
+                                       std::vector<PersistentStateGroupStateEntry> const& full_state)
+    -> std::optional<PreparedStateGroup>
+{
     auto const requested_map = to_state_group_map(full_state);
 
     auto parent_depth = std::uint32_t{0U};
@@ -2527,7 +2569,10 @@ namespace
         parent_map = to_state_group_map(*parent_full);
         if (requested_map == parent_map)
         {
-            return std::string{*parent_state_group_id}; // unchanged: reuse the parent group
+            // Unchanged: reuse the parent group, writing nothing.
+            auto reused = PreparedStateGroup{};
+            reused.state_group_id = *parent_state_group_id;
+            return reused;
         }
     }
 
@@ -2567,49 +2612,65 @@ namespace
     auto const new_depth = write_snapshot ? std::uint32_t{0U} : parent_depth + 1U;
     auto const parent_column_value = write_snapshot ? std::string{} : *parent_state_group_id;
 
-    auto statements = std::vector<PreparedStatement>{};
-    statements.push_back(
+    auto prepared = PreparedStateGroup{};
+    prepared.state_group_id = std::string{new_state_group_id};
+    prepared.group = PersistentStateGroup{std::string{new_state_group_id}, std::string{room_id},
+                                          write_snapshot ? std::nullopt : parent_state_group_id, new_depth};
+    prepared.statements.push_back(
         record_statement("insert_state_group",
                          "INSERT INTO state_groups (state_group_id, room_id, parent_state_group_id, delta_depth) "
                          "VALUES ($1, $2, $3, $4)",
                          {public_value(new_state_group_id), public_value(room_id), public_value(parent_column_value),
                           public_value(std::to_string(new_depth))}));
-    for (auto const& row : rows_to_persist)
-    {
-        statements.push_back(record_statement("insert_state_group_state",
-                                              "INSERT INTO state_group_state VALUES ($1, $2, $3, $4)",
-                                              {public_value(new_state_group_id), public_value(row.event_type),
-                                               public_value(row.state_key), public_value(row.event_id)}));
-    }
-    if (!commit_persistent_transaction(store, statements))
-    {
-        return std::nullopt;
-    }
-
-    store.state_groups.push_back({std::string{new_state_group_id}, std::string{room_id},
-                                  write_snapshot ? std::nullopt : parent_state_group_id, new_depth});
     for (auto row : rows_to_persist)
     {
+        prepared.statements.push_back(record_statement("insert_state_group_state",
+                                                       "INSERT INTO state_group_state VALUES ($1, $2, $3, $4)",
+                                                       {public_value(new_state_group_id), public_value(row.event_type),
+                                                        public_value(row.state_key), public_value(row.event_id)}));
         row.state_group_id = std::string{new_state_group_id};
-        store.state_group_state.push_back(std::move(row));
+        prepared.rows.push_back(std::move(row));
     }
-    return std::string{new_state_group_id};
+    return prepared;
+}
+
+auto apply_state_group(PersistentStore& store, PreparedStateGroup const& prepared) -> void
+{
+    if (!prepared.group.has_value())
+    {
+        return; // the parent was reused
+    }
+    store.state_groups.push_back(*prepared.group);
+    store.state_group_state.insert(store.state_group_state.end(), prepared.rows.begin(), prepared.rows.end());
 }
 
 [[nodiscard]] auto set_event_state_group(PersistentStore& store, std::string_view event_id,
                                          std::string_view state_group_id) -> bool
 {
+    auto statement = prepare_event_state_group(event_id, state_group_id);
+    if (!statement.has_value() || !record_and_persist(store, std::move(*statement)))
+    {
+        return false;
+    }
+    apply_event_state_group(store, event_id, state_group_id);
+    return true;
+}
+
+[[nodiscard]] auto prepare_event_state_group(std::string_view event_id, std::string_view state_group_id)
+    -> std::optional<PreparedStatement>
+{
     if (event_id.empty() || state_group_id.empty())
     {
-        return false;
+        return std::nullopt;
     }
-    if (!record_and_persist(store, record_statement("upsert_event_state_group",
-                                                    "INSERT INTO event_state_groups VALUES ($1, $2) ON CONFLICT "
-                                                    "(event_id) DO UPDATE SET state_group_id = $2",
-                                                    {public_value(event_id), public_value(state_group_id)})))
-    {
-        return false;
-    }
+    return record_statement("upsert_event_state_group",
+                            "INSERT INTO event_state_groups VALUES ($1, $2) ON CONFLICT "
+                            "(event_id) DO UPDATE SET state_group_id = $2",
+                            {public_value(event_id), public_value(state_group_id)});
+}
+
+auto apply_event_state_group(PersistentStore& store, std::string_view event_id, std::string_view state_group_id) -> void
+{
     auto const existing =
         std::ranges::find_if(store.event_state_groups, [event_id](PersistentEventStateGroup const& mapping) {
             return mapping.event_id == event_id;
@@ -2622,7 +2683,6 @@ namespace
     {
         store.event_state_groups.push_back({std::string{event_id}, std::string{state_group_id}});
     }
-    return true;
 }
 
 [[nodiscard]] auto find_event_state_group(PersistentStore const& store, std::string_view event_id)
@@ -2648,29 +2708,44 @@ namespace
     {
         return false;
     }
+    if (!commit_persistent_transaction(store, prepare_forward_extremities_update(room_id, event_id, prev_event_ids)))
+    {
+        return false;
+    }
+    apply_forward_extremities_update(store, room_id, event_id, prev_event_ids);
+    return true;
+}
 
+[[nodiscard]] auto prepare_forward_extremities_update(std::string_view room_id, std::string_view event_id,
+                                                      std::vector<std::string> const& replaced_event_ids)
+    -> std::vector<PreparedStatement>
+{
+    if (room_id.empty() || event_id.empty())
+    {
+        return {};
+    }
     auto statements = std::vector<PreparedStatement>{};
-    for (auto const& prev_event_id : prev_event_ids)
+    for (auto const& replaced_event_id : replaced_event_ids)
     {
         statements.push_back(record_statement("delete_forward_extremity",
                                               "DELETE FROM forward_extremities WHERE room_id = $1 AND event_id = $2",
-                                              {public_value(room_id), public_value(prev_event_id)}));
+                                              {public_value(room_id), public_value(replaced_event_id)}));
     }
     statements.push_back(
         record_statement("insert_forward_extremity",
                          "INSERT INTO forward_extremities VALUES ($1, $2) ON CONFLICT (room_id, event_id) DO NOTHING",
                          {public_value(room_id), public_value(event_id)}));
+    return statements;
+}
 
-    if (!commit_persistent_transaction(store, statements))
-    {
-        return false;
-    }
-
-    for (auto const& prev_event_id : prev_event_ids)
+auto apply_forward_extremities_update(PersistentStore& store, std::string_view room_id, std::string_view event_id,
+                                      std::vector<std::string> const& replaced_event_ids) -> void
+{
+    for (auto const& replaced_event_id : replaced_event_ids)
     {
         std::erase_if(store.forward_extremities,
-                      [room_id, &prev_event_id](PersistentForwardExtremity const& extremity) {
-                          return extremity.room_id == room_id && extremity.event_id == prev_event_id;
+                      [room_id, &replaced_event_id](PersistentForwardExtremity const& extremity) {
+                          return extremity.room_id == room_id && extremity.event_id == replaced_event_id;
                       });
     }
     if (!std::ranges::any_of(store.forward_extremities,
@@ -2680,7 +2755,6 @@ namespace
     {
         store.forward_extremities.push_back({std::string{room_id}, std::string{event_id}});
     }
-    return true;
 }
 
 [[nodiscard]] auto find_forward_extremities(PersistentStore const& store, std::string_view room_id)

@@ -681,6 +681,13 @@ extremity recorded before it, left from an earlier stay, is retired (0.12.48).
 Kept, those made every later local event resolve the old stay's state against
 the new one.
 
+A local event, or a federated join, commits in one transaction with its
+after-state group, the group mapping, the forward-extremity change and the
+current state the resulting extremities resolve to
+(`homeserver::store_event_with_bookkeeping`, ADR-0228). That resolution runs
+before the commit, with the event standing in for itself. A refusal anywhere
+writes nothing: no event, membership, group or tip.
+
 Federated-join seeding only ever takes events for the room being joined
 (FED-1, ADR-0083): `filter_send_join_events_for_room` drops every `state`
 and `auth_chain` entry of the `send_join` response whose `room_id` — for a

@@ -27,6 +27,18 @@ choose differently.
   caused stays a debug-level `room.leave.rejected`), `room.join.failed`,
   `event.prev_events.fallback`, `event.prev_events.unresolvable`, `event.store.failed` (with the
   failing `step`) and `event.persist.failed` (`docs/debug-logging.md`).
+- **FIXED:** a local event or a federated join that answers 500 has written nothing (ADR-0228,
+  PR #533 review). The event, its `current_state` row and membership, its after-state group, the
+  group mapping, the forward-extremity change and the current state those extremities resolve to
+  now commit in one transaction (`homeserver::store_event_with_bookkeeping`), mirrored in memory
+  only once it commits. Before, each committed on its own: a refused `current_state` write left
+  the event stored and the room's tip moved, so a client retrying the 500 could store it twice,
+  and a refused state-group write left a user joined with no state to build the room's next event
+  on. The store gains prepared forms (`prepare_state_group`, `prepare_event_state_group`,
+  `prepare_forward_extremities_update`, `prepare_current_state`, `state_matches_stored_event`)
+  with their `apply_*`; the single-step functions are now prepare, commit, apply. A join's
+  after-state is one snapshot group instead of a delta on a separate `join-snapshot:` group.
+  The ADR-0064 guard now also counts `database::prepare_store_event_with_state` callers.
 - **TESTS:** the failure branches are covered directly: each reason `compute_state_before` fails
   closed for, `basis_for_new_event` skipping a newer extremity with no recorded state and finding
   none, each step `store_local_event` refuses at (through the in-memory store's

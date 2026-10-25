@@ -615,16 +615,31 @@ value. Test fixtures that do not exercise persistence select it through
     state-before check and after-state/current-state bookkeeping.
     `invite_handler`'s invite-event store gets explicit `status =
     "outlier"` (it is never part of this server's own timeline).
+  - Since 0.12.48 (ADR-0228) a local event and a federated join commit in ONE
+    transaction with all of their bookkeeping, through
+    `homeserver::store_event_with_bookkeeping`: the event with its
+    `current_state` row and membership projection, its after-state group, the
+    mapping, the forward-extremity change, and every `current_state` change
+    the resolution of the new extremities makes. Each part has a prepared form
+    in the store (`prepare_store_event_with_state`, `prepare_state_group`,
+    `prepare_event_state_group`, `prepare_forward_extremities_update`,
+    `prepare_current_state`) and an `apply_*` that mirrors it in memory once
+    the transaction commits; the single-step functions
+    (`create_or_reuse_state_group`, `set_event_state_group`,
+    `update_forward_extremities`, `store_state`) are prepare, commit, apply. A
+    refusal at any part writes nothing. Before, each part committed on its own,
+    so a 500 could leave the event stored and the room's tip moved, or a user
+    joined with no state group. Inbound PDUs keep their separate commits.
   - The federated-join flow (`join_room`/`perform_federated_join`,
-    `room_service.cpp`) now seeds a snapshot state group from the
+    `room_service.cpp`) seeds the room's state from the
     `send_join` response's state (stored as `status = "outlier"` events by
     `ingest_send_join_state`, which returns the full state map alongside
-    the joined-members list), gives the join event an after-state group
-    chained off that snapshot (`homeserver::record_event_state_with_parent`,
-    `record_event_state` generalised to an explicit parent group), and
-    makes it the room's sole forward extremity (since 0.12.48 it also
-    retires every extremity an earlier stay left; before, a rejoin kept
-    them) — so the first inbound PDU
+    the joined-members list): the join event's after-state, that state plus
+    the join, is one snapshot group (until 0.12.48, a delta on a separate
+    `join-snapshot:` group holding the before-join state, which nothing
+    read), and the join is made the room's sole forward extremity (since
+    0.12.48 it also retires every extremity an earlier stay left; before, a
+    rejoin kept them) — so the first inbound PDU
     after a join no longer hits `missing_prev_state`. Since FED-1
     (ADR-0083) only entries whose room is the joined room are stored, and
     `auth_chain` events are stored as outliers with no `current_state` row;
@@ -632,7 +647,8 @@ value. Test fixtures that do not exercise persistence select it through
     `accepted` events, never an outlier or a rejected one.
   - A source-tree guard test (`tests/unit/test_store_event_choke_point.cpp`)
     fails the build if `database::store_event_with_state(` appears anywhere
-    in `src/` outside a reviewed, counted allowlist.
+    in `src/` outside a reviewed, counted allowlist, and since 0.12.48 the
+    same for `database::prepare_store_event_with_state(`.
   - `PduStateConflictContext` / `state_conflict_resolver` (the older,
     never-production-reached conflict-resolution plumbing this phase was
     meant to replace) are still left in place unchanged and unused —

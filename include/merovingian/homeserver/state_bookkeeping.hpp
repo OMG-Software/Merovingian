@@ -195,6 +195,37 @@ struct NewEventBasis final
                                        rooms::RoomVersionPolicy const& policy,
                                        events::StateResolutionLimits const& limits = {}) -> NewEventBasis;
 
+// How an event this server places itself is recorded: the state after it, the
+// group that state is a delta of (nullopt: a full snapshot), and the forward
+// extremities it replaces as the room's tip.
+struct EventBookkeeping final
+{
+    std::vector<database::PersistentStateGroupStateEntry> state_after{};
+    std::optional<std::string> parent_state_group_id{};
+    std::vector<std::string> replaced_extremities{};
+};
+
+// Whether store_event_with_bookkeeping stored the event, and if not, the step
+// that refused it (`event`, `state_group`, `current_state` or `commit`) and why.
+struct StoredWithBookkeeping final
+{
+    bool ok{false};
+    std::string step{};
+    std::string reason{};
+};
+
+// Stores an event this server places itself (a local event, or the join event
+// of a federated join) with all of its bookkeeping in ONE transaction
+// (ADR-0228): the event and its current_state row, `membership` (DB-4), its
+// after-state group, its mapping to that group, the forward-extremity change,
+// and whatever the resolution of the resulting extremities changes in current
+// state. Nothing is written unless all of it is, so a refusal leaves no event,
+// membership, group or tip behind. Call it under runtime.mutex.
+[[nodiscard]] auto store_event_with_bookkeeping(
+    database::PersistentStore& store, rooms::RoomVersionPolicy const& policy, database::PersistentEvent event,
+    std::optional<database::PersistentStateEvent> state, std::optional<database::MembershipProjection> membership,
+    EventBookkeeping const& bookkeeping, events::StateResolutionLimits const& limits = {}) -> StoredWithBookkeeping;
+
 // Stores a locally created, already-composed-and-signed `event` (and its
 // `state` row, if it is a state event) and performs the same bookkeeping
 // homeserver::ingest_pdu_event runs for inbound PDUs: stores the event via
@@ -208,7 +239,8 @@ struct NewEventBasis final
 // false, with a warning naming the step): a local event has not yet been told
 // "success" to any client or peer by the time this runs, so it is safe — and
 // preferable — to fail the whole request rather than leave the store with an
-// event whose bookkeeping is broken. A basis that is not `ok` stores nothing.
+// event whose bookkeeping is broken. A basis that is not `ok` stores nothing,
+// and the rest commits in one transaction (store_event_with_bookkeeping).
 //
 // Local events are authorised by the caller's own checks
 // (events::authorize_event_against_auth_events, already run during
