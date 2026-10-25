@@ -13,6 +13,7 @@ DEPENDENCY_TRIAGE_WORKFLOW = (
 )
 SBOM_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "sbom.yml"
 SANITIZERS_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "sanitizers.yml"
+CODEQL_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "codeql.yml"
 GITLEAKS_CONFIG = REPO_ROOT / ".gitleaks.toml"
 DEPENDENCY_REVIEW_CONFIG = REPO_ROOT / ".github" / "dependency-review-config.yml"
 RELEASE_READINESS_SCRIPT = REPO_ROOT / "scripts" / "check-release-readiness.sh"
@@ -83,6 +84,29 @@ class SecurityWorkflowTests(unittest.TestCase):
         self.assertIn("format: cyclonedx-json", workflow)
         self.assertIn("artifact-name: merovingian-sbom-spdx", workflow)
         self.assertIn("artifact-name: merovingian-sbom-cyclonedx", workflow)
+
+    def test_codeql_filters_catch2_false_positives_before_upload(self) -> None:
+        # GIVEN the repository CodeQL workflow.
+        self.assertTrue(CODEQL_WORKFLOW.is_file(), "codeql workflow is missing")
+        workflow = CODEQL_WORKFLOW.read_text(encoding="utf-8")
+
+        # WHEN C++ results are analysed and published.
+        analyze = workflow.find("github/codeql-action/analyze@v4")
+        filtered = workflow.find("python3 scripts/filter_codeql_sarif.py codeql-results")
+        upload = workflow.find("github/codeql-action/upload-sarif@v4")
+
+        # THEN the analyze step writes SARIF without uploading it, the filter
+        # (ADR-0226) rewrites it, and only then is it uploaded under the same category.
+        self.assertNotEqual(analyze, -1, "CodeQL analyze step is missing")
+        self.assertNotEqual(filtered, -1, "SARIF filter step is missing")
+        self.assertNotEqual(upload, -1, "SARIF upload step is missing")
+        self.assertLess(analyze, filtered)
+        self.assertLess(filtered, upload)
+        self.assertIn("upload: never", workflow)
+        self.assertIn("output: codeql-results", workflow)
+        self.assertIn("sarif_file: codeql-results", workflow)
+        self.assertEqual(workflow.count("category: '/language:c-cpp'"), 2)
+        self.assertNotIn("query-filters", workflow, "the rule must stay enabled for production code")
 
     def test_sanitizer_workflow_runs_threadsanitizer_with_project_suppressions(self) -> None:
         # GIVEN the repository sanitizer workflow.

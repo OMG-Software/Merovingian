@@ -1,3 +1,25 @@
+## 0.12.49
+
+CodeQL no longer reports every Catch2 test scenario as an unused static function (ADR-0226).
+`SCENARIO` expands to a static function registered by a static object, which
+`cpp/unused-static-function` cannot follow, so `main` carried thousands of open alerts across
+`tests/` and pull requests touching tests drew a review comment for each.
+
+- **CHANGED:** `codeql.yml` analyses with `upload: never` into `codeql-results/`, filters the
+  report with `scripts/filter_codeql_sarif.py`, then uploads it with `upload-sarif` under the same
+  `/language:c-cpp` category. The rule still covers `src/` and `include/`, and every other rule still
+  covers `tests/`; the alerts already open on `main` close at its next analysis.
+- **ADDED:** `scripts/filter_codeql_sarif.py` drops only `cpp/unused-static-function` results whose
+  file is under the top-level `tests/` directory. It keeps any result it cannot place, and refuses a
+  report that is not SARIF (or a missing path, or a directory with no report) without writing
+  anything, so the upload fails rather than publishing an unfiltered report.
+- **TESTS (new):** `tests/tooling/test_codeql_sarif_filter.py` (`codeql-sarif-filter-tooling`): only the
+  rule under `tests/` is dropped; a rule named by index is recognised; `src/tests/`, `contests/` and
+  `testsuite/` do not match; every report in a directory is filtered; input that is not SARIF fails
+  and is left as it was; a missing target or empty directory fails.
+  `tests/tooling/test_security_workflows.py` gains "CodeQL filters Catch2 false positives before
+  upload" (analyze, filter, upload in that order; no `query-filters`).
+
 ## 0.12.46
 
 The documentation site takes the theme of the OMG Software organisation site (ADR-0223).

@@ -208,6 +208,7 @@
 * [0221 - A grown sliding sync timeline_limit skips the long-poll once per request pos](0221-a-grown-sliding-sync-timeline-limit-skips-the-long-poll-once-per-request-pos.md)
 * [0222 - Library linkage is read from the loader at runtime, not from the build](0222-library-linkage-is-read-from-the-loader-at-runtime.md)
 * [0223 - The documentation site wears the OMG Software theme, dark first, with system fonts](0223-the-documentation-site-wears-the-omg-software-theme-dark-first-with-system-fonts.md)
+* [0226 - CodeQL drops cpp/unused-static-function on Catch2 tests before upload, and nowhere else](0226-codeql-drops-unused-static-function-on-catch2-tests-before-upload.md)
 
 ## Proposed Records
 

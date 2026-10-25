@@ -111,6 +111,12 @@ shell = find_program('sh')
   )
 
   test(
+    'codeql-sarif-filter-tooling',
+    python,
+    args: [meson.project_source_root() / 'tests' / 'tooling' / 'test_codeql_sarif_filter.py'],
+  )
+
+  test(
     'docs-site-tooling',
     python,
     args: [meson.project_source_root() / 'tests' / 'tooling' / 'test_docs_site.py'],
