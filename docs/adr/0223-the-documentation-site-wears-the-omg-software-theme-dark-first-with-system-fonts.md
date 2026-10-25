@@ -35,7 +35,9 @@ pages or printing.
   the system preference; Material remembers a reader's toggle.
 * Both schemes use `primary: custom` and `accent: custom` and take every colour from
   `docs/stylesheets/extra.css`. The header and footer stay OMG near-black in both. The light scheme's
-  link colour is a darker orange (`#a8461c`), because `#ff8954` on a light page fails AA.
+  link colour is a darker orange (`#a8461c`), because `#ff8954` on a light page fails AA; its accent,
+  which Material draws hovered and focused link and button text in, is darker still (`#8f3a15`), so
+  hover stays visible and above AA on the page and on cards.
 * `font: false`: the site uses Arial and Consolas from the reader's system, as the organisation site
   does, and makes no request to Google Fonts. `extra.css` holds no `@import` or remote URL.
 * The logo and favicon are local SVG files with no script, event handler or external reference.

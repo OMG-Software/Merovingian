@@ -301,12 +301,20 @@ class SiteThemeTests(unittest.TestCase):
                 # GIVEN the colours a scheme sets.
                 colours = scheme_colours(self.stylesheet, scheme)
 
-                # WHEN body text and links are drawn on the page background.
-                background = colours["--md-default-bg-color"]
+                # WHEN body text, links, and the accent Material gives hovered
+                # and focused links and buttons are drawn on the page and on a card.
+                for surface in ("--md-default-bg-color", "--omg-panel"):
+                    background = colours[surface]
 
-                # THEN each meets the WCAG AA contrast ratio for body text.
-                for role in ("--md-default-fg-color", "--md-typeset-a-color"):
-                    self.assertGreaterEqual(contrast_ratio(colours[role], background), 4.5, role)
+                    # THEN each meets the WCAG AA contrast ratio for body text.
+                    for role in (
+                        "--md-default-fg-color",
+                        "--md-typeset-a-color",
+                        "--md-accent-fg-color",
+                    ):
+                        self.assertGreaterEqual(
+                            contrast_ratio(colours[role], background), 4.5, f"{role} on {surface}"
+                        )
 
 
 class SiteHookLinkTests(unittest.TestCase):

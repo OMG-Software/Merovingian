@@ -4,7 +4,7 @@ The documentation site takes the theme of the OMG Software organisation site (AD
 
 - **CHANGED:** the site opens in a dark scheme of OMG near-black (`#151616`) with the OMG orange
   accent (`#ff8954`), whatever the system preference; the toggle offers a matching light scheme whose
-  links use a darker orange so they stay readable. Header, tabs and footer are OMG near-black with a
+  links and hover accent use darker oranges so they stay readable (PR #531 review). Header, tabs and footer are OMG near-black with a
   hairline rule in both schemes; buttons, cards and headings follow the organisation site's shapes
   and weights, and the home page hero carries its mono eyebrow label.
 - **CHANGED:** the site uses Arial and Consolas from the reader's system (`font: false`) and no
@@ -13,7 +13,8 @@ The documentation site takes the theme of the OMG Software organisation site (AD
   (`docs/assets/omg-favicon.svg`).
 - **TESTS (new):** `tests/tooling/test_docs_site.py` gains `SiteThemeTests`: the site opens dark with
   custom colours; it fetches no fonts from a third party; the logo and favicon are inert local SVG;
-  body text and links meet WCAG AA contrast in both schemes.
+  body text, links and the hover accent meet WCAG AA contrast on the page and on cards in both
+  schemes.
 
 ## 0.12.45
 
