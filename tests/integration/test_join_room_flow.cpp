@@ -1072,6 +1072,52 @@ SCENARIO("A federated join seeds the join event's after-state group and forward 
                         std::vector<std::string>{join_state_row->event_id});
             }
         }
+
+        // The state the join's after-state is recorded from cannot be stored:
+        // the join answers a server error instead of leaving a joined room
+        // with no state to build the next event on.
+        auto const join_with_failing_statement = [&](std::string const& statement_name) {
+            {
+                auto const lock = std::lock_guard{runtime.mutex};
+                runtime.database.persistent_store.force_failure_statement_names.insert(statement_name);
+            }
+            auto captured_requests = std::vector<std::string>{};
+            auto server_thread = std::thread{[&]() {
+                run_resident_server(acceptor, *tls_context.context, make_join_response, send_join_response,
+                                    captured_requests);
+            }};
+            auto const result =
+                merovingian::homeserver::join_room(runtime, login.value, room_id, {std::string{resident_server}});
+            server_thread.join();
+            return result;
+        };
+
+        WHEN("join_room cannot store the snapshot of the room's state before the join")
+        {
+            auto const result = join_with_failing_statement("insert_state_group");
+
+            THEN("the join answers a server error")
+            {
+                CAPTURE(result.reason);
+                REQUIRE_FALSE(result.ok);
+                REQUIRE(result.status == 500U);
+            }
+        }
+
+        WHEN("join_room cannot record the join event's after-state group")
+        {
+            auto const result = join_with_failing_statement("upsert_event_state_group");
+
+            THEN("the join answers a server error and the join event is not made a forward extremity")
+            {
+                CAPTURE(result.reason);
+                REQUIRE_FALSE(result.ok);
+                REQUIRE(result.status == 500U);
+                auto const lock = std::lock_guard{runtime.mutex};
+                REQUIRE(merovingian::database::find_forward_extremities(runtime.database.persistent_store, room_id)
+                            .empty());
+            }
+        }
     }
 }
 

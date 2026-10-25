@@ -27,6 +27,11 @@ choose differently.
   caused stays a debug-level `room.leave.rejected`), `room.join.failed`,
   `event.prev_events.fallback`, `event.prev_events.unresolvable`, `event.store.failed` (with the
   failing `step`) and `event.persist.failed` (`docs/debug-logging.md`).
+- **TESTS:** the failure branches are covered directly: each reason `compute_state_before` fails
+  closed for, `basis_for_new_event` skipping a newer extremity with no recorded state and finding
+  none, each step `store_local_event` refuses at (through the in-memory store's
+  `force_failure_statement_names`), and a federated join whose state snapshot or join state group
+  cannot be stored (PR #533 coverage report).
 
 ## 0.12.47
 
