@@ -573,8 +573,8 @@ SCENARIO("A scratch database's connection string names only the scratch database
     GIVEN("connection strings for the shared database, some naming it again in the query")
     {
         auto const cases = std::vector<std::pair<std::string, std::string>>{
-            {"postgresql://u:p@db.test:5432/shared?dbname=shared&sslmode=disable",
-             "postgresql://u:p@db.test:5432/scratch?sslmode=disable"                                                                  },
+            {"postgresql://scratch_user@db.test:5432/shared?dbname=shared&sslmode=disable",
+             "postgresql://scratch_user@db.test:5432/scratch?sslmode=disable"                                                         },
             {"postgresql://db.test/shared?sslmode=require&%64bname=shared&connect_timeout=5",
              "postgresql://db.test/scratch?sslmode=require&connect_timeout=5"                                                         },
             {"postgresql://db.test/shared?dbname=shared",                                     "postgresql://db.test/scratch"          },
