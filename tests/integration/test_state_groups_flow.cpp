@@ -235,7 +235,9 @@ auto const atomic_sender = std::string{"@alice:example.org"};
 }
 
 // Nothing of `event_id` is in `store`: no event row, no after-state group, no
-// mapping, no current_state row naming it, and the room's tips are `tips`.
+// mapping, no current_state row naming it, no event_edges row (hydrated from
+// the table, so a reopened store shows what is on disk), and the room's tips
+// are `tips`.
 auto require_nothing_of(merovingian::database::PersistentStore const& store, std::string const& event_id,
                         std::vector<std::string> const& tips) -> void
 {
@@ -244,6 +246,9 @@ auto require_nothing_of(merovingian::database::PersistentStore const& store, std
     REQUIRE_FALSE(merovingian::database::find_event_state_group(store, event_id).has_value());
     REQUIRE_FALSE(std::ranges::any_of(store.state, [&event_id](auto const& row) {
         return row.event_id == event_id;
+    }));
+    REQUIRE_FALSE(std::ranges::any_of(store.event_edges, [&event_id](auto const& edge) {
+        return edge.event_id == event_id;
     }));
     REQUIRE(merovingian::database::find_forward_extremities(store, atomic_room_id) == tips);
 }
