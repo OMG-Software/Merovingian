@@ -961,6 +961,19 @@ media-fetch-pool task.
   existing rows, and dropping data is irreversible.
   Source: `migrations/AGENTS.md`.
 
+- **The whole schema is one v1 migration, frozen from 1.0.0; a ledger naming a migration
+  this build does not have is refused before anything is migrated or read, and every DDL
+  path on PostgreSQL, the fresh-database bootstrap included, runs as
+  `database.migration_role` when one is configured.**
+  Why: a version number alone cannot tell this build's schema from another's (every
+  pre-1.0 build wrote a v1 row too), so a database whose ledger is not this build's is
+  refused rather than read through queries written for different tables. A bootstrap run
+  as the login role would execute DDL with the widest privileges in the deployment and
+  leave the migration role owning nothing, so the next migration could not `ALTER` the
+  tables it must change.
+  Source: [ADR-0224](adr/0224-pre-1-0-migrations-collapse-into-one-frozen-v1-schema.md);
+  `src/database/AGENTS.md`, `migrations/AGENTS.md`.
+
 - **Revocation is one-way: no function in the database layer may clear a `revoked`
   flag.** A requirement of the shape "revoke every token except this one" must be
   expressed as a narrower revoke (e.g. `revoke_tokens_for_user_except_device`), never

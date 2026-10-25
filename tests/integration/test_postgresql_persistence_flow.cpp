@@ -1299,55 +1299,58 @@ namespace
                "ALTER SEQUENCE public.");
 }
 
-// Roll the live database back one migration so the next open has real DDL to
-// apply. Migrations are not written idempotently, so the column migration 14
-// adds is dropped alongside its schema_migrations row; re-applying the
-// migration is what restores both.
-// Leaves exactly the newest migration pending: runs that migration's own
-// downgrade step from the catalog and forgets its row. Undoing an older one
-// (this used to hard-code version 14) leaves a gap that the planner rightly
-// refuses ("migration versions must be contiguous") once newer migrations
-// exist, and the damaged schema then fails every later scenario. Idempotent:
-// Catch2 re-runs a WHEN once per leaf section, so a second call must find the
-// migration already pending rather than undo it twice.
-[[nodiscard]] auto make_migration_pending(std::string_view uri) -> bool
+// Removes the whole schema, ledger included, so the next open has the v1
+// bootstrap to run: with every migration folded into v1, that bootstrap is the
+// only DDL an open can be made to perform. Drops the tables the v1 step
+// creates, in its downgrade's order. Idempotent: Catch2 re-runs a WHEN once per
+// leaf section, so a second call must find the schema already gone.
+[[nodiscard]] auto make_schema_absent(std::string_view uri) -> bool
 {
     auto connection = merovingian::database::open_postgresql_connection(uri);
     if (!connection.ok)
     {
         return false;
     }
-    auto const newest = merovingian::database::current_schema_version();
-    auto const newest_row = connection.connection.execute(
-        {"newest_migration_row",
-         "SELECT count(*) FROM schema_migrations WHERE version = '" + std::to_string(newest) + "'",
+    auto const ledger = connection.connection.execute(
+        {"schema_migrations_present",
+         "SELECT count(*) FROM information_schema.tables WHERE table_schema = 'public' AND table_name = "
+         "'schema_migrations'",
          {}});
-    if (!newest_row.ok || newest_row.rows.size() != 1U || newest_row.rows.front().empty())
+    if (!ledger.ok || ledger.rows.size() != 1U || ledger.rows.front().empty())
     {
         return false;
     }
-    if (newest_row.rows.front().front() == "0")
+    if (ledger.rows.front().front() == "0")
     {
         return true;
     }
-    auto const downgrades = merovingian::database::downgrade_migration_catalog();
-    auto const undo = std::ranges::find_if(downgrades, [newest](merovingian::database::MigrationStep const& step) {
-        return step.version + 1U == newest;
-    });
-    if (undo == downgrades.end())
-    {
-        return false;
-    }
-    for (auto const& statement : undo->statements)
+    for (auto const& statement : merovingian::database::downgrade_initial_schema_migration().statements)
     {
         if (!connection.connection.execute(statement).ok)
         {
             return false;
         }
     }
-    auto const removed = connection.connection.execute(
-        {"forget_migration_row", "DELETE FROM schema_migrations WHERE version = '" + std::to_string(newest) + "'", {}});
-    return removed.ok;
+    return true;
+}
+
+// Public tables some role other than `role` owns.
+[[nodiscard]] auto tables_not_owned_by(std::string_view uri, std::string_view role) -> std::string
+{
+    auto connection = merovingian::database::open_postgresql_connection(uri);
+    if (!connection.ok)
+    {
+        return "unable to connect";
+    }
+    auto const owned = connection.connection.execute(
+        {"tables_not_owned_by",
+         "SELECT count(*) FROM pg_tables WHERE schemaname = 'public' AND tableowner <> $1",
+         {merovingian::database::BoundValue{std::string{role}}}});
+    if (!owned.ok || owned.rows.size() != 1U || owned.rows.front().empty())
+    {
+        return "unable to list table owners";
+    }
+    return owned.rows.front().front();
 }
 
 } // namespace
@@ -1404,38 +1407,42 @@ SCENARIO("PostgreSQL migrations execute as the migration role, never as the logi
             }
         }
 
-        WHEN("a migration is pending and the named migration role cannot be assumed")
+        WHEN("the schema is absent and the named migration role cannot be assumed")
         {
-            REQUIRE(grant_schema_ownership_to(uri, migration_role));
-            REQUIRE(make_migration_pending(uri));
+            REQUIRE(make_schema_absent(uri));
             auto const opened = merovingian::database::open_postgresql_persistent_store(
                 uri, runtime_role, "merovingian_migration_role_that_does_not_exist");
 
-            THEN("the open is refused rather than running DDL as the login role")
+            THEN("the open is refused rather than bootstrapping the schema as the login role")
             {
                 // Fail closed: falling back to the login role here would execute
-                // schema mutation with the widest privileges in the deployment,
+                // schema creation with the widest privileges in the deployment,
                 // silently, on exactly the path the separation exists for.
                 REQUIRE_FALSE(opened.ok);
                 REQUIRE(opened.reason.find("migration role") != std::string::npos);
             }
 
-            AND_THEN("the pending migration then applies under the real migration role")
+            AND_THEN("the bootstrap then runs under the real migration role, which owns every table it made")
             {
                 auto const recovered =
                     merovingian::database::open_postgresql_persistent_store(uri, runtime_role, migration_role);
+                INFO("open refused: " << recovered.reason);
                 REQUIRE(recovered.ok);
                 REQUIRE(recovered.store.schema.version == merovingian::database::current_schema_version());
+                // So the first post-1.0 migration, which ALTERs these tables as the
+                // migration role, is run by their owner.
+                REQUIRE(tables_not_owned_by(uri, migration_role) == "0");
             }
         }
 
-        WHEN("a migration is pending and no migration role is configured")
+        WHEN("the schema is absent and no migration role is configured")
         {
-            REQUIRE(make_migration_pending(uri));
+            REQUIRE(make_schema_absent(uri));
             auto const opened = merovingian::database::open_postgresql_persistent_store(uri, runtime_role);
 
-            THEN("it migrates as the login role, preserving single-role deployments")
+            THEN("it bootstraps as the login role, preserving single-role deployments")
             {
+                INFO("open refused: " << opened.reason);
                 REQUIRE(opened.ok);
                 REQUIRE(opened.store.schema.version == merovingian::database::current_schema_version());
             }

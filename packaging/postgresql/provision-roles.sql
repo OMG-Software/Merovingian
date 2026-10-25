@@ -35,9 +35,11 @@
 --
 -- Since 0.12.5 merovingian-server assumes both roles itself: any pending
 -- migration is applied after SET ROLE :migration_role, the session is then
--- reset, and request handling runs after SET ROLE :runtime_role. Neither the
--- migration nor the request path executes as the login role. If :migration_role
--- cannot be assumed, startup fails rather than falling back to the login role.
+-- reset, and request handling runs after SET ROLE :runtime_role. Since 0.12.47
+-- the schema bootstrap of an empty database, which creates every table, runs
+-- after SET ROLE :migration_role too. Neither DDL nor the request path executes
+-- as the login role. If :migration_role cannot be assumed, startup fails rather
+-- than falling back to the login role.
 --
 -- UPGRADING AN EXISTING DATABASE. Before 0.12.5 the schema objects were created
 -- by, and are therefore owned by, :login_role. ALTER TABLE is permitted only to

@@ -565,13 +565,18 @@ namespace
                 return false;
             }
         }
+        for (auto const& index : initial_schema_indexes())
+        {
+            auto const sql = create_index_if_missing_sql(index);
+            if (!sql.has_value() || !execute_sql(connection, *sql))
+            {
+                return false;
+            }
+        }
 
-        // The schema lands at v1 in its final shape — there are no historic
-        // database deployments to upgrade, so only the initial migration
-        // record needs to be present.
-        // Bootstrap records only the initial schema row. Runtime startup can
-        // then apply newer numbered migrations against the freshly created
-        // tables when current_schema_version() is greater than 1.
+        // Bootstrap builds exactly what the v1 migration builds and records only
+        // its row. Runtime startup then applies any later numbered migration on
+        // top, as it would for a database a previous release left at v1.
         if (!execute_sql(connection,
                          "INSERT OR IGNORE INTO schema_migrations VALUES ('1', 'initial_schema', 'upgrade')"))
         {
@@ -1440,6 +1445,10 @@ auto migrate_sqlite_schema_to(std::string const& path, std::uint32_t target_vers
         return {false, "unable to initialize SQLite schema", {}};
     }
     auto state = load_schema_state(sqlite);
+    if (auto const known = schema_ledger_is_known(state); !known.valid)
+    {
+        return {false, known.reason, std::move(state)};
+    }
     if (state.version > target_version)
     {
         return {false, "schema is newer than the target version; migrations never move a schema backwards",
@@ -1505,6 +1514,16 @@ auto open_sqlite_persistent_store(std::string const& path, TableLoadProfile prof
                        {"path",    path,                                 false},
                        {"version", std::to_string(store.schema.version), false}
     });
+    // Before migrating or hydrating anything: a ledger this build does not
+    // recognise describes tables it must not read or alter (ADR-0224).
+    if (auto const known = schema_ledger_is_known(store.schema); !known.valid)
+    {
+        log_diagnostic("store.rejected", {
+                                             {"path",   path,         false},
+                                             {"reason", known.reason, false}
+        });
+        return {false, known.reason, {}};
+    }
     if (store.schema.version < current_schema_version())
     {
         if (read_only)

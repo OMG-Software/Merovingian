@@ -23,51 +23,33 @@ value. Test fixtures that do not exercise persistence select it through
 - Migration step and migration plan models.
 - Contiguous upgrade and explicit downgrade migration-plan validation; data-only
   migration statements (`INSERT`/`UPDATE`/`DELETE`) are accepted as no-op
-  schema-state transitions, enabling backfill and corrective migrations such
-  as the v5 `state_transitions` backfill.
-- Initial schema deployed at version `1` in its final shape: 45 core
-  tables covering every Matrix storage area from the project plan. There
-  were no live databases at that time, so historical per-version migrations
-  were collapsed into the single `initial_schema` step. Once live
-  pre-production deployments existed, subsequent schema changes started
-  receiving their own numbered migration files; schema version `2` adds the
-  `sync_stream_watermark` table via `migrations/002_sync_stream_watermark.sql`,
-  schema version `3` adds the `event_stream_watermark` table via
-  `migrations/003_event_stream_watermark.sql`, schema version `4` adds the
-  `state_transitions` table via `migrations/004_state_transitions.sql` so the
-  server can populate `unsigned.replaces_state` for state events, and schema
-  version `5` backfills `state_transitions` from `current_state` via
-  `migrations/005_backfill_state_transitions.sql` so existing rooms do not lack
-  transition history after the v4 upgrade, and schema version `6` adds the
-  `account_threepids` table via `migrations/006_account_threepids.sql` so
-  bound 3PID associations survive restarts rather than living only in the
-  in-memory `vector<AccountThreePid>`, and schema version `7` adds the
-  `client_secret` and `sid` TEXT columns to `account_threepids` via
-  `migrations/007_account_threepids_columns.sql` so an IS-bound 3PID can be
-  remotely unbound via IS unbind auth mode 2 (the stored pair is replayed in the
-  unbind body; empty for local-only bindings), and schema version `8` adds the
-  `pushers` table via `migrations/008_pushers.sql` so push notification
-  pushers registered via `POST /_matrix/client/v3/pushers/set` survive
-  restarts, and schema version `9` adds the `notifications` table via
-  `migrations/009_notifications.sql` so `GET /_matrix/client/v3/notifications`
-  history survives restarts (see "Notification history" below for the
-  retention policy that keeps it bounded), and schema version `10` adds the
-  `openid_tokens` table via `migrations/010_openid_tokens.sql` so tokens
-  minted by `POST /_matrix/client/v3/user/{userId}/openid/request_token`
-  survive restarts and can be redeemed by
-  `GET /_matrix/federation/v1/openid/userinfo` (see "OpenID tokens" below),
-  and schema version `11` ALTERs a `data_extra_json` column onto the
-  existing `pushers` table via `migrations/011_pushers_data_extra.sql` (no
-  new table) so custom members of a pusher's registration-time `data`
-  dictionary — beyond the `url`/`format` keys already stored as dedicated
-  columns — survive restarts and can be forwarded to the Push Gateway (see
-  "Pushers" below), and schema version `12` adds the `login_tokens` table
-  via `migrations/012_login_tokens.sql` so short-lived, single-use SSO login
-  tokens minted by `homeserver::complete_sso_login` survive restarts and can
-  be redeemed exactly once by `POST /_matrix/client/v3/login` with `type:
-  m.login.token` (see "SSO login tokens" below).
-  After the project reaches production-ready `v1.0.0`, every schema change
-  must add a forward migration and keep deployed databases compatible.
+  schema-state transitions, enabling backfill and corrective migrations
+  should a later migration need one.
+- The schema is a single step, version `1` (`initial_schema`):
+  `schema::current_schema_version()` is `1`, and `migrations/` holds only
+  `001_initial_schema.sql`. Every pre-1.0 migration (versions 2 to 26 as of
+  0.12.46) was collapsed into it in 0.12.47
+  ([ADR-0224](adr/0224-pre-1-0-migrations-collapse-into-one-frozen-v1-schema.md)),
+  so v1 creates all 62 tables in their final shape, every column that an
+  earlier migration used to `ALTER` on now being part of the table's `CREATE`,
+  plus four indexes: `event_edges_prev_event_id`,
+  `idx_to_device_messages_recipient_age`, `idx_deferred_pdus_room_id` and
+  `idx_media_pending_uploads_owner`. Nothing is seeded or backfilled: the old
+  state-transition backfill and state-group seeding only ever mattered for
+  upgrading existing databases and no longer exist. The compiled catalog in
+  `src/database/migration.cpp` has exactly one upgrade step (version `1`,
+  `initial_schema`) and one downgrade step (to version `0`,
+  `drop_initial_schema`, which drops every table).
+  `migrations/001_initial_schema.sql` is the frozen record of v1; a unit test
+  requires it to match the build's v1 step statement for statement.
+- Schema change policy. Until `v1.0.0` there is nothing to upgrade from: a
+  database whose `schema_migrations` ledger holds an upgrade row this build does
+  not have (for example the rows 2 to 26 written by every build up to 0.12.46)
+  is refused at open, before any migration or hydration
+  (`schema_ledger_is_known`), and must be recreated. From `v1.0.0` the v1
+  migration and `migrations/001_initial_schema.sql` never change; every schema
+  change is a new numbered migration (v2 onwards) that keeps deployed databases
+  compatible, and upgrade compatibility is promised from that release.
 - SQLite RAII wrappers around database connections and prepared statements.
 - SQLite current-schema bootstrap for new database files.
 - SQLite row hydration for users, devices, access tokens, rooms, memberships,
@@ -128,22 +110,21 @@ value. Test fixtures that do not exercise persistence select it through
   transaction deletes the media and `remote_media` rows of the cache entries the
   admission displaces, sets those blobs' reference counts (clearing bytes at zero),
   and inserts the new media, blob and `remote_media` rows. `remote_media` carries
-  `local_media_id` and `fetched_at_ms` since schema version 20.
-- `room_aliases` carries `creator_user_id` since schema version 21 (CSAZ-12,
-  ADR-0127): `store_room_alias` writes the creating user, empty for aliases
-  created earlier, and `delete_room_alias` removes a mapping, in the database and
+  `local_media_id` and `fetched_at_ms`.
+- `room_aliases` carries `creator_user_id` (CSAZ-12, ADR-0127):
+  `store_room_alias` writes the creating user, and `delete_room_alias` removes a mapping, in the database and
   in memory, for `DELETE /directory/room/{roomAlias}`.
 - Binary payload columns are `BLOB` (#448): `media_blobs.bytes` holds raw media
   content and `server_signing_keys.secret_key` holds encrypted key material
   (`BLOB NOT NULL DEFAULT ''`, empty = no secret persisted). Both were folded
-  into the version-1 initial schema per the pre-1.0 migration policy. SQLite
+  into the v1 schema. SQLite
   column reads are length-based (`sqlite3_column_bytes`), so payloads
   containing NUL or invalid UTF-8 round-trip byte-exactly. `SchemaTableDefinition::columns_sql`
   is shared, backend-agnostic DDL text written in SQLite's dialect; PostgreSQL
   has no `BLOB` type, so `postgresql_store.cpp`'s `translate_ddl_types_for_postgresql()`
   rewrites `BLOB` to `BYTEA` (whole-word, so it cannot mangle an identifier)
   wherever a `SchemaTableDefinition` becomes DDL for that backend — both the
-  bootstrap path and the migration-step path.
+  bootstrap path and any later migration step.
 - Every SQLite connection pins `PRAGMA synchronous = FULL` and
   `PRAGMA journal_mode = DELETE` at open (#447), so an environment that
   installs global default pragmas cannot silently weaken durability.
@@ -167,16 +148,15 @@ value. Test fixtures that do not exercise persistence select it through
   differs from `key_signatures`, so rows pushed directly never produce a missing
   result. Read signatures through this function, not by scanning the vector.
 - Physical migration-file loading for SQL files with explicit metadata and
-  statement names; the checked-in pre-production migration directory now
-  contains the version-1 `initial_schema` create-table file and numbered
-  migrations such as `002_sync_stream_watermark.sql`.
+  statement names; the checked-in `migrations/` directory contains only
+  `001_initial_schema.sql`, the frozen record of the v1 schema.
 - `sync_stream_watermark` table stores the highest allocated `sync_stream_id`
   and is updated by `database::allocate_sync_stream_id()` before the ID is
   used for ephemeral events such as typing notifications and read receipts. This
   prevents the monotonic sync stream counter from rolling back across restarts.
 - `database::restore_sync_stream_id()` writes the highest `sync_stream_id` found
   in durable rows (account data, to-device messages, device-list changes,
-  presence, read receipts) into the watermark on startup, so fresh upgrades start from the
+  presence, read receipts) into the watermark on startup, so a restart starts from the
   maximum persisted value rather than the table default.
 - `device_list_changes` holds at most one row per `(observer_user_id,
   subject_user_id)`. `database::record_device_list_change()` and
@@ -199,9 +179,8 @@ value. Test fixtures that do not exercise persistence select it through
   `pos`/`since` tokens ahead of the live stream and invalidates them all on
   every restart. Hydration takes the maximum of the persisted watermark and the
   highest event `stream_ordering`, then persists the merged floor so the row
-  exists even on fresh upgrades.
-- `state_transitions` table (schema version `4`, backfilled at schema version
-  `5`) records the previous `event_id` for every state-event tuple replacement.
+  exists even on a first start.
+- `state_transitions` table records the previous `event_id` for every state-event tuple replacement.
   It is populated by `database::store_state()` and the split
   `prepare_store_event_with_state()` / `apply_store_event_with_state()` helpers.
   The in-memory store keeps a hash index over `state_transitions` so that
@@ -211,28 +190,17 @@ value. Test fixtures that do not exercise persistence select it through
   (`prev_events` and `auth_events`) to find the predecessor state event of the
   same `(room_id, event_type, state_key)` tuple, instead of assuming the local
   arrival-time current state was the predecessor.
-- `account_threepids` table (schema version `6`, migration
-  `migrations/006_account_threepids.sql`) records the 3PID bindings a user has
+- `account_threepids` table records the 3PID bindings a user has
   added to their account, replacing the prior in-memory
   `vector<AccountThreePid>` which was lost on restart. Columns are `user_id`,
   `medium`, `address`, `country`, `id_server`, `added_at_ms`,
   `validated_at_ms`, and `bound`, with a unique key on `(medium, address)` so
-  the same email/msisdn cannot be bound twice. The runtime migration path
-  uses the compiled migration catalog in `src/database/migration.cpp`
-  (upgrade step version `6` "account_threepids"; downgrade step version `5`
-  "drop_account_threepids") rather than the on-disk `.sql` file, which
-  remains the canonical schema definition.
+  the same email/msisdn cannot be bound twice.
 - `account_threepids.client_secret` / `account_threepids.sid` columns
-  (schema version `7`, migration
-  `migrations/007_account_threepids_columns.sql`) store the
-  `client_secret` + `sid` pair the IS issued for a binding, so a later remote
+  store the `client_secret` + `sid` pair the IS issued for a binding, so a later remote
   unbind can replay them in the request body (IS unbind auth mode 2). Both
   columns are `TEXT NOT NULL DEFAULT ''`; they are populated only for IS-bound
-  3PIDs and left empty for local-only bindings. The runtime migration path
-  uses the compiled catalog in `src/database/migration.cpp` (upgrade step
-  version `7` "account_threepids_columns"; downgrade step version `6`
-  "drop_account_threepids_columns" — column drop precedes the v5 table drop
-  on the downgrade walk).
+  3PIDs and left empty for local-only bindings.
 - `PersistentThreePidBinding` struct (now carrying optional `client_secret`
   and `sid`) and the
   `store_account_threepid` / `find_account_threepid` /
@@ -242,14 +210,12 @@ value. Test fixtures that do not exercise persistence select it through
   (`sqlite_store.cpp`) and PostgreSQL (`postgresql_store.cpp`); rows are
   hydrated into the in-memory store on backend open so existing bindings are
   visible immediately after restart.
-- `pushers` table (schema version `8`, migration `migrations/008_pushers.sql`)
-  records the push notification pushers a user has registered via
+- `pushers` table records the push notification pushers a user has registered via
   `POST /_matrix/client/v3/pushers/set`. Columns are `user_id`, `app_id`,
   `pushkey`, `kind`, `app_display_name`, `device_display_name`,
   `profile_tag`, `lang`, `data_url`, `data_format` (the pusher's `data`
   dictionary's `url`/`format` keys, stored as plain columns rather than
-  nested JSON), and — since schema version `11`, migration
-  `migrations/011_pushers_data_extra.sql` — `data_extra_json` (a
+  nested JSON), and `data_extra_json` (a
   canonical-JSON-serialized object holding every OTHER member of the
   pusher's `data` dictionary at registration time; PR #479 review finding
   P1: the Push Gateway API's notify Device object is defined as "the data
@@ -257,12 +223,7 @@ value. Test fixtures that do not exercise persistence select it through
   member beyond `url`/`format` must survive a restart and reach the gateway,
   not just be discarded), with a primary key on `(user_id, app_id,
   pushkey)` — the spec's uniqueness rule: setting a pusher with the same
-  `app_id` and `pushkey` for the same user replaces it in place. The
-  runtime migration path uses the compiled catalog in
-  `src/database/migration.cpp` (upgrade step version `8` "pushers", version
-  `11` "pushers_data_extra"; downgrade step version `7` "drop_pushers",
-  version `10` "drop_pushers_data_extra"); `schema::current_schema_
-  version()` returns `11U`. The `PersistentPusher` struct and the
+  `app_id` and `pushkey` for the same user replaces it in place. The `PersistentPusher` struct and the
   `store_pusher` / `find_pusher` / `delete_pusher` / `list_pushers_for_user`
   store functions
   ([persistent_store.hpp](../include/merovingian/database/persistent_store.hpp))
@@ -276,8 +237,7 @@ value. Test fixtures that do not exercise persistence select it through
   pusher-to-`PushGatewayDevice` conversion threads it through to a live
   delivery, so the gap noted above is closed end to end; see
   `docs/todos/capability-gaps.md`.
-- `notifications` table (schema version `9`, migration
-  `migrations/009_notifications.sql`) records the history
+- `notifications` table records the history
   `GET /_matrix/client/v3/notifications` serves. Columns are `user_id`,
   `room_id`, `event_id`, `stream_ordering` (the triggering event's global
   stream position — unique per row, since a recipient gets at most one
@@ -292,10 +252,7 @@ value. Test fixtures that do not exercise persistence select it through
   rather than once per pusher, so it cannot name one pusher's configured
   tag), and `highlight` (`"true"`/`"false"`, mirroring the matched rule's
   `set_tweak: highlight` action, so `?only=highlight` can filter without
-  re-parsing `actions`), with a primary key on `(user_id, event_id)`. The
-  runtime migration path uses the compiled catalog in
-  `src/database/migration.cpp` (upgrade step version `9` "notifications";
-  downgrade step version `8` "drop_notifications").
+  re-parsing `actions`), with a primary key on `(user_id, event_id)`.
   The `PersistentNotification`
   struct and the `store_notification` / `list_notifications_for_user` store
   functions
@@ -325,8 +282,7 @@ value. Test fixtures that do not exercise persistence select it through
   than persisted rows. Recording still occurs when push delivery is disabled.
   Increasing retention preserves more future history but cannot restore rows
   already pruned under an earlier policy. Changing the policy requires restart.
-- `openid_tokens` table (schema version `10`, migration
-  `migrations/010_openid_tokens.sql`) stores the short-lived tokens minted by
+- `openid_tokens` table stores the short-lived tokens minted by
   `POST /_matrix/client/v3/user/{userId}/openid/request_token` (Matrix v1.19
   CS API §OpenID) and redeemed by `GET /_matrix/federation/v1/openid/userinfo`
   (SS API §OpenID). Columns are `user_id`, `token_hash` (primary key), and
@@ -334,10 +290,7 @@ value. Test fixtures that do not exercise persistence select it through
   `access_tokens.expires_at` / `refresh_tokens.expires_at` via
   `expires_at_text`/`parse_expires_at`). Unlike an access token's expiry,
   `expires_at` is never optional here — every OpenID token has a finite
-  lifetime. The runtime migration path uses the compiled catalog in
-  `src/database/migration.cpp` (upgrade step version `10` "openid_tokens";
-  downgrade step version `9` "drop_openid_tokens"); `schema::current_schema_
-  version()` returns `10U`. This is a **separate table from `access_tokens`**,
+  lifetime. This is a **separate table from `access_tokens`**,
   by design — see `docs/auth-identity.md` ("OpenID tokens") and
   `docs/threat-model.md` for why that separation is the entire security
   property this feature depends on. The `PersistentOpenidToken` struct and
@@ -358,8 +311,7 @@ value. Test fixtures that do not exercise persistence select it through
   token's natural bound is its own short expiry (one hour; see
   `docs/auth-identity.md`) rather than a per-user row count, unlike
   `notifications`' count-based cap above.
-- `login_tokens` table (schema version `12`, migration
-  `migrations/012_login_tokens.sql`) stores the short-lived, single-use
+- `login_tokens` table stores the short-lived, single-use
   tokens minted by `homeserver::complete_sso_login` when an SSO
   authentication completes (Matrix v1.19 CS API §"Client login via SSO")
   and redeemed exactly once by `POST /_matrix/client/v3/login` with `type:
@@ -367,10 +319,7 @@ value. Test fixtures that do not exercise persistence select it through
   `token_hash` (primary key), `expires_at` (epoch milliseconds, same
   encoding as `openid_tokens.expires_at`), and `used` (`TEXT NOT NULL
   DEFAULT 'false'`, following the `revoked`-column boolean-as-text
-  convention `access_tokens`/`refresh_tokens` already use). The runtime
-  migration path uses the compiled catalog in `src/database/migration.cpp`
-  (upgrade step version `12` "login_tokens"; downgrade step version `11`
-  "drop_login_tokens"); `schema::current_schema_version()` returns `12U`.
+  convention `access_tokens`/`refresh_tokens` already use).
   This is a **separate table from `access_tokens`**, for the same
   token-confusion reason `openid_tokens` is — see `docs/auth-identity.md`
   ("SSO login") and `docs/threat-model.md` ("Open redirect and login-token
@@ -388,8 +337,7 @@ value. Test fixtures that do not exercise persistence select it through
   alone, and returns `nullopt` on any miss (unknown, expired, or
   already-used token are indistinguishable to the caller). Implemented for
   both SQLite and PostgreSQL, hydrated on backend open.
-- `appservice_txn_cursor` table (schema version `13`, migration
-  `migrations/013_appservice_txn_cursor.sql`) persists the outbound
+- `appservice_txn_cursor` table persists the outbound
   `PUT /_matrix/app/v1/transactions/{txnId}` delivery cursor for each
   registered Application Service API (Matrix v1.19) appservice, keyed on
   `appservice_id` (one row per appservice). Columns: `next_txn_id` (the
@@ -404,15 +352,14 @@ value. Test fixtures that do not exercise persistence select it through
   `find_appservice_txn_cursor`/`store_appservice_txn_cursor` store functions
   ([persistent_store.hpp](../include/merovingian/database/persistent_store.hpp))
   are implemented for both SQLite and PostgreSQL, hydrated on backend open.
-  Since schema version `22` the cursor is the *state of the one transaction
+  The cursor is the *state of the one transaction
   in flight* (`pending_txn_id` / `pending_stream_ordering`) plus the
   transaction-ID allocator; the queue behind it is `appservice_outbox`
   below. A retry of the in-flight transaction reuses the exact same
   `pending_txn_id` and re-derives the identical single event from `events`,
   never growing it, per the spec's "Homeservers MUST NOT alter ... events
   they were going to send within that transaction ID on retries."
-- `appservice_outbox` table (schema version `22`, migration
-  `migrations/022_appservice_outbox.sql`, audit R01, ADR-0163) is the
+- `appservice_outbox` table (audit R01, ADR-0163) is the
   Application Service API transaction queue the spec requires: one row
   `(appservice_id, stream_ordering, event_id)` per event queued for one
   appservice, primary key `(appservice_id, stream_ordering)`. A row is
@@ -433,8 +380,7 @@ value. Test fixtures that do not exercise persistence select it through
   `enqueue_appservice_delivery` writes no further row for that appservice, and
   `count_appservice_outbox_entries` (two binary searches over the sorted mirror)
   is what it checks. No row is dropped for age.
-- `appservice_directory` table (schema version `25`, migration
-  `migrations/025_appservice_directory.sql`, ADR-0192) holds the rooms an
+- `appservice_directory` table (ADR-0192) holds the rooms an
   appservice has published to the directory of one of its networks (protocols)
   with `PUT /_matrix/client/v3/directory/list/appservice/{networkId}/{roomId}`:
   one row `(appservice_id, network_id, room_id)`, primary key all three.
@@ -444,8 +390,7 @@ value. Test fixtures that do not exercise persistence select it through
   listing and unlisting are idempotent and commit before the mirror changes. It
   is independent of `rooms.directory_public`. Main only: the table is not in
   `federation_worker_table_allowlist`.
-- `deferred_pdus` table (schema version `23`, migration
-  `migrations/023_deferred_pdus.sql`, R03, ADR-0165) holds the federation PDUs
+- `deferred_pdus` table (R03, ADR-0165) holds the federation PDUs
   `ingest_pdu_event` could not yet place because a `prev_event` or `auth_event`
   is unknown or a `prev_event` has no state group. Columns: `event_id`
   (primary key), `room_id` (indexed), `origin` (the server it arrived from, to
@@ -469,8 +414,7 @@ value. Test fixtures that do not exercise persistence select it through
   restart every retained PDU is due at once. Main only: the table is not in
   `federation_worker_table_allowlist`, because the worker relays every PDU to
   main and never reads or writes it.
-- `receipts` table (schema version `24`, migration `migrations/024_receipts.sql`,
-  ADR-0169) holds read receipts, local and federated: one row per
+- `receipts` table (ADR-0169) holds read receipts, local and federated: one row per
   `(room_id, receipt_type, user_id, thread_id)` (the primary key), naming
   `event_id`, its `ts` and the `stream_id` it was last set at. `thread_id` is
   `''` for an unthreaded receipt, `main` for the main timeline, or a thread
@@ -491,8 +435,7 @@ value. Test fixtures that do not exercise persistence select it through
   `homeserver::max_inbound_receipt_entries`; at the cap the oldest receipt of a
   *remote* user is removed, never a local user's. Main only: the table is not in
   `federation_worker_table_allowlist`.
-- Schema version `26` (`migrations/026_media_upload_names_and_pending_uploads.sql`) changes the
-  media tables.
+- The v1 schema's media tables carry the upload names and pending uploads.
   - `media.upload_name` (`TEXT NOT NULL DEFAULT ''`, ADR-0211) is the upload's `filename`
     (or the remote server's `Content-Disposition` filename), served back in
     `Content-Disposition`.
@@ -503,18 +446,13 @@ value. Test fixtures that do not exercise persistence select it through
     `commit_local_media_upload` with `completes_pending_media_id` deletes the row in the
     transaction that stores the content. Rows are bounded by `max_pending_uploads`. Main only:
     not in `federation_worker_table_allowlist` (the federation media route runs in main).
-- `users.deactivated` column (schema version `14`, migration
-  `migrations/014_user_deactivation.sql`) is a `TEXT NOT NULL DEFAULT
-  'false'` column added to the existing `users` table (no new table), set by
+- `users.deactivated` column (part of the v1 schema) is a `TEXT NOT NULL DEFAULT
+  'false'` column of the `users` table, set by
   `POST /_matrix/client/v3/account/deactivate` (see `docs/auth-identity.md`
   "Account deactivation"). It is deliberately distinct from the existing
   reversible `locked`/`suspended` columns: a deactivated account can never
   log in again, and its row is retained (not deleted) so the localpart is
-  never reissued to a new registration. The runtime migration path uses the
-  compiled catalog in `src/database/migration.cpp` (upgrade step version
-  `14` "user_deactivation", an `ALTER TABLE users ADD COLUMN` statement;
-  downgrade step version `13` "drop_user_deactivation"); `schema::current_
-  schema_version()` returns `14U`. `set_user_deactivated`
+  never reissued to a new registration. `set_user_deactivated`
   ([persistent_store.hpp](../include/merovingian/database/persistent_store.hpp))
   updates the column and mirrors the change into the in-memory
   `PersistentUser`, following the same pattern as `set_user_account_state`
@@ -527,11 +465,11 @@ value. Test fixtures that do not exercise persistence select it through
   (user_id, password_hash, locked, suspended, admin, deactivated) VALUES
   (...)`), so a future schema change to `users` fails loudly (wrong
   parameter count) rather than silently binding a value to the wrong column.
-- **Phase A of spec-conformant PDU ingestion (schema version `15`, migration
-  `migrations/015_event_graph_state.sql`, ADR-0064): delta state groups,
+- **Phase A of spec-conformant PDU ingestion (ADR-0064): delta state groups,
   forward extremities, and event status.** This is storage plumbing only —
   it does not change how PDUs are ingested, how local events pick
-  `prev_events`, or what clients see; that is later phases. Adds:
+  `prev_events`, or what clients see; that is later phases. The v1 schema
+  holds:
   - `events.status` — `TEXT NOT NULL DEFAULT 'accepted'`, one of
     `'accepted' | 'soft_failed' | 'rejected' | 'outlier'` (spec: "Checks
     performed on receipt of a PDU"). `set_event_status`/`find_event_status`
@@ -539,20 +477,17 @@ value. Test fixtures that do not exercise persistence select it through
     in-memory `PersistentEvent::status` field (appended as that struct's
     last member, defaulting to `"accepted"`, so no existing brace-init call
     site needed to change).
-  - The pre-existing `state_groups` table (created at v1 but never
-    populated or read by any code path before this — confirmed vestigial by
-    grep) gains `parent_state_group_id` (`TEXT NOT NULL DEFAULT ''`) and
-    `delta_depth` (`TEXT NOT NULL DEFAULT '0'`), turning it into the root of
-    a delta chain. Like every other nullable-in-spirit column in this
+  - `state_groups`, the root of a delta chain, with `parent_state_group_id`
+    (`TEXT NOT NULL DEFAULT ''`) and `delta_depth` (`TEXT NOT NULL DEFAULT
+    '0'`). Like every other nullable-in-spirit column in this
     schema (e.g. `state_transitions.previous_event_id`), the empty string is
     the "no parent, this is a snapshot" sentinel rather than a SQL `NULL` —
     `PreparedStatement`/`BoundValue` has no NULL parameter representation,
     and this keeps the convention consistent with the rest of the schema.
     In C++, `PersistentStateGroup::parent_state_group_id` is
     `std::optional<std::string>` (`nullopt` ⇔ the empty-string sentinel).
-    `state_group_edges` (also created at v1, also vestigial) is
-    deliberately left alone — see "Federation worker least-privilege role"
-    below for whether it should eventually be dropped.
+    `state_group_edges` is vestigial and unused — see "Federation worker
+    least-privilege role" below for whether it should eventually be dropped.
   - `state_group_state (state_group_id, event_type, state_key, event_id)` —
     one group's own rows: the full state for a snapshot group
     (`parent_state_group_id` empty), or just the changed entries for a
@@ -561,20 +496,16 @@ value. Test fixtures that do not exercise persistence select it through
     event to the group holding the room's state immediately after it.
   - `forward_extremities (room_id, event_id)` — a room's current DAG
     leaves.
-  - **Index:** `event_edges_prev_event_id ON event_edges (prev_event_id)` —
-    the project's first index. `event_edges`' primary key is `(event_id,
-    prev_event_id)`, which cannot serve a lookup keyed on `prev_event_id`
-    alone; the migration's own `seed_forward_extremities` step probes
-    exactly that (is this event anybody's `prev_event_id`?) once per event,
-    and phase B's future ingest-time "children of this event" lookup needs
-    the same shape. Without the index both are a full table scan per probe
-    — O(events × edges) for the seed step alone. The index is created
-    before the seed statements run, so seeding itself uses it; confirmed
-    by `EXPLAIN QUERY PLAN` in
+  - **Index:** `event_edges_prev_event_id ON event_edges (prev_event_id)`.
+    `event_edges`' primary key is `(event_id, prev_event_id)`, which cannot
+    serve a lookup keyed on `prev_event_id` alone; the ingest-time "children
+    of this event" lookup (is this event anybody's `prev_event_id`?) needs
+    exactly that shape, and without the index it is a full table scan per
+    probe. Confirmed by `EXPLAIN QUERY PLAN` in
     `tests/integration/test_state_groups_flow.cpp`'s "event_edges has a
-    usable index for prev_event_id lookups" scenario. `state_groups` gets
-    no matching `room_id` index: every store function that reads it
-    (`find_state_group`, `read_state_group_full_state`,
+    usable index for prev_event_id lookups in the v1 schema" scenario.
+    `state_groups` has no matching `room_id` index: every store function that
+    reads it (`find_state_group`, `read_state_group_full_state`,
     `create_or_reuse_state_group`'s parent lookup) looks up by
     `state_group_id`, its primary key — nothing queries it by `room_id`.
 
@@ -606,27 +537,14 @@ value. Test fixtures that do not exercise persistence select it through
   trivially, so unit tests exercise the in-memory bookkeeping directly —
   see `tests/unit/test_state_groups.cpp`).
 
-  The migration seeds every pre-existing room in portable SQL (`INSERT ...
-  SELECT ... WHERE NOT EXISTS (...)`, idempotency-guarded so re-running the
-  migration chain is a no-op): one snapshot state group per room
-  (deterministic id `'seed:' || room_id`) built from its `current_state`,
-  attached via `event_state_groups` to the room's current forward
-  extremities (the events `event_edges` names as nobody's `prev_event_id`,
-  seeded into `forward_extremities`). Events older than a room's
-  extremities get no state group at seed time — a later phase treats them
-  as outliers if it ever reaches them. Integration coverage
-  (`tests/integration/test_state_groups_flow.cpp`) brings a real SQLite
-  database to v14 by replaying the compiled migration catalog by hand
-  (every v1–v14 statement happens to be parameter-free, so plain
-  `sqlite3_exec` suffices), seeds a room at that shape, then opens the
-  store through the public API so migration 015 runs for real and asserts
-  the seeded snapshot/extremities/mappings/statuses; a PostgreSQL-gated
-  scenario (skips without `MEROVINGIAN_TEST_POSTGRESQL_URI`, like every
-  other live-database scenario in this suite) checks the new tables exist
-  after bootstrap.
+  A fresh database starts with no state groups or forward extremities; they are
+  written as rooms are created and events ingested. Nothing is seeded at
+  bootstrap. PostgreSQL bootstrap creating these tables is covered by
+  `tests/integration/test_state_groups_flow.cpp`.
+
 - **Phase B1 of spec-conformant PDU ingestion (0.12.13, ADR-0064): the phase
   A tables are now written and read on the live ingest path**, not just
-  seeded for pre-existing rooms. New module
+  declared in the schema. New module
   [`merovingian::homeserver::state_bookkeeping`](../include/merovingian/homeserver/state_bookkeeping.hpp)
   (`src/homeserver/state_bookkeeping.cpp`):
   - `compute_state_before(store, room_id, policy, prev_event_ids)` — the
@@ -732,36 +650,26 @@ value. Test fixtures that do not exercise persistence select it through
   `tests/integration/test_join_room_flow.cpp` covers the federated-join
   seeding end to end; `tests/unit/test_sync_handler.cpp` covers a
   resolution-driven reactivation reaching an incremental `/sync` client.
-- **Token rotation lineage (schema version `17`, migration
-  `migrations/017_token_rotation_lineage.sql`, ADR-0074).** `refresh_tokens`
-  gains `predecessor_hash` and `access_tokens` gains
-  `predecessor_refresh_hash` (both `TEXT NOT NULL DEFAULT ''`, via `ALTER
-  TABLE`). A token pair minted by `POST /refresh` records the hash of the
-  refresh token it replaced, which stays valid until the pair is first used
-  (see `docs/auth-identity.md`). Both backends store and hydrate the columns;
-  `database::revoke_refresh_tokens_with_predecessor` supersedes an unused
-  pair when a refresh is retried. The downgrade step drops both columns.
-  Hydration (`homeserver::hydrate_local_database`) also copies each access
-  token's `expires_at` into its session; before 0.12.13 it did not, so
-  expiry was not enforced after a restart.
-- **M05 authenticated-media storage (schema version `16`, migration
-  `migrations/016_media_legacy_endpoint_visibility.sql`,
-  [ADR-0068](adr/0068-random-media-ids-and-legacy-endpoint-freeze.md)).**
-  The `media` table gains a `legacy_endpoint_visible` column (`TEXT NOT NULL
-  DEFAULT 'true'`) via an `ALTER TABLE` migration, keeping the v1 `media`
-  table definition historically intact exactly like v14's `users.deactivated`
-  addition. New local uploads are stored with `legacy_endpoint_visible = false`
-  (see `docs/media-repository.md`); the unauthenticated
-  `/_matrix/media/v3/download` and `/thumbnail` routes treat a `false` value
-  as a 404, while authenticated `/_matrix/client/v1/media/...` routes ignore it
-  and serve the media. Existing rows default to `'true'`, so pre-upgrade
-  unauthenticated links keep working. The runtime migration path uses the
-  compiled catalog in `src/database/migration.cpp` (upgrade step version
-  `16` "media_legacy_endpoint_visibility"; downgrade step version `15`
-  "drop_media_legacy_endpoint_visibility"); `schema::current_schema_version()`
-  returns `16U`. Adding a column to the `media` table does not affect the
-  federation worker table classification: `media` remains in
-  `worker_never_reads_tables`, so the worker allowlist needs no change.
+- **Token rotation lineage (ADR-0074).** `refresh_tokens.predecessor_hash` and
+  `access_tokens.predecessor_refresh_hash` (both `TEXT NOT NULL DEFAULT ''`) are
+  part of the v1 schema. A token pair minted by `POST /refresh` records the hash
+  of the refresh token it replaced, which stays valid until the pair is first
+  used (see `docs/auth-identity.md`). Both backends store and hydrate the
+  columns; `database::revoke_refresh_tokens_with_predecessor` supersedes an
+  unused pair when a refresh is retried. Hydration
+  (`homeserver::hydrate_local_database`) also copies each access token's
+  `expires_at` into its session; before 0.12.13 it did not, so expiry was not
+  enforced after a restart.
+- **M05 authenticated-media storage
+  ([ADR-0068](adr/0068-random-media-ids-and-legacy-endpoint-freeze.md)).**
+  The `media` table's `legacy_endpoint_visible` column (`TEXT NOT NULL DEFAULT
+  'true'`) is part of the v1 schema. New local uploads are stored with
+  `legacy_endpoint_visible = false` (see `docs/media-repository.md`); the
+  unauthenticated `/_matrix/media/v3/download` and `/thumbnail` routes treat a
+  `false` value as a 404, while authenticated `/_matrix/client/v1/media/...`
+  routes ignore it and serve the media. Adding a column to the `media` table
+  does not affect the federation worker table classification: `media` remains
+  in `worker_never_reads_tables`, so the worker allowlist needs no change.
 - `/sync` calls `database::ensure_sync_stream_id_ahead_of()` when the client's
   `since` token is ahead of the server's counter. This recovers live deployments
   whose counter rolled back below a stored token (for example, when the watermark
@@ -807,22 +715,21 @@ value. Test fixtures that do not exercise persistence select it through
   current-schema upgrade coverage separately tracks schema-version bumps.
 - Integration coverage proving SQLite users, sessions, rooms, and events survive
   a homeserver runtime restart.
-- Upgrade coverage across releases (`tests/integration/test_database_upgrade_flow.cpp`,
-  ADR-0216). `migrate_sqlite_schema_to` and `migrate_postgresql_schema_to` build a
+- Upgrade coverage (`tests/integration/test_database_upgrade_flow.cpp`, ADR-0216,
+  ADR-0224). `migrate_sqlite_schema_to` and `migrate_postgresql_schema_to` build a
   schema at an older version and stop there: they bootstrap an empty database,
   apply migrations forward to exactly the target, and hydrate nothing. They refuse
   a version this build does not know before touching the database, and a schema
-  already past the target, since migrations never run backwards. Tests use them to
-  open a database at every older version, and to seed the previous minor series'
-  rows (in that series' column shapes) and serve them from the current runtime.
-  `tests/fixtures/upgrade/0.11.13/` holds a SQLite database and a PostgreSQL dump
-  written over HTTP by release 0.11.13 (schema version 11), which the current
-  runtime must open, migrate and serve: its users log in, their old access tokens
-  still authenticate, their rooms, messages, aliases, media, profile, account data,
-  pushers and device keys are returned, a client's old sync token still works, and a
-  new event in an old room is signed with the old, decrypted signing key. The room
-  directory is not carried over: 0.11 listed rooms by join rule and stored no choice
-  to publish. The fixture is removed when the migrations collapse at 1.0.0.
+  already past the target, since migrations never run backwards. Today the
+  catalog has only v1, so the scenarios cover the v1 build-and-stop seam, never
+  going past this build, an unopenable file being refused, tables without a ledger
+  being refused (SQLite), a fresh database having every table's final columns and
+  all four indexes, and a pre-1.0 ledger (rows 2 to 26) being refused on both
+  backends. The "any older version opens at current" scenario is vacuous until a
+  v2 exists. There is no previous-release fixture: the 0.11.13 fixture was
+  removed when the migrations collapsed (0.12.47, ADR-0224). When the 1.1 series
+  starts, the last 1.0.x release writes the next fixture with
+  `scripts/generate_upgrade_fixture.py` (see `docs/release-process.md`).
 - Both stores read the migration ledger in numeric order
   (`ORDER BY CAST(version AS INTEGER)`): `schema_migrations.version` is `TEXT`, and
   ordering by it alone put `'10'` before `'9'`.
@@ -928,7 +835,10 @@ The boundary provides these guarantees:
 - Fresh SQLite database files are created with the current schema and recorded
   migration metadata.
 - Existing SQLite database files apply pending project-owned migrations before
-  runtime state is hydrated.
+  runtime state is hydrated. A database whose `schema_migrations` ledger holds an
+  upgrade row this build does not know (for example the rows 2 to 26 written by
+  pre-1.0 builds up to 0.12.46) is refused at open, before any migration or
+  hydration (`schema_ledger_is_known`), on both backends.
 - Auth and room mutations fail the request when required persistent writes fail.
   Token revocations (logout, logout-all, refresh rotation and reuse, device
   deletion, password change) are checked against the store after the write, and
@@ -1045,8 +955,12 @@ persisted and hydrated.
   startup applies pending schema migrations automatically.
 - PostgreSQL role separation is enforced in the live server path. When roles
   are configured, `open_postgresql_persistent_store()` assumes
-  `database.migration_role` for pending DDL, resets it, and then assumes
-  `database.runtime_role` for runtime access. Live role scenarios run in the
+  `database.migration_role` for DDL (the fresh-database v1 bootstrap and any
+  later pending migration), resets it, and then assumes
+  `database.runtime_role` for runtime access. The fresh-database bootstrap
+  fails closed if the migration role cannot be assumed, so the migration role
+  owns every table on a fresh install; a single-role deployment (no migration
+  role) bootstraps as the login role. Live role scenarios run in the
   `postgres-integration` workflow because they require PostgreSQL and the role
   environment variables. See `packaging/postgresql/provision-roles.sql`.
 - The schema's v1 `push_rules` table is unused: push rules are kept as `m.push_rules`
@@ -1275,7 +1189,7 @@ separate, operator-run provisioning script, never a file under
 
 ### Security audit follow-up (0.12.17)
 
-Schema 18 adds `rooms.directory_public` as TEXT NOT NULL DEFAULT false. It is independent of room join rules; existing rooms remain unpublished because their prior publication intent was not durable (ADR-0099). Creation persists publication with the room and initial membership. Visibility changes commit before updating the store and runtime mirrors. PostgreSQL scoped snapshots bind one room ID and join relation tables to events, avoiding the 128-parameter ceiling for large rooms. Media moderation commits flags, removal blob state and required administrative audit rows together; mirrors change only after commit (ADR-0100).
+`rooms.directory_public` is `TEXT NOT NULL DEFAULT 'false'` in the v1 schema. It is independent of room join rules; publication is an explicit, durable choice (ADR-0099). Creation persists publication with the room and initial membership. Visibility changes commit before updating the store and runtime mirrors. PostgreSQL scoped snapshots bind one room ID and join relation tables to events, avoiding the 128-parameter ceiling for large rooms. Media moderation commits flags, removal blob state and required administrative audit rows together; mirrors change only after commit (ADR-0100).
 
 ### Membership rows commit with their event (DB-4, 0.12.26)
 
