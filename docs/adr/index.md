@@ -211,6 +211,7 @@
 * [0224 - Pre-1.0 migrations collapse into one v1 schema, frozen at 1.0.0, and an unknown ledger is refused](0224-pre-1-0-migrations-collapse-into-one-frozen-v1-schema.md)
 * [0225 - A local event falls back to the newest forward extremity when their state cannot be resolved](0225-a-local-event-falls-back-to-the-newest-forward-extremity-when-their-state-cannot-be-resolved.md)
 * [0228 - An event this server places commits with its bookkeeping in one transaction](0228-an-event-this-server-places-commits-with-its-bookkeeping-in-one-transaction.md)
+* [0229 - SonarQube Cloud ignores tests and tooling, and keeps the server, packaging and workflows](0229-sonarqube-cloud-ignores-tests-and-tooling-and-keeps-the-server-packaging-and-workflows.md)
 
 ## Proposed Records
 
