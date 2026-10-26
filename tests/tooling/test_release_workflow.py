@@ -10,6 +10,18 @@ WORKFLOW = REPO_ROOT / ".github" / "workflows" / "release.yml"
 
 
 class ReleaseWorkflowTests(unittest.TestCase):
+    def test_release_notes_say_where_the_complement_evidence_is(self) -> None:
+        # GIVEN the repository release workflow.
+        workflow = WORKFLOW.read_text(encoding="utf-8")
+
+        # WHEN its release notes are written.
+        # THEN they have a Complement section naming the signed evidence files
+        # and how to verify them, and saying what their absence means.
+        self.assertIn("## Complement", workflow)
+        self.assertIn("complement-results-", workflow)
+        self.assertIn("gpg --verify complement-results-", workflow)
+        self.assertIn("not been tested against Complement", workflow)
+
     def test_alpha_tags_trigger_release_publication(self) -> None:
         # GIVEN the repository release workflow.
         self.assertTrue(WORKFLOW.is_file(), "release workflow is missing")

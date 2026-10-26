@@ -30,9 +30,12 @@ drops every privilege before starting the server. The `complement-image` job in
 `packages.yml` boots it on every branch run. `scripts/run_complement.py` runs Complement at a
 pinned commit against a package whose digest is in the maintainer-signed `SHA256SUMS`, and
 `scripts/summarise_complement.py` judges the run against `tests/complement/skip-list.toml`
-(ADR-0234). Still open: a first full run (unverified so far: whether Docker's default seccomp profile admits
-Landlock, and whether the container's memory-lock limit fits the master key), and recording
-the result as release evidence.
+(ADR-0234). `scripts/record_complement_evidence.py` and `publish_complement_evidence.py` turn a
+green run into a maintainer-signed record, tied to the shipped server binary's SHA-256 and
+attached to the release (ADR-0235, `docs/release-process.md`, "Complement"). Still open: the
+first full run against a candidate, and the skip list it produces. Not yet verified: whether
+Docker's default seccomp profile admits Landlock, and whether the container's memory-lock limit
+fits the master key.
 
 ## Release evidence, not CI gates
 

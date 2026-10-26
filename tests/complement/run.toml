@@ -18,3 +18,5 @@ go = "1.26.0"
 # "Verifying release signatures"). A package is release evidence only when
 # its digest is in a SHA256SUMS this key signed.
 maintainer_key = "66DFCC50187C8E46B5ED85FD92A3A264F0A7BE20"
+# Where publish_complement_evidence.py attaches the signed results.
+repository = "OMG-Software/Merovingian"

@@ -19,8 +19,9 @@
    status: 0 green, 1 not green, 2 refused before running.
 
 DIR must not exist or be empty. It ends up holding complement.jsonl (the raw
-run), listing.jsonl, summary.json and run-metadata.json, which
-record_complement_evidence.py turns into release evidence.
+run), listing.jsonl, the skip list the run was judged by, summary.json and
+run-metadata.json, which record_complement_evidence.py turns into release
+evidence.
 
 The run needs Docker, Go (at least the pinned version), git, gpg (unless
 --unsigned) and network access for Complement and its Go modules. Inherited
@@ -207,11 +208,16 @@ def execute(args: argparse.Namespace, work: Path) -> int:
     if head != commit:
         raise Refused(f"the checkout is at {head}, not the pinned {commit}")
 
+    # The run is judged by this copy, and the evidence carries it.
+    skip_list = work / "skip-list.toml"
+    shutil.copyfile(args.skip_list, skip_list)
+    skip_list_sha256 = sha256_of(skip_list)
+
     env = complement_environment(image_tag, args.allow_without_landlock)
     listing = work / "listing.jsonl"
     listing.write_text(run("go", "test", "-json", "-list", ".*", "./tests/...", cwd=checkout, env=env), encoding="utf-8")
     pattern = run(sys.executable, "-I", str(SUMMARISER), "--repo-root", str(REPO_ROOT),
-                  "--skip-list", str(args.skip_list), "--skip-pattern").strip()
+                  "--skip-list", str(skip_list), "--skip-pattern").strip()
 
     command = ["go", "test", "-json", "-count=1", "-timeout", args.timeout]
     if pattern:
@@ -227,7 +233,7 @@ def execute(args: argparse.Namespace, work: Path) -> int:
     finished_at = now()
 
     summary = subprocess.run(
-        [sys.executable, "-I", str(SUMMARISER), "--repo-root", str(REPO_ROOT), "--skip-list", str(args.skip_list),
+        [sys.executable, "-I", str(SUMMARISER), "--repo-root", str(REPO_ROOT), "--skip-list", str(skip_list),
          "--log", str(log), "--listing", str(listing), "--output", str(work / "summary.json")],
         check=False,
     )
@@ -245,6 +251,7 @@ def execute(args: argparse.Namespace, work: Path) -> int:
         "run_filter": args.run,
         "timeout": args.timeout,
         "skip_pattern": pattern or None,
+        "skip_list_sha256": skip_list_sha256,
         "go_test_exit_code": go_test.returncode,
         "summariser_exit_code": summary.returncode,
         "started_at": started_at,

@@ -69,6 +69,19 @@ server refused both with no setting that could change it.
     summariser checks exists.
   - An entry hiding an auth, signature, key or ACL test needs `signed_off_by`.
   - The list is empty until the first full run.
+- **ADDED:** `scripts/record_complement_evidence.py` and `scripts/publish_complement_evidence.py`
+  (ADR-0235). The recorder writes `complement-results-<version>.json` and the raw
+  `complement-<version>.jsonl` from a run's work directory. It refuses, writing nothing, unless
+  the package is the one the run tested, the server binary it extracts from the package is the
+  one the run read out of the image, and the skip list is the one the run was judged by.
+  `release_evidence` is true only for a GPG-verified, unfiltered, green run. The publisher signs
+  both files with the maintainer key, checks the signatures, and attaches them to the tag's
+  release. It refuses anything that is not evidence, another version's tag, or an existing
+  signature. `run_complement.py` now keeps the skip list it judged the run by, with its digest.
+- **CI:** the alpha release notes have a Complement section naming the signed evidence files and
+  how to verify them. A release without them has not been tested against Complement.
+- **DOCS:** `docs/release-process.md` has a pre-tag "Complement" section: candidate, run, record,
+  tag, publish. `docs/dev-environment.md` lists the Docker, Go, git and gpg prerequisites.
 - **DOCS:** the root `AGENTS.md` glossary no longer calls the in-house JSON flow fixtures
   (`tests/fixtures/complement/`) Complement. This branch's ADRs are 0231 and 0232, because
   0230 went to unknown client endpoints (0.12.56).
@@ -79,7 +92,8 @@ server refused both with no setting that could change it.
   invalid. `tests/tooling/test_complement_image.py` (meson test
   `complement-image-tooling`) for the image's scripts, Dockerfile, nginx config and CI job;
   `test_complement_summary.py` and `test_run_complement.py` for the summariser, the skip list
-  and the run script.
+  and the run script; `test_complement_evidence.py` for the recorder (against Debian packages
+  built in the test) and the publisher; a release-notes scenario in `test_release_workflow.py`.
 
 ## 0.12.54
 

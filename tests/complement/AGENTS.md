@@ -51,6 +51,16 @@ cp merovingian_<version>_amd64-debian.deb tests/complement/artifact/merovingian.
 docker build --build-arg MEROVINGIAN_DEB_SHA256=<its SHA-256> --tag merovingian-complement tests/complement
 ```
 
+## Release evidence
+
+`scripts/record_complement_evidence.py` turns a run's work directory into
+`complement-results-<version>.json` and `complement-<version>.jsonl`.
+`scripts/publish_complement_evidence.py` signs them with the maintainer key and
+attaches them to the tag's release (ADR-0235). The recorder refuses a run
+whose image did not hold the package's own server binary. Only a signed,
+unfiltered, green run is release evidence. The sequence is in
+`docs/release-process.md`, "Complement".
+
 ## The skip list
 
 A green run is not "every test passed". It means nothing failed outside

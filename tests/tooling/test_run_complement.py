@@ -170,6 +170,18 @@ class RunComplementTests(unittest.TestCase):
         self.assertIsNone(metadata["run_filter"])
         self.assertEqual(json.loads((self.results / "summary.json").read_text(encoding="utf-8"))["verdict"], "pass")
 
+    def test_the_run_keeps_the_skip_list_it_was_judged_by(self) -> None:
+        # GIVEN a skip list.
+        self.skip_list.write_text("# judged by this\n", encoding="utf-8")
+        # WHEN Complement is run, and the list changes afterwards.
+        result = self.run_script()
+        self.skip_list.write_text("# changed later\n", encoding="utf-8")
+        # THEN the work directory holds the list as it was, and the metadata its digest.
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        snapshot = (self.results / "skip-list.toml").read_bytes()
+        self.assertEqual(snapshot, b"# judged by this\n")
+        self.assertEqual(self.metadata()["skip_list_sha256"], hashlib.sha256(snapshot).hexdigest())
+
     def test_the_image_is_built_from_the_verified_package_outside_the_source_tree(self) -> None:
         # GIVEN a signed package.
         # WHEN the run builds the image.

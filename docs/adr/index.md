@@ -218,6 +218,7 @@
 * [0232 - Open registration needs an explicit acknowledgement, and still uses UIA](0232-open-registration-needs-an-explicit-acknowledgement-and-still-uses-uia.md)
 * [0233 - Complement runs the shipped trixie package, in an image that drops its own privileges](0233-complement-runs-the-shipped-trixie-package-in-an-image-that-drops-its-own-privileges.md)
 * [0234 - A Complement run is judged by a summariser over a checked-in skip list](0234-a-complement-run-is-judged-by-a-summariser-over-a-checked-in-skip-list.md)
+* [0235 - Complement evidence is a maintainer-signed record tied to the shipped binary](0235-complement-evidence-is-a-maintainer-signed-record-tied-to-the-shipped-binary.md)
 
 ## Proposed Records
 

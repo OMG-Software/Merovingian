@@ -137,6 +137,9 @@ sh scripts/reject-unsafe.sh
 sh scripts/check-release-readiness.sh
 ```
 
+Then run Complement against the candidate (see "Complement" below). It must be green
+before the tag is created.
+
 After that, create and push an alpha tag:
 
 ```sh
@@ -147,6 +150,45 @@ git push origin v<version>-alpha.1
 GitHub Actions publishes the prerelease assets for that tag.
 The matching release event also publishes the SBOM assets, and the scheduled
 dependency-triage workflow keeps a separate vulnerability report artifact.
+
+## Complement
+
+The external Complement suite runs against the candidate's Debian trixie package before
+the tag, and its signed result is attached to the release afterwards (ADR-0233, ADR-0234,
+ADR-0235). Prerequisites are in `docs/dev-environment.md`, "Complement".
+
+1. Take the candidate from the rolling `latest` prerelease built from the release
+   commit, with its checksums and their signature:
+
+   ```sh
+   gh release download latest --repo OMG-Software/Merovingian --dir candidate      --pattern 'merovingian_*_amd64-debian.deb' --pattern SHA256SUMS --pattern SHA256SUMS.asc
+   ```
+
+2. Run Complement. The work directory must be empty, and the exit status is the verdict:
+
+   ```sh
+   python3 scripts/run_complement.py      --package candidate/merovingian_<version>_amd64-debian.deb      --sha256sums candidate/SHA256SUMS --signature candidate/SHA256SUMS.asc      --work-dir ../complement-<version>
+   ```
+
+   A failure outside `tests/complement/skip-list.toml` is fixed, or listed with the
+   evidence its category needs (`tests/complement/AGENTS.md`). A stale or missing
+   entry is removed. Either way the run is repeated from an empty work directory.
+
+3. Record the evidence. The exit status is 0 only for release evidence:
+
+   ```sh
+   python3 scripts/record_complement_evidence.py --work-dir ../complement-<version>      --package candidate/merovingian_<version>_amd64-debian.deb --output-dir ../complement-evidence
+   ```
+
+4. Create and push the tag (above). Once the release workflow has published the
+   release, sign and attach the evidence with the maintainer key:
+
+   ```sh
+   python3 scripts/publish_complement_evidence.py      --results ../complement-evidence/complement-results-<version>.json      --log ../complement-evidence/complement-<version>.jsonl --tag v<version>-alpha.<n>
+   ```
+
+The release notes' Complement section names the two files. Readers verify them
+like any other asset: `gpg --verify <file>.asc <file>`.
 
 ## Rolling latest packages
 

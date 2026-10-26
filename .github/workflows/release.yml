@@ -297,6 +297,20 @@ jobs:
           - SLSA provenance: `gh attestation verify <tarball> --repo OMG-Software/Merovingian`
           - GPG signature: `gpg --verify <tarball>.asc <tarball>` (import the maintainer key from `docs/release-process.md`)
 
+          ## Complement
+
+          The maintainer runs the external Complement suite against this version's Debian
+          trixie package before tagging, and attaches the result to this release once it is
+          published (`docs/release-process.md`, "Complement"):
+
+          - `complement-results-<version>.json`: the package, server binary and image tested,
+            the Complement commit, the skip list the run was judged by, and the verdict
+          - `complement-<version>.jsonl`: the raw `go test -json` log
+
+          Each has a detached signature by the maintainer key:
+          `gpg --verify complement-results-<version>.json.asc complement-results-<version>.json`.
+          A release without these files has not been tested against Complement.
+
           ## Package checksums
 
           EOF
