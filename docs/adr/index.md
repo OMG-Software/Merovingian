@@ -217,6 +217,7 @@
 * [0231 - Federation may reach operator-named private networks, and nothing else](0231-federation-may-reach-operator-named-private-networks-and-nothing-else.md)
 * [0232 - Open registration needs an explicit acknowledgement, and still uses UIA](0232-open-registration-needs-an-explicit-acknowledgement-and-still-uses-uia.md)
 * [0233 - Complement runs the shipped trixie package, in an image that drops its own privileges](0233-complement-runs-the-shipped-trixie-package-in-an-image-that-drops-its-own-privileges.md)
+* [0234 - A Complement run is judged by a summariser over a checked-in skip list](0234-a-complement-run-is-judged-by-a-summariser-over-a-checked-in-skip-list.md)
 
 ## Proposed Records
 

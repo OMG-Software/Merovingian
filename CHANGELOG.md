@@ -52,6 +52,23 @@ server refused both with no setting that could change it.
   challenge, the federation key over TLS with only the test CA trusted, and the worker
   answering `/_matrix/federation/v1/version`. It also checks a non-root server with empty
   `CapBnd`/`CapEff` and `NoNewPrivs: 1`, and the same signing key after `docker restart`.
+- **ADDED:** `scripts/run_complement.py` (ADR-0234). It refuses a package whose SHA-256 is not
+  in a `SHA256SUMS` signed by the maintainer key pinned in `tests/complement/run.toml`
+  (`--unsigned` runs a local package, never as evidence). It builds the image from a copy
+  outside the source tree, reads the server binary's SHA-256 back from the image, fetches
+  Complement at the pinned commit (`df42e709`, Go 1.26.0) and refuses any other, drops inherited
+  `COMPLEMENT_*` variables, and runs `go test -json ./tests/...`. `--allow-without-landlock`
+  shares only the Landlock waiver with the containers. Its exit status is the summariser's.
+- **ADDED:** `scripts/summarise_complement.py` and `tests/complement/skip-list.toml`
+  (ADR-0234). A run is green only when it ran tests, every failure is listed, every
+  `expect-fail` entry still fails, every entry names a test that exists, no test was left
+  unfinished, and no package failed on its own. `go test`'s exit status is never used.
+  - Entries are `expect-fail` (the test runs and must fail) or `skip` (not run; top-level only,
+    with a reason, checked against `go test -list`).
+  - Every entry is `spec`, `non-spec`, `room-version` or `known-gap`, with evidence the
+    summariser checks exists.
+  - An entry hiding an auth, signature, key or ACL test needs `signed_off_by`.
+  - The list is empty until the first full run.
 - **DOCS:** the root `AGENTS.md` glossary no longer calls the in-house JSON flow fixtures
   (`tests/fixtures/complement/`) Complement. This branch's ADRs are 0231 and 0232, because
   0230 went to unknown client endpoints (0.12.56).
@@ -60,7 +77,9 @@ server refused both with no setting that could change it.
   `test_open_registration_conformance.cpp`, and in `test_media_security.cpp` a remote media
   allowlist scenario plus server-name scenarios that replace the one asserting `nodot` was
   invalid. `tests/tooling/test_complement_image.py` (meson test
-  `complement-image-tooling`) for the image's scripts, Dockerfile, nginx config and CI job.
+  `complement-image-tooling`) for the image's scripts, Dockerfile, nginx config and CI job;
+  `test_complement_summary.py` and `test_run_complement.py` for the summariser, the skip list
+  and the run script.
 
 ## 0.12.54
 

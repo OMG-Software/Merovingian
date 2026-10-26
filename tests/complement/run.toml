@@ -1,0 +1,20 @@
+# SPDX-FileCopyrightText: 2026 James Chapman
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# What scripts/run_complement.py tests a release against (ADR-0234). Changing
+# a value here changes what a green run means, so a change is reviewed like a
+# code change and recorded in CHANGELOG.md.
+
+[complement]
+repository = "https://github.com/matrix-org/complement"
+# main on 2026-10-26. Move it deliberately: a newer Complement brings tests the
+# skip list has not been checked against.
+commit = "df42e70900b45789b72e3ba91771cd26933d5008"
+# The go directive of go.mod at that commit; the run refuses an older toolchain.
+go = "1.26.0"
+
+[release]
+# The maintainer key that signs SHA256SUMS (docs/release-process.md,
+# "Verifying release signatures"). A package is release evidence only when
+# its digest is in a SHA256SUMS this key signed.
+maintainer_key = "66DFCC50187C8E46B5ED85FD92A3A264F0A7BE20"

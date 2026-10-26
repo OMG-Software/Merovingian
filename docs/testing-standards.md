@@ -98,7 +98,9 @@ config departs from the defaults only where Complement's contract forces it,
 plus the optional parts of the encryption policy and rate limits. A full run is a pre-release step,
 not a per-PR gate (`docs/todos/production-milestone.md`). Every branch run of
 `packages.yml` boots the image without Complement (`complement-image`), and
-`tests/tooling/test_complement_image.py` tests its scripts directly.
+`tests/tooling/test_complement_image.py` tests its scripts directly. A run is
+green by `scripts/summarise_complement.py`'s verdict over
+`tests/complement/skip-list.toml`, never by `go test`'s exit status (ADR-0234).
 
 ## Fuzz testing
 

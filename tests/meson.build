@@ -94,6 +94,19 @@ shell = find_program('sh')
   )
 
   test(
+    'complement-summary-tooling',
+    python,
+    args: [meson.project_source_root() / 'tests' / 'tooling' / 'test_complement_summary.py'],
+  )
+
+  test(
+    'run-complement-tooling',
+    python,
+    args: [meson.project_source_root() / 'tests' / 'tooling' / 'test_run_complement.py'],
+    timeout: 120,
+  )
+
+  test(
     'example-config-tooling',
     python,
     args: [meson.project_source_root() / 'tests' / 'tooling' / 'test_example_config.py'],

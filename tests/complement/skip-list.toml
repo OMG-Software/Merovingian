@@ -1,0 +1,43 @@
+# SPDX-FileCopyrightText: 2026 James Chapman
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# Complement tests a green run may fail or not run (ADR-0234). A run is green
+# when nothing fails outside this list, every expect-fail entry still fails,
+# and every entry still names a test that exists. scripts/summarise_complement.py
+# decides, and refuses a list that breaks these rules.
+#
+# Each entry is an [[entry]] table:
+#
+#   test      Go test name as `go test` reports it: "TestX" or "TestX/subtest".
+#   package   Its package inside Complement: "tests" or "tests/csapi", ...
+#   mode      "expect-fail": the test runs and must fail; once it passes, the
+#               entry is stale and the run fails until it is removed.
+#             "skip": the test does not run at all (go test -skip). Top-level
+#               tests only, and only with `not_run_because`: running it would
+#               harm the rest of the run. Prefer expect-fail.
+#   category  Why the failure is acceptable, with the evidence it needs:
+#             "spec"          this server follows the spec and the test
+#                             contradicts it; `spec` cites the section.
+#             "non-spec"      the test asserts behaviour the spec does not
+#                             require; `spec` cites the section.
+#             "room-version"  the test needs room version 1 or 2, which this
+#                             server does not support; `adr` is ADR-0076.
+#             "known-gap"     this server is wrong or incomplete; `todo` names
+#                             the row in docs/todos/ that tracks the fix.
+#   reason    One or two sentences a reviewer can check.
+#   signed_off_by
+#             Required when the test name mentions auth, signatures, keys or
+#             ACLs: hiding a federation authorisation or signature check needs
+#             the maintainer's name and the date.
+#
+# Example:
+#
+#   [[entry]]
+#   test = "TestExample/subtest"
+#   package = "tests/csapi"
+#   mode = "expect-fail"
+#   category = "known-gap"
+#   reason = "The endpoint is not implemented."
+#   todo = "docs/todos/capability-gaps.md"
+#
+# Empty until the first full run against a release candidate.

@@ -372,6 +372,23 @@ What the site expects of each branch:
   The home page uses its separate `merovingian-logo.svg` project mark.
   These SVG files are local, so readers make no request to the organisation site.
 
+## Complement
+
+Running Complement against a package (`scripts/run_complement.py`, see
+`tests/complement/AGENTS.md`) needs, beyond the build tools:
+
+- Docker 20.10 or later, with a daemon the user can reach. On Linux, Complement
+  maps `host.docker.internal` to the host itself (`host-gateway`). Docker
+  Desktop resolves the name natively.
+- Go at least the version `tests/complement/run.toml` pins (`go = ...`, the
+  `go` directive of Complement's `go.mod` at the pinned commit).
+- git and gpg, and the maintainer key imported for a signed run
+  (docs/release-process.md, "Verifying release signatures").
+- Network access to fetch Complement and its Go modules.
+
+Nothing here is needed for the normal build and test cycle. CI does not run
+Complement. Its `complement-image` job only boots the image.
+
 ## Security Posture
 
 The setup script does not weaken local package manager policy, add third-party package repositories, install Boost, or fetch dependencies outside the operating-system package manager. Use `--dry-run` during review to record the exact package command before running it on hardened hosts.

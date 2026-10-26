@@ -22,18 +22,53 @@ are this project's own tests.
 | `prepare-state.sh` | Master key and database directories, kept across restarts and bound to one server name |
 | `mint-tls.sh` | One-day P-256 certificate for the federation listener, from Complement's CA |
 | `nginx.conf` | Puts the loopback client listener (`127.0.0.1:8080`) on 8008 |
+| `run.toml` | The pinned Complement commit, the Go it needs, and the maintainer key that must sign `SHA256SUMS` |
+| `skip-list.toml` | Tests a green run may fail or not run, each with a category and evidence (ADR-0234) |
 
-## Building and running
+## Running Complement
+
+`scripts/run_complement.py` does the whole run (prerequisites in
+`docs/dev-environment.md`, "Complement"):
+
+```bash
+python3 scripts/run_complement.py     --package merovingian_<version>_amd64-debian.deb     --sha256sums SHA256SUMS --signature SHA256SUMS.asc     --work-dir ../complement-<version>
+```
+
+It verifies the package against the maintainer-signed `SHA256SUMS`, builds
+this directory into an image from a copy in the work directory, fetches
+Complement at the commit in `run.toml`, and runs `go test -json ./tests/...`.
+`scripts/summarise_complement.py` judges the result against `skip-list.toml`,
+and its verdict is the exit status: 0 green, 1 not green, 2 refused.
+`--unsigned` runs a locally built package and `--run` a subset; neither is
+release evidence. `--allow-without-landlock` passes
+`MEROVINGIAN_COMPLEMENT_ALLOW_WITHOUT_LANDLOCK=true` to each container through
+`COMPLEMENT_SHARE_ENV_PREFIX`, and the run records it.
+
+To build the image by hand:
 
 ```bash
 cp merovingian_<version>_amd64-debian.deb tests/complement/artifact/merovingian.deb
 docker build --build-arg MEROVINGIAN_DEB_SHA256=<its SHA-256> --tag merovingian-complement tests/complement
 ```
 
-Complement then runs with `COMPLEMENT_BASE_IMAGE=merovingian-complement`. To
-waive Landlock for the federation worker, which only an evidence record may
-show, pass `MEROVINGIAN_COMPLEMENT_ALLOW_WITHOUT_LANDLOCK=true` through
-Complement's `COMPLEMENT_SHARE_ENV_PREFIX`.
+## The skip list
+
+A green run is not "every test passed". It means nothing failed outside
+`skip-list.toml`, every `expect-fail` entry still fails, and every entry names a
+test that exists (ADR-0234). The file's header documents the format. In short:
+
+- Prefer `expect-fail`. A `skip` entry never runs, so it cannot go stale. It is
+  only for a top-level test that would harm the rest of the run, and it must
+  say why.
+- Each entry needs evidence for its category. `spec` and `non-spec` cite the
+  pinned spec, `room-version` cites ADR-0076, and `known-gap` names its
+  `docs/todos/` row.
+- An entry hiding a test about auth, signatures, keys or ACLs needs the
+  maintainer's `signed_off_by`.
+- When a fix lands, its test passes, its entry goes stale, and the run fails
+  until the entry is removed. Remove it in the same change as the fix.
+- Moving the pinned commit in `run.toml` can bring tests the list has never
+  seen. Do it in its own change, with a full run.
 
 ## Rules
 
@@ -70,7 +105,9 @@ Complement's `COMPLEMENT_SHARE_ENV_PREFIX`.
 
 ## Tests
 
-`tests/tooling/test_complement_image.py` (meson test `complement-image-tooling`)
+`tests/tooling/test_complement_summary.py` and `test_run_complement.py` cover
+the summariser and the run script (the latter against fake `docker`, `go`,
+`git` and `gpg`). `tests/tooling/test_complement_image.py` (meson test `complement-image-tooling`)
 runs these scripts directly. It covers server-name refusals, the rendered
 config, restarts, and certificates from a throwaway CA. The real server's
 `--check-config` must approve the rendered config. It also checks the

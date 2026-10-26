@@ -27,8 +27,10 @@ registration with `m.login.dummy` exists behind an explicit acknowledgement
 the same release (`tests/complement/`, ADR-0233). It installs the trixie package, puts the
 client API on 8008 through nginx, mints the federation certificate from Complement's CA, and
 drops every privilege before starting the server. The `complement-image` job in
-`packages.yml` boots it on every branch run. Still open: the maintainer run script and skip
-list, a first full run (unverified so far: whether Docker's default seccomp profile admits
+`packages.yml` boots it on every branch run. `scripts/run_complement.py` runs Complement at a
+pinned commit against a package whose digest is in the maintainer-signed `SHA256SUMS`, and
+`scripts/summarise_complement.py` judges the run against `tests/complement/skip-list.toml`
+(ADR-0234). Still open: a first full run (unverified so far: whether Docker's default seccomp profile admits
 Landlock, and whether the container's memory-lock limit fits the master key), and recording
 the result as release evidence.
 
