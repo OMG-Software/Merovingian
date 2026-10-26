@@ -1,3 +1,10 @@
+## 0.12.53
+
+- **MAINTENANCE:** merge current `main` into the documentation branding branch,
+  retain both changelog histories, and align all version metadata with 0.12.53.
+  Resolve the conflicts with the 0.12.52 CodeQL filter release without changing
+  the branding, README badges, or logging example edits.
+
 ## 0.12.52
 
 CodeQL no longer reports every Catch2 test scenario as an unused static function (ADR-0226).
@@ -50,6 +57,14 @@ a CI script. It now ignores test code and developer tooling (ADR-0229).
   must reach the gate is excluded.
 - **DOCS:** the security review checklist names the SonarQube Cloud gate and its scope as release
   evidence; the docs index lists it among the CI checks.
+
+## 0.12.49
+
+- **FIXED:** the documentation header and favicon use the angular OMG Software mark
+  published on omg-software.org, replacing the obsolete four-square symbol.
+- **ADDED:** the matching Merovingian project mark on the documentation home page.
+  All three images are served locally. The existing colours, fonts and light-mode
+  option remain in place.
 
 ## 0.12.48
 

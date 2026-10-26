@@ -2,6 +2,8 @@
 
 <div class="hero" markdown>
 
+<img class="merovingian-mark" src="assets/merovingian-logo.svg" alt="" width="96" height="96">
+
 <p class="omg-eyebrow">OMG SOFTWARE / MEROVINGIAN</p>
 
 ## A security-first Matrix homeserver

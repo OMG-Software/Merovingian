@@ -1,5 +1,5 @@
 Name:           merovingian
-Version:        0.12.52
+Version:        0.12.53
 Release:        1%{?dist}
 Summary:        Secure Matrix Protocol homeserver
 
@@ -101,11 +101,17 @@ fi
 %{_sysconfdir}/merovingian/merovingian.conf.example
 
 %changelog
+* Mon Oct 26 2026 James Chapman <claude@ping.me.uk> - 0.12.53-1
+- Integrate main while retaining the published documentation branding.
+
 * Mon Oct 26 2026 James Chapman <claude@ping.me.uk> - 0.12.52-1
 - CodeQL no longer reports cpp/unused-static-function on Catch2 test sources: the SARIF is filtered before upload.
 
 * Sun Oct 25 2026 James Chapman <claude@ping.me.uk> - 0.12.51-1
 - SonarQube Cloud ignores test code and developer tooling; the server, packaging and CI workflows stay analysed.
+
+* Sun Oct 25 2026 James Chapman <claude@ping.me.uk> - 0.12.49-1
+- Match the published OMG Software and Merovingian logo assets on the documentation site.
 
 * Sun Oct 25 2026 James Chapman <claude@ping.me.uk> - 0.12.48-1
 - Leaving a room no longer fails with 500 when the room's state cannot be resolved locally; every persistence failure on the leave path is logged at warning level.

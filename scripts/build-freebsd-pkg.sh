@@ -1,9 +1,9 @@
 #!/bin/sh
 # SPDX-License-Identifier: GPL-3.0-or-later
-# Build for merovingian 0.12.52.
+# Build for merovingian 0.12.53.
 set -e
 
-VERSION="0.12.52"
+VERSION="0.12.53"
 STAGING="staging-fbsd"
 
 # Clean any state (staged files, build dir) from cached FreeBSD VM runs.
