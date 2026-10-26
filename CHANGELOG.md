@@ -9,7 +9,9 @@ a token it cannot have, and logged each probe as a `token hashing failed` warnin
   `404 M_UNRECOGNIZED` whether it carries no token, an unknown token or a valid one, as the spec's
   `M_UNRECOGNIZED` and "Authentication API discovery" text asks. Before, only an authenticated request
   reached the `404`; anything else got `401 M_MISSING_TOKEN` or `401 M_UNKNOWN_TOKEN`. An implemented
-  endpoint without a valid token still answers `401`.
+  endpoint without a valid token still answers `401`. Such a request is never authenticated: the rate
+  limiter, which runs first, keeps unknown paths in their shared per-IP fallback bucket but no longer looks
+  up their token for a per-user bucket, so a probe writes no `access_token.rejected` row (PR #538 review).
 - **FIXED:** an `access_token.rejected` audit row for a request that carried no access token gives the
   reason `missing token`. It said `token hashing failed`, which only an unusable token key should cause.
 - **CHANGED:** `normalized_target()` in `client_server.cpp` is now also the list of client-server paths the

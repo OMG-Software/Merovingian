@@ -3657,8 +3657,11 @@ namespace
         // 0.4.x limiter's empty-token bucket. We also append the
         // normalized target so a 5/60s cap on /login does not bleed
         // into the 90/60s sync-tier cap on /sync.
+        // A path this server does not serve is never authenticated (ADR-0230):
+        // it keeps the shared per-IP fallback cap, but its token is not looked
+        // up, so a probe of an unknown endpoint writes no access_token.rejected row.
         std::string user_key;
-        if (!req.access_token.empty())
+        if (!req.access_token.empty() && norm != "/_matrix/client/{unmatched}")
         {
             // Matrix v1.19 rate-limiting: per-user buckets MUST be keyed by the
             // authenticated user_id, not by the access_token. A bearer token can

@@ -140,6 +140,48 @@ SCENARIO("Ten thousand requests with an unknown bearer token cannot flood the au
     }
 }
 
+// ADR-0230: a path this server does not serve is answered 404 M_UNRECOGNIZED
+// without ever authenticating, so probing unknown endpoints with a made-up
+// token writes no access_token.rejected row (the rate limiter's per-user
+// lookup included), while the same token on a served path still does.
+SCENARIO("A request for an unknown endpoint is not authenticated, so it writes no access_token.rejected row",
+         "[homeserver][audit][security][unknown-endpoint]")
+{
+    GIVEN("a started runtime")
+    {
+        REQUIRE(sodium_init() >= 0);
+        auto started = merovingian::homeserver::start_client_server(flood_test_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        auto const& store = runtime.homeserver.database.persistent_store;
+        auto const rows_before = count_rows(store, "access_token.rejected");
+
+        WHEN("an unknown endpoint is requested with a token that was never issued")
+        {
+            auto const result = merovingian::homeserver::handle_client_server_request(
+                runtime, {"GET", "/_matrix/client/r0/login", "unknown-token-probe", {}, {}, "203.0.113.90"});
+
+            THEN("it is answered 404 and no token rejection is audited")
+            {
+                REQUIRE(result.response.status == 404U);
+                REQUIRE(count_rows(store, "access_token.rejected") == rows_before);
+            }
+        }
+
+        WHEN("a served endpoint is requested with the same token")
+        {
+            auto const result = merovingian::homeserver::handle_client_server_request(
+                runtime, request_with_bad_token("unknown-token-probe", "203.0.113.91"));
+
+            THEN("it is answered 401 and the token rejection is audited")
+            {
+                REQUIRE(result.response.status == 401U);
+                REQUIRE(count_rows(store, "access_token.rejected") > rows_before);
+            }
+        }
+    }
+}
+
 SCENARIO("The first rejection row after the window carries the number of rows the window suppressed",
          "[homeserver][audit][flood][security][auth-1]")
 {
