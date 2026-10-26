@@ -212,6 +212,7 @@
 * [0225 - A local event falls back to the newest forward extremity when their state cannot be resolved](0225-a-local-event-falls-back-to-the-newest-forward-extremity-when-their-state-cannot-be-resolved.md)
 * [0227 - A scenario that asserts on every store write runs on a PostgreSQL database of its own](0227-a-scenario-that-asserts-on-every-store-write-runs-on-its-own-postgresql-database.md)
 * [0228 - An event this server places commits with its bookkeeping in one transaction](0228-an-event-this-server-places-commits-with-its-bookkeeping-in-one-transaction.md)
+* [0229 - SonarQube Cloud ignores tests and tooling, and keeps the server, packaging and workflows](0229-sonarqube-cloud-ignores-tests-and-tooling-and-keeps-the-server-packaging-and-workflows.md)
 
 ## Proposed Records
 

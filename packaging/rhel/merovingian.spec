@@ -1,5 +1,5 @@
 Name:           merovingian
-Version:        0.12.50
+Version:        0.12.54
 Release:        1%{?dist}
 Summary:        Secure Matrix Protocol homeserver
 
@@ -97,6 +97,12 @@ fi
 %{_sysconfdir}/merovingian/merovingian.conf.example
 
 %changelog
+* Mon Oct 26 2026 James Chapman <claude@ping.me.uk> - 0.12.54-1
+- Merge DB-6 PostgreSQL fixture isolation with the SonarQube Cloud analysis-scope change.
+
+* Sun Oct 25 2026 James Chapman <claude@ping.me.uk> - 0.12.51-1
+- SonarQube Cloud ignores test code and developer tooling; the server, packaging and CI workflows stay analysed.
+
 * Sun Oct 25 2026 James Chapman <claude@ping.me.uk> - 0.12.50-1
 - The DB-6 PostgreSQL admission test runs on a database of its own, so a background federation retry can no longer write during its capture window.
 

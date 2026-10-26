@@ -1,3 +1,27 @@
+## 0.12.54
+
+- **MAINTENANCE:** merge current `main` into the DB-6 PostgreSQL fixture branch,
+  retain both changelog histories, and align all version metadata with 0.12.54.
+
+## 0.12.51
+
+SonarQube Cloud, added with Automatic Analysis and no configuration, gated every pull request on
+the security rating of its new code across every tracked file, and failed PR #534 on findings in
+a CI script. It now ignores test code and developer tooling (ADR-0229).
+
+- **ADDED:** `.sonarcloud.properties` excludes `tests/`, `scripts/`, `build.py`, `llvm.sh` and
+  `.codex/` from analysis. Their findings (world-writable temporary directories, hard-coded test
+  credentials, fixed-seed generators, `http://` fixtures, scripts reading the paths CI hands them)
+  are deliberate in tests and tooling. The server (`src/`, `include/`), `packaging/` (including the
+  NetBSD rc.d script installed on users' systems), `migrations/`, `config/` and the `.github/`
+  workflows stay analysed: their open findings (14 in `src/`, 68 in `.github/`) need fixing or
+  reviewing, and gate only a pull request that changes those lines.
+- **ADDED:** `tests/tooling/test_sonarcloud_config.py` (meson test `sonarcloud-config-tooling`)
+  fails if a tracked test or tooling file is still analysed, or if anything under a path that
+  must reach the gate is excluded.
+- **DOCS:** the security review checklist names the SonarQube Cloud gate and its scope as release
+  evidence; the docs index lists it among the CI checks.
+
 ## 0.12.50
 
 The live PostgreSQL scenario "DB-6 PostgreSQL inbound admission rejects escaped NUL state keys
