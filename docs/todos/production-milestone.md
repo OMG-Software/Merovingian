@@ -23,10 +23,14 @@ Progress on the Complement blocker: 0.12.55 removed the two server-side refusals
 Complement impossible to run against the release build. Federation can now reach operator-named
 RFC 1918 / ULA networks (`security.federation.allow_private_ip_ranges`, ADR-0231), and open
 registration with `m.login.dummy` exists behind an explicit acknowledgement
-(`security.registration.allow_open_registration`, ADR-0232). Still open: the Complement image
-(a client-API proxy, a certificate minted from Complement's CA, and a root entrypoint that drops
-the capability bounding set before starting the server), the maintainer run script and skip
-list, and recording the result as release evidence.
+(`security.registration.allow_open_registration`, ADR-0232). The Complement image followed in
+the same release (`tests/complement/`, ADR-0233). It installs the trixie package, puts the
+client API on 8008 through nginx, mints the federation certificate from Complement's CA, and
+drops every privilege before starting the server. The `complement-image` job in
+`packages.yml` boots it on every branch run. Still open: the maintainer run script and skip
+list, a first full run (unverified so far: whether Docker's default seccomp profile admits
+Landlock, and whether the container's memory-lock limit fits the master key), and recording
+the result as release evidence.
 
 ## Release evidence, not CI gates
 

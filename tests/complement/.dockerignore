@@ -1,0 +1,10 @@
+# Only what the Dockerfile copies is sent to the build.
+*
+!artifact/merovingian.deb
+!entrypoint.sh
+!render-config.sh
+!prepare-state.sh
+!mint-tls.sh
+!server-name.sh
+!merovingian.conf.template
+!nginx.conf

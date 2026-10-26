@@ -434,6 +434,108 @@ jobs:
             merovingian:ci \
             /usr/local/bin/check-startup-hardening-gate.sh /usr/bin/merovingian-server
 
+  complement-image:
+    name: Complement image smoke test
+    # Builds tests/complement from the trixie package this run built and starts
+    # it as Complement does, so the image cannot rot between releases. No Go,
+    # no Complement: that run is the maintainer's (tests/complement/AGENTS.md).
+    needs: debian-pkg
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: debian-package
+          path: debian-package/
+      - name: Stage the package
+        run: |
+          set -eu
+          set -- debian-package/merovingian_*.deb
+          if [ "$#" -ne 1 ] || [ ! -f "$1" ]; then
+            echo "expected exactly one package, found: $*" >&2
+            exit 1
+          fi
+          mkdir -p tests/complement/artifact
+          cp "$1" tests/complement/artifact/merovingian.deb
+          echo "MEROVINGIAN_DEB_SHA256=$(sha256sum tests/complement/artifact/merovingian.deb | cut -d ' ' -f 1)" >> "$GITHUB_ENV"
+      - name: Build the Complement image
+        run: |
+          docker build \
+            --build-arg "MEROVINGIAN_DEB_SHA256=${MEROVINGIAN_DEB_SHA256}" \
+            --tag merovingian-complement:ci \
+            tests/complement
+      - name: Make a CA as Complement mounts it
+        run: |
+          mkdir complement-ca
+          openssl req -x509 -newkey rsa:2048 -nodes \
+            -keyout complement-ca/ca.key -out complement-ca/ca.crt -days 1 \
+            -subj "/CN=Complement CI CA" \
+            -addext "basicConstraints=critical,CA:TRUE" \
+            -addext "keyUsage=critical,keyCertSign,cRLSign"
+      - name: Start the image as Complement does
+        # SERVER_NAME and the CA mount are all Complement gives. It drops no
+        # capabilities, so the entrypoint must, and Landlock is not waived.
+        run: |
+          docker run --detach --name hs1 \
+            --env SERVER_NAME=hs1 \
+            --volume "$PWD/complement-ca:/complement/ca:ro" \
+            --publish 127.0.0.1:18008:8008 \
+            --publish 127.0.0.1:18448:8448 \
+            merovingian-complement:ci
+          cat > wait-healthy.sh <<'EOF'
+          for _ in $(seq 1 120); do
+            [ "$(docker inspect --format '{{.State.Health.Status}}' hs1)" = healthy ] && exit 0
+            [ "$(docker inspect --format '{{.State.Running}}' hs1)" = true ] || break
+            sleep 1
+          done
+          echo "hs1 did not become healthy" >&2
+          exit 1
+          EOF
+          sh wait-healthy.sh
+      - name: Check the client API offers open registration through nginx
+        run: |
+          set -eu
+          curl --fail --silent --show-error --output /dev/null http://127.0.0.1:18008/_matrix/client/versions
+          # No auth: 401 and the m.login.dummy flow (ADR-0232).
+          status=$(curl --silent --output register.json --write-out '%{http_code}' \
+            --request POST --header 'Content-Type: application/json' --data '{}' \
+            http://127.0.0.1:18008/_matrix/client/v3/register)
+          cat register.json
+          [ "$status" = 401 ]
+          jq -e '.flows | any(.stages == ["m.login.dummy"])' register.json
+      - name: Check federation over TLS, trusting only the test CA
+        run: |
+          set -eu
+          tls="--cacert complement-ca/ca.crt --resolve hs1:18448:127.0.0.1"
+          curl --fail --silent --show-error $tls https://hs1:18448/_matrix/key/v2/server > key-before.json
+          jq -e '.server_name == "hs1"' key-before.json
+          # Answered by the federation worker, so this also shows it is running.
+          curl --fail --silent --show-error $tls https://hs1:18448/_matrix/federation/v1/version
+      - name: Check the server runs unprivileged with no capabilities
+        run: |
+          set -eu
+          docker exec hs1 grep -E '^(Uid|CapBnd|CapEff|NoNewPrivs):' /proc/1/status | tee status.txt
+          if grep -qE '^Uid:\s+0\s' status.txt; then
+            echo "the server runs as root" >&2
+            exit 1
+          fi
+          grep -qE '^CapBnd:\s+0+$' status.txt
+          grep -qE '^CapEff:\s+0+$' status.txt
+          grep -qE '^NoNewPrivs:\s+1$' status.txt
+      - name: Restart and check the signing key survives
+        run: |
+          set -eu
+          docker restart hs1
+          sh wait-healthy.sh
+          curl --fail --silent --show-error --cacert complement-ca/ca.crt --resolve hs1:18448:127.0.0.1 \
+            https://hs1:18448/_matrix/key/v2/server > key-after.json
+          [ "$(jq -cS .verify_keys key-before.json)" = "$(jq -cS .verify_keys key-after.json)" ]
+      - name: Show the container log
+        if: always()
+        run: docker logs hs1 || true
+
   rhel-rpm:
     name: RHEL-compatible (AlmaLinux 10) RPM
     runs-on: ubuntu-latest

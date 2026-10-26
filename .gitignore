@@ -30,3 +30,6 @@ tsan-ci-log*.txt
 # Local review scratch and CI capture files — never part of the source tree
 .review_tmp/
 .ci_pr_checks_final.txt
+
+# The package the Complement image installs; staged per build (tests/complement/AGENTS.md).
+tests/complement/artifact/

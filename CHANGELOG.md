@@ -31,11 +31,36 @@ server refused both with no setting that could change it.
   and Complement names its homeservers `hs1` and `hs2`. The media check now delegates to
   `federation::server_name_is_valid`, the same grammar federation uses. Malformed names
   (spaces, `_`, `/`, a missing or out-of-range port) are still refused.
+- **ADDED:** the Complement image, `tests/complement/` (ADR-0233). It installs the Debian
+  trixie package a release ships on the shipped image's pinned base. The build refuses a
+  package whose SHA-256 is not the one passed in `MEROVINGIAN_DEB_SHA256`. The entrypoint
+  starts as root, because Complement passes no `--cap-drop`. It writes only into directories the
+  server's user cannot create entries in. It checks `SERVER_NAME` against the
+  spec's server-name grammar before writing anything, and renders the config from
+  `merovingian.conf.template`. It keeps the master key and database across restarts, bound to
+  one server name, and mints a one-day federation certificate from Complement's CA. It trusts
+  that CA and puts the loopback client listener on 8008 through nginx. Last, it `exec`s the
+  server through `setpriv` as `merovingian`, with an empty bounding set and `no_new_privs`.
+  The template turns off the parts of the encryption policy that the server lets an operator
+  change. New rooms stay encrypted by default and direct messages still require encryption,
+  because the server refuses a config that changes either. It raises every rate limit out of
+  reach, including the built-in per-user ones, and sets the login throttle to its largest counts
+  over a 1s window. Landlock stays required unless
+  `MEROVINGIAN_COMPLEMENT_ALLOW_WITHOUT_LANDLOCK=true`.
+- **CI:** a `complement-image` job in `packages.yml` builds the image from the trixie package
+  and starts it as Complement does. It checks health through nginx, the 401 `m.login.dummy`
+  challenge, the federation key over TLS with only the test CA trusted, and the worker
+  answering `/_matrix/federation/v1/version`. It also checks a non-root server with empty
+  `CapBnd`/`CapEff` and `NoNewPrivs: 1`, and the same signing key after `docker restart`.
+- **DOCS:** the root `AGENTS.md` glossary no longer calls the in-house JSON flow fixtures
+  (`tests/fixtures/complement/`) Complement. This branch's ADRs are 0231 and 0232, because
+  0230 went to unknown client endpoints (0.12.56).
 - **TESTS:** `test_config_private_range_allowlist.cpp`,
   `test_federation_private_range_allowlist.cpp`, `test_config_open_registration.cpp`,
   `test_open_registration_conformance.cpp`, and in `test_media_security.cpp` a remote media
   allowlist scenario plus server-name scenarios that replace the one asserting `nodot` was
-  invalid.
+  invalid. `tests/tooling/test_complement_image.py` (meson test
+  `complement-image-tooling`) for the image's scripts, Dockerfile, nginx config and CI job.
 
 ## 0.12.54
 

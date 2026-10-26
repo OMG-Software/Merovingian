@@ -216,6 +216,7 @@
 * [0229 - SonarQube Cloud ignores tests and tooling, and keeps the server, packaging and workflows](0229-sonarqube-cloud-ignores-tests-and-tooling-and-keeps-the-server-packaging-and-workflows.md)
 * [0231 - Federation may reach operator-named private networks, and nothing else](0231-federation-may-reach-operator-named-private-networks-and-nothing-else.md)
 * [0232 - Open registration needs an explicit acknowledgement, and still uses UIA](0232-open-registration-needs-an-explicit-acknowledgement-and-still-uses-uia.md)
+* [0233 - Complement runs the shipped trixie package, in an image that drops its own privileges](0233-complement-runs-the-shipped-trixie-package-in-an-image-that-drops-its-own-privileges.md)
 
 ## Proposed Records
 

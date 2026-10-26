@@ -88,6 +88,18 @@ MEROVINGIAN_LIVE_ACCESS_TOKEN.
 - If a conformance expectation changes, the test comment must cite the newer
   spec section that justifies the change.
 
+## Complement
+
+Complement, the external Matrix homeserver suite, runs against the release
+package in the image under `tests/complement/` (ADR-0233). Its rules are in
+`tests/complement/AGENTS.md`. In short: only the release package goes in, the
+server runs unprivileged after a root entrypoint drops everything, and the
+config departs from the defaults only where Complement's contract forces it,
+plus the optional parts of the encryption policy and rate limits. A full run is a pre-release step,
+not a per-PR gate (`docs/todos/production-milestone.md`). Every branch run of
+`packages.yml` boots the image without Complement (`complement-image`), and
+`tests/tooling/test_complement_image.py` tests its scripts directly.
+
 ## Fuzz testing
 
 Fuzz targets live in `tests/fuzz/` and are built only when `-Dbuild_fuzz=true` is

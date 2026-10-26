@@ -87,6 +87,13 @@ shell = find_program('sh')
   )
 
   test(
+    'complement-image-tooling',
+    python,
+    args: [meson.project_source_root() / 'tests' / 'tooling' / 'test_complement_image.py', server_exe.full_path()],
+    depends: server_exe,
+  )
+
+  test(
     'example-config-tooling',
     python,
     args: [meson.project_source_root() / 'tests' / 'tooling' / 'test_example_config.py'],
