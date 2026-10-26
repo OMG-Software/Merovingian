@@ -1614,17 +1614,24 @@ auto authenticated_user(HomeserverRuntime& runtime, std::string_view access_toke
         return identity->user_id;
     }
 
-    auto const token_hashes = lookup_token_hashes(runtime, access_token);
+    // An absent token is refused before any hash is attempted, so the audit
+    // trail says what happened: no token was presented. lookup_token_hashes
+    // also refuses an empty token, and reporting that as a hashing failure
+    // sent operators looking for a key problem that did not exist.
+    auto const token_hashes =
+        access_token.empty() ? std::vector<std::string>{} : lookup_token_hashes(runtime, access_token);
     if (token_hashes.empty())
     {
         // Security: never pass the raw bearer token to the audit log.
-        // When hashing itself fails we have no identity to report — use "<unknown>".
+        // With no token, or no hash of it, there is no identity to report — use "<unknown>".
+        auto const rejection_reason =
+            access_token.empty() ? std::string{"missing token"} : std::string{"token hashing failed"};
         log_diagnostic_audit(runtime.database, "auth", "access_token.rejected",
                              {
-                                 {"reason", "token hashing failed", false}
+                                 {"reason", rejection_reason, false}
         },
                              observability::LogEventSeverity::warning, observability::AuditCategory::auth,
-                             "access_token.rejected", "<unknown>", "<unknown>", "token hashing failed");
+                             "access_token.rejected", "<unknown>", "<unknown>", rejection_reason);
         return std::nullopt;
     }
     auto const now = std::chrono::system_clock::now();

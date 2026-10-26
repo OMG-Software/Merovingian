@@ -48,7 +48,9 @@
 #include <cstdint>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <tuple>
+#include <utility>
 #include <vector>
 
 namespace
@@ -17540,6 +17542,176 @@ SCENARIO("A locked-out login returns M_LIMIT_EXCEEDED with a retry delay",
                 REQUIRE(*errcode == "M_LIMIT_EXCEEDED");
                 // The delay must actually be carried, not merely a 429 shape.
                 REQUIRE(last.response.body.find("retry_after_ms") != std::string::npos);
+            }
+        }
+    }
+}
+
+// --- Unknown endpoints --------------------------------------------------------
+// Spec: Matrix Client-Server API v1.19
+// Endpoint / Section: Standard error response (M_UNRECOGNIZED); Authentication API discovery
+// URL: ../../docs/matrix-v1.19-spec/client-server-api.md#authentication-api-discovery
+//
+// M_UNRECOGNIZED: "The server did not understand the request. This is expected
+// to be returned with a 404 HTTP status code if the endpoint is not
+// implemented". Authentication API discovery: a client probes `GET /login`, and
+// "the server SHOULD respond with 404 and an M_UNRECOGNIZED error code if the
+// corresponding API is not supported". v1.19 defines no `r0` endpoints, so a
+// client asking for `/_matrix/client/r0/login` must learn that the endpoint does
+// not exist, not that it needs an access token: a 401 sends it looking for a
+// token it cannot have before it has logged in.
+SCENARIO("A request for an endpoint the server does not implement is answered 404 M_UNRECOGNIZED, with or "
+         "without an access token",
+         "[conformance][client-server][unknown-endpoint]")
+{
+    GIVEN("a running client-server")
+    {
+        auto started = merovingian::homeserver::start_client_server(conformance_config());
+        REQUIRE(started.started);
+
+        auto const unknown_requests = std::to_array<std::pair<std::string_view, std::string_view>>({
+            {"GET",  "/_matrix/client/r0/login"                                  },
+            {"POST", "/_matrix/client/r0/login"                                  },
+            {"GET",  "/_matrix/client/r0/sync?timeout=0"                         },
+            {"GET",  "/_matrix/client/v3/no_such_endpoint"                       },
+            {"GET",  "/_matrix/client/unstable/org.example.nope/x"               },
+            {"GET",  "/_matrix/client/v3/rooms/%21r%3Aexample.org/no_such_action"},
+        });
+
+        WHEN("each unknown endpoint is requested without an access token")
+        {
+            THEN("every one is answered 404 M_UNRECOGNIZED")
+            {
+                for (auto const& [method, target] : unknown_requests)
+                {
+                    INFO(method << " " << target);
+                    auto const response = merovingian::homeserver::handle_client_server_request(
+                        started.runtime, {std::string{method}, std::string{target}, {}, "{}"});
+                    // Spec SHOULD: an endpoint that is not implemented is answered 404.
+                    REQUIRE(response.response.status == 404U);
+                    auto const body = parse_object(response.response.body);
+                    auto const* errcode = string_member(body, "errcode");
+                    REQUIRE(errcode != nullptr);
+                    // Spec SHOULD: with M_UNRECOGNIZED, not M_MISSING_TOKEN.
+                    REQUIRE(*errcode == "M_UNRECOGNIZED");
+                }
+            }
+        }
+
+        WHEN("each unknown endpoint is requested with a token that was never issued")
+        {
+            THEN("every one is still answered 404 M_UNRECOGNIZED, not 401 M_UNKNOWN_TOKEN")
+            {
+                for (auto const& [method, target] : unknown_requests)
+                {
+                    INFO(method << " " << target);
+                    auto const response = merovingian::homeserver::handle_client_server_request(
+                        started.runtime,
+                        {std::string{method}, std::string{target}, "syt_never_issued_token_xyz", "{}"});
+                    // Spec SHOULD: an endpoint that is not implemented is answered 404.
+                    REQUIRE(response.response.status == 404U);
+                    auto const body = parse_object(response.response.body);
+                    auto const* errcode = string_member(body, "errcode");
+                    REQUIRE(errcode != nullptr);
+                    // Spec SHOULD: with M_UNRECOGNIZED.
+                    REQUIRE(*errcode == "M_UNRECOGNIZED");
+                }
+            }
+        }
+
+        WHEN("an unknown endpoint is requested by a logged-in user")
+        {
+            auto const token = logged_in_token(started.runtime);
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                started.runtime, {"GET", "/_matrix/client/r0/login", token, {}});
+
+            THEN("it is answered 404 M_UNRECOGNIZED")
+            {
+                // Spec SHOULD: an endpoint that is not implemented is answered 404.
+                REQUIRE(response.response.status == 404U);
+                auto const body = parse_object(response.response.body);
+                auto const* errcode = string_member(body, "errcode");
+                REQUIRE(errcode != nullptr);
+                // Spec SHOULD: with M_UNRECOGNIZED.
+                REQUIRE(*errcode == "M_UNRECOGNIZED");
+            }
+        }
+    }
+}
+
+// Spec: Matrix Client-Server API v1.19
+// Endpoint / Section: Using access tokens
+// URL: ../../docs/matrix-v1.19-spec/client-server-api.md#using-access-tokens
+//
+// Answering unknown endpoints before authenticating must not leak into the
+// endpoints that do exist: a request to an implemented endpoint that requires
+// authentication and carries no token is still 401 M_MISSING_TOKEN, and one
+// with a token the server does not know is still 401 M_UNKNOWN_TOKEN.
+SCENARIO("An implemented endpoint that requires authentication still answers 401 without a valid token",
+         "[conformance][client-server][unknown-endpoint]")
+{
+    GIVEN("a running client-server")
+    {
+        auto started = merovingian::homeserver::start_client_server(conformance_config());
+        REQUIRE(started.started);
+
+        auto const authenticated_requests = std::to_array<std::pair<std::string_view, std::string_view>>({
+            {"GET",  "/_matrix/client/v3/account/whoami"                                    },
+            {"GET",  "/_matrix/client/v3/sync?timeout=0"                                    },
+            {"POST", "/_matrix/client/unstable/org.matrix.simplified_msc3575/sync?timeout=0"},
+            {"GET",  "/_matrix/client/v3/rooms/%21r%3Aexample.org/messages?dir=b"           },
+            {"PUT",  "/_matrix/client/v3/rooms/%21r%3Aexample.org/send/m.room.message/txn1" },
+            {"GET",  "/_matrix/client/v1/rooms/%21r%3Aexample.org/relations/%24event"       },
+            {"PUT",  "/_matrix/client/v3/sendToDevice/m.room_key_request/txn1"              },
+            {"GET",  "/_matrix/client/v3/user/%40alice%3Aexample.org/account_data/m.direct" },
+            {"GET",  "/_matrix/client/v3/pushrules/"                                        },
+            {"GET",  "/_matrix/client/v3/pushrules/global/"                                 },
+            {"POST", "/_matrix/client/v3/keys/query"                                        },
+            {"GET",  "/_matrix/client/v3/capabilities"                                      },
+            {"GET",  "/_matrix/client/v3/thirdparty/protocol/irc"                           },
+            {"GET",  "/_matrix/client/v3/thirdparty/location/irc"                           },
+            {"GET",  "/_matrix/client/v3/thirdparty/user/irc"                               },
+            {"POST", "/_matrix/client/v3/rooms/%21r%3Aexample.org/send"                     },
+        });
+
+        WHEN("each is requested without an access token")
+        {
+            THEN("every one is answered 401 M_MISSING_TOKEN")
+            {
+                for (auto const& [method, target] : authenticated_requests)
+                {
+                    INFO(method << " " << target);
+                    auto const response = merovingian::homeserver::handle_client_server_request(
+                        started.runtime, {std::string{method}, std::string{target}, {}, "{}"});
+                    // Spec MUST: a request lacking a required access token is answered 401.
+                    REQUIRE(response.response.status == 401U);
+                    auto const body = parse_object(response.response.body);
+                    auto const* errcode = string_member(body, "errcode");
+                    REQUIRE(errcode != nullptr);
+                    // Spec MUST: errcode M_MISSING_TOKEN when no access token is provided.
+                    REQUIRE(*errcode == "M_MISSING_TOKEN");
+                }
+            }
+        }
+
+        WHEN("each is requested with a token that was never issued")
+        {
+            THEN("every one is answered 401 M_UNKNOWN_TOKEN")
+            {
+                for (auto const& [method, target] : authenticated_requests)
+                {
+                    INFO(method << " " << target);
+                    auto const response = merovingian::homeserver::handle_client_server_request(
+                        started.runtime,
+                        {std::string{method}, std::string{target}, "syt_never_issued_token_xyz", "{}"});
+                    // Spec MUST: an unrecognised access token is answered 401.
+                    REQUIRE(response.response.status == 401U);
+                    auto const body = parse_object(response.response.body);
+                    auto const* errcode = string_member(body, "errcode");
+                    REQUIRE(errcode != nullptr);
+                    // Spec MUST: errcode M_UNKNOWN_TOKEN when the access token is not recognised.
+                    REQUIRE(*errcode == "M_UNKNOWN_TOKEN");
+                }
             }
         }
     }

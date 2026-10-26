@@ -1,5 +1,5 @@
 Name:           merovingian
-Version:        0.12.54
+Version:        0.12.56
 Release:        1%{?dist}
 Summary:        Secure Matrix Protocol homeserver
 
@@ -97,6 +97,9 @@ fi
 %{_sysconfdir}/merovingian/merovingian.conf.example
 
 %changelog
+* Mon Oct 26 2026 James Chapman <claude@ping.me.uk> - 0.12.56-1
+- Answer 404 M_UNRECOGNIZED for unknown client API endpoints before checking the access token; log a missing token as a missing token.
+
 * Mon Oct 26 2026 James Chapman <claude@ping.me.uk> - 0.12.54-1
 - Integrate main, including documentation branding, while retaining DB-6 PostgreSQL fixture isolation.
 

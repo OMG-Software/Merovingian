@@ -950,6 +950,57 @@ SCENARIO("access_token_is_soft_logout returns false for empty and unknown tokens
     }
 }
 
+// --- authenticated_user rejection reasons ----------------------------------------
+
+// A request that carries no access token is a missing token, not a hashing
+// failure: hashing an empty string is refused before any hash is computed, and
+// the audit trail used to report that refusal as "token hashing failed", which
+// sent an operator chasing a key problem that did not exist.
+SCENARIO("authenticated_user records an absent access token as a missing token",
+         "[homeserver][auth][access_token][audit]")
+{
+    GIVEN("a started runtime")
+    {
+        REQUIRE(sodium_init() >= 0);
+        auto started = merovingian::homeserver::start_runtime(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        auto const& audit_log = runtime.database.persistent_store.audit_log;
+        auto const rows_before = audit_log.size();
+
+        WHEN("authentication is attempted with an empty access token")
+        {
+            auto const user = merovingian::homeserver::authenticated_user(runtime, "");
+
+            THEN("no user is authenticated and the rejection is audited as a missing token")
+            {
+                REQUIRE_FALSE(user.has_value());
+                REQUIRE(audit_log.size() > rows_before);
+                auto const rejected = std::ranges::find_if(audit_log, [](auto const& event) {
+                    return event.event_type == "access_token.rejected";
+                });
+                REQUIRE(rejected != audit_log.end());
+                REQUIRE(rejected->reason == "missing token");
+            }
+        }
+
+        WHEN("authentication is attempted with a token that was never issued")
+        {
+            auto const user = merovingian::homeserver::authenticated_user(runtime, "syt_never_issued_token_xyz");
+
+            THEN("no user is authenticated and the rejection is audited as an unknown session")
+            {
+                REQUIRE_FALSE(user.has_value());
+                auto const rejected = std::ranges::find_if(audit_log, [](auto const& event) {
+                    return event.event_type == "access_token.rejected";
+                });
+                REQUIRE(rejected != audit_log.end());
+                REQUIRE(rejected->reason == "session not found");
+            }
+        }
+    }
+}
+
 // --- load_hashed_registration_token ------------------------------------------------
 
 SCENARIO("Registration token loading rejects insecure files even after caching",
