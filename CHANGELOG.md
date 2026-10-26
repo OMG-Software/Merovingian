@@ -102,6 +102,10 @@ server refused both with no setting that could change it.
 - **FIXED:** the release notes' Complement section printed a literal `<version>` in the evidence
   file names, because its heredoc is quoted. The step now reads the version from `meson.build`
   and fills it in, and fails if it cannot read one.
+- **FIXED:** `tests/complement/mint-tls.sh` and the tests' CA helper ran `openssl req`, which
+  refuses to run without a config file. The NetBSD CI VM ships none, so `complement-image-tooling`
+  failed there. Both now use a minimal config of their own (`OPENSSL_CONF`). A scenario mints
+  with the system config missing.
 - **TESTS:** the fake tools in `test_run_complement.py` no longer need `sha256sum` or `seq`, which
   the BSD hosts may lack. The certificate checks in `test_complement_image.py` read
   `openssl x509 -text`, which LibreSSL also has.

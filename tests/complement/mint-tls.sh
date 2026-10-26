@@ -55,6 +55,18 @@ umask 077
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 
+# `openssl req` refuses to run without a config file, and not every system
+# ships one. Everything this script needs is on the command line, so it uses
+# a minimal config of its own rather than whatever the host has.
+cat >"$work/openssl.cnf" <<'EOF'
+[req]
+distinguished_name = req_distinguished_name
+prompt = no
+[req_distinguished_name]
+EOF
+OPENSSL_CONF="$work/openssl.cnf"
+export OPENSSL_CONF
+
 openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:P-256 -out "$work/key.pem" 2>/dev/null
 openssl req -new -key "$work/key.pem" -subj "/CN=${host}" -out "$work/request.csr"
 cat >"$work/extensions.cnf" <<EOF

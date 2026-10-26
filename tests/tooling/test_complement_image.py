@@ -85,15 +85,23 @@ def render(server_name: str, allow_without_landlock: str = "false", root: str = 
     return run("sh", str(RENDER_CONFIG), str(TEMPLATE), server_name, allow_without_landlock, env=env)
 
 
+# `openssl req` refuses to run without a config file, and some hosts (the
+# NetBSD CI VM) ship none, so the helpers bring their own.
+MINIMAL_OPENSSL_CONF = "[req]\ndistinguished_name = req_distinguished_name\nprompt = no\n[req_distinguished_name]\n"
+
+
 def make_ca(directory: Path) -> None:
     """Write a throwaway CA as Complement mounts it: ca.crt and ca.key."""
     directory.mkdir(parents=True)
+    openssl_conf = directory.parent / "test-ca-openssl.cnf"
+    openssl_conf.write_text(MINIMAL_OPENSSL_CONF, encoding="utf-8")
     result = run(
         "openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes",
         "-keyout", str(directory / "ca.key"), "-out", str(directory / "ca.crt"),
         "-days", "2", "-subj", "/CN=Complement test CA",
         "-addext", "basicConstraints=critical,CA:TRUE",
         "-addext", "keyUsage=critical,keyCertSign,cRLSign",
+        env={"OPENSSL_CONF": str(openssl_conf)},
     )
     if result.returncode != 0:
         raise RuntimeError(result.stderr)
@@ -400,8 +408,19 @@ class MintTlsTests(unittest.TestCase):
         self.ca.chmod(0o755)
         shutil.rmtree(self.workdir, ignore_errors=True)
 
-    def mint(self, server_name: str) -> subprocess.CompletedProcess[str]:
-        return run("sh", str(MINT_TLS), str(self.ca), server_name, str(self.cert), str(self.key), current_owner())
+    def mint(self, server_name: str, env: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
+        return run("sh", str(MINT_TLS), str(self.ca), server_name, str(self.cert), str(self.key), current_owner(),
+                   env=env)
+
+    def test_minting_needs_no_system_openssl_config(self) -> None:
+        # GIVEN a host whose OpenSSL config file is missing, as on the NetBSD
+        # CI VM, where `openssl req` otherwise refuses to run.
+        missing = {"OPENSSL_CONF": str(self.workdir / "no-such-openssl.cnf")}
+        # WHEN a certificate is minted.
+        result = self.mint("hs1", env=missing)
+        # THEN the script brings its own config and succeeds.
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue(self.cert.exists())
 
     def openssl_x509(self, *args: str) -> subprocess.CompletedProcess[str]:
         return run("openssl", "x509", "-in", str(self.cert), "-noout", *args)
