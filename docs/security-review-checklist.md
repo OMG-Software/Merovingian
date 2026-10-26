@@ -138,6 +138,10 @@ Use this checklist for every release candidate.
 - CodeQL (`codeql.yml`), secret-scanning (`secret-scan.yml`),
   dependency-triage (`dependency-vulnerability-triage.yml`), and SBOM
   (`sbom.yml`) workflows passed for the release candidate commit.
+  CodeQL's report reaches code scanning through `scripts/filter_codeql_sarif.py`,
+  which drops only `cpp/unused-static-function` on files under `tests/`
+  (Catch2 scenarios, ADR-0226); any other exclusion added there needs its own
+  ADR and is reviewed like a dismissed alert.
 - The SonarQube Cloud quality gate passed for the release candidate commit.
   It analyses the server (`src/`, `include/`), `packaging/` and the
   `.github/` workflows; test code and developer tooling (`tests/`,
