@@ -142,6 +142,12 @@ Use this checklist for every release candidate.
   which drops only `cpp/unused-static-function` on files under `tests/`
   (Catch2 scenarios, ADR-0226); any other exclusion added there needs its own
   ADR and is reviewed like a dismissed alert.
+- The SonarQube Cloud quality gate passed for the release candidate commit.
+  It analyses the server (`src/`, `include/`), `packaging/` and the
+  `.github/` workflows; test code and developer tooling (`tests/`,
+  `scripts/`, `build.py`, `llvm.sh`, `.codex/`) are excluded in
+  `.sonarcloud.properties` (ADR-0229). A finding in an analysed path is
+  fixed or reviewed in SonarQube, never hidden by widening that list.
 - Dependency vulnerability triage artifacts were reviewed before tagging.
 - SBOM and package checksums are attached.
 - Release artifacts are signed with a detached GPG `.asc` signature by the

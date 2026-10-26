@@ -1,4 +1,4 @@
-## 0.12.49
+## 0.12.52
 
 CodeQL no longer reports every Catch2 test scenario as an unused static function (ADR-0226).
 `SCENARIO` expands to a static function registered by a static object, which
@@ -31,6 +31,25 @@ CodeQL no longer reports every Catch2 test scenario as an unused static function
   values so `upload: never`, the output, the SARIF file and the category must sit on the right step,
   and the three steps in one job (separate jobs share no workspace), and "CodeQL upload check binds
   each value to its step" (five misplaced variants are each caught; PR #534 review).
+
+## 0.12.51
+
+SonarQube Cloud, added with Automatic Analysis and no configuration, gated every pull request on
+the security rating of its new code across every tracked file, and failed PR #534 on findings in
+a CI script. It now ignores test code and developer tooling (ADR-0229).
+
+- **ADDED:** `.sonarcloud.properties` excludes `tests/`, `scripts/`, `build.py`, `llvm.sh` and
+  `.codex/` from analysis. Their findings (world-writable temporary directories, hard-coded test
+  credentials, fixed-seed generators, `http://` fixtures, scripts reading the paths CI hands them)
+  are deliberate in tests and tooling. The server (`src/`, `include/`), `packaging/` (including the
+  NetBSD rc.d script installed on users' systems), `migrations/`, `config/` and the `.github/`
+  workflows stay analysed: their open findings (14 in `src/`, 68 in `.github/`) need fixing or
+  reviewing, and gate only a pull request that changes those lines.
+- **ADDED:** `tests/tooling/test_sonarcloud_config.py` (meson test `sonarcloud-config-tooling`)
+  fails if a tracked test or tooling file is still analysed, or if anything under a path that
+  must reach the gate is excluded.
+- **DOCS:** the security review checklist names the SonarQube Cloud gate and its scope as release
+  evidence; the docs index lists it among the CI checks.
 
 ## 0.12.48
 

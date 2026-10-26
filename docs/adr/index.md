@@ -212,6 +212,7 @@
 * [0225 - A local event falls back to the newest forward extremity when their state cannot be resolved](0225-a-local-event-falls-back-to-the-newest-forward-extremity-when-their-state-cannot-be-resolved.md)
 * [0226 - CodeQL drops cpp/unused-static-function on Catch2 tests before upload, and nowhere else](0226-codeql-drops-unused-static-function-on-catch2-tests-before-upload.md)
 * [0228 - An event this server places commits with its bookkeeping in one transaction](0228-an-event-this-server-places-commits-with-its-bookkeeping-in-one-transaction.md)
+* [0229 - SonarQube Cloud ignores tests and tooling, and keeps the server, packaging and workflows](0229-sonarqube-cloud-ignores-tests-and-tooling-and-keeps-the-server-packaging-and-workflows.md)
 
 ## Proposed Records
 
