@@ -19,7 +19,7 @@ and what has been deliberately dropped.
 | --- | --- | --- |
 | Federation conformance is entirely self-attested | Every conformance claim rests on this project's own tests. Complement is the only external check on whether the federation implementation is actually correct. | Complement runs green against a release candidate — see "Release evidence" for why this is a pre-tag run, not a per-PR gate. |
 
-Progress on the Complement blocker: 0.12.55 removed the two server-side refusals that made
+Progress on the Complement blocker: 0.12.57 removed the two server-side refusals that made
 Complement impossible to run against the release build. Federation can now reach operator-named
 RFC 1918 / ULA networks (`security.federation.allow_private_ip_ranges`, ADR-0231), and open
 registration with `m.login.dummy` exists behind an explicit acknowledgement

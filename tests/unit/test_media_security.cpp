@@ -663,7 +663,7 @@ SCENARIO("evaluate_media_upload rejects (not quarantines) scanner failures when 
 // (docs/matrix-v1.19-spec/appendices.md#server-name):
 //   server_name = hostname [ ":" port ]; dns-name = 1*255dns-char;
 //   dns-char = DIGIT / ALPHA / "-" / "."
-// A dns-name need not contain a dot. Until 0.12.55 this check also demanded
+// A dns-name need not contain a dot. Until 0.12.57 this check also demanded
 // one and refused "nodot", which the grammar allows; Complement names its
 // homeservers hs1 and hs2.
 SCENARIO("remote_media_fetch_policy rejects an origin that is not a Matrix server name",

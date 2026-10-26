@@ -1,4 +1,4 @@
-## 0.12.55
+## 0.12.57
 
 The first step towards running the external Complement suite against a release build, the
 last 1.0.0 blocker ("Federation conformance is entirely self-attested"). Complement runs
@@ -94,6 +94,26 @@ server refused both with no setting that could change it.
   `test_complement_summary.py` and `test_run_complement.py` for the summariser, the skip list
   and the run script; `test_complement_evidence.py` for the recorder (against Debian packages
   built in the test) and the publisher; a release-notes scenario in `test_release_workflow.py`.
+
+## 0.12.56
+
+A client asking for an endpoint this server does not implement is told so, before its access token is
+looked at (ADR-0230). Element X was seen probing `GET /_matrix/client/r0/login`, an endpoint v1.19 does
+not define; the server answered `401 M_MISSING_TOKEN`, which tells a client still logging in that it needs
+a token it cannot have, and logged each probe as a `token hashing failed` warning.
+
+- **FIXED:** a client-server request whose path names no endpoint this server implements is answered
+  `404 M_UNRECOGNIZED` whether it carries no token, an unknown token or a valid one, as the spec's
+  `M_UNRECOGNIZED` and "Authentication API discovery" text asks. Before, only an authenticated request
+  reached the `404`; anything else got `401 M_MISSING_TOKEN` or `401 M_UNKNOWN_TOKEN`. An implemented
+  endpoint without a valid token still answers `401`. Such a request is never authenticated: the rate
+  limiter, which runs first, keeps unknown paths in their shared per-IP fallback bucket but no longer looks
+  up their token for a per-user bucket, so a probe writes no `access_token.rejected` row (PR #538 review).
+- **FIXED:** an `access_token.rejected` audit row for a request that carried no access token gives the
+  reason `missing token`. It said `token hashing failed`, which only an unusable token key should cause.
+- **CHANGED:** `normalized_target()` in `client_server.cpp` is now also the list of client-server paths the
+  server serves: a path it maps to the `/_matrix/client/{unmatched}` fallback is answered `404` before
+  authentication. Every implemented route, static or dynamic, must be recognised there.
 
 ## 0.12.54
 

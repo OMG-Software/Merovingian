@@ -1616,12 +1616,12 @@ SCENARIO("merovingian-server serves two sequential requests over one persistent 
 
             THEN("both responses are served over the single accepted TLS connection")
             {
-                // The client-server dispatcher authenticates before routing,
-                // so an unauthenticated unknown route answers 401 — what is
-                // under test here is the connection reuse, not the route.
-                REQUIRE(first_response.starts_with("HTTP/1.1 401"));
+                // An unknown route answers 404 M_UNRECOGNIZED before any
+                // authentication (ADR-0230) — what is under test here is the
+                // connection reuse, not the route.
+                REQUIRE(first_response.starts_with("HTTP/1.1 404"));
                 REQUIRE(first_response.find("Connection: keep-alive") != std::string::npos);
-                REQUIRE(second_response.starts_with("HTTP/1.1 401"));
+                REQUIRE(second_response.starts_with("HTTP/1.1 404"));
                 REQUIRE(stats.accepted_connections == 1U);
                 REQUIRE(stats.completed_requests >= 2U);
             }

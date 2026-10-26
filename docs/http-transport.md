@@ -821,6 +821,17 @@ falls back. Every implemented route with a variable path component must have
 a template; the fallback is only for paths the server does not implement
 (ADR-0092).
 
+The same matcher decides whether a path names an endpoint at all (ADR-0230).
+Just before the access-token check, the dispatcher answers any path that
+`normalized_target()` sends to the fallback with `404 M_UNRECOGNIZED`, with or
+without a token, as the spec's `M_UNRECOGNIZED` asks for an endpoint that is
+not implemented. A client probing an endpoint this server does not serve (such
+as Element X asking for `GET /_matrix/client/r0/login`) is told so, not asked
+for a token. So a fixed-path route must be in `static_routes` too, not only a
+variable one in a template: a served route the matcher cannot place is
+answered `404` for everyone. The check is on the path only; a served path
+asked for with a method it does not serve still authenticates first.
+
 ### Inbound federation
 
 `/send` transactions are limited per **verified origin server name** (the

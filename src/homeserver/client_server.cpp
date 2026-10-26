@@ -2983,7 +2983,14 @@ namespace
                 auto const action = suffix.substr(0U, action_end);
                 auto const tail =
                     action_end == std::string_view::npos ? std::string_view{} : suffix.substr(action_end + 1U);
-                if (action == "send")
+                if (action == "send" && action_end == std::string_view::npos)
+                {
+                    // POST /rooms/{roomId}/send: a body-typed send this dispatcher
+                    // serves (the in-process smoke flow below uses it); not a
+                    // v1.19 route, but served, so it must be recognised.
+                    out = normalized_room + "/send";
+                }
+                else if (action == "send")
                 {
                     out = replace_two_tail_segments(normalized_room + "/send/", tail, "{eventType}", "{txnId}");
                     if (out.empty())
@@ -3336,6 +3343,20 @@ namespace
             return std::string{unmatched};
         }
 
+        // Third-party lookups by protocol: protocol/{protocol}, location/{protocol}, user/{protocol}.
+        auto constexpr thirdparty_prefix = std::string_view{"/_matrix/client/v3/thirdparty/"};
+        if (starts_with(out, thirdparty_prefix))
+        {
+            auto const rest = std::string_view{out}.substr(thirdparty_prefix.size());
+            auto const slash = rest.find('/');
+            auto const kind = rest.substr(0U, slash);
+            if (slash != std::string_view::npos && (kind == "protocol" || kind == "location" || kind == "user") &&
+                has_one_segment(rest.substr(slash + 1U)))
+            {
+                return std::string{thirdparty_prefix} + std::string{kind} + "/{protocol}";
+            }
+        }
+
         auto constexpr to_device_prefix = std::string_view{"/_matrix/client/v3/sendToDevice/"};
         if (starts_with(out, to_device_prefix))
         {
@@ -3412,6 +3433,11 @@ namespace
                 return std::nullopt;
             }
             auto const tail = std::string_view{out}.substr(prefix.size());
+            if (tail.empty())
+            {
+                // GET /pushrules/global/ is a static route.
+                return std::nullopt;
+            }
             auto const kind_end = tail.find('/');
             if (kind_end == std::string_view::npos || kind_end == 0U)
             {
@@ -3547,6 +3573,14 @@ namespace
         return "/_matrix/client/{unmatched}";
     }
 
+    // normalized_target() recognises every client-server path this dispatcher
+    // serves, so a path it cannot place names no endpoint here. Such a request is
+    // answered 404 M_UNRECOGNIZED before authentication (ADR-0230).
+    [[nodiscard]] auto client_route_is_known(std::string_view target) -> bool
+    {
+        return normalized_target(target) != "/_matrix/client/{unmatched}";
+    }
+
     [[nodiscard]] auto allow(ClientServerRuntime& rt, LocalHttpRequest const& req) -> http::RateLimitDecision
     {
         // Matrix v1.19 CS API "Third-party Lookups" (client-server-api.md):
@@ -3628,8 +3662,11 @@ namespace
         // 0.4.x limiter's empty-token bucket. We also append the
         // normalized target so a 5/60s cap on /login does not bleed
         // into the 90/60s sync-tier cap on /sync.
+        // A path this server does not serve is never authenticated (ADR-0230):
+        // it keeps the shared per-IP fallback cap, but its token is not looked
+        // up, so a probe of an unknown endpoint writes no access_token.rejected row.
         std::string user_key;
-        if (!req.access_token.empty())
+        if (!req.access_token.empty() && norm != "/_matrix/client/{unmatched}")
         {
             // Matrix v1.19 rate-limiting: per-user buckets MUST be keyed by the
             // authenticated user_id, not by the access_token. A bearer token can
@@ -11996,6 +12033,22 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             req, rt, 400U, "M_THREEPID_MEDIUM_NOT_SUPPORTED",
             "this server cannot validate phone numbers itself; request the token through a trusted identity server "
             "(id_server and id_access_token)");
+    }
+
+    // Spec M_UNRECOGNIZED: "expected to be returned with a 404 HTTP status code if
+    // the endpoint is not implemented", whatever the request's credentials. Answer
+    // it before authenticating: a client probing an endpoint this server does not
+    // serve (Element X asking for GET /_matrix/client/r0/login) must learn that,
+    // not be told to find an access token it cannot have yet (ADR-0230).
+    if (!client_route_is_known(req.target))
+    {
+        log_diagnostic("request.route_not_found",
+                       {
+                           {"method", req.method,                                       false},
+                           {"target", observability::sanitized_http_target(req.target), false},
+                           {"status", "404",                                            false}
+        });
+        return dispatch_err(req, rt, 404U, "M_UNRECOGNIZED", "route not found");
     }
 
     auto const user = auth(rt, req.access_token);

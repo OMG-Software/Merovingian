@@ -2308,7 +2308,7 @@ the limits alone but not once signed is refused after the room is stored, leavin
 state up to the refused event; report de-duplication covers only the rows the admin listing reads
 (`server.client_api.max_safety_report_rows`).
 
-### Operator-opened private networks and open registration (0.12.55, ADR-0231, ADR-0232)
+### Operator-opened private networks and open registration (0.12.57, ADR-0231, ADR-0232)
 
 New surface: two settings, both off by default, let an external test harness such as Complement run against the
 release build. `security.federation.allow_private_ip_ranges` lets federation reach named RFC 1918 or ULA networks,

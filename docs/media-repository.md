@@ -116,7 +116,7 @@ current in-process runtime path.
   ADR-0079 client-outbound budget: 1 per client address.
 - The origin of a remote fetch must be a Matrix server name, checked by
   `federation::server_name_is_valid` (appendices, "Server Name"). A name without
-  a dot, such as `hs2` or `localhost`, is valid; until 0.12.55 the media check
+  a dot, such as `hs2` or `localhost`, is valid; until 0.12.57 the media check
   demanded a dot and refused such origins.
 - Remote media fetches are live: the homeserver resolves the origin server via
   federation server discovery (`.well-known`, SRV, direct), then tries the
