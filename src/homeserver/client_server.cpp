@@ -15796,15 +15796,21 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             }();
             if (!result.ok)
             {
-                log_diagnostic("room.leave.rejected",
-                               {
-                                   {"actor",   *user,                                                      false},
-                                   {"room_id", room_id,                                                    false},
-                                   {"status",  std::to_string(result.status != 0U ? result.status : 403U), false},
-                                   {"reason",  result.reason,                                              false}
-                });
                 auto refused = result;
                 refused.status = result.status != 0U ? result.status : 403U;
+                // A server-side failure reaches an operator's log at warning
+                // level, as room.create.failed does; a refusal the client
+                // caused stays a debug-level room.leave.rejected.
+                auto const server_failure = refused.status >= 500U;
+                log_diagnostic(server_failure ? "room.leave.failed" : "room.leave.rejected",
+                               {
+                                   {"actor",   *user,                          false},
+                                   {"room_id", room_id,                        false},
+                                   {"status",  std::to_string(refused.status), false},
+                                   {"reason",  result.reason,                  false}
+                },
+                               server_failure ? observability::LogEventSeverity::warning
+                                              : observability::LogEventSeverity::debug);
                 return dispatch_err(req, rt, refused.status, error_code_for(refused), result.reason);
             }
             log_diagnostic("room.leave.accepted", {

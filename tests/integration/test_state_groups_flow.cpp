@@ -7,6 +7,10 @@
 // See docs/adr/0064-spec-conformant-pdu-ingestion-with-delta-state-groups.md
 // and tests/integration/AGENTS.md.
 
+#include "../support/sqlite_insert_fault.hpp"
+#include "merovingian/homeserver/state_bookkeeping.hpp"
+#include "merovingian/rooms/room_version_policy.hpp"
+
 #include <catch2/catch_test_macros.hpp>
 
 #include <algorithm>
@@ -205,5 +209,106 @@ SCENARIO("PostgreSQL bootstrap creates the ADR-0064 phase A tables",
                 REQUIRE(has_table("forward_extremities"));
             }
         }
+    }
+}
+
+namespace
+{
+
+auto const atomic_room_id = std::string{"!atomic:example.org"};
+auto const atomic_sender = std::string{"@alice:example.org"};
+
+[[nodiscard]] auto atomic_state_event(std::string const& event_id, std::string const& event_type,
+                                      std::string const& content_json, std::uint64_t depth,
+                                      std::vector<std::string> prev_event_ids) -> merovingian::database::PersistentEvent
+{
+    auto event = merovingian::database::PersistentEvent{};
+    event.event_id = event_id;
+    event.room_id = atomic_room_id;
+    event.sender_user_id = atomic_sender;
+    event.json = std::string{R"({"type":")"} + event_type + R"(","state_key":"","sender":")" + atomic_sender +
+                 R"(","room_id":")" + atomic_room_id + R"(","content":)" + content_json + "}";
+    event.depth = depth;
+    event.stream_ordering = depth;
+    event.prev_event_ids = std::move(prev_event_ids);
+    return event;
+}
+
+// Nothing of `event_id` is in `store`: no event row, no after-state group, no
+// mapping, no current_state row naming it, no event_edges row (hydrated from
+// the table, so a reopened store shows what is on disk), and the room's tips
+// are `tips`.
+auto require_nothing_of(merovingian::database::PersistentStore const& store, std::string const& event_id,
+                        std::vector<std::string> const& tips) -> void
+{
+    REQUIRE(store.events.find(event_id) == store.events.end());
+    REQUIRE_FALSE(merovingian::database::find_state_group(store, "sg:" + event_id).has_value());
+    REQUIRE_FALSE(merovingian::database::find_event_state_group(store, event_id).has_value());
+    REQUIRE_FALSE(std::ranges::any_of(store.state, [&event_id](auto const& row) {
+        return row.event_id == event_id;
+    }));
+    REQUIRE_FALSE(std::ranges::any_of(store.event_edges, [&event_id](auto const& edge) {
+        return edge.event_id == event_id;
+    }));
+    REQUIRE(merovingian::database::find_forward_extremities(store, atomic_room_id) == tips);
+}
+
+} // namespace
+
+SCENARIO("A local event whose last bookkeeping write fails leaves nothing of it in the SQLite database",
+         "[pdu_ingestion][state_groups][sqlite]")
+{
+    GIVEN("a SQLite store holding a room's create event as its only tip, and a fault on forward_extremities inserts")
+    {
+        auto const* policy = merovingian::rooms::find_room_version_policy("10");
+        REQUIRE(policy != nullptr);
+        auto const path = unique_sqlite_path();
+        {
+            auto opened = open_sqlite_persistent_store(path.string());
+            REQUIRE(opened.ok);
+            auto& store = opened.store;
+            REQUIRE(merovingian::database::store_room(store, {atomic_room_id, atomic_sender}));
+            auto create = atomic_state_event("$create:example.org", "m.room.create",
+                                             R"({"creator":"@alice:example.org","room_version":"10"})", 1U, {});
+            REQUIRE(merovingian::database::store_event_with_state(
+                store, create,
+                merovingian::database::PersistentStateEvent{atomic_room_id, "m.room.create", "", create.event_id}));
+            REQUIRE(merovingian::homeserver::record_event_state(
+                        store, atomic_room_id, create.event_id, {},
+                        merovingian::homeserver::compute_state_after({}, create.event_id, "m.room.create", ""))
+                        .has_value());
+            auto const tips = std::vector<std::string>{create.event_id};
+            REQUIRE(merovingian::database::find_forward_extremities(store, atomic_room_id) == tips);
+            auto const basis = merovingian::homeserver::basis_for_new_event(store, atomic_room_id, *policy);
+            REQUIRE(basis.ok);
+
+            // forward_extremities is written after the event, its current_state
+            // row, its new after-state group and the mapping, all in the same
+            // transaction (ADR-0228).
+            auto fault = merovingian::tests::SqliteInsertFault{path, "forward_extremities", "atomic_tip_failure"};
+
+            WHEN("a local m.room.topic is stored")
+            {
+                auto topic = atomic_state_event("$topic:example.org", "m.room.topic", R"({"topic":"lost"})", 2U,
+                                                basis.prev_event_ids);
+                auto const stored = merovingian::homeserver::store_local_event(
+                    store, *policy, topic,
+                    merovingian::database::PersistentStateEvent{atomic_room_id, "m.room.topic", "", topic.event_id},
+                    basis);
+                fault.clear();
+
+                THEN("it is refused, and nothing of it is in the store or, reopened, in the database")
+                {
+                    REQUIRE_FALSE(stored);
+                    require_nothing_of(store, "$topic:example.org", tips);
+
+                    auto reopened = open_sqlite_persistent_store(path.string());
+                    REQUIRE(reopened.ok);
+                    REQUIRE(reopened.store.events.find("$create:example.org") != reopened.store.events.end());
+                    require_nothing_of(reopened.store, "$topic:example.org", tips);
+                }
+            }
+        }
+        std::filesystem::remove(path);
     }
 }

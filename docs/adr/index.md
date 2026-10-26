@@ -209,6 +209,9 @@
 * [0222 - Library linkage is read from the loader at runtime, not from the build](0222-library-linkage-is-read-from-the-loader-at-runtime.md)
 * [0223 - The documentation site wears the OMG Software theme, dark first, with system fonts](0223-the-documentation-site-wears-the-omg-software-theme-dark-first-with-system-fonts.md)
 * [0224 - Pre-1.0 migrations collapse into one v1 schema, frozen at 1.0.0, and an unknown ledger is refused](0224-pre-1-0-migrations-collapse-into-one-frozen-v1-schema.md)
+* [0225 - A local event falls back to the newest forward extremity when their state cannot be resolved](0225-a-local-event-falls-back-to-the-newest-forward-extremity-when-their-state-cannot-be-resolved.md)
+* [0228 - An event this server places commits with its bookkeeping in one transaction](0228-an-event-this-server-places-commits-with-its-bookkeeping-in-one-transaction.md)
+* [0229 - SonarQube Cloud ignores tests and tooling, and keeps the server, packaging and workflows](0229-sonarqube-cloud-ignores-tests-and-tooling-and-keeps-the-server-packaging-and-workflows.md)
 
 ## Proposed Records
 
@@ -240,3 +243,4 @@
 * [0163 - Appservice delivery is a durable outbox drained by one thread](0163-appservice-delivery-is-a-durable-outbox-drained-by-one-thread.md) — Refined by ADR-0191: the queue of one appservice is capped at `appservice.max_queued_events`, and ADR-0190: ephemeral data rides the same transactions but is not durable
 * [0173 - Cap a user's global account-data types; room account data stays bounded by membership](0173-cap-global-account-data-types-per-user.md) — Refined by ADR-0197: room account data also needs a membership row and is capped per room
 * [0216 - The upgrade path is tested from a forward-only schema seam and a database the previous release wrote](0216-upgrade-path-is-tested-from-a-forward-only-seam-and-a-real-previous-release-fixture.md) — Refined by ADR-0224: the migrations collapsed in 0.12.47, before 1.0.0, and the 0.11.13 fixture is gone; the seam and synthetic scenarios stay
+* [0064 - Spec-conformant PDU ingestion with delta state groups](0064-spec-conformant-pdu-ingestion-with-delta-state-groups.md) — Refined by ADR-0225: when the state across a room's forward extremities cannot be resolved, a local event is built on the newest extremity alone and the others are retired, instead of being refused; and by ADR-0228: local and federated-join bookkeeping commits in one transaction with the event
