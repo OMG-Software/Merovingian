@@ -97,6 +97,11 @@ server refused both with no setting that could change it.
 - **FIXED:** the open-registration conformance test required `params` and `session` in the 401,
   which the spec makes optional ("if one is provided"). It now checks them only when present,
   passes a session back only when one is issued, and gives every assertion its spec constraint.
+  The registered user ID is checked against the user-ID grammar (a MUST). The check that it is
+  based on the requested username is labelled the SHOULD it is.
+- **FIXED:** the release notes' Complement section printed a literal `<version>` in the evidence
+  file names, because its heredoc is quoted. The step now reads the version from `meson.build`
+  and fills it in, and fails if it cannot read one.
 - **TESTS:** the fake tools in `test_run_complement.py` no longer need `sha256sum` or `seq`, which
   the BSD hosts may lack. The certificate checks in `test_complement_image.py` read
   `openssl x509 -text`, which LibreSSL also has.

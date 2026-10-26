@@ -316,6 +316,14 @@ jobs:
           ## Package checksums
 
           EOF
+          # The quoted heredoc keeps `$` and backticks literal, so the Complement
+          # section's file names are filled in here, before anything is appended.
+          version=$(sed -n "s/^  version: '\([0-9][0-9.]*\)',$/\1/p" meson.build)
+          if [ -z "$version" ]; then
+            echo "cannot read the project version from meson.build" >&2
+            exit 1
+          fi
+          sed -i "s/<version>/${version}/g" release-notes.md
           for sumfile in release-assets/*.sha256; do
             [ -f "$sumfile" ] || continue
             printf -- '- `%s`\n' "$(cat "$sumfile")" >> release-notes.md

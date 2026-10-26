@@ -8,6 +8,7 @@
 #include "../support/in_memory_database_config.hpp"
 #include "../support/json_test_support.hpp"
 #include "../support/master_key.hpp"
+#include "merovingian/auth/identity.hpp"
 #include "merovingian/config/config.hpp"
 #include "merovingian/homeserver/client_server.hpp"
 
@@ -154,7 +155,11 @@ SCENARIO("Open registration completes with m.login.dummy", "[conformance][client
                 auto const* user_id = string_member(body, "user_id");
                 // Spec MUST: a successful registration returns the "Required" `user_id`.
                 REQUIRE(user_id != nullptr);
-                // Spec MUST: the user ID is built from the requested `username` localpart.
+                // Spec MUST: the registered `user_id` is a user ID, its localpart within
+                // the restricted grammar ("map the provided username onto a user_id").
+                REQUIRE(merovingian::auth::user_id_is_valid(*user_id));
+                // Spec SHOULD: "register an account with a User ID based on the username
+                // provided"; clients may not assume it, but this server does as asked.
                 REQUIRE(user_id->starts_with("@carol:"));
                 // Spec MUST: `access_token` is "Required if the inhibit_login option is false".
                 REQUIRE(string_member(body, "access_token") != nullptr);

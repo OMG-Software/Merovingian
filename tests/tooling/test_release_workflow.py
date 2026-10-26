@@ -22,6 +22,24 @@ class ReleaseWorkflowTests(unittest.TestCase):
         self.assertIn("gpg --verify complement-results-", workflow)
         self.assertIn("not been tested against Complement", workflow)
 
+    def test_release_notes_name_the_complement_files_by_this_versions_number(self) -> None:
+        # GIVEN the step that writes the release notes, whose heredoc is quoted
+        # so `$` and backticks in the notes stay literal.
+        workflow = WORKFLOW.read_text(encoding="utf-8")
+        step = workflow.split("- name: Write release notes", 1)[1].split("- name:", 1)[0]
+        heredoc_end = step.index("\n          EOF\n")
+
+        # WHEN the step is read past the heredoc.
+        after = step[heredoc_end:]
+
+        # THEN it reads the version from meson.build, refuses to go on without
+        # one, and replaces every <version> placeholder before anything else is
+        # appended, so the notes name the real evidence files.
+        self.assertIn("meson.build", after)
+        self.assertIn('if [ -z "$version" ]', after)
+        replace = after.index('sed -i "s/<version>/${version}/g" release-notes.md')
+        self.assertLess(replace, after.index(">> release-notes.md"))
+
     def test_alpha_tags_trigger_release_publication(self) -> None:
         # GIVEN the repository release workflow.
         self.assertTrue(WORKFLOW.is_file(), "release workflow is missing")
