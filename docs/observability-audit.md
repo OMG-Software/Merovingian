@@ -255,8 +255,13 @@ Grepping for `append_local_audit` call sites finds these event-name families:
   so a bridge stuck at its cap does not write a row per event; the exact count is the metric above.
 
 The `access_token.rejected` row carries a `reason` that distinguishes the
-failure mode: `token hashing failed`, `session not found`, `user not found`,
-and — for an expired-but-not-revoked token (#275) — `token expired`. The
+failure mode: `missing token` (the request carried no access token),
+`token hashing failed` (a token was presented but no hash of it could be
+computed, which points at the token key), `session not found`, `user not found`,
+and — for an expired-but-not-revoked token (#275) — `token expired`. A request
+to a path the server does not implement never reaches the token check: it is
+answered `404 M_UNRECOGNIZED` first (ADR-0230), so it writes no
+`access_token.rejected` row. The
 expired reason is emitted only when a session matching the token hash exists,
 is not revoked, but is past its `expires_at`, so operators can tell a stale
 TTL from a genuinely unknown token.

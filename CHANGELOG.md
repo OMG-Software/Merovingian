@@ -1,3 +1,21 @@
+## 0.12.56
+
+A client asking for an endpoint this server does not implement is told so, before its access token is
+looked at (ADR-0230). Element X was seen probing `GET /_matrix/client/r0/login`, an endpoint v1.19 does
+not define; the server answered `401 M_MISSING_TOKEN`, which tells a client still logging in that it needs
+a token it cannot have, and logged each probe as a `token hashing failed` warning.
+
+- **FIXED:** a client-server request whose path names no endpoint this server implements is answered
+  `404 M_UNRECOGNIZED` whether it carries no token, an unknown token or a valid one, as the spec's
+  `M_UNRECOGNIZED` and "Authentication API discovery" text asks. Before, only an authenticated request
+  reached the `404`; anything else got `401 M_MISSING_TOKEN` or `401 M_UNKNOWN_TOKEN`. An implemented
+  endpoint without a valid token still answers `401`.
+- **FIXED:** an `access_token.rejected` audit row for a request that carried no access token gives the
+  reason `missing token`. It said `token hashing failed`, which only an unusable token key should cause.
+- **CHANGED:** `normalized_target()` in `client_server.cpp` is now also the list of client-server paths the
+  server serves: a path it maps to the `/_matrix/client/{unmatched}` fallback is answered `404` before
+  authentication. Every implemented route, static or dynamic, must be recognised there.
+
 ## 0.12.54
 
 - **MAINTENANCE:** merge current `main` into the DB-6 PostgreSQL fixture branch,
