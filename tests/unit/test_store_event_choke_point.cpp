@@ -69,19 +69,59 @@ namespace
 [[nodiscard]] auto reviewed_call_sites() -> std::map<std::string, std::size_t>
 {
     return {
-        // The choke point itself (homeserver::store_local_event).
-        {"src/homeserver/state_bookkeeping.cpp", 1U},
-        // ingest_send_join_state's critical-state loop (outlier),
-        // join_room's auth-chain persist loop (outlier), and the join
-        // event's own store (bespoke snapshot-parent bookkeeping via
-        // record_event_state_with_parent — see join_room).
-        {"src/homeserver/room_service.cpp",      3U},
+        // ingest_send_join_state's critical-state loop (outlier) and
+        // join_room's auth-chain persist loop (outlier). The join event
+        // itself, like every local event, goes through
+        // homeserver::store_event_with_bookkeeping (ADR-0228).
+        {"src/homeserver/room_service.cpp",      2U},
         // membership_acceptor (inbound send_join/send_leave/send_knock
         // acceptance — has its own compute_state_before/record_event_state/
         // recompute_current_state sequence, the same trust boundary as
         // ingest_pdu_event) and invite_handler (outlier).
         {"src/homeserver/local_http_router.cpp", 2U},
     };
+}
+
+// The same review for database::prepare_store_event_with_state, which stores
+// an event once its statements are committed: a caller that commits them
+// without its own bookkeeping bypasses ADR-0064 just as surely.
+[[nodiscard]] auto reviewed_prepare_call_sites() -> std::map<std::string, std::size_t>
+{
+    return {
+        // The choke point itself: homeserver::store_event_with_bookkeeping,
+        // which commits the event with its state group, mapping, forward
+        // extremities and current state in one transaction (ADR-0228).
+        {"src/homeserver/state_bookkeeping.cpp", 1U},
+        // Backfill (outliers that never become forward extremities) and
+        // ingest_pdu_event (records its own state group after the commit).
+        {"src/homeserver/local_http_router.cpp", 2U},
+    };
+}
+
+// Counts `needle` in every .cpp under src/, outside src/database/ (the store
+// abstraction itself), keyed by path relative to the source root.
+[[nodiscard]] auto call_sites_in_src(std::string const& needle) -> std::map<std::string, std::size_t>
+{
+    auto const src_dir = source_root() / "src";
+    REQUIRE(std::filesystem::exists(src_dir));
+    auto actual = std::map<std::string, std::size_t>{};
+    for (auto const& entry : std::filesystem::recursive_directory_iterator{src_dir})
+    {
+        if (!entry.is_regular_file() || entry.path().extension() != ".cpp")
+        {
+            continue;
+        }
+        auto const relative_str = std::filesystem::relative(entry.path(), source_root()).generic_string();
+        if (relative_str.starts_with("src/database/"))
+        {
+            continue;
+        }
+        if (auto const count = count_occurrences(read_whole_file(entry.path()), needle); count > 0U)
+        {
+            actual[relative_str] = count;
+        }
+    }
+    return actual;
 }
 
 } // namespace
@@ -91,29 +131,7 @@ SCENARIO("Every database::store_event_with_state call site in src/ is a reviewed
 {
     GIVEN("the checked-in src/ tree, excluding src/database/ (the store abstraction itself)")
     {
-        auto const src_dir = source_root() / "src";
-        REQUIRE(std::filesystem::exists(src_dir));
-
-        auto actual = std::map<std::string, std::size_t>{};
-        for (auto const& entry : std::filesystem::recursive_directory_iterator{src_dir})
-        {
-            if (!entry.is_regular_file() || entry.path().extension() != ".cpp")
-            {
-                continue;
-            }
-            auto const relative = std::filesystem::relative(entry.path(), source_root());
-            auto relative_str = relative.generic_string();
-            if (relative_str.starts_with("src/database/"))
-            {
-                continue; // the store abstraction itself
-            }
-            auto const contents = read_whole_file(entry.path());
-            auto const count = count_occurrences(contents, "database::store_event_with_state(");
-            if (count > 0U)
-            {
-                actual[relative_str] = count;
-            }
-        }
+        auto const actual = call_sites_in_src("database::store_event_with_state(");
 
         WHEN("every call site found is compared against the reviewed allowlist")
         {
@@ -138,6 +156,27 @@ SCENARIO("Every database::store_event_with_state call site in src/ is a reviewed
                     REQUIRE(actual_it != actual.end());
                     REQUIRE(actual_it->second == count);
                 }
+            }
+        }
+    }
+}
+
+SCENARIO("Every database::prepare_store_event_with_state call site in src/ is a reviewed ADR-0064 exception",
+         "[pdu_ingestion][state_groups]")
+{
+    GIVEN("the checked-in src/ tree, excluding src/database/")
+    {
+        auto const actual = call_sites_in_src("database::prepare_store_event_with_state(");
+
+        WHEN("every call site found is compared against the reviewed allowlist")
+        {
+            auto const expected = reviewed_prepare_call_sites();
+
+            THEN("no file outside the allowlist calls it, and every allowlisted count matches exactly")
+            {
+                INFO("database::prepare_store_event_with_state call sites changed; review them against ADR-0064 "
+                     "and ADR-0228 before updating reviewed_prepare_call_sites()");
+                REQUIRE(actual == expected);
             }
         }
     }

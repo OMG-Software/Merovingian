@@ -41,7 +41,7 @@ Merovingian is a Matrix homeserver written in modern C++26. Its design treats co
 
 -   :material-source-branch-check:{ .lg .middle } **Continuous verification**
 
-    CI covers builds, static analysis, sanitizers, fuzzing, CodeQL, reproducibility, SBOM generation, secret scanning, and package workflows.
+    CI covers builds, static analysis, sanitizers, fuzzing, CodeQL, SonarQube Cloud, reproducibility, SBOM generation, secret scanning, and package workflows.
 
 -   :material-server-security:{ .lg .middle } **Operator-focused deployment**
 

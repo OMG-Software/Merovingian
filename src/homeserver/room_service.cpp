@@ -246,6 +246,9 @@ namespace
         // yet — the store has no create row for this room while composing
         // it) re-derive it from store.state.
         std::string room_version{};
+        // The prev_events chosen while composing, and the state before them,
+        // resolved once (ADR-0225); persist_composed_event stores against it.
+        NewEventBasis basis{};
     };
 
     // Queues a stored event for every appservice interested in it (R07, R01). The target of a
@@ -945,18 +948,6 @@ namespace
         return {true, {}, room_version_str == nullptr ? std::string{"10"} : *room_version_str, *event_object};
     }
 
-    // ADR-0064 phase B1: prev_events for a new local event are the room's
-    // recorded forward extremities, not "whatever was inserted into
-    // store.events last" — the latter has no relationship to the DAG once
-    // inbound federation can fork a room's tip, and silently produces an
-    // event whose bookkeeping the rest of ADR-0064 cannot place (see
-    // homeserver::forward_extremities_for_new_event).
-    [[nodiscard]] auto previous_events_for_room(database::PersistentStore const& store, std::string_view room_id)
-        -> std::vector<std::string>
-    {
-        return forward_extremities_for_new_event(store, room_id);
-    }
-
     [[nodiscard]] auto event_json_for_id(database::PersistentStore const& store, std::string_view event_id)
         -> std::optional<std::string>
     {
@@ -1506,7 +1497,15 @@ namespace
         // hash) and no event lists the create event in its auth_events.
         auto const create_defines_room_id = policy->create_event_is_room_id;
         auto const omit_room_id = event_type == "m.room.create" && create_defines_room_id;
-        auto const prev_events = previous_events_for_room(runtime.database.persistent_store, room_id);
+        // ADR-0064 phase B1: prev_events for a new local event are the room's
+        // recorded forward extremities, not "whatever was inserted into
+        // store.events last". ADR-0225: chosen together with the state before
+        // them, falling back to the newest extremity alone when the state
+        // across all of them cannot be resolved.
+        auto basis =
+            basis_for_new_event(runtime.database.persistent_store, room_id, *policy,
+                                state_resolution_limits(runtime.config.security().federation.state_resolution));
+        auto const prev_events = basis.prev_event_ids;
         auto const membership = event_type == "m.room.member"
                                     ? events::extract_content_membership(canonicaljson::Value{*input})
                                     : std::string{};
@@ -1770,7 +1769,8 @@ namespace
                           prev_events, auth_events,
                           {{signed_event.server_name, signed_event.key_id, signed_event.signature}},
                           event_type, state_key,
-                          room_version, }
+                          room_version, std::move(basis),
+                          }
         };
     }
 
@@ -1858,7 +1858,7 @@ namespace
     // emit the initial chain (create → member → power_levels → join_rules) so the room's
     // current_state is populated before any federation peer calls send_join.
     // Each event must be stored before the next is generated: auth_events_for_room and
-    // previous_events_for_room both read the persistent state to build the correct chain.
+    // basis_for_new_event both read the persistent state to build the correct chain.
     // Persists an already-composed event (and its state row, if any) under room_id.
     // Split out from emit_initial_state_event so create_room can compose the room v12
     // m.room.create event first — deriving the room ID from its reference hash
@@ -1869,10 +1869,20 @@ namespace
         // ADR-0064 phase B1: every locally created event goes through the
         // store_local_event choke point, never database::store_event_with_state
         // directly (see tests/unit/test_store_event_choke_point.cpp).
+        auto const failed = [&room_id, &composed](std::string_view reason) {
+            log_diagnostic("event.persist.failed",
+                           {
+                               {"room_id",  std::string{room_id}, false},
+                               {"event_id", composed.event_id,    false},
+                               {"reason",   std::string{reason},  false}
+            },
+                           observability::LogEventSeverity::warning);
+            return false;
+        };
         auto const* policy = rooms::find_room_version_policy(composed.room_version);
         if (policy == nullptr)
         {
-            return false;
+            return failed("room version policy missing");
         }
         auto const stream_ordering = allocate_stream_ordering(runtime.database);
         auto state = std::optional<database::PersistentStateEvent>{};
@@ -1888,7 +1898,7 @@ namespace
             membership = local_membership_projection(runtime, room_id, sender, composed);
             if (!membership.has_value())
             {
-                return false;
+                return failed("member event has no membership to project");
             }
         }
         auto committed_membership = membership.has_value() ? membership->membership : std::string{};
@@ -1902,13 +1912,18 @@ namespace
         event.prev_event_ids = composed.prev_event_ids;
         event.auth_event_ids = composed.auth_event_ids;
         event.signatures = composed.signatures;
-        if (!store_local_event(runtime.database.persistent_store, *policy, std::move(event), std::move(state),
-                               state_resolution_limits(runtime.config.security().federation.state_resolution),
-                               std::move(membership)))
+        // store_local_event logs the step that failed.
+        if (!store_local_event(
+                runtime.database.persistent_store, *policy, std::move(event), std::move(state), composed.basis,
+                state_resolution_limits(runtime.config.security().federation.state_resolution), std::move(membership)))
         {
             return false;
         }
-        return !is_member_event || finish_local_membership(runtime, room_id, composed, std::move(committed_membership));
+        if (is_member_event && !finish_local_membership(runtime, room_id, composed, std::move(committed_membership)))
+        {
+            return failed("roster or device-list update after the member event failed");
+        }
+        return true;
     }
 
     // CSAZ-9: true when createRoom content the client supplied cannot fit in an
@@ -4906,62 +4921,55 @@ namespace
                 database::PersistentStateEvent{std::string{room_id}, "m.room.member", *user_id,
                                                event_id_result.event_id}
             };
-            // store_event_with_state either inserts a new state row or UPDATEs the
-            // existing one (invite → join).  Either path leaves current_state pointing
+            // The join event either inserts a new state row or UPDATEs the
+            // existing one (invite → join). Either path leaves current_state pointing
             // at the join event at membership_stream, which joined_membership_changed_since
             // then detects correctly. DB-4: the user's membership row and the end of
-            // their invite are committed in the same transaction.
+            // their invite are committed with it.
+            //
+            // ADR-0064 phase B1: the join also seeds this room's state
+            // bookkeeping, so the FIRST inbound PDU after it does not hit
+            // missing_prev_state. The send_join response's state array (stored
+            // above as outliers by ingest_send_join_state, returned here as
+            // state_entries) is the room's state immediately BEFORE the join;
+            // the join event's after-state is that plus the join itself,
+            // recorded as one snapshot group, and the join becomes the room's
+            // sole forward extremity.
+            //
+            // Sole: any extremity already recorded here is left from an earlier
+            // stay in the room (concurrent PDUs are deferred until the join
+            // commits). The resident's DAG has moved past it, and the join's
+            // real prev_events are events this server does not hold, so it is
+            // retired here. Kept, it made every later local event resolve the
+            // old stay's state against the new one, and a leave from a large
+            // public room failed with 500 (0.12.48).
+            //
+            // ADR-0228: the event, the membership, the state group, its mapping,
+            // the forward extremities and current state commit together, so a
+            // refused write leaves the user not joined rather than joined with
+            // no state to build the next event on.
             auto const join_event_id = join_pe.event_id;
-            if (!database::store_event_with_state(
-                    runtime.database.persistent_store, std::move(join_pe), join_state,
-                    database::MembershipProjection{*user_id, "join", membership_stream, std::nullopt}))
+            auto bookkeeping = EventBookkeeping{};
+            bookkeeping.state_after = compute_state_after(send_join_state.state_entries, join_event_id, "m.room.member",
+                                                          std::string{*user_id});
+            bookkeeping.replaced_extremities =
+                database::find_forward_extremities(runtime.database.persistent_store, room_id);
+            auto const stored = store_event_with_bookkeeping(
+                runtime.database.persistent_store, policy, std::move(join_pe), join_state,
+                database::MembershipProjection{*user_id, "join", membership_stream, std::nullopt}, bookkeeping,
+                state_resolution_limits(runtime.config.security().federation.state_resolution));
+            if (!stored.ok)
             {
-                log_diagnostic("room.join.rejected", {
-                                                         {"actor",   *user_id,                        false},
-                                                         {"room_id", std::string{room_id},            false},
-                                                         {"status",  "500",                           false},
-                                                         {"reason",  "join event persistence failed", false}
-                });
-                return make_operation_result(false, {}, "join event persistence failed", 500U);
-            }
-            {
-                // ADR-0064 phase B1: seed this freshly joined room's state
-                // bookkeeping so the FIRST inbound PDU after the join does
-                // not hit missing_prev_state. The send_join response's
-                // state array (already stored above as outliers by
-                // ingest_send_join_state, returned here as state_entries)
-                // is exactly the room's state immediately BEFORE the join
-                // event — build one snapshot group from it, give the join
-                // event an after-state group chained off that snapshot
-                // (snapshot + the join member event itself), and make the
-                // join event the room's sole forward extremity.
-                auto const snapshot_group_id = database::create_or_reuse_state_group(
-                    runtime.database.persistent_store, room_id, "join-snapshot:" + join_event_id, std::nullopt,
-                    send_join_state.state_entries);
-                if (snapshot_group_id.has_value())
-                {
-                    auto const state_after = compute_state_after(send_join_state.state_entries, join_event_id,
-                                                                 "m.room.member", std::string{*user_id});
-                    auto const join_group = record_event_state_with_parent(
-                        runtime.database.persistent_store, room_id, join_event_id, {}, snapshot_group_id, state_after);
-                    if (join_group.has_value())
-                    {
-                        if (!recompute_current_state(
-                                runtime.database.persistent_store, room_id, policy,
-                                state_resolution_limits(runtime.config.security().federation.state_resolution)))
-                        {
-                            return make_operation_result(false, {}, "join current-state persistence failed", 500U);
-                        }
-                    }
-                    else
-                    {
-                        return make_operation_result(false, {}, "join event state-group persistence failed", 500U);
-                    }
-                }
-                else
-                {
-                    return make_operation_result(false, {}, "join snapshot persistence failed", 500U);
-                }
+                log_diagnostic("room.join.failed",
+                               {
+                                   {"actor",   *user_id,             false},
+                                   {"room_id", std::string{room_id}, false},
+                                   {"status",  "500",                false},
+                                   {"step",    stored.step,          false},
+                                   {"reason",  stored.reason,        false}
+                },
+                               observability::LogEventSeverity::warning);
+                return make_operation_result(false, {}, "join event persistence failed: " + stored.reason, 500U);
             }
         }
         // GCOVR_EXCL_STOP

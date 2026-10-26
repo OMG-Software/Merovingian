@@ -1400,6 +1400,29 @@ auto reconstruct_event_relations(PersistentStore& store) -> void;
                                               PersistentMembership membership) -> bool;
 [[nodiscard]] auto store_event(PersistentStore& store, PersistentEvent event) -> bool;
 [[nodiscard]] auto store_state(PersistentStore& store, PersistentStateEvent state) -> bool;
+
+// A current_state change prepared but not committed, so it can commit in the
+// transaction of the event that caused it (ADR-0228). store_state is
+// prepare_current_state, a commit and apply_current_state.
+struct PreparedCurrentState final
+{
+    PersistentStateEvent state{};
+    // The event the key named before; empty when the key had no row.
+    std::string previous_event_id{};
+    std::vector<PreparedStatement> statements{};
+};
+
+// The statements that make `state` current, replacing `previous_event_id`
+// (empty for a key with no current_state row yet), and record the transition.
+// Does not check that `state` names a stored event: see
+// state_matches_stored_event.
+[[nodiscard]] auto prepare_current_state(PersistentStateEvent state, std::string previous_event_id)
+    -> PreparedCurrentState;
+// Mirrors a committed prepare_current_state into current_state and the
+// state_transitions index.
+auto apply_current_state(PersistentStore& store, PreparedCurrentState const& prepared) -> void;
+// True when `state` names a stored event of that type and state key in that room.
+[[nodiscard]] auto state_matches_stored_event(PersistentStore const& store, PersistentStateEvent const& state) -> bool;
 // With `membership`, also writes that membership row and invite change in the same
 // transaction (DB-4). The projection must name the state event's own user: `state`
 // must be the m.room.member entry whose state_key is `membership->user_id`, or
@@ -1454,6 +1477,30 @@ auto reconstruct_event_relations(PersistentStore& store) -> void;
                                                std::vector<PersistentStateGroupStateEntry> const& full_state)
     -> std::optional<std::string>;
 
+// A create_or_reuse_state_group prepared but not committed, so it can commit
+// in the transaction of the event whose state it holds (ADR-0228).
+struct PreparedStateGroup final
+{
+    // The group that holds the state: the reused parent, or the new group.
+    std::string state_group_id{};
+    // The new group's row, or nullopt when the parent is reused and nothing
+    // is written.
+    std::optional<PersistentStateGroup> group{};
+    // The new group's own entries (its delta, or the full snapshot).
+    std::vector<PersistentStateGroupStateEntry> rows{};
+    std::vector<PreparedStatement> statements{};
+};
+
+// create_or_reuse_state_group without the commit. A parent, when given, must
+// already be in the store. Returns nullopt when it is not a valid group.
+[[nodiscard]] auto prepare_state_group(PersistentStore const& store, std::string_view room_id,
+                                       std::string_view new_state_group_id,
+                                       std::optional<std::string> const& parent_state_group_id,
+                                       std::vector<PersistentStateGroupStateEntry> const& full_state)
+    -> std::optional<PreparedStateGroup>;
+// Mirrors a committed prepare_state_group into the in-memory store.
+auto apply_state_group(PersistentStore& store, PreparedStateGroup const& prepared) -> void;
+
 // Returns `state_group_id`'s own row (its room, parent, and delta depth —
 // not its resulting state; see read_state_group_full_state for that), or
 // nullopt if no such group exists.
@@ -1473,6 +1520,13 @@ auto reconstruct_event_relations(PersistentStore& store) -> void;
 // after it. Upserts: replaces any existing mapping for `event_id`.
 [[nodiscard]] auto set_event_state_group(PersistentStore& store, std::string_view event_id,
                                          std::string_view state_group_id) -> bool;
+// set_event_state_group's statement, uncommitted (ADR-0228); nullopt for an
+// empty `event_id` or `state_group_id`.
+[[nodiscard]] auto prepare_event_state_group(std::string_view event_id, std::string_view state_group_id)
+    -> std::optional<PreparedStatement>;
+// Mirrors a committed prepare_event_state_group into the in-memory mapping.
+auto apply_event_state_group(PersistentStore& store, std::string_view event_id, std::string_view state_group_id)
+    -> void;
 // Returns the state group mapped to `event_id`, or nullopt if none is recorded.
 [[nodiscard]] auto find_event_state_group(PersistentStore const& store, std::string_view event_id)
     -> std::optional<std::string>;
@@ -1486,6 +1540,15 @@ auto reconstruct_event_relations(PersistentStore& store) -> void;
 [[nodiscard]] auto update_forward_extremities(PersistentStore& store, std::string_view room_id,
                                               std::string_view event_id, std::vector<std::string> const& prev_event_ids,
                                               bool accepted) -> bool;
+// update_forward_extremities for an accepted event, uncommitted (ADR-0228):
+// the statements that remove `replaced_event_ids` from `room_id`'s
+// extremities and add `event_id`. Empty for an empty `room_id` or `event_id`.
+[[nodiscard]] auto prepare_forward_extremities_update(std::string_view room_id, std::string_view event_id,
+                                                      std::vector<std::string> const& replaced_event_ids)
+    -> std::vector<PreparedStatement>;
+// Mirrors a committed prepare_forward_extremities_update in memory.
+auto apply_forward_extremities_update(PersistentStore& store, std::string_view room_id, std::string_view event_id,
+                                      std::vector<std::string> const& replaced_event_ids) -> void;
 // Returns `room_id`'s current forward extremity event ids, in no particular order.
 [[nodiscard]] auto find_forward_extremities(PersistentStore const& store, std::string_view room_id)
     -> std::vector<std::string>;

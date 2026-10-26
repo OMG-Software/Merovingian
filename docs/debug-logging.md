@@ -45,6 +45,35 @@ only at debug, so a 500 left nothing in a default log. `room.create.room_id_take
 (debug) records each timestamp `create_room` stepped past because its room v12 ID
 already existed (ADR-0156).
 
+## Leave, join and local event failures (0.12.48)
+
+These are warnings, not debug-only, so a 500 from a membership change or a
+local send leaves its cause in a default log. All are module `rooms`, except
+`room.leave.failed`, which is `client_server`.
+
+- `room.leave.failed`: `POST /rooms/{roomId}/leave` answered a 5xx. Fields
+  `actor`, `room_id`, `status`, `reason`. A refusal the client caused (401,
+  403, 404) stays a debug-level `room.leave.rejected`.
+- `room.join.failed`: a federated join's join event and its state seeding
+  could not be stored after `send_join` (500), with `actor`, `room_id`,
+  `status`, `step` (as for `event.store.failed`) and `reason`. Nothing of the
+  join was written (ADR-0228).
+- `event.prev_events.fallback`: the state across a room's forward extremities
+  could not be resolved, so the new local event cites only the newest one whose
+  state can be read on its own (not necessarily the newest overall) and retires
+  the rest (ADR-0225). Fields `room_id`, `extremities` (how many),
+  `prev_event` (the one cited), `retired` (how many) and `reason`.
+- `event.prev_events.unresolvable`: no forward extremity has a readable state;
+  the local event is refused. Fields `room_id`, `extremities`, `reason`.
+- `event.store.failed`: `store_local_event` refused a local event, and wrote
+  none of it (ADR-0228). `step` is `state_before`, `event`, `state_group`,
+  `current_state` or `commit` (the transaction holding all of them was
+  refused); with `room_id`, `event_id` and `reason`.
+- `event.persist.failed`: `persist_composed_event` failed outside
+  `store_local_event` (no room version policy, a member event with no
+  membership, or the roster and device-list update after it), with `room_id`,
+  `event_id` and `reason`.
+
 ## Sliding Sync response diagnostics (0.10.41)
 
 Starting the server with --debug additionally enables the
