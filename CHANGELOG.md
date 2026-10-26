@@ -1,3 +1,10 @@
+## 0.12.54
+
+- **MAINTENANCE:** merge current `main` into the DB-6 PostgreSQL fixture branch,
+  retain both changelog histories, and align all version metadata with 0.12.54.
+  Resolve conflicts with the 0.12.53 documentation branding release while
+  preserving the isolated PostgreSQL fixtures and their regression tests.
+
 ## 0.12.53
 
 - **MAINTENANCE:** merge current `main` into the documentation branding branch,
@@ -57,6 +64,39 @@ a CI script. It now ignores test code and developer tooling (ADR-0229).
   must reach the gate is excluded.
 - **DOCS:** the security review checklist names the SonarQube Cloud gate and its scope as release
   evidence; the docs index lists it among the CI checks.
+
+## 0.12.50
+
+The live PostgreSQL scenario "DB-6 PostgreSQL inbound admission rejects escaped NUL state keys
+before any write" no longer fails at random (ADR-0227). It ran on the database every live
+PostgreSQL scenario shares, so its runtime replayed the outbound federation transactions earlier
+scenarios had left there; the dispatch worker's retries of those deliveries re-persisted them from
+its own thread, and one landing inside the scenario's store-wide statement capture was charged to
+the rejection (`statements written while rejecting: upsert_federation_transaction`, seen on PR #534
+while `main` with the same C++ passed). The production rejection path was not at fault.
+
+- **FIXED:** the scenario runs on a PostgreSQL database of its own, created before its runtime and
+  dropped when it ends, so nothing is replayed and its assertion that a rejection writes nothing,
+  from any thread, is unchanged. Before each capture window it also requires that the dispatch
+  worker, if started, has never been given work (`enqueued == 0`; `pending` drops to 0 while an
+  attempt is in flight, PR #536 review), so background outbound work added later fails it at once
+  instead of at random. The worker is not shut down for the window: `enqueue` then refuses without
+  persisting, which would hide a rejection that queues outbound work.
+- **CHANGED:** `ScratchPostgresqlDatabase` and `conninfo_for_database` move from
+  `tests/integration/test_database_upgrade_flow.cpp` to `tests/integration/scratch_postgresql_database.hpp`
+  (`merovingian::tests`), shared by both files; the upgrade scenarios' databases are now named
+  `merovingian_scratch_*`. `conninfo_for_database` drops a `dbname` query parameter (also
+  percent-encoded) from a URI, since libpq reads the query after the path and would otherwise
+  connect to the original database (PR #536 review). A failed `DROP DATABASE` when the fixture
+  goes is reported as a test failure instead of being ignored. A string is treated as a URI only when it
+  starts with `postgresql://` or `postgres://`, as libpq does, so a keyword/value string whose value
+  holds `://` (`application_name=ci://worker`) still gets the scratch `dbname`.
+- **DOCS:** `docs/testing-standards.md` gains "Live PostgreSQL scenarios that need a quiet store".
+- **TESTS (changed):** "DB-6 PostgreSQL inbound admission rejects escaped NUL state keys before any
+  write" (own database; the dispatch worker has had no work before each capture). The PostgreSQL upgrade
+  scenarios use the shared fixture. **TESTS (new):** "A scratch database's connection string names
+  only the scratch database" (`[scratch]`, no live server needed). The race itself is
+  timing-dependent and is removed at its cause rather than reproduced.
 
 ## 0.12.49
 

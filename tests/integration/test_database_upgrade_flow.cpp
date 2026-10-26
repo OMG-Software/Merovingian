@@ -14,6 +14,7 @@
 #include "merovingian/database/persistent_store.hpp"
 #include "merovingian/database/postgresql_store.hpp"
 #include "merovingian/database/schema.hpp"
+#include "scratch_postgresql_database.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -28,7 +29,6 @@
 #include <memory>
 #include <string>
 #include <string_view>
-#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -188,62 +188,6 @@ struct PgClear final
     auto const* value = std::getenv("MEROVINGIAN_TEST_POSTGRESQL_URI");
     return value == nullptr ? std::string{} : std::string{value};
 }
-
-// The same server, another database. The store only looks for its schema in
-// `public`, and the shared test database is already at the current version,
-// so a scenario that needs a schema of its own needs a database of its own.
-[[nodiscard]] auto conninfo_for_database(std::string const& conninfo, std::string const& database) -> std::string
-{
-    auto const scheme = conninfo.find("://");
-    if (scheme == std::string::npos)
-    {
-        // Keyword/value form: a later keyword overrides an earlier one.
-        return conninfo + " dbname=" + database;
-    }
-    auto const path = conninfo.find('/', scheme + 3U);
-    auto const query = conninfo.find('?', scheme + 3U);
-    auto const authority_end = std::min(path, query);
-    auto const rest = query == std::string::npos ? std::string{} : conninfo.substr(query);
-    return conninfo.substr(0U, authority_end) + "/" + database + rest;
-}
-
-// Drops the scenario's database when the scenario ends, however it ends.
-class ScratchPostgresqlDatabase final
-{
-public:
-    explicit ScratchPostgresqlDatabase(std::string admin_conninfo)
-        : admin_conninfo_{std::move(admin_conninfo)}
-        , name_{"merovingian_upgrade_" + std::to_string(std::chrono::system_clock::now().time_since_epoch().count())}
-        , created_{pg_execute(admin_conninfo_, "CREATE DATABASE " + name_)}
-    {
-    }
-    ScratchPostgresqlDatabase(ScratchPostgresqlDatabase const& other) = delete;
-    auto operator=(ScratchPostgresqlDatabase const& other) -> ScratchPostgresqlDatabase& = delete;
-    ScratchPostgresqlDatabase(ScratchPostgresqlDatabase&& other) = delete;
-    auto operator=(ScratchPostgresqlDatabase&& other) -> ScratchPostgresqlDatabase& = delete;
-    ~ScratchPostgresqlDatabase()
-    {
-        if (created_)
-        {
-            std::ignore = pg_execute(admin_conninfo_, "DROP DATABASE IF EXISTS " + name_ + " WITH (FORCE)");
-        }
-    }
-
-    [[nodiscard]] auto created() const noexcept -> bool
-    {
-        return created_;
-    }
-
-    [[nodiscard]] auto conninfo() const -> std::string
-    {
-        return conninfo_for_database(admin_conninfo_, name_);
-    }
-
-private:
-    std::string admin_conninfo_{};
-    std::string name_{};
-    bool created_{false};
-};
 
 [[nodiscard]] auto has_table(merovingian::database::SchemaState const& state, std::string_view table) -> bool
 {
@@ -565,7 +509,7 @@ SCENARIO("A PostgreSQL schema is built at v1 and stops there", "[database][upgra
             SUCCEED("skipped: MEROVINGIAN_TEST_POSTGRESQL_URI is not set");
             return;
         }
-        auto const scratch = ScratchPostgresqlDatabase{uri};
+        auto const scratch = merovingian::tests::ScratchPostgresqlDatabase{uri};
         REQUIRE(scratch.created());
 
         WHEN("the schema is migrated to v1")
@@ -597,7 +541,7 @@ SCENARIO("A PostgreSQL schema is never migrated past this build", "[database][up
             SUCCEED("skipped: MEROVINGIAN_TEST_POSTGRESQL_URI is not set");
             return;
         }
-        auto const scratch = ScratchPostgresqlDatabase{uri};
+        auto const scratch = merovingian::tests::ScratchPostgresqlDatabase{uri};
         REQUIRE(scratch.created());
         REQUIRE(merovingian::database::migrate_postgresql_schema_to(scratch.conninfo(),
                                                                     merovingian::database::current_schema_version())
@@ -617,6 +561,51 @@ SCENARIO("A PostgreSQL schema is never migrated past this build", "[database][up
                     scratch.conninfo(), merovingian::database::current_schema_version());
                 REQUIRE(again.ok);
                 REQUIRE(again.state.version == merovingian::database::current_schema_version());
+            }
+        }
+    }
+}
+
+// libpq reads a URI's query after its path, so a dbname there would send the
+// "scratch" connection back to the shared database (PR #536 review).
+SCENARIO("A scratch database's connection string names only the scratch database", "[database][postgresql][scratch]")
+{
+    GIVEN("connection strings for the shared database, some naming it again in the query")
+    {
+        auto const cases = std::vector<std::pair<std::string, std::string>>{
+            {"postgresql://scratch_user@db.test:5432/shared?dbname=shared&sslmode=disable",
+             "postgresql://scratch_user@db.test:5432/scratch?sslmode=disable"                                                         },
+            {"postgresql://db.test/shared?sslmode=require&%64bname=shared&connect_timeout=5",
+             "postgresql://db.test/scratch?sslmode=require&connect_timeout=5"                                                         },
+            {"postgresql://db.test/shared?dbname=shared",                                     "postgresql://db.test/scratch"          },
+            {"postgres://db.test?dbname=shared",                                              "postgres://db.test/scratch"            },
+            {"postgresql://db.test/shared",                                                   "postgresql://db.test/scratch"          },
+            {"postgresql://db.test/shared?dbnamex=1",                                         "postgresql://db.test/scratch?dbnamex=1"},
+        };
+
+        WHEN("each is pointed at the scratch database")
+        {
+            THEN("the path names it and no query parameter names another")
+            {
+                for (auto const& [shared, expected] : cases)
+                {
+                    INFO("conninfo " << shared);
+                    REQUIRE(merovingian::tests::conninfo_for_database(shared, "scratch") == expected);
+                }
+            }
+
+            AND_THEN("a keyword/value string gets the scratch dbname last, which libpq uses")
+            {
+                REQUIRE(merovingian::tests::conninfo_for_database("host=db.test dbname=shared", "scratch") ==
+                        "host=db.test dbname=shared dbname=scratch");
+                // Only a postgresql:// or postgres:// prefix makes a URI (PR #536 review): a
+                // "://" inside a keyword's value does not.
+                REQUIRE(merovingian::tests::conninfo_for_database(
+                            "host=db.test dbname=shared application_name=ci://worker", "scratch") ==
+                        "host=db.test dbname=shared application_name=ci://worker dbname=scratch");
+                REQUIRE(merovingian::tests::conninfo_for_database("host=db.test dbname=shared options='x://y'",
+                                                                  "scratch") ==
+                        "host=db.test dbname=shared options='x://y' dbname=scratch");
             }
         }
     }
@@ -652,7 +641,7 @@ SCENARIO("A fresh PostgreSQL database has every column and index of the v1 schem
             SUCCEED("skipped: MEROVINGIAN_TEST_POSTGRESQL_URI is not set");
             return;
         }
-        auto const scratch = ScratchPostgresqlDatabase{uri};
+        auto const scratch = merovingian::tests::ScratchPostgresqlDatabase{uri};
         REQUIRE(scratch.created());
 
         WHEN("it is opened as a persistent store")
@@ -698,7 +687,7 @@ SCENARIO("A PostgreSQL database a pre-1.0 build created is refused, not upgraded
             SUCCEED("skipped: MEROVINGIAN_TEST_POSTGRESQL_URI is not set");
             return;
         }
-        auto const scratch = ScratchPostgresqlDatabase{uri};
+        auto const scratch = merovingian::tests::ScratchPostgresqlDatabase{uri};
         REQUIRE(scratch.created());
         REQUIRE(merovingian::database::migrate_postgresql_schema_to(scratch.conninfo(), 1U).ok);
         for (auto index = std::size_t{0U}; index < pre_collapse_step_names.size(); ++index)
