@@ -13,11 +13,124 @@ DEPENDENCY_TRIAGE_WORKFLOW = (
 )
 SBOM_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "sbom.yml"
 SANITIZERS_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "sanitizers.yml"
+CODEQL_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "codeql.yml"
 GITLEAKS_CONFIG = REPO_ROOT / ".gitleaks.toml"
 DEPENDENCY_REVIEW_CONFIG = REPO_ROOT / ".github" / "dependency-review-config.yml"
 RELEASE_READINESS_SCRIPT = REPO_ROOT / "scripts" / "check-release-readiness.sh"
 SERVER_MAIN = REPO_ROOT / "src" / "main.cpp"
 SMOKE_TESTS = REPO_ROOT / "tests" / "smoke" / "meson.build"
+
+
+def workflow_steps(workflow: str) -> list[dict[str, object]]:
+    """Each step of every job: its top-level `key: value` pairs, a `with` dict, and `job`,
+    the index of the `steps:` list it belongs to.
+
+    A deliberately small reader for this repository's workflows (no PyYAML on
+    every CI image): steps are the `- ` items under a `steps:` key, comment
+    lines are ignored, and values keep their text with surrounding quotes removed.
+    """
+    steps: list[dict[str, object]] = []
+    steps_key_indent = None  # indentation of the `steps:` key being read, if any
+    step_indent = None  # indentation of that key's `- ` items
+    current: dict[str, object] | None = None
+    in_with = False
+    job = -1
+    for raw in workflow.splitlines():
+        if not raw.strip() or raw.lstrip().startswith("#"):
+            continue
+        indent = len(raw) - len(raw.lstrip(" "))
+        text = raw.strip()
+        if text == "steps:":
+            steps_key_indent, step_indent, current, in_with = indent, None, None, False
+            job += 1
+            continue
+        if steps_key_indent is None:
+            continue
+        if indent <= steps_key_indent:
+            # Left the steps list (a sibling of `steps:` or a parent key).
+            steps_key_indent, step_indent, current, in_with = None, None, None, False
+            continue
+        if step_indent is None and text.startswith("- "):
+            step_indent = indent
+        if step_indent is None:
+            continue
+        if indent == step_indent and text.startswith("- "):
+            current = {"with": {}, "job": job}
+            steps.append(current)
+            text, indent, in_with = text[2:], indent + 2, False
+        if current is None:
+            continue
+        key, separator, value = text.partition(":")
+        if not separator:
+            continue
+        value = value.strip().strip("'\"")
+        if indent == step_indent + 2:
+            in_with = key == "with"
+            if not in_with:
+                current[key] = value
+        elif in_with and indent == step_indent + 4:
+            current["with"][key] = value  # type: ignore[index]
+    return steps
+
+
+def codeql_upload_problems(workflow: str) -> list[str]:
+    """What is wrong with how codeql.yml analyses, filters and uploads (ADR-0226)."""
+    steps = workflow_steps(workflow)
+
+    def find(predicate) -> list[int]:
+        return [index for index, step in enumerate(steps) if predicate(step)]
+
+    analyze = find(lambda step: step.get("uses") == "github/codeql-action/analyze@v4")
+    filtered = find(lambda step: step.get("run") == "python3 scripts/filter_codeql_sarif.py codeql-results")
+    upload = find(lambda step: step.get("uses") == "github/codeql-action/upload-sarif@v4")
+    problems = []
+    for name, found in (("analyze", analyze), ("filter", filtered), ("upload", upload)):
+        if len(found) != 1:
+            problems.append(f"expected one {name} step, found {len(found)}")
+    if problems:
+        return problems
+    analyze_with = steps[analyze[0]]["with"]
+    upload_with = steps[upload[0]]["with"]
+    if len({steps[index]["job"] for index in (analyze[0], filtered[0], upload[0])}) != 1:
+        # Separate jobs do not share a workspace, so the filter could not see the report.
+        problems.append("analyze, filter and upload are not steps of one job")
+    if not analyze[0] < filtered[0] < upload[0]:
+        problems.append("steps are not analyze, then filter, then upload")
+    if analyze_with.get("upload") != "never":  # type: ignore[union-attr]
+        problems.append("the analyze step uploads its own results")
+    if analyze_with.get("output") != "codeql-results":  # type: ignore[union-attr]
+        problems.append("the analyze step does not write codeql-results")
+    if upload_with.get("sarif_file") != "codeql-results":  # type: ignore[union-attr]
+        problems.append("the upload step does not upload codeql-results")
+    if analyze_with.get("category") != "/language:c-cpp" or upload_with.get("category") != "/language:c-cpp":  # type: ignore[union-attr]
+        problems.append("analyze and upload do not share the /language:c-cpp category")
+    for index, step in enumerate(steps):
+        if index != upload[0] and step.get("uses", "").startswith("github/codeql-action/upload-sarif"):  # type: ignore[union-attr]
+            problems.append("another step uploads SARIF")
+        if "query-filters" in step["with"] or "config" in step["with"]:  # type: ignore[operator]
+            problems.append("a CodeQL step filters queries; the rule must stay on for production code")
+    return problems
+
+
+def move_step_after(workflow: str, moved: str, anchor: str) -> str:
+    """`workflow` with the step named `moved` cut out and pasted after the step named `anchor`."""
+    lines = workflow.splitlines(keepends=True)
+
+    def span(name: str) -> tuple[int, int]:
+        start = next(i for i, line in enumerate(lines) if line.strip() == f"- name: {name}")
+        end = start + 1
+        while end < len(lines) and not lines[end].lstrip().startswith("- name:") and not (
+            lines[end].strip().startswith("#") and lines[end].startswith("      #")
+        ):
+            end += 1
+        return start, end
+
+    start, end = span(moved)
+    block = lines[start:end]
+    del lines[start:end]
+    _, anchor_end = span(anchor)
+    lines[anchor_end:anchor_end] = block
+    return "".join(lines)
 
 
 class SecurityWorkflowTests(unittest.TestCase):
@@ -83,6 +196,49 @@ class SecurityWorkflowTests(unittest.TestCase):
         self.assertIn("format: cyclonedx-json", workflow)
         self.assertIn("artifact-name: merovingian-sbom-spdx", workflow)
         self.assertIn("artifact-name: merovingian-sbom-cyclonedx", workflow)
+
+    def test_codeql_filters_catch2_false_positives_before_upload(self) -> None:
+        # GIVEN the repository CodeQL workflow.
+        self.assertTrue(CODEQL_WORKFLOW.is_file(), "codeql workflow is missing")
+        workflow = CODEQL_WORKFLOW.read_text(encoding="utf-8")
+
+        # WHEN its steps are read, each with its own `with:` values.
+        problems = codeql_upload_problems(workflow)
+
+        # THEN the analyze step writes SARIF without uploading it, the filter
+        # (ADR-0226) rewrites it, and only then is it uploaded under the same category.
+        self.assertEqual(problems, [])
+
+    def test_codeql_upload_check_binds_each_value_to_its_step(self) -> None:
+        # GIVEN workflows that keep every expected string but put one in the wrong
+        # place: upload: never on another step or only in a comment, the categories
+        # swapped onto other steps, or the filter after the upload.
+        workflow = CODEQL_WORKFLOW.read_text(encoding="utf-8")
+        never = "          upload: never\n"
+        sarif = "          sarif_file: codeql-results\n"
+        variants = {
+            "upload: never moved to the upload step": workflow.replace(never, "", 1).replace(sarif, sarif + never, 1),
+            "upload: never only in a comment": workflow.replace(never, "          # upload: never\n", 1),
+            "upload category differs": workflow.replace(
+                sarif + "          category: '/language:c-cpp'", sarif + "          category: '/language:other'", 1
+            ),
+            "filter after upload": move_step_after(workflow, "Filter Catch2 false positives", "Upload CodeQL results"),
+            "filter and upload in another job": workflow.replace(
+                "      # Drops only cpp/unused-static-function",
+                "  publish:\n    runs-on: ubuntu-latest\n    steps:\n      # Drops only cpp/unused-static-function",
+                1,
+            ),
+        }
+
+        for name, variant in variants.items():
+            with self.subTest(variant=name):
+                self.assertNotEqual(variant, workflow, "the variant did not change the workflow")
+
+                # WHEN the check reads it.
+                problems = codeql_upload_problems(variant)
+
+                # THEN it reports the misplaced value.
+                self.assertNotEqual(problems, [])
 
     def test_sanitizer_workflow_runs_threadsanitizer_with_project_suppressions(self) -> None:
         # GIVEN the repository sanitizer workflow.

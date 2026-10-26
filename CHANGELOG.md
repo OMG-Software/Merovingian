@@ -3,6 +3,40 @@
 - **MAINTENANCE:** merge current `main` into the DB-6 PostgreSQL fixture branch,
   retain both changelog histories, and align all version metadata with 0.12.54.
 
+## 0.12.52
+
+CodeQL no longer reports every Catch2 test scenario as an unused static function (ADR-0226).
+`SCENARIO` expands to a static function registered by a static object, which
+`cpp/unused-static-function` cannot follow, so `main` carried thousands of open alerts across
+`tests/` and pull requests touching tests drew a review comment for each.
+
+- **CHANGED:** `codeql.yml` analyses with `upload: never` into `codeql-results/`, filters the
+  report with `scripts/filter_codeql_sarif.py`, then uploads it with `upload-sarif` under the same
+  `/language:c-cpp` category. The rule still covers `src/` and `include/`, and every other rule still
+  covers `tests/`; the alerts already open on `main` close at its next analysis.
+- **ADDED:** `scripts/filter_codeql_sarif.py` drops only `cpp/unused-static-function` results whose
+  file is under the top-level `tests/` directory. It keeps any result it cannot place, and any whose
+  location might resolve elsewhere: a base other than `%SRCROOT%`, or a `..` segment or backslash
+  after percent-decoding (PR #534 review). A rule named by index (`rule.index` or `ruleIndex`) is
+  read in the rules of the tool component the result names, the driver when none, so a query pack's
+  rule is never mistaken for the driver's; a rule it cannot resolve is kept. It refuses a report that
+  is not SARIF 2.1.0 or has no runs (uploading one would close every alert), a missing path, or a
+  directory with no report, without writing anything, so the upload fails rather than publishing an
+  unfiltered report. Since it rewrites reports in place, it touches only real files under its working
+  directory: a target or report outside it, or a symbolic link, is refused (PR #534 review).
+- **TESTS (new):** `tests/tooling/test_codeql_sarif_filter.py` (`codeql-sarif-filter-tooling`): only the
+  rule under `tests/` is dropped; a rule named by index is recognised; `src/tests/`, `contests/` and
+  `testsuite/` do not match; a target outside the working directory (absolute or `../`) and a
+  symlinked report are refused and left unchanged; a location with a parent segment (plain or percent-encoded), a
+  backslash, another base or none is kept; a top-level `ruleIndex` is recognised; an index is read
+  in the tool component it names; every report in a directory is filtered; input that is not SARIF fails
+  and is left as it was; a missing target or empty directory fails.
+  `tests/tooling/test_security_workflows.py` gains "CodeQL filters Catch2 false positives before
+  upload" (analyze, filter, upload in that order; no `query-filters`), reading each step's own `with:`
+  values so `upload: never`, the output, the SARIF file and the category must sit on the right step,
+  and the three steps in one job (separate jobs share no workspace), and "CodeQL upload check binds
+  each value to its step" (five misplaced variants are each caught; PR #534 review).
+
 ## 0.12.51
 
 SonarQube Cloud, added with Automatic Analysis and no configuration, gated every pull request on

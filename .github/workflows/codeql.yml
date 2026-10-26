@@ -54,7 +54,22 @@ jobs:
       - name: Build
         run: sh scripts/build-linux.sh --builddir build --compile-only
 
+      # Analyse without uploading, so the report can be filtered first (ADR-0226).
       - name: Perform CodeQL Analysis
         uses: github/codeql-action/analyze@v4
         with:
+          category: '/language:c-cpp'
+          upload: never
+          output: codeql-results
+
+      # Drops only cpp/unused-static-function under tests/: Catch2 registers each
+      # SCENARIO through a static object the rule cannot follow. The rule stays on
+      # for production code, and every other rule stays on for tests.
+      - name: Filter Catch2 false positives
+        run: python3 scripts/filter_codeql_sarif.py codeql-results
+
+      - name: Upload CodeQL results
+        uses: github/codeql-action/upload-sarif@v4
+        with:
+          sarif_file: codeql-results
           category: '/language:c-cpp'

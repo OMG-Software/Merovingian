@@ -100,6 +100,9 @@ fi
 * Mon Oct 26 2026 James Chapman <claude@ping.me.uk> - 0.12.54-1
 - Merge DB-6 PostgreSQL fixture isolation with the SonarQube Cloud analysis-scope change.
 
+* Mon Oct 26 2026 James Chapman <claude@ping.me.uk> - 0.12.52-1
+- CodeQL no longer reports cpp/unused-static-function on Catch2 test sources: the SARIF is filtered before upload.
+
 * Sun Oct 25 2026 James Chapman <claude@ping.me.uk> - 0.12.51-1
 - SonarQube Cloud ignores test code and developer tooling; the server, packaging and CI workflows stay analysed.
 
