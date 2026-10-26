@@ -1271,6 +1271,13 @@ namespace
                 add_parse_finding(findings, std::string{key}, "expected boolean value");
             }
         }
+        else if (key == "security.registration.allow_open_registration")
+        {
+            if (!parse_bool_value(value, security.registration.allow_open_registration))
+            {
+                add_parse_finding(findings, std::string{key}, "expected boolean value");
+            }
+        }
         else if (key == "security.registration.token_file")
         {
             security.registration.token_file = std::string{value};
@@ -1378,6 +1385,10 @@ namespace
         else if (key == "security.federation.deny_ip_ranges")
         {
             security.federation.deny_ip_ranges = parse_string_list(value);
+        }
+        else if (key == "security.federation.allow_private_ip_ranges")
+        {
+            security.federation.allow_private_ip_ranges = parse_string_list(value);
         }
         else if (key == "security.federation.max_transaction_size")
         {

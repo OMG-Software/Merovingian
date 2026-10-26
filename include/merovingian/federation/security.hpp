@@ -75,13 +75,28 @@ struct RemoteTrustDecision final
 // SSRF-safe discovery path to reject a host whose resolution includes any
 // non-public address. Configured IPv4/IPv6 literals or CIDRs add restrictions;
 // they never replace the built-in blocks. Invalid addresses/ranges fail closed.
+//
+// `allowed_private_ranges` is security.federation.allow_private_ip_ranges
+// (ADR-0230): an address inside one of them is allowed even though it is
+// private or covered by `denied_ranges`. Only federation callers pass it;
+// URL preview and media redirects never do.
 [[nodiscard]] auto address_set_allowed(std::vector<std::string> const& addresses,
-                                       std::vector<std::string> const& denied_ranges = {}) noexcept -> bool;
+                                       std::vector<std::string> const& denied_ranges = {},
+                                       std::vector<std::string> const& allowed_private_ranges = {}) noexcept -> bool;
+// True when `address` is an RFC 1918 or ULA address inside one of
+// `allowed_private_ranges`. A range that config::private_ip_range_is_allowable()
+// refuses is ignored, so no list can open loopback, link-local or reserved
+// space even if it bypassed config validation.
+[[nodiscard]] auto ip_address_in_allowed_private_range(std::string_view address,
+                                                       std::vector<std::string> const& allowed_private_ranges) noexcept
+    -> bool;
 // Strict syntactic IPv4/IPv6 literal check (via inet_pton). Used to validate
 // operator-facing values derived from untrusted headers (e.g. X-Forwarded-For)
 // before they are trusted as an effective client address.
 [[nodiscard]] auto ip_address_is_valid(std::string_view address) noexcept -> bool;
-[[nodiscard]] auto federation_discovery_policy(RemoteServerRecord const& remote) -> FederationDiscoveryDecision;
+[[nodiscard]] auto federation_discovery_policy(RemoteServerRecord const& remote,
+                                               std::vector<std::string> const& allowed_private_ranges = {})
+    -> FederationDiscoveryDecision;
 [[nodiscard]] auto verify_federation_request_signature(FederationRequestSignature const& signature)
     -> FederationVerificationDecision;
 [[nodiscard]] auto verify_federation_event_signatures(std::vector<events::EventSignature> const& signatures,
@@ -99,8 +114,9 @@ struct RemoteTrustDecision final
 // already verified). Never call this for a failed signature check: the claimed
 // origin is unauthenticated (ADR-0081). A stale count from before a quiet
 // period is discarded first so old failures do not compound with new ones.
-auto record_remote_trust_failure(RemoteTrustState& state, std::chrono::steady_clock::time_point now =
-                                                              std::chrono::steady_clock::now()) noexcept -> void;
+auto record_remote_trust_failure(RemoteTrustState& state,
+                                 std::chrono::steady_clock::time_point now = std::chrono::steady_clock::now()) noexcept
+    -> void;
 [[nodiscard]] auto federation_security_boundary_notes() -> std::vector<std::string>;
 
 } // namespace merovingian::federation

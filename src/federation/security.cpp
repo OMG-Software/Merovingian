@@ -3,6 +3,7 @@
 
 #include "merovingian/federation/security.hpp"
 
+#include "merovingian/config/config.hpp"
 #include "merovingian/observability/logger.hpp"
 #include "merovingian/observability/observability.hpp"
 
@@ -14,6 +15,7 @@
 #include <limits>
 #include <string>
 #include <string_view>
+#include <tuple>
 #include <vector>
 
 #include <arpa/inet.h>
@@ -330,6 +332,21 @@ namespace
         return remaining == 0U || (address.bytes[prefix / 8U] & mask) == (network.bytes[prefix / 8U] & mask);
     }
 
+    [[nodiscard]] auto unwrap_v4_mapped(IpBytes address) noexcept -> IpBytes
+    {
+        if (address.size == 16U &&
+            std::ranges::all_of(address.bytes.begin(), address.bytes.begin() + 10,
+                                [](auto byte) {
+                                    return byte == 0U;
+                                }) &&
+            address.bytes[10] == 0xFFU && address.bytes[11] == 0xFFU)
+        {
+            std::copy_n(address.bytes.begin() + 12, 4U, address.bytes.begin());
+            address.size = 4U;
+        }
+        return address;
+    }
+
     [[nodiscard]] auto range_denies(IpBytes address, std::string_view range) noexcept -> bool
     {
         auto const slash = range.find('/');
@@ -349,33 +366,58 @@ namespace
                 return true;
             }
         }
-        if (network.size == 4U && address.size == 16U &&
-            std::ranges::all_of(address.bytes.begin(), address.bytes.begin() + 10,
-                                [](auto byte) {
-                                    return byte == 0U;
-                                }) &&
-            address.bytes[10] == 0xFFU && address.bytes[11] == 0xFFU)
+        if (network.size == 4U)
         {
-            std::copy_n(address.bytes.begin() + 12, 4U, address.bytes.begin());
-            address.size = 4U;
+            address = unwrap_v4_mapped(address);
         }
         return prefix_matches(address, network, prefix);
     }
+
+    // Only for a range config::private_ip_range_is_allowable() accepted, which
+    // guarantees an explicit, in-bounds prefix and an RFC 1918 or ULA network.
+    [[nodiscard]] auto allowable_range_contains(IpBytes const& address, std::string_view range) noexcept -> bool
+    {
+        auto const slash = range.find('/');
+        auto const network = parse_ip_bytes(range.substr(0U, slash));
+        auto const text = range.substr(slash + 1U);
+        auto prefix = 0U;
+        std::ignore = std::from_chars(text.data(), text.data() + text.size(), prefix);
+        return prefix_matches(network.size == 4U ? unwrap_v4_mapped(address) : address, network, prefix);
+    }
 } // namespace
 
-auto address_set_allowed(std::vector<std::string> const& addresses,
-                         std::vector<std::string> const& denied_ranges) noexcept -> bool
+auto ip_address_in_allowed_private_range(std::string_view address,
+                                         std::vector<std::string> const& allowed_private_ranges) noexcept -> bool
 {
-    return !addresses.empty() && std::ranges::none_of(addresses, [&denied_ranges](std::string const& address) {
-        auto const parsed = parse_ip_bytes(address);
-        return parsed.size == 0U || ip_address_is_private_or_loopback(address) ||
-               std::ranges::any_of(denied_ranges, [&parsed](std::string const& range) {
-                   return range_denies(parsed, range);
-               });
-    });
+    if (allowed_private_ranges.empty())
+    {
+        return false;
+    }
+    auto const parsed = parse_ip_bytes(address);
+    return parsed.size != 0U && std::ranges::any_of(allowed_private_ranges, [&parsed](std::string const& range) {
+               return config::private_ip_range_is_allowable(range) && allowable_range_contains(parsed, range);
+           });
 }
 
-auto federation_discovery_policy(RemoteServerRecord const& remote) -> FederationDiscoveryDecision
+auto address_set_allowed(std::vector<std::string> const& addresses, std::vector<std::string> const& denied_ranges,
+                         std::vector<std::string> const& allowed_private_ranges) noexcept -> bool
+{
+    return !addresses.empty() &&
+           std::ranges::none_of(addresses, [&denied_ranges, &allowed_private_ranges](std::string const& address) {
+               if (ip_address_in_allowed_private_range(address, allowed_private_ranges))
+               {
+                   return false;
+               }
+               auto const parsed = parse_ip_bytes(address);
+               return parsed.size == 0U || ip_address_is_private_or_loopback(address) ||
+                      std::ranges::any_of(denied_ranges, [&parsed](std::string const& range) {
+                          return range_denies(parsed, range);
+                      });
+           });
+}
+
+auto federation_discovery_policy(RemoteServerRecord const& remote,
+                                 std::vector<std::string> const& allowed_private_ranges) -> FederationDiscoveryDecision
 {
     if (!server_name_is_valid(remote.server_name))
     {
@@ -414,7 +456,8 @@ auto federation_discovery_policy(RemoteServerRecord const& remote) -> Federation
     }
     for (auto const& address : remote.resolved_addresses)
     {
-        if (ip_address_is_private_or_loopback(address))
+        if (ip_address_is_private_or_loopback(address) &&
+            !ip_address_in_allowed_private_range(address, allowed_private_ranges))
         {
             log_diagnostic("discovery.rejected", {
                                                      {"server_name", remote.server_name,                      false},

@@ -115,6 +115,8 @@ struct RemoteMediaFetchRequest final
     std::vector<std::string> resolved_addresses{};
     bool isolate_remote_media{true};
     bool private_address_fetches_blocked{true};
+    // security.federation.allow_private_ip_ranges (ADR-0230).
+    std::vector<std::string> allowed_private_ranges{};
 };
 
 struct SandboxedMediaWorkerPlan final

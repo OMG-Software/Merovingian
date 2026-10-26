@@ -2592,6 +2592,11 @@ namespace
                                                       json_member("token", json_str(token)),
                                                   })));
         }
+        else if (!config.security().registration.require_token)
+        {
+            // Open registration still completes a UIA stage (ADR-0231).
+            members.push_back(json_member("auth", json_obj({json_member("type", json_str("m.login.dummy"))})));
+        }
         return json_serialize(json_obj(std::move(members)));
     }
 
@@ -11266,20 +11271,24 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                                      json_member("device_id", json_str(reg_device_id)),
                                  })));
         }
-        // Spec §5.5.1: UIA is only required when the server is configured to
-        // require a registration token. When require_token is false the client
-        // may register without any auth block.
-        auto const require_token = rt.homeserver.config.security().registration.require_token;
-        if (require_token)
+        // Registration always uses User-Interactive Authentication. Spec: a UIA
+        // request "never succeeds without auth. Homeservers may allow requests
+        // that don't require auth by offering a stage with only the
+        // m.login.dummy auth type, but they must still give a 401 response to
+        // requests with no auth data." Token-gated registration offers
+        // m.login.registration_token; open registration (ADR-0231) offers
+        // m.login.dummy.
         {
-            // Per spec v1.19 §5.5.1, incomplete credentials MUST receive 401
-            // with the challenge — not proceed to registration and fail 403.
-            // The session id is minted per attempt (L-01, security audit
-            // 2026-09); it used to be the constant "merovingian-ui-auth",
-            // shared by every client and every attempt.
+            auto const require_token = rt.homeserver.config.security().registration.require_token;
+            auto const stage =
+                require_token ? std::string_view{"m.login.registration_token"} : std::string_view{"m.login.dummy"};
+            // Incomplete credentials MUST receive 401 with the challenge — not
+            // proceed to registration and fail 403. The session id is minted
+            // per attempt (L-01, security audit 2026-09); it used to be the
+            // constant "merovingian-ui-auth", shared by every client and every
+            // attempt.
             auto const uia_challenge = json_serialize(json_obj({
-                json_member("flows", json_arr({json_obj({json_member(
-                                         "stages", json_arr({json_str("m.login.registration_token")}))})})),
+                json_member("flows", json_arr({json_obj({json_member("stages", json_arr({json_str(stage)}))})})),
                 json_member("params", json_obj({})),
                 json_member("session", json_str(issue_uia_session(rt, "register"))),
             }));
@@ -11297,11 +11306,12 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                 return dispatch_resp(req, rt, 401U, uia_challenge);
             }
             auto const* auth_type = string_member(*auth, "type");
-            if (auth_type == nullptr || *auth_type != "m.login.registration_token")
+            if (auth_type == nullptr || *auth_type != stage)
             {
                 return dispatch_resp(req, rt, 401U, uia_challenge);
             }
-            if (string_member(*auth, "token") == nullptr)
+            // Spec: dummy authentication "requires no extra parameters".
+            if (require_token && string_member(*auth, "token") == nullptr)
             {
                 return dispatch_resp(req, rt, 401U, uia_challenge);
             }

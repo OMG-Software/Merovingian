@@ -405,7 +405,8 @@ auto remote_media_fetch_policy(RemoteMediaFetchRequest const& request) -> MediaP
     {
         for (auto const& address : request.resolved_addresses)
         {
-            if (address_is_private_or_loopback(address))
+            if (address_is_private_or_loopback(address) &&
+                !federation::ip_address_in_allowed_private_range(address, request.allowed_private_ranges))
             {
                 log_diagnostic("remote_fetch.rejected",
                                {

@@ -145,6 +145,17 @@ Federation is the highest-risk surface: **all input comes from untrusted remote 
    path that touches `queue_` uses these. Never discard `enqueue`'s result: log a refusal. Give
    every destination its own transaction ID: it is the durable `federation_transactions` key.
 
+13. **The private-range allowlist is for federation callers only (ADR-0230).**
+   `security.federation.allow_private_ip_ranges` lets federation reach named RFC 1918 / ULA
+   networks (Complement, LAN federations). `discover_server`, well-known fetches,
+   `CachedServerDiscovery::discover`, `federation_discovery_policy` (the inbound origin check)
+   and the remote media re-check apply it. `resolve_federation_destination` applies it only
+   when the caller passes it explicitly, and `CachedServerDiscovery::lookup_addresses_filtered`
+   (pushers, identity servers) never applies it. URL preview and media redirects share the
+   discovery network: never pass them the allowance. Match ranges only through
+   `ip_address_in_allowed_private_range`, which re-checks each range with
+   `config::private_ip_range_is_allowable` so loopback and link-local can never open.
+
 ## Key files
 
 | File | Responsibility |

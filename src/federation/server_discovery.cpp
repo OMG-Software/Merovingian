@@ -150,8 +150,8 @@ namespace
         return parse_host_port(authority, port);
     }
 
-    [[nodiscard]] auto canonical_object_member(canonicaljson::Object const& object,
-                                               std::string_view key) noexcept -> canonicaljson::Value const*
+    [[nodiscard]] auto canonical_object_member(canonicaljson::Object const& object, std::string_view key) noexcept
+        -> canonicaljson::Value const*
     {
         for (auto const& member : object)
         {
@@ -199,7 +199,10 @@ namespace
                                            ServerDiscoveryNetwork& network,
                                            std::vector<std::string> const& denied_ranges = {}) -> ServerDiscoveryResult
     {
-        auto result = resolve_federation_destination(host_port.host, host_port.port, network, denied_ranges);
+        // Every caller is a federation discovery branch, so the network's
+        // allow_private_ip_ranges applies here (ADR-0230).
+        auto result = resolve_federation_destination(host_port.host, host_port.port, network, denied_ranges,
+                                                     network.allowed_private_ip_ranges());
         result.server_name = std::string{server_name};
         result.tls_server_name = std::string{tls_host};
         result.tls_required = host_port.port != 8008U;
@@ -303,8 +306,8 @@ namespace
     {
     public:
         using ServerDiscoveryNetwork::ServerDiscoveryNetwork;
-        [[nodiscard]] auto fetch_well_known(std::string_view server_name,
-                                            std::uint32_t timeout_seconds) -> WellKnownServerResult override
+        [[nodiscard]] auto fetch_well_known(std::string_view server_name, std::uint32_t timeout_seconds)
+            -> WellKnownServerResult override
         {
             auto const host_port = parse_host_port(server_name, default_https_port);
             if (!host_port.has_value())
@@ -313,7 +316,8 @@ namespace
             }
 
             auto addresses = lookup_addresses(host_port->host, host_port->port);
-            if (!addresses.ok || !address_set_allowed(addresses.addresses, denied_ip_ranges()))
+            if (!addresses.ok ||
+                !address_set_allowed(addresses.addresses, denied_ip_ranges(), allowed_private_ip_ranges()))
             {
                 return {false, false, {}, "well-known host address is disallowed or unresolved"};
             }
@@ -473,8 +477,8 @@ auto parse_srv_records(unsigned char const* message, int message_length) -> std:
     return records;
 }
 
-auto discover_server(LiteralDiscoveryOptIn, std::string_view server_name,
-                     std::string_view well_known_server) -> ServerDiscoveryResult
+auto discover_server(LiteralDiscoveryOptIn, std::string_view server_name, std::string_view well_known_server)
+    -> ServerDiscoveryResult
 {
     auto result = ServerDiscoveryResult{};
     result.server_name = server_name;
@@ -655,14 +659,15 @@ auto discover_server(std::string_view server_name) -> ServerDiscoveryResult
     return discover_server(server_name, network, 30U);
 }
 
-auto make_system_server_discovery_network(std::vector<std::string> denied_ranges)
+auto make_system_server_discovery_network(std::vector<std::string> denied_ranges,
+                                          std::vector<std::string> allowed_private_ranges)
     -> std::unique_ptr<ServerDiscoveryNetwork>
 {
-    return std::make_unique<SystemServerDiscoveryNetwork>(std::move(denied_ranges));
+    return std::make_unique<SystemServerDiscoveryNetwork>(std::move(denied_ranges), std::move(allowed_private_ranges));
 }
 
-auto validate_federation_tls_origin(std::string_view server_name,
-                                    ServerDiscoveryResult const& discovery) noexcept -> FederationTlsOriginDecision
+auto validate_federation_tls_origin(std::string_view server_name, ServerDiscoveryResult const& discovery) noexcept
+    -> FederationTlsOriginDecision
 {
     if (!server_name_is_valid(server_name) && !host_is_numeric_ip(server_name))
     {
@@ -719,7 +724,8 @@ auto validate_federation_tls_origin(std::string_view server_name,
 }
 
 auto resolve_federation_destination(std::string_view host, std::uint16_t port, ServerDiscoveryNetwork& network,
-                                    std::vector<std::string> const& denied_ranges) -> ServerDiscoveryResult
+                                    std::vector<std::string> const& denied_ranges,
+                                    std::vector<std::string> const& allowed_private_ranges) -> ServerDiscoveryResult
 {
     auto result = ServerDiscoveryResult{};
     result.resolved_host = std::string{host};
@@ -731,7 +737,8 @@ auto resolve_federation_destination(std::string_view host, std::uint16_t port, S
         result.reason = "resolved host is empty";
         return result;
     }
-    if (host_is_numeric_ip(result.resolved_host) && ip_address_is_private_or_loopback(result.resolved_host))
+    if (host_is_numeric_ip(result.resolved_host) && ip_address_is_private_or_loopback(result.resolved_host) &&
+        !ip_address_in_allowed_private_range(result.resolved_host, allowed_private_ranges))
     {
         result.reason = "resolved address set contains a disallowed IP address";
         return result;
@@ -743,8 +750,8 @@ auto resolve_federation_destination(std::string_view host, std::uint16_t port, S
         result.reason = addresses.reason.empty() ? "resolved host has no addresses" : addresses.reason;
         return result;
     }
-    if (!address_set_allowed(addresses.addresses, network.denied_ip_ranges()) ||
-        !address_set_allowed(addresses.addresses, denied_ranges))
+    if (!address_set_allowed(addresses.addresses, network.denied_ip_ranges(), allowed_private_ranges) ||
+        !address_set_allowed(addresses.addresses, denied_ranges, allowed_private_ranges))
     {
         result.reason = "resolved address set contains a disallowed IP address";
         return result;

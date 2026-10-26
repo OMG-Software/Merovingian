@@ -891,7 +891,8 @@ live TLS handshakes or worker certificate-file access. See
 | Key | Default | When to change |
 |---|---|---|
 | `security.registration.enabled` | `false` | Set `true` to allow public self-registration. |
-| `security.registration.require_token` | `true` | Set `false` only on private test servers; open public registration without a token is rejected by the parser unless explicitly allowed. |
+| `security.registration.require_token` | `true` | Set `false` only on private test servers. With `enabled=true`, `false` is a startup error unless `allow_open_registration=true`. |
+| `security.registration.allow_open_registration` | `false` | The explicit acknowledgement that `enabled=true` with `require_token=false` is intended: anyone who can reach the client API can create an account. Registration then still uses user-interactive auth, with the single stage `m.login.dummy` (a request with no `auth` gets 401). Logged at CRITICAL on every start. Meant for test harnesses such as Complement (ADR-0231). |
 | `security.registration.token_file` | (empty) | **Required** when registration is enabled with `require_token=true` (the default). Owner-only file containing the registration token. The shipped example sets `/etc/merovingian/registration-token`. |
 
 The token file is read on startup and should contain the registration token
@@ -1026,7 +1027,8 @@ rooms.
 | `security.federation.denied_servers` | (empty) | Comma-separated server names always blocked. |
 | `security.federation.require_valid_tls` | `true` | Disable only in controlled test labs. |
 | `security.federation.verify_json_signatures` | `true` | Disable only in controlled test labs. |
-| `security.federation.deny_ip_ranges` | private/loopback ranges | IPv4/IPv6 literals or CIDRs blocked during remote discovery/fetching, including public ranges. Keep the defaults; built-in SSRF blocks cannot be disabled. Every entry must be a well-formed address or CIDR range (prefix no longer than the address): a malformed entry is a startup error, because the boundary would otherwise treat it as denying every address. |
+| `security.federation.deny_ip_ranges` | private/loopback ranges | IPv4/IPv6 literals or CIDRs blocked during remote discovery/fetching, including public ranges. Keep the defaults; built-in SSRF blocks cannot be disabled, except for the private networks named in `allow_private_ip_ranges`. Every entry must be a well-formed address or CIDR range (prefix no longer than the address): a malformed entry is a startup error, because the boundary would otherwise treat it as denying every address. |
+| `security.federation.allow_private_ip_ranges` | (empty) | Comma-separated CIDR networks that federation may reach although they are private, e.g. `172.16.0.0/12` for Docker bridges. Each must have an explicit prefix, no host bits, and lie wholly inside `10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16` or `fc00::/7`; anything else (loopback, link-local, CGNAT, public space) is a startup error. An address inside one passes both the built-in block and `deny_ip_ranges`. Applies to federation discovery, key fetch, the inbound origin check and remote media; never to URL preview, media redirects, push gateways or identity servers. Each range is logged at CRITICAL on every start. Meant for test harnesses such as Complement and private federations (ADR-0230). |
 | `security.federation.remote_timeout` | `60s` | General outbound federation HTTP timeout. |
 | `security.federation.max_transaction_size` | `20MiB` | Inbound `/send` body cap, enforced at HTTP admission as well as federation parsing. Positive and at most `64MiB`. |
 
@@ -1194,6 +1196,7 @@ rejection and pinned resolved addresses used during federation discovery.
 |---|---|---|---|
 | `security.federation.remote_timeout` | `60s` | requires restart | General outbound federation HTTP timeout for calls other than the join/leave dance. |
 | `security.federation.deny_ip_ranges` | private/loopback ranges | requires restart | Adds IPv4/IPv6 destination blocks to the mandatory built-in SSRF policy, on main and worker discovery paths. |
+| `security.federation.allow_private_ip_ranges` | (empty) | requires restart | Opens the named RFC 1918 / ULA networks to federation only (ADR-0230). Copied into the discovery network at startup. |
 | `security.federation.key_resolution_*` | see above | requires restart | Budgets pre-authentication remote-key resolution. Snapshotted into the federation runtime config at startup, which SIGHUP does not rebuild. |
 | `federation.worker.relay_threads` | `32` | requires restart | Thread pool for worker paths that can block on outbound HTTP or synchronous main-process relays. |
 
@@ -1325,7 +1328,7 @@ Service API".
 | `security.media.max_pending_uploads_per_user` | `10` | Live reservations one user may hold, 1..1000. Past it `create` answers `429 M_LIMIT_EXCEEDED`. Requires a restart. |
 | `security.media.max_pending_uploads` | `10000` | Live reservations the whole server may hold, 1..1000000. Requires a restart. |
 | `security.media.pending_upload_max_wait_ms` | `20000` | The longest a download of a reserved but not yet uploaded media ID waits (never longer than the request's `timeout_ms`) before `504 M_NOT_YET_UPLOADED`, 0..60000. The wait runs on the media fetch pool, never on a main request thread, and at most `server.http.media_fetch_threads` - 1 waits run at once; past that a download answers `504` at once. Requires a restart. |
-| `security.media.url_preview_enabled` | `false` | Serve `GET /_matrix/client/v1/media/preview_url` (and the deprecated `/_matrix/media/v3/preview_url`). The server then fetches URLs your users name; every fetch and redirect is refused if it resolves to a private, loopback, link-local or reserved address or one in `security.federation.deny_ip_ranges`. While `false` the endpoint answers `404 M_UNRECOGNIZED`. Requires a restart. |
+| `security.media.url_preview_enabled` | `false` | Serve `GET /_matrix/client/v1/media/preview_url` (and the deprecated `/_matrix/media/v3/preview_url`). The server then fetches URLs your users name; every fetch and redirect is refused if it resolves to a private, loopback, link-local or reserved address or one in `security.federation.deny_ip_ranges`; `security.federation.allow_private_ip_ranges` never applies here. While `false` the endpoint answers `404 M_UNRECOGNIZED`. Requires a restart. |
 | `security.media.url_preview_max_page_size` | `1MiB` | Largest page a preview fetches; a larger one is not previewed. At most `64MiB`. Requires a restart. |
 | `security.media.url_preview_max_image_size` | `5MiB` | Largest `og:image` a preview fetches and stores (also capped by `max_upload_size`). The image is stored as the requesting user's media and counts against their quota. At most `64MiB`. Requires a restart. |
 | `security.media.url_preview_timeout_seconds` | `10` | Total time for one preview (page, redirects and image), 1..30. Requires a restart. |

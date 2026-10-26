@@ -1037,8 +1037,31 @@ auto start_runtime(RuntimeStartOptions opts) -> RuntimeStartResult
     runtime.federation = federation::make_federation_runtime_state(federation::shard_key_resolution_budget(
         federation::make_runtime_federation_config(config), opts.key_resolution_shards));
     runtime.outbound_client = std::make_unique<http::OutboundClient>();
-    runtime.discovery_network =
-        federation::make_system_server_discovery_network(runtime.federation.config.deny_ip_ranges);
+    runtime.discovery_network = federation::make_system_server_discovery_network(
+        runtime.federation.config.deny_ip_ranges, runtime.federation.config.allow_private_ip_ranges);
+    for (auto const& range : runtime.federation.config.allow_private_ip_ranges)
+    {
+        // ADR-0230: an opened private network is an SSRF exception, so it is
+        // announced on every start, not only when the config is first read.
+        log_diagnostic("federation.private_range_allowed",
+                       {
+                           {"range",  range,                                                                  false},
+                           {"reason", "security.federation.allow_private_ip_ranges lets federation reach it", false}
+        },
+                       observability::LogEventSeverity::critical);
+    }
+    if (auto const& registration = runtime.config.security().registration;
+        registration.enabled && !registration.require_token)
+    {
+        // ADR-0231: anyone who can reach the client API can create an account.
+        log_diagnostic(
+            "registration.open",
+            {
+                {"reason", "security.registration.allow_open_registration lets anyone register with m.login.dummy",
+                 false}
+        },
+            observability::LogEventSeverity::critical);
+    }
     if (runtime.discovery_network != nullptr)
     {
         // Wrap the raw network with a 60s TTL cache so repeated lookups for the

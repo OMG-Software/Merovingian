@@ -23,6 +23,8 @@ struct RuntimeFederationConfig final
     bool require_valid_tls{true};
     bool verify_json_signatures{true};
     std::vector<std::string> deny_ip_ranges{};
+    // security.federation.allow_private_ip_ranges (ADR-0230).
+    std::vector<std::string> allow_private_ip_ranges{};
     std::uint64_t max_transaction_bytes{0U};
     std::uint32_t max_transaction_pdus{50U};
     std::uint32_t max_transaction_edus{100U};

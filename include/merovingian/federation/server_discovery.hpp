@@ -83,8 +83,10 @@ struct FederationDestination final
 class ServerDiscoveryNetwork
 {
 public:
-    explicit ServerDiscoveryNetwork(std::vector<std::string> denied_ip_ranges = {})
+    explicit ServerDiscoveryNetwork(std::vector<std::string> denied_ip_ranges = {},
+                                    std::vector<std::string> allowed_private_ip_ranges = {})
         : denied_ip_ranges_{std::move(denied_ip_ranges)}
+        , allowed_private_ip_ranges_{std::move(allowed_private_ip_ranges)}
     {
     }
 
@@ -92,6 +94,15 @@ public:
     [[nodiscard]] auto denied_ip_ranges() const noexcept -> std::vector<std::string> const&
     {
         return denied_ip_ranges_;
+    }
+
+    // security.federation.allow_private_ip_ranges (ADR-0230). Applied by
+    // discover_server, well-known fetches and the cache, which only federation
+    // uses; resolve_federation_destination applies it only when the caller
+    // passes it, so URL preview sharing this network never gets it.
+    [[nodiscard]] auto allowed_private_ip_ranges() const noexcept -> std::vector<std::string> const&
+    {
+        return allowed_private_ip_ranges_;
     }
     virtual ~ServerDiscoveryNetwork() = default;
 
@@ -107,6 +118,7 @@ public:
 
 private:
     std::vector<std::string> denied_ip_ranges_{};
+    std::vector<std::string> allowed_private_ip_ranges_{};
 };
 
 // Test-only opt-in token for the well-known delegation overload below.
@@ -127,8 +139,8 @@ struct LiteralDiscoveryOptIn final
 [[nodiscard]] auto discover_server(LiteralDiscoveryOptIn, std::string_view server_name,
                                    std::string_view well_known_server) -> ServerDiscoveryResult;
 [[nodiscard]] auto discover_server(std::string_view server_name, ServerDiscoveryNetwork& network,
-                                   std::uint32_t timeout_seconds,
-                                   std::vector<std::string> const& denied_ranges = {}) -> ServerDiscoveryResult;
+                                   std::uint32_t timeout_seconds, std::vector<std::string> const& denied_ranges = {})
+    -> ServerDiscoveryResult;
 [[nodiscard]] auto discover_server(std::string_view server_name) -> ServerDiscoveryResult;
 
 // Validates that the resolved federation destination is acceptable for the
@@ -152,14 +164,20 @@ struct FederationTlsOriginDecision final
 // ServerDiscoveryResult carries pinned addresses suitable for libcurl's
 // CURLOPT_RESOLVE. Used by callers that need to pin addresses before
 // connecting, such as media redirect following.
-[[nodiscard]] auto resolve_federation_destination(
-    std::string_view host, std::uint16_t port, ServerDiscoveryNetwork& network,
-    std::vector<std::string> const& denied_ranges = {}) -> ServerDiscoveryResult;
+//
+// `allowed_private_ranges` is passed only by federation discovery (ADR-0230);
+// the network's own allowance is deliberately not read here.
+[[nodiscard]] auto resolve_federation_destination(std::string_view host, std::uint16_t port,
+                                                  ServerDiscoveryNetwork& network,
+                                                  std::vector<std::string> const& denied_ranges = {},
+                                                  std::vector<std::string> const& allowed_private_ranges = {})
+    -> ServerDiscoveryResult;
 
 // Creates a production ServerDiscoveryNetwork backed by real DNS and
 // HTTP well-known lookups. Used by start_runtime to wire the remote key
 // resolver and outbound membership fetch paths.
-[[nodiscard]] auto make_system_server_discovery_network(std::vector<std::string> denied_ranges = {})
+[[nodiscard]] auto make_system_server_discovery_network(std::vector<std::string> denied_ranges = {},
+                                                        std::vector<std::string> allowed_private_ranges = {})
     -> std::unique_ptr<ServerDiscoveryNetwork>;
 
 } // namespace merovingian::federation

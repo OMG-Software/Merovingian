@@ -214,6 +214,8 @@
 * [0227 - A scenario that asserts on every store write runs on a PostgreSQL database of its own](0227-a-scenario-that-asserts-on-every-store-write-runs-on-its-own-postgresql-database.md)
 * [0228 - An event this server places commits with its bookkeeping in one transaction](0228-an-event-this-server-places-commits-with-its-bookkeeping-in-one-transaction.md)
 * [0229 - SonarQube Cloud ignores tests and tooling, and keeps the server, packaging and workflows](0229-sonarqube-cloud-ignores-tests-and-tooling-and-keeps-the-server-packaging-and-workflows.md)
+* [0230 - Federation may reach operator-named private networks, and nothing else](0230-federation-may-reach-operator-named-private-networks-and-nothing-else.md)
+* [0231 - Open registration needs an explicit acknowledgement, and still uses UIA](0231-open-registration-needs-an-explicit-acknowledgement-and-still-uses-uia.md)
 
 ## Proposed Records
 

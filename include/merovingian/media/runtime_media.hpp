@@ -91,6 +91,10 @@ struct RuntimeMediaConfig final
     std::uint32_t url_preview_max_redirects{3U};
     std::uint32_t url_preview_cache_ttl_seconds{3600U};
     std::uint32_t url_preview_cache_max_entries{1000U};
+    // security.federation.allow_private_ip_ranges (ADR-0230): remote media is
+    // fetched from a federation peer, so the same networks are reachable.
+    // URL preview does not use this.
+    std::vector<std::string> allowed_private_fetch_ranges{};
 };
 
 [[nodiscard]] auto make_runtime_media_config(config::Config const& config) -> RuntimeMediaConfig;

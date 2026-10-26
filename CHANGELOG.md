@@ -1,3 +1,36 @@
+## 0.12.55
+
+The first step towards running the external Complement suite against a release build, the
+last 1.0.0 blocker ("Federation conformance is entirely self-attested"). Complement runs
+homeservers on Docker bridge networks and creates users through open registration, and the
+server refused both with no setting that could change it.
+
+- **ADDED:** `security.federation.allow_private_ip_ranges` (ADR-0230), empty by default. It
+  takes CIDR networks wholly inside `10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16` or
+  `fc00::/7`, with an explicit prefix and no host bits. Anything else (loopback, link-local,
+  CGNAT, multicast, reserved or public space) is a startup error, and the matcher re-checks
+  every range, so a list that skipped validation still cannot open them. An address inside an
+  allowed network passes the built-in block and `deny_ip_ranges`. It applies to federation
+  discovery, well-known fetches, cached discovery, the inbound origin check and the re-check
+  of remote media addresses. It never applies to URL preview, media redirects, push gateways
+  or identity servers, which share the discovery network. Each range is logged at CRITICAL on
+  every start, and changing it requires a restart.
+- **ADDED:** `security.registration.allow_open_registration` (ADR-0231), default `false`.
+  `enabled=true` with `require_token=false` is still a startup error unless it is set, and the
+  open state is logged at CRITICAL on every start.
+- **FIXED:** with `require_token=false`, `POST /_matrix/client/v3/register` registered a
+  request with no `auth` at all. The spec says a UIA request "never succeeds without auth" and
+  that a server allowing unauthenticated requests offers `m.login.dummy` and "must still give
+  a 401 response to requests with no auth data". Open registration now answers with a 401
+  offering the single stage `m.login.dummy`. It completes on `m.login.dummy`, and refuses any
+  other stage or a session this server did not issue. The path was unreachable until now,
+  because validation refused the configuration. The in-process smoke flow sends
+  `m.login.dummy` when no token is required.
+- **TESTS:** `test_config_private_range_allowlist.cpp`,
+  `test_federation_private_range_allowlist.cpp`, `test_config_open_registration.cpp`,
+  `test_open_registration_conformance.cpp`, and a remote media scenario in
+  `test_media_security.cpp`.
+
 ## 0.12.54
 
 - **MAINTENANCE:** merge current `main` into the DB-6 PostgreSQL fixture branch,

@@ -1363,9 +1363,9 @@ auto fetch_remote_media_disabled(LocalMediaRepository& repository, RemoteMediaDo
         return {false, 502U, "remote media fetch disabled"};
     }
 
-    auto const decision = remote_media_fetch_policy({request.origin_server, request.media_id, request.resolved_host,
-                                                     request.resolved_addresses, true,
-                                                     repository.config.private_address_fetches_blocked});
+    auto const decision = remote_media_fetch_policy(
+        {request.origin_server, request.media_id, request.resolved_host, request.resolved_addresses, true,
+         repository.config.private_address_fetches_blocked, repository.config.allowed_private_fetch_ranges});
     ++repository.metrics.remote_fetch_rejections;
     if (decision.disposition == MediaDisposition::reject)
     {
@@ -1382,9 +1382,9 @@ auto fetch_remote_media(LocalMediaRepository& repository, RemoteMediaDownloadReq
         ++repository.metrics.remote_fetch_rejections;
         return {false, 502U, "remote media fetch disabled"};
     }
-    auto const remote_decision = remote_media_fetch_policy({request.origin_server, request.media_id,
-                                                            request.resolved_host, request.resolved_addresses, true,
-                                                            repository.config.private_address_fetches_blocked});
+    auto const remote_decision = remote_media_fetch_policy(
+        {request.origin_server, request.media_id, request.resolved_host, request.resolved_addresses, true,
+         repository.config.private_address_fetches_blocked, repository.config.allowed_private_fetch_ranges});
     if (remote_decision.disposition == MediaDisposition::reject)
     {
         ++repository.metrics.remote_fetch_rejections;
