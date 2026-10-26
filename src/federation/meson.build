@@ -23,5 +23,7 @@ federation_lib = static_library(
   federation_sources,
   include_directories: inc,
   dependencies: [libsodium_dep, libcurl_dep, resolv_dep],
-  link_with: [canonicaljson_lib, crypto_lib, database_lib, events_lib, http_lib, rooms_lib],
+  # config_lib: security.cpp re-checks the private-range allowlist with
+  # config::private_ip_range_is_allowable (ADR-0231).
+  link_with: [canonicaljson_lib, config_lib, crypto_lib, database_lib, events_lib, http_lib, rooms_lib],
 )

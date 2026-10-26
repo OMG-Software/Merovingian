@@ -382,8 +382,9 @@ Running Complement against a package (`scripts/run_complement.py`, see
   Desktop resolves the name natively.
 - Go at least the version `tests/complement/run.toml` pins (`go = ...`, the
   `go` directive of Complement's `go.mod` at the pinned commit).
-- git and gpg, and the maintainer key imported for a signed run
-  (docs/release-process.md, "Verifying release signatures").
+- git, gpg and the GitHub CLI (`gh`, for `gh attestation verify`), and the
+  maintainer key imported for a signed run (docs/release-process.md,
+  "Verifying release signatures").
 - Network access to fetch Complement and its Go modules.
 
 Nothing here is needed for the normal build and test cycle. CI does not run

@@ -42,28 +42,41 @@ Chosen option: the signed record attached by the maintainer.
     the run read out of the image (its SHA-256);
   * the skip-list snapshot is the one the run was judged by.
   The results carry the package, server and image digests, how the package
-  was verified, the Complement commit, Go and Docker versions, the Landlock
-  waiver, the skip list's text and digest, the summary, timestamps, and the
-  log's digest. Evidence is never overwritten.
+  was verified, the package's source commit, the Complement commit, Go and
+  Docker versions, the Landlock waiver, the skip list's text and digest, the
+  summary, timestamps, and the log's digest. Evidence is never overwritten.
+* The source commit comes from the package's GitHub build provenance, never
+  from the version string. `run_complement.py` runs `gh attestation verify`
+  against this repository's `packages.yml` and takes the one commit the
+  statement names. The statement must cover this exact file and come from
+  `refs/heads/main`. Two packages of the same version built from different
+  commits are therefore told apart.
 * `release_evidence` is true only for a package verified against the
-  maintainer-signed `SHA256SUMS`, an unfiltered run, and a green verdict.
-  Otherwise the file says false and lists why. A Landlock waiver does not
-  disqualify a run, but it is on the record's face.
+  maintainer-signed `SHA256SUMS` with a provenance-verified source commit, an
+  unfiltered run, and a green verdict. Otherwise the file says false and lists
+  why. A Landlock waiver does not disqualify a run, but it is on the record's
+  face.
 * `scripts/publish_complement_evidence.py` refuses results that are not
-  evidence, a log that is not the recorded one, a tag for another version, an
-  existing signature, or a tag with no release. It signs both files with the
-  maintainer key in `tests/complement/run.toml`, checks the signatures verify
-  to that key, and uploads the files and signatures with `gh release upload`
-  (never `--clobber`).
+  evidence, a log or package that is not the recorded one, a tag for another
+  version, an existing signature, or a tag with no release. It also refuses a
+  tag that does not point at the recorded source commit, and a package
+  signature that does not verify to the maintainer key. It signs the results
+  and the log with the maintainer key in `tests/complement/run.toml`, checks
+  the signatures verify to that key, and uploads them with their signatures,
+  the tested package and the package's own maintainer signature with
+  `gh release upload` (never `--clobber`). The rolling `latest` release is
+  replaced on every push to `main`, so the tested bytes must live on the tag's
+  release to stay verifiable.
 * The release notes have a Complement section naming the files and how to
   verify them. They say that a release without the files has not been tested
   against Complement.
 
 ### Positive Consequences
 
-* A reader can check, from the release alone, that the tested server is the
-  shipped server, and can reproduce the run from the recorded commit and skip
-  list.
+* A reader can check, from the release alone, that the tested package is the
+  one attached, that its server binary is the one the image ran, and that the
+  tag is the commit it was built from. The run can be reproduced from the
+  recorded Complement commit and skip list.
 * An unverified or partial run can be recorded for debugging without any risk
   of it being published as evidence.
 
@@ -71,6 +84,9 @@ Chosen option: the signed record attached by the maintainer.
 
 * Evidence depends on the maintainer doing the run and the upload. The release
   notes make a missing record visible but do not prevent the tag.
+* The evidence covers the Debian trixie package attached with it. The
+  release's Linux and FreeBSD tarballs are separate builds of the same commit,
+  and Complement says nothing about their bytes.
 * A Docker or kernel difference between the maintainer's machine and a
   reader's can change a result. The Docker version is recorded, not the
   kernel.

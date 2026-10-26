@@ -306,6 +306,8 @@ jobs:
           - `complement-results-<version>.json`: the package, server binary and image tested,
             the Complement commit, the skip list the run was judged by, and the verdict
           - `complement-<version>.jsonl`: the raw `go test -json` log
+          - `merovingian_<version>_amd64-debian.deb`: the package that was tested, built
+            from this tag's commit; its SHA-256 and its server binary's are in the results
 
           Each has a detached signature by the maintainer key:
           `gpg --verify complement-results-<version>.json.asc complement-results-<version>.json`.

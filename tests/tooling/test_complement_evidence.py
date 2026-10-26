@@ -35,6 +35,8 @@ VERSION = "0.12.55"
 PACKAGE_NAME = f"merovingian_{VERSION}_amd64-debian.deb"
 SERVER = b"\x7fELF the shipped server"
 
+SOURCE = {"commit": "f" * 40, "ref": "refs/heads/main", "workflow": ".github/workflows/packages.yml"}
+
 
 def tar_xz(members: dict[str, tuple[bytes, int]]) -> bytes:
     buffer = io.BytesIO()
@@ -90,6 +92,7 @@ class RecorderTests(unittest.TestCase):
             "schema": 1,
             "package": {"name": PACKAGE_NAME, "sha256": sha256(self.package.read_bytes())},
             "verification": {"method": "gpg", "key": MAINTAINER_KEY},
+            "source": dict(SOURCE),
             "image_tag": "merovingian-complement:0123456789abcdef",
             "image_id": "sha256:" + "cd" * 32,
             "in_image_server_sha256": sha256(SERVER),
@@ -141,6 +144,7 @@ class RecorderTests(unittest.TestCase):
         self.assertEqual(results["version"], VERSION)
         self.assertEqual(results["package"]["sha256"], sha256(self.package.read_bytes()))
         self.assertEqual(results["server_sha256"], sha256(SERVER))
+        self.assertEqual(results["source"], SOURCE)
         self.assertEqual(results["complement"]["commit"], self.metadata["complement"]["commit"])
         self.assertEqual(results["summary"]["verdict"], "pass")
         self.assertEqual(results["skip_list"], {"sha256": sha256(self.skip_list), "content": self.skip_list.decode()})
@@ -200,6 +204,7 @@ class RecorderTests(unittest.TestCase):
         cases = {
             "unsigned": ("verification", {"method": "unsigned"}),
             "filtered": ("run_filter", "TestA"),
+            "no verified source commit": ("source", None),
         }
         for name, (field, value) in cases.items():
             with self.subTest(case=name):
@@ -254,7 +259,13 @@ FAKE_GPG = """\
     while [ "$#" -gt 0 ]; do
         case "$1" in
             --output) shift; output=$1 ;;
-            --verify) printf '%b' "$FAKE_GPG_STATUS"; exit 0 ;;
+            --verify)
+                case "$2" in
+                    *.deb.asc) printf '%b' "${FAKE_PACKAGE_GPG_STATUS:-$FAKE_GPG_STATUS}" ;;
+                    *) printf '%b' "$FAKE_GPG_STATUS" ;;
+                esac
+                exit 0
+                ;;
         esac
         shift
     done
@@ -267,6 +278,7 @@ FAKE_GH = """\
     echo "gh $*" >> "$FAKE_OUT/calls"
     case "$1 $2" in
         "release view") exit "${FAKE_GH_VIEW_EXIT:-0}" ;;
+        "api repos/"*) echo "$FAKE_TAG_COMMIT"; exit 0 ;;
     esac
     exit 0
     """
@@ -291,10 +303,15 @@ class PublisherTests(unittest.TestCase):
             tool.chmod(tool.stat().st_mode | stat.S_IXUSR)
         self.log = self.workdir / f"complement-{VERSION}.jsonl"
         self.log.write_bytes(b"{}\n")
+        self.package = self.workdir / PACKAGE_NAME
+        self.package.write_bytes(debian_package())
+        self.package_signature = self.workdir / f"{PACKAGE_NAME}.asc"
+        self.package_signature.write_text("maintainer signature", encoding="utf-8")
         self.results = self.workdir / f"complement-results-{VERSION}.json"
         self.write_results(release_evidence=True)
         self.env = dict(os.environ, PATH=f"{self.bin}{os.pathsep}{os.environ['PATH']}",
-                        FAKE_OUT=str(self.calls_dir), FAKE_GPG_STATUS=valid_status())
+                        FAKE_OUT=str(self.calls_dir), FAKE_GPG_STATUS=valid_status(),
+                        FAKE_TAG_COMMIT=SOURCE["commit"])
 
     def tearDown(self) -> None:
         shutil.rmtree(self.workdir, ignore_errors=True)
@@ -305,11 +322,14 @@ class PublisherTests(unittest.TestCase):
             "release_evidence": release_evidence,
             "not_evidence_because": [] if release_evidence else ["the package was not verified"],
             "log": {"name": self.log.name, "sha256": log_sha256 or sha256(self.log.read_bytes())},
+            "package": {"name": PACKAGE_NAME, "sha256": sha256(self.package.read_bytes())},
+            "source": SOURCE,
         }), encoding="utf-8")
 
     def publish(self, tag: str = f"v{VERSION}-alpha.1") -> subprocess.CompletedProcess[str]:
         return subprocess.run(
-            [sys.executable, "-I", str(PUBLISHER), "--results", str(self.results), "--log", str(self.log), "--tag", tag],
+            [sys.executable, "-I", str(PUBLISHER), "--results", str(self.results), "--log", str(self.log),
+             "--package", str(self.package), "--package-signature", str(self.package_signature), "--tag", tag],
             env=self.env, capture_output=True, text=True, timeout=60, check=False,
         )
 
@@ -330,7 +350,8 @@ class PublisherTests(unittest.TestCase):
         self.assertTrue((self.workdir / f"{self.log.name}.asc").exists())
         upload = [line for line in calls.splitlines() if line.startswith("gh release upload")]
         self.assertEqual(len(upload), 1)
-        for name in (self.results.name, f"{self.results.name}.asc", self.log.name, f"{self.log.name}.asc"):
+        for name in (self.results.name, f"{self.results.name}.asc", self.log.name, f"{self.log.name}.asc",
+                     PACKAGE_NAME, f"{PACKAGE_NAME}.asc"):
             self.assertIn(name, upload[0])
         self.assertIn(f"--repo {REPOSITORY}", upload[0])
         self.assertNotIn("--clobber", upload[0])
@@ -380,6 +401,35 @@ class PublisherTests(unittest.TestCase):
         # THEN nothing is signed.
         self.assertNotEqual(result.returncode, 0)
         self.assertNotIn("gpg ", self.calls())
+
+    def test_a_tag_at_another_commit_is_refused(self) -> None:
+        # GIVEN a tag that does not point at the commit the tested package was built from.
+        self.env["FAKE_TAG_COMMIT"] = "e" * 40
+        # WHEN publishing is attempted.
+        result = self.publish()
+        # THEN nothing is signed or uploaded: the release is not what was tested.
+        self.assertNotEqual(result.returncode, 0)
+        self.assertNotIn("--detach-sign", self.calls())
+        self.assertNotIn("gh release upload", self.calls())
+
+    def test_a_package_other_than_the_tested_one_is_refused(self) -> None:
+        # GIVEN a package whose bytes differ from the one the results name.
+        self.package.write_bytes(debian_package(server=b"rebuilt"))
+        # WHEN publishing is attempted.
+        result = self.publish()
+        # THEN it is refused before anything is signed or uploaded.
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(self.calls(), "")
+
+    def test_a_package_signature_by_another_key_is_refused(self) -> None:
+        # GIVEN the package's signature verifies to a key other than the maintainer's.
+        self.env["FAKE_PACKAGE_GPG_STATUS"] = valid_status("F" * 40)
+        # WHEN publishing is attempted.
+        result = self.publish()
+        # THEN nothing is signed or uploaded.
+        self.assertNotEqual(result.returncode, 0)
+        self.assertNotIn("--detach-sign", self.calls())
+        self.assertNotIn("gh release upload", self.calls())
 
     def test_signatures_by_another_key_are_not_uploaded(self) -> None:
         # GIVEN gpg signs with a key other than the maintainer's.

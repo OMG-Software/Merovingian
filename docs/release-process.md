@@ -158,16 +158,23 @@ the tag, and its signed result is attached to the release afterwards (ADR-0233, 
 ADR-0235). Prerequisites are in `docs/dev-environment.md`, "Complement".
 
 1. Take the candidate from the rolling `latest` prerelease built from the release
-   commit, with its checksums and their signature:
+   commit: the Debian trixie package and its signature, and the checksums and theirs:
 
    ```sh
-   gh release download latest --repo OMG-Software/Merovingian --dir candidate      --pattern 'merovingian_*_amd64-debian.deb' --pattern SHA256SUMS --pattern SHA256SUMS.asc
+   gh release download latest --repo OMG-Software/Merovingian --dir candidate \
+     --pattern 'merovingian_*_amd64-debian.deb*' --pattern SHA256SUMS --pattern SHA256SUMS.asc
    ```
 
-2. Run Complement. The work directory must be empty, and the exit status is the verdict:
+2. Run Complement. The work directory must be empty, and the exit status is the verdict.
+   Besides the signed checksums, the run checks the package's build provenance with
+   `gh attestation verify`. `packages.yml` must have built exactly this file from one
+   commit on `main`, and the run records that commit:
 
    ```sh
-   python3 scripts/run_complement.py      --package candidate/merovingian_<version>_amd64-debian.deb      --sha256sums candidate/SHA256SUMS --signature candidate/SHA256SUMS.asc      --work-dir ../complement-<version>
+   python3 scripts/run_complement.py \
+     --package candidate/merovingian_<version>_amd64-debian.deb \
+     --sha256sums candidate/SHA256SUMS --signature candidate/SHA256SUMS.asc \
+     --work-dir ../complement-<version>
    ```
 
    A failure outside `tests/complement/skip-list.toml` is fixed, or listed with the
@@ -177,18 +184,27 @@ ADR-0235). Prerequisites are in `docs/dev-environment.md`, "Complement".
 3. Record the evidence. The exit status is 0 only for release evidence:
 
    ```sh
-   python3 scripts/record_complement_evidence.py --work-dir ../complement-<version>      --package candidate/merovingian_<version>_amd64-debian.deb --output-dir ../complement-evidence
+   python3 scripts/record_complement_evidence.py --work-dir ../complement-<version> \
+     --package candidate/merovingian_<version>_amd64-debian.deb --output-dir ../complement-evidence
    ```
 
-4. Create and push the tag (above). Once the release workflow has published the
-   release, sign and attach the evidence with the maintainer key:
+4. Tag the commit the run recorded (`source.commit` in the results), and push the tag
+   (above). Once the release workflow has published the release, sign and attach the
+   evidence and the tested package. The publisher refuses a tag at any other commit:
 
    ```sh
-   python3 scripts/publish_complement_evidence.py      --results ../complement-evidence/complement-results-<version>.json      --log ../complement-evidence/complement-<version>.jsonl --tag v<version>-alpha.<n>
+   python3 scripts/publish_complement_evidence.py \
+     --results ../complement-evidence/complement-results-<version>.json \
+     --log ../complement-evidence/complement-<version>.jsonl \
+     --package candidate/merovingian_<version>_amd64-debian.deb \
+     --package-signature candidate/merovingian_<version>_amd64-debian.deb.asc \
+     --tag v<version>-alpha.<n>
    ```
 
-The release notes' Complement section names the two files. Readers verify them
-like any other asset: `gpg --verify <file>.asc <file>`.
+The release notes' Complement section names the files. Readers verify each like any
+other asset (`gpg --verify <file>.asc <file>`). The tested package's SHA-256 must equal
+the `package.sha256` the results record, and its `/usr/bin/merovingian-server` the
+`server_sha256`.
 
 ## Rolling latest packages
 

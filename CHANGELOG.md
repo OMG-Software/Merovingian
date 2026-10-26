@@ -82,8 +82,26 @@ server refused both with no setting that could change it.
   how to verify them. A release without them has not been tested against Complement.
 - **DOCS:** `docs/release-process.md` has a pre-tag "Complement" section: candidate, run, record,
   tag, publish. `docs/dev-environment.md` lists the Docker, Go, git and gpg prerequisites.
+- **CHANGED:** Complement evidence is bound to the commit the tested package was built from.
+  - `run_complement.py` verifies the package's build provenance with `gh attestation verify`.
+    `packages.yml` must have built exactly that file from one commit on `main`, and the run
+    records the commit.
+  - The recorder treats a run with no verified source commit as not evidence.
+  - The publisher refuses a tag at any other commit, and refuses a package signature by any key
+    but the maintainer's.
+  - The publisher also attaches the tested `.deb` and its maintainer signature to the tag's
+    release, because the rolling `latest` release that held it is replaced on every push.
+- **FIXED:** the federation library did not link the config library it now calls
+  (`config::private_ip_range_is_allowable`), so a fuzz target linking federation alone failed
+  with an undefined reference. `src/federation/meson.build` now links it.
+- **FIXED:** the open-registration conformance test required `params` and `session` in the 401,
+  which the spec makes optional ("if one is provided"). It now checks them only when present,
+  passes a session back only when one is issued, and gives every assertion its spec constraint.
+- **TESTS:** the fake tools in `test_run_complement.py` no longer need `sha256sum` or `seq`, which
+  the BSD hosts may lack. The certificate checks in `test_complement_image.py` read
+  `openssl x509 -text`, which LibreSSL also has.
 - **DOCS:** the root `AGENTS.md` glossary no longer calls the in-house JSON flow fixtures
-  (`tests/fixtures/complement/`) Complement. This branch's ADRs are 0231 and 0232, because
+  (`tests/fixtures/complement/`) Complement. This branch's ADRs are 0231 to 0235, because
   0230 went to unknown client endpoints (0.12.56).
 - **TESTS:** `test_config_private_range_allowlist.cpp`,
   `test_federation_private_range_allowlist.cpp`, `test_config_open_registration.cpp`,

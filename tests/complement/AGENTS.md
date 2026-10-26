@@ -31,10 +31,15 @@ are this project's own tests.
 `docs/dev-environment.md`, "Complement"):
 
 ```bash
-python3 scripts/run_complement.py     --package merovingian_<version>_amd64-debian.deb     --sha256sums SHA256SUMS --signature SHA256SUMS.asc     --work-dir ../complement-<version>
+python3 scripts/run_complement.py \
+    --package merovingian_<version>_amd64-debian.deb \
+    --sha256sums SHA256SUMS --signature SHA256SUMS.asc \
+    --work-dir ../complement-<version>
 ```
 
-It verifies the package against the maintainer-signed `SHA256SUMS`, builds
+It verifies the package against the maintainer-signed `SHA256SUMS` and its
+build provenance (`gh attestation verify`: built by `packages.yml` from one
+commit on `main`, which the run records), builds
 this directory into an image from a copy in the work directory, fetches
 Complement at the commit in `run.toml`, and runs `go test -json ./tests/...`.
 `scripts/summarise_complement.py` judges the result against `skip-list.toml`,
@@ -56,8 +61,10 @@ docker build --build-arg MEROVINGIAN_DEB_SHA256=<its SHA-256> --tag merovingian-
 `scripts/record_complement_evidence.py` turns a run's work directory into
 `complement-results-<version>.json` and `complement-<version>.jsonl`.
 `scripts/publish_complement_evidence.py` signs them with the maintainer key and
-attaches them to the tag's release (ADR-0235). The recorder refuses a run
-whose image did not hold the package's own server binary. Only a signed,
+attaches them, with the tested package and its signature, to the tag's release
+(ADR-0235). The recorder refuses a run whose image did not hold the package's
+own server binary, and the publisher refuses a tag at any commit other than
+the one the package was built from. Only a signed, provenance-checked,
 unfiltered, green run is release evidence. The sequence is in
 `docs/release-process.md`, "Complement".
 

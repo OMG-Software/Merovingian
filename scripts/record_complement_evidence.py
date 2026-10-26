@@ -17,8 +17,9 @@ the run). The skip list snapshot must be the one the run was judged by. A
 mismatch means the run tested other bytes, and nothing is written.
 
 The results are release evidence only when the package was verified against
-the maintainer-signed SHA256SUMS, the whole suite ran (no --run filter) and
-the summariser judged it green. Otherwise they are written with
+the maintainer-signed SHA256SUMS, its source commit was verified from its
+build provenance, the whole suite ran (no --run filter) and the summariser
+judged it green. Otherwise they are written with
 "release_evidence": false and say why.
 
 Exit status: 0 evidence written, 1 written but not release evidence, 2 refused
@@ -133,6 +134,8 @@ def build(work: Path, package: Path) -> tuple[str, dict, bytes]:
     not_evidence_because = []
     if metadata["verification"].get("method") != "gpg":
         not_evidence_because.append("the package was not verified against the maintainer-signed SHA256SUMS")
+    if not metadata.get("source"):
+        not_evidence_because.append("the package's source commit was not verified from its build provenance")
     if metadata.get("run_filter"):
         not_evidence_because.append(f"only tests matching '{metadata['run_filter']}' ran")
     if summary.get("verdict") != "pass" or metadata.get("summariser_exit_code") != 0:
@@ -146,7 +149,8 @@ def build(work: Path, package: Path) -> tuple[str, dict, bytes]:
         "package": metadata["package"],
         "server_sha256": server_sha256,
         "verification": metadata["verification"],
-        "image": {"tag": metadata["image_tag"], "id": metadata["image_id"]},
+        "source": metadata.get("source"),
+        "image":{"tag": metadata["image_tag"], "id": metadata["image_id"]},
         "complement": metadata["complement"],
         "go_version": metadata["go_version"],
         "docker_version": metadata["docker_version"],

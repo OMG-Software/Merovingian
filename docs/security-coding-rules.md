@@ -750,6 +750,7 @@ quickly finding everything a given `AGENTS.md` file contributed.
   would make them unreachable. See `docs/threat-model.md`, "Outbound
   Application Service API transaction delivery" for the full justification
   and the condition under which this exemption must be revisited.
+  Source: `src/appservice/AGENTS.md`; `docs/threat-model.md`.
 
 - **`security.federation.allow_private_ip_ranges` reaches federation callers
   only.** `discover_server`, well-known fetches, `CachedServerDiscovery::discover`,
@@ -764,7 +765,6 @@ quickly finding everything a given `AGENTS.md` file contributed.
   (ADR-0231). Every caller that shares the discovery network would otherwise
   inherit an SSRF opening that was meant for server-to-server traffic only.
   Source: `src/federation/AGENTS.md`.
-  Source: `src/appservice/AGENTS.md`; `docs/threat-model.md`.
 
 - **A URL a client names is fetched only through the URL preview gate
   (`gated_fetch` in `src/homeserver/url_preview_service.cpp`).** It resolves and checks every

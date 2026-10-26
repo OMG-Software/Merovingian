@@ -9,8 +9,10 @@
     run_complement.py --package local.deb --unsigned --work-dir DIR
 
 1. Verify the package: its SHA-256 must be in a SHA256SUMS that the
-   maintainer key in tests/complement/run.toml signed. --unsigned skips this
-   for a package built locally; such a run is never release evidence.
+   maintainer key in tests/complement/run.toml signed, and its GitHub build
+   provenance (`gh attestation verify`) must show packages.yml built exactly
+   this file from one commit on main, which the run records. --unsigned skips
+   both for a package built locally; such a run is never release evidence.
 2. Build tests/complement into an image, from a copy under DIR (the source
    tree is not written), and read the server binary's SHA-256 back out of it.
 3. Fetch Complement at the pinned commit into DIR/complement.
@@ -23,8 +25,8 @@ run), listing.jsonl, the skip list the run was judged by, summary.json and
 run-metadata.json, which record_complement_evidence.py turns into release
 evidence.
 
-The run needs Docker, Go (at least the pinned version), git, gpg (unless
---unsigned) and network access for Complement and its Go modules. Inherited
+The run needs Docker, Go (at least the pinned version), git, gpg and gh
+(unless --unsigned) and network access for Complement and its Go modules. Inherited
 COMPLEMENT_* variables are dropped, so the caller's shell cannot change what
 is tested.
 """
@@ -51,6 +53,9 @@ SPAWN_TIMEOUT_SECONDS = "60"
 GO_VERSION = re.compile(r"go(\d+)\.(\d+)(?:\.(\d+))?")
 SHA256 = re.compile(r"[0-9a-f]{64}")
 FINGERPRINT = re.compile(r"[0-9A-F]{40}")
+GIT_COMMIT = re.compile(r"[0-9a-f]{40}")
+PACKAGES_WORKFLOW = ".github/workflows/packages.yml"
+MAIN_REF = "refs/heads/main"
 REFUSED_STATUS = {"BADSIG", "ERRSIG", "EXPSIG", "EXPKEYSIG", "REVKEYSIG", "NO_PUBKEY"}
 
 
@@ -110,6 +115,40 @@ def listed_digest(sums: Path, package_name: str) -> str:
     return matches[0]
 
 
+def verified_source(package: Path, digest: str, repository: str) -> dict[str, str]:
+    """The commit the package was built from, from its build provenance.
+
+    `gh attestation verify` checks the attestation's signature and that the
+    packages workflow of this repository made it. The statement must then cover
+    exactly this file, and name one commit on main as its only source.
+    """
+    workflow_path = PACKAGES_WORKFLOW
+    output = run("gh", "attestation", "verify", str(package), "--repo", repository,
+                 "--signer-workflow", f"{repository}/{workflow_path}", "--format", "json")
+    try:
+        results = json.loads(output)
+    except json.JSONDecodeError as error:
+        raise Refused(f"cannot read gh attestation verify output: {error}") from error
+    commits = set()
+    for result in results if isinstance(results, list) else []:
+        statement = result.get("verificationResult", {}).get("statement", {})
+        subjects = {subject.get("digest", {}).get("sha256") for subject in statement.get("subject", [])}
+        if digest not in subjects:
+            continue
+        definition = statement.get("predicate", {}).get("buildDefinition", {})
+        workflow = definition.get("externalParameters", {}).get("workflow", {})
+        if (workflow.get("path"), workflow.get("ref"), workflow.get("repository")) != \
+                (workflow_path, MAIN_REF, f"https://github.com/{repository}"):
+            continue
+        for dependency in definition.get("resolvedDependencies", []):
+            if dependency.get("uri", "").startswith(f"git+https://github.com/{repository}@"):
+                commits.add(dependency.get("digest", {}).get("gitCommit"))
+    if len(commits) != 1 or not GIT_COMMIT.fullmatch(next(iter(commits)) or ""):
+        raise Refused(f"{package.name} has no build provenance naming one commit on {MAIN_REF} "
+                      f"built by {workflow_path} (found {sorted(str(commit) for commit in commits)})")
+    return {"commit": commits.pop(), "ref": MAIN_REF, "workflow": workflow_path}
+
+
 def complement_environment(image_tag: str, allow_without_landlock: bool) -> dict[str, str]:
     env = {key: value for key, value in os.environ.items()
            if not key.startswith("COMPLEMENT_") and not key.startswith(SHARED_PREFIX)}
@@ -165,7 +204,8 @@ def execute(args: argparse.Namespace, work: Path) -> int:
     if not FINGERPRINT.fullmatch(maintainer_key):
         raise Refused(f"{args.run_config}: maintainer_key is not a 40-digit fingerprint")
 
-    tools = ["docker", "go", "git"] + ([] if args.unsigned else ["gpg"])
+    release_repository = config["release"]["repository"]
+    tools = ["docker", "go", "git"] + ([] if args.unsigned else ["gpg", "gh"])
     absent = [tool for tool in tools if shutil.which(tool) is None]
     if absent:
         raise Refused(f"not on PATH: {', '.join(absent)}")
@@ -177,11 +217,13 @@ def execute(args: argparse.Namespace, work: Path) -> int:
     digest = sha256_of(package)
     if args.unsigned:
         verification = {"method": "unsigned"}
+        source = None
     else:
         verify_signature(args.sha256sums, args.signature, maintainer_key)
         if listed_digest(args.sha256sums, package.name) != digest:
             raise Refused(f"{package.name} does not match its digest in {args.sha256sums.name}")
         verification = {"method": "gpg", "key": maintainer_key}
+        source = verified_source(package, digest, release_repository)
     print(f"run_complement: {package.name} {digest} ({verification['method']})")
 
     work.mkdir(parents=True, exist_ok=True)
@@ -241,6 +283,7 @@ def execute(args: argparse.Namespace, work: Path) -> int:
         "schema": 1,
         "package": {"name": package.name, "sha256": digest},
         "verification": verification,
+        "source": source,
         "image_tag": image_tag,
         "image_id": image_id,
         "in_image_server_sha256": in_image_server_sha256,

@@ -29,6 +29,8 @@ RUN_CONFIG = REPO_ROOT / "tests" / "complement" / "run.toml"
 PINNED = tomllib.loads(RUN_CONFIG.read_text(encoding="utf-8"))
 COMMIT = PINNED["complement"]["commit"]
 MAINTAINER_KEY = PINNED["release"]["maintainer_key"]
+REPOSITORY = PINNED["release"]["repository"]
+SOURCE_COMMIT = "f" * 40
 PACKAGE_NAME = "merovingian_0.12.55_amd64-debian.deb"
 SERVER_SHA = "ab" * 32
 TESTS = "github.com/matrix-org/complement/tests"
@@ -70,12 +72,18 @@ FAKE_TOOLS = {
             build)
                 for last; do :; done
                 ls -A "$last" > "$FAKE_OUT/build-context"
-                sha256sum "$last/artifact/merovingian.deb" | cut -d ' ' -f 1 > "$FAKE_OUT/built-package"
+                "$FAKE_PYTHON" -c 'import hashlib, sys; print(hashlib.sha256(open(sys.argv[1], "rb").read()).hexdigest())' \
+                    "$last/artifact/merovingian.deb" > "$FAKE_OUT/built-package"
                 ;;
-            image) echo "sha256:$(printf 'cd%.0s' $(seq 32))" ;;
+            image) echo "sha256:cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd" ;;
             run) echo "$FAKE_SERVER_SHA  /usr/bin/merovingian-server" ;;
         esac
         exit 0
+        """,
+    "gh": """        #!/bin/sh
+        echo "gh $*" >> "$FAKE_OUT/calls"
+        cat "$FAKE_ATTESTATION"
+        exit "${FAKE_GH_EXIT:-0}"
         """,
 }
 
@@ -85,6 +93,22 @@ def event(action: str, test: str | None = None) -> dict:
     if test is not None:
         record["Test"] = test
     return record
+
+
+def attestation(digest: str, ref: str = "refs/heads/main", workflow: str = ".github/workflows/packages.yml",
+                commit: str = SOURCE_COMMIT) -> str:
+    """`gh attestation verify --format json` for one SLSA provenance attestation."""
+    statement = {
+        "predicateType": "https://slsa.dev/provenance/v1",
+        "subject": [{"name": "merovingian_0.12.57_amd64.deb", "digest": {"sha256": digest}}],
+        "predicate": {"buildDefinition": {
+            "externalParameters": {"workflow": {"ref": ref, "repository": f"https://github.com/{REPOSITORY}",
+                                                "path": workflow}},
+            "resolvedDependencies": [{"uri": f"git+https://github.com/{REPOSITORY}@{ref}",
+                                      "digest": {"gitCommit": commit}}],
+        }},
+    }
+    return json.dumps([{"verificationResult": {"statement": statement}}])
 
 
 def valid_status(fingerprint: str = MAINTAINER_KEY) -> str:
@@ -120,6 +144,8 @@ class RunComplementTests(unittest.TestCase):
         self.run_log = self.workdir / "run-input.jsonl"
         self.write_run_log([event("run", "TestA"), event("pass", "TestA"), event("pass")])
         self.results = self.workdir / "results"
+        self.attestation = self.workdir / "attestation.json"
+        self.attestation.write_text(attestation(self.digest), encoding="utf-8")
         self.env = dict(
             os.environ,
             PATH=f"{self.bin}{os.pathsep}{os.environ['PATH']}",
@@ -130,6 +156,8 @@ class RunComplementTests(unittest.TestCase):
             FAKE_LISTING=str(self.listing),
             FAKE_RUN_LOG=str(self.run_log),
             FAKE_SERVER_SHA=SERVER_SHA,
+            FAKE_PYTHON=sys.executable,
+            FAKE_ATTESTATION=str(self.attestation),
         )
 
     def tearDown(self) -> None:
@@ -168,6 +196,8 @@ class RunComplementTests(unittest.TestCase):
         self.assertEqual(metadata["in_image_server_sha256"], SERVER_SHA)
         self.assertFalse(metadata["landlock_waived"])
         self.assertIsNone(metadata["run_filter"])
+        self.assertEqual(metadata["source"], {"commit": SOURCE_COMMIT, "ref": "refs/heads/main",
+                                              "workflow": ".github/workflows/packages.yml"})
         self.assertEqual(json.loads((self.results / "summary.json").read_text(encoding="utf-8"))["verdict"], "pass")
 
     def test_the_run_keeps_the_skip_list_it_was_judged_by(self) -> None:
@@ -291,6 +321,41 @@ class RunComplementTests(unittest.TestCase):
                 self.assertNotEqual(result.returncode, 0)
                 self.assertNotIn("docker build", self.calls())
 
+    def test_the_package_must_have_been_built_on_main_by_the_packages_workflow(self) -> None:
+        cases = {
+            "a feature branch": attestation(self.digest, ref="refs/heads/feature/x"),
+            "another workflow": attestation(self.digest, workflow=".github/workflows/release.yml"),
+            "another package": attestation("0" * 64),
+            "no attestation": "[]",
+            "a malformed commit": attestation(self.digest, commit="main"),
+        }
+        for name, document in cases.items():
+            with self.subTest(case=name):
+                # GIVEN a signed package whose build provenance does not show a
+                # build of this exact file from main by packages.yml.
+                self.attestation.write_text(document, encoding="utf-8")
+                shutil.rmtree(self.results, ignore_errors=True)
+                (self.out / "calls").unlink(missing_ok=True)
+                # WHEN the run starts.
+                result = self.run_script()
+                # THEN it refuses before building anything.
+                self.assertNotEqual(result.returncode, 0)
+                self.assertNotIn("docker build", self.calls())
+
+    def test_provenance_is_checked_cryptographically_by_gh(self) -> None:
+        # GIVEN a signed package.
+        # WHEN the run checks its provenance, and gh cannot verify the attestation.
+        result = self.run_script()
+        self.assertIn(f"gh attestation verify {self.package} --repo {REPOSITORY} "
+                      f"--signer-workflow {REPOSITORY}/.github/workflows/packages.yml --format json", self.calls())
+        shutil.rmtree(self.results)
+        self.env["FAKE_GH_EXIT"] = "1"
+        refused = self.run_script()
+        # THEN it asks gh to verify against this repository's packages workflow,
+        # and refuses when gh cannot.
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertNotEqual(refused.returncode, 0)
+
     def test_an_unsigned_package_runs_but_says_so(self) -> None:
         # GIVEN a locally built package with no signed sums.
         # WHEN Complement is run against it with --unsigned.
@@ -298,7 +363,9 @@ class RunComplementTests(unittest.TestCase):
         # THEN gpg is not consulted and the run records that the package was unverified.
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertNotIn("gpg ", self.calls())
+        self.assertNotIn("gh ", self.calls())
         self.assertEqual(self.metadata()["verification"], {"method": "unsigned"})
+        self.assertIsNone(self.metadata()["source"])
 
     def test_unsigned_and_signed_inputs_are_not_mixed(self) -> None:
         # GIVEN --unsigned together with sums and a signature, or neither.

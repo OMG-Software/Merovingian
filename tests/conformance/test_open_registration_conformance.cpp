@@ -80,6 +80,7 @@ SCENARIO("Open registration challenges a request without auth data with an m.log
     GIVEN("a running client-server with acknowledged open registration")
     {
         auto started = merovingian::homeserver::start_client_server(open_registration_config());
+        // Precondition: the server starts with acknowledged open registration.
         REQUIRE(started.started);
 
         WHEN("an empty registration probe is submitted")
@@ -91,12 +92,24 @@ SCENARIO("Open registration challenges a request without auth data with an m.log
                 // Spec MUST: "they must still give a 401 response to requests with no auth data".
                 REQUIRE(response.response.status == 401U);
                 auto const body = parse_object(response.response.body);
-                // Spec: the server offers "a stage with only the m.login.dummy auth type".
+                // Spec MUST: `flows` is "Required", and the server offers "a stage with only
+                // the m.login.dummy auth type".
                 REQUIRE(only_stage(body) == "m.login.dummy");
-                REQUIRE(object_member_as_object(body, "params") != nullptr);
-                auto const* session = string_member(body, "session");
-                REQUIRE(session != nullptr);
-                REQUIRE_FALSE(session->empty());
+                // `params` and `session` are optional ("if one is provided"); when present
+                // they must have the types the AuthenticationResponse schema gives them.
+                if (object_member(body, "params") != nullptr)
+                {
+                    // Spec MUST: `params` is a `{string: object}` map.
+                    REQUIRE(object_member_as_object(body, "params") != nullptr);
+                }
+                if (object_member(body, "session") != nullptr)
+                {
+                    auto const* session = string_member(body, "session");
+                    // Spec MUST: `session` is a string the client passes back.
+                    REQUIRE(session != nullptr);
+                    // Spec MUST: a session identifier the client can pass back is not empty.
+                    REQUIRE_FALSE(session->empty());
+                }
             }
         }
 
@@ -108,6 +121,7 @@ SCENARIO("Open registration challenges a request without auth data with an m.log
             {
                 // Spec MUST: a UIA request "never succeeds without auth".
                 REQUIRE(response.response.status == 401U);
+                // Spec MUST: the 401 carries the `flows` the client must complete.
                 REQUIRE(only_stage(parse_object(response.response.body)) == "m.login.dummy");
             }
         }
@@ -124,6 +138,7 @@ SCENARIO("Open registration completes with m.login.dummy", "[conformance][client
     GIVEN("a running client-server with acknowledged open registration")
     {
         auto started = merovingian::homeserver::start_client_server(open_registration_config());
+        // Precondition: the server starts with acknowledged open registration.
         REQUIRE(started.started);
 
         WHEN("a registration completes the dummy stage without a session")
@@ -137,25 +152,31 @@ SCENARIO("Open registration completes with m.login.dummy", "[conformance][client
                 REQUIRE(response.response.status == 200U);
                 auto const body = parse_object(response.response.body);
                 auto const* user_id = string_member(body, "user_id");
+                // Spec MUST: a successful registration returns the "Required" `user_id`.
                 REQUIRE(user_id != nullptr);
+                // Spec MUST: the user ID is built from the requested `username` localpart.
                 REQUIRE(user_id->starts_with("@carol:"));
+                // Spec MUST: `access_token` is "Required if the inhibit_login option is false".
                 REQUIRE(string_member(body, "access_token") != nullptr);
             }
         }
 
-        WHEN("a registration completes the dummy stage with the session from its challenge")
+        WHEN("a registration completes the dummy stage with the session its challenge issued, if any")
         {
+            // A session is optional ("if one is provided"). When the challenge issues
+            // one, the client passes it back; without one this case is the one above.
             auto const challenge = parse_object(register_with(started.runtime, "{}").response.body);
             auto const* session = string_member(challenge, "session");
-            REQUIRE(session != nullptr);
+            auto const auth = session == nullptr ? std::string{R"({"type":"m.login.dummy"})"}
+                                                 : R"({"type":"m.login.dummy","session":")" + *session + R"("})";
             auto const response = register_with(
-                started.runtime, R"({"username":"dave","password":"CorrectHorse7!","auth":{"type":"m.login.dummy",)"
-                                 R"("session":")" +
-                                     *session + R"("}})");
+                started.runtime, R"({"username":"dave","password":"CorrectHorse7!","auth":)" + auth + "}");
 
             THEN("the account is created")
             {
+                // Spec MUST: "Dummy authentication always succeeds".
                 REQUIRE(response.response.status == 200U);
+                // Spec MUST: a successful registration returns the "Required" `user_id`.
                 REQUIRE(string_member(parse_object(response.response.body), "user_id") != nullptr);
             }
         }
@@ -174,6 +195,7 @@ SCENARIO("Open registration refuses stages and sessions it did not offer",
     GIVEN("a running client-server with acknowledged open registration")
     {
         auto started = merovingian::homeserver::start_client_server(open_registration_config());
+        // Precondition: the server starts with acknowledged open registration.
         REQUIRE(started.started);
 
         WHEN("the client answers with a registration-token stage instead")
@@ -184,7 +206,9 @@ SCENARIO("Open registration refuses stages and sessions it did not offer",
 
             THEN("the response is the 401 dummy challenge")
             {
+                // Spec MUST: authentication completes only through a stage the server offered.
                 REQUIRE(response.response.status == 401U);
+                // Spec MUST: the 401 repeats the `flows` the client must complete.
                 REQUIRE(only_stage(parse_object(response.response.body)) == "m.login.dummy");
             }
         }
@@ -197,7 +221,9 @@ SCENARIO("Open registration refuses stages and sessions it did not offer",
 
             THEN("the response is the 401 dummy challenge and no account is created")
             {
+                // Spec MUST: a `session` passes back one "the homeserver" provided, never another.
                 REQUIRE(response.response.status == 401U);
+                // Spec MUST: the 401 repeats the `flows` the client must complete.
                 REQUIRE(only_stage(parse_object(response.response.body)) == "m.login.dummy");
             }
         }

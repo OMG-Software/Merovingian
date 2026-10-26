@@ -414,7 +414,7 @@ class MintTlsTests(unittest.TestCase):
         # THEN it chains to that CA, names hs1, and lasts about a day.
         verify = run("openssl", "verify", "-CAfile", str(self.ca / "ca.crt"), "-purpose", "sslserver", str(self.cert))
         self.assertEqual(verify.returncode, 0, verify.stdout + verify.stderr)
-        self.assertIn("DNS:hs1", self.openssl_x509("-ext", "subjectAltName").stdout)
+        self.assertIn("DNS:hs1", self.openssl_x509("-text").stdout)
         self.assertEqual(self.openssl_x509("-checkend", "3600").returncode, 0)
         self.assertNotEqual(self.openssl_x509("-checkend", str(26 * 3600)).returncode, 0)
 
@@ -445,9 +445,9 @@ class MintTlsTests(unittest.TestCase):
         # GIVEN Complement's CA.
         # WHEN certificates are minted for IPv4 and IPv6 literal server names.
         self.assertEqual(self.mint("10.1.2.3:8448").returncode, 0)
-        ipv4 = self.openssl_x509("-ext", "subjectAltName").stdout
+        ipv4 = self.openssl_x509("-text").stdout
         self.assertEqual(self.mint("[2001:db8::1]").returncode, 0)
-        ipv6 = self.openssl_x509("-ext", "subjectAltName").stdout
+        ipv6 = self.openssl_x509("-text").stdout
         # THEN each names its address as an IP, without the port.
         self.assertIn("IP Address:10.1.2.3", ipv4)
         self.assertIn("IP ADDRESS:2001:DB8:0:0:0:0:0:1", ipv6.upper())
