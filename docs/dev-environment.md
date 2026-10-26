@@ -366,6 +366,11 @@ What the site expects of each branch:
   loads nothing from another origin
   ([ADR-0223](adr/0223-the-documentation-site-wears-the-omg-software-theme-dark-first-with-system-fonts.md)).
   `docs-site-tooling` checks text and link contrast in both schemes.
+- **Use the published brand marks.** `docs/assets/omg-logo.svg` and
+  `omg-favicon.svg` reproduce the angular OMG mark and favicon from
+  [OMG Software](https://omg-software.org/projects/merovingian/index.html).
+  The home page uses its separate `merovingian-logo.svg` project mark.
+  These SVG files are local, so readers make no request to the organisation site.
 
 ## Security Posture
 

@@ -2,6 +2,15 @@
 
 - **MAINTENANCE:** merge current `main` into the DB-6 PostgreSQL fixture branch,
   retain both changelog histories, and align all version metadata with 0.12.54.
+  Resolve conflicts with the 0.12.53 documentation branding release while
+  preserving the isolated PostgreSQL fixtures and their regression tests.
+
+## 0.12.53
+
+- **MAINTENANCE:** merge current `main` into the documentation branding branch,
+  retain both changelog histories, and align all version metadata with 0.12.53.
+  Resolve the conflicts with the 0.12.52 CodeQL filter release without changing
+  the branding, README badges, or logging example edits.
 
 ## 0.12.52
 
@@ -88,6 +97,14 @@ while `main` with the same C++ passed). The production rejection path was not at
   scenarios use the shared fixture. **TESTS (new):** "A scratch database's connection string names
   only the scratch database" (`[scratch]`, no live server needed). The race itself is
   timing-dependent and is removed at its cause rather than reproduced.
+
+## 0.12.49
+
+- **FIXED:** the documentation header and favicon use the angular OMG Software mark
+  published on omg-software.org, replacing the obsolete four-square symbol.
+- **ADDED:** the matching Merovingian project mark on the documentation home page.
+  All three images are served locally. The existing colours, fonts and light-mode
+  option remain in place.
 
 ## 0.12.48
 

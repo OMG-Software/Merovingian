@@ -7,6 +7,7 @@ import re
 import sys
 import tempfile
 import unittest
+import xml.etree.ElementTree as ET
 from pathlib import Path
 
 
@@ -294,6 +295,32 @@ class SiteThemeTests(unittest.TestCase):
                 # external reference, so serving it cannot run code.
                 self.assertTrue(svg.startswith("<svg"))
                 self.assertNotRegex(svg, r"(?i)<script|\son\w+\s*=|href\s*=|<foreignObject")
+
+    def test_site_uses_the_published_organisation_and_project_marks(self) -> None:
+        # GIVEN the marks published on omg-software.org on 25 October 2026.
+        marks = {
+            "omg-logo.svg": "M32 11 20 4 6 12v16l14 8 14-8v-8H21",
+            "omg-favicon.svg": "M36 15 24 8 10 16v16l14 8 14-8v-8H25",
+            "merovingian-logo.svg": "M6 28V12l14 11 14-11v16l-14 8-14-8Z",
+        }
+        for filename, outline in marks.items():
+            with self.subTest(asset=filename):
+                # WHEN the local image is loaded.
+                root = ET.parse(DOCS_DIR / "assets" / filename).getroot()
+                paths = root.findall("{http://www.w3.org/2000/svg}path")
+
+                # THEN it carries the published outline and orange stroke.
+                self.assertEqual(len(paths), 1)
+                self.assertEqual(paths[0].get("d"), outline)
+                self.assertEqual(paths[0].get("stroke"), "#ff8954")
+                self.assertNotRegex(
+                    (DOCS_DIR / "assets" / filename).read_text(encoding="utf-8"),
+                    r"(?i)<script|\son\w+\s*=|href\s*=|<foreignObject",
+                )
+
+        # THEN the home page also displays the project's own mark.
+        home = (DOCS_DIR / "index.md").read_text(encoding="utf-8")
+        self.assertIn('src="assets/merovingian-logo.svg"', home)
 
     def test_text_and_links_are_readable_in_both_schemes(self) -> None:
         for scheme in ("slate", "default"):

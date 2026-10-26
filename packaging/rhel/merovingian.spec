@@ -98,7 +98,10 @@ fi
 
 %changelog
 * Mon Oct 26 2026 James Chapman <claude@ping.me.uk> - 0.12.54-1
-- Merge DB-6 PostgreSQL fixture isolation with the SonarQube Cloud analysis-scope change.
+- Integrate main, including documentation branding, while retaining DB-6 PostgreSQL fixture isolation.
+
+* Mon Oct 26 2026 James Chapman <claude@ping.me.uk> - 0.12.53-1
+- Integrate main while retaining the published documentation branding.
 
 * Mon Oct 26 2026 James Chapman <claude@ping.me.uk> - 0.12.52-1
 - CodeQL no longer reports cpp/unused-static-function on Catch2 test sources: the SARIF is filtered before upload.
@@ -108,6 +111,9 @@ fi
 
 * Sun Oct 25 2026 James Chapman <claude@ping.me.uk> - 0.12.50-1
 - The DB-6 PostgreSQL admission test runs on a database of its own, so a background federation retry can no longer write during its capture window.
+
+* Sun Oct 25 2026 James Chapman <claude@ping.me.uk> - 0.12.49-1
+- Match the published OMG Software and Merovingian logo assets on the documentation site.
 
 * Sun Oct 25 2026 James Chapman <claude@ping.me.uk> - 0.12.48-1
 - Leaving a room no longer fails with 500 when the room's state cannot be resolved locally; every persistence failure on the leave path is logged at warning level.
