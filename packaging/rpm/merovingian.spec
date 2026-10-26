@@ -104,6 +104,9 @@ fi
 * Mon Oct 26 2026 James Chapman <claude@ping.me.uk> - 0.12.53-1
 - Integrate main while retaining the published documentation branding.
 
+* Mon Oct 26 2026 James Chapman <claude@ping.me.uk> - 0.12.52-1
+- CodeQL no longer reports cpp/unused-static-function on Catch2 test sources: the SARIF is filtered before upload.
+
 * Sun Oct 25 2026 James Chapman <claude@ping.me.uk> - 0.12.51-1
 - SonarQube Cloud ignores test code and developer tooling; the server, packaging and CI workflows stay analysed.
 
