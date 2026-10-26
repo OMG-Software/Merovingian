@@ -23,7 +23,7 @@ shipped.
 
 * Open registration is an abuse risk on a public server. It must never be the
   result of a typo or a half-edited config.
-* Complement must run against the shipped binary (ADR-0230).
+* Complement must run against the shipped binary (ADR-0231).
 * The spec, not a convenient shortcut, decides the UIA behaviour.
 
 ## Considered Options
@@ -73,5 +73,5 @@ for deliberate weakenings (`federation.worker.allow_without_landlock`,
 
 ## Links
 
-* [ADR-0230](0230-federation-may-reach-operator-named-private-networks-and-nothing-else.md)
+* [ADR-0231](0231-federation-may-reach-operator-named-private-networks-and-nothing-else.md)
 * `docs/matrix-v1.19-spec/client-server-api.md`, "User-Interactive Authentication API"

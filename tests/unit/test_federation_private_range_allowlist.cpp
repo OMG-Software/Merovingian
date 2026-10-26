@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 James Chapman
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-// security.federation.allow_private_ip_ranges (ADR-0230) at the federation
+// security.federation.allow_private_ip_ranges (ADR-0231) at the federation
 // boundary. An allowlisted private network is reachable for federation
 // (discovery, well-known, key fetch, the inbound origin check); loopback,
 // link-local, CGNAT, multicast and reserved space never are, whatever the

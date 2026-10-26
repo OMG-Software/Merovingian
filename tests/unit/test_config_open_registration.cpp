@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 James Chapman
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-// security.registration.allow_open_registration (ADR-0231): registration
+// security.registration.allow_open_registration (ADR-0232): registration
 // without a token is refused at startup unless the operator acknowledges it.
 
 #include "merovingian/config/config.hpp"

@@ -96,7 +96,7 @@ public:
         return denied_ip_ranges_;
     }
 
-    // security.federation.allow_private_ip_ranges (ADR-0230). Applied by
+    // security.federation.allow_private_ip_ranges (ADR-0231). Applied by
     // discover_server, well-known fetches and the cache, which only federation
     // uses; resolve_federation_destination applies it only when the caller
     // passes it, so URL preview sharing this network never gets it.
@@ -165,7 +165,7 @@ struct FederationTlsOriginDecision final
 // CURLOPT_RESOLVE. Used by callers that need to pin addresses before
 // connecting, such as media redirect following.
 //
-// `allowed_private_ranges` is passed only by federation discovery (ADR-0230);
+// `allowed_private_ranges` is passed only by federation discovery (ADR-0231);
 // the network's own allowance is deliberately not read here.
 [[nodiscard]] auto resolve_federation_destination(std::string_view host, std::uint16_t port,
                                                   ServerDiscoveryNetwork& network,

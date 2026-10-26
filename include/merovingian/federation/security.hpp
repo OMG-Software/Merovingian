@@ -77,7 +77,7 @@ struct RemoteTrustDecision final
 // they never replace the built-in blocks. Invalid addresses/ranges fail closed.
 //
 // `allowed_private_ranges` is security.federation.allow_private_ip_ranges
-// (ADR-0230): an address inside one of them is allowed even though it is
+// (ADR-0231): an address inside one of them is allowed even though it is
 // private or covered by `denied_ranges`. Only federation callers pass it;
 // URL preview and media redirects never do.
 [[nodiscard]] auto address_set_allowed(std::vector<std::string> const& addresses,

@@ -2594,7 +2594,7 @@ namespace
         }
         else if (!config.security().registration.require_token)
         {
-            // Open registration still completes a UIA stage (ADR-0231).
+            // Open registration still completes a UIA stage (ADR-0232).
             members.push_back(json_member("auth", json_obj({json_member("type", json_str("m.login.dummy"))})));
         }
         return json_serialize(json_obj(std::move(members)));
@@ -11276,7 +11276,7 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
         // that don't require auth by offering a stage with only the
         // m.login.dummy auth type, but they must still give a 401 response to
         // requests with no auth data." Token-gated registration offers
-        // m.login.registration_token; open registration (ADR-0231) offers
+        // m.login.registration_token; open registration (ADR-0232) offers
         // m.login.dummy.
         {
             auto const require_token = rt.homeserver.config.security().registration.require_token;

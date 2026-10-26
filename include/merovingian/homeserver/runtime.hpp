@@ -296,7 +296,7 @@ class LocalDatabaseScope;
 // through federation::discover_server(), which unconditionally rejects
 // loopback and private-range addresses (src/federation/security.cpp
 // ip_address_is_private_or_loopback) unless security.federation.
-// allow_private_ip_ranges names an RFC 1918 or ULA network (ADR-0230), and
+// allow_private_ip_ranges names an RFC 1918 or ULA network (ADR-0231), and
 // never loopback — and production outbound calls never populate an in-memory
 // CA bundle, so a
 // self-signed test certificate would fail TLS verification even if discovery

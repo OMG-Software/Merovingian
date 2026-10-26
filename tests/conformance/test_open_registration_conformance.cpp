@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 // Open registration (security.registration.require_token=false, acknowledged by
-// security.registration.allow_open_registration=true, ADR-0231) still goes
+// security.registration.allow_open_registration=true, ADR-0232) still goes
 // through User-Interactive Authentication, with the single stage m.login.dummy.
 
 #include "../support/in_memory_database_config.hpp"

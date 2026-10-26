@@ -21,9 +21,9 @@ and what has been deliberately dropped.
 
 Progress on the Complement blocker: 0.12.55 removed the two server-side refusals that made
 Complement impossible to run against the release build. Federation can now reach operator-named
-RFC 1918 / ULA networks (`security.federation.allow_private_ip_ranges`, ADR-0230), and open
+RFC 1918 / ULA networks (`security.federation.allow_private_ip_ranges`, ADR-0231), and open
 registration with `m.login.dummy` exists behind an explicit acknowledgement
-(`security.registration.allow_open_registration`, ADR-0231). Still open: the Complement image
+(`security.registration.allow_open_registration`, ADR-0232). Still open: the Complement image
 (a client-API proxy, a certificate minted from Complement's CA, and a root entrypoint that drops
 the capability bounding set before starting the server), the maintainer run script and skip
 list, and recording the result as release evidence.

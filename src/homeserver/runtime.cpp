@@ -1041,7 +1041,7 @@ auto start_runtime(RuntimeStartOptions opts) -> RuntimeStartResult
         runtime.federation.config.deny_ip_ranges, runtime.federation.config.allow_private_ip_ranges);
     for (auto const& range : runtime.federation.config.allow_private_ip_ranges)
     {
-        // ADR-0230: an opened private network is an SSRF exception, so it is
+        // ADR-0231: an opened private network is an SSRF exception, so it is
         // announced on every start, not only when the config is first read.
         log_diagnostic("federation.private_range_allowed",
                        {
@@ -1053,7 +1053,7 @@ auto start_runtime(RuntimeStartOptions opts) -> RuntimeStartResult
     if (auto const& registration = runtime.config.security().registration;
         registration.enabled && !registration.require_token)
     {
-        // ADR-0231: anyone who can reach the client API can create an account.
+        // ADR-0232: anyone who can reach the client API can create an account.
         log_diagnostic(
             "registration.open",
             {

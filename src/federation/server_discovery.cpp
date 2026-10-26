@@ -200,7 +200,7 @@ namespace
                                            std::vector<std::string> const& denied_ranges = {}) -> ServerDiscoveryResult
     {
         // Every caller is a federation discovery branch, so the network's
-        // allow_private_ip_ranges applies here (ADR-0230).
+        // allow_private_ip_ranges applies here (ADR-0231).
         auto result = resolve_federation_destination(host_port.host, host_port.port, network, denied_ranges,
                                                      network.allowed_private_ip_ranges());
         result.server_name = std::string{server_name};

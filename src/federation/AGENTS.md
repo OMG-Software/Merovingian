@@ -145,7 +145,7 @@ Federation is the highest-risk surface: **all input comes from untrusted remote 
    path that touches `queue_` uses these. Never discard `enqueue`'s result: log a refusal. Give
    every destination its own transaction ID: it is the durable `federation_transactions` key.
 
-13. **The private-range allowlist is for federation callers only (ADR-0230).**
+13. **The private-range allowlist is for federation callers only (ADR-0231).**
    `security.federation.allow_private_ip_ranges` lets federation reach named RFC 1918 / ULA
    networks (Complement, LAN federations). `discover_server`, well-known fetches,
    `CachedServerDiscovery::discover`, `federation_discovery_policy` (the inbound origin check)

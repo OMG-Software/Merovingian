@@ -291,7 +291,7 @@ policy, so IP-literal, explicit-port, well-known, SRV, fallback, redirect and
 filtered URL lookups retain it on both cached and uncached paths. Main and
 federation-worker startup wire the same policy. Configured deny ranges cannot
 enable loopback or private destinations. The one opening is
-`security.federation.allow_private_ip_ranges` (ADR-0230): RFC 1918 / ULA networks
+`security.federation.allow_private_ip_ranges` (ADR-0231): RFC 1918 / ULA networks
 that `discover_server`, well-known fetches, cached `discover`, the inbound origin
 check and the remote media re-check accept. Redirect resolution, URL preview and
 the filtered lookups used by pushers and identity servers never apply it. The server-name discovery cache retains at

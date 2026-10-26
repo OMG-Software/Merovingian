@@ -415,7 +415,7 @@ struct RegistrationSecurityConfig final
     bool enabled{false};
     bool require_token{true};
     std::string token_file{};
-    // ADR-0231: `require_token=false` with `enabled=true` is a startup error
+    // ADR-0232: `require_token=false` with `enabled=true` is a startup error
     // unless this is set. Open registration still uses UIA, with the single
     // stage m.login.dummy.
     bool allow_open_registration{false};
@@ -488,7 +488,7 @@ struct FederationSecurityConfig final
     std::vector<std::string> deny_ip_ranges{
         "127.0.0.0/8", "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "::1/128", "fc00::/7",
     };
-    // The one exception to the private-address block (ADR-0230): RFC 1918 and
+    // The one exception to the private-address block (ADR-0231): RFC 1918 and
     // ULA networks, named as CIDRs, that federation may reach. Each entry must
     // pass private_ip_range_is_allowable(). Empty by default; meant for test
     // harnesses such as Complement and private federations on a LAN or VPN.
@@ -941,7 +941,7 @@ struct DurationParseResult final
 [[nodiscard]] auto parse_duration_seconds(std::string_view value) noexcept -> DurationParseResult;
 [[nodiscard]] auto is_private_or_loopback_range(std::string_view range) noexcept -> bool;
 // True only for a CIDR with an explicit prefix, no host bits set, that lies
-// wholly inside 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16 or fc00::/7 (ADR-0230).
+// wholly inside 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16 or fc00::/7 (ADR-0231).
 [[nodiscard]] auto private_ip_range_is_allowable(std::string_view range) noexcept -> bool;
 [[nodiscard]] auto parse_rate_limit_policy(std::string_view value) noexcept -> std::optional<http::RateLimitPolicy>;
 [[nodiscard]] auto parse_log_level(std::string_view value) noexcept -> std::optional<observability::LogLevel>;

@@ -761,7 +761,7 @@ quickly finding everything a given `AGENTS.md` file contributed.
   `federation::ip_address_in_allowed_private_range`, which ignores a range
   `config::private_ip_range_is_allowable` refuses.
   Why: the allowance exists so federation can reach Docker or LAN peers
-  (ADR-0230). Every caller that shares the discovery network would otherwise
+  (ADR-0231). Every caller that shares the discovery network would otherwise
   inherit an SSRF opening that was meant for server-to-server traffic only.
   Source: `src/federation/AGENTS.md`.
   Source: `src/appservice/AGENTS.md`; `docs/threat-model.md`.

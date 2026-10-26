@@ -28,7 +28,7 @@ production-gated.
 - `POST /register` always uses user-interactive auth. Token-gated registration
   offers the single stage `m.login.registration_token`. Open registration
   (`require_token=false`, valid only with
-  `security.registration.allow_open_registration=true`, ADR-0231) offers the
+  `security.registration.allow_open_registration=true`, ADR-0232) offers the
   single stage `m.login.dummy`, and a request with no `auth` gets 401 in both modes.
 - Client-server registration, password login, refresh-token rotation, logout,
   global logout, whoami, device listing, single-device fetch, device update,

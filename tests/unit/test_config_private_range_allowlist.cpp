@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 James Chapman
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-// security.federation.allow_private_ip_ranges (ADR-0230): the explicit,
+// security.federation.allow_private_ip_ranges (ADR-0231): the explicit,
 // operator-named exception to the built-in private-address block. Only
 // RFC 1918 and ULA networks may be named; loopback, link-local, CGNAT,
 // multicast, reserved and public space can never be opened by it.

@@ -5,7 +5,7 @@ last 1.0.0 blocker ("Federation conformance is entirely self-attested"). Complem
 homeservers on Docker bridge networks and creates users through open registration, and the
 server refused both with no setting that could change it.
 
-- **ADDED:** `security.federation.allow_private_ip_ranges` (ADR-0230), empty by default. It
+- **ADDED:** `security.federation.allow_private_ip_ranges` (ADR-0231), empty by default. It
   takes CIDR networks wholly inside `10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16` or
   `fc00::/7`, with an explicit prefix and no host bits. Anything else (loopback, link-local,
   CGNAT, multicast, reserved or public space) is a startup error, and the matcher re-checks
@@ -15,7 +15,7 @@ server refused both with no setting that could change it.
   of remote media addresses. It never applies to URL preview, media redirects, push gateways
   or identity servers, which share the discovery network. Each range is logged at CRITICAL on
   every start, and changing it requires a restart.
-- **ADDED:** `security.registration.allow_open_registration` (ADR-0231), default `false`.
+- **ADDED:** `security.registration.allow_open_registration` (ADR-0232), default `false`.
   `enabled=true` with `require_token=false` is still a startup error unless it is set, and the
   open state is logged at CRITICAL on every start.
 - **FIXED:** with `require_token=false`, `POST /_matrix/client/v3/register` registered a
