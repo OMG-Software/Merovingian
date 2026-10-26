@@ -26,10 +26,16 @@ server refused both with no setting that could change it.
   other stage or a session this server did not issue. The path was unreachable until now,
   because validation refused the configuration. The in-process smoke flow sends
   `m.login.dummy` when no token is required.
+- **FIXED:** remote media fetches refused any origin whose server name had no dot, such as `hs2`
+  or `localhost`. The spec's server-name grammar (`dns-name = 1*255dns-char`) needs no dot,
+  and Complement names its homeservers `hs1` and `hs2`. The media check now delegates to
+  `federation::server_name_is_valid`, the same grammar federation uses. Malformed names
+  (spaces, `_`, `/`, a missing or out-of-range port) are still refused.
 - **TESTS:** `test_config_private_range_allowlist.cpp`,
   `test_federation_private_range_allowlist.cpp`, `test_config_open_registration.cpp`,
-  `test_open_registration_conformance.cpp`, and a remote media scenario in
-  `test_media_security.cpp`.
+  `test_open_registration_conformance.cpp`, and in `test_media_security.cpp` a remote media
+  allowlist scenario plus server-name scenarios that replace the one asserting `nodot` was
+  invalid.
 
 ## 0.12.54
 

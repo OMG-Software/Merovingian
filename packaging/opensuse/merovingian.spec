@@ -113,7 +113,7 @@ fi
 
 %changelog
 * Mon Oct 26 2026 James Chapman <claude@ping.me.uk> - 0.12.55-1
-- Add an explicit federation private-range allowlist and acknowledged open registration with m.login.dummy, so the Complement suite can run against a release build.
+- Add an explicit federation private-range allowlist and acknowledged open registration with m.login.dummy, and accept dot-less remote media origins, so the Complement suite can run against a release build.
 
 * Mon Oct 26 2026 James Chapman <claude@ping.me.uk> - 0.12.54-1
 - Integrate main, including documentation branding, while retaining DB-6 PostgreSQL fixture isolation.

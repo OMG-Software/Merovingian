@@ -152,8 +152,11 @@ namespace
 
     [[nodiscard]] auto server_name_is_valid(std::string_view server_name) noexcept -> bool
     {
-        return !server_name.empty() && server_name.find('.') != std::string_view::npos &&
-               server_name.find(' ') == std::string_view::npos;
+        // Delegate to the federation helper, which implements the server-name
+        // grammar (appendices.md, "Server Name"). The prior local copy also
+        // demanded a dot, which the grammar does not: "hs2" and "localhost" are
+        // valid names, and Complement names its homeservers that way.
+        return federation::server_name_is_valid(server_name);
     }
 
 } // namespace

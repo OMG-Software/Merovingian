@@ -114,6 +114,10 @@ current in-process runtime path.
   request, the legacy fallback, a `Location` redirect follow) draws from one 30 s deadline (audit
   HTTP-2). Without a media fetch pool (tests, embedded callers) a fetch runs inline under the
   ADR-0079 client-outbound budget: 1 per client address.
+- The origin of a remote fetch must be a Matrix server name, checked by
+  `federation::server_name_is_valid` (appendices, "Server Name"). A name without
+  a dot, such as `hs2` or `localhost`, is valid; until 0.12.55 the media check
+  demanded a dot and refused such origins.
 - Remote media fetches are live: the homeserver resolves the origin server via
   federation server discovery (`.well-known`, SRV, direct), then tries the
   mandatory authenticated endpoint first per spec (changed in v1.11):
