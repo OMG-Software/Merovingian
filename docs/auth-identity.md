@@ -30,6 +30,12 @@ production-gated.
   (`require_token=false`, valid only with
   `security.registration.allow_open_registration=true`, ADR-0232) offers the
   single stage `m.login.dummy`, and a request with no `auth` gets 401 in both modes.
+- A password a person chooses (registration, the bootstrap administrator,
+  `POST /account/password`) must meet `security.password_policy` (ADR-0236):
+  by default at least 12 bytes with a lower-case and an upper-case ASCII letter,
+  an ASCII digit and an ASCII symbol. A refusal is `400 M_WEAK_PASSWORD`, the
+  error code the spec gives weak passwords. A weaker policy is logged at
+  CRITICAL on every start. Appservice users' generated credentials are exempt.
 - Client-server registration, password login, refresh-token rotation, logout,
   global logout, whoami, device listing, single-device fetch, device update,
   and device delete routes use runtime token validation.

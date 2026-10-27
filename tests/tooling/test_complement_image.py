@@ -270,6 +270,15 @@ class RenderedConfigTests(unittest.TestCase):
                 # THEN none is low enough for a Complement run to meet.
                 self.assert_out_of_reach(key)
 
+    def test_the_password_policy_admits_complements_passwords(self) -> None:
+        # GIVEN the rendered config.
+        # WHEN the password policy is read.
+        policy = {key: self.config.get(f"security.password_policy.{key}")
+                  for key in ("min_length", "require_character_classes")}
+        # THEN it accepts any non-empty password: Complement registers users with
+        # passwords such as "password" and "secret" that a deployment would refuse.
+        self.assertEqual(policy, {"min_length": "1", "require_character_classes": "false"})
+
     def test_failed_logins_cannot_lock_a_client_out(self) -> None:
         # GIVEN the rendered config.
         # WHEN the login throttle is read.

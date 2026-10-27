@@ -1,3 +1,34 @@
+## 0.12.58
+
+The first full Complement run against 0.12.57 failed 322 tests, nearly all before reaching what
+they test: the server's fixed password rule refused every password Complement registers users
+with. This release makes the rule configurable and fixes its error code.
+
+- **ADDED:** `security.password_policy.min_length` (bytes, 1-1024, default 12) and
+  `security.password_policy.require_character_classes` (default `true`) (ADR-0236). The defaults
+  are the rule enforced until now, so no deployment changes. The policy covers registration, the
+  bootstrap administrator and `POST /account/password`; appservice users' generated credentials
+  stay exempt. A weaker policy is logged at CRITICAL on every start (`registration.password_policy_relaxed`),
+  and both keys need a restart.
+- **FIXED:** a password the policy refused was answered `400 M_UNKNOWN "password rejected"`. The
+  spec says servers "MAY reject weak passwords with an error code `M_WEAK_PASSWORD`", so registration
+  and `POST /account/password` now answer `400 M_WEAK_PASSWORD`.
+- **DOCS:** the example config says, beside the registration and password settings, what weakening
+  each does and which CRITICAL line it causes on every start (`registration.open`,
+  `registration.password_policy_relaxed`).
+- **CHANGED:** the Complement template sets `min_length=1` and `require_character_classes=false`,
+  so Complement's users can register.
+- **CHANGED:** `scripts/run_complement.py` lists and runs only Complement's `./tests` and
+  `./tests/csapi` packages (ADR-0237). `./tests/...` also ran the `tests/msc*` packages, which test
+  unstable proposals outside Matrix v1.19 and accounted for 19 of the first run's top-level failures.
+- **TESTS:** `test_homeserver_weakened_settings_log.cpp` starts the server weakened and at its
+  defaults and checks exactly which CRITICAL lines appear.
+- **TESTS:** `test_config_password_policy.cpp` (defaults, parsing, range, restart),
+  `test_homeserver_password_policy.cpp` (the configured policy reaches registration, both relaxed and
+  stricter), policy scenarios in `test_auth.cpp`, `M_WEAK_PASSWORD` conformance scenarios for
+  `/register` and `POST /account/password`, and in the tooling tests the template's relaxed policy
+  and the run's package list.
+
 ## 0.12.57
 
 The first step towards running the external Complement suite against a release build, the

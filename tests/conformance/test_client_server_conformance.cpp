@@ -4881,6 +4881,44 @@ SCENARIO("POST /account/password returns 200 with empty JSON object", "[conforma
     }
 }
 
+// Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#password-management
+//
+// "Servers MAY reject weak passwords with an error code M_WEAK_PASSWORD." A new
+// password the server's policy refuses is refused with that errcode, and the
+// old password keeps working.
+SCENARIO("POST /account/password refuses a weak password with M_WEAK_PASSWORD",
+         "[conformance][client-server][account][password-policy]")
+{
+    GIVEN("a running client-server with the default password policy and a logged-in user")
+    {
+        auto started = merovingian::homeserver::start_client_server(conformance_config());
+        REQUIRE(started.started);
+        auto const token = logged_in_token(started.runtime);
+
+        WHEN("POST /account/password completes authentication with a weak new password")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                started.runtime,
+                {"POST", "/_matrix/client/v3/account/password", token,
+                 R"({"auth":{"type":"m.login.password","identifier":{"type":"m.id.user","user":"@alice:example.org"},"password":"CorrectHorse7!"},"new_password":"password"})"});
+
+            THEN("the change is refused as a weak password and the old password still logs in")
+            {
+                // Spec MAY: weak passwords are rejected "with an error code M_WEAK_PASSWORD".
+                REQUIRE(response.response.status == 400U);
+                auto const body = parse_object(response.response.body);
+                auto const* errcode = string_member(body, "errcode");
+                // Spec MAY: the errcode for a weak password is M_WEAK_PASSWORD.
+                REQUIRE(errcode != nullptr);
+                // Spec MAY: the errcode for a weak password is M_WEAK_PASSWORD.
+                REQUIRE(*errcode == "M_WEAK_PASSWORD");
+                // Spec MUST: a refused change leaves the account's password as it was.
+                REQUIRE_FALSE(login_existing_user(started.runtime, "alice", "AFTERWEAK").empty());
+            }
+        }
+    }
+}
+
 // Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#post_matrixclientv3accountpassword
 //
 // logout_devices defaults to true. When a user changes their password the server

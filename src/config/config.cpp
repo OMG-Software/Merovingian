@@ -868,6 +868,9 @@ auto validate(Config const& config) -> std::vector<ConfigValidationFinding>
     {
         findings.push_back({"security.federation.backfill.timeout", "must be between 1s and 300s"});
     }
+    // An empty password must never pass, and a minimum no client can meet
+    // would close registration by accident (ADR-0236).
+    validate_count("security.password_policy.min_length", config.security().password_policy.min_length, 1024U);
     validate_count("security.login_throttle.max_failures_per_source",
                    config.security().login_throttle.max_failures_per_source, 1000U);
     validate_count("security.login_throttle.max_failures_per_account",

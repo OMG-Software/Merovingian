@@ -184,14 +184,36 @@ listeners.max_queued_connections=1024
 #database.sqlite_path=/var/lib/merovingian/merovingian.sqlite3
 
 # Public registration
-# Registration is disabled by default. If enabled, keep require_token=true and
-# store the token in an owner-only secret file outside web roots.
+# Registration is disabled by default. To let people sign up, set enabled=true
+# and keep require_token=true: only someone holding the token in token_file
+# (an owner-only file outside web roots) can create an account.
+#
+# WEAKENING: enabled=true with require_token=false is OPEN registration.
+# Anyone who can reach the client API can create as many accounts as they like,
+# with no token and no other check than the password policy below. Use it only
+# on a private or test server. Because one mistyped value would do this, the
+# server refuses to start with require_token=false unless
+# allow_open_registration=true is also set, as the explicit acknowledgement.
+# The server logs registration.open at CRITICAL on every start while it is open.
 security.registration.enabled=false
 security.registration.require_token=true
 security.registration.token_file=/etc/merovingian/registration-token
-# allow_open_registration=true is the explicit acknowledgement that
-# require_token=false is intended. Never set it on a public server.
 security.registration.allow_open_registration=false
+
+# Password policy, for passwords a person chooses: registration, the bootstrap
+# administrator and password changes. A refused password gets 400
+# M_WEAK_PASSWORD. The defaults require at least 12 bytes (not characters: a
+# non-ASCII character is 2 to 4 bytes) with a lower-case and an upper-case
+# letter, a digit and a symbol. min_length can be raised up to 1024.
+#
+# WEAKENING: min_length below 12, or require_character_classes=false, lets
+# users choose shorter or simpler passwords that are easier to guess; with
+# min_length=1 and no classes, any non-empty password is accepted. The
+# failed-login throttle below still limits guessing. The server logs
+# registration.password_policy_relaxed at CRITICAL on every start while the
+# policy is weaker than the default. A change needs a restart.
+security.password_policy.min_length=12
+security.password_policy.require_character_classes=true
 
 # Failed-login throttle. A password login for an account is refused (429
 # M_LIMIT_EXCEEDED) once it has max_failures_per_source failures from one client

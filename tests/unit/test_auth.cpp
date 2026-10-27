@@ -241,13 +241,83 @@ SCENARIO("Auth password policy requires a hardened minimum shape", "[auth]")
 
         WHEN("password policy is evaluated")
         {
-            auto const weak_accepted = merovingian::auth::password_is_acceptable(weak_password);
-            auto const stronger_accepted = merovingian::auth::password_is_acceptable(stronger_password);
+            auto const policy = merovingian::auth::PasswordPolicy{};
+            auto const weak_accepted = merovingian::auth::password_is_acceptable(weak_password, policy);
+            auto const stronger_accepted = merovingian::auth::password_is_acceptable(stronger_password, policy);
 
             THEN("weak passwords are rejected")
             {
                 REQUIRE_FALSE(weak_accepted);
                 REQUIRE(stronger_accepted);
+            }
+        }
+    }
+}
+
+SCENARIO("The default password policy needs twelve bytes and every character class",
+         "[auth][password-policy][security]")
+{
+    GIVEN("the default policy")
+    {
+        auto const policy = merovingian::auth::PasswordPolicy{};
+
+        WHEN("passwords one requirement short are evaluated")
+        {
+            THEN("each is refused, and one that meets them all is accepted")
+            {
+                REQUIRE(policy.min_length == 12U);
+                REQUIRE(policy.require_character_classes);
+                REQUIRE_FALSE(merovingian::auth::password_is_acceptable("CorrectHo7!", policy));    // 11 bytes
+                REQUIRE_FALSE(merovingian::auth::password_is_acceptable("correcthorse7!", policy)); // no upper
+                REQUIRE_FALSE(merovingian::auth::password_is_acceptable("CORRECTHORSE7!", policy)); // no lower
+                REQUIRE_FALSE(merovingian::auth::password_is_acceptable("CorrectHorse!!", policy)); // no digit
+                REQUIRE_FALSE(merovingian::auth::password_is_acceptable("CorrectHorse77", policy)); // no symbol
+                REQUIRE(merovingian::auth::password_is_acceptable("CorrectHo7!x", policy));
+            }
+        }
+    }
+}
+
+SCENARIO("A relaxed password policy accepts what it no longer requires", "[auth][password-policy][security]")
+{
+    GIVEN("a policy without character classes and an eight-byte minimum")
+    {
+        auto const policy = merovingian::auth::PasswordPolicy{.min_length = 8U, .require_character_classes = false};
+
+        WHEN("a lower-case password is evaluated at, and below, the minimum")
+        {
+            THEN("only the length is enforced")
+            {
+                REQUIRE(merovingian::auth::password_is_acceptable("password", policy));
+                REQUIRE_FALSE(merovingian::auth::password_is_acceptable("secret", policy));
+            }
+        }
+    }
+
+    GIVEN("a policy with character classes and a one-byte minimum")
+    {
+        auto const policy = merovingian::auth::PasswordPolicy{.min_length = 1U, .require_character_classes = true};
+
+        WHEN("short passwords are evaluated")
+        {
+            THEN("the classes are still enforced")
+            {
+                REQUIRE(merovingian::auth::password_is_acceptable("aB3!", policy));
+                REQUIRE_FALSE(merovingian::auth::password_is_acceptable("secret", policy));
+            }
+        }
+    }
+
+    GIVEN("the most relaxed policy the config allows")
+    {
+        auto const policy = merovingian::auth::PasswordPolicy{.min_length = 1U, .require_character_classes = false};
+
+        WHEN("a short password and the empty password are evaluated")
+        {
+            THEN("any non-empty password is accepted, and the empty one never is")
+            {
+                REQUIRE(merovingian::auth::password_is_acceptable("secret", policy));
+                REQUIRE_FALSE(merovingian::auth::password_is_acceptable("", policy));
             }
         }
     }

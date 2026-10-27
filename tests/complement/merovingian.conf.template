@@ -33,10 +33,20 @@ database.backend=sqlite
 database.sqlite_path=@ROOT@/var/lib/merovingian/data/merovingian.sqlite3
 security.secrets.master_key_file=@ROOT@/var/lib/merovingian/secrets/master.key
 
-# Complement registers its users without a token (ADR-0232).
+# Complement registers its users without a token, so registration is open:
+# anyone who can reach the client API can create an account. That needs the
+# acknowledgement too (ADR-0232), and the server logs registration.open at
+# CRITICAL on every start.
 security.registration.enabled=true
 security.registration.require_token=false
 security.registration.allow_open_registration=true
+
+# Complement's users have passwords such as "password", "secret" and
+# "complement_meets_min_password_req", which the default policy (12 bytes and
+# every character class) refuses, so no test could get past creating its users.
+# Any non-empty password is accepted here (ADR-0236).
+security.password_policy.min_length=1
+security.password_policy.require_character_classes=false
 
 # Complement's servers live on Docker networks and host.docker.internal, all
 # inside RFC 1918 space (ADR-0231). Loopback and link-local stay blocked.

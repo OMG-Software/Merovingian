@@ -421,6 +421,18 @@ struct RegistrationSecurityConfig final
     bool allow_open_registration{false};
 };
 
+// ADR-0236: the rule a password a person chooses must meet, at registration and
+// on a password change. The defaults are the rule enforced before it was
+// configurable. Anything weaker is logged at CRITICAL on every start, and a
+// change needs a restart. Appservice users' generated credentials are exempt.
+struct PasswordPolicyConfig final
+{
+    // Bytes, 1 to 1024.
+    std::uint32_t min_length{12U};
+    // A lower-case and an upper-case ASCII letter, an ASCII digit and an ASCII symbol.
+    bool require_character_classes{true};
+};
+
 // AUTH-2: the failed-password-login throttle. A password login is refused once
 // the account has `max_failures_per_source` failures from one client source
 // inside `window` (that source only), or `max_failures_per_account` failures
@@ -848,6 +860,7 @@ struct AppserviceConfig final
 struct SecurityConfig final
 {
     RegistrationSecurityConfig registration{};
+    PasswordPolicyConfig password_policy{};
     LoginThrottleSecurityConfig login_throttle{};
     EncryptionSecurityConfig encryption{};
     FederationSecurityConfig federation{};

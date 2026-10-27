@@ -11395,8 +11395,10 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             register_local_user(rt.homeserver, *body->localpart, body->password, body->registration_token);
         if (!result.ok)
         {
-            return dispatch_err(req, rt, result.status, registration_error_code(result.status, result.reason),
-                                result.reason, result.retry_after_ms);
+            // A refusal that names its own errcode (M_WEAK_PASSWORD, ADR-0236) keeps it.
+            auto const errcode = result.errcode.empty() ? registration_error_code(result.status, result.reason)
+                                                        : std::string_view{result.errcode};
+            return dispatch_err(req, rt, result.status, errcode, result.reason, result.retry_after_ms);
         }
         auto const full_user_id = result.value;
         // Spec §5.5.1: inhibit_login suppresses session creation; return only user_id.
@@ -12715,6 +12717,11 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             if (result.status == 429U)
             {
                 return dispatch_err(req, rt, 429U, "M_LIMIT_EXCEEDED", result.reason, result.retry_after_ms);
+            }
+            // A refusal that names its own errcode (M_WEAK_PASSWORD, ADR-0236) keeps it.
+            if (!result.errcode.empty())
+            {
+                return dispatch_err(req, rt, result.status, result.errcode, result.reason);
             }
             return dispatch_err(req, rt, result.status, result.status == 401U ? "M_UNKNOWN_TOKEN" : "M_FORBIDDEN",
                                 result.reason);

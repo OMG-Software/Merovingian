@@ -220,6 +220,8 @@
 * [0233 - Complement runs the shipped trixie package, in an image that drops its own privileges](0233-complement-runs-the-shipped-trixie-package-in-an-image-that-drops-its-own-privileges.md)
 * [0234 - A Complement run is judged by a summariser over a checked-in skip list](0234-a-complement-run-is-judged-by-a-summariser-over-a-checked-in-skip-list.md)
 * [0235 - Complement evidence is a maintainer-signed record tied to the shipped binary](0235-complement-evidence-is-a-maintainer-signed-record-tied-to-the-shipped-binary.md)
+* [0236 - The password policy is configurable, strict by default](0236-the-password-policy-is-configurable-strict-by-default.md)
+* [0237 - Complement runs only its federation and client-server packages](0237-complement-runs-only-its-federation-and-client-server-packages.md)
 
 ## Proposed Records
 
@@ -253,3 +255,4 @@
 * [0216 - The upgrade path is tested from a forward-only schema seam and a database the previous release wrote](0216-upgrade-path-is-tested-from-a-forward-only-seam-and-a-real-previous-release-fixture.md) — Refined by ADR-0224: the migrations collapsed in 0.12.47, before 1.0.0, and the 0.11.13 fixture is gone; the seam and synthetic scenarios stay
 * [0064 - Spec-conformant PDU ingestion with delta state groups](0064-spec-conformant-pdu-ingestion-with-delta-state-groups.md) — Refined by ADR-0225: when the state across a room's forward extremities cannot be resolved, a local event is built on the newest extremity alone and the others are retired, instead of being refused; and by ADR-0228: local and federated-join bookkeeping commits in one transaction with the event
 * [0092 - Normalize known rate-limit routes and evict least-recently-used buckets](0092-normalize-rate-limit-routes-and-evict-lru.md) — Refined by ADR-0230: the matcher is also the list of served paths, so every implemented route, static or dynamic, must be recognised, and a path it cannot place is answered 404 M_UNRECOGNIZED before authentication
+* [0234 - A Complement run is judged by a summariser over a checked-in skip list](0234-a-complement-run-is-judged-by-a-summariser-over-a-checked-in-skip-list.md) — Refined by ADR-0237: only Complement's `./tests` and `./tests/csapi` packages run; the `tests/msc*` packages test proposals outside v1.19

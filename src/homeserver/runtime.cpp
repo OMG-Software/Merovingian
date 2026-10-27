@@ -1062,6 +1062,21 @@ auto start_runtime(RuntimeStartOptions opts) -> RuntimeStartResult
         },
             observability::LogEventSeverity::critical);
     }
+    if (auto const& password_policy = runtime.config.security().password_policy;
+        password_policy.min_length < config::PasswordPolicyConfig{}.min_length ||
+        !password_policy.require_character_classes)
+    {
+        // ADR-0236: a policy weaker than the default lets users choose weaker
+        // passwords. A change needs a restart, so this is never skipped.
+        log_diagnostic(
+            "registration.password_policy_relaxed",
+            {
+                {"min_length",                std::to_string(password_policy.min_length),                   false},
+                {"require_character_classes", password_policy.require_character_classes ? "true" : "false", false},
+                {"reason",                    "security.password_policy is weaker than the default",        false}
+        },
+            observability::LogEventSeverity::critical);
+    }
     if (runtime.discovery_network != nullptr)
     {
         // Wrap the raw network with a 60s TTL cache so repeated lookups for the
