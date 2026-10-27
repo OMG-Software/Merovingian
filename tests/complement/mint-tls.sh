@@ -57,18 +57,21 @@ trap 'rm -rf "$work"' EXIT
 
 # `openssl req` refuses to run without a config file, and not every system
 # ships one. Everything this script needs is on the command line, so it uses
-# a minimal config of its own rather than whatever the host has.
+# a minimal config of its own rather than whatever the host has. No
+# `prompt = no`: with it, LibreSSL takes the subject from the config's
+# section instead of -subj. The section's entry is a prompt label -subj
+# replaces, and stdin is closed below so nothing can prompt.
 cat >"$work/openssl.cnf" <<'EOF'
 [req]
 distinguished_name = req_distinguished_name
-prompt = no
 [req_distinguished_name]
+commonName = Common Name
 EOF
 OPENSSL_CONF="$work/openssl.cnf"
 export OPENSSL_CONF
 
 openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:P-256 -out "$work/key.pem" 2>/dev/null
-openssl req -new -key "$work/key.pem" -subj "/CN=${host}" -out "$work/request.csr"
+openssl req -new -key "$work/key.pem" -subj "/CN=${host}" -out "$work/request.csr" </dev/null
 cat >"$work/extensions.cnf" <<EOF
 basicConstraints = critical, CA:FALSE
 keyUsage = critical, digitalSignature

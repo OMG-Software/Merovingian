@@ -105,7 +105,9 @@ server refused both with no setting that could change it.
 - **FIXED:** `tests/complement/mint-tls.sh` and the tests' CA helper ran `openssl req`, which
   refuses to run without a config file. The NetBSD CI VM ships none, so `complement-image-tooling`
   failed there. Both now use a minimal config of their own (`OPENSSL_CONF`). A scenario mints
-  with the system config missing.
+  with the system config missing. The config has no `prompt = no`, under which OpenBSD's
+  LibreSSL takes the subject from the config instead of `-subj` and fails on an empty section.
+  The test CA's extensions come from the file rather than `-addext`.
 - **TESTS:** the fake tools in `test_run_complement.py` no longer need `sha256sum` or `seq`, which
   the BSD hosts may lack. The certificate checks in `test_complement_image.py` read
   `openssl x509 -text`, which LibreSSL also has.

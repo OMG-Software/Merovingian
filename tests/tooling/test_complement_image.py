@@ -86,22 +86,32 @@ def render(server_name: str, allow_without_landlock: str = "false", root: str = 
 
 
 # `openssl req` refuses to run without a config file, and some hosts (the
-# NetBSD CI VM) ship none, so the helpers bring their own.
-MINIMAL_OPENSSL_CONF = "[req]\ndistinguished_name = req_distinguished_name\nprompt = no\n[req_distinguished_name]\n"
+# NetBSD CI VM) ship none, so the CA helper brings its own. It works with
+# OpenSSL and LibreSSL (OpenBSD): no `prompt = no`, which makes LibreSSL ignore
+# -subj, and the CA's extensions in the file rather than -addext.
+TEST_CA_OPENSSL_CONF = (
+    "[req]\n"
+    "distinguished_name = req_distinguished_name\n"
+    "x509_extensions = ca_extensions\n"
+    "[req_distinguished_name]\n"
+    "commonName = Common Name\n"
+    "[ca_extensions]\n"
+    "basicConstraints = critical, CA:TRUE\n"
+    "keyUsage = critical, keyCertSign, cRLSign\n"
+)
 
 
 def make_ca(directory: Path) -> None:
     """Write a throwaway CA as Complement mounts it: ca.crt and ca.key."""
     directory.mkdir(parents=True)
     openssl_conf = directory.parent / "test-ca-openssl.cnf"
-    openssl_conf.write_text(MINIMAL_OPENSSL_CONF, encoding="utf-8")
-    result = run(
-        "openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes",
-        "-keyout", str(directory / "ca.key"), "-out", str(directory / "ca.crt"),
-        "-days", "2", "-subj", "/CN=Complement test CA",
-        "-addext", "basicConstraints=critical,CA:TRUE",
-        "-addext", "keyUsage=critical,keyCertSign,cRLSign",
-        env={"OPENSSL_CONF": str(openssl_conf)},
+    openssl_conf.write_text(TEST_CA_OPENSSL_CONF, encoding="utf-8")
+    result = subprocess.run(
+        ["openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes",
+         "-keyout", str(directory / "ca.key"), "-out", str(directory / "ca.crt"),
+         "-days", "2", "-subj", "/CN=Complement test CA"],
+        env=dict(os.environ, OPENSSL_CONF=str(openssl_conf)),
+        stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=60, check=False,
     )
     if result.returncode != 0:
         raise RuntimeError(result.stderr)
