@@ -40,6 +40,21 @@ pagination and filters, and the expected failures from the legacy media freeze.
   service now builds the body with `federation::build_pdu_transaction_body`, beside the EDU builder
   that already got this right. Regression: `test_outbound_pdu_transaction_flow.cpp` sends a message
   in a room shared with another server and checks the queued transaction; it fails on the old code.
+- **FIXED:** after joining a room on another server, every event from a member who was already
+  joined was refused as "sender is not joined to the room" (Complement triage F1). The join
+  verified and persisted only the room-level part of the `send_join` state before returning, built
+  the join event's state group from that part alone, and left other members to a background task
+  that never added them to it; the auth rules judge an event against the state before it, which
+  for the first events after the join is that group. A join now verifies the whole `state` array,
+  with the same bounded key-resolution parallelism, and persists all of it before it returns, so
+  the join's state holds every member and `/members` is complete at once (ADR-0241). The fast-join
+  split (`split_send_join_state_events`) and the `room.join.background_state_complete` log event
+  are gone. A first join to a room spanning many servers now waits for their keys.
+- **TESTS (regression):** the live `join_room` scenario in `test_join_room_flow.cpp` (tag
+  `[join-full-state]`) now requires every member of the returned state to be joined, and in the
+  join event's state group, when `join_room` returns, and a signed message from one of them, sent
+  after the join, to be accepted; it fails on the old code. The six `split_send_join_state_events`
+  unit scenarios are removed with the function.
 - **FIXED:** room version 12 creation. Every v12 room's initial power levels now define
   `m.room.tombstone` above `state_default` (the spec's MUST; only `trusted_private_chat` did), and
   a client's own tombstone level in `power_level_content_override` is kept. A
@@ -47,6 +62,15 @@ pagination and filters, and the expected failures from the legacy media freeze.
   not an array of valid user IDs, is refused with `400 M_INVALID_ROOM_STATE` before anything is
   created; they had been silently stripped, answered 500, or (for a server name such as
   `dom$ain$.com`) accepted.
+- **CHANGED:** `power_level_content_override` replaces each top-level key of the generated power
+  levels, nested maps included, instead of merging into them (ADR-0240). The v12 tombstone level
+  is part of the generated `events` map, so an override that supplies `events` decides it; one
+  that does not keeps it above the resulting `state_default`.
+- **ADDED:** `GET /rooms/{roomId}/state/{eventType}/{stateKey}?format=event` returns the whole
+  client-formatted event (v1.16); it had returned the content only.
+- **CHANGED:** the Complement skip list also expects five owner decisions where v1.19 is silent:
+  `/members?at` is the strict point the token names, and auth-rule refusals of invalid content
+  stay `403 M_FORBIDDEN` (Complement wants 400).
 - **FIXED:** the v12 `m.room.create` event reached clients without `room_id` on `/state`,
   `/event`, `/context` and `/messages`. Room version 12 omits it from the PDU only; the client
   format requires it.

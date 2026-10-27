@@ -15265,6 +15265,13 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                 {
                     return dispatch_err(req, rt, 500U, "M_UNKNOWN", "state event JSON is not an object");
                 }
+                // `format`: "`content` (the default) will return only the content of the state
+                // event. `event` will return the entire event in the usual format suitable for
+                // clients" (v1.16).
+                if (query_param_value(req.target, "format") == "event")
+                {
+                    return complete({200U, json_serialize(client_event_with_id(store, *event_it))});
+                }
                 auto const* content_val = object_member(*event_obj, "content");
                 if (content_val == nullptr)
                 {

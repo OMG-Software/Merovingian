@@ -8,9 +8,9 @@
 // |  URL:  ../../docs/matrix-v1.19-spec/server-server-api.md#joining-rooms   |
 // |                                                                         |
 // |  Drives merovingian::homeserver::join_room() through a REAL make_join / |
-// |  send_join round trip against a local TLS server, exercising the fast- |
-// |  join state split, send_join signature verification, and the           |
-// |  background membership-fill task end to end. This closes the           |
+// |  send_join round trip against a local TLS server, exercising send_join |
+// |  signature verification and persistence of the whole returned state   |
+// |  (ADR-0241) end to end. This closes the                                |
 // |  codecov/patch coverage gap left by PR #341 (room_service.cpp's        |
 // |  post-send_join-success path had no integration coverage).             |
 // |                                                                         |
@@ -504,20 +504,6 @@ auto constexpr resident_key_seed = "join-room-flow-resident-seed";
     return eid.event_id;
 }
 
-// Blocks until every background task a join queued (the partial-state
-// member fill, see HomeserverRuntime::orphan_futures_) has finished.
-auto wait_for_join_background_tasks(merovingian::homeserver::HomeserverRuntime& runtime) -> void
-{
-    auto const lock = std::lock_guard{runtime.orphan_futures_mutex_};
-    for (auto& future : runtime.orphan_futures_)
-    {
-        if (future.valid())
-        {
-            future.wait();
-        }
-    }
-}
-
 [[nodiscard]] auto canonicaljson_array_to_string(merovingian::canonicaljson::Array const& array) -> std::string
 {
     auto out = std::string{"["};
@@ -537,25 +523,23 @@ auto wait_for_join_background_tasks(merovingian::homeserver::HomeserverRuntime& 
 
 } // namespace
 
-SCENARIO("join_room completes a live federated join and defers the bulk membership list to a background task",
-         "[membership-template-hashes][homeserver][federation][join][integration]")
+// ADR-0241: a federated join verifies and persists every event of the send_join `state` array,
+// other members' m.room.member events included, before it returns. The join event's after-state
+// group is built from all of it, so an event from any member who was joined before us is judged
+// against state that holds that member. With the earlier fast join, other members were filled in
+// afterwards, never into the join's state group, and every event they sent next failed the auth
+// rules as "sender is not joined to the room" (Complement F1).
+SCENARIO("join_room completes a live federated join with every member of the returned state in the join's state",
+         "[membership-template-hashes][homeserver][federation][join][join-full-state][integration]")
 {
     GIVEN("a real HomeserverRuntime, a logged-in local user, and a real TLS resident server")
     {
         REQUIRE(sodium_init() >= 0);
         auto const template_has_hashes = GENERATE(false, true);
         auto const profile_mode = GENERATE(as<std::string>{}, "absent", "empty", "display-only", "avatar-only");
-        // Declared before `started`/`runtime` so it destructs AFTER them:
-        // HomeserverRuntime's destructor blocks until every orphaned
-        // background future (see orphan_futures_) has finished draining, and
-        // the background member-fill task holds a reference to `runtime` and
-        // may call notify_room_changed() — which writes through
-        // runtime.test_room_changed_log — for as long as it is still
-        // in-flight. If this vector destructed first (the default order for
-        // a variable declared after `runtime`), a THEN block that returns
-        // before explicitly waiting on the background task would free this
-        // vector while that task could still be writing to it through the
-        // now-dangling pointer.
+        // Declared before `started`/`runtime` so it outlives them: join_room
+        // writes through runtime.test_room_changed_log when it notifies the
+        // federation worker.
         auto changed_rooms = std::vector<std::string>{};
         auto started = merovingian::homeserver::start_runtime(registration_enabled_config());
         REQUIRE(started.started);
@@ -630,10 +614,9 @@ SCENARIO("join_room completes a live federated join and defers the bulk membersh
                                      R"("avatar_url":"mxc://resident.example.org/forged"}})";
         auto const make_join_body = std::string{R"({"room_version":"10","event":)"} + make_join_event + "}";
 
-        // --- send_join response: critical state (create/power_levels/our own
-        // membership) plus five OTHER members' m.room.member events, all signed
-        // by the resident server — the bulk that gets deferred to the
-        // background task. ---
+        // --- send_join response: create, power_levels and our own membership,
+        // plus five OTHER members' m.room.member events, all signed by the
+        // resident server. ---
         auto const create_event = std::string{R"({"type":"m.room.create","state_key":"","sender":")"} + creator +
                                   R"(","room_id":")" + room_id +
                                   R"(","depth":1,"origin_server_ts":900,)"
@@ -696,7 +679,7 @@ SCENARIO("join_room completes a live federated join and defers the bulk membersh
 
             server_thread.join();
 
-            THEN("the join succeeds immediately with critical room state already persisted")
+            THEN("the join succeeds with the room's state persisted")
             {
                 CAPTURE(template_has_hashes, profile_mode, result.reason);
                 REQUIRE(result.ok);
@@ -739,9 +722,6 @@ SCENARIO("join_room completes a live federated join and defers the bulk membersh
                     REQUIRE(avatar_url == nullptr);
                 }
 
-                // The background member-fill task (see HomeserverRuntime::orphan_futures_)
-                // is still running at this point and writes to persistent_store under
-                // runtime.mutex; every reader must take the same lock or race against it.
                 auto const lock = std::lock_guard{runtime.mutex};
 
                 auto const& state = runtime.database.persistent_store.state;
@@ -758,29 +738,33 @@ SCENARIO("join_room completes a live federated join and defers the bulk membersh
                 }));
             }
 
-            THEN("after the background task drains, every deferred member is persisted too")
+            THEN("every other member is joined, and in the join event's state, as soon as join_room returns")
             {
-                // Deterministic wait: block on every future queued by this
-                // join's background fill (see HomeserverRuntime::orphan_futures_)
-                // instead of sleeping. Waiting does not consume/invalidate a
-                // std::future, so this is safe to do from the test thread.
-                {
-                    auto const lock = std::lock_guard{runtime.orphan_futures_mutex_};
-                    for (auto& future : runtime.orphan_futures_)
-                    {
-                        if (future.valid())
-                        {
-                            future.wait();
-                        }
-                    }
-                }
+                CAPTURE(template_has_hashes, profile_mode, result.reason);
+                REQUIRE(result.ok);
+                auto const lock = std::lock_guard{runtime.mutex};
+                auto const& store = runtime.database.persistent_store;
 
-                auto const& memberships = runtime.database.persistent_store.memberships;
+                auto const join_state_row =
+                    std::ranges::find_if(store.state, [&](merovingian::database::PersistentStateEvent const& s) {
+                        return s.room_id == room_id && s.event_type == "m.room.member" && s.state_key == alice;
+                    });
+                REQUIRE(join_state_row != store.state.end());
+                auto const join_event_id = join_state_row->event_id;
+                auto const group = merovingian::database::find_event_state_group(store, join_event_id);
+                REQUIRE(group.has_value());
+                auto const full = merovingian::database::read_state_group_full_state(store, *group);
+                REQUIRE(full.has_value());
+
                 for (auto member_index = std::size_t{0U}; member_index < k_other_member_count; ++member_index)
                 {
                     auto const member_id = "@member" + std::to_string(member_index) + ":" + resident_server;
-                    REQUIRE(std::ranges::any_of(memberships, [&](auto const& m) {
+                    CAPTURE(member_id);
+                    REQUIRE(std::ranges::any_of(store.memberships, [&](auto const& m) {
                         return m.room_id == room_id && m.user_id == member_id && m.membership == "join";
+                    }));
+                    REQUIRE(std::ranges::any_of(*full, [&](auto const& e) {
+                        return e.event_type == "m.room.member" && e.state_key == member_id;
                     }));
                 }
 
@@ -788,17 +772,88 @@ SCENARIO("join_room completes a live federated join and defers the bulk membersh
                     return r.room_id == room_id;
                 });
                 REQUIRE(room_it != runtime.database.rooms.end());
-                // alice + 5 deferred members.
+                // alice + the five members the resident returned.
                 REQUIRE(room_it->members.size() == k_other_member_count + 1U);
 
-                // The federation worker notification fires once for the
-                // synchronous critical-state join and again once the
-                // background member fill completes (see room_service.cpp's
-                // notify_room_changed call sites) — both for this same room.
+                // The federation worker is told about this room, and no other.
                 REQUIRE_FALSE(changed_rooms.empty());
                 REQUIRE(std::ranges::all_of(changed_rooms, [&](auto const& logged_room_id) {
                     return logged_room_id == room_id;
                 }));
+
+                AND_THEN("a message from one of those members, after the join, is accepted")
+                {
+                    auto const sender = "@member0:" + std::string{resident_server};
+                    auto const state_event_id = [&](std::string_view type, std::string_view state_key) {
+                        auto const entry = std::ranges::find_if(*full, [&](auto const& e) {
+                            return e.event_type == type && e.state_key == state_key;
+                        });
+                        REQUIRE(entry != full->end());
+                        return entry->event_id;
+                    };
+                    auto auth_event_ids = std::vector<std::string>{state_event_id("m.room.create", ""),
+                                                                   state_event_id("m.room.power_levels", ""),
+                                                                   state_event_id("m.room.member", sender)};
+
+                    auto content = merovingian::canonicaljson::Object{};
+                    content.push_back(merovingian::canonicaljson::make_member(
+                        "body", merovingian::canonicaljson::Value{std::string{"hello from a resident member"}}));
+                    content.push_back(merovingian::canonicaljson::make_member(
+                        "msgtype", merovingian::canonicaljson::Value{std::string{"m.text"}}));
+                    auto obj = merovingian::canonicaljson::Object{};
+                    obj.push_back(merovingian::canonicaljson::make_member(
+                        "type", merovingian::canonicaljson::Value{std::string{"m.room.message"}}));
+                    obj.push_back(
+                        merovingian::canonicaljson::make_member("room_id", merovingian::canonicaljson::Value{room_id}));
+                    obj.push_back(
+                        merovingian::canonicaljson::make_member("sender", merovingian::canonicaljson::Value{sender}));
+                    obj.push_back(
+                        merovingian::canonicaljson::make_member("content", merovingian::canonicaljson::Value{content}));
+                    obj.push_back(merovingian::canonicaljson::make_member(
+                        "origin_server_ts", merovingian::canonicaljson::Value{std::int64_t{2000}}));
+                    obj.push_back(merovingian::canonicaljson::make_member(
+                        "depth", merovingian::canonicaljson::Value{std::int64_t{7}}));
+                    auto prev_arr = merovingian::canonicaljson::Array{};
+                    prev_arr.push_back(merovingian::canonicaljson::Value{join_event_id});
+                    obj.push_back(merovingian::canonicaljson::make_member(
+                        "prev_events", merovingian::canonicaljson::Value{std::move(prev_arr)}));
+                    auto auth_arr = merovingian::canonicaljson::Array{};
+                    for (auto const& id : auth_event_ids)
+                    {
+                        auth_arr.push_back(merovingian::canonicaljson::Value{id});
+                    }
+                    obj.push_back(merovingian::canonicaljson::make_member(
+                        "auth_events", merovingian::canonicaljson::Value{std::move(auth_arr)}));
+                    auto const hash = merovingian::events::make_content_hash(merovingian::canonicaljson::Value{obj});
+                    REQUIRE(hash.error.empty());
+                    auto hashes = merovingian::canonicaljson::Object{};
+                    hashes.push_back(merovingian::canonicaljson::make_member(
+                        "sha256", merovingian::canonicaljson::Value{hash.sha256}));
+                    obj.push_back(merovingian::canonicaljson::make_member(
+                        "hashes", merovingian::canonicaljson::Value{std::move(hashes)}));
+                    auto const unsigned_json = merovingian::canonicaljson::serialize_canonical(
+                        merovingian::canonicaljson::Value{std::move(obj)});
+                    REQUIRE(unsigned_json.error == merovingian::canonicaljson::CanonicalJsonError::none);
+                    auto const signed_json = merovingian::canonicaljson::serialize_canonical(sign_test_event(
+                        unsigned_json.output, policy, resident_server, resident_key_id, resident_key_seed));
+                    REQUIRE(signed_json.error == merovingian::canonicaljson::CanonicalJsonError::none);
+
+                    auto envelope = merovingian::federation::InboundPduEnvelope{};
+                    envelope.event_id = "$member_after_join:" + std::string{resident_server};
+                    envelope.room_id = room_id;
+                    envelope.room_version = "10";
+                    envelope.sender = sender;
+                    envelope.event_type = "m.room.message";
+                    envelope.origin_server_ts = 2000;
+                    envelope.depth = 7U;
+                    envelope.prev_event_ids = {join_event_id};
+                    envelope.auth_event_ids = std::move(auth_event_ids);
+                    envelope.json = signed_json.output;
+
+                    auto const ingest_result = merovingian::homeserver::ingest_pdu_event(runtime, envelope);
+                    CAPTURE(ingest_result.reason);
+                    REQUIRE(ingest_result.status == merovingian::federation::PduIngestionStatus::accepted);
+                }
             }
         }
     }
@@ -1651,7 +1706,6 @@ SCENARIO("A send_join response cannot inject state into a local room",
             auto const result = merovingian::homeserver::join_room(runtime, bob_login.value, joined_room,
                                                                    {std::string{resident_server}});
             server_thread.join();
-            wait_for_join_background_tasks(runtime);
             auto const lock = std::lock_guard{runtime.mutex};
 
             THEN("the join itself still succeeds, with the joined room's genuine state")
@@ -1795,7 +1849,6 @@ SCENARIO("A send_join response's own-domain events are accepted when signed with
             auto const result =
                 merovingian::homeserver::join_room(runtime, login.value, room_id, {std::string{resident_server}});
             server_thread.join();
-            wait_for_join_background_tasks(runtime);
             auto const lock = std::lock_guard{runtime.mutex};
             auto const& store = runtime.database.persistent_store;
 
@@ -2136,7 +2189,6 @@ SCENARIO("A federated join is refused when the room's create event does not decl
             auto result = merovingian::homeserver::join_room(runtime, bob_login.value, joined_room,
                                                              {std::string{resident_server}});
             server_thread.join();
-            wait_for_join_background_tasks(runtime);
             return result;
         };
         // Nothing of a refused room may be stored: no current state and no event.

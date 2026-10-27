@@ -312,6 +312,7 @@ shell = find_program('sh')
       'unit/test_remote_key_cache.cpp',
       'unit/test_remote_key_resolver_worker_store.cpp',
       'unit/test_room_upgrade_predecessor.cpp',
+      'unit/test_create_room_power_level_override.cpp',
       'unit/test_review_regressions.cpp',
       'unit/test_room_encryption_policy.cpp',
       'unit/test_runtime_config.cpp',

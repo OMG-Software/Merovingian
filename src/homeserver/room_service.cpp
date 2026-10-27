@@ -473,31 +473,6 @@ namespace
         object.push_back(std::move(member));
     }
 
-    auto merge_object_into(canonicaljson::Object& destination, canonicaljson::Object const& source) -> void
-    {
-        for (auto const& member : source)
-        {
-            auto existing = std::ranges::find_if(destination, [&member](canonicaljson::ObjectMember const& current) {
-                return current.key == member.key;
-            });
-            if (existing != destination.end())
-            {
-                auto const* destination_object = std::get_if<canonicaljson::Object>(&existing->value->storage());
-                auto const* source_object = std::get_if<canonicaljson::Object>(&member.value->storage());
-                if (destination_object != nullptr && source_object != nullptr)
-                {
-                    auto merged = *destination_object;
-                    merge_object_into(merged, *source_object);
-                    existing->value = std::make_unique<canonicaljson::Value>(std::move(merged));
-                    continue;
-                }
-                existing->value = std::make_unique<canonicaljson::Value>(*member.value);
-                continue;
-            }
-            destination.push_back(canonicaljson::make_member(member.key, *member.value));
-        }
-    }
-
     [[nodiscard]] auto serialize_canonical_string(canonicaljson::Value const& value) -> std::optional<std::string>
     {
         auto const serialized = canonicaljson::serialize_canonical(value);
@@ -3292,9 +3267,20 @@ auto ensure_crypto_provider_holds_key(HomeserverRuntime& runtime, std::string_vi
                                        : server_failure("initial room state event generation failed");
     };
 
+    // m.room.power_levels `events`: "when the server sends the initial power levels event during
+    // room creation in room versions 12 and higher, the m.room.tombstone event MUST be explicitly
+    // defined and given a power level higher than state_default. ... Clients may override this
+    // using the described power_level_content_override field." So it is part of the generated
+    // content, which the override is then applied on top of.
+    auto generated_events = canonicaljson::Object{};
+    if (room_version_number(options.room_version) >= 12)
+    {
+        generated_events.push_back(
+            canonicaljson::make_member("m.room.tombstone", canonicaljson::Value{std::int64_t{150}}));
+    }
     auto power_levels = canonicaljson::Object{};
     power_levels.push_back(canonicaljson::make_member("ban", canonicaljson::Value{std::int64_t{50}}));
-    power_levels.push_back(canonicaljson::make_member("events", canonicaljson::Value{canonicaljson::Object{}}));
+    power_levels.push_back(canonicaljson::make_member("events", canonicaljson::Value{std::move(generated_events)}));
     power_levels.push_back(canonicaljson::make_member("events_default", canonicaljson::Value{std::int64_t{0}}));
     power_levels.push_back(canonicaljson::make_member("invite", canonicaljson::Value{std::int64_t{50}}));
     power_levels.push_back(canonicaljson::make_member("kick", canonicaljson::Value{std::int64_t{50}}));
@@ -3337,7 +3323,13 @@ auto ensure_crypto_provider_holds_key(HomeserverRuntime& runtime, std::string_vi
     }
     power_levels.push_back(canonicaljson::make_member("users", canonicaljson::Value{std::move(power_users)}));
     power_levels.push_back(canonicaljson::make_member("users_default", canonicaljson::Value{std::int64_t{0}}));
-    merge_object_into(power_levels, options.power_level_content_override);
+    // power_level_content_override "is applied on top of the generated m.room.power_levels event
+    // content": each of its keys replaces that key of the generated content, nested maps
+    // (`users`, `events`) included (ADR-0240).
+    for (auto const& member : options.power_level_content_override)
+    {
+        upsert_object_member(power_levels, canonicaljson::make_member(member.key, *member.value));
+    }
     if (creator_has_implicit_power_level)
     {
         // v12_creation_refusal has already refused a client override naming a creator; this
@@ -3360,15 +3352,10 @@ auto ensure_crypto_provider_holds_key(HomeserverRuntime& runtime, std::string_vi
             }
         }
     }
-    // m.room.power_levels `events`: "when the server sends the initial power levels event during
-    // room creation in room versions 12 and higher, the m.room.tombstone event MUST be explicitly
-    // defined and given a power level higher than state_default. ... Clients may override this
-    // using the described power_level_content_override field."
-    auto const override_sets_tombstone = [&options] {
-        auto const* events = object_member_as_object(options.power_level_content_override, "events");
-        return events != nullptr && object_member(*events, "m.room.tombstone") != nullptr;
-    }();
-    if (room_version_number(options.room_version) >= 12 && !override_sets_tombstone)
+    // An override that supplies `events` owns the whole map, tombstone included. Otherwise the
+    // generated tombstone level stays above state_default, which the override may have raised.
+    auto const override_sets_events = object_member(options.power_level_content_override, "events") != nullptr;
+    if (room_version_number(options.room_version) >= 12 && !override_sets_events)
     {
         auto state_default = std::int64_t{50};
         if (auto const* configured_state_default = integer_member(power_levels, "state_default");
@@ -4098,22 +4085,6 @@ auto filter_verified_send_join_events(HomeserverRuntime& runtime, canonicaljson:
     return verified;
 }
 
-auto split_send_join_state_events(canonicaljson::Array const& state_arr, std::string_view our_user_id)
-    -> SendJoinStateSplit
-{
-    auto split = SendJoinStateSplit{};
-    for (auto const& entry : state_arr)
-    {
-        auto const* entry_obj = std::get_if<canonicaljson::Object>(&entry.storage());
-        auto const* type_field = entry_obj != nullptr ? json_string_member(*entry_obj, "type") : nullptr;
-        auto const* state_key_field = entry_obj != nullptr ? json_string_member(*entry_obj, "state_key") : nullptr;
-        auto const is_other_member = type_field != nullptr && *type_field == "m.room.member" &&
-                                     state_key_field != nullptr && *state_key_field != our_user_id;
-        (is_other_member ? split.background : split.critical).push_back(entry);
-    }
-    return split;
-}
-
 namespace
 {
 
@@ -4130,19 +4101,16 @@ namespace
         // Held by value. The lookup returns a pointer into a static table, but
         // storing that pointer here would make the caller's dereference depend on
         // `failure` being disengaged, and the project forbids raw pointers.
-        // RoomVersionPolicy is a string_view and a handful of enums and bools, and
-        // the background-fill task already copies it.
+        // RoomVersionPolicy is a string_view and a handful of enums and bools.
         rooms::RoomVersionPolicy policy{};
         std::string remote_server{};
         events::SignedEventResult signed_event{};
         canonicaljson::Value signed_event_value{};
         events::EventIdResult event_id_result{};
-        canonicaljson::Array verified_critical_state{};
+        // Every event of the send_join `state` array whose signature checked out,
+        // other members' m.room.member events included (ADR-0241).
+        canonicaljson::Array verified_state{};
         canonicaljson::Array verified_auth_chain{};
-        // Other members' m.room.member events, deferred to the background task
-        // `join_room` spawns once the critical state is persisted.
-        canonicaljson::Array background_state{};
-        std::size_t background_member_count{0U};
     };
 
     [[nodiscard]] auto federated_join_failure(std::string reason, std::uint16_t status) -> FederatedJoinOutcome
@@ -4548,20 +4516,13 @@ namespace
             });
             return federated_join_failure("malformed send_join response", 502U);
         }
-        // Fast join: split the state array into "critical" state (everything
-        // except OTHER users' m.room.member — create, power_levels, join_rules,
-        // history_visibility, encryption, our own membership, etc.) and
-        // "background" state (every other member's m.room.member). Critical
-        // state is small — usually a handful of events from one or two signing
-        // domains — and is verified and persisted before this call returns, so
-        // the room is immediately usable (auth checks on the joining user's own
-        // actions only ever depend on critical state). The bulk of a large
-        // room's membership list, and its potentially hundreds of distinct
-        // signing domains, is verified and persisted in the background after
-        // the join response is returned to the client — this is the same
-        // "partial state room" trade-off Synapse's faster-joins feature makes.
-        // Signature verification itself (network-bound key resolution) runs
-        // here, inside the released region, so it never holds runtime.mutex.
+        // ADR-0241: the whole state array — other members' m.room.member events
+        // included — is verified here and persisted by join_room before the join
+        // returns. The join event's after-state group is built from it, and the
+        // auth rules judge every later event from an existing member against
+        // that state, so no member may be left out of it. Signature verification
+        // (network-bound key resolution) runs here, inside the released region,
+        // so it never holds runtime.mutex.
         auto const state_arr_member = std::ranges::find_if(*send_obj, [](canonicaljson::ObjectMember const& m) {
             return m.key == "state";
         });
@@ -4569,28 +4530,24 @@ namespace
                                     ? std::get_if<canonicaljson::Array>(&state_arr_member->value->storage())
                                     : nullptr;
         // FED-1 (ADR-0083): only the joined room's events go any further — an
-        // entry naming any other room is dropped before key resolution, on
-        // both the critical and the background (partial-state) path. The
+        // entry naming any other room is dropped before key resolution. The
         // response's own `event` field is never read: the join event we store
         // is the one signed above from the validated make_join template.
-        auto state_split =
-            state_arr != nullptr
-                ? split_send_join_state_events(filter_send_join_events_for_room(*state_arr, room_id, *policy), user_id)
-                : SendJoinStateSplit{};
-        auto& critical_state = state_split.critical;
-        auto& background_state = state_split.background;
-        auto const background_member_count = background_state.size();
         // Verify each event's signature before it enters the event graph
         // (src/federation/AGENTS.md rule 2) — resolves distinct sender-domain
         // signing keys with bounded parallelism rather than trusting the
         // resident server's response wholesale. Unverifiable events are
         // silently dropped, not persisted.
-        auto verified_critical_state = filter_verified_send_join_events(runtime, critical_state, *policy, our_server);
+        auto verified_state =
+            state_arr != nullptr
+                ? filter_verified_send_join_events(
+                      runtime, filter_send_join_events_for_room(*state_arr, room_id, *policy), *policy, our_server)
+                : canonicaljson::Array{};
         // A room's version is the one its m.room.create declares; one without room_version is
         // room version 1 (ADR-0076). The make_join answer only names it. Joining under a version
         // the create event does not declare would let each component judge the room by a
         // different rule set, so refuse before anything is stored (security audit run-1).
-        for (auto const& entry : verified_critical_state)
+        for (auto const& entry : verified_state)
         {
             auto const* event = std::get_if<canonicaljson::Object>(&entry.storage());
             auto const* type = event == nullptr ? nullptr : string_member(*event, "type");
@@ -4633,10 +4590,8 @@ namespace
         outcome.signed_event = std::move(signed_event);
         outcome.signed_event_value = signed_value.value;
         outcome.event_id_result = event_id_result;
-        outcome.verified_critical_state = std::move(verified_critical_state);
+        outcome.verified_state = std::move(verified_state);
         outcome.verified_auth_chain = std::move(verified_auth_chain);
-        outcome.background_state = std::move(background_state);
-        outcome.background_member_count = background_member_count;
         return outcome;
     }
 
@@ -4816,10 +4771,8 @@ namespace
         auto const& signed_event = joined.signed_event;
         auto const& signed_event_value = joined.signed_event_value;
         auto const& event_id_result = joined.event_id_result;
-        auto const& verified_critical_state = joined.verified_critical_state;
+        auto const& verified_state = joined.verified_state;
         auto const& verified_auth_chain = joined.verified_auth_chain;
-        auto background_state = std::move(joined.background_state);
-        auto const background_member_count = joined.background_member_count;
         // Persist the room locally with the joined user as a member.
         // State events from the remote response are persisted to the
         // database so the room has enough state for auth checks.
@@ -4828,11 +4781,11 @@ namespace
         // (m.room.encryption, m.room.create, m.room.power_levels, etc.) by
         // checking the raw JSON for the presence of the "state_key" field
         // rather than its emptiness.
-        auto send_join_state = ingest_send_join_state(runtime, room_id, verified_critical_state, policy);
+        auto send_join_state = ingest_send_join_state(runtime, room_id, verified_state, policy);
         // Never open/drain admission on an incomplete or failed initial state
-        // commit. The verified snapshot must contain create and every critical
+        // commit. The verified snapshot must contain create and every verified
         // state entry must have been persisted by the bootstrap writer.
-        if (send_join_state.state_entries.size() != verified_critical_state.size() ||
+        if (send_join_state.state_entries.size() != verified_state.size() ||
             !std::ranges::any_of(send_join_state.state_entries, [](auto const& entry) {
                 return entry.event_type == "m.room.create" && entry.state_key.empty();
             }))
@@ -5098,74 +5051,9 @@ namespace
         // frozen at its own startup snapshot and a remote server's inbound
         // make_join/state query against us 404s despite this server having
         // just completed the join (see docs/architecture.md, "Federation
-        // worker room staleness"). Critical state (create/power_levels/
-        // join_rules/our own membership) is already persisted above, so the
-        // worker can answer correctly even before the background member fill
-        // below completes — same partial-state contract as fast join itself.
+        // worker room staleness"). The room's whole state, every member
+        // included, is persisted above (ADR-0241).
         notify_room_changed(runtime, room_id);
-        // Fast join: the room is fully usable now (create/power_levels/join_rules/
-        // etc. and our own membership are already verified and persisted above).
-        // The remaining member rows — deferred above as `background_state` — are
-        // verified and persisted off the request path so this call does not wait
-        // on resolving a signing key for every distinct home server in a large
-        // room. Until this completes the room is in a "partial state": queries
-        // like room_has_member()/the /members endpoint may not yet list every
-        // member. This mirrors Synapse's faster-joins partial-state rooms.
-        if (background_member_count > 0U)
-        {
-            auto room_id_bg = std::string{room_id};
-            auto our_server_bg = our_server;
-            auto policy_bg = policy;
-            auto bg_future =
-                std::async(std::launch::async, [&runtime, room_id_bg, our_server_bg, policy_bg, background_member_count,
-                                                background_state_bg = std::move(background_state)]() mutable {
-                    // Network-bound key resolution — deliberately outside runtime.mutex.
-                    auto const verified =
-                        filter_verified_send_join_events(runtime, background_state_bg, policy_bg, our_server_bg);
-                    auto bg_guard = std::unique_lock<RuntimeMutex>{runtime.mutex};
-                    auto const newly_joined = ingest_send_join_state(runtime, room_id_bg, verified, policy_bg);
-                    auto stored = std::size_t{0U};
-                    auto const room_it = std::ranges::find_if(runtime.database.rooms, [&](LocalRoom const& r) {
-                        return r.room_id == room_id_bg;
-                    });
-                    for (auto const& member : newly_joined.joined_members)
-                    {
-                        auto const member_stream = allocate_stream_ordering(runtime.database);
-                        auto const result = database::store_membership(runtime.database.persistent_store,
-                                                                       {room_id_bg, member, "join", member_stream});
-                        if (result == database::MembershipStoreResult::already_exists)
-                        {
-                            std::ignore = database::update_membership(runtime.database.persistent_store, room_id_bg,
-                                                                      member, "join", member_stream);
-                        }
-                        if (room_it != runtime.database.rooms.end())
-                        {
-                            append_unique_member(room_it->members, member);
-                        }
-                        ++stored;
-                    }
-                    if (stored > 0U && runtime.sync_notifier != nullptr)
-                    {
-                        auto const bg_sync_stream_id =
-                            database::allocate_sync_stream_id(runtime.database.persistent_store);
-                        runtime.sync_notifier->publish(runtime.database.next_stream_ordering - 1U, bg_sync_stream_id);
-                    }
-                    log_diagnostic("room.join.background_state_complete",
-                                   {
-                                       {"room_id",           room_id_bg,                                         false},
-                                       {"members_submitted", std::to_string(background_member_count),            false},
-                                       {"members_verified",  std::to_string(newly_joined.joined_members.size()), false},
-                                       {"members_stored",    std::to_string(stored),                             false}
-                    },
-                                   observability::LogEventSeverity::info);
-                    if (stored > 0U)
-                    {
-                        notify_room_changed(runtime, room_id_bg);
-                    }
-                });
-            auto orphan_lk = std::lock_guard{runtime.orphan_futures_mutex_};
-            runtime.orphan_futures_.push_back(std::move(bg_future));
-        }
         auto const pending_pdus = pending_join.take_committed();
         {
             // The sink takes room stripe then runtime mutex. Drop ALL global
@@ -6489,11 +6377,10 @@ namespace
     // build_pending_push_deliveries above. This function runs the deliveries
     // entirely OFF that lock and off the request path: it is invoked from
     // send_event() via std::async(std::launch::async, ...) and the resulting
-    // future is parked in runtime.orphan_futures_, exactly mirroring
-    // join_room's background member-fill task (see the orphan_futures_ doc
-    // comment on HomeserverRuntime — same lifetime contract: runtime's
-    // destructor blocks until every such future has drained, so the captured
-    // `runtime&` reference stays valid for as long as this task can run).
+    // future is parked in runtime.orphan_futures_ (see the orphan_futures_ doc
+    // comment on HomeserverRuntime: runtime's destructor blocks until every
+    // such future has drained, so the captured `runtime&` reference stays
+    // valid for as long as this task can run).
     //
     // Each delivery is one attempt_push_delivery (push_retry.hpp): an open circuit or a failure
     // the spec says to retry ("If the endpoint returns an HTTP error code, the homeserver SHOULD

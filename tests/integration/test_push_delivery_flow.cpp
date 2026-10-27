@@ -198,9 +198,8 @@ auto register_http_pusher_with_extra_data(merovingian::homeserver::ClientServerR
                   R"({"msgtype":"m.text","body":")" + body + R"("})"});
 }
 
-// Deterministic wait: blocks on every future queued in orphan_futures_ (the
-// same mechanism join_room's background member-fill task uses) instead of
-// sleeping. Waiting does not consume/invalidate a std::future.
+// Deterministic wait: blocks on every future queued in orphan_futures_
+// instead of sleeping. Waiting does not consume/invalidate a std::future.
 //
 // The mutex is held only long enough to move the futures out of
 // orphan_futures_, mirroring HomeserverRuntime::~HomeserverRuntime(); it must

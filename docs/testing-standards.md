@@ -256,13 +256,9 @@ map, so real-server SSRF and TLS-trust behaviour is unchanged.
    clobbering a test double set beforehand. Calling it explicitly first (and
    setting the test resolver *after*) makes `join_room`'s internal call a
    no-op via the `pdu_sink` guard.
-4. Drive `join_room` and assert on `runtime.database.persistent_store`/`.rooms`.
-   To wait for the background membership-fill task (see `docs/threat-model.md`
-   "Fast join / partial-state trade-off") deterministically rather than
-   sleeping, lock `runtime.orphan_futures_mutex_` and call `.wait()` on every
-   valid future in `runtime.orphan_futures_` — waiting does not consume or
-   invalidate a `std::future`, so this is safe to do from the test thread
-   before making further assertions.
+4. Drive `join_room` and assert on `runtime.database.persistent_store`/`.rooms`,
+   holding `runtime.mutex`. The join's whole state is persisted before it
+   returns (ADR-0241), so there is nothing to wait for.
 
 ## Sanitizers and concurrency tests
 

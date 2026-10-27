@@ -713,31 +713,24 @@ threat it closes; the controls above are the standing defences these reinforce.
   events that reach us later go through normal PDU ingestion, which
   authorises them and resolves state against it as usual.
 
-- **Fast join / partial-state trade-off (v0.10.11):** verifying a large room's
-  full `state` array before returning `join_room`'s response means the client
-  waits on resolving a signing key for every distinct member home server —
-  potentially hundreds for a 30,000-member room — even though only a handful
-  of *room-level* state events (create, power_levels, join_rules,
-  history_visibility, our own membership) are actually needed for the room to
-  be usable. `split_send_join_state_events` separates those from every other
-  member's `m.room.member` event; the former is verified and persisted
-  synchronously (the join response does not return until this completes), the
-  latter is verified and persisted by a background task tracked in the
-  existing `orphan_futures_` queue (same drain-on-shutdown guarantee as a
-  losing make_join race candidate). The verify-before-persist invariant is
-  unchanged for every event, including deferred ones — nothing enters the
-  event graph without a checked signature, and `/sync` only ever reads
-  persisted rows, so no unverified data is exposed to clients regardless of
-  timing. The trade-off is a "partial state" window: `room_has_member()`, the
-  `/members` endpoint, and the `LocalRoom.members` cache may not list every
-  member until the background task completes (`room.join.background_state_complete`
-  logs when it does), which fails closed (a not-yet-backfilled member looks
-  absent, not present) but can surface as a temporarily incomplete member
-  list to the joining client. This is deliberately narrower than Synapse's
-  full "faster joins" (MSC2775-derived) implementation — there is no explicit
-  device-list-change gating, resync coordination, or blocking of specific
-  operations while partial: it is a bounded-scope version of the same idea,
-  suitable because critical auth-relevant state is never deferred.
+- **Fast join / partial-state trade-off (v0.10.11, withdrawn in 0.12.59):**
+  from 0.10.11 `join_room` verified and persisted only the room-level part of
+  the `send_join` `state` array (create, power levels, join rules, our own
+  membership) before returning, and left every other member's
+  `m.room.member` event to a background task. Its premise, that "critical
+  auth-relevant state is never deferred", was false: the auth rules refuse an
+  event whose sender is not joined in the state before it, and the join
+  event's after-state group, built from the room-level part only, never
+  learned of the deferred members. Every event a resident member sent after
+  we joined was refused as "sender is not joined to the room" (Complement
+  triage F1). Since 0.12.59 (ADR-0241) the whole array is verified, with the
+  mutex released and the same bounded key-resolution parallelism
+  (`join_state_key_parallelism`), and persisted before the join returns; the
+  join's state group holds every member, and there is no partial-state
+  window. The cost is a slower first join to a room that spans many servers.
+  A member event whose signature cannot be checked is still dropped, not
+  stored, so that member's later events are refused until state from a later
+  event brings them back: the server fails closed.
 
 - **Remote media fetch fabricated a scanner-clean verdict for federated content
   (2026-07 audit):** `fetch_remote_media_live()` unconditionally set

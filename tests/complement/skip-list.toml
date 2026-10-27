@@ -153,3 +153,45 @@ mode = "expect-fail"
 category = "spec"
 spec = "docs/matrix-v1.19-spec/client-server-api.md#client-behaviour"
 reason = "Downloads remote media fetched during the run through /_matrix/media/v3/download; remote media cached after the freeze counts as new, so the frozen route answers 404 (ADR-0068)."
+
+# Owner decisions, 2026-10-27: v1.19 does not settle these, and this server keeps its reading.
+
+[[entry]]
+test = "TestGetRoomMembersAtPoint"
+package = "tests/csapi"
+mode = "expect-fail"
+category = "non-spec"
+spec = "docs/matrix-v1.19-spec/client-server-api.md#get_matrixclientv3roomsroomidmembers"
+reason = "`at` is \"The point in time (pagination token) to return members for\"; the test's token is the sync timeline's prev_batch, which for this small room lies before anyone joined, so the strict answer is no members. The test assumes members as of the sync instead."
+
+[[entry]]
+test = "TestPowerLevels/PUT_power_levels_should_not_explode_if_the_old_power_levels_were_empty"
+package = "tests/csapi"
+mode = "expect-fail"
+category = "non-spec"
+spec = "docs/matrix-v1.19-spec/client-server-api.md#put_matrixclientv3roomsroomidstateeventtypestatekey"
+reason = "Expects 400 for power levels the auth rules refuse; v1.19 gives no status for an auth-rule refusal of invalid content, and this server answers every auth-rule refusal 403 M_FORBIDDEN."
+
+[[entry]]
+test = "TestMSC4289PrivilegedRoomCreators/creator_cannot_set_self_in_PL_event"
+package = "tests"
+mode = "expect-fail"
+category = "non-spec"
+spec = "docs/matrix-v1.19-spec/rooms/v12.md"
+reason = "A v12 creator named in power-level users is refused by the auth rules; the test wants 400, v1.19 gives no status, and this server answers auth-rule refusals 403 M_FORBIDDEN."
+
+[[entry]]
+test = "TestMSC4289PrivilegedRoomCreators_Additional"
+package = "tests"
+mode = "expect-fail"
+category = "non-spec"
+spec = "docs/matrix-v1.19-spec/rooms/v12.md"
+reason = "An additional creator named in power-level users is refused by the auth rules; the test wants 400, v1.19 gives no status, and this server answers auth-rule refusals 403 M_FORBIDDEN."
+
+[[entry]]
+test = "TestMSC4291RoomIDAsHashOfCreateEvent_CannotSendCreateEvent"
+package = "tests"
+mode = "expect-fail"
+category = "non-spec"
+spec = "docs/matrix-v1.19-spec/rooms/v12.md"
+reason = "A second m.room.create is refused by the auth rules; the test wants 400, v1.19 gives no status, and this server answers auth-rule refusals 403 M_FORBIDDEN."

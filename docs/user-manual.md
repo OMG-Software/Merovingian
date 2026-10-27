@@ -1076,14 +1076,11 @@ every signature before the event enters the graph rather than trusting the
 resident server's response wholesale. `join_state_key_parallelism` caps
 concurrent remote signing-key resolutions for that verification pass —
 distinct `(sender_domain, key_id)` pairs are deduplicated first, so it bounds
-concurrent *distinct home servers* contacted, not concurrent events. Fast
-join persists the room's own critical state (create, power levels, join
-rules, history visibility, our own membership) and the auth chain
-synchronously before `join_room` returns; the bulk of `state` — every other
-member's `m.room.member` event — is verified and persisted by a background
-task afterward, governed by the same parallelism cap. See
-[`docs/threat-model.md`](threat-model.md) for the partial-state trade-off
-this implies.
+concurrent *distinct home servers* contacted, not concurrent events. The
+whole of `state`, every member's `m.room.member` event included, and the
+auth chain are verified and persisted before `join_room` returns (ADR-0241),
+so the first join to a room spanning many servers waits on this pass; raise
+the cap to shorten it.
 
 `join_response_max_size` exists because a `send_join` response embeds the
 room's full current state as a single HTTP response body, which for a large

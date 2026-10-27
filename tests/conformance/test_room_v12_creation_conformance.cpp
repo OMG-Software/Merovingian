@@ -349,6 +349,11 @@ SCENARIO("A room version 12 create event carries room_id in client responses",
                 call(rt, "GET", "/_matrix/client/v3/rooms/" + room_id + "/context/" + create_event_id, token);
             auto const messages_reply =
                 call(rt, "GET", "/_matrix/client/v3/rooms/" + room_id + "/messages?dir=f&limit=1", token);
+            // GET /state/{eventType}/{stateKey} `format`: "`event` will return the entire event in
+            // the usual format suitable for clients, including fields like event ID, sender and
+            // timestamp." (Added in v1.16.)
+            auto const format_event_reply =
+                call(rt, "GET", "/_matrix/client/v3/rooms/" + room_id + "/state/m.room.create/?format=event", token);
 
             THEN("every form names the room")
             {
@@ -373,6 +378,14 @@ SCENARIO("A room version 12 create event carries room_id in client responses",
                 REQUIRE(*string_member(*first, "type") == "m.room.create");
                 REQUIRE(string_member(*first, "room_id") != nullptr);
                 REQUIRE(*string_member(*first, "room_id") == room_id);
+                REQUIRE(format_event_reply.status == 200U);
+                auto const format_event = parse_object(format_event_reply.body);
+                REQUIRE(string_member(format_event, "event_id") != nullptr);
+                REQUIRE(*string_member(format_event, "event_id") == create_event_id);
+                REQUIRE(string_member(format_event, "sender") != nullptr);
+                REQUIRE(object_member_as_object(format_event, "content") != nullptr);
+                REQUIRE(string_member(format_event, "room_id") != nullptr);
+                REQUIRE(*string_member(format_event, "room_id") == room_id);
             }
         }
     }

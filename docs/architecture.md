@@ -264,14 +264,14 @@ narrowing decision is backed by measurement. See
 and the numbers it produced.
 
 **Fire-and-forget background work.** Some work must start from inside a
-request handler but must not make the client wait on it: `join_room`'s
-background member-fill (deferred verification of the bulk member list after
-a fast join) and, since v0.11.11, push notification delivery
-(`room_service.cpp`'s `dispatch_push_deliveries`, reached from
+request handler but must not make the client wait on it: push notification
+delivery (`room_service.cpp`'s `dispatch_push_deliveries`, reached from
 `send_event()` — `/send` and `/state` — and from every membership-mutating
 path: invite, join, leave, kick, ban, knock, and the 3PID invite, via
-`dispatch_membership_push_notification()`) both use the same pattern rather
-than a dedicated thread pool. The handler snapshots everything it needs
+`dispatch_membership_push_notification()`) uses this pattern rather than a
+dedicated thread pool. (`join_room`'s background member fill used it too
+until 0.12.59, when a join began persisting its whole state before returning:
+ADR-0241.) The handler snapshots everything it needs
 *while it still holds `runtime.mutex`* (for push delivery: which pushers to
 notify, and the already-built notification bodies — no I/O), then submits a
 `std::async(std::launch::async, [&runtime, ...]{ ... })` task that performs
@@ -282,7 +282,8 @@ resulting `std::future` is parked in `HomeserverRuntime::orphan_futures_`
 every parked future before any of its other members (`outbound_client`,
 `cached_discovery`, the persistent store) are torn down, so the task's
 captured `runtime&` reference is always valid for as long as it can run.
-Both call sites now share one reaping policy, `reap_completed_futures()`
+Every call site that parks a future (push delivery, and the losers of
+`join_room`'s make_join race) shares one reaping policy, `reap_completed_futures()`
 (`runtime.hpp`/`.cpp`): every already-finished future is removed from
 `orphan_futures_` before a new one is parked, so the vector does not grow
 unboundedly over the runtime's lifetime. Push delivery additionally bounds

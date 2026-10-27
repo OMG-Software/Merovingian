@@ -435,18 +435,9 @@ struct HomeserverRuntime final
     // the *design contract* directly and cheaply: every room-residency
     // change must notify the worker, regardless of whether federation_proxy
     // happens to be wired to a real worker in that test. Always nullptr in
-    // production; never read except to append to it.
-    //
-    // Lifetime hazard for callers: join_room's background member-fill task
-    // (see orphan_futures_) captures `runtime` by reference and may call
-    // notify_room_changed() — writing through this pointer — for as long as
-    // it is still in flight, and this runtime's destructor blocks until that
-    // task drains. A test that points this at a local std::vector declared
-    // AFTER `runtime` gets the wrong destruction order (the vector frees
-    // first) and the background task can write through a dangling pointer.
-    // Declare the target vector BEFORE the runtime/HomeserverRuntime
-    // variable so it destructs after runtime's blocking dtor has drained
-    // every orphaned future.
+    // production; never read except to append to it. Declare the target
+    // vector BEFORE the runtime/HomeserverRuntime variable, so it outlives
+    // anything the runtime does while it is torn down.
     std::vector<std::string>* test_room_changed_log{nullptr};
     // Owned implementation of the runtime signing provider: the production
     // multi-key provider in main, or the refusing provider in the federation
