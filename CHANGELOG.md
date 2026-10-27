@@ -1,3 +1,39 @@
+## 0.12.59
+
+The second Complement run (0.12.58) showed two federation bugs that blocked 46 of its 133 failing
+tests, and every one of those tests involved a join with another server.
+
+- **FIXED:** a federation worker refused every `send_join`, `send_leave`, `send_knock`, `invite`
+  and `/send` from a server whose key it had not already held at start-up, with
+  `403 remote is unknown` (and `429` on retries, from the failure cache). The resolver fetched and
+  verified the key, wrote it to the key cache, and then read it back. A worker cannot write that
+  cache: its SQLite connection is read-only and its PostgreSQL role has `SELECT` only. The resolver
+  now returns the key it fetched, trusted for at most seven days as before, and caching is
+  best-effort (ADR-0238). `docs/database-persistence.md` already described this behaviour; the code now
+  matches it.
+- **FIXED:** joining or leaving a room on another server refused a `make_join` or `make_leave`
+  template without `origin_server_ts`, and signed the resident server's timestamp and `origin` when
+  the template had them. The spec says the joining server "is expected to add or replace the
+  `origin`, `origin_server_ts`, and `event_id`", so this server now always sets its own `origin`
+  and timestamp and drops any `event_id` (`claim_membership_event_template`). A resident server no
+  longer chooses the timestamp our signature vouches for, which from room version 5 decides which
+  of our keys must be valid (ADR-0075).
+- **TESTS:** `test_remote_key_resolver_worker_store.cpp`: a resolver over main's SQLite database
+  opened read-only, as a worker opens it, returns a fetched key it cannot cache; main's resolver
+  still caches; a refused discovery still refuses the key. The make_join validation scenario in
+  `test_homeserver_vertical_slice.cpp` now expects a template without `origin_server_ts` to be
+  accepted, as the spec says (it encoded the opposite); added scenarios for `make_leave`, a template
+  with the wrong membership, and the claim step.
+- **TESTS (regression):** `test_federation_worker_key_resolution_flow.cpp` sends a signed `/send`
+  from a server the worker has never seen through the real inbound gate and resolver, over main's
+  SQLite database opened read-only; it is accepted, and the second request needs no fetch.
+  `test_join_room_flow.cpp`: a new `join_room` scenario and the existing `leave_room` scenario
+  check, against a TLS resident server, that the event we sign carries our `origin` and clock and
+  no `event_id`, with and without those fields in the template. Run against the old behaviour,
+  every one of these fails as Complement did (`403`, a refused template, the resident's `origin`).
+- **ADDED:** `federation::make_remote_key_resolver`, the resolver with its discovery and fetch
+  steps supplied by the caller, for tests.
+
 ## 0.12.58
 
 The first full Complement run against 0.12.57 failed 322 tests, nearly all before reaching what

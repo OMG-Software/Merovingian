@@ -168,8 +168,8 @@ public:
         return {};
     }
 
-    [[nodiscard]] auto lookup_addresses(std::string_view host,
-                                        std::uint16_t port) -> merovingian::federation::ResolvedAddressSet override
+    [[nodiscard]] auto lookup_addresses(std::string_view host, std::uint16_t port)
+        -> merovingian::federation::ResolvedAddressSet override
     {
         auto result = merovingian::federation::ResolvedAddressSet{};
         result.ok = true;
@@ -951,12 +951,16 @@ SCENARIO("Remote join fails closed when the runtime signing key is not initializ
     }
 }
 
-// Spec: Matrix Server-Server API v1.19
-// URL:  ../../docs/matrix-v1.19-spec/server-server-api.md#get_matrixfederationv1make_joinroomiduserid
+// Spec: Matrix Server-Server API v1.19, "Joining Rooms"
+// URL:  ../../docs/matrix-v1.19-spec/server-server-api.md#joining-rooms
 //
-// The joining server must reject a malformed make_join template rather than
-// repairing missing required fields locally before signing it.
-SCENARIO("Remote join rejects malformed make_join templates instead of repairing them",
+// "The joining server is expected to add or replace the origin,
+// origin_server_ts, and event_id on the templated event received by the
+// resident server. The joining server MUST also verify that the type, room_id,
+// sender, state_key and content.membership fields have the expected values."
+// So a template without origin_server_ts is accepted (we add our own), and a
+// template whose checked fields are wrong is refused, never repaired.
+SCENARIO("Remote join validates the make_join template fields the joining server must check",
          "[homeserver][vertical][rooms][federation][make-join]")
 {
     GIVEN("a make_join response whose event omits origin_server_ts")
@@ -969,10 +973,28 @@ SCENARIO("Remote join rejects malformed make_join templates instead of repairing
             auto const parsed = merovingian::homeserver::validate_make_join_response("!room:remote.example.org",
                                                                                      "@alice:local.example.org", body);
 
-            THEN("validation fails because origin_server_ts is required")
+            THEN("validation succeeds: the joining server adds origin_server_ts itself")
+            {
+                REQUIRE(parsed.ok);
+                REQUIRE(parsed.room_version == "12");
+            }
+        }
+    }
+
+    GIVEN("a make_join response whose content.membership is not join")
+    {
+        auto const body = std::string{
+            R"({"room_version":"12","event":{"type":"m.room.member","room_id":"!room:remote.example.org","sender":"@alice:local.example.org","state_key":"@alice:local.example.org","origin_server_ts":1234,"content":{"membership":"leave"}}})"};
+
+        WHEN("the response is validated before signing")
+        {
+            auto const parsed = merovingian::homeserver::validate_make_join_response("!room:remote.example.org",
+                                                                                     "@alice:local.example.org", body);
+
+            THEN("validation fails rather than repairing the membership")
             {
                 REQUIRE_FALSE(parsed.ok);
-                REQUIRE(parsed.reason.find("origin_server_ts") != std::string::npos);
+                REQUIRE(parsed.reason.find("membership") != std::string::npos);
             }
         }
     }
@@ -1009,6 +1031,118 @@ SCENARIO("Remote join rejects malformed make_join templates instead of repairing
             {
                 REQUIRE(parsed.ok);
                 REQUIRE(parsed.room_version == "12");
+            }
+        }
+    }
+}
+
+// Spec: Matrix Server-Server API v1.19, "Leaving Rooms (Rejecting Invites)"
+// URL:  ../../docs/matrix-v1.19-spec/server-server-api.md#leaving-rooms-rejecting-invites
+//
+// make_leave returns a template like make_join's, which the leaving server
+// fills in the same way: the timestamp is the leaving server's to add.
+SCENARIO("Remote leave accepts a make_leave template without origin_server_ts",
+         "[homeserver][vertical][rooms][federation][make-join]")
+{
+    GIVEN("a make_leave response whose event omits origin_server_ts")
+    {
+        auto const body = std::string{
+            R"({"room_version":"12","event":{"type":"m.room.member","room_id":"!room:remote.example.org","sender":"@alice:local.example.org","state_key":"@alice:local.example.org","content":{"membership":"leave"}}})"};
+
+        WHEN("the response is validated before signing")
+        {
+            auto const parsed = merovingian::homeserver::validate_make_leave_response("!room:remote.example.org",
+                                                                                      "@alice:local.example.org", body);
+
+            THEN("validation succeeds")
+            {
+                REQUIRE(parsed.ok);
+            }
+        }
+    }
+}
+
+namespace
+{
+[[nodiscard]] auto member_of(merovingian::canonicaljson::Object const& object, std::string_view key)
+    -> merovingian::canonicaljson::Value const*
+{
+    auto const found = std::ranges::find_if(object, [key](auto const& member) {
+        return member.key == key;
+    });
+    return found == object.end() ? nullptr : found->value.get();
+}
+
+[[nodiscard]] auto string_of(merovingian::canonicaljson::Object const& object, std::string_view key)
+    -> std::optional<std::string>
+{
+    auto const* value = member_of(object, key);
+    auto const* text = value == nullptr ? nullptr : std::get_if<std::string>(&value->storage());
+    return text == nullptr ? std::nullopt : std::optional<std::string>{*text};
+}
+
+[[nodiscard]] auto integer_of(merovingian::canonicaljson::Object const& object, std::string_view key)
+    -> std::optional<std::int64_t>
+{
+    auto const* value = member_of(object, key);
+    auto const* number = value == nullptr ? nullptr : std::get_if<std::int64_t>(&value->storage());
+    return number == nullptr ? std::nullopt : std::optional<std::int64_t>{*number};
+}
+} // namespace
+
+// Spec: Matrix Server-Server API v1.19, "Joining Rooms"
+// URL:  ../../docs/matrix-v1.19-spec/server-server-api.md#joining-rooms
+//
+// "The joining server is expected to add or replace the origin,
+// origin_server_ts, and event_id on the templated event received by the
+// resident server." The event is ours once we sign it, so the resident must
+// not choose its timestamp: from room version 5 other servers judge our key's
+// validity at that timestamp (ADR-0075).
+SCENARIO("The joining server puts its own origin and timestamp on a membership template",
+         "[homeserver][vertical][rooms][federation][make-join]")
+{
+    GIVEN("a validated make_join template carrying the resident's origin, timestamp and an event_id")
+    {
+        auto const body = std::string{
+            R"({"room_version":"12","event":{"type":"m.room.member","room_id":"!room:remote.example.org","sender":"@alice:local.example.org","state_key":"@alice:local.example.org","origin":"remote.example.org","origin_server_ts":1234,"event_id":"$resident-chosen","depth":7,"content":{"membership":"join"}}})"};
+        auto parsed = merovingian::homeserver::validate_make_join_response("!room:remote.example.org",
+                                                                           "@alice:local.example.org", body);
+        REQUIRE(parsed.ok);
+
+        WHEN("this server claims the template")
+        {
+            merovingian::homeserver::claim_membership_event_template(parsed.event, "local.example.org",
+                                                                     1'800'000'000'000);
+
+            THEN("origin and origin_server_ts are ours, event_id is gone, and the checked fields are untouched")
+            {
+                REQUIRE(string_of(parsed.event, "origin") == "local.example.org");
+                REQUIRE(integer_of(parsed.event, "origin_server_ts") == 1'800'000'000'000);
+                REQUIRE(member_of(parsed.event, "event_id") == nullptr);
+                REQUIRE(string_of(parsed.event, "room_id") == "!room:remote.example.org");
+                REQUIRE(string_of(parsed.event, "sender") == "@alice:local.example.org");
+                REQUIRE(string_of(parsed.event, "state_key") == "@alice:local.example.org");
+                REQUIRE(integer_of(parsed.event, "depth") == 7);
+            }
+        }
+    }
+
+    GIVEN("a validated make_join template without origin or origin_server_ts")
+    {
+        auto const body = std::string{
+            R"({"room_version":"12","event":{"type":"m.room.member","room_id":"!room:remote.example.org","sender":"@alice:local.example.org","state_key":"@alice:local.example.org","content":{"membership":"join"}}})"};
+        auto parsed = merovingian::homeserver::validate_make_join_response("!room:remote.example.org",
+                                                                           "@alice:local.example.org", body);
+        REQUIRE(parsed.ok);
+
+        WHEN("this server claims the template")
+        {
+            merovingian::homeserver::claim_membership_event_template(parsed.event, "local.example.org", 42);
+
+            THEN("both fields are added")
+            {
+                REQUIRE(string_of(parsed.event, "origin") == "local.example.org");
+                REQUIRE(integer_of(parsed.event, "origin_server_ts") == 42);
             }
         }
     }
@@ -1206,7 +1340,8 @@ SCENARIO("ensure_runtime_server_signing_key migrates a legacy ed25519:auto key b
         // "ed25519:auto", which notary servers (e.g. matrix.org) may have cached with a
         // far-future valid_until_ts, making it impossible to rotate via normal expiry.
         runtime.database.persistent_store.server_signing_keys.push_back({
-            server_name, "ed25519:auto",
+            server_name,
+            "ed25519:auto",
             "cHVibGlja2V5", // base64("pubkey") - syntactically valid but not real Ed25519
             32503680000000ULL,
             "c2VjcmV0a2V5", // base64("secretkey") - valid base64, wrong size

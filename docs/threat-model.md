@@ -2526,3 +2526,19 @@ Security audit run-1 (2026-10-20) found six LOW issues, all fixed in 0.12.34.
   with previews enabled the server makes requests to public hosts on users' behalf, revealing its
   address to them and letting a user point it at any public service within the caps; `http`
   previews can be altered in transit (the content is treated as hostile either way).
+
+### A resident server's timestamp on our joins; workers that could not verify new servers (0.12.59)
+
+- **Resident-chosen timestamps on our membership events.** When we joined or left a remote room we
+  signed the `make_join`/`make_leave` template's `origin_server_ts` and `origin` as the resident server
+  sent them. From room version 5 other servers judge our signing key's validity at the event's own
+  timestamp (ADR-0075), so a resident could date our user's join outside our key's validity, making
+  it unverifiable elsewhere, or backdate it. **Mitigation:** the joining server sets its own
+  `origin` and timestamp and drops any `event_id`, as the spec's "Joining Rooms" prose says
+  (`claim_membership_event_template`).
+- **Workers refusing servers they had not cached.** A federation worker cannot write the key cache
+  (read-only SQLite, `SELECT`-only PostgreSQL role), and the resolver read keys back after writing
+  them, so a worker refused every server it had not cached at start-up. This was an availability
+  failure, not a security one: nothing was accepted unverified. **Mitigation:** the resolver returns
+  the key it fetched and self-verified, trusted for at most seven days, without widening the
+  worker's database rights (ADR-0238).

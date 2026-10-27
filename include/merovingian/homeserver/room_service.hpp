@@ -117,6 +117,14 @@ struct SendJoinStateSplit final
     -> std::vector<std::string>;
 [[nodiscard]] auto validate_make_join_response(std::string_view requested_room_id, std::string_view requested_user_id,
                                                std::string_view body) -> ValidatedMakeJoinResponse;
+// Server-Server API, "Joining Rooms": the joining server "is expected to add or
+// replace the origin, origin_server_ts, and event_id on the templated event
+// received by the resident server". Puts this server's name and clock on a
+// validated make_join or make_leave template before it is hashed and signed, and
+// drops any event_id (room versions 3 and later derive it from the event). The
+// resident never chooses the timestamp this server signs.
+auto claim_membership_event_template(canonicaljson::Object& event, std::string_view our_server_name,
+                                     std::int64_t now_ms) -> void;
 [[nodiscard]] auto validate_make_leave_response(std::string_view requested_room_id, std::string_view requested_user_id,
                                                 std::string_view body) -> ValidatedMakeLeaveResponse;
 // Synchronous outbound federation call — signs in-process then routes via

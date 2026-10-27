@@ -1831,16 +1831,24 @@ SCENARIO("A send_join response's own-domain events are accepted when signed with
     }
 }
 
+// Spec: Matrix Server-Server API v1.19, "Joining Rooms" (make_leave templates are
+// filled in the same way): the joining server "is expected to add or replace the
+// origin, origin_server_ts, and event_id on the templated event". The leave we
+// sign carries our origin and our clock, whatever the template held, and a
+// template without them is accepted.
 SCENARIO("leave_room signs remote membership templates with and without existing hashes",
-         "[membership-template-hashes][homeserver][federation][integration]")
+         "[membership-template-hashes][homeserver][federation][integration][make-join]")
 {
     GIVEN("a logged-in local user with a persisted remote membership and a TLS resident server")
     {
         REQUIRE(sodium_init() >= 0);
         auto const template_has_hashes = GENERATE(false, true);
+        auto const template_is_stamped = GENERATE(true, false);
         auto started = merovingian::homeserver::start_runtime(registration_enabled_config());
         REQUIRE(started.started);
         auto& runtime = started.runtime;
+        auto constexpr our_clock_ms = std::int64_t{1'800'000'000'000};
+        runtime.test_frozen_event_clock_ms = our_clock_ms;
         auto const reg = merovingian::homeserver::register_local_user(runtime, "alice", "CorrectHorse7!",
                                                                       merovingian::tests::registration_token);
         REQUIRE(reg.ok);
@@ -1863,10 +1871,14 @@ SCENARIO("leave_room signs remote membership templates with and without existing
             merovingian::homeserver::TestOnlyForcedOutboundResolution{
                 "localhost", acceptor.bound_port(), {"127.0.0.1"}, certificate.certificate_pem};
 
-        auto const leave_event =
-            std::string{R"({"type":"m.room.member","state_key":")"} + alice + R"(","room_id":")" + room_id +
-            R"(","sender":")" + alice + R"(","depth":7,"origin_server_ts":1001,"prev_events":[],"auth_events":[],)" +
-            (template_has_hashes ? R"("hashes":{"sha256":"stale"},)" : "") + R"("content":{"membership":"leave"}})";
+        auto const leave_event = std::string{R"({"type":"m.room.member","state_key":")"} + alice + R"(","room_id":")" +
+                                 room_id + R"(","sender":")" + alice + R"(","depth":7,)" +
+                                 (template_is_stamped ? std::string{R"("origin":")"} + resident_server +
+                                                            R"(","origin_server_ts":1001,"event_id":"$resident",)"
+                                                      : std::string{}) +
+                                 R"("prev_events":[],"auth_events":[],)" +
+                                 (template_has_hashes ? R"("hashes":{"sha256":"stale"},)" : "") +
+                                 R"("content":{"membership":"leave"}})";
         auto const make_leave_response =
             json_http_response("200 OK", std::string{R"({"room_version":"10","event":)"} + leave_event + "}");
         auto const send_response = json_http_response("200 OK", "{}");
@@ -1883,16 +1895,148 @@ SCENARIO("leave_room signs remote membership templates with and without existing
 
             THEN("the leave succeeds and the outbound event has one correct hash and a valid local signature")
             {
-                CAPTURE(template_has_hashes, result.reason);
+                CAPTURE(template_has_hashes, template_is_stamped, result.reason);
                 REQUIRE(result.ok);
                 REQUIRE(result.value == room_id);
                 REQUIRE(captured_requests.size() == 2U);
                 auto const leave = event_from_send_request(captured_requests[1]);
                 auto const policy = *merovingian::rooms::find_room_version_policy("10");
                 require_membership_event_integrity(runtime, leave, policy);
+                auto const* leave_object = std::get_if<merovingian::canonicaljson::Object>(&leave.storage());
+                REQUIRE(leave_object != nullptr);
+                // Ours, not the resident's: origin, origin_server_ts and no event_id.
+                auto const* origin = merovingian::tests::string_member(*leave_object, "origin");
+                REQUIRE(origin != nullptr);
+                REQUIRE(*origin == local_server);
+                auto const* timestamp = merovingian::tests::int_member(*leave_object, "origin_server_ts");
+                REQUIRE(timestamp != nullptr);
+                REQUIRE(*timestamp == our_clock_ms);
+                REQUIRE(merovingian::tests::object_member(*leave_object, "event_id") == nullptr);
                 REQUIRE(std::ranges::any_of(runtime.database.persistent_store.memberships, [&](auto const& member) {
                     return member.room_id == room_id && member.user_id == alice && member.membership == "leave";
                 }));
+            }
+        }
+    }
+}
+
+// Spec: Matrix Server-Server API v1.19, "Joining Rooms"
+// URL:  ../../docs/matrix-v1.19-spec/server-server-api.md#joining-rooms
+//
+// "The joining server is expected to add or replace the origin,
+// origin_server_ts, and event_id on the templated event received by the
+// resident server." Regression for Complement run 2 (0.12.58): a template
+// without origin_server_ts was refused (`502 make_join event origin_server_ts
+// is required`), and a template with one had the resident's timestamp signed
+// as ours. From room version 5 other servers judge our key at that timestamp
+// (ADR-0075), so the resident must not choose it.
+SCENARIO("join_room signs the join with its own origin and timestamp, whatever the make_join template holds",
+         "[homeserver][federation][join][integration][make-join]")
+{
+    GIVEN("a logged-in local user, a frozen event clock and a TLS resident server")
+    {
+        REQUIRE(sodium_init() >= 0);
+        auto const template_is_stamped = GENERATE(true, false);
+        auto started = merovingian::homeserver::start_runtime(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        auto constexpr our_clock_ms = std::int64_t{1'800'000'000'000};
+        runtime.test_frozen_event_clock_ms = our_clock_ms;
+
+        auto const reg = merovingian::homeserver::register_local_user(runtime, "alice", "CorrectHorse7!",
+                                                                      merovingian::tests::registration_token);
+        REQUIRE(reg.ok);
+        auto const login = merovingian::homeserver::login_local_user(runtime, reg.value, "CorrectHorse7!", "DEVICE1");
+        REQUIRE(login.ok);
+        auto const alice = reg.value;
+
+        auto const certificate = write_test_tls_certificate();
+        auto tls_context = merovingian::homeserver::make_tls_server_context(certificate.certificate_file,
+                                                                            certificate.private_key_file);
+        REQUIRE(tls_context.ok());
+        auto acceptor = merovingian::net::TcpAcceptor{};
+        REQUIRE(acceptor.bind("127.0.0.1", 0U).ok);
+        runtime.test_forced_outbound_resolution[resident_server] =
+            merovingian::homeserver::TestOnlyForcedOutboundResolution{
+                "localhost", acceptor.bound_port(), {"127.0.0.1"}, certificate.certificate_pem};
+
+        merovingian::homeserver::wire_federation_callbacks(runtime);
+        runtime.federation.remote_key_resolver =
+            [](std::string_view server_name,
+               std::string_view key_id) -> std::optional<merovingian::federation::FederationRemoteRuntime> {
+            if (server_name != resident_server || key_id != resident_key_id)
+            {
+                return std::nullopt;
+            }
+            return resident_remote_runtime();
+        };
+
+        auto const room_id = std::string{"!stamproom:"} + resident_server;
+        auto const creator = std::string{"@creator:"} + resident_server;
+        auto const policy = *merovingian::rooms::find_room_version_policy("10");
+
+        auto const make_join_event = std::string{R"({"type":"m.room.member","state_key":")"} + alice +
+                                     R"(","room_id":")" + room_id + R"(","sender":")" + alice + R"(","depth":3,)" +
+                                     (template_is_stamped ? std::string{R"("origin":")"} + resident_server +
+                                                                R"(","origin_server_ts":1,"event_id":"$resident",)"
+                                                          : std::string{}) +
+                                     R"("prev_events":[],"auth_events":[],"content":{"membership":"join"}})";
+        auto const make_join_body = std::string{R"({"room_version":"10","event":)"} + make_join_event + "}";
+
+        auto const create_event = std::string{R"({"type":"m.room.create","state_key":"","sender":")"} + creator +
+                                  R"(","room_id":")" + room_id +
+                                  R"(","depth":1,"origin_server_ts":900,)"
+                                  R"("prev_events":[],"auth_events":[],)"
+                                  R"("content":{"room_version":"10","creator":")" +
+                                  creator + R"("}})";
+        auto const power_levels_event = std::string{R"({"type":"m.room.power_levels","state_key":"","sender":")"} +
+                                        creator + R"(","room_id":")" + room_id +
+                                        R"(","depth":2,"origin_server_ts":901,)"
+                                        R"("prev_events":[],"auth_events":[],"content":{"users":{")" +
+                                        creator + R"(":100}}})";
+        auto state_array = merovingian::canonicaljson::Array{};
+        state_array.push_back(
+            sign_test_event(create_event, policy, resident_server, resident_key_id, resident_key_seed));
+        state_array.push_back(
+            sign_test_event(power_levels_event, policy, resident_server, resident_key_id, resident_key_seed));
+        auto auth_chain_array = merovingian::canonicaljson::Array{};
+        auth_chain_array.push_back(
+            sign_test_event(create_event, policy, resident_server, resident_key_id, resident_key_seed));
+        auth_chain_array.push_back(
+            sign_test_event(power_levels_event, policy, resident_server, resident_key_id, resident_key_seed));
+        auto const send_join_body = std::string{R"({"state":)"} + canonicaljson_array_to_string(state_array) +
+                                    R"(,"auth_chain":)" + canonicaljson_array_to_string(auth_chain_array) + "}";
+
+        auto const make_join_response = json_http_response("200 OK", make_join_body);
+        auto const send_join_response = json_http_response("200 OK", send_join_body);
+
+        WHEN("join_room joins through the resident server")
+        {
+            auto captured_requests = std::vector<std::string>{};
+            auto server_thread = std::thread{[&]() {
+                run_resident_server(acceptor, *tls_context.context, make_join_response, send_join_response,
+                                    captured_requests);
+            }};
+            auto const result =
+                merovingian::homeserver::join_room(runtime, login.value, room_id, {std::string{resident_server}});
+            server_thread.join();
+
+            THEN("the join succeeds, and the event we signed carries our origin and clock and no event_id")
+            {
+                CAPTURE(template_is_stamped, result.reason);
+                REQUIRE(result.ok);
+                REQUIRE(captured_requests.size() == 2U);
+                auto const join_event = event_from_send_request(captured_requests[1]);
+                require_membership_event_integrity(runtime, join_event, policy);
+                auto const* join_object = std::get_if<merovingian::canonicaljson::Object>(&join_event.storage());
+                REQUIRE(join_object != nullptr);
+                auto const* origin = merovingian::tests::string_member(*join_object, "origin");
+                REQUIRE(origin != nullptr);
+                REQUIRE(*origin == local_server);
+                auto const* timestamp = merovingian::tests::int_member(*join_object, "origin_server_ts");
+                REQUIRE(timestamp != nullptr);
+                REQUIRE(*timestamp == our_clock_ms);
+                REQUIRE(merovingian::tests::object_member(*join_object, "event_id") == nullptr);
             }
         }
     }

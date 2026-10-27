@@ -876,13 +876,10 @@ namespace
         {
             return {false, "make_join event type must be m.room.member"};
         }
-        // The origin field was removed from events in room version 4 (hash-based
-        // event IDs replaced server-name-based IDs). Do not require it on the
-        // make_join event template — room versions 10/11/12 omit it.
-        if (integer_member(*event_object, "origin_server_ts") == nullptr)
-        {
-            return {false, "make_join event origin_server_ts is required"};
-        }
+        // "Joining Rooms": the joining server "is expected to add or replace the
+        // origin, origin_server_ts, and event_id", so the template need not carry
+        // them (claim_membership_event_template sets ours). Only type, room_id,
+        // sender, state_key and content.membership MUST be verified.
         auto const* content = object_member_as_object(*event_object, "content");
         if (content == nullptr)
         {
@@ -930,10 +927,6 @@ namespace
         if (event_type == nullptr || *event_type != "m.room.member")
         {
             return {false, "make_leave event type must be m.room.member"};
-        }
-        if (integer_member(*event_object, "origin_server_ts") == nullptr)
-        {
-            return {false, "make_leave event origin_server_ts is required"};
         }
         auto const* content = object_member_as_object(*event_object, "content");
         if (content == nullptr)
@@ -4332,6 +4325,7 @@ namespace
         }
         auto const room_version = validated.room_version;
         auto event_object = validated.event;
+        claim_membership_event_template(event_object, our_server, event_clock_now_ms(runtime));
         // The resident server's template carries the membership; the joining user's display name
         // and avatar URL are this server's to add, before the content hash and signature. Any the
         // template supplies are dropped first: add_member_profile leaves an unset local field out,
@@ -5488,6 +5482,7 @@ namespace
             }
             auto const room_version = validated.room_version;
             auto event_object = validated.event;
+            claim_membership_event_template(event_object, our_server, event_clock_now_ms(runtime));
 
             // Step 3: add content hash and sign the leave event.
             auto const content_hash = events::make_content_hash(canonicaljson::Value{event_object});
@@ -7758,6 +7753,16 @@ auto validate_make_join_response(std::string_view requested_room_id, std::string
         return {false, "make_join response must be a JSON object"};
     }
     return validate_make_join_event(requested_room_id, requested_user_id, *response_object);
+}
+
+auto claim_membership_event_template(canonicaljson::Object& event, std::string_view our_server_name,
+                                     std::int64_t now_ms) -> void
+{
+    std::erase_if(event, [](canonicaljson::ObjectMember const& member) {
+        return member.key == "event_id";
+    });
+    replace_or_add_member(event, "origin", canonicaljson::Value{std::string{our_server_name}});
+    replace_or_add_member(event, "origin_server_ts", canonicaljson::Value{now_ms});
 }
 
 auto validate_make_leave_response(std::string_view requested_room_id, std::string_view requested_user_id,

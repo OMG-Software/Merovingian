@@ -37,6 +37,15 @@ namespace
     // at most 7 days before it must be fetched again.
     auto constexpr max_key_trust_ms = std::uint64_t{7U * 24U * 60U * 60U * 1000U};
 
+    // rooms/v5.md: "Servers MUST use the lesser of valid_until_ts and 7 days
+    // into the future when determining if a key is valid." Measured from the
+    // fetch, so a key its owner has withdrawn stops being trusted (ADR-0075).
+    [[nodiscard]] auto trusted_until(std::uint64_t valid_until_ts, std::uint64_t fetched_at_ms) noexcept
+        -> std::uint64_t
+    {
+        return std::min(valid_until_ts, fetched_at_ms + max_key_trust_ms);
+    }
+
     [[nodiscard]] auto find_member(canonicaljson::Object const& object, std::string_view key) noexcept
         -> canonicaljson::Value const*
     {
@@ -337,11 +346,7 @@ auto cache_remote_server_keys(database::PersistentStore& store, RemoteKeyRespons
     {
         return false;
     }
-    // rooms/v5.md: "Servers MUST use the lesser of valid_until_ts and 7 days
-    // into the future when determining if a key is valid." Capping at the
-    // fetch forces a refetch within 7 days, so a key its owner has withdrawn
-    // stops being trusted (ADR-0075).
-    auto const valid_until_ts = std::min(response.valid_until_ts, fetched_at_ms + max_key_trust_ms);
+    auto const valid_until_ts = trusted_until(response.valid_until_ts, fetched_at_ms);
     auto all_ok = true;
     for (auto const& verify_key : response.verify_keys)
     {
@@ -464,8 +469,33 @@ namespace
         return runtime;
     }
 
-    using DiscoverFn = std::function<ServerDiscoveryResult(std::string_view, std::uint32_t)>;
-    using FetchKeysFn = std::function<RemoteKeyFetchResult(http::OutboundClient&, std::string_view, std::uint32_t)>;
+    // The record for `key_id` in a fetched, self-verified key response, trusted
+    // for exactly as long as cache_remote_server_keys would trust it.
+    [[nodiscard]] auto fetched_key_record(RemoteKeyResponse const& response, std::string_view key_id,
+                                          std::uint64_t fetched_at_ms) -> std::optional<FederationKeyRecord>
+    {
+        if (response.valid_until_ts == 0U)
+        {
+            return std::nullopt;
+        }
+        auto const entry = std::ranges::find_if(response.verify_keys, [key_id](RemoteVerifyKey const& key) {
+            return key.key_id == key_id;
+        });
+        if (entry == response.verify_keys.end())
+        {
+            return std::nullopt;
+        }
+        auto record = FederationKeyRecord{};
+        record.server_name = response.server_name;
+        record.key_id = entry->key_id;
+        record.valid_until_ts = trusted_until(response.valid_until_ts, fetched_at_ms);
+        record.public_key_bytes = events::matrix_bytes_from_base64(entry->public_key_base64);
+        if (record.public_key_bytes.size() != crypto::ed25519_public_key_bytes)
+        {
+            return std::nullopt;
+        }
+        return record;
+    }
 
     // Shared body of the remote-key resolver. `discover` resolves a server
     // name to a destination (raw `discover_server` or a TTL cache) and
@@ -474,8 +504,9 @@ namespace
     // resolver; they capture the underlying network/cache by pointer, which
     // must outlive the resolver (the runtime owns both).
     [[nodiscard]] auto make_resolver_impl(database::PersistentStore& store, http::OutboundClient& client,
-                                          std::uint32_t timeout_seconds, RemoteKeyClock clock, DiscoverFn discover,
-                                          FetchKeysFn fetch_keys, std::string own_server_name) -> RemoteKeyResolver
+                                          std::uint32_t timeout_seconds, RemoteKeyClock clock,
+                                          RemoteKeyDiscoverFn discover, RemoteKeyFetchFn fetch_keys,
+                                          std::string own_server_name) -> RemoteKeyResolver
     {
         return [&store, &client, timeout_seconds, clock = std::move(clock), discover = std::move(discover),
                 fetch_keys = std::move(fetch_keys), own_server_name = std::move(own_server_name)](
@@ -533,13 +564,22 @@ namespace
                                  {"key_count",   std::to_string(fetched.response.verify_keys.size()), false},
                                  {"valid_until", std::to_string(fetched.response.valid_until_ts),     false}
                 });
-                std::ignore = cache_remote_server_keys(store, fetched.response, now);
-                auto refreshed = find_cached_remote_key(store, server_name, key_id);
-                if (refreshed.has_value() && discovery.discovery_allowed)
+                // ADR-0238: the key just fetched and self-verified is the answer;
+                // caching it is best-effort. A federation worker cannot write the
+                // cache (read-only SQLite, a SELECT-only PostgreSQL role), so a
+                // read-back after its failed write would find nothing.
+                if (!cache_remote_server_keys(store, fetched.response, now))
                 {
-                    return build_remote_runtime(server_name, std::move(*refreshed), discovery);
+                    log_resolver("key_cache_write_failed", {
+                                                               {"server_name", std::string{server_name}, false},
+                    });
                 }
-                if (!refreshed.has_value())
+                auto fetched_key = fetched_key_record(fetched.response, key_id, now);
+                if (fetched_key.has_value() && discovery.discovery_allowed)
+                {
+                    return build_remote_runtime(server_name, std::move(*fetched_key), discovery);
+                }
+                if (!fetched_key.has_value())
                 {
                     // The fetch and self-verification succeeded, but the key_id the
                     // request was signed with is absent from the published set.
@@ -609,6 +649,15 @@ auto make_persistent_remote_key_resolver(database::PersistentStore& store, http:
             return fetch_remote_server_keys(c, discovery, sn, ts);
         },
         std::string{own_server_name});
+}
+
+auto make_remote_key_resolver(database::PersistentStore& store, http::OutboundClient& client,
+                              std::uint32_t timeout_seconds, RemoteKeyClock now_ms, RemoteKeyDiscoverFn discover,
+                              RemoteKeyFetchFn fetch_keys, std::string_view own_server_name) -> RemoteKeyResolver
+{
+    auto clock = now_ms ? std::move(now_ms) : RemoteKeyClock{default_wall_clock_ms};
+    return make_resolver_impl(store, client, timeout_seconds, std::move(clock), std::move(discover),
+                              std::move(fetch_keys), std::string{own_server_name});
 }
 
 } // namespace merovingian::federation

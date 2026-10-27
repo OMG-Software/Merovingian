@@ -1084,10 +1084,13 @@ Two independent mechanisms close this, together:
    PostgreSQL column-level grant — so even a bug that widened the C++ query
    back to five columns would be refused at the database. The worker's
    *write* attempt (caching a freshly-fetched key) is expected to fail under
-   this SELECT-only grant; the caller already discards that result
-   (`std::ignore = cache_remote_server_keys(...)`,
-   `src/federation/remote_key_cache.cpp`) and simply re-fetches on the next
-   request, so the failure degrades performance, not correctness.
+   this SELECT-only grant, as it does on SQLite, where the worker's connection
+   is read-only. The resolver therefore returns the key it fetched and verified
+   directly, never a read-back of the cache (ADR-0238, 0.12.59); before that it
+   read the key back after the failed write, found nothing, and refused every
+   server the worker had not cached at start-up. The worker keeps a resolved
+   remote in its in-memory `runtime.remotes`, so the failed write costs at most
+   one fetch per server and key per worker start.
 
    Every table `PersistentStore` can hold that is **not** in the allowlist is
    read by no worker-local code path — verified table by table during review
