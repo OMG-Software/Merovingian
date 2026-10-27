@@ -41,7 +41,9 @@ It verifies the package against the maintainer-signed `SHA256SUMS` and its
 build provenance (`gh attestation verify`: built by `packages.yml` from one
 commit on `main`, which the run records), builds
 this directory into an image from a copy in the work directory, fetches
-Complement at the commit in `run.toml`, and runs `go test -json ./tests/...`.
+Complement at the commit in `run.toml`, and runs `go test -json ./tests ./tests/csapi`.
+The `tests/msc*` packages test unstable proposals outside Matrix v1.19 and are
+not run (ADR-0237).
 `scripts/summarise_complement.py` judges the result against `skip-list.toml`,
 and its verdict is the exit status: 0 green, 1 not green, 2 refused.
 `--unsigned` runs a locally built package and `--run` a subset; neither is
@@ -105,7 +107,8 @@ test that exists (ADR-0234). The file's header documents the format. In short:
    State stays in the container layer, and is never served under another
    server name.
 5. **Departures from the defaults are few and stated.** The template may change
-   only what Complement's contract forces, the optional parts of the
+   only what Complement's contract forces (including a password policy that
+   admits its users' passwords, ADR-0236), the optional parts of the
    encryption policy, and rate limits. Each change says why in a comment. A
    change that makes the server behave differently from a deployment needs an
    ADR. The rendered config must pass the real server's `--check-config`: what

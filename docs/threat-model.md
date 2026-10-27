@@ -2323,6 +2323,15 @@ fetch URLs a client chooses, keep the full block. Open registration still answer
 `m.login.dummy` challenge. Both settings are logged at CRITICAL on every start. Residual risk: an operator who sets
 either on a public server gets exactly what it says. The names and log lines are the only guard against that.
 
+### A configurable password policy (0.12.58, ADR-0236)
+
+New surface: `security.password_policy.min_length` and `require_character_classes` set the rule for passwords a
+person chooses, so Complement can register its users. Threat: an operator weakens it on a public server and users
+choose guessable passwords. Mitigations: the defaults are the rule enforced before (12 bytes, four character
+classes); an empty password never passes and validation refuses a zero minimum; a weaker policy is logged at
+CRITICAL on every start and needs a restart, so a reload cannot loosen it unannounced; the failed-login throttle
+(AUTH-2) still bounds guessing. Residual risk: a deliberately weakened policy is the operator's choice.
+
 ## Security principles
 
 - Fail closed.

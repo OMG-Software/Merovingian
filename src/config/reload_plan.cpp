@@ -211,6 +211,15 @@ auto build_reload_plan(Config const& current, Config const& next) -> ReloadPlan
     {
         add_change(plan, "security.registration.allow_open_registration");
     }
+    if (current.security().password_policy.min_length != next.security().password_policy.min_length)
+    {
+        add_change(plan, "security.password_policy.min_length");
+    }
+    if (current.security().password_policy.require_character_classes !=
+        next.security().password_policy.require_character_classes)
+    {
+        add_change(plan, "security.password_policy.require_character_classes");
+    }
     if (current.security().registration.token_file != next.security().registration.token_file)
     {
         add_change(plan, "security.registration.token_file");

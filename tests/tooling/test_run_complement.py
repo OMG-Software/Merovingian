@@ -230,7 +230,7 @@ class RunComplementTests(unittest.TestCase):
         result = self.run_script()
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         go_env = dict(line.split("=", 1) for line in (self.out / "go-env").read_text(encoding="utf-8").splitlines())
-        # THEN it fetches the pinned commit, and runs every test package with
+        # THEN it fetches the pinned commit, and runs the spec test packages with
         # JSON output against the image just built.
         self.assertIn(f"fetch --depth 1 origin {COMMIT}", self.calls())
         self.assertTrue(go_env["COMPLEMENT_BASE_IMAGE"].startswith("merovingian-complement:"))
@@ -239,7 +239,21 @@ class RunComplementTests(unittest.TestCase):
         self.assertEqual(len(run_call), 1)
         self.assertIn("-json", run_call[0])
         self.assertIn("-count=1", run_call[0])
-        self.assertTrue(run_call[0].endswith("./tests/..."))
+        self.assertTrue(run_call[0].endswith(" ./tests ./tests/csapi"), run_call[0])
+
+    def test_only_the_spec_packages_are_listed_and_run(self) -> None:
+        # GIVEN a signed package.
+        # WHEN Complement is run.
+        result = self.run_script()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        go_tests = [line for line in self.calls().splitlines() if line.startswith("go test")]
+        # THEN both the listing and the run name exactly the federation and
+        # client-server packages: the tests/msc* packages test unstable
+        # proposals outside Matrix v1.19 (ADR-0237), and `./tests/...` would run them.
+        self.assertEqual(len(go_tests), 2)
+        for line in go_tests:
+            self.assertTrue(line.endswith(" ./tests ./tests/csapi"), line)
+            self.assertNotIn("...", line)
 
     def test_the_verdict_is_the_summarisers_not_go_tests(self) -> None:
         # GIVEN go test exits 1, as it does whenever any test fails.

@@ -23,6 +23,13 @@ auto reload_policy_for_key(std::string_view key) noexcept -> ReloadPolicy
         return ReloadPolicy::restart_required;
     }
 
+    // ADR-0236: a weaker password policy is logged at CRITICAL when the server
+    // starts. Taking it only on restart keeps that warning from being skipped.
+    if (starts_with(key, "security.password_policy."))
+    {
+        return ReloadPolicy::restart_required;
+    }
+
     // ADR-0212 / ADR-0213: the asynchronous-upload and URL preview limits are
     // copied into the media repository's runtime config at startup.
     if (starts_with(key, "security.media.url_preview_") || key == "security.media.pending_upload_ttl_seconds" ||

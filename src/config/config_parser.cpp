@@ -1282,6 +1282,20 @@ namespace
         {
             security.registration.token_file = std::string{value};
         }
+        else if (key == "security.password_policy.min_length")
+        {
+            if (!parse_u32_value(value, security.password_policy.min_length))
+            {
+                add_parse_finding(findings, std::string{key}, "expected unsigned integer");
+            }
+        }
+        else if (key == "security.password_policy.require_character_classes")
+        {
+            if (!parse_bool_value(value, security.password_policy.require_character_classes))
+            {
+                add_parse_finding(findings, std::string{key}, "expected boolean value");
+            }
+        }
         else if (key == "security.login_throttle.max_failures_per_source")
         {
             if (!parse_u32_value(value, security.login_throttle.max_failures_per_source))

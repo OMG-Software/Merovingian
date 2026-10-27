@@ -892,7 +892,9 @@ live TLS handshakes or worker certificate-file access. See
 |---|---|---|
 | `security.registration.enabled` | `false` | Set `true` to allow public self-registration. |
 | `security.registration.require_token` | `true` | Set `false` only on private test servers. With `enabled=true`, `false` is a startup error unless `allow_open_registration=true`. |
-| `security.registration.allow_open_registration` | `false` | The explicit acknowledgement that `enabled=true` with `require_token=false` is intended: anyone who can reach the client API can create an account. Registration then still uses user-interactive auth, with the single stage `m.login.dummy` (a request with no `auth` gets 401). Logged at CRITICAL on every start. Meant for test harnesses such as Complement (ADR-0232). |
+| `security.registration.allow_open_registration` | `false` | The explicit acknowledgement that `enabled=true` with `require_token=false` is intended: anyone who can reach the client API can create an account. Logged as `registration.open` at CRITICAL on every start (ADR-0232). |
+| `security.password_policy.min_length` | `12` | Minimum length in bytes (1-1024) of a password a person chooses: registration, the bootstrap administrator and `POST /account/password`. A refused password gets `400 M_WEAK_PASSWORD`. Below 12 is logged at CRITICAL on every start (ADR-0236). |
+| `security.password_policy.require_character_classes` | `true` | Require a lower-case and an upper-case ASCII letter, an ASCII digit and an ASCII symbol. `false` is logged at CRITICAL on every start. Appservice users' generated credentials are never checked. |
 | `security.registration.token_file` | (empty) | **Required** when registration is enabled with `require_token=true` (the default). Owner-only file containing the registration token. The shipped example sets `/etc/merovingian/registration-token`. |
 
 The token file is read on startup and should contain the registration token
@@ -1197,6 +1199,8 @@ rejection and pinned resolved addresses used during federation discovery.
 | `security.federation.remote_timeout` | `60s` | requires restart | General outbound federation HTTP timeout for calls other than the join/leave dance. |
 | `security.federation.deny_ip_ranges` | private/loopback ranges | requires restart | Adds IPv4/IPv6 destination blocks to the mandatory built-in SSRF policy, on main and worker discovery paths. |
 | `security.federation.allow_private_ip_ranges` | (empty) | requires restart | Opens the named RFC 1918 / ULA networks to federation only (ADR-0231). Copied into the discovery network at startup. |
+| `security.password_policy.min_length` | `12` | requires restart | A weaker policy is logged at CRITICAL at start-up; a reload cannot loosen it without that line (ADR-0236). |
+| `security.password_policy.require_character_classes` | `true` | requires restart | As above. |
 | `security.federation.key_resolution_*` | see above | requires restart | Budgets pre-authentication remote-key resolution. Snapshotted into the federation runtime config at startup, which SIGHUP does not rebuild. |
 | `federation.worker.relay_threads` | `32` | requires restart | Thread pool for worker paths that can block on outbound HTTP or synchronous main-process relays. |
 

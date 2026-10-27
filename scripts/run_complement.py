@@ -16,7 +16,9 @@
 2. Build tests/complement into an image, from a copy under DIR (the source
    tree is not written), and read the server binary's SHA-256 back out of it.
 3. Fetch Complement at the pinned commit into DIR/complement.
-4. List its tests, run `go test -json ./tests/...` against the image, and
+4. List its tests, run `go test -json ./tests ./tests/csapi` against the image
+   (the federation and client-server packages; tests/msc* test unstable
+   proposals outside Matrix v1.19 and are not run, ADR-0237), and
    hand both to summarise_complement.py, whose verdict is this script's exit
    status: 0 green, 1 not green, 2 refused before running.
 
@@ -55,6 +57,9 @@ SHA256 = re.compile(r"[0-9a-f]{64}")
 FINGERPRINT = re.compile(r"[0-9A-F]{40}")
 GIT_COMMIT = re.compile(r"[0-9a-f]{40}")
 PACKAGES_WORKFLOW = ".github/workflows/packages.yml"
+# Complement's federation and client-server tests. Never `./tests/...`: that
+# also runs tests/msc*, which test unstable proposals outside Matrix v1.19 (ADR-0237).
+SPEC_PACKAGES = ("./tests", "./tests/csapi")
 MAIN_REF = "refs/heads/main"
 REFUSED_STATUS = {"BADSIG", "ERRSIG", "EXPSIG", "EXPKEYSIG", "REVKEYSIG", "NO_PUBKEY"}
 
@@ -257,7 +262,7 @@ def execute(args: argparse.Namespace, work: Path) -> int:
 
     env = complement_environment(image_tag, args.allow_without_landlock)
     listing = work / "listing.jsonl"
-    listing.write_text(run("go", "test", "-json", "-list", ".*", "./tests/...", cwd=checkout, env=env), encoding="utf-8")
+    listing.write_text(run("go", "test", "-json", "-list", ".*", *SPEC_PACKAGES, cwd=checkout, env=env), encoding="utf-8")
     pattern = run(sys.executable, "-I", str(SUMMARISER), "--repo-root", str(REPO_ROOT),
                   "--skip-list", str(skip_list), "--skip-pattern").strip()
 
@@ -266,7 +271,7 @@ def execute(args: argparse.Namespace, work: Path) -> int:
         command += ["-skip", pattern]
     if args.run:
         command += ["-run", args.run]
-    command.append("./tests/...")
+    command.extend(SPEC_PACKAGES)
     log = work / "complement.jsonl"
     started_at = now()
     print(f"run_complement: {' '.join(command)} (image {image_tag})")

@@ -674,6 +674,22 @@ namespace
         return throttled;
     }
 
+    // ADR-0236: the operator's password policy, as the auth rule takes it.
+    [[nodiscard]] auto configured_password_policy(HomeserverRuntime const& runtime) -> auth::PasswordPolicy
+    {
+        auto const& configured = runtime.config.security().password_policy;
+        return {.min_length = configured.min_length, .require_character_classes = configured.require_character_classes};
+    }
+
+    // Spec, "Password management": servers "MAY reject weak passwords with an
+    // error code M_WEAK_PASSWORD".
+    [[nodiscard]] auto weak_password_refusal() -> OperationResult
+    {
+        auto refused = make_operation_result(false, {}, "password rejected", 400U);
+        refused.errcode = "M_WEAK_PASSWORD";
+        return refused;
+    }
+
     [[nodiscard]] auto make_user(HomeserverRuntime& runtime, std::string_view localpart, std::string_view password,
                                  bool admin, std::string_view audit_outcome, bool enforce_password_policy = true)
         -> OperationResult
@@ -688,13 +704,12 @@ namespace
         // random secret the appservice never sees and password login is
         // never the intended auth path for that account (masquerade/
         // m.login.application_service only), so the human-facing
-        // upper/lower/digit/symbol complexity policy in
-        // auth::password_is_acceptable does not apply — it exists to push
-        // back on weak choices a HUMAN makes, not to gate an
-        // internally-generated placeholder.
-        if (enforce_password_policy && !auth::password_is_acceptable(password))
+        // configured password policy (auth::password_is_acceptable) does not
+        // apply — it exists to push back on weak choices a HUMAN makes, not to
+        // gate an internally-generated placeholder.
+        if (enforce_password_policy && !auth::password_is_acceptable(password, configured_password_policy(runtime)))
         {
-            return make_operation_result(false, {}, "password rejected");
+            return weak_password_refusal();
         }
         // Backstop for every creation path (registration, appservice registration, bootstrap
         // admin): the server's own localparts are never accounts (security audit run-1).
@@ -1985,9 +2000,9 @@ auto change_local_user_password(HomeserverRuntime& runtime, std::string_view acc
         return make_operation_result(false, {}, "unauthenticated", 401U);
     }
     auto const& user_id = session->user_id;
-    if (!auth::password_is_acceptable(new_password))
+    if (!auth::password_is_acceptable(new_password, configured_password_policy(runtime)))
     {
-        return make_operation_result(false, {}, "password rejected", 400U);
+        return weak_password_refusal();
     }
     // AUTH-4: snapshot what this change is replacing, then hash with
     // runtime.mutex released and the shared Argon2id budget held. The user

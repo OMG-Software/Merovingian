@@ -1,5 +1,5 @@
 Name:           merovingian
-Version:        0.12.57
+Version:        0.12.58
 Release:        1%{?dist}
 Summary:        Secure Matrix Protocol homeserver
 
@@ -101,6 +101,9 @@ fi
 %{_sysconfdir}/merovingian/merovingian.conf.example
 
 %changelog
+* Tue Oct 27 2026 James Chapman <claude@ping.me.uk> - 0.12.58-1
+- Make the password policy configurable (character classes and minimum length, strict by
+  default), answer a refused password with M_WEAK_PASSWORD, and relax the policy for Complement.
 * Mon Oct 26 2026 James Chapman <claude@ping.me.uk> - 0.12.57-1
 - Add an explicit federation private-range allowlist and acknowledged open registration with m.login.dummy, and accept dot-less remote media origins, so the Complement suite can run against a release build.
 * Mon Oct 26 2026 James Chapman <claude@ping.me.uk> - 0.12.56-1

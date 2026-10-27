@@ -4,7 +4,6 @@
 #include "merovingian/auth/identity.hpp"
 
 #include "merovingian/canonicaljson/parser.hpp"
-
 #include "merovingian/observability/logger.hpp"
 #include "merovingian/observability/observability.hpp"
 
@@ -414,8 +413,19 @@ auto device_id_is_valid(std::string_view device_id) noexcept -> bool
            });
 }
 
-auto password_is_acceptable(std::string_view password) noexcept -> bool
+auto password_is_acceptable(std::string_view password, PasswordPolicy const& policy) noexcept -> bool
 {
+    // An empty password never passes, whatever min_length says (config
+    // validation refuses 0, but this rule does not depend on it).
+    if (password.empty() || password.size() < policy.min_length)
+    {
+        return false;
+    }
+    if (!policy.require_character_classes)
+    {
+        return true;
+    }
+
     auto has_lower = false;
     auto has_upper = false;
     auto has_digit = false;
@@ -430,7 +440,7 @@ auto password_is_acceptable(std::string_view password) noexcept -> bool
         has_symbol = has_symbol || (byte >= 0x21U && byte <= 0x7EU && !is_ascii_alnum(value));
     }
 
-    return password.size() >= 12U && has_lower && has_upper && has_digit && has_symbol;
+    return has_lower && has_upper && has_digit && has_symbol;
 }
 
 auto login_policy(UserIdentity const& user) -> LoginPolicyDecision
