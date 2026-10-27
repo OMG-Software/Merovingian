@@ -1229,6 +1229,12 @@ current member event's membership when the row is missing, says `join` while the
 than the event; a newer row is kept. Corrected rows get a fresh stream ordering and are corrected in memory
 even if the write fails. No schema change (ADR-0149).
 
+Since 0.12.59 a `knock` projection may carry the invite record too: a knock on a room on another server
+keeps its signed knock event and the resident's verified `knock_room_state` there, which `/sync` shows as
+`knock_state` (ADR-0243). Join, leave and ban end it, and an invite answering the knock replaces it. Every
+reader looks the record up only for a user whose membership is `invite`, or deletes it; a new reader must
+check the membership too.
+
 ### Write connection pool (DB-7, 0.12.26)
 
 Persisted writes reuse connections from a per-store `ConnectionPool` instead of opening one per

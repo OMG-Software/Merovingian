@@ -87,7 +87,14 @@ struct ValidatedMakeLeaveResponse final
                               std::string_view target_user_id) -> OperationResult;
 [[nodiscard]] auto forget_room(HomeserverRuntime& runtime, std::string_view access_token, std::string_view room_id)
     -> OperationResult;
-[[nodiscard]] auto knock_room(HomeserverRuntime& runtime, std::string_view access_token, std::string_view room_id)
+// Knocks on a room. When this server is in the room, the knock is composed here;
+// otherwise it goes through make_knock and send_knock to the first of
+// `via_servers` (routed as a join is, ADR-0242) that offers a template, and the
+// resident's verified knock_room_state is kept for the user's /sync (ADR-0243).
+// `reason`, when not empty, is the knock event's content.reason. A resident that
+// refuses with 403 is a 403; no server to ask, or an unknown local room, is a 404.
+[[nodiscard]] auto knock_room(HomeserverRuntime& runtime, std::string_view access_token, std::string_view room_id,
+                              std::vector<std::string> const& via_servers = {}, std::string_view reason = {})
     -> OperationResult;
 // Parses the `server_name=` and `via=` query parameters (each may repeat) from a
 // raw query string into an ordered, de-duplicated list of server names. Values are
@@ -95,9 +102,20 @@ struct ValidatedMakeLeaveResponse final
 // parameters remain untouched. `server_name` is legacy; `via` (MSC4156) is current.
 [[nodiscard]] auto parse_join_via_servers(std::string_view query) -> std::optional<std::vector<std::string>>;
 // Builds the ordered list of candidate resident servers to attempt make_join /
-// send_join against: the via servers first (in request order), then the room ID's
-// server domain when present (room versions < 12). Room version 12 IDs are bare
-// hashes with no domain, so the via servers are the only route. Our own server and
+// Single choke point for the "room_id changed here" signal to the out-of-process
+// federation worker, which answers make_join, make_leave, state and backfill
+// requests from its own snapshot of the room. Every path that creates a room,
+// changes a membership in it (locally, or by accepting a send_join, send_leave or
+// send_knock) or stores a relayed event MUST call this, or that snapshot goes stale
+// (see docs/architecture.md, "Federation worker room staleness"). Tests pin the
+// contract through HomeserverRuntime::test_room_changed_log without a real worker.
+auto notify_room_changed(HomeserverRuntime& runtime, std::string_view room_id) -> void;
+
+// send_join against. When the client names via servers, only those, in request
+// order: room IDs "are not routable on their own" (appendices, Room IDs), so the
+// room ID's domain never overrides the client's choice (ADR-0242). With no via
+// servers, the room ID's domain when it has one (room versions < 12); a version 12
+// room ID is a bare hash, so it then has no candidate at all. Our own server and
 // duplicates are removed.
 [[nodiscard]] auto join_candidate_servers(std::vector<std::string> const& via_servers, std::string_view room_id,
                                           std::string_view our_server) -> std::vector<std::string>;
@@ -158,14 +176,25 @@ struct BoundedOutboundLimits final
     std::chrono::seconds worker_margin;
 };
 
+// What one outbound federation call came to. `body` is the response body on
+// success and a reason otherwise; `remote_status` is the HTTP status the remote
+// server answered with, or 0 when no answer arrived (discovery, transport or
+// signing failure, deadline).
+struct OutboundCallResult final
+{
+    bool ok{false};
+    std::string body{};
+    std::uint16_t remote_status{0U};
+};
+
 // The shared implementation of perform_sync_outbound_call (bounded == nullopt)
-// and perform_bounded_outbound_call. Prefer those two.
+// and perform_bounded_outbound_call. Call it directly only when the remote's
+// status decides the answer, as a membership call refused with 403 does.
 [[nodiscard]] auto perform_outbound_call(HomeserverRuntime& runtime, std::string_view room_id,
                                          federation::OutboundTransaction const& transaction, std::string_view key_id,
                                          core::SecretBuffer secret_key, std::string_view diagnostic_event,
                                          std::uint32_t timeout_seconds, std::uint64_t max_response_bytes,
-                                         std::optional<BoundedOutboundLimits> const& bounded)
-    -> std::pair<bool, std::string>;
+                                         std::optional<BoundedOutboundLimits> const& bounded) -> OutboundCallResult;
 
 // ADR-0064 phase B1: joined_members is what callers used before (the user
 // IDs found with membership="join" among the ingested state entries);

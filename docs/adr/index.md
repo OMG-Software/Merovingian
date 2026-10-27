@@ -226,6 +226,8 @@
 * [0239 - A room upgrade to version 12 omits predecessor.event_id](0239-a-room-upgrade-to-version-12-omits-predecessor-event-id.md)
 * [0240 - power_level_content_override replaces top-level keys](0240-power-level-content-override-replaces-top-level-keys.md)
 * [0241 - A federated join verifies and persists all returned state before it returns](0241-a-federated-join-verifies-and-persists-all-returned-state-before-it-returns.md)
+* [0242 - A join tries only the servers the client names](0242-a-join-tries-only-the-servers-the-client-names.md)
+* [0243 - A remote knock keeps its stripped state in the invite record](0243-a-remote-knock-keeps-its-stripped-state-in-the-invite-record.md)
 
 ## Proposed Records
 

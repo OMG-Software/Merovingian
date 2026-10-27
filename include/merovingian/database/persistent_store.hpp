@@ -305,8 +305,11 @@ struct PersistentInvite final
 // (or prepare_store_event_with_state) so the event, its current_state row, the
 // membership row and the invite change commit in ONE transaction: a ban can never
 // be durable while the row still says join. The invite change follows the
-// membership: "invite" writes `invite` (when given); "join", "leave" and "ban"
-// delete the user's invite metadata; anything else leaves it alone.
+// membership: "invite" writes `invite` (when given), and so does "knock", whose
+// `invite` is the knock on a room on another server and the knock_room_state it
+// was answered with (ADR-0243); "join", "leave" and "ban" delete the user's invite
+// metadata; anything else leaves it alone. Readers of the record must check the
+// user's membership before treating it as an invite.
 struct MembershipProjection final
 {
     std::string user_id{};

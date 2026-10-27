@@ -265,6 +265,12 @@ snapshot; historical and federated snapshots are re-pruned on client reads,
 including sliding-sync invite responses. Matrix permits additional event types;
 the restrictive allowlist is our policy (ADR-0088), not a protocol prohibition.
 
+Implementation note (0.12.59): `POST /knock/{roomIdOrAlias}` on a room this server is not in goes over
+federation (`make_knock`, `send_knock`) to the servers named by `via` or the pre-v1.12 `server_name`, routed as
+a join is (ADR-0242, ADR-0243), with the body's `reason` on the knock event. A resident's 403 is a 403. The
+resident's `knock_room_state` is kept, without entries whose signature does not check out, and shown as
+`knock_state`. A room alias is not resolved by `/knock` yet: it answers 404.
+
 ## Room participation
 
 | Method | Path | Operation ID | Auth | Request body | Responses |

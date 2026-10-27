@@ -2693,6 +2693,12 @@ namespace
             {
                 rt->sync_notifier->publish(rt->database.next_stream_ordering - 1U, sync_stream_id);
             }
+            // A federation worker usually accepted this request and relayed it here; it
+            // answers the room's next make_join, make_leave or send_leave from its own
+            // snapshot, which only this refreshes. Without it the worker's make_leave
+            // template omitted a just-joined user's membership from auth_events, and the
+            // worker then refused that user's leave against them.
+            notify_room_changed(*rt, room_id);
             // The event is now durably stored with its receipt status, so a
             // rejection can be reported to the peer without losing it: spec
             // "Rejection" keeps rejected events available for later events

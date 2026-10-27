@@ -347,6 +347,54 @@ SCENARIO("send_join: a joining event with a mismatched content hash is redacted 
     }
 }
 
+// A send_join, send_leave or send_knock is usually accepted by a federation worker and relayed
+// to main, which stores it. The worker answers the room's next make_join, make_leave or
+// send_leave from its own snapshot of the room, so main must tell it the room changed, as it
+// does for a relayed /send PDU. Without that the worker built a make_leave template whose
+// auth_events lacked the leaver's join, then refused the leave against them (Complement
+// TestRestrictedRoomsRemoteJoin, rule 7: "self-leave requires current membership").
+SCENARIO("An accepted send_join tells the federation worker that the room changed", "[pdu_ingestion][worker-room-sync]")
+{
+    GIVEN("a seeded room and a valid send_join from a remote user")
+    {
+        // Declared before the runtime so it outlives it.
+        auto changed_rooms = std::vector<std::string>{};
+        auto const path = unique_sqlite_path();
+        std::filesystem::remove(path);
+        auto started = merovingian::homeserver::start_runtime(config_with_sqlite(path));
+        REQUIRE(started.started);
+        merovingian::homeserver::wire_federation_callbacks(started.runtime);
+        started.runtime.test_room_changed_log = &changed_rooms;
+
+        auto const room_id = std::string{"!sjnotify:local.example.org"};
+        auto const genesis = seed_room_genesis(started.runtime, room_id, "@admin:local.example.org");
+        auto content = merovingian::canonicaljson::Object{};
+        content.push_back(merovingian::canonicaljson::make_member(
+            "membership", merovingian::canonicaljson::Value{std::string{"join"}}));
+        auto const json = build_event_json(room_id, "m.room.member", std::string{"@bob:remote.example.org"},
+                                           "@bob:remote.example.org", std::move(content), {genesis.join_rules_id},
+                                           {genesis.create_id, genesis.pl_id, genesis.join_rules_id}, 4, 5);
+        auto const envelope =
+            make_envelope(room_id, "$sjnotify:remote.example.org", "m.room.member",
+                          std::string{"@bob:remote.example.org"}, "@bob:remote.example.org", {genesis.join_rules_id},
+                          {genesis.create_id, genesis.pl_id, genesis.join_rules_id}, 4, json);
+
+        WHEN("the membership acceptor accepts it")
+        {
+            auto const result = started.runtime.federation.membership_acceptor(
+                merovingian::federation::FederationEndpoint::send_join, room_id, envelope.event_id, envelope);
+
+            THEN("the join is accepted and the worker is told about the room")
+            {
+                REQUIRE(result.accepted);
+                REQUIRE(std::ranges::find(changed_rooms, room_id) != changed_rooms.end());
+            }
+        }
+
+        std::filesystem::remove(path);
+    }
+}
+
 SCENARIO("send_join: a joining event that fails its own auth_events is rejected", "[pdu_ingestion][auth]")
 {
     GIVEN("a send_join whose named auth_events reference a power_levels event with a prohibitive state_default")

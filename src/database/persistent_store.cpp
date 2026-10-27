@@ -1434,16 +1434,22 @@ auto reconstruct_event_relations(PersistentStore& store) -> void
 namespace
 {
 
-    // DB-4: a join, leave or ban ends any pending invite; an invite records one.
+    // DB-4: a join, leave or ban ends any pending invite; an invite records one, and
+    // so does a knock on a room on another server (its knock_room_state, ADR-0243).
     [[nodiscard]] auto membership_ends_invite(std::string_view membership) noexcept -> bool
     {
         return membership == "join" || membership == "leave" || membership == "ban";
     }
 
+    [[nodiscard]] auto membership_records_invite(std::string_view membership) noexcept -> bool
+    {
+        return membership == "invite" || membership == "knock";
+    }
+
     [[nodiscard]] auto membership_projection_is_valid(MembershipProjection const& projection) noexcept -> bool
     {
         return !projection.user_id.empty() && !projection.membership.empty() &&
-               (!projection.invite.has_value() || projection.membership == "invite");
+               (!projection.invite.has_value() || membership_records_invite(projection.membership));
     }
 
     // The statements that write `projection` for `room_id`. Upserts, so the
@@ -1459,7 +1465,7 @@ namespace
             "$3, $4) ON CONFLICT (room_id, user_id) DO UPDATE SET membership = $3, stream_ordering = $4",
             {public_value(room_id), public_value(projection.user_id), public_value(projection.membership),
              public_value(std::to_string(projection.stream_ordering))}));
-        if (projection.membership == "invite" && projection.invite.has_value())
+        if (membership_records_invite(projection.membership) && projection.invite.has_value())
         {
             auto const& invite = *projection.invite;
             auto const invite_state_json = serialize_invite_state_events_json(invite.invite_state_events_json);
@@ -1508,7 +1514,7 @@ namespace
         auto const invite = std::ranges::find_if(store.invites, [&](PersistentInvite const& current) {
             return current.room_id == room_id && current.user_id == projection.user_id;
         });
-        if (projection.membership == "invite" && projection.invite.has_value())
+        if (membership_records_invite(projection.membership) && projection.invite.has_value())
         {
             auto written = *projection.invite;
             written.room_id = std::string{room_id};

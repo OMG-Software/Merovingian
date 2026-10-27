@@ -55,6 +55,35 @@ pagination and filters, and the expected failures from the legacy media freeze.
   join event's state group, when `join_room` returns, and a signed message from one of them, sent
   after the join, to be accepted; it fails on the old code. The six `split_send_join_state_events`
   unit scenarios are removed with the function.
+- **FIXED:** a user who joined a room here over federation could not leave it: the federation
+  worker refused their `send_leave` (403, auth rule 7, "self-leave requires current membership").
+  Main stored the joins and leaves a worker relayed but never told the worker the room had
+  changed, as it does for a relayed `/send` PDU, so the worker answered the next `make_leave` from
+  a snapshot without the join and then judged the leave against it. The membership acceptor now
+  calls `notify_room_changed` once it has stored the event; `notify_room_changed` is now declared in
+  `room_service.hpp`. Regression: `[worker-room-sync]` in
+  `test_membership_acceptor_receipt_checks.cpp`, red on the old code. (Complement
+  `TestRestrictedRoomsRemoteJoin`, whose invite and mangled-join-rules subtests followed from it.)
+- **CHANGED:** a join tries only the `via` servers the client names, and falls back to the room
+  ID's domain only when it names none (ADR-0242, owner decision). The domain was always added, so
+  a join routed through a server that could not authorise it succeeded through the room's creator
+  (Complement `TestRestrictedRoomsRemoteJoinFailOver`). `test_join_routing.cpp` now pins the
+  rule; it pinned the opposite.
+- **FIXED:** when the resident server refuses a join (`make_join` or `send_join` answered 403),
+  `/join` answers 403, as the spec lists for "You do not have permission to join the room"; it
+  answered 502. `perform_outbound_call` now returns the remote's HTTP status
+  (`OutboundCallResult`). Reading the make_join race's last error after the wait also took no lock
+  while losing candidates could still write it; it is now copied under the race mutex.
+  Regression: `[join-refused]` in `test_join_room_flow.cpp`, red on the old code.
+- **ADDED:** knocking on a room on another server. `POST /knock/{roomIdOrAlias}` answered 404 for
+  any room this server was not in; it now goes through `make_knock` and `send_knock` to the servers
+  named by `via` or `server_name` (owner decision), puts the body's `reason` on the knock event,
+  and keeps the resident's `knock_room_state`, without entries whose signature does not check out
+  ("SHOULD be removed"), for the user's `/sync` `knock_state` (ADR-0243: it lives in the user's
+  invite record, which DB-4 ends with the knock). A resident's 403 is a 403. A local knock now
+  carries `reason` too. Not done: resolving a room alias in `/knock`. Regression: `[knock-remote]`
+  in `test_join_room_flow.cpp` drives the client route against a TLS resident, including a forged
+  unsigned entry in `knock_room_state`; red on the old code.
 - **FIXED:** room version 12 creation. Every v12 room's initial power levels now define
   `m.room.tombstone` above `state_default` (the spec's MUST; only `trusted_private_chat` did), and
   a client's own tombstone level in `power_level_content_override` is kept. A

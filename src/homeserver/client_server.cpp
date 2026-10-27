@@ -1137,6 +1137,14 @@ namespace
     [[nodiscard]] auto build_knock_state_events_array(database::PersistentStore const& store, std::string_view room_id,
                                                       std::string_view user_id) -> canonicaljson::Array
     {
+        // A knock on a room on another server keeps the knock and the resident's
+        // verified knock_room_state in the user's invite record (ADR-0243); this
+        // server holds no state for that room. The record is read here only because
+        // the user's membership is knock.
+        if (database::find_invite(store, room_id, user_id).has_value())
+        {
+            return build_invite_state_events_array(store, room_id, user_id);
+        }
         auto result = canonicaljson::Array{};
         for (auto const& state : store.state)
         {
@@ -16657,7 +16665,40 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
         {
             return dispatch_err(req, rt, 400U, "M_INVALID_PARAM", "room id or alias must not be empty");
         }
-        auto const result = merovingian::homeserver::knock_room(rt.homeserver, req.access_token, room_id);
+        // The servers to knock through: `via`, and the pre-v1.12 `server_name`, as
+        // /join takes them (ADR-0243).
+        auto knock_query = std::string_view{};
+        if (auto const query_start = std::string_view{req.target}.find('?'); query_start != std::string_view::npos)
+        {
+            knock_query = std::string_view{req.target}.substr(query_start + 1U);
+        }
+        auto const via_servers = parse_join_servers_query(knock_query);
+        if (!via_servers.has_value())
+        {
+            return dispatch_err(req, rt, 400U, "M_INVALID_PARAM", "knock server parameter must not contain NUL");
+        }
+        // Spec: "reason: Optional reason to be included as the reason on the
+        // subsequent membership event."
+        auto reason = std::string{};
+        if (!req.body.empty())
+        {
+            auto const body = parsed_json_object(req.body);
+            if (!body.has_value())
+            {
+                return dispatch_err(req, rt, 400U, "M_NOT_JSON", "request body must be a JSON object");
+            }
+            if (auto const* reason_value = object_member(*body, "reason"); reason_value != nullptr)
+            {
+                auto const* reason_text = std::get_if<std::string>(&reason_value->storage());
+                if (reason_text == nullptr)
+                {
+                    return dispatch_err(req, rt, 400U, "M_BAD_JSON", "reason must be a string");
+                }
+                reason = *reason_text;
+            }
+        }
+        auto const result =
+            merovingian::homeserver::knock_room(rt.homeserver, req.access_token, room_id, *via_servers, reason);
         if (!result.ok)
         {
             return dispatch_err(req, rt, result.status, error_code_for(result), result.reason);

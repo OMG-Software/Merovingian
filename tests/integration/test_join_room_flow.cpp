@@ -42,6 +42,7 @@
 #include "merovingian/federation/inbound_ingestion.hpp"
 #include "merovingian/federation/inbound_request.hpp"
 #include "merovingian/homeserver/auth_service.hpp"
+#include "merovingian/homeserver/client_server.hpp"
 #include "merovingian/homeserver/local_http_router.hpp"
 #include "merovingian/homeserver/request_lock.hpp"
 #include "merovingian/homeserver/room_service.hpp"
@@ -328,7 +329,8 @@ auto run_resident_server(merovingian::net::TcpAcceptor& acceptor,
         }
         captured_requests.push_back(request_bytes);
         auto const is_send = request_bytes.find("/send_join/") != std::string::npos ||
-                             request_bytes.find("/send_leave/") != std::string::npos;
+                             request_bytes.find("/send_leave/") != std::string::npos ||
+                             request_bytes.find("/send_knock/") != std::string::npos;
         if (is_send && before_send)
         {
             before_send(request_bytes);
@@ -853,6 +855,253 @@ SCENARIO("join_room completes a live federated join with every member of the ret
                     auto const ingest_result = merovingian::homeserver::ingest_pdu_event(runtime, envelope);
                     CAPTURE(ingest_result.reason);
                     REQUIRE(ingest_result.status == merovingian::federation::PduIngestionStatus::accepted);
+                }
+            }
+        }
+    }
+}
+
+// Spec: Client-Server API v1.19, POST /_matrix/client/v3/join/{roomIdOrAlias}, 403: "You do
+// not have permission to join the room ... The room is invite-only and the user was not
+// invited". When the resident server refuses the join (make_join or send_join answered 403),
+// that is the answer the client gets; it was a 502 (Complement TestKnocking, "Attempting to
+// join a room with join rule 'knock' without an invite should fail").
+SCENARIO("join_room answers 403 when the resident server refuses the join",
+         "[homeserver][federation][join][join-refused][integration]")
+{
+    GIVEN("a real HomeserverRuntime, a logged-in local user, and a resident server that refuses the join")
+    {
+        REQUIRE(sodium_init() >= 0);
+        auto const refused_step = GENERATE(as<std::string>{}, "make_join", "send_join");
+        auto started = merovingian::homeserver::start_runtime(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        auto const reg = merovingian::homeserver::register_local_user(runtime, "alice", "CorrectHorse7!",
+                                                                      merovingian::tests::registration_token);
+        REQUIRE(reg.ok);
+        auto const login = merovingian::homeserver::login_local_user(runtime, reg.value, "CorrectHorse7!", "DEVICE1");
+        REQUIRE(login.ok);
+        auto const alice = reg.value;
+
+        auto const certificate = write_test_tls_certificate();
+        auto tls_context = merovingian::homeserver::make_tls_server_context(certificate.certificate_file,
+                                                                            certificate.private_key_file);
+        REQUIRE(tls_context.ok());
+        auto acceptor = merovingian::net::TcpAcceptor{};
+        REQUIRE(acceptor.bind("127.0.0.1", 0U).ok);
+        auto const port = acceptor.bound_port();
+        REQUIRE(port > 0U);
+        runtime.test_forced_outbound_resolution[resident_server] =
+            merovingian::homeserver::TestOnlyForcedOutboundResolution{
+                "localhost", port, {"127.0.0.1"}, certificate.certificate_pem};
+        merovingian::homeserver::wire_federation_callbacks(runtime);
+
+        auto const room_id = std::string{"!knockroom:"} + resident_server;
+        auto const make_join_event = std::string{R"({"type":"m.room.member","state_key":")"} + alice +
+                                     R"(","room_id":")" + room_id + R"(","sender":")" + alice +
+                                     R"(","depth":3,"origin_server_ts":1000,)"
+                                     R"("prev_events":[],"auth_events":[],)"
+                                     R"("content":{"membership":"join"}})";
+        auto const refusal =
+            json_http_response("403 Forbidden", R"({"errcode":"M_FORBIDDEN","error":"You are not invited"})");
+        auto const make_join_response =
+            refused_step == "make_join"
+                ? refusal
+                : json_http_response("200 OK", std::string{R"({"room_version":"10","event":)"} + make_join_event + "}");
+
+        WHEN("join_room is called with that server as the only via")
+        {
+            auto captured_requests = std::vector<std::string>{};
+            auto server_thread = std::thread{[&]() {
+                run_resident_server(acceptor, *tls_context.context, make_join_response, refusal, captured_requests);
+            }};
+            auto const result =
+                merovingian::homeserver::join_room(runtime, login.value, room_id, {std::string{resident_server}});
+            server_thread.join();
+
+            THEN("the join fails with 403, and the user is not joined")
+            {
+                CAPTURE(refused_step, result.reason);
+                REQUIRE_FALSE(result.ok);
+                REQUIRE(result.status == 403U);
+                auto const lock = std::lock_guard{runtime.mutex};
+                REQUIRE_FALSE(std::ranges::any_of(runtime.database.persistent_store.memberships, [&](auto const& m) {
+                    return m.room_id == room_id && m.user_id == alice && m.membership == "join";
+                }));
+            }
+        }
+    }
+}
+
+// Spec: Client-Server API v1.19, POST /_matrix/client/v3/knock/{roomIdOrAlias}; Server-Server
+// API v1.19, "Knocking upon a room" (make_knock, send_knock, knock_room_state); /sync
+// rooms.knock knock_state. A knock on a room this server is not in goes to the server the
+// client names (ADR-0242, ADR-0243): `server_name` as well as `via`, the body's `reason` on the
+// event, and the resident's signed knock_room_state kept for the user's /sync, without any
+// entry whose signature does not check out ("SHOULD be removed"). Complement TestKnocking.
+SCENARIO("A knock on a room on another server goes through make_knock and send_knock",
+         "[homeserver][federation][knock][knock-remote][integration]")
+{
+    GIVEN("a client API runtime, a logged-in local user, and a resident server hosting a knock room")
+    {
+        REQUIRE(sodium_init() >= 0);
+        auto const refuse = GENERATE(false, true);
+        auto started = merovingian::homeserver::start_client_server(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& rt = started.runtime;
+        auto& runtime = rt.homeserver;
+        auto const reg = merovingian::homeserver::register_local_user(runtime, "alice", "CorrectHorse7!",
+                                                                      merovingian::tests::registration_token);
+        REQUIRE(reg.ok);
+        auto const login = merovingian::homeserver::login_local_user(runtime, reg.value, "CorrectHorse7!", "DEVICE1");
+        REQUIRE(login.ok);
+        auto const alice = reg.value;
+
+        auto const certificate = write_test_tls_certificate();
+        auto tls_context = merovingian::homeserver::make_tls_server_context(certificate.certificate_file,
+                                                                            certificate.private_key_file);
+        REQUIRE(tls_context.ok());
+        auto acceptor = merovingian::net::TcpAcceptor{};
+        REQUIRE(acceptor.bind("127.0.0.1", 0U).ok);
+        auto const port = acceptor.bound_port();
+        REQUIRE(port > 0U);
+        runtime.test_forced_outbound_resolution[resident_server] =
+            merovingian::homeserver::TestOnlyForcedOutboundResolution{
+                "localhost", port, {"127.0.0.1"}, certificate.certificate_pem};
+        merovingian::homeserver::wire_federation_callbacks(runtime);
+        runtime.federation.remote_key_resolver =
+            [](std::string_view server_name,
+               std::string_view key_id) -> std::optional<merovingian::federation::FederationRemoteRuntime> {
+            if (server_name != resident_server || key_id != resident_key_id)
+            {
+                return std::nullopt;
+            }
+            return resident_remote_runtime();
+        };
+
+        auto const room_id = std::string{"!knockable:"} + resident_server;
+        auto const creator = std::string{"@creator:"} + resident_server;
+        auto const policy = *merovingian::rooms::find_room_version_policy("10");
+        auto const state_event = [&](std::string const& type, std::string const& content, int depth) {
+            return std::string{R"({"type":")"} + type + R"(","state_key":"","sender":")" + creator +
+                   R"(","room_id":")" + room_id + R"(","depth":)" + std::to_string(depth) +
+                   R"(,"origin_server_ts":900,"prev_events":[],"auth_events":[],"content":)" + content + "}";
+        };
+        auto knock_state = merovingian::canonicaljson::Array{};
+        knock_state.push_back(sign_test_event(
+            state_event("m.room.create", std::string{R"({"room_version":"10","creator":")"} + creator + R"("})", 1),
+            policy, resident_server, resident_key_id, resident_key_seed));
+        knock_state.push_back(sign_test_event(state_event("m.room.join_rules", R"({"join_rule":"knock"})", 2), policy,
+                                              resident_server, resident_key_id, resident_key_seed));
+        knock_state.push_back(sign_test_event(state_event("m.room.name", R"({"name":"Knock Here"})", 3), policy,
+                                              resident_server, resident_key_id, resident_key_seed));
+        // Forged: no signature at all.
+        auto const forged = merovingian::canonicaljson::parse_lossless(
+            state_event("m.room.topic", R"({"topic":"forged by a middlebox"})", 4));
+        REQUIRE(forged.error == merovingian::canonicaljson::ParseError::none);
+        knock_state.push_back(forged.value);
+
+        auto const make_knock_event = std::string{R"({"type":"m.room.member","state_key":")"} + alice +
+                                      R"(","room_id":")" + room_id + R"(","sender":")" + alice +
+                                      R"(","depth":5,"origin_server_ts":1000,)"
+                                      R"("prev_events":[],"auth_events":[],)"
+                                      R"("content":{"membership":"knock"}})";
+        auto const refusal =
+            json_http_response("403 Forbidden", R"({"errcode":"M_FORBIDDEN","error":"You cannot knock here"})");
+        auto const make_knock_response =
+            refuse ? refusal
+                   : json_http_response("200 OK",
+                                        std::string{R"({"room_version":"10","event":)"} + make_knock_event + "}");
+        auto const send_knock_response = json_http_response(
+            "200 OK", std::string{R"({"knock_room_state":)"} + canonicaljson_array_to_string(knock_state) + "}");
+
+        WHEN("the user knocks through POST /knock naming the resident with server_name, with a reason")
+        {
+            auto captured_requests = std::vector<std::string>{};
+            auto server_thread = std::thread{[&]() {
+                run_resident_server(acceptor, *tls_context.context, make_knock_response, send_knock_response,
+                                    captured_requests);
+            }};
+            auto const knocked = merovingian::homeserver::handle_client_server_request(
+                rt,
+                {"POST",
+                 "/_matrix/client/v3/knock/%21knockable%3Aresident.example.org?server_name=" +
+                     std::string{resident_server},
+                 login.value, R"({"reason":"let me in"})"},
+                /*can_wait=*/false);
+            server_thread.join();
+
+            if (refuse)
+            {
+                THEN("a resident's refusal is a 403, and the user has no knock")
+                {
+                    CAPTURE(knocked.response.body);
+                    REQUIRE(knocked.response.status == 403);
+                    auto const lock = std::lock_guard{runtime.mutex};
+                    REQUIRE_FALSE(
+                        std::ranges::any_of(runtime.database.persistent_store.memberships, [&](auto const& m) {
+                            return m.room_id == room_id && m.user_id == alice;
+                        }));
+                }
+            }
+            else
+            {
+                THEN("the knock is signed by this server, carries the reason, and the user has knocked")
+                {
+                    CAPTURE(knocked.response.body);
+                    REQUIRE(knocked.response.status == 200);
+                    REQUIRE(captured_requests.size() == 2U);
+                    REQUIRE(captured_requests[0].find("/_matrix/federation/v1/make_knock/") != std::string::npos);
+                    REQUIRE(captured_requests[0].find("ver=10") != std::string::npos);
+                    REQUIRE(captured_requests[1].find("/_matrix/federation/v1/send_knock/") != std::string::npos);
+                    auto const knock_event = event_from_send_request(captured_requests[1]);
+                    require_membership_event_integrity(runtime, knock_event, policy);
+                    auto const& knock_object = std::get<merovingian::canonicaljson::Object>(knock_event.storage());
+                    auto const* content = merovingian::tests::object_member_as_object(knock_object, "content");
+                    REQUIRE(content != nullptr);
+                    REQUIRE(*merovingian::tests::string_member(*content, "membership") == "knock");
+                    REQUIRE(*merovingian::tests::string_member(*content, "reason") == "let me in");
+                    REQUIRE(*merovingian::tests::string_member(knock_object, "origin") == "example.org");
+
+                    auto const lock = std::lock_guard{runtime.mutex};
+                    REQUIRE(std::ranges::any_of(runtime.database.persistent_store.memberships, [&](auto const& m) {
+                        return m.room_id == room_id && m.user_id == alice && m.membership == "knock";
+                    }));
+                }
+
+                THEN("the user's /sync shows the room under knock with the resident's signed stripped state")
+                {
+                    auto const synced = merovingian::homeserver::handle_client_server_request(
+                        rt, {"GET", "/_matrix/client/v3/sync", login.value, {}}, /*can_wait=*/false);
+                    REQUIRE(synced.response.status == 200);
+                    auto const body = merovingian::tests::parse_object(synced.response.body);
+                    auto const* rooms = merovingian::tests::object_member_as_object(body, "rooms");
+                    REQUIRE(rooms != nullptr);
+                    auto const* knock = merovingian::tests::object_member_as_object(*rooms, "knock");
+                    REQUIRE(knock != nullptr);
+                    auto const* room = merovingian::tests::object_member_as_object(*knock, room_id);
+                    REQUIRE(room != nullptr);
+                    auto const* state = merovingian::tests::object_member_as_object(*room, "knock_state");
+                    REQUIRE(state != nullptr);
+                    auto const* events_value = merovingian::tests::object_member(*state, "events");
+                    REQUIRE(events_value != nullptr);
+                    auto const& events = std::get<merovingian::canonicaljson::Array>(events_value->storage());
+                    auto const has = [&](std::string_view type, std::string_view key, std::string_view value) {
+                        return std::ranges::any_of(events, [&](merovingian::canonicaljson::Value const& entry) {
+                            auto const& event = std::get<merovingian::canonicaljson::Object>(entry.storage());
+                            auto const* event_type = merovingian::tests::string_member(event, "type");
+                            auto const* event_content = merovingian::tests::object_member_as_object(event, "content");
+                            auto const* field = event_content == nullptr
+                                                    ? nullptr
+                                                    : merovingian::tests::string_member(*event_content, key);
+                            return event_type != nullptr && *event_type == type && field != nullptr && *field == value;
+                        });
+                    };
+                    REQUIRE(has("m.room.member", "membership", "knock"));
+                    REQUIRE(has("m.room.name", "name", "Knock Here"));
+                    REQUIRE(has("m.room.join_rules", "join_rule", "knock"));
+                    // Spec: improperly signed entries "SHOULD be removed by the server".
+                    REQUIRE_FALSE(has("m.room.topic", "topic", "forged by a middlebox"));
                 }
             }
         }
