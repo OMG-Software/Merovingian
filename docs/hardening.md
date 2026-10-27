@@ -849,6 +849,13 @@ Hardening is exercised by automated tests:
   `setpriv --bounding-set=-all`, and the `docker-image` job builds the
   `Dockerfile` and runs it inside the image with `--cap-drop=ALL
   --security-opt=no-new-privileges`. The BSD package jobs do not run it yet.
+* The `complement-image` job (0.12.57, ADR-0233) builds `tests/complement/`
+  from the trixie package and starts it as Complement does: no `--cap-drop`
+  and no `no-new-privileges` flag. The image's root entrypoint drops both
+  itself with `setpriv` before it `exec`s the server. The job reads
+  `/proc/1/status` and requires a non-root UID, an empty `CapBnd` and
+  `CapEff`, and `NoNewPrivs: 1`, then requires the worker to answer federation
+  requests with Landlock still required.
 
 Because seccomp/pledge/unveil are permanent in-process, the test suite sets
 `MEROVINGIAN_TEST_DISABLE_HARDENING=1` when invoking `meson test`. The build

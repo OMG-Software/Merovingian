@@ -295,8 +295,10 @@ class LocalDatabaseScope;
 // perform_sync_outbound_call (room_service.cpp) always resolves a destination
 // through federation::discover_server(), which unconditionally rejects
 // loopback and private-range addresses (src/federation/security.cpp
-// ip_address_is_private_or_loopback) with no config or environment override —
-// and production outbound calls never populate an in-memory CA bundle, so a
+// ip_address_is_private_or_loopback) unless security.federation.
+// allow_private_ip_ranges names an RFC 1918 or ULA network (ADR-0231), and
+// never loopback — and production outbound calls never populate an in-memory
+// CA bundle, so a
 // self-signed test certificate would fail TLS verification even if discovery
 // succeeded. There is therefore no way to integration-test a live federation
 // round trip against a local test server without this seam.

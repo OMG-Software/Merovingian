@@ -2976,7 +2976,7 @@ namespace
                 }
             }
         }
-        auto const discovery = federation_discovery_policy(remote->discovery);
+        auto const discovery = federation_discovery_policy(remote->discovery, runtime.config.allow_private_ip_ranges);
         if (!discovery.accepted)
         {
             log_diagnostic("request.rejected",

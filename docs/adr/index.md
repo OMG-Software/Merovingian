@@ -215,6 +215,11 @@
 * [0228 - An event this server places commits with its bookkeeping in one transaction](0228-an-event-this-server-places-commits-with-its-bookkeeping-in-one-transaction.md)
 * [0229 - SonarQube Cloud ignores tests and tooling, and keeps the server, packaging and workflows](0229-sonarqube-cloud-ignores-tests-and-tooling-and-keeps-the-server-packaging-and-workflows.md)
 * [0230 - Unknown client-server endpoints answer 404 M_UNRECOGNIZED before authentication](0230-unknown-client-endpoints-answer-404-before-authentication.md)
+* [0231 - Federation may reach operator-named private networks, and nothing else](0231-federation-may-reach-operator-named-private-networks-and-nothing-else.md)
+* [0232 - Open registration needs an explicit acknowledgement, and still uses UIA](0232-open-registration-needs-an-explicit-acknowledgement-and-still-uses-uia.md)
+* [0233 - Complement runs the shipped trixie package, in an image that drops its own privileges](0233-complement-runs-the-shipped-trixie-package-in-an-image-that-drops-its-own-privileges.md)
+* [0234 - A Complement run is judged by a summariser over a checked-in skip list](0234-a-complement-run-is-judged-by-a-summariser-over-a-checked-in-skip-list.md)
+* [0235 - Complement evidence is a maintainer-signed record tied to the shipped binary](0235-complement-evidence-is-a-maintainer-signed-record-tied-to-the-shipped-binary.md)
 
 ## Proposed Records
 

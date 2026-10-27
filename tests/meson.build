@@ -87,6 +87,32 @@ shell = find_program('sh')
   )
 
   test(
+    'complement-image-tooling',
+    python,
+    args: [meson.project_source_root() / 'tests' / 'tooling' / 'test_complement_image.py', server_exe.full_path()],
+    depends: server_exe,
+  )
+
+  test(
+    'complement-summary-tooling',
+    python,
+    args: [meson.project_source_root() / 'tests' / 'tooling' / 'test_complement_summary.py'],
+  )
+
+  test(
+    'complement-evidence-tooling',
+    python,
+    args: [meson.project_source_root() / 'tests' / 'tooling' / 'test_complement_evidence.py'],
+  )
+
+  test(
+    'run-complement-tooling',
+    python,
+    args: [meson.project_source_root() / 'tests' / 'tooling' / 'test_run_complement.py'],
+    timeout: 120,
+  )
+
+  test(
     'example-config-tooling',
     python,
     args: [meson.project_source_root() / 'tests' / 'tooling' / 'test_example_config.py'],
@@ -179,6 +205,8 @@ shell = find_program('sh')
       'unit/test_configurable_http_limits.cpp',
       'unit/test_config_media_timeout.cpp',
       'unit/test_config_federation_join.cpp',
+      'unit/test_config_private_range_allowlist.cpp',
+      'unit/test_config_open_registration.cpp',
       'unit/test_config_client_rate_limits.cpp',
       'unit/test_config_log_modules.cpp',
       'unit/test_config_oidc_validation.cpp',
@@ -221,6 +249,7 @@ shell = find_program('sh')
       'unit/test_outbound_dispatch.cpp',
       'unit/test_federation_security.cpp',
       'unit/test_federation_denied_ranges.cpp',
+      'unit/test_federation_private_range_allowlist.cpp',
       'unit/test_cached_server_discovery_bounds.cpp',
       'unit/test_federation_edu_idempotence.cpp',
       'unit/test_federation_server_acl.cpp',
@@ -382,6 +411,7 @@ shell = find_program('sh')
       'conformance/test_canonicaljson_parser.cpp',
       'conformance/test_canonicaljson_serializer.cpp',
       'conformance/test_client_server_conformance.cpp',
+      'conformance/test_open_registration_conformance.cpp',
       'conformance/test_content_repository_conformance.cpp',
       'conformance/test_token_expiry_conformance.cpp',
       'conformance/test_typing_conformance.cpp',

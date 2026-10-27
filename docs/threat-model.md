@@ -2308,6 +2308,21 @@ the limits alone but not once signed is refused after the room is stored, leavin
 state up to the refused event; report de-duplication covers only the rows the admin listing reads
 (`server.client_api.max_safety_report_rows`).
 
+### Operator-opened private networks and open registration (0.12.57, ADR-0231, ADR-0232)
+
+New surface: two settings, both off by default, let an external test harness such as Complement run against the
+release build. `security.federation.allow_private_ip_ranges` lets federation reach named RFC 1918 or ULA networks,
+and `security.registration.allow_open_registration` acknowledges registration without a token. Threats: a production
+server configured with either. The first lets a remote server name, or a well-known delegation, steer federation
+requests to internal hosts in the named ranges. The second lets anyone create accounts. Mitigations: an allowed range
+must be a CIDR wholly inside `10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16` or `fc00::/7`, so loopback, link-local
+(cloud metadata), CGNAT, multicast and reserved space can never be opened. The matcher re-checks every range, so a
+list that bypassed validation cannot open them either. The allowance applies only to federation discovery, key fetch,
+the inbound origin check and remote media. URL preview, media redirects, push gateways and identity servers, which
+fetch URLs a client chooses, keep the full block. Open registration still answers a request without `auth` with a 401
+`m.login.dummy` challenge. Both settings are logged at CRITICAL on every start. Residual risk: an operator who sets
+either on a public server gets exactly what it says. The names and log lines are the only guard against that.
+
 ## Security principles
 
 - Fail closed.

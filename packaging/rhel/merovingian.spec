@@ -1,5 +1,5 @@
 Name:           merovingian
-Version:        0.12.56
+Version:        0.12.57
 Release:        1%{?dist}
 Summary:        Secure Matrix Protocol homeserver
 
@@ -97,6 +97,8 @@ fi
 %{_sysconfdir}/merovingian/merovingian.conf.example
 
 %changelog
+* Mon Oct 26 2026 James Chapman <claude@ping.me.uk> - 0.12.57-1
+- Add an explicit federation private-range allowlist and acknowledged open registration with m.login.dummy, and accept dot-less remote media origins, so the Complement suite can run against a release build.
 * Mon Oct 26 2026 James Chapman <claude@ping.me.uk> - 0.12.56-1
 - Answer 404 M_UNRECOGNIZED for unknown client API endpoints before checking the access token; log a missing token as a missing token.
 

@@ -85,6 +85,7 @@ auto make_runtime_media_config(config::Config const& config) -> RuntimeMediaConf
         config.security().media.url_preview_max_redirects,
         config.security().media.url_preview_cache_ttl_seconds,
         config.security().media.url_preview_cache_max_entries,
+        config.security().federation.allow_private_ip_ranges,
     };
 }
 

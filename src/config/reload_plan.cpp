@@ -207,6 +207,10 @@ auto build_reload_plan(Config const& current, Config const& next) -> ReloadPlan
     {
         add_change(plan, "security.registration.require_token");
     }
+    if (current.security().registration.allow_open_registration != next.security().registration.allow_open_registration)
+    {
+        add_change(plan, "security.registration.allow_open_registration");
+    }
     if (current.security().registration.token_file != next.security().registration.token_file)
     {
         add_change(plan, "security.registration.token_file");
@@ -263,6 +267,10 @@ auto build_reload_plan(Config const& current, Config const& next) -> ReloadPlan
     if (current.security().federation.deny_ip_ranges != next.security().federation.deny_ip_ranges)
     {
         add_change(plan, "security.federation.deny_ip_ranges");
+    }
+    if (current.security().federation.allow_private_ip_ranges != next.security().federation.allow_private_ip_ranges)
+    {
+        add_change(plan, "security.federation.allow_private_ip_ranges");
     }
     if (current.security().federation.max_transaction_size != next.security().federation.max_transaction_size)
     {

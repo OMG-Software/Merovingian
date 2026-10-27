@@ -1,3 +1,133 @@
+## 0.12.57
+
+The first step towards running the external Complement suite against a release build, the
+last 1.0.0 blocker ("Federation conformance is entirely self-attested"). Complement runs
+homeservers on Docker bridge networks and creates users through open registration, and the
+server refused both with no setting that could change it.
+
+- **ADDED:** `security.federation.allow_private_ip_ranges` (ADR-0231), empty by default. It
+  takes CIDR networks wholly inside `10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16` or
+  `fc00::/7`, with an explicit prefix and no host bits. Anything else (loopback, link-local,
+  CGNAT, multicast, reserved or public space) is a startup error, and the matcher re-checks
+  every range, so a list that skipped validation still cannot open them. An address inside an
+  allowed network passes the built-in block and `deny_ip_ranges`. It applies to federation
+  discovery, well-known fetches, cached discovery, the inbound origin check and the re-check
+  of remote media addresses. It never applies to URL preview, media redirects, push gateways
+  or identity servers, which share the discovery network. Each range is logged at CRITICAL on
+  every start, and changing it requires a restart.
+- **ADDED:** `security.registration.allow_open_registration` (ADR-0232), default `false`.
+  `enabled=true` with `require_token=false` is still a startup error unless it is set, and the
+  open state is logged at CRITICAL on every start.
+- **FIXED:** with `require_token=false`, `POST /_matrix/client/v3/register` registered a
+  request with no `auth` at all. The spec says a UIA request "never succeeds without auth" and
+  that a server allowing unauthenticated requests offers `m.login.dummy` and "must still give
+  a 401 response to requests with no auth data". Open registration now answers with a 401
+  offering the single stage `m.login.dummy`. It completes on `m.login.dummy`, and refuses any
+  other stage or a session this server did not issue. The path was unreachable until now,
+  because validation refused the configuration. The in-process smoke flow sends
+  `m.login.dummy` when no token is required.
+- **FIXED:** remote media fetches refused any origin whose server name had no dot, such as `hs2`
+  or `localhost`. The spec's server-name grammar (`dns-name = 1*255dns-char`) needs no dot,
+  and Complement names its homeservers `hs1` and `hs2`. The media check now delegates to
+  `federation::server_name_is_valid`, the same grammar federation uses. Malformed names
+  (spaces, `_`, `/`, a missing or out-of-range port) are still refused.
+- **ADDED:** the Complement image, `tests/complement/` (ADR-0233). It installs the Debian
+  trixie package a release ships on the shipped image's pinned base. The build refuses a
+  package whose SHA-256 is not the one passed in `MEROVINGIAN_DEB_SHA256`. The entrypoint
+  starts as root, because Complement passes no `--cap-drop`. It writes only into directories the
+  server's user cannot create entries in. It checks `SERVER_NAME` against the
+  spec's server-name grammar before writing anything, and renders the config from
+  `merovingian.conf.template`. It keeps the master key and database across restarts, bound to
+  one server name, and mints a one-day federation certificate from Complement's CA. It trusts
+  that CA and puts the loopback client listener on 8008 through nginx. Last, it `exec`s the
+  server through `setpriv` as `merovingian`, with an empty bounding set and `no_new_privs`.
+  The template turns off the parts of the encryption policy that the server lets an operator
+  change. New rooms stay encrypted by default and direct messages still require encryption,
+  because the server refuses a config that changes either. It raises every rate limit out of
+  reach, including the built-in per-user ones, and sets the login throttle to its largest counts
+  over a 1s window. Landlock stays required unless
+  `MEROVINGIAN_COMPLEMENT_ALLOW_WITHOUT_LANDLOCK=true`.
+- **CI:** a `complement-image` job in `packages.yml` builds the image from the trixie package
+  and starts it as Complement does. It checks health through nginx, the 401 `m.login.dummy`
+  challenge, the federation key over TLS with only the test CA trusted, and the worker
+  answering `/_matrix/federation/v1/version`. It also checks a non-root server with empty
+  `CapBnd`/`CapEff` and `NoNewPrivs: 1`, and the same signing key after `docker restart`.
+- **ADDED:** `scripts/run_complement.py` (ADR-0234). It refuses a package whose SHA-256 is not
+  in a `SHA256SUMS` signed by the maintainer key pinned in `tests/complement/run.toml`
+  (`--unsigned` runs a local package, never as evidence). It builds the image from a copy
+  outside the source tree, reads the server binary's SHA-256 back from the image, fetches
+  Complement at the pinned commit (`df42e709`, Go 1.26.0) and refuses any other, drops inherited
+  `COMPLEMENT_*` variables, and runs `go test -json ./tests/...`. `--allow-without-landlock`
+  shares only the Landlock waiver with the containers. Its exit status is the summariser's.
+- **ADDED:** `scripts/summarise_complement.py` and `tests/complement/skip-list.toml`
+  (ADR-0234). A run is green only when it ran tests, every failure is listed, every
+  `expect-fail` entry still fails, every entry names a test that exists, no test was left
+  unfinished, and no package failed on its own. `go test`'s exit status is never used.
+  - Entries are `expect-fail` (the test runs and must fail) or `skip` (not run; top-level only,
+    with a reason, checked against `go test -list`).
+  - Every entry is `spec`, `non-spec`, `room-version` or `known-gap`, with evidence the
+    summariser checks exists.
+  - An entry hiding an auth, signature, key or ACL test needs `signed_off_by`.
+  - The list is empty until the first full run.
+- **ADDED:** `scripts/record_complement_evidence.py` and `scripts/publish_complement_evidence.py`
+  (ADR-0235). The recorder writes `complement-results-<version>.json` and the raw
+  `complement-<version>.jsonl` from a run's work directory. It refuses, writing nothing, unless
+  the package is the one the run tested, the server binary it extracts from the package is the
+  one the run read out of the image, and the skip list is the one the run was judged by.
+  `release_evidence` is true only for a GPG-verified, unfiltered, green run. The publisher signs
+  both files with the maintainer key, checks the signatures, and attaches them to the tag's
+  release. It refuses anything that is not evidence, another version's tag, or an existing
+  signature. `run_complement.py` now keeps the skip list it judged the run by, with its digest.
+- **CI:** the alpha release notes have a Complement section naming the signed evidence files and
+  how to verify them. A release without them has not been tested against Complement.
+- **DOCS:** `docs/release-process.md` has a pre-tag "Complement" section: candidate, run, record,
+  tag, publish. `docs/dev-environment.md` lists the Docker, Go, git and gpg prerequisites.
+- **CHANGED:** Complement evidence is bound to the commit the tested package was built from.
+  - `run_complement.py` verifies the package's build provenance with `gh attestation verify`.
+    `packages.yml` must have built exactly that file from one commit on `main`, and the run
+    records the commit.
+  - The recorder treats a run with no verified source commit as not evidence.
+  - The publisher refuses a tag at any other commit, and refuses a package signature by any key
+    but the maintainer's.
+  - The publisher also attaches the tested `.deb` and its maintainer signature to the tag's
+    release, because the rolling `latest` release that held it is replaced on every push.
+- **FIXED:** the federation library did not link the config library it now calls
+  (`config::private_ip_range_is_allowable`), so a fuzz target linking federation alone failed
+  with an undefined reference. `src/federation/meson.build` now links it.
+- **FIXED:** the open-registration conformance test required `params` and `session` in the 401,
+  which the spec makes optional ("if one is provided"). It now checks them only when present,
+  passes a session back only when one is issued, and gives every assertion its spec constraint.
+  The registered user ID is checked against the user-ID grammar (a MUST). The check that it is
+  based on the requested username is labelled the SHOULD it is.
+- **FIXED:** the release notes' Complement section printed a literal `<version>` in the evidence
+  file names, because its heredoc is quoted. The step now reads the version from `meson.build`
+  and fills it in, and fails if it cannot read one.
+- **FIXED:** `tests/complement/mint-tls.sh` and the tests' CA helper ran `openssl req`, which
+  refuses to run without a config file. The NetBSD CI VM ships none, so `complement-image-tooling`
+  failed there. Both now use a minimal config of their own (`OPENSSL_CONF`). A scenario mints
+  with the system config missing. The config has no `prompt = no`, under which OpenBSD's
+  LibreSSL takes the subject from the config instead of `-subj` and fails on an empty section.
+  The test CA's extensions come from the file rather than `-addext`.
+- **TESTS:** the discovery scenario in `test_federation_private_range_allowlist.cpp` explains
+  what each of its cases guards against: each branch of `discover_server`, the cache, non-federation
+  callers, pushers and identity servers, and loopback. CodeQL flagged it as a long function with
+  almost no comments.
+- **TESTS:** the fake tools in `test_run_complement.py` no longer need `sha256sum` or `seq`, which
+  the BSD hosts may lack. The certificate checks in `test_complement_image.py` read
+  `openssl x509 -text`, which LibreSSL also has.
+- **DOCS:** the root `AGENTS.md` glossary no longer calls the in-house JSON flow fixtures
+  (`tests/fixtures/complement/`) Complement. This branch's ADRs are 0231 to 0235, because
+  0230 went to unknown client endpoints (0.12.56).
+- **TESTS:** `test_config_private_range_allowlist.cpp`,
+  `test_federation_private_range_allowlist.cpp`, `test_config_open_registration.cpp`,
+  `test_open_registration_conformance.cpp`, and in `test_media_security.cpp` a remote media
+  allowlist scenario plus server-name scenarios that replace the one asserting `nodot` was
+  invalid. `tests/tooling/test_complement_image.py` (meson test
+  `complement-image-tooling`) for the image's scripts, Dockerfile, nginx config and CI job;
+  `test_complement_summary.py` and `test_run_complement.py` for the summariser, the skip list
+  and the run script; `test_complement_evidence.py` for the recorder (against Debian packages
+  built in the test) and the publisher; a release-notes scenario in `test_release_workflow.py`.
+
 ## 0.12.56
 
 A client asking for an endpoint this server does not implement is told so, before its access token is

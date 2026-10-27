@@ -88,6 +88,7 @@ auto make_runtime_federation_config(config::Config const& config) -> RuntimeFede
         config.security().federation.require_valid_tls,
         config.security().federation.verify_json_signatures,
         config.security().federation.deny_ip_ranges,
+        config.security().federation.allow_private_ip_ranges,
         max_transaction_size.valid ? max_transaction_size.bytes : 0U,
         config.security().federation.max_transaction_pdus,
         config.security().federation.max_transaction_edus,

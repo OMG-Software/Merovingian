@@ -289,8 +289,12 @@ Federation discovery applies `security.federation.deny_ip_ranges` in addition
 to the mandatory built-in SSRF blocks. The discovery network owns this immutable
 policy, so IP-literal, explicit-port, well-known, SRV, fallback, redirect and
 filtered URL lookups retain it on both cached and uncached paths. Main and
-federation-worker startup wire the same policy. Configured ranges cannot enable
-loopback or private destinations. The server-name discovery cache retains at
+federation-worker startup wire the same policy. Configured deny ranges cannot
+enable loopback or private destinations. The one opening is
+`security.federation.allow_private_ip_ranges` (ADR-0231): RFC 1918 / ULA networks
+that `discover_server`, well-known fetches, cached `discover`, the inbound origin
+check and the remote media re-check accept. Redirect resolution, URL preview and
+the filtered lookups used by pushers and identity servers never apply it. The server-name discovery cache retains at
 most 1024 positive and negative entries combined, with a 60-second freshness
 TTL; when full, a new name evicts the oldest retained result. Expired entries
 are swept before cache hits and insertion. Invalid server names are refused

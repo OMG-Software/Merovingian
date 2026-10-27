@@ -19,6 +19,24 @@ and what has been deliberately dropped.
 | --- | --- | --- |
 | Federation conformance is entirely self-attested | Every conformance claim rests on this project's own tests. Complement is the only external check on whether the federation implementation is actually correct. | Complement runs green against a release candidate — see "Release evidence" for why this is a pre-tag run, not a per-PR gate. |
 
+Progress on the Complement blocker: 0.12.57 removed the two server-side refusals that made
+Complement impossible to run against the release build. Federation can now reach operator-named
+RFC 1918 / ULA networks (`security.federation.allow_private_ip_ranges`, ADR-0231), and open
+registration with `m.login.dummy` exists behind an explicit acknowledgement
+(`security.registration.allow_open_registration`, ADR-0232). The Complement image followed in
+the same release (`tests/complement/`, ADR-0233). It installs the trixie package, puts the
+client API on 8008 through nginx, mints the federation certificate from Complement's CA, and
+drops every privilege before starting the server. The `complement-image` job in
+`packages.yml` boots it on every branch run. `scripts/run_complement.py` runs Complement at a
+pinned commit against a package whose digest is in the maintainer-signed `SHA256SUMS`, and
+`scripts/summarise_complement.py` judges the run against `tests/complement/skip-list.toml`
+(ADR-0234). `scripts/record_complement_evidence.py` and `publish_complement_evidence.py` turn a
+green run into a maintainer-signed record, tied to the shipped server binary's SHA-256 and
+attached to the release (ADR-0235, `docs/release-process.md`, "Complement"). Still open: the
+first full run against a candidate, and the skip list it produces. Not yet verified: whether
+Docker's default seccomp profile admits Landlock, and whether the container's memory-lock limit
+fits the master key.
+
 ## Release evidence, not CI gates
 
 Soak, load and chaos runs cannot produce meaningful numbers on shared,

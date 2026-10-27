@@ -189,6 +189,7 @@ The one exception is `bootstrap/`, which is header-only.
 │   ├── integration/       #   Flow/integration tests (test_*_flow.cpp)
 │   ├── fuzz/              #   Fuzz targets
 │   ├── smoke/             #   Smoke tests
+│   ├── complement/        #   Docker image that runs the release package under Complement
 │   ├── fixtures/          #   Test fixtures (complement)
 │   ├── support/           #   Test helpers (json_test_support, master_key, registration_token, temp_directory, tls_mock_server)
 │   ├── sanitizer/         #   Sanitizer suppression files (tsan.supp)
@@ -254,6 +255,7 @@ More specific guidance lives alongside the code it governs. Read the relevant fi
 | `tests/fuzz/AGENTS.md` | Fuzz target conventions and regression test policy |
 | `tests/smoke/AGENTS.md` | Smoke test scope: startup, basic HTTP, migration |
 | `tests/fixtures/AGENTS.md` | Complement fixture format: step schema, supported fields |
+| `tests/complement/AGENTS.md` | Complement image: release package only, root entrypoint that drops privileges, config template |
 | `tests/support/AGENTS.md` | Test helpers: `master_key`, `json_test_support`, registration token |
 | `migrations/AGENTS.md` | Migration format, numbering, and safety rules |
 | `docs/AGENTS.md` | Which documents to update and when |
@@ -309,7 +311,7 @@ Base: docs/matrix-v1.19-spec/index.md
 | Backfill | Retrieving historical events from other servers to fill gaps | [spec](docs/matrix-v1.19-spec/server-server-api.md#backfilling-and-retrieving-missing-events) |
 | Transaction | Batch of PDUs/EDUs sent between servers | `federation/transactions.hpp` |
 | Key ID | `algorithm:version` identifier for a signing key | `crypto/`, [spec](docs/matrix-v1.19-spec/appendices.md#cryptographic-key-representation) |
-| Complement | Matrix federation test suite (used in integration tests) | `tests/fixtures/complement/` |
+| Complement | The external Matrix homeserver test suite (matrix-org/complement), run against the release package. The JSON flow fixtures under `tests/fixtures/complement/` are this project's own tests, not Complement | `tests/complement/` |
 
 ## Build & Test Commands
 ```bash

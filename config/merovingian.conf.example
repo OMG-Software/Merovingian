@@ -189,6 +189,9 @@ listeners.max_queued_connections=1024
 security.registration.enabled=false
 security.registration.require_token=true
 security.registration.token_file=/etc/merovingian/registration-token
+# allow_open_registration=true is the explicit acknowledgement that
+# require_token=false is intended. Never set it on a public server.
+security.registration.allow_open_registration=false
 
 # Failed-login throttle. A password login for an account is refused (429
 # M_LIMIT_EXCEEDED) once it has max_failures_per_source failures from one client
@@ -229,6 +232,10 @@ security.federation.denied_servers=
 security.federation.require_valid_tls=true
 security.federation.verify_json_signatures=true
 security.federation.deny_ip_ranges=127.0.0.0/8,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,::1/128,fc00::/7
+# allow_private_ip_ranges names RFC 1918 / ULA networks that federation (only)
+# may reach, e.g. 172.16.0.0/12 for a Docker test harness. Leave it empty on a
+# public server.
+security.federation.allow_private_ip_ranges=
 security.federation.max_transaction_size=20MiB
 security.federation.remote_timeout=60s
 

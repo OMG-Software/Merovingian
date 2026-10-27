@@ -505,6 +505,110 @@ auto is_private_or_loopback_range(std::string_view range) noexcept -> bool
            range == "::1/128" || range == "fc00::/7";
 }
 
+namespace
+{
+
+    struct PrivateBlock final
+    {
+        std::array<std::uint8_t, 16U> network{};
+        unsigned prefix{0U};
+    };
+
+    // The networks allow_private_ip_ranges may name. Loopback, link-local,
+    // CGNAT, multicast, reserved and NAT64 space are deliberately absent.
+    constexpr auto private_v4_blocks = std::array<PrivateBlock, 3U>{
+        PrivateBlock{{10U},        8U },
+        PrivateBlock{{172U, 16U},  12U},
+        PrivateBlock{{192U, 168U}, 16U},
+    };
+    constexpr auto private_v6_blocks = std::array<PrivateBlock, 1U>{
+        PrivateBlock{{0xFCU}, 7U},
+    };
+
+    [[nodiscard]] auto leading_bits_match(std::array<std::uint8_t, 16U> const& address,
+                                          std::array<std::uint8_t, 16U> const& network, unsigned bits) noexcept -> bool
+    {
+        for (auto bit = 0U; bit < bits; ++bit)
+        {
+            auto const mask = static_cast<std::uint8_t>(0x80U >> (bit % 8U));
+            if ((address[bit / 8U] & mask) != (network[bit / 8U] & mask))
+            {
+                return false;
+            }
+        }
+        return true;
+    }
+
+} // namespace
+
+auto private_ip_range_is_allowable(std::string_view range) noexcept -> bool
+{
+    auto const slash = range.find('/');
+    if (slash == std::string_view::npos)
+    {
+        return false;
+    }
+    auto const address = range.substr(0U, slash);
+    auto const prefix_text = range.substr(slash + 1U);
+    if (address.empty() || address.size() >= INET6_ADDRSTRLEN || prefix_text.empty() ||
+        !std::ranges::all_of(prefix_text, [](char character) {
+            return character >= '0' && character <= '9';
+        }))
+    {
+        return false;
+    }
+    auto prefix = 0U;
+    auto const parsed = std::from_chars(prefix_text.data(), prefix_text.data() + prefix_text.size(), prefix);
+    if (parsed.ec != std::errc{} || parsed.ptr != prefix_text.data() + prefix_text.size())
+    {
+        return false;
+    }
+
+    auto literal = std::array<char, INET6_ADDRSTRLEN>{};
+    std::ranges::copy(address, literal.begin());
+    auto bytes = std::array<std::uint8_t, 16U>{};
+    auto bits = 0U;
+    auto v4 = in_addr{};
+    auto v6 = in6_addr{};
+    if (::inet_pton(AF_INET, literal.data(), &v4) == 1)
+    {
+        auto const value = ntohl(v4.s_addr);
+        for (auto index = 0U; index < 4U; ++index)
+        {
+            bytes[index] = static_cast<std::uint8_t>(value >> (24U - index * 8U));
+        }
+        bits = 32U;
+    }
+    else if (::inet_pton(AF_INET6, literal.data(), &v6) == 1)
+    {
+        std::ranges::copy(v6.s6_addr, bytes.begin());
+        bits = 128U;
+    }
+    else
+    {
+        return false;
+    }
+    if (prefix > bits)
+    {
+        return false;
+    }
+
+    // No host bits: "10.0.0.5/8" reads as a host but means a network.
+    for (auto bit = prefix; bit < bits; ++bit)
+    {
+        if ((bytes[bit / 8U] & static_cast<std::uint8_t>(0x80U >> (bit % 8U))) != 0U)
+        {
+            return false;
+        }
+    }
+
+    auto const inside = [&bytes, prefix](PrivateBlock const& block) {
+        return prefix >= block.prefix && leading_bits_match(bytes, block.network, block.prefix);
+    };
+    return bits == 32U ? std::ranges::any_of(private_v4_blocks, inside)
+                       : std::ranges::any_of(private_v6_blocks, inside);
+}
+
 // Parse a "<max>/<window>s" rate-limit value, e.g. "20/60s" or
 // "5/60s". Returns std::nullopt on a malformed value. Validates the
 // window via the existing `parse_duration_seconds` and the cap against
@@ -1209,9 +1313,12 @@ auto validate(Config const& config) -> std::vector<ConfigValidationFinding>
                             "unless federation.worker.allow_shared_database_credentials=true"});
     }
 
-    if (config.security().registration.enabled && !config.security().registration.require_token)
+    if (config.security().registration.enabled && !config.security().registration.require_token &&
+        !config.security().registration.allow_open_registration)
     {
-        findings.push_back({"security.registration.require_token", "open registration requires token protection"});
+        findings.push_back({"security.registration.require_token",
+                            "open registration requires token protection, or an explicit "
+                            "security.registration.allow_open_registration=true"});
     }
 
     if (config.security().registration.enabled && config.security().registration.require_token &&
@@ -1300,6 +1407,14 @@ auto validate(Config const& config) -> std::vector<ConfigValidationFinding>
         findings.push_back({"security.federation.deny_ip_ranges",
                             "every federation deny range must be an IP address or CIDR range such as 10.0.0.0/8 or "
                             "fc00::/7; a malformed entry would deny every address"});
+    }
+    if (auto const& ranges = config.security().federation.allow_private_ip_ranges;
+        !std::ranges::all_of(ranges, private_ip_range_is_allowable))
+    {
+        findings.push_back({"security.federation.allow_private_ip_ranges",
+                            "every allowed private range must be a CIDR network with no host bits set inside "
+                            "10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16 or fc00::/7; loopback, link-local and other "
+                            "reserved space can never be allowed"});
     }
 
     validate_count("security.federation.query.max_backfill_pdus", config.security().federation.query.max_backfill_pdus,

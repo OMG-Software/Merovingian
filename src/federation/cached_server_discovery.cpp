@@ -23,8 +23,8 @@ CachedServerDiscovery::CachedServerDiscovery(ServerDiscoveryNetwork& upstream, s
 {
 }
 
-auto CachedServerDiscovery::discover(std::string_view server_name,
-                                     std::uint32_t timeout_seconds) -> ServerDiscoveryResult
+auto CachedServerDiscovery::discover(std::string_view server_name, std::uint32_t timeout_seconds)
+    -> ServerDiscoveryResult
 {
     if (!server_name_is_valid(server_name))
     {
@@ -88,6 +88,9 @@ auto CachedServerDiscovery::lookup_addresses_filtered(std::string_view host, std
     {
         return resolved;
     }
+    // Pusher gateway and identity-server URLs come through here, so the
+    // federation-only allow_private_ip_ranges is deliberately not applied
+    // (ADR-0231).
     if (!address_set_allowed(resolved.addresses, upstream_.denied_ip_ranges()))
     {
         return ResolvedAddressSet{false, {}, "resolved address set contains disallowed addresses"};

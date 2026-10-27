@@ -752,6 +752,20 @@ quickly finding everything a given `AGENTS.md` file contributed.
   and the condition under which this exemption must be revisited.
   Source: `src/appservice/AGENTS.md`; `docs/threat-model.md`.
 
+- **`security.federation.allow_private_ip_ranges` reaches federation callers
+  only.** `discover_server`, well-known fetches, `CachedServerDiscovery::discover`,
+  the inbound origin check and the remote media re-check apply it.
+  `resolve_federation_destination` applies it only when the caller passes it,
+  and `CachedServerDiscovery::lookup_addresses_filtered` never does. A new
+  outbound caller that fetches a client- or user-chosen URL (preview, redirect,
+  pusher, identity server) must not pass it. Test any range check through
+  `federation::ip_address_in_allowed_private_range`, which ignores a range
+  `config::private_ip_range_is_allowable` refuses.
+  Why: the allowance exists so federation can reach Docker or LAN peers
+  (ADR-0231). Every caller that shares the discovery network would otherwise
+  inherit an SSRF opening that was meant for server-to-server traffic only.
+  Source: `src/federation/AGENTS.md`.
+
 - **A URL a client names is fetched only through the URL preview gate
   (`gated_fetch` in `src/homeserver/url_preview_service.cpp`).** It resolves and checks every
   hop, redirects and images included, pins the connection to the checked addresses, and follows

@@ -1,0 +1,84 @@
+# SPDX-FileCopyrightText: 2026 James Chapman
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# Merovingian configuration for Complement. The entrypoint renders it with
+# render-config.sh at every container start; it is not a deployment example
+# (that is config/merovingian.conf.example). Keys not set here keep their
+# defaults, so the run tests the server as shipped. Every setting below that
+# differs from the example config says why.
+
+server.name=@SERVER_NAME@
+server.public_baseurl=https://@SERVER_NAME@
+# nginx, in the same container, is the only proxy (nginx.conf).
+server.trusted_proxies=127.0.0.1
+
+# Complement talks plain HTTP to the client API on 8008. A cleartext listener
+# must be on loopback, so the server listens on 127.0.0.1:8080 and nginx puts
+# it on 8008. Federation is served directly, with a certificate minted from
+# Complement's CA at every start (mint-tls.sh).
+listeners.client.bind=127.0.0.1:8080
+listeners.client.tls=false
+listeners.client.reverse_proxy=true
+listeners.federation.bind=0.0.0.0:8448
+listeners.federation.tls=true
+listeners.federation.reverse_proxy=false
+listeners.federation.tls_certificate_file=@ROOT@/etc/merovingian/tls/server.crt
+# Secrets live outside the config and database directories: the federation
+# worker's Landlock rules cover those, and it refuses a secret inside them.
+listeners.federation.tls_private_key_file=@ROOT@/var/lib/merovingian/secrets/tls.key
+
+# SQLite (D3): one process per container, state kept in the container layer
+# so Complement's snapshots carry it (prepare-state.sh).
+database.backend=sqlite
+database.sqlite_path=@ROOT@/var/lib/merovingian/data/merovingian.sqlite3
+security.secrets.master_key_file=@ROOT@/var/lib/merovingian/secrets/master.key
+
+# Complement registers its users without a token (ADR-0232).
+security.registration.enabled=true
+security.registration.require_token=false
+security.registration.allow_open_registration=true
+
+# Complement's servers live on Docker networks and host.docker.internal, all
+# inside RFC 1918 space (ADR-0231). Loopback and link-local stay blocked.
+security.federation.allow_private_ip_ranges=10.0.0.0/8,172.16.0.0/12,192.168.0.0/16
+
+# Landlock stays required unless the run waives it with
+# MEROVINGIAN_COMPLEMENT_ALLOW_WITHOUT_LANDLOCK=true, which the evidence records.
+federation.worker.allow_without_landlock=@ALLOW_WITHOUT_LANDLOCK@
+
+# The encryption policy goes beyond the spec. Two parts of it are fixed: the
+# server refuses a config that stops encrypting new rooms by default or stops
+# requiring encryption in direct messages, so Complement meets both as shipped.
+# The parts an operator may change are off: unencrypted private rooms may be
+# created here, and joined when another server created them.
+security.encryption.require_for_private_rooms=false
+security.encryption.allow_unencrypted_public_rooms=true
+security.encryption.block_unencrypted_federated_private_rooms=false
+
+# Rate limits cannot be switched off, so each one is raised out of reach:
+# every Complement client arrives from one address. A tier override outranks
+# the built-in per-IP refinements (keys, devices, search, thumbnails); the
+# built-in per-user limits need entries of their own (src/http/rate_limit.cpp).
+client_rate_limits.default_per_ip=1000000000/1s
+client_rate_limits.tier.auth_sensitive=1000000000/1s
+client_rate_limits.tier.media=1000000000/1s
+client_rate_limits.tier.sync=1000000000/1s
+client_rate_limits.tier.federation=1000000000/1s
+client_rate_limits.tier.admin=1000000000/1s
+client_rate_limits.tier.generic=1000000000/1s
+client_rate_limits.per_user./_matrix/client/v3/login=1000000000/1s
+client_rate_limits.per_user./_matrix/client/v1/media/preview_url=1000000000/1s
+client_rate_limits.per_user./_matrix/media/v3/preview_url=1000000000/1s
+client_rate_limits.per_user./_matrix/media/v1/create=1000000000/1s
+security.federation.per_origin_transaction_rate=1000000000/1s
+security.federation.per_origin_pdu_rate=1000000000/1s
+security.federation.per_origin_edu_rate=1000000000/1s
+security.federation.per_origin_request_rate=1000000000/1s
+security.federation.key_resolution_per_ip_rate=1000000000/1s
+security.federation.bad_signature_per_ip_rate=1000000000/1s
+# Complement tests failed logins on purpose. The throttle cannot be switched
+# off either: these are the largest counts the server accepts, over its
+# shortest window.
+security.login_throttle.max_failures_per_source=1000
+security.login_throttle.max_failures_per_account=100000
+security.login_throttle.window=1s

@@ -297,9 +297,33 @@ jobs:
           - SLSA provenance: `gh attestation verify <tarball> --repo OMG-Software/Merovingian`
           - GPG signature: `gpg --verify <tarball>.asc <tarball>` (import the maintainer key from `docs/release-process.md`)
 
+          ## Complement
+
+          The maintainer runs the external Complement suite against this version's Debian
+          trixie package before tagging, and attaches the result to this release once it is
+          published (`docs/release-process.md`, "Complement"):
+
+          - `complement-results-<version>.json`: the package, server binary and image tested,
+            the Complement commit, the skip list the run was judged by, and the verdict
+          - `complement-<version>.jsonl`: the raw `go test -json` log
+          - `merovingian_<version>_amd64-debian.deb`: the package that was tested, built
+            from this tag's commit; its SHA-256 and its server binary's are in the results
+
+          Each has a detached signature by the maintainer key:
+          `gpg --verify complement-results-<version>.json.asc complement-results-<version>.json`.
+          A release without these files has not been tested against Complement.
+
           ## Package checksums
 
           EOF
+          # The quoted heredoc keeps `$` and backticks literal, so the Complement
+          # section's file names are filled in here, before anything is appended.
+          version=$(sed -n "s/^  version: '\([0-9][0-9.]*\)',$/\1/p" meson.build)
+          if [ -z "$version" ]; then
+            echo "cannot read the project version from meson.build" >&2
+            exit 1
+          fi
+          sed -i "s/<version>/${version}/g" release-notes.md
           for sumfile in release-assets/*.sha256; do
             [ -f "$sumfile" ] || continue
             printf -- '- `%s`\n' "$(cat "$sumfile")" >> release-notes.md

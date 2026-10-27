@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+#include "merovingian/config/config.hpp"
+#include "merovingian/media/runtime_media.hpp"
 #include "merovingian/media/security.hpp"
 
 #include <catch2/catch_test_macros.hpp>
@@ -657,26 +659,67 @@ SCENARIO("evaluate_media_upload rejects (not quarantines) scanner failures when 
 // remote_media_fetch_policy — uncovered branch paths
 // ---------------------------------------------------------------------------
 
-SCENARIO("remote_media_fetch_policy rejects an invalid origin server name", "[media][security][remote][error]")
+// The origin is a Matrix server name. Appendices, "Server Name"
+// (docs/matrix-v1.19-spec/appendices.md#server-name):
+//   server_name = hostname [ ":" port ]; dns-name = 1*255dns-char;
+//   dns-char = DIGIT / ALPHA / "-" / "."
+// A dns-name need not contain a dot. Until 0.12.57 this check also demanded
+// one and refused "nodot", which the grammar allows; Complement names its
+// homeservers hs1 and hs2.
+SCENARIO("remote_media_fetch_policy rejects an origin that is not a Matrix server name",
+         "[media][security][remote][error][server-name]")
 {
-    GIVEN("a fetch request whose origin_server has no dot")
+    GIVEN("fetch requests whose origin_server breaks the server-name grammar")
     {
         auto request = merovingian::media::RemoteMediaFetchRequest{};
-        request.origin_server = "nodot"; // no '.' → fails server_name_is_valid
         request.media_id = "abc123";
-        request.resolved_host = "nodot";
+        request.resolved_host = "media.example.org";
         request.resolved_addresses = {"203.0.113.1"};
         request.isolate_remote_media = true;
         request.private_address_fetches_blocked = true;
 
-        WHEN("the policy is evaluated")
+        WHEN("the policy is evaluated for each")
         {
-            auto const result = merovingian::media::remote_media_fetch_policy(request);
-
-            THEN("the fetch is rejected — origin server name is invalid")
+            THEN("each fetch is rejected as an invalid origin")
             {
-                REQUIRE(result.disposition == merovingian::media::MediaDisposition::reject);
-                REQUIRE(result.reason == "invalid remote media origin");
+                for (auto const* origin : {"", "bad server", "hs2:", "hs2:0", "hs2:99999", "hs2:80:80", "under_score",
+                                           "[::1", "media.example.org/evil"})
+                {
+                    INFO(origin);
+                    request.origin_server = origin;
+                    auto const result = merovingian::media::remote_media_fetch_policy(request);
+                    REQUIRE(result.disposition == merovingian::media::MediaDisposition::reject);
+                    REQUIRE(result.reason == "invalid remote media origin");
+                }
+            }
+        }
+    }
+}
+
+SCENARIO("remote_media_fetch_policy accepts every form of Matrix server name", "[media][security][remote][server-name]")
+{
+    GIVEN("fetch requests from origins with and without dots, ports and IP literals")
+    {
+        auto request = merovingian::media::RemoteMediaFetchRequest{};
+        request.media_id = "abc123";
+        request.resolved_host = "media.example.org";
+        request.resolved_addresses = {"203.0.113.1"};
+        request.isolate_remote_media = true;
+        request.private_address_fetches_blocked = true;
+
+        WHEN("the policy is evaluated for each")
+        {
+            THEN("each origin passes the server-name check and the fetch is accepted")
+            {
+                for (auto const* origin :
+                     {"nodot", "hs2", "hs2:8448", "localhost", "media.example.org", "media.example.org:8448",
+                      "203.0.113.1", "203.0.113.1:8448", "[2001:db8::1]", "[2001:db8::1]:8448"})
+                {
+                    INFO(origin);
+                    request.origin_server = origin;
+                    auto const result = merovingian::media::remote_media_fetch_policy(request);
+                    REQUIRE(result.disposition == merovingian::media::MediaDisposition::accept);
+                }
             }
         }
     }
@@ -1060,6 +1103,57 @@ SCENARIO("A remote Content-Disposition filename is read strictly", "[media][secu
                 REQUIRE(
                     merovingian::media::content_disposition_filename("inline; filename*=iso-8859-1''a.txt").empty());
                 REQUIRE(merovingian::media::content_disposition_filename(R"(inline; filename="../../x")").empty());
+            }
+        }
+    }
+}
+
+SCENARIO("Remote media fetch policy honours the federation private-range allowlist",
+         "[media][security][remote][ssrf][private-allowlist]")
+{
+    GIVEN("a remote media fetch from a peer on the Docker bridge")
+    {
+        auto request = merovingian::media::RemoteMediaFetchRequest{};
+        request.origin_server = "media.example.org";
+        request.media_id = "abc123";
+        request.resolved_host = "media.example.org";
+        request.resolved_addresses = {"172.18.0.3"};
+        request.isolate_remote_media = true;
+        request.private_address_fetches_blocked = true;
+
+        auto allowlisted = request;
+        allowlisted.allowed_private_ranges = {"172.16.0.0/12"};
+        auto loopback_with_allowance = allowlisted;
+        loopback_with_allowance.resolved_addresses = {"127.0.0.1"};
+
+        WHEN("the policy is evaluated with and without the allowance")
+        {
+            auto const refused = merovingian::media::remote_media_fetch_policy(request);
+            auto const accepted = merovingian::media::remote_media_fetch_policy(allowlisted);
+            auto const loopback = merovingian::media::remote_media_fetch_policy(loopback_with_allowance);
+
+            THEN("only the allowlisted bridge address is fetched; loopback never is")
+            {
+                REQUIRE(refused.disposition == merovingian::media::MediaDisposition::reject);
+                REQUIRE(accepted.disposition == merovingian::media::MediaDisposition::accept);
+                REQUIRE(loopback.disposition == merovingian::media::MediaDisposition::reject);
+                REQUIRE(loopback.reason == "remote media address is private or loopback");
+            }
+        }
+    }
+
+    GIVEN("a config that allowlists the Docker bridge for federation")
+    {
+        auto config = merovingian::config::Config{};
+        config.security().federation.allow_private_ip_ranges = {"172.16.0.0/12"};
+
+        WHEN("the runtime media config is built")
+        {
+            auto const runtime = merovingian::media::make_runtime_media_config(config);
+
+            THEN("remote media fetches carry the same allowance")
+            {
+                REQUIRE(runtime.allowed_private_fetch_ranges == std::vector<std::string>{"172.16.0.0/12"});
             }
         }
     }
