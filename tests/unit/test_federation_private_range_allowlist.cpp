@@ -164,6 +164,11 @@ SCENARIO("The inbound origin check honours the allowance", "[federation][securit
     }
 }
 
+// The discovery network is shared: federation discovery, the cached front
+// end, and callers outside federation (pushers, identity servers, URL preview)
+// all resolve through it. The allowance it carries must open the allowlisted
+// network to the federation paths only, and never let loopback through, so
+// each path is checked here against the same network (ADR-0231).
 SCENARIO("Federation discovery reaches an allowlisted peer by name and by literal",
          "[federation][discovery][private-allowlist]")
 {
@@ -173,6 +178,9 @@ SCENARIO("Federation discovery reaches an allowlisted peer by name and by litera
 
         WHEN("hs2, hs2:8448 and an IP literal are discovered")
         {
+            // Each server-name form takes its own branch of discover_server:
+            // SRV and well-known lookup for a bare name, a direct connection for
+            // an explicit port, and no resolution at all for an IP literal.
             auto const by_name = merovingian::federation::discover_server("hs2", network, 1U);
             auto const by_port = merovingian::federation::discover_server("hs2:8448", network, 1U);
             auto const by_literal = merovingian::federation::discover_server("172.18.0.3:8448", network, 1U);
@@ -190,6 +198,8 @@ SCENARIO("Federation discovery reaches an allowlisted peer by name and by litera
 
         WHEN("the cached front end discovers hs2 twice")
         {
+            // The first call misses the cache and the second hits it; both must
+            // carry the allowance, or a cached result would decide differently.
             auto cached = merovingian::federation::CachedServerDiscovery{network, 60000U, [] {
                                                                              return 1000U;
                                                                          }};
@@ -205,6 +215,8 @@ SCENARIO("Federation discovery reaches an allowlisted peer by name and by litera
 
         WHEN("a non-federation caller resolves the same host without passing an allowance")
         {
+            // URL preview and media redirects call resolve_federation_destination
+            // without an allowance; the one the network carries must not reach them.
             auto const preview_style = merovingian::federation::resolve_federation_destination("hs2", 443U, network);
             auto const literal = merovingian::federation::resolve_federation_destination("172.18.0.3", 443U, network);
 
@@ -217,6 +229,8 @@ SCENARIO("Federation discovery reaches an allowlisted peer by name and by litera
 
         WHEN("a pusher gateway or identity server host is looked up through the shared cache")
         {
+            // lookup_addresses_filtered serves pushers and identity servers, which
+            // fetch URLs a user chose: an SSRF opening if the allowance applied.
             auto cached = merovingian::federation::CachedServerDiscovery{network, 60000U, [] {
                                                                              return 1000U;
                                                                          }};
@@ -231,6 +245,8 @@ SCENARIO("Federation discovery reaches an allowlisted peer by name and by litera
 
         WHEN("the bridge address is replaced by loopback")
         {
+            // A name that resolves to loopback stays refused: the allowance names
+            // only private networks, never the host itself.
             network.addresses = {"127.0.0.1"};
             auto const result = merovingian::federation::discover_server("hs2", network, 1U);
 
