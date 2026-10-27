@@ -41,6 +41,7 @@
 #include "merovingian/homeserver/local_http_router.hpp"
 
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/generators/catch_generators.hpp>
 
 #include <algorithm>
 #include <array>
@@ -1051,6 +1052,47 @@ SCENARIO("POST /login success response contains required spec fields", "[conform
                 REQUIRE(!device_id->empty());
 
                 // Note: "home_server" was deprecated in v1.2 and is not asserted.
+            }
+        }
+    }
+}
+
+// Spec: ../../docs/matrix-v1.19-spec/appendices.md#user-identifiers (rationale): "it should be
+// possible to reach `@user:matrix.org` as `@USER:matrix.org`": user IDs are created downcased,
+// so one that differs only in case names the same user. Historical user IDs with upper-case
+// localparts still match exactly first. Complement TestLogin, "Login with uppercase username
+// works and GET /whoami afterwards also".
+SCENARIO("POST /login with an upper-case form of a user ID logs that user in",
+         "[conformance][client-server][login][login-case]")
+{
+    GIVEN("a registered user carol")
+    {
+        auto started = merovingian::homeserver::start_client_server(conformance_config());
+        REQUIRE(started.started);
+        REQUIRE(merovingian::homeserver::handle_client_server_request(
+                    started.runtime, {"POST",
+                                      "/_matrix/client/v3/register",
+                                      {},
+                                      merovingian::tests::registration_json("carol", "CorrectHorse7!")})
+                    .response.status == 200U);
+        auto const identifier = GENERATE(as<std::string>{}, "@CAROL:example.org", "CAROL", "Carol");
+
+        WHEN("carol logs in naming herself with upper-case letters")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                started.runtime,
+                {"POST",
+                 "/_matrix/client/v3/login",
+                 {},
+                 std::string{R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":")"} + identifier +
+                     R"("},"password":"CorrectHorse7!"})"});
+
+            THEN("she is logged in as @carol:example.org")
+            {
+                CAPTURE(identifier, response.response.body);
+                REQUIRE(response.response.status == 200U);
+                auto const body = parse_object(response.response.body);
+                REQUIRE(*string_member(body, "user_id") == "@carol:example.org");
             }
         }
     }
@@ -3091,7 +3133,8 @@ SCENARIO("GET /sync returns full event content and correct room version in state
                 REQUIRE(int_member(*first_event_obj, "origin_server_ts") != nullptr);
             }
 
-            THEN("the state section includes m.room.create with room_version 12")
+            THEN("the room's state, as the state and then the timeline give it, includes m.room.create with "
+                 "room_version 12")
             {
                 REQUIRE(response.response.status == 200U);
                 auto const body = parse_object(response.response.body);
@@ -3111,21 +3154,30 @@ SCENARIO("GET /sync returns full event content and correct room version in state
                 REQUIRE(state != nullptr);
                 auto const* state_events = object_member_as_array(*state, "events");
                 REQUIRE(state_events != nullptr);
+                auto const* timeline = object_member_as_object(*room_obj, "timeline");
+                REQUIRE(timeline != nullptr);
+                auto const* timeline_events = object_member_as_array(*timeline, "events");
+                REQUIRE(timeline_events != nullptr);
 
-                // Find the m.room.create event in state.
+                // Spec (GET /sync, JoinedRoom `state`, v1.19): "all state up to the start of the
+                // timeline". This timeline starts at the room's creation, so m.room.create is in
+                // the timeline and not repeated in `state`; a client takes the room's state from
+                // `state` followed by the timeline's state events, and must find it there.
                 merovingian::canonicaljson::Object const* create_event = nullptr;
-                for (auto const& evt : *state_events)
+                for (auto const* events : {state_events, timeline_events})
                 {
-                    auto const* evt_obj = std::get_if<merovingian::canonicaljson::Object>(&evt.storage());
-                    if (evt_obj == nullptr)
+                    for (auto const& evt : *events)
                     {
-                        continue;
-                    }
-                    auto const* type = string_member(*evt_obj, "type");
-                    if (type != nullptr && *type == "m.room.create")
-                    {
-                        create_event = evt_obj;
-                        break;
+                        auto const* evt_obj = std::get_if<merovingian::canonicaljson::Object>(&evt.storage());
+                        if (evt_obj == nullptr)
+                        {
+                            continue;
+                        }
+                        auto const* type = string_member(*evt_obj, "type");
+                        if (type != nullptr && *type == "m.room.create" && create_event == nullptr)
+                        {
+                            create_event = evt_obj;
+                        }
                     }
                 }
                 REQUIRE(create_event != nullptr);

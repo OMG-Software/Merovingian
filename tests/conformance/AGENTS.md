@@ -73,6 +73,7 @@ Every test in this directory directly encodes a **MUST** or **SHOULD** from the 
 | `test_state_resolution_conformance.cpp` | [SS API § State Resolution](../../docs/matrix-v1.19-spec/server-server-api.md#room-state-resolution) |
 | `test_sync_filter_conformance.cpp` | [CS API § Filtering](../../docs/matrix-v1.19-spec/client-server-api.md#filtering) |
 | `test_sync_summary_conformance.cpp` | [CS API § Syncing](../../docs/matrix-v1.19-spec/client-server-api.md#syncing) |
+| `test_sync_state_conformance.cpp` | [CS API `GET /sync`](../../docs/matrix-v1.19-spec/client-server-api.md#get_matrixclientv3sync) (a joined room's `state` is the state up to the start of the timeline, not current state) |
 | `test_typing_conformance.cpp` | [CS API § Typing Notifications](../../docs/matrix-v1.19-spec/client-server-api.md#typing-notifications) (`typing` must be a boolean; typing expires after its `timeout`, never later than the server's ceiling) |
 | `test_x_matrix_auth_parsing.cpp` | [SS API § X-Matrix Auth](../../docs/matrix-v1.19-spec/server-server-api.md#request-authentication) |
 

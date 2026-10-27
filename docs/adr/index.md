@@ -228,6 +228,8 @@
 * [0241 - A federated join verifies and persists all returned state before it returns](0241-a-federated-join-verifies-and-persists-all-returned-state-before-it-returns.md)
 * [0242 - A join tries only the servers the client names](0242-a-join-tries-only-the-servers-the-client-names.md)
 * [0243 - A remote knock keeps its stripped state in the invite record](0243-a-remote-knock-keeps-its-stripped-state-in-the-invite-record.md)
+* [0244 - A server that has left a room rejoins through a resident](0244-a-server-that-has-left-a-room-rejoins-through-a-resident.md)
+* [0245 - Login matches a user ID exactly, then downcased](0245-login-matches-a-user-id-exactly-then-downcased.md)
 
 ## Proposed Records
 

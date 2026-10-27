@@ -84,6 +84,46 @@ pagination and filters, and the expected failures from the legacy media freeze.
   carries `reason` too. Not done: resolving a room alias in `/knock`. Regression: `[knock-remote]`
   in `test_join_room_flow.cpp` drives the client route against a TLS resident, including a forged
   unsigned entry in `knock_room_state`; red on the old code.
+- **FIXED:** membership events composed here never reached another server. Only messages and
+  state sent through `/send` and `/state` were sent to the room's other servers; a join, leave,
+  kick, ban, unban, local knock or third-party invite composed here was stored and went nowhere,
+  so another server never learnt that one of our users had left (Complement
+  `TestRestrictedRoomsRemoteJoin`, "Join should fail when left allowed room"). Every local compose
+  path now calls `federate_local_event`, `send_event`'s fan-out moved into one function, and a
+  kick, ban or unban also goes to its target's server, which is no longer among the room's members
+  once the event applies; an invite still reaches the invitee's server through `/invite`.
+  Regression: `[membership-fanout]` in `test_outbound_pdu_transaction_flow.cpp` (a join, a leave
+  and a ban), red on the old code.
+- **FIXED:** a server whose last user had left a room composed the next join itself, from the
+  state it held when that user left, and told the user they had joined; the resident never saw
+  it, so a join the resident would refuse succeeded (Complement `TestRestrictedRoomsRemoteJoin`,
+  "Join should fail with mangled join rules"). A server is in a room while one of its users is
+  joined to it; otherwise a join goes through a resident: the `via` servers, else the room ID's
+  domain, else the servers of users joined in the state this server last held (ADR-0244).
+  Regression: a join, leave and rejoin through a live TLS resident in `test_join_room_flow.cpp`
+  (`[state_groups]`); the rejoin must use `make_join` and `send_join`, and did not.
+- **FIXED:** an initial `/sync` (and a room newly joined since `since`) gave a joined room's
+  current state as `state`, not "all state up to the start of the timeline": a state event the
+  timeline carried was repeated in `state` with its later value. Complement `TestKnocking`,
+  "Users in the room see a user's membership update when they knock", read a second knock from
+  `state` before the first in the timeline. `state` is now the state before the timeline's first
+  event (from its `prev_events`; for an event whose `prev_events` this server never held, its own
+  after-state without the entry it set), and current state only when the timeline is empty.
+  Regression: `test_sync_state_conformance.cpp`, red on the old code. The
+  `GET /sync returns full event content and correct room version in state` conformance scenario
+  expected `m.room.create` in `state` for a room whose timeline starts at its creation, and
+  `test_client_server_flow.cpp` expected a newly joined user's own join in `state` though the
+  timeline carries it; both now look in the state followed by the timeline, citing the spec. Not done: an incremental sync
+  with a limited timeline still gives no state updates for the gap between `since` and the start
+  of the timeline.
+- **FIXED:** `POST /login` did not log `@user:server` in when named `@USER:server`, `USER` or
+  `User`. A user ID is looked up exactly, then with its localpart's ASCII letters downcased
+  (ADR-0245), so historical upper-case localparts still log in as themselves. Regression:
+  `[login-case]` in `test_client_server_conformance.cpp`, red on the old code.
+- **CHANGED (not fixed):** Complement `TestLogin`'s parallel subtests still meet
+  `429 too many concurrent authentication attempts`: the Argon2id admission cap is 4 and not
+  configurable (ADR-0090). Lifting it for Complement needs a configuration key, which is an owner
+  decision.
 - **FIXED:** room version 12 creation. Every v12 room's initial power levels now define
   `m.room.tombstone` above `state_default` (the spec's MUST; only `trusted_private_chat` did), and
   a client's own tombstone level in `power_level_content_override` is kept. A

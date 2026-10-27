@@ -50,6 +50,7 @@
 #include "merovingian/homeserver/room_service.hpp"
 #include "merovingian/homeserver/runtime.hpp"
 #include "merovingian/homeserver/space_hierarchy.hpp"
+#include "merovingian/homeserver/state_bookkeeping.hpp"
 #include "merovingian/homeserver/stored_push_rules.hpp"
 #include "merovingian/homeserver/stored_room_version.hpp"
 #include "merovingian/homeserver/url_preview_service.hpp"
@@ -4398,6 +4399,92 @@ namespace
         return state_events;
     }
 
+    // Extracts the "type" field from a stored event's JSON, or an empty
+    // string when the JSON is malformed/not an object. Used to apply a
+    // RoomEventFilter's types/not_types predicates to PersistentEvent rows,
+    // which do not carry a parsed event type of their own.
+    [[nodiscard]] auto stored_event_type(database::PersistentEvent const& event) -> std::string
+    {
+        auto const parsed = canonicaljson::parse_lossless(event.json);
+        if (parsed.error != canonicaljson::ParseError::none)
+        {
+            return {};
+        }
+        auto const* obj = std::get_if<canonicaljson::Object>(&parsed.value.storage());
+        if (obj == nullptr)
+        {
+            return {};
+        }
+        auto const* type = string_member(*obj, "type");
+        return type == nullptr ? std::string{} : *type;
+    }
+
+    // Builds a ClientEvent array from an explicit list of state event IDs
+    // (e.g. from federation::resolve_state_event_ids_at), applying the same
+    // RoomEventFilter type/sender predicate build_current_state_events_array
+    // applies to the room's current state. Unknown event IDs are skipped.
+    [[nodiscard]] auto build_state_events_array_for_ids(database::PersistentStore const& store,
+                                                        sync::EventTypeFilter const& filter,
+                                                        std::vector<std::string> const& state_event_ids)
+        -> canonicaljson::Array
+    {
+        auto state_events = canonicaljson::Array{};
+        for (auto const& event_id : state_event_ids)
+        {
+            auto const event = store.events.find(event_id);
+            if (event == store.events.end() ||
+                !sync::event_passes_filter(filter, stored_event_type(*event), event->sender_user_id))
+            {
+                continue;
+            }
+            state_events.push_back(client_event_with_id(store, *event));
+        }
+        return state_events;
+    }
+
+    // Spec (GET /sync, JoinedRoom `state`): "all state up to the start of the timeline,
+    // if since is not given, or full_state is true". That is the state immediately before
+    // the timeline's first event, resolved from its prev_events; a state event the
+    // timeline carries is not repeated here with its later value. When that cannot be
+    // resolved (an event whose prev_events this server never held, such as the join that
+    // brought it into the room), the first event's own after-state stands in, without the
+    // entry the event itself set.
+    [[nodiscard]] auto build_state_events_at_timeline_start(database::PersistentStore const& store,
+                                                            sync::EventTypeFilter const& filter,
+                                                            std::string_view room_id,
+                                                            database::PersistentEvent const& first_event)
+        -> std::optional<canonicaljson::Array>
+    {
+        auto const* policy = stored_room_version_policy(store, room_id);
+        if (policy == nullptr)
+        {
+            return std::nullopt;
+        }
+        auto ids = std::vector<std::string>{};
+        if (auto const before = compute_state_before(store, room_id, *policy, first_event.prev_event_ids); before.ok)
+        {
+            for (auto const& entry : before.state)
+            {
+                ids.push_back(entry.event_id);
+            }
+            return build_state_events_array_for_ids(store, filter, ids);
+        }
+        auto const group = database::find_event_state_group(store, first_event.event_id);
+        auto const after = group.has_value() ? database::read_state_group_full_state(store, *group) : std::nullopt;
+        if (!after.has_value())
+        {
+            return std::nullopt;
+        }
+        for (auto const& entry : *after)
+        {
+            if (entry.event_id != first_event.event_id)
+            {
+                ids.push_back(entry.event_id);
+            }
+        }
+        return build_state_events_array_for_ids(store, filter, ids);
+    }
+
     // Spec: GET /messages `state` is "a list of state events relevant to showing
     // the `chunk`... if `lazy_load_members` is enabled in the filter then this
     // may contain the membership events for the senders of events in the
@@ -4948,7 +5035,13 @@ namespace
             auto state_events = canonicaljson::Array{};
             if (!since_token.has_value() || newly_joined)
             {
-                state_events = build_current_state_events_array(store, filter.room.state, room.room_id);
+                auto at_start =
+                    window_begin != matched.end()
+                        ? build_state_events_at_timeline_start(store, filter.room.state, room.room_id, **window_begin)
+                        : std::nullopt;
+                state_events = at_start.has_value()
+                                   ? std::move(*at_start)
+                                   : build_current_state_events_array(store, filter.room.state, room.room_id);
             }
             auto ephemeral_events = build_room_ephemeral_events_array(
                 rt.homeserver, room.room_id, user, since_sync_stream_id, max_observed_sync_stream_id, ignored_senders);
@@ -7975,49 +8068,6 @@ namespace
             return std::nullopt;
         }
         return parsed;
-    }
-
-    // Extracts the "type" field from a stored event's JSON, or an empty
-    // string when the JSON is malformed/not an object. Used to apply a
-    // RoomEventFilter's types/not_types predicates to PersistentEvent rows,
-    // which do not carry a parsed event type of their own.
-    [[nodiscard]] auto stored_event_type(database::PersistentEvent const& event) -> std::string
-    {
-        auto const parsed = canonicaljson::parse_lossless(event.json);
-        if (parsed.error != canonicaljson::ParseError::none)
-        {
-            return {};
-        }
-        auto const* obj = std::get_if<canonicaljson::Object>(&parsed.value.storage());
-        if (obj == nullptr)
-        {
-            return {};
-        }
-        auto const* type = string_member(*obj, "type");
-        return type == nullptr ? std::string{} : *type;
-    }
-
-    // Builds a ClientEvent array from an explicit list of state event IDs
-    // (e.g. from federation::resolve_state_event_ids_at), applying the same
-    // RoomEventFilter type/sender predicate build_current_state_events_array
-    // applies to the room's current state. Unknown event IDs are skipped.
-    [[nodiscard]] auto build_state_events_array_for_ids(database::PersistentStore const& store,
-                                                        sync::EventTypeFilter const& filter,
-                                                        std::vector<std::string> const& state_event_ids)
-        -> canonicaljson::Array
-    {
-        auto state_events = canonicaljson::Array{};
-        for (auto const& event_id : state_event_ids)
-        {
-            auto const event = store.events.find(event_id);
-            if (event == store.events.end() ||
-                !sync::event_passes_filter(filter, stored_event_type(*event), event->sender_user_id))
-            {
-                continue;
-            }
-            state_events.push_back(client_event_with_id(store, *event));
-        }
-        return state_events;
     }
 
     // Parses a pagination token an endpoint accepts as `at`: the plain stream ordering that
@@ -11680,6 +11730,26 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                 return dispatch_err(req, rt, 403U, "M_FORBIDDEN", "invalid login token");
             }
             body->user_id = *redeemed;
+        }
+        // ADR-0245: user IDs are created downcased, and "it should be possible to reach
+        // `@user:matrix.org` as `@USER:matrix.org`" (appendices, User Identifiers). An
+        // account whose ID matches exactly wins, so a historical upper-case localpart still
+        // logs in as itself.
+        if (body->type == "m.login.password" && !body->is_appservice_login && !user_exists(rt, body->user_id))
+        {
+            auto downcased = body->user_id;
+            auto const localpart_end = std::min(downcased.find(':'), downcased.size());
+            for (auto index = std::size_t{1U}; index < localpart_end; ++index)
+            {
+                if (downcased[index] >= 'A' && downcased[index] <= 'Z')
+                {
+                    downcased[index] = static_cast<char>(downcased[index] - 'A' + 'a');
+                }
+            }
+            if (downcased != body->user_id && user_exists(rt, downcased))
+            {
+                body->user_id = std::move(downcased);
+            }
         }
         if (body->is_appservice_login)
         {

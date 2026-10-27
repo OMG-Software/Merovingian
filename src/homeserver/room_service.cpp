@@ -1090,6 +1090,43 @@ namespace
         return events;
     }
 
+    // Whether a user of this server is joined to `room_id`. Only then is this server in
+    // the room: it holds the room's current state and composes membership events
+    // itself. Otherwise a join or knock goes through a resident server, even when this
+    // server still knows the room from an earlier stay (ADR-0244).
+    [[nodiscard]] auto this_server_is_in_room(HomeserverRuntime const& runtime, std::string_view room_id) -> bool
+    {
+        auto const our_server = runtime.config.server().server_name;
+        return std::ranges::any_of(runtime.database.persistent_store.memberships,
+                                   [&](database::PersistentMembership const& membership) {
+                                       return membership.room_id == room_id && membership.membership == "join" &&
+                                              auth::identifier_server_name(membership.user_id) == our_server;
+                                   });
+    }
+
+    // The servers of users joined to `room_id` in the state this server last held,
+    // other than this one: the residents a rejoin can go through when the client names
+    // no server and the room ID has no other domain to try.
+    [[nodiscard]] auto last_known_resident_servers(HomeserverRuntime const& runtime, std::string_view room_id)
+        -> std::vector<std::string>
+    {
+        auto const our_server = runtime.config.server().server_name;
+        auto servers = std::vector<std::string>{};
+        for (auto const& membership : runtime.database.persistent_store.memberships)
+        {
+            if (membership.room_id != room_id || membership.membership != "join")
+            {
+                continue;
+            }
+            auto const server = std::string{auth::identifier_server_name(membership.user_id)};
+            if (!server.empty() && server != our_server && std::ranges::find(servers, server) == servers.end())
+            {
+                servers.push_back(server);
+            }
+        }
+        return servers;
+    }
+
     [[nodiscard]] auto room_exists(HomeserverRuntime const& runtime, std::string_view room_id) -> bool
     {
         return find_room(runtime.database, room_id) != nullptr ||
@@ -1120,6 +1157,104 @@ namespace
         }
         return result != database::MembershipStoreResult::already_exists ||
                database::update_membership(store, room_id, user_id, membership, stream_ordering);
+    }
+
+    // Sends an event composed here to every other server in the room: those of its
+    // joined members once the event applies, and `target_user_id`'s server (empty for
+    // none). Server-Server API, "Room Events": a server sends the events it creates to
+    // the room's other servers. Every path that composes and stores an event must call
+    // it; a membership event that did not (a join, leave, kick, ban or local knock)
+    // never reached another server.
+    auto federate_local_event(HomeserverRuntime& runtime, std::string_view room_id, LocalRoom const& room,
+                              ComposedEvent const& composed, std::string_view target_user_id = {}) -> void
+    {
+        wire_federation_callbacks(runtime);
+        if (runtime.dispatch_worker != nullptr)
+        {
+            auto const& server_name = runtime.config.server().server_name;
+            auto remote_servers = std::vector<std::string>{};
+            for (auto const& member : room.members)
+            {
+                auto const member_server = std::string{auth::user_id_server_name(member)};
+                if (member_server.empty())
+                {
+                    continue;
+                }
+                if (member_server != server_name &&
+                    std::ranges::find(remote_servers, member_server) == remote_servers.end())
+                {
+                    remote_servers.emplace_back(member_server);
+                }
+            }
+            // The target of a kick, ban or unban is told even though it is no longer (or
+            // not yet) among the room's members once the event applies. An invite reaches
+            // the invitee's server through /invite instead.
+            if (auto const target_server = std::string{auth::user_id_server_name(target_user_id)};
+                !target_server.empty() && target_server != server_name &&
+                std::ranges::find(remote_servers, target_server) == remote_servers.end())
+            {
+                remote_servers.push_back(target_server);
+            }
+            // Built by the shared builder so the transaction carries the Required `origin` and
+            // `origin_server_ts`; a hand-built body without them was refused by strict receivers.
+            auto const tx_body_result = remote_servers.empty()
+                                            ? std::optional<std::string>{}
+                                            : federation::build_pdu_transaction_body(server_name, composed.json);
+            if (!remote_servers.empty() && !tx_body_result.has_value())
+            {
+                log_diagnostic("room.event.dispatch_refused",
+                               {
+                                   {"room_id",  std::string{room_id},                  false},
+                                   {"event_id", composed.event_id,                     false},
+                                   {"reason",   "transaction body could not be built", false}
+                },
+                               observability::LogEventSeverity::error);
+            }
+            if (tx_body_result.has_value())
+            {
+                auto const& tx_body = *tx_body_result;
+                // One transaction ID per destination: it is the durable queue row's key, so a shared ID
+                // left one row for the whole fan-out and the first delivery deleted the others' row.
+                auto refused = std::vector<std::string>{};
+                for (auto const& destination : remote_servers)
+                {
+                    auto const tx_id = federation::make_federation_transaction_id();
+                    auto target = "/_matrix/federation/v1/send/" + tx_id;
+                    auto transaction =
+                        federation::make_outbound_transaction(destination, "PUT", target, server_name, tx_body);
+                    transaction.transaction_id = tx_id;
+                    if (!runtime.dispatch_worker->enqueue(std::move(transaction)))
+                    {
+                        refused.push_back(destination);
+                    }
+                }
+                if (!refused.empty())
+                {
+                    // The worker refused these (its queue, or the destination's share of it, is full).
+                    // They are not retried; each peer recovers the event itself through prev_events
+                    // once it is reachable (security audit run-1).
+                    auto names = std::string{};
+                    for (auto const& name : refused)
+                    {
+                        names += names.empty() ? name : "," + name;
+                    }
+                    log_diagnostic("room.event.dispatch_refused",
+                                   {
+                                       {"room_id",      std::string{room_id},           false},
+                                       {"event_id",     composed.event_id,              false},
+                                       {"refused",      std::to_string(refused.size()), false},
+                                       {"destinations", names,                          false}
+                    },
+                                   observability::LogEventSeverity::warning);
+                }
+                log_diagnostic("room.event.dispatched",
+                               {
+                                   {"room_id",      std::string{room_id},                                   false},
+                                   {"event_id",     composed.event_id,                                      false},
+                                   {"destinations", std::to_string(remote_servers.size() - refused.size()), false}
+                });
+            }
+        }
     }
 
     // Forward declaration: defined further down this file, after
@@ -1168,6 +1303,10 @@ namespace
         if (room != nullptr)
         {
             room->events.push_back(composed->json);
+            // An invite reaches the invitee's server through /invite; every other
+            // membership change also reaches its target's server.
+            federate_local_event(runtime, room_id, *room, *composed,
+                                 membership == "invite" ? std::string_view{} : target_user_id);
         }
 
         auto const sync_stream_id = database::allocate_sync_stream_id(runtime.database.persistent_store);
@@ -4718,6 +4857,27 @@ namespace
             }
         }
     }
+    // ADR-0244: a room this server still knows, but which none of its users is joined
+    // to, is a room this server is not in. Its state stops at our last user's leave, so
+    // a join composed here would be judged by nobody who holds the room's current
+    // state; it goes through a resident, which decides it (Server-Server API, "Joining
+    // Rooms").
+    if (room != nullptr && !this_server_is_in_room(runtime, room_id))
+    {
+        auto const erase_it = std::ranges::find_if(runtime.database.rooms, [room_id](LocalRoom const& r) {
+            return r.room_id == room_id;
+        });
+        if (erase_it != runtime.database.rooms.end())
+        {
+            runtime.database.rooms.erase(erase_it);
+        }
+        log_diagnostic("room.join.not_resident",
+                       {
+                           {"actor",   *user_id,             false},
+                           {"room_id", std::string{room_id}, false}
+        });
+        room = nullptr; // triggers the federation join path below
+    }
     if (room == nullptr)
     {
         if (third_party_signed != nullptr)
@@ -4736,6 +4896,12 @@ namespace
         // room ID's domain for room versions < 12 (v12 IDs are domain-less, MSC4291).
         auto const our_server = runtime.config.server().server_name;
         auto candidates = join_candidate_servers(via_servers, room_id, our_server);
+        if (candidates.empty())
+        {
+            // A room this server has left, named with no other server: the residents
+            // of the state it last held (ADR-0244).
+            candidates = last_known_resident_servers(runtime, room_id);
+        }
         if (candidates.empty())
         {
             log_diagnostic("room.join.rejected", {
@@ -5189,6 +5355,7 @@ namespace
                 return make_operation_result(false, {}, "third-party invite event persistence failed", 500U);
             }
             room->events.push_back(composed_invite->json);
+            federate_local_event(runtime, room_id, *room, *composed_invite);
             // The invite is an m.room.member event for `user_id`, who may be one of an
             // appservice's virtual users; it was stored here and nowhere else queued it.
             queue_event_for_appservices(runtime, *room, *composed_invite, inviter_id);
@@ -5262,6 +5429,7 @@ namespace
             return make_operation_result(false, {}, "membership event persistence failed", 500U);
         }
         room->events.push_back(composed->json);
+        federate_local_event(runtime, room_id, *room, *composed);
 
         // persist_composed_event has already projected the join (CSAZ-6).
         log_diagnostic("room.join.membership_persisted",
@@ -5856,6 +6024,7 @@ namespace
     if (room_for_push != nullptr)
     {
         room_for_push->events.push_back(composed->json);
+        federate_local_event(runtime, room_id, *room_for_push, *composed);
     }
 
     auto const sync_stream_id = database::allocate_sync_stream_id(runtime.database.persistent_store);
@@ -6040,18 +6209,6 @@ namespace
 
 namespace
 {
-
-    // Whether a user of this server is joined to `room_id`: only then does this
-    // server hold the room's current state and compose a knock itself.
-    [[nodiscard]] auto this_server_is_in_room(HomeserverRuntime const& runtime, std::string_view room_id) -> bool
-    {
-        auto const our_server = runtime.config.server().server_name;
-        return std::ranges::any_of(runtime.database.persistent_store.memberships,
-                                   [&](database::PersistentMembership const& membership) {
-                                       return membership.room_id == room_id && membership.membership == "join" &&
-                                              auth::identifier_server_name(membership.user_id) == our_server;
-                                   });
-    }
 
     // What a knock on a room on another server comes to, produced with
     // runtime.mutex released: a failure, or the signed knock event and the
@@ -7068,84 +7225,7 @@ namespace
     // for this room could omit every message sent since the room's last
     // membership-triggered reload.
     notify_room_changed(runtime, room_id);
-    wire_federation_callbacks(runtime);
-    if (runtime.dispatch_worker != nullptr)
-    {
-        auto const& server_name = runtime.config.server().server_name;
-        auto remote_servers = std::vector<std::string>{};
-        for (auto const& member : room->members)
-        {
-            auto const member_server = std::string{auth::user_id_server_name(member)};
-            if (member_server.empty())
-            {
-                continue;
-            }
-            if (member_server != server_name &&
-                std::ranges::find(remote_servers, member_server) == remote_servers.end())
-            {
-                remote_servers.emplace_back(member_server);
-            }
-        }
-        // Built by the shared builder so the transaction carries the Required `origin` and
-        // `origin_server_ts`; a hand-built body without them was refused by strict receivers.
-        auto const tx_body_result = remote_servers.empty()
-                                        ? std::optional<std::string>{}
-                                        : federation::build_pdu_transaction_body(server_name, composed->json);
-        if (!remote_servers.empty() && !tx_body_result.has_value())
-        {
-            log_diagnostic("room.event.dispatch_refused",
-                           {
-                               {"room_id",  std::string{room_id},                  false},
-                               {"event_id", composed->event_id,                    false},
-                               {"reason",   "transaction body could not be built", false}
-            },
-                           observability::LogEventSeverity::error);
-        }
-        if (tx_body_result.has_value())
-        {
-            auto const& tx_body = *tx_body_result;
-            // One transaction ID per destination: it is the durable queue row's key, so a shared ID
-            // left one row for the whole fan-out and the first delivery deleted the others' row.
-            auto refused = std::vector<std::string>{};
-            for (auto const& destination : remote_servers)
-            {
-                auto const tx_id = federation::make_federation_transaction_id();
-                auto target = "/_matrix/federation/v1/send/" + tx_id;
-                auto transaction =
-                    federation::make_outbound_transaction(destination, "PUT", target, server_name, tx_body);
-                transaction.transaction_id = tx_id;
-                if (!runtime.dispatch_worker->enqueue(std::move(transaction)))
-                {
-                    refused.push_back(destination);
-                }
-            }
-            if (!refused.empty())
-            {
-                // The worker refused these (its queue, or the destination's share of it, is full).
-                // They are not retried; each peer recovers the event itself through prev_events
-                // once it is reachable (security audit run-1).
-                auto names = std::string{};
-                for (auto const& name : refused)
-                {
-                    names += names.empty() ? name : "," + name;
-                }
-                log_diagnostic("room.event.dispatch_refused",
-                               {
-                                   {"room_id",      std::string{room_id},           false},
-                                   {"event_id",     composed->event_id,             false},
-                                   {"refused",      std::to_string(refused.size()), false},
-                                   {"destinations", names,                          false}
-                },
-                               observability::LogEventSeverity::warning);
-            }
-            log_diagnostic("room.event.dispatched",
-                           {
-                               {"room_id",      std::string{room_id},                                   false},
-                               {"event_id",     composed->event_id,                                     false},
-                               {"destinations", std::to_string(remote_servers.size() - refused.size()), false}
-            });
-        }
-    }
+    federate_local_event(runtime, room_id, *room, *composed);
     // Push delivery: evaluate push rules for every local, joined recipient,
     // record GET /_matrix/client/v3/notifications history for every
     // notify-worthy one (regardless of push.enabled/pushers — see

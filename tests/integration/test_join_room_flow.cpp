@@ -1339,6 +1339,59 @@ SCENARIO("A federated join seeds the join event's after-state group and forward 
             }
         }
 
+        // Spec: Server-Server API v1.19, "Joining Rooms": a server that is not in the room joins
+        // through a resident with make_join and send_join. Once this server's last user has left,
+        // it is no longer in the room even though it still knows the room, so a rejoin must go
+        // through the resident, which decides it. It was composed here instead, so a join the
+        // resident would refuse (Complement TestRestrictedRoomsRemoteJoin, "Join should fail with
+        // mangled join rules") succeeded, and nothing told the resident.
+        WHEN("alice joins through the resident, leaves through it, and joins again")
+        {
+            auto first_requests = std::vector<std::string>{};
+            auto first_server = std::thread{[&]() {
+                run_resident_server(acceptor, *tls_context.context, make_join_response, send_join_response,
+                                    first_requests);
+            }};
+            auto const joined =
+                merovingian::homeserver::join_room(runtime, login.value, room_id, {std::string{resident_server}});
+            first_server.join();
+            REQUIRE(joined.ok);
+
+            auto const make_leave_event = std::string{R"({"type":"m.room.member","state_key":")"} + alice +
+                                          R"(","room_id":")" + room_id + R"(","sender":")" + alice +
+                                          R"(","depth":4,"origin_server_ts":1100,)"
+                                          R"("prev_events":[],"auth_events":[],)"
+                                          R"("content":{"membership":"leave"}})";
+            auto leave_requests = std::vector<std::string>{};
+            auto leave_server = std::thread{[&]() {
+                run_resident_server(acceptor, *tls_context.context,
+                                    json_http_response("200 OK", std::string{R"({"room_version":"10","event":)"} +
+                                                                     make_leave_event + "}"),
+                                    json_http_response("200 OK", "{}"), leave_requests);
+            }};
+            auto const left = merovingian::homeserver::leave_room(runtime, login.value, room_id);
+            leave_server.join();
+            REQUIRE(left.ok);
+
+            auto rejoin_requests = std::vector<std::string>{};
+            auto rejoin_server = std::thread{[&]() {
+                run_resident_server(acceptor, *tls_context.context, make_join_response, send_join_response,
+                                    rejoin_requests);
+            }};
+            auto const rejoined =
+                merovingian::homeserver::join_room(runtime, login.value, room_id, {std::string{resident_server}});
+            rejoin_server.join();
+
+            THEN("the rejoin goes through the resident's make_join and send_join")
+            {
+                CAPTURE(rejoined.reason);
+                REQUIRE(rejoined.ok);
+                REQUIRE(rejoin_requests.size() == 2U);
+                REQUIRE(rejoin_requests[0].find("/_matrix/federation/v1/make_join/") != std::string::npos);
+                REQUIRE(rejoin_requests[1].find("/_matrix/federation/v2/send_join/") != std::string::npos);
+            }
+        }
+
         WHEN("join_room rejoins a room whose last event from an earlier stay is still a forward extremity")
         {
             // An earlier stay ended with this server's own leave as the room's

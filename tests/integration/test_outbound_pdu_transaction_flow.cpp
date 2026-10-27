@@ -153,3 +153,129 @@ SCENARIO("A locally sent event reaches other servers in a transaction carrying o
         }
     }
 }
+
+namespace
+{
+
+// The membership of the single PDU in a transaction queued for `server`, for each such
+// transaction whose PDU is an m.room.member event about `user_id`.
+[[nodiscard]] auto queued_memberships_for(merovingian::homeserver::ClientServerRuntime& runtime,
+                                          std::string_view server, std::string_view user_id) -> std::vector<std::string>
+{
+    auto memberships = std::vector<std::string>{};
+    auto const lock = std::lock_guard{runtime.homeserver.mutex};
+    for (auto const& transaction : runtime.homeserver.database.persistent_store.federation_transactions)
+    {
+        if (transaction.server_name != server)
+        {
+            continue;
+        }
+        auto const parsed = merovingian::canonicaljson::parse_lossless(transaction.body);
+        auto const* root = std::get_if<merovingian::canonicaljson::Object>(&parsed.value.storage());
+        auto const* pdus = root == nullptr ? nullptr : object_member_as_array(*root, "pdus");
+        if (pdus == nullptr)
+        {
+            continue;
+        }
+        for (auto const& pdu : *pdus)
+        {
+            auto const* event = std::get_if<merovingian::canonicaljson::Object>(&pdu.storage());
+            auto const* type = event == nullptr ? nullptr : string_member(*event, "type");
+            auto const* state_key = event == nullptr ? nullptr : string_member(*event, "state_key");
+            auto const* content = event == nullptr ? nullptr : object_member_as_object(*event, "content");
+            auto const* membership = content == nullptr ? nullptr : string_member(*content, "membership");
+            if (type != nullptr && *type == "m.room.member" && state_key != nullptr && *state_key == user_id &&
+                membership != nullptr)
+            {
+                memberships.emplace_back(*membership);
+            }
+        }
+    }
+    return memberships;
+}
+
+[[nodiscard]] auto register_user(merovingian::homeserver::ClientServerRuntime& runtime, std::string const& name)
+    -> std::string
+{
+    auto const registration = call(runtime, "POST", "/_matrix/client/v3/register", {},
+                                   merovingian::tests::registration_json(name, "CorrectHorse7!"));
+    REQUIRE(registration.response.status == 200U);
+    auto const body = parse_object(registration.response.body);
+    return std::string{*string_member(body, "access_token")};
+}
+
+} // namespace
+
+// Spec: Server-Server API v1.19, "Room Events" / Transactions: a server sends the events it
+// creates to the other servers in the room. A membership event composed here (a join, a leave,
+// a ban) went nowhere: only messages and state sent through /send and /state were fanned out,
+// so another server never learnt that one of our users left (Complement
+// TestRestrictedRoomsRemoteJoin, "Join should fail when left allowed room"). A ban or kick also
+// goes to the target's server, which is no longer among the room's members once it applies.
+SCENARIO("A membership event composed here reaches the room's other servers and the target's server",
+         "[integration][federation][outbound][membership-fanout]")
+{
+    GIVEN("alice's public room on this server, which bob on another server has joined")
+    {
+        REQUIRE(sodium_init() >= 0);
+        auto started = merovingian::homeserver::start_client_server(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        install_unstarted_dispatch_worker(runtime);
+        auto const alice = register_user(runtime, "alice");
+        auto const created =
+            call(runtime, "POST", "/_matrix/client/v3/createRoom", alice, R"({"preset":"public_chat"})");
+        REQUIRE(created.response.status == 200U);
+        auto const created_body = parse_object(created.response.body);
+        auto const room_id = std::string{*string_member(created_body, "room_id")};
+        auto const bob = std::string{"@bob:"} + std::string{remote_server};
+        {
+            auto const lock = std::lock_guard{runtime.homeserver.mutex};
+            auto const room =
+                std::ranges::find_if(runtime.homeserver.database.rooms, [&room_id](auto const& candidate) {
+                    return candidate.room_id == room_id;
+                });
+            REQUIRE(room != runtime.homeserver.database.rooms.end());
+            room->members.emplace_back(bob);
+        }
+        auto const own_server = std::string{runtime.homeserver.config.server().server_name};
+
+        WHEN("carol, a user of this server, joins the room")
+        {
+            auto const carol = register_user(runtime, "carol");
+            REQUIRE(call(runtime, "POST", "/_matrix/client/v3/join/" + room_id, carol, "{}").response.status == 200U);
+
+            THEN("bob's server is sent carol's join")
+            {
+                auto const sent = queued_memberships_for(runtime, remote_server, "@carol:" + own_server);
+                REQUIRE(std::ranges::find(sent, "join") != sent.end());
+            }
+        }
+
+        WHEN("alice leaves the room")
+        {
+            REQUIRE(
+                call(runtime, "POST", "/_matrix/client/v3/rooms/" + room_id + "/leave", alice, "{}").response.status ==
+                200U);
+
+            THEN("bob's server is sent alice's leave")
+            {
+                auto const sent = queued_memberships_for(runtime, remote_server, "@alice:" + own_server);
+                REQUIRE(std::ranges::find(sent, "leave") != sent.end());
+            }
+        }
+
+        WHEN("alice bans bob")
+        {
+            REQUIRE(call(runtime, "POST", "/_matrix/client/v3/rooms/" + room_id + "/ban", alice,
+                         std::string{R"({"user_id":")"} + bob + R"("})")
+                        .response.status == 200U);
+
+            THEN("bob's server is sent the ban, though bob is no longer among the room's members")
+            {
+                auto const sent = queued_memberships_for(runtime, remote_server, bob);
+                REQUIRE(std::ranges::find(sent, "ban") != sent.end());
+            }
+        }
+    }
+}

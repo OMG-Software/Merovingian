@@ -441,6 +441,7 @@ shell = find_program('sh')
       'conformance/test_history_visibility_conformance.cpp',
       'conformance/test_room_pagination_conformance.cpp',
       'conformance/test_room_v12_creation_conformance.cpp',
+      'conformance/test_sync_state_conformance.cpp',
       'conformance/test_identifier_grammar.cpp',
       'conformance/test_ignoring_users_conformance.cpp',
       'conformance/test_key_publication_conformance.cpp',
