@@ -189,41 +189,6 @@ SCENARIO("Open registration completes with m.login.dummy", "[conformance][client
 }
 
 // Spec: Matrix Client-Server API v1.19
-// Endpoint / Section: Password management; POST /register
-// URL: ../../docs/matrix-v1.19-spec/client-server-api.md#password-management
-//
-// "Servers MAY reject weak passwords with an error code M_WEAK_PASSWORD."
-// The permission to refuse a password for weakness comes with that error code.
-SCENARIO("Registration refuses a weak password with M_WEAK_PASSWORD",
-         "[conformance][client-server][register][password-policy]")
-{
-    GIVEN("a running client-server with open registration and the default password policy")
-    {
-        auto started = merovingian::homeserver::start_client_server(open_registration_config());
-        // Precondition: the server starts with acknowledged open registration.
-        REQUIRE(started.started);
-
-        WHEN("a registration completes the dummy stage with a password the policy refuses")
-        {
-            auto const response = register_with(
-                started.runtime, R"({"username":"weak","password":"password","auth":{"type":"m.login.dummy"}})");
-
-            THEN("it is refused as a weak password")
-            {
-                // Spec MAY: weak passwords are rejected "with an error code M_WEAK_PASSWORD".
-                REQUIRE(response.response.status == 400U);
-                auto const body = parse_object(response.response.body);
-                auto const* errcode = string_member(body, "errcode");
-                // Spec MAY: the errcode for a weak password is M_WEAK_PASSWORD.
-                REQUIRE(errcode != nullptr);
-                // Spec MAY: the errcode for a weak password is M_WEAK_PASSWORD.
-                REQUIRE(*errcode == "M_WEAK_PASSWORD");
-            }
-        }
-    }
-}
-
-// Spec: Matrix Client-Server API v1.19
 // Endpoint / Section: User-Interactive Authentication API
 // URL: ../../docs/matrix-v1.19-spec/client-server-api.md#user-interactive-authentication-api
 //

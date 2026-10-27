@@ -106,3 +106,42 @@ SCENARIO("Registration applies the configured password policy", "[homeserver][re
         }
     }
 }
+
+// The spec lets a server reject a weak password ("Servers MAY reject weak
+// passwords with an error code M_WEAK_PASSWORD"); this server does, on a
+// password change as well as at registration.
+SCENARIO("A password change applies the configured password policy", "[homeserver][account][password-policy]")
+{
+    GIVEN("a server with the default policy and a user registered with a strong password")
+    {
+        auto started = merovingian::homeserver::start_client_server(open_registration_config({}));
+        REQUIRE(started.started);
+        auto const registered = register_dummy(started.runtime, "dave", "CorrectHorse7!");
+        REQUIRE(registered.response.status == 200U);
+        auto const registered_body = parse_object(registered.response.body);
+        auto const user_id = std::string{*string_member(registered_body, "user_id")};
+        auto const token = std::string{*string_member(registered_body, "access_token")};
+
+        WHEN("the user completes authentication and asks for a weak password")
+        {
+            auto const change = merovingian::homeserver::handle_client_server_request(
+                started.runtime, {"POST", "/_matrix/client/v3/account/password", token,
+                                  R"({"auth":{"type":"m.login.password","identifier":{"type":"m.id.user","user":")" +
+                                      user_id + R"("},"password":"CorrectHorse7!"},"new_password":"password"})"});
+
+            THEN("the change is refused as a weak password and the old password still logs in")
+            {
+                REQUIRE(change.response.status == 400U);
+                auto const change_body = parse_object(change.response.body);
+                REQUIRE(*string_member(change_body, "errcode") == "M_WEAK_PASSWORD");
+                auto const login = merovingian::homeserver::handle_client_server_request(
+                    started.runtime, {"POST",
+                                      "/_matrix/client/v3/login",
+                                      {},
+                                      R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":")" +
+                                          user_id + R"("},"password":"CorrectHorse7!"})"});
+                REQUIRE(login.response.status == 200U);
+            }
+        }
+    }
+}

@@ -24,10 +24,11 @@ with. This release makes the rule configurable and fixes its error code.
 - **TESTS:** `test_homeserver_weakened_settings_log.cpp` starts the server weakened and at its
   defaults and checks exactly which CRITICAL lines appear.
 - **TESTS:** `test_config_password_policy.cpp` (defaults, parsing, range, restart),
-  `test_homeserver_password_policy.cpp` (the configured policy reaches registration, both relaxed and
-  stricter), policy scenarios in `test_auth.cpp`, `M_WEAK_PASSWORD` conformance scenarios for
-  `/register` and `POST /account/password`, and in the tooling tests the template's relaxed policy
-  and the run's package list.
+  `test_homeserver_password_policy.cpp` (the configured policy reaches registration and
+  `POST /account/password`, both relaxed and stricter, refusing with `M_WEAK_PASSWORD`), policy
+  scenarios in `test_auth.cpp`, and in the tooling tests the template's relaxed policy and the run's
+  package list. The `M_WEAK_PASSWORD` checks are implementation tests, not conformance tests: the
+  spec only says servers MAY reject weak passwords.
 
 ## 0.12.57
 

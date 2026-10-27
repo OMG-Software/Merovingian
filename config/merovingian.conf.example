@@ -204,7 +204,9 @@ security.registration.allow_open_registration=false
 # administrator and password changes. A refused password gets 400
 # M_WEAK_PASSWORD. The defaults require at least 12 bytes (not characters: a
 # non-ASCII character is 2 to 4 bytes) with a lower-case and an upper-case
-# letter, a digit and a symbol. min_length can be raised up to 1024.
+# ASCII letter, an ASCII digit and an ASCII symbol: letters and digits outside
+# ASCII count towards the length but not towards the classes. min_length can
+# be raised up to 1024.
 #
 # WEAKENING: min_length below 12, or require_character_classes=false, lets
 # users choose shorter or simpler passwords that are easier to guess; with
