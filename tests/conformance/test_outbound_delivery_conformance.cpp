@@ -92,6 +92,69 @@ auto const test_key_id = std::string{"ed25519:auto"};
 } // namespace
 
 // =============================================================================
+// PDU transaction body — required top-level fields
+// =============================================================================
+// Spec: Matrix Server-Server API v1.19, PUT /_matrix/federation/v1/send/{txnId}
+// URL: ../../docs/matrix-v1.19-spec/server-server-api.md#put_matrixfederationv1sendtxnid
+//
+// Transaction: `origin` "Required: The server_name of the homeserver sending this
+// transaction", `origin_server_ts` "Required: POSIX timestamp in milliseconds on originating
+// homeserver when this transaction started", `pdus` "Required: List of persistent updates to
+// rooms." Until 0.12.59 the transaction carrying a local event had neither origin nor
+// origin_server_ts, so a strict receiver (this server among them) refused every one.
+SCENARIO("build_pdu_transaction_body produces required top-level fields", "[federation][outbound][conformance][pdu]")
+{
+    GIVEN("a PDU and the sending server's name")
+    {
+        auto const pdu = std::string{R"({"type":"m.room.message","room_id":"!r:local.example.org",)"
+                                     R"("sender":"@a:local.example.org","content":{"body":"hi"}})"};
+
+        WHEN("a PDU transaction body is built")
+        {
+            auto const result = merovingian::federation::build_pdu_transaction_body(local_origin, pdu);
+
+            THEN("it carries origin, origin_server_ts and the PDU")
+            {
+                REQUIRE(result.has_value());
+                auto const parsed = merovingian::canonicaljson::parse_lossless(*result);
+                REQUIRE(parsed.error == merovingian::canonicaljson::ParseError::none);
+                auto const* root = std::get_if<merovingian::canonicaljson::Object>(&parsed.value.storage());
+                REQUIRE(root != nullptr);
+                // Spec MUST: origin is the sending server's name.
+                auto const* origin = json_get(*root, "origin");
+                REQUIRE(origin != nullptr);
+                REQUIRE(std::get_if<std::string>(&origin->storage()) != nullptr);
+                REQUIRE(*std::get_if<std::string>(&origin->storage()) == local_origin);
+                // Spec MUST: origin_server_ts is an integer millisecond timestamp.
+                auto const* timestamp = json_get(*root, "origin_server_ts");
+                REQUIRE(timestamp != nullptr);
+                auto const* timestamp_ms = std::get_if<std::int64_t>(&timestamp->storage());
+                REQUIRE(timestamp_ms != nullptr);
+                REQUIRE(*timestamp_ms > 0);
+                // Spec MUST: pdus is an array holding the PDU.
+                auto const* pdus = json_get(*root, "pdus");
+                REQUIRE(pdus != nullptr);
+                auto const* pdu_array = std::get_if<merovingian::canonicaljson::Array>(&pdus->storage());
+                REQUIRE(pdu_array != nullptr);
+                REQUIRE(pdu_array->size() == 1U);
+            }
+        }
+
+        WHEN("the origin is empty, or the PDU is not JSON")
+        {
+            auto const no_origin = merovingian::federation::build_pdu_transaction_body("", pdu);
+            auto const not_json = merovingian::federation::build_pdu_transaction_body(local_origin, "not json");
+
+            THEN("no body is built")
+            {
+                REQUIRE_FALSE(no_origin.has_value());
+                REQUIRE_FALSE(not_json.has_value());
+            }
+        }
+    }
+}
+
+// =============================================================================
 // EDU transaction body — required top-level fields
 // =============================================================================
 // Spec: Matrix Server-Server API v1.19

@@ -190,6 +190,38 @@ class VerdictTests(SummaryCase):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertEqual(summary["unexpected_failures"], [])
 
+    def test_a_parent_is_explained_by_a_listed_subtest_whose_name_contains_a_slash(self) -> None:
+        # GIVEN a test that fails because one listed subtest fails, the subtest's
+        # name holding slashes as Complement's route names do
+        # ("test /_matrix/media/v3 endpoint"), so it looks nested.
+        log = (
+            [event("run", "TestP")]
+            + ran("TestP/test_/_matrix/client/v1/media_endpoint", "pass")
+            + ran("TestP/test_/_matrix/media/v3_endpoint", "fail")
+            + [event("fail", "TestP"), event("fail", package=TESTS)]
+        )
+        # WHEN it is summarised.
+        result, summary = self.summariser.run(expect_fail("TestP/test_/_matrix/media/v3_endpoint"), log)
+        # THEN the parent's failure is explained and the run is green.
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(summary["unexpected_failures"], [])
+
+    def test_an_unlisted_subtest_whose_name_contains_a_slash_leaves_its_parent_unexplained(self) -> None:
+        # GIVEN a parent with one listed failing subtest and one unlisted failing
+        # subtest whose name holds slashes.
+        log = (
+            [event("run", "TestP")]
+            + ran("TestP/listed", "fail")
+            + ran("TestP/via__matrix/client/v1/media/download", "fail")
+            + [event("fail", "TestP"), event("fail", package=TESTS)]
+        )
+        # WHEN it is summarised.
+        result, summary = self.summariser.run(expect_fail("TestP/listed"), log)
+        # THEN the unlisted subtest and the parent it fails are both reported.
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(summary["unexpected_failures"],
+                         ["tests:TestP", "tests:TestP/via__matrix/client/v1/media/download"])
+
     def test_an_unlisted_subtest_failure_is_reported_as_itself(self) -> None:
         # GIVEN a parent with one listed and one unlisted failing subtest.
         log = (

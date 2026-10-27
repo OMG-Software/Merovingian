@@ -57,6 +57,7 @@
 #include "merovingian/sync/history_visibility.hpp"
 #include "merovingian/sync/room_read_access.hpp"
 #include "merovingian/sync/sliding_sync_room_builder.hpp"
+#include "merovingian/sync/stream_token.hpp"
 #include "merovingian/trust_safety/ignore_list.hpp"
 #include "merovingian/trust_safety/policy_engine.hpp"
 
@@ -809,6 +810,68 @@ namespace
         auto const [ptr, error] =
             std::from_chars(room_version.data(), room_version.data() + room_version.size(), parsed);
         return error == std::errc{} && ptr == room_version.data() + room_version.size() ? parsed : 0;
+    }
+
+    // createRoom answers 400 M_INVALID_ROOM_STATE when "The initial state implied by the
+    // parameters to the request is invalid".
+    [[nodiscard]] auto invalid_room_state_result(std::string reason) -> OperationResult
+    {
+        auto result = make_operation_result(false, {}, std::move(reason), 400U);
+        result.errcode = "M_INVALID_ROOM_STATE";
+        return result;
+    }
+
+    // Room version 12: the creation options must imply valid initial state. Each of the
+    // create event's additional_creators "MUST be a valid user ID", and the room's creators
+    // (the creator, the additional creators and, for trusted_private_chat, the invitees
+    // appended to them) "cannot be specified in the users field" of m.room.power_levels.
+    // Refusing here, before anything is created, keeps a client's mistake from surfacing as
+    // a 500 from the create event's own auth check, and from being silently repaired.
+    [[nodiscard]] auto v12_creation_refusal(CreateRoomOptions const& options, std::string_view creator)
+        -> std::optional<std::string>
+    {
+        if (room_version_number(options.room_version) < 12)
+        {
+            return std::nullopt;
+        }
+        auto creators = std::vector<std::string>{std::string{creator}};
+        if (auto const* additional = object_member(options.creation_content, "additional_creators");
+            additional != nullptr)
+        {
+            auto const* entries = std::get_if<canonicaljson::Array>(&additional->storage());
+            if (entries == nullptr)
+            {
+                return std::string{"additional_creators must be an array of user IDs"};
+            }
+            for (auto const& entry : *entries)
+            {
+                auto const* additional_id = std::get_if<std::string>(&entry.storage());
+                if (additional_id == nullptr || !auth::user_id_is_valid_federated(*additional_id))
+                {
+                    return std::string{"additional_creators must contain only valid user IDs"};
+                }
+                creators.push_back(*additional_id);
+            }
+        }
+        if (options.preset == "trusted_private_chat")
+        {
+            creators.insert(creators.end(), options.trusted_invitees.begin(), options.trusted_invitees.end());
+        }
+        if (auto const* users_value = object_member(options.power_level_content_override, "users");
+            users_value != nullptr)
+        {
+            if (auto const* users = std::get_if<canonicaljson::Object>(&users_value->storage()); users != nullptr)
+            {
+                for (auto const& member : *users)
+                {
+                    if (std::ranges::find(creators, member.key) != creators.end())
+                    {
+                        return std::string{"power_level_content_override must not name a room creator in users"};
+                    }
+                }
+            }
+        }
+        return std::nullopt;
     }
 
     [[nodiscard]] auto full_room_alias(config::ServerConfig const& server, std::string_view room_alias_name)
@@ -2997,6 +3060,16 @@ auto ensure_crypto_provider_holds_key(HomeserverRuntime& runtime, std::string_vi
         });
         return event_too_large_result();
     }
+    if (auto refusal = v12_creation_refusal(options, *user_id); refusal.has_value())
+    {
+        log_diagnostic("room.create.rejected",
+                       {
+                           {"actor",  *user_id, false},
+                           {"status", "400",    false},
+                           {"reason", *refusal, false}
+        });
+        return invalid_room_state_result(std::move(*refusal));
+    }
 
     // Build the m.room.create content first. In room version 12 the room ID is the
     // reference hash of the create event (MSC4291), so the create event must be
@@ -3267,8 +3340,8 @@ auto ensure_crypto_provider_holds_key(HomeserverRuntime& runtime, std::string_vi
     merge_object_into(power_levels, options.power_level_content_override);
     if (creator_has_implicit_power_level)
     {
-        // A client may still send creators in power_level_content_override; strip them so the
-        // emitted event is always valid for v12 regardless of the override's contents.
+        // v12_creation_refusal has already refused a client override naming a creator; this
+        // keeps the emitted event valid for v12 whatever reaches it.
         if (auto const* users_value = object_member(power_levels, "users"); users_value != nullptr)
         {
             if (auto const* users_object = std::get_if<canonicaljson::Object>(&users_value->storage());
@@ -3287,7 +3360,15 @@ auto ensure_crypto_provider_holds_key(HomeserverRuntime& runtime, std::string_vi
             }
         }
     }
-    if (options.preset == "trusted_private_chat" && room_version_number(options.room_version) >= 12)
+    // m.room.power_levels `events`: "when the server sends the initial power levels event during
+    // room creation in room versions 12 and higher, the m.room.tombstone event MUST be explicitly
+    // defined and given a power level higher than state_default. ... Clients may override this
+    // using the described power_level_content_override field."
+    auto const override_sets_tombstone = [&options] {
+        auto const* events = object_member_as_object(options.power_level_content_override, "events");
+        return events != nullptr && object_member(*events, "m.room.tombstone") != nullptr;
+    }();
+    if (room_version_number(options.room_version) >= 12 && !override_sets_tombstone)
     {
         auto state_default = std::int64_t{50};
         if (auto const* configured_state_default = integer_member(power_levels, "state_default");
@@ -6822,19 +6903,24 @@ namespace
                 remote_servers.emplace_back(member_server);
             }
         }
-        if (!remote_servers.empty())
+        // Built by the shared builder so the transaction carries the Required `origin` and
+        // `origin_server_ts`; a hand-built body without them was refused by strict receivers.
+        auto const tx_body_result = remote_servers.empty()
+                                        ? std::optional<std::string>{}
+                                        : federation::build_pdu_transaction_body(server_name, composed->json);
+        if (!remote_servers.empty() && !tx_body_result.has_value())
         {
-            auto pdu_array = canonicaljson::Array{};
-            auto pdu_parsed = canonicaljson::parse_lossless(composed->json);
-            if (pdu_parsed.error == canonicaljson::ParseError::none)
-            {
-                pdu_array.push_back(std::move(pdu_parsed.value));
-            }
-            auto tx_root = canonicaljson::Object{};
-            tx_root.push_back(canonicaljson::make_member("pdus", canonicaljson::Value{std::move(pdu_array)}));
-            tx_root.push_back(canonicaljson::make_member("edus", canonicaljson::Value{canonicaljson::Array{}}));
-            auto const tx_body_result = canonicaljson::serialize_canonical(canonicaljson::Value{std::move(tx_root)});
-            auto const& tx_body = tx_body_result.output;
+            log_diagnostic("room.event.dispatch_refused",
+                           {
+                               {"room_id",  std::string{room_id},                  false},
+                               {"event_id", composed->event_id,                    false},
+                               {"reason",   "transaction body could not be built", false}
+            },
+                           observability::LogEventSeverity::error);
+        }
+        if (tx_body_result.has_value())
+        {
+            auto const& tx_body = *tx_body_result;
             // One transaction ID per destination: it is the durable queue row's key, so a shared ID
             // left one row for the whole fan-out and the first delivery deleted the others' row.
             auto refused = std::vector<std::string>{};
@@ -7164,6 +7250,12 @@ auto deliver_federation_push_notifications(HomeserverRuntime& runtime, federatio
     }
     auto client_obj = *obj;
     client_obj.push_back(canonicaljson::make_member("event_id", canonicaljson::Value{event.event_id}));
+    // ClientEvent `room_id` is required everywhere but /sync. Room version 12 omits it from
+    // the m.room.create PDU only, so a client still gets the room it belongs to.
+    if (object_member(*obj, "room_id") == nullptr && !event.room_id.empty())
+    {
+        client_obj.push_back(canonicaljson::make_member("room_id", canonicaljson::Value{event.room_id}));
+    }
 
     auto const find_string = [](canonicaljson::Object const& object, std::string_view key) {
         for (auto const& member : object)
@@ -7366,8 +7458,25 @@ namespace
         });
     }
 
-    auto const from_token = parse_stream_ordering_token(request.from);
-    auto const to_token = parse_stream_ordering_token(request.to);
+    // `from` may be "a next_batch token from /sync". This endpoint's own tokens are
+    // inclusive positions (forward keeps events at or after one, backward at or before one);
+    // a /sync next_batch names the newest event that sync delivered, so forward starts
+    // after it and backward includes it.
+    auto const relations_position = [forward](std::optional<std::string> const& token, bool is_from) {
+        if (auto const plain = parse_stream_ordering_token(token); plain.has_value())
+        {
+            return plain;
+        }
+        auto const decoded = token.has_value() ? sync::decode_stream_token(*token) : std::nullopt;
+        if (!decoded.has_value())
+        {
+            return std::optional<std::uint64_t>{};
+        }
+        return std::optional<std::uint64_t>{is_from && forward ? decoded->event_ordering + 1U
+                                                               : decoded->event_ordering};
+    };
+    auto const from_token = relations_position(request.from, true);
+    auto const to_token = relations_position(request.to, false);
     auto constexpr default_limit = std::uint64_t{100U};
     auto const max_limit = static_cast<std::uint64_t>(runtime.config.server().client_api.max_relations_page_size);
     auto limit = request.limit.value_or(default_limit);

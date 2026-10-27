@@ -8028,6 +8028,124 @@ namespace
         return std::nullopt;
     }
 
+    // The current content of a room's state event, or nothing.
+    [[nodiscard]] auto current_state_content(database::PersistentStore const& store, std::string_view room_id,
+                                             std::string_view event_type) -> std::optional<canonicaljson::Object>
+    {
+        auto const event_json = state_event_json(store, build_state_index(store), room_id, event_type);
+        if (!event_json.has_value())
+        {
+            return std::nullopt;
+        }
+        auto const parsed = canonicaljson::parse_lossless(*event_json);
+        auto const* event = std::get_if<canonicaljson::Object>(&parsed.value.storage());
+        auto const* content = event == nullptr ? nullptr : object_member_as_object(*event, "content");
+        return content == nullptr ? std::nullopt : std::optional<canonicaljson::Object>{*content};
+    }
+
+    // The replacement room's creation options for POST /rooms/{roomId}/upgrade (spec, "Server
+    // behaviour" for room upgrades). The create event carries `predecessor`, the version and
+    // the old room's `type`; additional creators are only those the request names, never the
+    // old room's. When upgrading to version 12 or later predecessor.event_id "MAY be omitted":
+    // a v12 room is named by its create event, so it is (ADR-0239). The recommended
+    // transferable state is replicated; the power levels lose the replacement room's creators, who
+    // "cannot be specified in the users field" from version 12.
+    [[nodiscard]] auto upgrade_room_options(database::PersistentStore const& store, LocalRoom const& old_room,
+                                            rooms::RoomVersionPolicy const& new_policy, std::string const& new_version,
+                                            std::string const& upgrader, canonicaljson::Array additional_creators)
+        -> CreateRoomOptions
+    {
+        auto options = CreateRoomOptions{};
+        options.room_version = new_version;
+        auto predecessor = canonicaljson::Object{};
+        predecessor.push_back(json_member("room_id", json_str(old_room.room_id)));
+        if (!new_policy.create_event_is_room_id && !old_room.events.empty())
+        {
+            predecessor.push_back(json_member("event_id", json_str(old_room.events.back())));
+        }
+        options.creation_content.push_back(json_member("predecessor", json_obj(std::move(predecessor))));
+        if (auto const old_create = current_state_content(store, old_room.room_id, "m.room.create");
+            old_create.has_value())
+        {
+            if (auto const* type = string_member(*old_create, "type"); type != nullptr)
+            {
+                options.creation_content.push_back(json_member("type", json_str(*type)));
+            }
+        }
+        auto creators = std::vector<std::string>{upgrader};
+        for (auto const& entry : additional_creators)
+        {
+            if (auto const* creator = std::get_if<std::string>(&entry.storage()); creator != nullptr)
+            {
+                creators.push_back(*creator);
+            }
+        }
+        if (!additional_creators.empty())
+        {
+            options.creation_content.push_back(
+                json_member("additional_creators", canonicaljson::Value{std::move(additional_creators)}));
+        }
+        auto const transferable = std::array<std::string_view, 8U>{
+            "m.room.server_acl",   "m.room.encryption",         "m.room.name",      "m.room.avatar", "m.room.topic",
+            "m.room.guest_access", "m.room.history_visibility", "m.room.join_rules"};
+        for (auto const type : transferable)
+        {
+            if (auto content = current_state_content(store, old_room.room_id, type); content.has_value())
+            {
+                options.initial_state.push_back(json_obj({
+                    json_member("type", json_str(std::string{type})),
+                    json_member("state_key", json_str("")),
+                    json_member("content", json_obj(std::move(*content))),
+                }));
+            }
+        }
+        if (auto power_levels = current_state_content(store, old_room.room_id, "m.room.power_levels");
+            power_levels.has_value())
+        {
+            auto users = canonicaljson::Object{};
+            if (auto const* old_users = object_member_as_object(*power_levels, "users"); old_users != nullptr)
+            {
+                for (auto const& member : *old_users)
+                {
+                    if (!new_policy.privilege_room_creators ||
+                        std::ranges::find(creators, member.key) == creators.end())
+                    {
+                        users.push_back(json_member(member.key, *member.value));
+                    }
+                }
+            }
+            // Below version 12 the creator holds no implicit power: an upgrader who was a v12
+            // creator, and so absent from users, keeps the power to run the replacement room.
+            if (!new_policy.privilege_room_creators && object_member(users, upgrader) == nullptr)
+            {
+                users.push_back(json_member(upgrader, canonicaljson::Value{std::int64_t{100}}));
+            }
+            std::erase_if(*power_levels, [](canonicaljson::ObjectMember const& member) {
+                return member.key == "users";
+            });
+            power_levels->push_back(json_member("users", json_obj(std::move(users))));
+            options.power_level_content_override = std::move(*power_levels);
+        }
+        return options;
+    }
+
+    // Whether a stored event passes a RoomEventFilter (/messages, /context). The content is
+    // parsed only when the filter asks about contains_url.
+    [[nodiscard]] auto passes_room_event_filter(sync::EventTypeFilter const& filter,
+                                                database::PersistentEvent const& event) -> bool
+    {
+        auto content_has_url = false;
+        if (filter.contains_url.has_value())
+        {
+            auto const parsed = canonicaljson::parse_lossless(event.json);
+            auto const* object = std::get_if<canonicaljson::Object>(&parsed.value.storage());
+            auto const* content = object == nullptr ? nullptr : object_member_as_object(*object, "content");
+            content_has_url = content != nullptr && object_member(*content, "url") != nullptr;
+        }
+        return sync::event_passes_room_event_filter(filter, stored_event_type(event), event.sender_user_id,
+                                                    content_has_url);
+    }
+
     // May this user reach an endpoint that returns room events? Spec (Room History Visibility):
     // "In all cases except `world_readable`, a user needs to join a room to view events in that
     // room." A user who was joined keeps the events they were allowed to see (`as_of`), and a
@@ -8062,7 +8180,27 @@ namespace
         auto const dir = messages_query_value(target, "dir");
         auto const backwards = dir != "f"; // both default and "b" walk backward
         auto const from_text = messages_query_value(target, "from");
-        auto const from_token = parse_u64(from_text);
+        // `from` "can be obtained from a prev_batch or next_batch token returned by the /sync
+        // endpoint, or from an end token returned by a previous request to this endpoint". A
+        // plain token T is the boundary at event T: backward returns events before T, forward
+        // events after T. A /sync next_batch names the newest event that sync delivered, so
+        // forward starts after it and backward includes it.
+        auto const from_token = [&]() -> std::optional<std::uint64_t> {
+            if (auto const plain = parse_u64(from_text); plain.has_value())
+            {
+                return plain;
+            }
+            if (auto const decoded = sync::decode_stream_token(from_text); decoded.has_value())
+            {
+                return backwards ? decoded->event_ordering + 1U : decoded->event_ordering;
+            }
+            return std::nullopt;
+        }();
+        // The request's RoomEventFilter selects the returned events (`filter`: "A JSON
+        // RoomEventFilter to filter returned events with") and drives lazy-loaded members.
+        auto const event_filter = sync::parse_room_event_filter_argument(messages_query_value(target, "filter"))
+                                      .value_or(sync::RoomFilter{})
+                                      .timeline;
         auto limit = std::min<std::size_t>(10U, static_cast<std::size_t>(rt.limits.max_messages_page_size));
         if (auto const parsed = parse_u64(messages_query_value(target, "limit")); parsed.has_value())
         {
@@ -8116,7 +8254,7 @@ namespace
             }
             ++examined;
             end_token = std::to_string(event.stream_ordering);
-            if (!visibility.can_see(event))
+            if (!visibility.can_see(event) || !passes_room_event_filter(event_filter, event))
             {
                 return true;
             }
@@ -8160,14 +8298,9 @@ namespace
         {
             start_token = from_text;
         }
-        // The request's own RoomEventFilter drives this: it carries
-        // lazy_load_members, and a default-constructed filter silently ignored it.
-        auto const state_filter = sync::parse_room_event_filter_argument(messages_query_value(target, "filter"))
-                                      .value_or(sync::RoomFilter{})
-                                      .timeline;
         auto state = apply_lazy_member_loading(
-            state_filter, chunk_senders,
-            messages_state_events(store, state_filter, room_id, sync::room_read_access_for(store, room_id, user_id)));
+            event_filter, chunk_senders,
+            messages_state_events(store, event_filter, room_id, sync::room_read_access_for(store, room_id, user_id)));
         return json_serialize(json_obj({
             json_member("chunk", json_arr(std::move(chunk))),
             json_member("start", json_str(start_token)),
@@ -8250,8 +8383,7 @@ namespace
             for (auto i = target_index; i > 0U && events_before.size() < before_limit; --i)
             {
                 auto const* candidate = entries[i - 1U];
-                if (!sync::event_passes_filter(filter.timeline, stored_event_type(*candidate),
-                                               candidate->sender_user_id))
+                if (!passes_room_event_filter(filter.timeline, *candidate))
                 {
                     continue;
                 }
@@ -8282,8 +8414,7 @@ namespace
             for (auto i = target_index + 1U; i < entries.size() && events_after.size() < after_limit; ++i)
             {
                 auto const* candidate = entries[i];
-                if (!sync::event_passes_filter(filter.timeline, stored_event_type(*candidate),
-                                               candidate->sender_user_id))
+                if (!passes_room_event_filter(filter.timeline, *candidate))
                 {
                     continue;
                 }
@@ -15289,9 +15420,11 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                 auto const room_it = std::ranges::find_if(store.rooms, [&room_id](auto const& r) {
                     return r.room_id == room_id;
                 });
+                // The response table lists 403 "You aren't a member of the room and weren't
+                // previously a member of the room" and no 404: an unknown room is one of those.
                 if (room_it == store.rooms.end())
                 {
-                    return dispatch_err(req, rt, 404U, "M_NOT_FOUND", "room not found");
+                    return dispatch_err(req, rt, 403U, "M_FORBIDDEN", "You aren't a member of the room");
                 }
 
                 // Spec §GET /rooms/{roomId}/members: "If you are joined to the room then this
@@ -15687,7 +15820,9 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                                                                  {"room_id", *messages_room,   false},
                                                                  {"reason",  "room not found", false}
                     });
-                    return dispatch_err(req, rt, 404U, "M_NOT_FOUND", "room not found");
+                    // The response table lists 403 "You aren't a member of the room" and no
+                    // 404: a room this server does not know is one the user is not in.
+                    return dispatch_err(req, rt, 403U, "M_FORBIDDEN", "You aren't a member of the room");
                 }
                 // Spec: 403 "You aren't a member of the room". A user who was joined and has left
                 // reads what they were allowed to see; a world_readable room may be read
@@ -16161,16 +16296,25 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                 });
                 return dispatch_err(req, rt, 403U, "M_FORBIDDEN", "You do not have permission to upgrade this room");
             }
-            auto const last_event_id = old_room_it->events.empty() ? std::string{} : old_room_it->events.back();
-            auto predecessor = canonicaljson::Object{};
-            predecessor.push_back(json_member("room_id", json_str(room_id)));
-            if (!last_event_id.empty())
+            auto const& new_policy = *rooms::find_room_version_policy(*new_version_str);
+            // additional_creators: "the user IDs which should be considered room creators in
+            // addition to the user performing the upgrade ... When upgrading to a room version
+            // which doesn't support additional creators, this field is ignored." Their validity
+            // is judged by create_room (400 M_INVALID_ROOM_STATE).
+            auto additional_creators = canonicaljson::Array{};
+            if (auto const* additional = object_member(*upgrade_body, "additional_creators");
+                additional != nullptr && new_policy.privilege_room_creators)
             {
-                predecessor.push_back(json_member("event_id", json_str(last_event_id)));
+                auto const* entries = std::get_if<canonicaljson::Array>(&additional->storage());
+                if (entries == nullptr)
+                {
+                    return dispatch_err(req, rt, 400U, "M_BAD_JSON", "additional_creators must be an array");
+                }
+                additional_creators = *entries;
             }
-            auto upgrade_options = CreateRoomOptions{};
-            upgrade_options.room_version = *new_version_str;
-            upgrade_options.creation_content.push_back(json_member("predecessor", json_obj(std::move(predecessor))));
+            auto upgrade_options =
+                upgrade_room_options(rt.homeserver.database.persistent_store, *old_room_it, new_policy,
+                                     *new_version_str, *user, std::move(additional_creators));
             // See the createRoom route above for why the outer guard must be
             // released before calling create_room (which self-locks).
             auto const create_result = [&] {

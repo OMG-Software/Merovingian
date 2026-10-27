@@ -223,6 +223,7 @@
 * [0236 - The password policy is configurable, strict by default](0236-the-password-policy-is-configurable-strict-by-default.md)
 * [0237 - Complement runs only its federation and client-server packages](0237-complement-runs-only-its-federation-and-client-server-packages.md)
 * [0238 - The key resolver uses the key it fetched, not a cache read-back](0238-the-key-resolver-uses-the-key-it-fetched-not-a-cache-read-back.md)
+* [0239 - A room upgrade to version 12 omits predecessor.event_id](0239-a-room-upgrade-to-version-12-omits-predecessor-event-id.md)
 
 ## Proposed Records
 

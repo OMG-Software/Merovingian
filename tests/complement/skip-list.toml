@@ -40,4 +40,116 @@
 #   reason = "The endpoint is not implemented."
 #   todo = "docs/todos/capability-gaps.md"
 #
-# Empty until the first full run against a release candidate.
+
+# G11: the legacy media freeze (ADR-0068). "By Matrix 1.12, servers SHOULD 'freeze' the
+# deprecated, unauthenticated, endpoints ... any media uploaded *after* (or *during*) the
+# freeze SHOULD only be accessible through the new, authenticated, endpoints. For remote
+# media, 'newly-uploaded' is determined by the date the cache was populated."
+# Each test below downloads or thumbnails media uploaded (or fetched) during the run through
+# /_matrix/media/v3, so this server answers 404 as the spec says; its
+# /_matrix/client/v1/media twin is not listed and must pass. Complement itself skips these
+# for Synapse and Venator.
+
+[[entry]]
+test = "TestContent"
+package = "tests/csapi"
+mode = "expect-fail"
+category = "spec"
+spec = "docs/matrix-v1.19-spec/client-server-api.md#client-behaviour"
+reason = "Downloads media uploaded during the run through /_matrix/media/v3/download, which the media freeze answers 404 (ADR-0068). TestContentCSAPIMediaV1 covers the authenticated route."
+
+[[entry]]
+test = "TestAsyncUpload/Not_yet_uploaded"
+package = "tests/csapi"
+mode = "expect-fail"
+category = "spec"
+spec = "docs/matrix-v1.19-spec/client-server-api.md#client-behaviour"
+reason = "Expects 504 for a reserved media ID on /_matrix/media/v3/download; media created after the freeze is not served there at all, so the frozen route answers 404 (ADR-0068)."
+
+[[entry]]
+test = "TestLocalPngThumbnail/test_/_matrix/media/v3_endpoint"
+package = "tests"
+mode = "expect-fail"
+category = "spec"
+spec = "docs/matrix-v1.19-spec/client-server-api.md#client-behaviour"
+reason = "Thumbnails media uploaded during the run through /_matrix/media/v3/thumbnail, which the media freeze answers 404 (ADR-0068); the /_matrix/client/v1/media subtest covers the authenticated route."
+
+[[entry]]
+test = "TestRemotePngThumbnail/test_/_matrix/media/v3_endpoint"
+package = "tests"
+mode = "expect-fail"
+category = "spec"
+spec = "docs/matrix-v1.19-spec/client-server-api.md#client-behaviour"
+reason = "Thumbnails remote media fetched during the run through /_matrix/media/v3; remote media cached after the freeze counts as new, so the frozen route answers 404 (ADR-0068)."
+
+[[entry]]
+test = "TestMediaFilenames/Parallel/ASCII/Can_download_file_'ascii'"
+package = "tests"
+mode = "expect-fail"
+category = "spec"
+spec = "docs/matrix-v1.19-spec/client-server-api.md#client-behaviour"
+reason = "Downloads media uploaded during the run through /_matrix/media/v3/download, frozen (ADR-0068); the 'over /_matrix/client/v1/media/download' subtest covers the authenticated route."
+
+[[entry]]
+test = "TestMediaFilenames/Parallel/ASCII/Can_download_file_'name_with_spaces'"
+package = "tests"
+mode = "expect-fail"
+category = "spec"
+spec = "docs/matrix-v1.19-spec/client-server-api.md#client-behaviour"
+reason = "Downloads media uploaded during the run through /_matrix/media/v3/download, frozen (ADR-0068); the 'over /_matrix/client/v1/media/download' subtest covers the authenticated route."
+
+[[entry]]
+test = "TestMediaFilenames/Parallel/ASCII/Can_download_file_'name;with;semicolons'"
+package = "tests"
+mode = "expect-fail"
+category = "spec"
+spec = "docs/matrix-v1.19-spec/client-server-api.md#client-behaviour"
+reason = "Downloads media uploaded during the run through /_matrix/media/v3/download, frozen (ADR-0068); the 'over /_matrix/client/v1/media/download' subtest covers the authenticated route."
+
+[[entry]]
+test = "TestMediaFilenames/Parallel/ASCII/Can_download_specifying_a_different_ASCII_file_name"
+package = "tests"
+mode = "expect-fail"
+category = "spec"
+spec = "docs/matrix-v1.19-spec/client-server-api.md#client-behaviour"
+reason = "Downloads media uploaded during the run through /_matrix/media/v3/download/{serverName}/{mediaId}/{fileName}, frozen (ADR-0068); its _matrix/client/v1 twin covers the authenticated route."
+
+[[entry]]
+test = "TestMediaFilenames/Parallel/Unicode/Can_download_specifying_a_different_Unicode_file_name"
+package = "tests"
+mode = "expect-fail"
+category = "spec"
+spec = "docs/matrix-v1.19-spec/client-server-api.md#client-behaviour"
+reason = "Downloads media uploaded during the run through /_matrix/media/v3/download/{serverName}/{mediaId}/{fileName}, frozen (ADR-0068); its _matrix/client/v1 twin covers the authenticated route."
+
+[[entry]]
+test = "TestMediaFilenames/Parallel/Unicode/Can_download_with_Unicode_file_name_locally"
+package = "tests"
+mode = "expect-fail"
+category = "spec"
+spec = "docs/matrix-v1.19-spec/client-server-api.md#client-behaviour"
+reason = "Downloads media uploaded during the run through /_matrix/media/v3/download, frozen (ADR-0068); its _matrix/client/v1 twin covers the authenticated route."
+
+[[entry]]
+test = "TestMediaFilenames/Parallel/Unicode/Can_download_with_Unicode_file_name_over_federation"
+package = "tests"
+mode = "expect-fail"
+category = "spec"
+spec = "docs/matrix-v1.19-spec/client-server-api.md#client-behaviour"
+reason = "Downloads remote media fetched during the run through /_matrix/media/v3/download; remote media cached after the freeze counts as new, so the frozen route answers 404 (ADR-0068)."
+
+[[entry]]
+test = "TestMediaWithoutFileName/parallel/Can_download_without_a_file_name_locally"
+package = "tests"
+mode = "expect-fail"
+category = "spec"
+spec = "docs/matrix-v1.19-spec/client-server-api.md#client-behaviour"
+reason = "Downloads media uploaded during the run through /_matrix/media/v3/download, frozen (ADR-0068); TestMediaWithoutFileNameCSMediaV1 covers the authenticated route."
+
+[[entry]]
+test = "TestMediaWithoutFileName/parallel/Can_download_without_a_file_name_over_federation"
+package = "tests"
+mode = "expect-fail"
+category = "spec"
+spec = "docs/matrix-v1.19-spec/client-server-api.md#client-behaviour"
+reason = "Downloads remote media fetched during the run through /_matrix/media/v3/download; remote media cached after the freeze counts as new, so the frozen route answers 404 (ADR-0068)."

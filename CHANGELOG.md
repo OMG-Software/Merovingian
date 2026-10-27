@@ -1,7 +1,8 @@
 ## 0.12.59
 
-The second Complement run (0.12.58) showed two federation bugs that blocked 46 of its 133 failing
-tests, and every one of those tests involved a join with another server.
+Fixes from the triage of the second Complement run (0.12.58, 133 failing top-level tests): three
+federation bugs that blocked over 50 of them, room version 12 creation and upgrades, room event
+pagination and filters, and the expected failures from the legacy media freeze.
 
 - **FIXED:** a federation worker refused every `send_join`, `send_leave`, `send_knock`, `invite`
   and `/send` from a server whose key it had not already held at start-up, with
@@ -31,6 +32,53 @@ tests, and every one of those tests involved a join with another server.
   check, against a TLS resident server, that the event we sign carries our `origin` and clock and
   no `event_id`, with and without those fields in the template. Run against the old behaviour,
   every one of these fails as Complement did (`403`, a refused template, the resident's `origin`).
+- **FIXED:** the `/send` transaction carrying an event sent on this server had no `origin` and no
+  `origin_server_ts`, which the Transaction object marks Required. Synapse tolerated the omission,
+  but this server refuses such a transaction (`400 transaction origin is required`), so no event
+  ever reached another Merovingian server: in Complement, every two-server test saw joins succeed
+  and nothing after them arrive (the restricted-room tests filed as F1 among them). The room
+  service now builds the body with `federation::build_pdu_transaction_body`, beside the EDU builder
+  that already got this right. Regression: `test_outbound_pdu_transaction_flow.cpp` sends a message
+  in a room shared with another server and checks the queued transaction; it fails on the old code.
+- **FIXED:** room version 12 creation. Every v12 room's initial power levels now define
+  `m.room.tombstone` above `state_default` (the spec's MUST; only `trusted_private_chat` did), and
+  a client's own tombstone level in `power_level_content_override` is kept. A
+  `power_level_content_override` naming a room creator in `users`, or `additional_creators` that is
+  not an array of valid user IDs, is refused with `400 M_INVALID_ROOM_STATE` before anything is
+  created; they had been silently stripped, answered 500, or (for a server name such as
+  `dom$ain$.com`) accepted.
+- **FIXED:** the v12 `m.room.create` event reached clients without `room_id` on `/state`,
+  `/event`, `/context` and `/messages`. Room version 12 omits it from the PDU only; the client
+  format requires it.
+- **FIXED:** `POST /rooms/{roomId}/upgrade` ignored `additional_creators`, copied no state and did
+  not copy the old room's `type`. It now applies `additional_creators` to a v12 replacement,
+  copies `type`, and transfers the spec's recommended state (server ACL, encryption, name, avatar,
+  topic, guest access, history visibility, join rules, and power levels without the new room's
+  creators). Upgrading to version 12 or later omits `predecessor.event_id`, which the spec allows
+  (ADR-0239). `docs/todos/capability-gaps.md` had claimed a full state copy; it now names the
+  remaining gaps (aliases are not moved, the old room's power levels are not raised).
+- **FIXED:** `/messages` ignored a `/sync` `next_batch` as `from` and started at the room's
+  beginning, and `/relations` did the same; both now page from it, forward after the newest event
+  that sync delivered and backward including it. `/messages` and `/context` now apply the
+  request's RoomEventFilter to the events they return (`types`, `senders`, and the new
+  `contains_url`), not only to lazy-loaded state.
+- **FIXED:** `/messages` and `/members` answered `404 M_NOT_FOUND` for a room the server does not
+  know; their response tables list only 200 and 403, so they answer `403 M_FORBIDDEN`. The
+  conformance scenario and unit test that expected 404 now expect 403, citing the tables.
+- **FIXED:** `scripts/summarise_complement.py` judged a failing parent by its direct children,
+  found by counting slashes; Complement subtest names can hold slashes ("test /_matrix/media/v3
+  endpoint"), so a parent was reported although its only failure was listed, or explained although
+  a failure beneath it was not. It now requires every failing leaf beneath a parent to be listed.
+- **CHANGED:** `tests/complement/skip-list.toml` lists 13 subtests as expected failures (category
+  `spec`): each downloads or thumbnails media uploaded or fetched during the run through the
+  legacy `/_matrix/media/v3` routes, which the media freeze answers 404 as v1.19 says servers
+  SHOULD (ADR-0068). Their `/_matrix/client/v1/media` twins are not listed.
+- **TESTS:** `test_room_v12_creation_conformance.cpp` (tombstone level, creator in the override,
+  invalid `additional_creators`, `room_id` on the create event, upgrade with `additional_creators`
+  and transferred state) and `test_room_pagination_conformance.cpp` (sync tokens on `/messages`
+  and `/relations`, the RoomEventFilter on `/messages`, 403 for unknown rooms);
+  `test_room_upgrade_predecessor.cpp` (ADR-0239); two summariser cases for slash-holding subtest
+  names, which fail on the old summariser.
 - **ADDED:** `federation::make_remote_key_resolver`, the resolver with its discovery and fetch
   steps supplied by the caller, for tests.
 

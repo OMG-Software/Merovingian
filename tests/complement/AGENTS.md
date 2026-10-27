@@ -84,6 +84,9 @@ test that exists (ADR-0234). The file's header documents the format. In short:
   `docs/todos/` row.
 - An entry hiding a test about auth, signatures, keys or ACLs needs the
   maintainer's `signed_off_by`.
+- A failing parent test is explained when every failing leaf beneath it is
+  listed. Subtest names can hold slashes ("test /_matrix/media/v3 endpoint"),
+  so list the leaf itself, never a guess at its depth.
 - When a fix lands, its test passes, its entry goes stale, and the run fails
   until the entry is removed. Remove it in the same change as the fix.
 - Moving the pinned commit in `run.toml` can bring tests the list has never

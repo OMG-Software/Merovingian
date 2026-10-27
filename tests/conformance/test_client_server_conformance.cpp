@@ -3329,8 +3329,11 @@ SCENARIO("GET /rooms/{roomId}/members reports join membership after invited loca
 // --- GET /_matrix/client/v3/rooms/{roomId}/members (unknown room) ------------
 // Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#get_matrixclientv3roomsroomidmembers
 //
-// MUST return 404 M_NOT_FOUND for a room that does not exist.
-SCENARIO("GET /rooms/{roomId}/members returns 404 for an unknown room", "[conformance][client-server][rooms][members]")
+// The v1.19 response table lists only 200 and 403 "You aren't a member of the room and
+// weren't previously a member of the room"; it has no 404. A room that does not exist is one
+// the user cannot be a member of. (Until 0.12.59 this scenario expected 404 M_NOT_FOUND,
+// which the table does not offer.)
+SCENARIO("GET /rooms/{roomId}/members returns 403 for an unknown room", "[conformance][client-server][rooms][members]")
 {
     GIVEN("a logged-in user")
     {
@@ -3343,14 +3346,14 @@ SCENARIO("GET /rooms/{roomId}/members returns 404 for an unknown room", "[confor
             auto const response = merovingian::homeserver::handle_client_server_request(
                 started.runtime, {"GET", "/_matrix/client/v3/rooms/%21nonexistent%3Aexample.org/members", token, {}});
 
-            THEN("the response is 404 M_NOT_FOUND")
+            THEN("the response is 403 M_FORBIDDEN")
             {
-                // Spec MUST: 404 when the room does not exist.
-                REQUIRE(response.response.status == 404U);
+                // Spec MUST: the response table offers 403 for a non-member and no 404.
+                REQUIRE(response.response.status == 403U);
                 auto const body = parse_object(response.response.body);
                 auto const* errcode = string_member(body, "errcode");
                 REQUIRE(errcode != nullptr);
-                REQUIRE(*errcode == "M_NOT_FOUND");
+                REQUIRE(*errcode == "M_FORBIDDEN");
             }
         }
     }

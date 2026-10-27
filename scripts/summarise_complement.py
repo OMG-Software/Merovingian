@@ -206,11 +206,16 @@ def summarise(entries: list[Entry], run_events: list[dict], listing_events: list
 
     failed = sorted(key for key, action in outcome.items() if action == "fail")
 
+    # A failing parent is explained when every failing leaf beneath it is listed.
+    # A leaf is a failing test with no failing test beneath it. Leaves, not
+    # direct children, because a subtest's name may itself hold slashes
+    # ("test /_matrix/media/v3 endpoint"), so the depth of a name says nothing.
     def explained(key: str) -> bool:
         if covered(key):
             return True
-        children = [other for other in failed if other.startswith(key + "/") and "/" not in other[len(key) + 1:]]
-        return bool(children) and all(explained(child) for child in children)
+        beneath = [other for other in failed if other.startswith(key + "/")]
+        leaves = [other for other in beneath if not any(deeper.startswith(other + "/") for deeper in beneath)]
+        return bool(leaves) and all(covered(leaf) for leaf in leaves)
 
     unexpected = [key for key in failed if not explained(key)]
     unfinished = sorted(started - set(outcome))

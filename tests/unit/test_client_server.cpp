@@ -2015,10 +2015,10 @@ SCENARIO("Client-server typing and messages routes dispatch through the room blo
             auto const messages = merovingian::homeserver::handle_client_server_request(
                 runtime, {"GET", "/_matrix/client/v3/rooms/!nonexistent:example.org/messages", token, {}});
 
-            THEN("the response is 404 M_NOT_FOUND")
+            THEN("the response is 403 M_FORBIDDEN, the only refusal the /messages table lists")
             {
-                REQUIRE(messages.response.status == 404U);
-                REQUIRE(messages.response.body.find("M_NOT_FOUND") != std::string::npos);
+                REQUIRE(messages.response.status == 403U);
+                REQUIRE(messages.response.body.find("M_FORBIDDEN") != std::string::npos);
             }
         }
     }
