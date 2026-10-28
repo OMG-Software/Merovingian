@@ -187,6 +187,10 @@ SCENARIO("change_local_user_password commits nothing when a revoked device's pus
                 REQUIRE(probe.text("SELECT password_hash FROM users WHERE user_id = ?1", reg.value) == hash_before);
                 REQUIRE(probe.text("SELECT pushkey FROM pushers WHERE device_id = ?1", "DEVICE2") ==
                         std::optional<std::string>{"device2-key"});
+                // The other device's token row is still there and live: a deleted row would also have
+                // no revoked token, so its presence is checked as well as its state.
+                REQUIRE(probe.text("SELECT revoked FROM access_tokens WHERE device_id = ?1", "DEVICE2") ==
+                        std::optional<std::string>{"false"});
                 REQUIRE_FALSE(
                     probe
                         .text("SELECT token_hash FROM access_tokens WHERE device_id = ?1 AND revoked = 'true'",
