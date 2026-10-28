@@ -93,8 +93,8 @@ encryption material.
 At debug level the `worker_pool` module logs `event=relay.runtime_lock_acquired wait_ms=<n>` when
 main takes `runtime.mutex` to read the room version of a PDU a federation worker relayed
 (`pdu_ingest`, `membership_ingest`, `invite_ingest`). `wait_ms` is how long the relay queued behind
-whatever held the lock (a join, a send, a sync); it is the part of a delivery's latency the worker
-cannot see. The worker's own debug lines (key fetches, discovery) are not in main's log.
+whatever held the lock (a join, a send, a sync), which is part of a delivery's latency that no other
+line shows.
 
 ## Per-module level overrides (0.5.0)
 
