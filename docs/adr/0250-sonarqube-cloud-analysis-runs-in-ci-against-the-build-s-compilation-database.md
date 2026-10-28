@@ -42,7 +42,9 @@ pull request gets no secrets and is analysed once merged.
 Since the job holds `SONAR_TOKEN`, its Python build tools (Meson, Ninja) install with
 `pip install --require-hashes --only-binary :all:` from `requirements-build.txt`, the hash-locked
 resolution of `requirements-build.in`: nothing is resolved at run time and no sdist's setup script
-runs beside the token. Upgrading `pip` itself first is dropped for the same reason.
+runs beside the token. Upgrading `pip` itself first is dropped for the same reason, and every action
+the job uses, `actions/checkout` and `actions/setup-python` as well as the scan, is pinned to a
+commit, since a tag can be moved.
 
 Meson already writes the compilation database, and SonarSource accepts one from any tool; the Build
 Wrapper would add a downloaded binary around the build for nothing this does not already give.

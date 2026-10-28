@@ -206,8 +206,9 @@ Cloud analysis from SonarSource's automatic analysis into this repository's CI.
 - **CHANGED:** the SonarQube Cloud workflow, which holds `SONAR_TOKEN`, installs Meson and Ninja
   from hash-locked wheels only (`requirements-build.txt`, compiled from `requirements-build.in`
   with `uv pip compile --generate-hashes --only-binary :all:`), not whatever `pip install --upgrade`
-  resolved at run time; it no longer upgrades `pip` first (ADR-0250). Checked by
-  `test_sonarcloud_config.py`.
+  resolved at run time; it no longer upgrades `pip` first, and pins `actions/checkout` (v4.4.0) and
+  `actions/setup-python` (v5.6.0) to commits as it already did the scan action (ADR-0250). Checked
+  by `test_sonarcloud_config.py`.
 - **FIXED:** `POST /login` did not log `@user:server` in when named `@USER:server`, `USER` or
   `User`. A user ID is looked up exactly, then with its localpart's ASCII letters downcased
   (ADR-0245), so historical upper-case localparts still log in as themselves. Regression:

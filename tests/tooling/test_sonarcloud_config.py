@@ -136,6 +136,13 @@ class SonarCloudCiScanTest(unittest.TestCase):
         self.assertRegex(self.workflow, r"uses: SonarSource/sonarqube-scan-action@[0-9a-f]{40}\b")
         self.assertNotRegex(self.workflow, r"uses: SonarSource/sonarqube-scan-action@v")
 
+    def test_given_the_workflow_when_read_then_every_action_is_pinned_to_a_commit(self) -> None:
+        # Every step shares the job with SONAR_TOKEN, the checkout and Python setup included.
+        uses = re.findall(r"(?m)^\s*-?\s*uses:\s*(\S+)", self.workflow)
+        self.assertTrue(uses)
+        for action in uses:
+            self.assertRegex(action, r"@[0-9a-f]{40}$", f"{action} is not pinned to a commit")
+
     def test_given_the_workflow_when_read_then_it_scans_full_history_with_the_repository_secret(self) -> None:
         self.assertIn("fetch-depth: 0", self.workflow)
         self.assertIn("SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}", self.workflow)
