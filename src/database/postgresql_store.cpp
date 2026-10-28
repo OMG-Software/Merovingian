@@ -1387,17 +1387,18 @@ namespace
 
         if (table_load_profile_includes("client_txn_ids", profile))
         {
-            auto client_txns = query_rows(connection, "postgresql_load_client_txn_ids",
-                                          "SELECT user_id, room_id, event_type, txn_id, event_id FROM client_txn_ids");
+            auto client_txns =
+                query_rows(connection, "postgresql_load_client_txn_ids",
+                           "SELECT user_id, room_id, event_type, txn_id, event_id, device_id FROM client_txn_ids");
             if (!client_txns.ok)
             {
                 return false;
             }
             for (auto const& row : client_txns.rows)
             {
-                if (row.size() >= 5U)
+                if (row.size() >= 6U)
                 {
-                    store.client_txn_ids.push_back({row[0], row[1], row[2], row[3], row[4]});
+                    store.client_txn_ids.push_back({row[0], row[1], row[2], row[3], row[4], row[5]});
                 }
             }
         }

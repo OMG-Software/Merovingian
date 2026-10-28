@@ -649,7 +649,8 @@ struct PersistentRoomAlias final
 };
 
 // Idempotency record for a client-issued room send or send-to-device PUT.
-// Keyed by (user_id, room_id, event_type, txn_id); room_id is empty for
+// Keyed by (user_id, room_id, event_type, txn_id) (device_id is not part of the key: a retry from
+// another device of the user is still the same request here); room_id is empty for
 // send-to-device entries. event_id holds the stored event ID for room sends
 // and is empty for send-to-device (whose response is always {}).
 struct PersistentClientTxnRecord final
@@ -659,6 +660,10 @@ struct PersistentClientTxnRecord final
     std::string event_type{};
     std::string txn_id{};
     std::string event_id{};
+    // The device that made the request, empty for a request with none. Spec (client-server-api.md,
+    // ClientEvent `unsigned.transaction_id`): the sending client is given the transaction ID, and a
+    // transaction ID is scoped to a device.
+    std::string device_id{};
 };
 
 // A push notification pusher registered via `POST

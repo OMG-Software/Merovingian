@@ -788,7 +788,9 @@ value. Test fixtures that do not exercise persistence select it through
 
 - Client transaction-idempotency dedup via the version-1 `client_txn_ids` table.
   Keyed on `(user_id, room_id, event_type, txn_id)`; `room_id` is empty string
-  for to-device sends. `event_id` stores the assigned event ID for room sends and
+  for to-device sends. `device_id` records the device that made the room-send
+  request (empty when it had none) so the sending device is given
+  `unsigned.transaction_id`; it is not part of the key. `event_id` stores the assigned event ID for room sends and
   is empty for to-device entries. Both SQLite and PostgreSQL hydrate rows on
   startup. Handlers check the table before processing and store the result after
   a successful send, allowing clients to safely retry `PUT /rooms/{roomId}/send`

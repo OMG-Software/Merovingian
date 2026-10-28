@@ -130,6 +130,7 @@ namespace
             if (auto const* value = as_integer(*limit); value != nullptr && *value >= 0)
             {
                 target.limit = static_cast<std::size_t>(*value);
+                target.limit_given = true;
             }
         }
     }

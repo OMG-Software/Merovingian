@@ -24,6 +24,9 @@ struct EventTypeFilter final
     std::vector<std::string> senders{};
     std::vector<std::string> not_senders{};
     std::size_t limit{0U}; // 0 == no cap
+    // True when the filter named a `limit`. `limit: 0` then means no events, not no cap (a
+    // RoomEventFilter's "maximum number of events to return"); `limit` alone cannot say which.
+    bool limit_given{false};
     // RoomEventFilter, Matrix v1.19 CS API § Filtering. When lazy_load_members
     // is set the server may send only the membership events of the senders
     // appearing in the returned events, instead of the room's whole member

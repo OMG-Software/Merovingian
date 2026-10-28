@@ -13,6 +13,7 @@ sync_sources = files(
   'stream_token.cpp',
   'sync_filter.cpp',
   'sync_notifier.cpp',
+  'viewer_event_unsigned.cpp',
 )
 
 sync_lib = static_library(

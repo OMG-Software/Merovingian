@@ -77,6 +77,7 @@
 #include "merovingian/sync/stream_token.hpp"
 #include "merovingian/sync/sync_filter.hpp"
 #include "merovingian/sync/sync_notifier.hpp"
+#include "merovingian/sync/viewer_event_unsigned.hpp"
 #include "merovingian/trust_safety/ignore_list.hpp"
 #include "merovingian/trust_safety/policy_engine.hpp"
 
@@ -1163,49 +1164,6 @@ namespace
             {
                 result.push_back(std::move(*stripped));
             }
-        }
-        return result;
-    }
-
-    // Per spec, rooms.leave.<room_id>.timeline is "the timeline of messages
-    // and state changes in the room up to the point when the user left" —
-    // matrix-js-sdk (and other real clients) derive `room.getMyMembership()`
-    // by processing this timeline's state events, not merely from the
-    // room_id being present under rooms.leave. An empty timeline here means
-    // the client never learns *that* the caller left, so the room silently
-    // stays in the joined room list even though the server-side leave and
-    // /sync notification both succeeded. The current m.room.member state
-    // event for the user is still authoritative even on an idempotent
-    // repeat /leave call that didn't compose a new event — store.state is
-    // upserted in place, so it always points at the last real transition.
-    // ADR-0247: nothing above `upper_bound`, the response's position, or the next
-    // sync, starting from it, reports the leave again.
-    [[nodiscard]] auto build_leave_timeline_events_array(database::PersistentStore const& store,
-                                                         std::string_view room_id, std::string_view user_id,
-                                                         std::uint64_t upper_bound) -> canonicaljson::Array
-    {
-        auto result = canonicaljson::Array{};
-        auto const state = std::ranges::find_if(store.state, [&](database::PersistentStateEvent const& current) {
-            return current.room_id == room_id && current.event_type == "m.room.member" && current.state_key == user_id;
-        });
-        if (state == store.state.end())
-        {
-            return result;
-        }
-        if (auto const event = store.events.find(state->event_id);
-            event != store.events.end() && event->stream_ordering > upper_bound)
-        {
-            return result;
-        }
-        auto const event_json = event_json_for_id(store, state->event_id);
-        if (!event_json.has_value())
-        {
-            return result;
-        }
-        auto const parsed = canonicaljson::parse_lossless(*event_json);
-        if (parsed.error == canonicaljson::ParseError::none)
-        {
-            result.push_back(parsed.value);
         }
         return result;
     }
@@ -4426,6 +4384,36 @@ namespace
         return type == nullptr ? std::string{} : *type;
     }
 
+    // Whether a stored event passes a RoomEventFilter (/messages, /context). The content is
+    // parsed only when the filter asks about contains_url.
+    [[nodiscard]] auto passes_room_event_filter(sync::EventTypeFilter const& filter,
+                                                database::PersistentEvent const& event) -> bool
+    {
+        auto content_has_url = false;
+        if (filter.contains_url.has_value())
+        {
+            auto const parsed = canonicaljson::parse_lossless(event.json);
+            auto const* object = std::get_if<canonicaljson::Object>(&parsed.value.storage());
+            auto const* content = object == nullptr ? nullptr : object_member_as_object(*object, "content");
+            content_has_url = content != nullptr && object_member(*content, "url") != nullptr;
+        }
+        return sync::event_passes_room_event_filter(filter, stored_event_type(event), event.sender_user_id,
+                                                    content_has_url);
+    }
+
+    // Whether a stored event passes the RoomEventFilter a /sync request names for a room's timeline.
+    // The event's JSON is parsed only when the filter restricts types or asks about contains_url, so
+    // the common request, which restricts neither, costs no parse.
+    [[nodiscard]] auto passes_sync_timeline_filter(sync::EventTypeFilter const& filter,
+                                                   database::PersistentEvent const& event) -> bool
+    {
+        if (filter.types.empty() && filter.not_types.empty() && !filter.contains_url.has_value())
+        {
+            return sync::event_passes_filter(filter, std::string_view{}, event.sender_user_id);
+        }
+        return passes_room_event_filter(filter, event);
+    }
+
     // Builds a ClientEvent array from an explicit list of state event IDs
     // (e.g. from federation::resolve_state_event_ids_at), applying the same
     // RoomEventFilter type/sender predicate build_current_state_events_array
@@ -4744,10 +4732,13 @@ namespace
             }
             receipts.add(receipt);
         }
-        if (!receipts.empty())
+        // Spec (Receipts, Server behaviour): "receipts SHOULD be batched into one event per room and
+        // thread before delivering them to clients". A user's unthreaded and threaded receipts for one
+        // event are distinct receipts that one event's content has no room for both of.
+        for (auto& content : receipts.build_per_thread())
         {
             events.push_back(json_obj(
-                {json_member("type", json_str("m.receipt")), json_member("content", json_obj(receipts.build()))}));
+                {json_member("type", json_str("m.receipt")), json_member("content", json_obj(std::move(content)))}));
         }
 
         return events;
@@ -4996,6 +4987,143 @@ namespace
         return out;
     }
 
+    // What `rooms.leave.<room_id>` holds for a room the user left or was banned from. Spec (GET /sync,
+    // LeftRoom): `timeline` is "the timeline of messages and state changes in the room up to the
+    // point when the user left", and `state` is "the state updates for the room up to the start of
+    // the timeline". The timeline is the room's events after `since` (all of them on an initial sync)
+    // up to the event that ended the user's stay, as the request's filter selects them and as the
+    // user may see them (m.room.history_visibility), the newest `timeline_cap` of them; nothing
+    // after the leave is in it, however much the room has moved on.
+    //
+    // The user's own leave or ban is the one event shown whatever the history visibility says: a
+    // client learns from it that it has left (a rejected invite under `joined` visibility included),
+    // and it is the user's own state. A timeline filter that excludes its type keeps it out of the
+    // timeline, so an incremental sync then reports it in `state`, or the client would never be told.
+    struct LeftRoomRequest final
+    {
+        std::string_view room_id{};
+        std::string_view user_id{};
+        // The stream ordering the user's membership row was written at; stands in for the leave
+        // event's own when the event is not in the store.
+        std::uint64_t membership_ordering{0U};
+        // The `since` ordering of an incremental sync; nullopt on an initial sync.
+        std::optional<std::uint64_t> since_ordering{};
+        std::uint64_t sync_position{0U};
+        std::size_t timeline_cap{0U};
+    };
+
+    [[nodiscard]] auto build_left_room(database::PersistentStore const& store, sync::SyncFilter const& filter,
+                                       sync::HistoryVisibility& history_visibility,
+                                       sync::ViewerEventUnsigned& viewer_unsigned,
+                                       std::unordered_set<std::string> const& ignored_senders,
+                                       LeftRoomRequest const& request) -> canonicaljson::Value
+    {
+        // The user's current m.room.member event is the one that ended their stay.
+        auto const member_state = std::ranges::find_if(store.state, [&](database::PersistentStateEvent const& entry) {
+            return entry.room_id == request.room_id && entry.event_type == "m.room.member" &&
+                   entry.state_key == request.user_id;
+        });
+        auto const leave_event =
+            member_state == store.state.end() ? store.events.end() : store.events.find(member_state->event_id);
+        auto const leave_ordering =
+            leave_event == store.events.end() ? request.membership_ordering : leave_event->stream_ordering;
+        // ADR-0247: nothing above the response's position, or the next sync, starting from it,
+        // would report it again.
+        auto const upper_bound = std::min(leave_ordering, request.sync_position);
+        auto const since_ordering = request.since_ordering.value_or(std::uint64_t{0U});
+
+        auto matched = std::vector<database::PersistentEvent const*>{};
+        for (auto const& event : store.events)
+        {
+            if (event.room_id != request.room_id || event.status == "rejected" || event.status == "soft_failed" ||
+                event.stream_ordering > upper_bound ||
+                (request.since_ordering.has_value() && event.stream_ordering <= since_ordering))
+            {
+                continue;
+            }
+            if (!passes_sync_timeline_filter(filter.room.timeline, event))
+            {
+                continue;
+            }
+            auto const is_leave = leave_event != store.events.end() && event.event_id == leave_event->event_id;
+            if (!is_leave &&
+                (trust_safety::is_delivery_suppressed(ignored_senders, event.sender_user_id,
+                                                      trust_safety::event_json_is_state_event(event.json)) ||
+                 !history_visibility.can_see(event)))
+            {
+                continue;
+            }
+            matched.push_back(&event);
+        }
+        std::ranges::sort(matched, [](auto const* lhs, auto const* rhs) noexcept {
+            return lhs->stream_ordering < rhs->stream_ordering;
+        });
+
+        auto const limited = matched.size() > request.timeline_cap;
+        auto const window_begin =
+            limited ? matched.end() - static_cast<std::ptrdiff_t>(request.timeline_cap) : matched.begin();
+        auto timeline_events = canonicaljson::Array{};
+        auto leave_in_timeline = false;
+        for (auto it = window_begin; it != matched.end(); ++it)
+        {
+            leave_in_timeline =
+                leave_in_timeline || (leave_event != store.events.end() && (*it)->event_id == leave_event->event_id);
+            timeline_events.push_back(viewer_unsigned.apply(**it, client_event_with_id(store, **it)));
+        }
+        // /messages?dir=b returns events strictly older than `from`: anchor it at the oldest event
+        // returned, or at `since` when the window is empty, as a joined room's prev_batch is.
+        auto const prev_batch = window_begin != matched.end() ? std::to_string((*window_begin)->stream_ordering)
+                                                              : std::to_string(since_ordering);
+
+        auto state_events = canonicaljson::Array{};
+        if (!request.since_ordering.has_value())
+        {
+            // An initial sync: all state up to the start of the timeline, or, with no timeline
+            // events, all state up to the leave itself.
+            auto at_start =
+                window_begin != matched.end()
+                    ? build_state_events_at_timeline_start(store, filter.room.state, request.room_id, **window_begin)
+                    : std::optional<canonicaljson::Array>{};
+            if (at_start.has_value())
+            {
+                state_events = std::move(*at_start);
+            }
+            else if (window_begin == matched.end() && leave_event != store.events.end())
+            {
+                if (auto const group = database::find_event_state_group(store, leave_event->event_id);
+                    group.has_value())
+                {
+                    if (auto const full = database::read_state_group_full_state(store, *group); full.has_value())
+                    {
+                        auto ids = std::vector<std::string>{};
+                        for (auto const& entry : *full)
+                        {
+                            ids.push_back(entry.event_id);
+                        }
+                        state_events = build_state_events_array_for_ids(store, filter.room.state, ids);
+                    }
+                }
+            }
+        }
+        else if (!leave_in_timeline && leave_event != store.events.end() &&
+                 sync::event_passes_filter(filter.room.state, stored_event_type(*leave_event),
+                                           leave_event->sender_user_id))
+        {
+            // An incremental sync's state is the delta since `since`; the leave is part of it when
+            // the timeline does not carry it.
+            state_events.push_back(viewer_unsigned.apply(*leave_event, client_event_with_id(store, *leave_event)));
+        }
+
+        return json_obj({
+            json_member("state", json_obj({json_member("events", json_arr(std::move(state_events)))})),
+            json_member("timeline", json_obj({
+                                        json_member("events", json_arr(std::move(timeline_events))),
+                                        json_member("limited", json_bool(limited)),
+                                        json_member("prev_batch", json_str(prev_batch)),
+                                    })),
+        });
+    }
+
     [[nodiscard]] auto sync_json(ClientServerRuntime& rt, std::string_view user, std::string_view device_id,
                                  core::SyncRequest const& request, bool can_wait = true) -> DispatchResult
     {
@@ -5064,6 +5192,13 @@ namespace
         // R15 (ADR-0205): one push-rule classifier for the request's unread counts.
         auto const unread_classifier =
             PushRuleUnreadClassifier{store, user, rt.limits.max_push_rules_per_user, history_visibility};
+        // The request's own `unsigned.transaction_id` and `unsigned.membership` on every timeline event.
+        auto viewer_unsigned = sync::ViewerEventUnsigned{store, history_visibility, user, device_id};
+        // The RoomEventFilter's `limit` bounds each room's timeline, and a `limit` of 0 asks for none.
+        auto const max_timeline_events = static_cast<std::size_t>(rt.limits.max_sync_events_per_room);
+        auto const timeline_cap = filter.room.timeline.limit_given
+                                      ? std::min(filter.room.timeline.limit, max_timeline_events)
+                                      : max_timeline_events;
 
         log_diagnostic("sync.request",
                        {
@@ -5085,11 +5220,6 @@ namespace
             {
                 continue;
             }
-            auto const timeline_cap =
-                filter.room.timeline.limit != 0U
-                    ? std::min(filter.room.timeline.limit, static_cast<std::size_t>(rt.limits.max_sync_events_per_room))
-                    : static_cast<std::size_t>(rt.limits.max_sync_events_per_room);
-
             // Collect this room's timeline-eligible events that are newer than
             // `since`, in stream-ordering order. `limited` and `prev_batch` are
             // derived from THIS window per the Matrix sync spec — never from the
@@ -5119,13 +5249,9 @@ namespace
                 {
                     continue;
                 }
-                if (!sync::event_passes_filter(filter.room.timeline, std::string_view{}, event.sender_user_id))
+                // The RoomEventFilter's types, not_types, senders, not_senders and contains_url.
+                if (!passes_sync_timeline_filter(filter.room.timeline, event))
                 {
-                    // Event type isn't surfaced on PersistentEvent yet; the
-                    // sender filter is the only meaningful per-event predicate
-                    // until events expose their type. Passing an empty string
-                    // for event_type makes `event_passes_filter` apply the
-                    // sender rules without requiring a type match.
                     continue;
                 }
                 // Ignoring Users: non-state events from an ignored sender are
@@ -5166,7 +5292,7 @@ namespace
             auto timeline_events = canonicaljson::Array{};
             for (auto it = window_begin; it != matched.end(); ++it)
             {
-                timeline_events.push_back(client_event_with_id(store, **it));
+                timeline_events.push_back(viewer_unsigned.apply(**it, client_event_with_id(store, **it)));
             }
             auto const event_count = timeline_events.size();
 
@@ -5321,21 +5447,24 @@ namespace
                     ++invite_count;
                 }
             }
-            else if (membership.membership == "leave" && membership.stream_ordering <= sync_position &&
-                     (filter.room.include_leave ||
-                      (since_token.has_value() && membership.stream_ordering > since_ordering)))
+            else if ((membership.membership == "leave" || membership.membership == "ban") &&
+                     membership.stream_ordering <= sync_position &&
+                     (since_token.has_value() ? membership.stream_ordering > since_ordering
+                                              : filter.room.include_leave))
             {
-                // ADR-0247: a leave above sync_position waits for the next sync,
-                // which starts from it.
+                // Spec (GET /sync): `leave` is "the rooms that the user has left or been banned from". An
+                // incremental sync reports the leaves since `since`, once: a room left before it is not
+                // reported again, `include_leave` or not. An initial sync reports every left room if the
+                // filter asks. ADR-0247: a leave above sync_position waits for the next sync, which
+                // starts from it.
                 if (leave_count < rt.limits.max_sync_rooms)
                 {
-                    auto leave_timeline_events =
-                        build_leave_timeline_events_array(store, membership.room_id, user, sync_position);
-                    leave_members.push_back(json_member(
-                        membership.room_id,
-                        json_obj({json_member(
-                            "timeline",
-                            json_obj({json_member("events", json_arr(std::move(leave_timeline_events)))}))})));
+                    auto const left_room = build_left_room(
+                        store, filter, history_visibility, viewer_unsigned, ignored_senders,
+                        {membership.room_id, user, membership.stream_ordering,
+                         since_token.has_value() ? std::optional<std::uint64_t>{since_ordering} : std::nullopt,
+                         sync_position, timeline_cap});
+                    leave_members.push_back(json_member(membership.room_id, left_room));
                     ++leave_count;
                 }
             }
@@ -8347,23 +8476,6 @@ namespace
             options.power_level_content_override = std::move(*power_levels);
         }
         return options;
-    }
-
-    // Whether a stored event passes a RoomEventFilter (/messages, /context). The content is
-    // parsed only when the filter asks about contains_url.
-    [[nodiscard]] auto passes_room_event_filter(sync::EventTypeFilter const& filter,
-                                                database::PersistentEvent const& event) -> bool
-    {
-        auto content_has_url = false;
-        if (filter.contains_url.has_value())
-        {
-            auto const parsed = canonicaljson::parse_lossless(event.json);
-            auto const* object = std::get_if<canonicaljson::Object>(&parsed.value.storage());
-            auto const* content = object == nullptr ? nullptr : object_member_as_object(*object, "content");
-            content_has_url = content != nullptr && object_member(*content, "url") != nullptr;
-        }
-        return sync::event_passes_room_event_filter(filter, stored_event_type(event), event.sender_user_id,
-                                                    content_has_url);
     }
 
     // May this user reach an endpoint that returns room events? Spec (Room History Visibility):
@@ -15147,7 +15259,8 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                             {
                                 std::ignore =
                                     database::store_client_txn(rt.homeserver.database.persistent_store,
-                                                               {*user, redact->room_id, txn_scope, redact->txn_id, *s});
+                                                               {*user, redact->room_id, txn_scope, redact->txn_id, *s,
+                                                                authenticated_request_device_id(rt, req.access_token)});
                             }
                         }
                     }
@@ -15211,7 +15324,8 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                             {
                                 std::ignore = database::store_client_txn(
                                     rt.homeserver.database.persistent_store,
-                                    {*user, path->room_id, path->event_type, path->txn_id, *s});
+                                    {*user, path->room_id, path->event_type, path->txn_id, *s,
+                                     authenticated_request_device_id(rt, req.access_token)});
                             }
                         }
                     }
@@ -15356,12 +15470,17 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                 // failure") — treated the same as not found, so a member
                 // cannot distinguish "never existed" from "was filtered".
                 // An event the user may not see is the same 404, for the same reason.
+                auto visibility = sync::HistoryVisibility{store, *user};
                 if (event == store.events.end() || event->status == "rejected" || event->status == "soft_failed" ||
-                    !sync::HistoryVisibility{store, *user}.can_see(*event))
+                    !visibility.can_see(*event))
                 {
                     return dispatch_err(req, rt, 404U, "M_NOT_FOUND", "event not found");
                 }
-                auto const serialized = canonicaljson::serialize_canonical(client_event_with_id(store, *event));
+                // `unsigned.transaction_id` and `unsigned.membership` are the requesting client's own.
+                auto viewer_unsigned = sync::ViewerEventUnsigned{store, visibility, *user,
+                                                                 authenticated_request_device_id(rt, req.access_token)};
+                auto const serialized = canonicaljson::serialize_canonical(
+                    viewer_unsigned.apply(*event, client_event_with_id(store, *event)));
                 if (serialized.error != canonicaljson::CanonicalJsonError::none)
                 {
                     return dispatch_err(req, rt, 500U, "M_UNKNOWN", "failed to serialize event");

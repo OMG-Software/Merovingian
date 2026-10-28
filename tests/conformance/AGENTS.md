@@ -35,6 +35,7 @@ Every test in this directory directly encodes a **MUST** or **SHOULD** from the 
 | `test_event_graph_conformance.cpp` | [SS API § Retrieving events](../../docs/matrix-v1.19-spec/server-server-api.md#retrieving-events) (`/state/{roomId}`, `/state_ids/{roomId}`) · [§ Backfilling and retrieving missing events](../../docs/matrix-v1.19-spec/server-server-api.md#backfilling-and-retrieving-missing-events) (`/backfill/{roomId}`) |
 | `test_event_relationships_conformance.cpp` | [CS API § Event Relationships](../../docs/matrix-v1.19-spec/client-server-api.md#forming-relationships-between-events) |
 | `test_event_size_limits_conformance.cpp` | [CS API § Size limits](../../docs/matrix-v1.19-spec/client-server-api.md#size-limits) (locally composed events over 65536 bytes, or with a `type` or `state_key` over 255 bytes, are refused with 400 `M_TOO_LARGE` on `/send`, `/state`, membership and `createRoom`) |
+| `test_event_unsigned_conformance.cpp` | [CS API § Transaction identifiers](../../docs/matrix-v1.19-spec/client-server-api.md#transaction-identifiers) · [`GET /sync`](../../docs/matrix-v1.19-spec/client-server-api.md#get_matrixclientv3sync) (ClientEvent `unsigned.transaction_id` for the sending device only, `unsigned.membership` as the requesting user's membership at the event) |
 | `test_events.cpp` | [SS API § Event Signing](../../docs/matrix-v1.19-spec/server-server-api.md#signing-events) · [§ Content Hash](../../docs/matrix-v1.19-spec/server-server-api.md#calculating-the-content-hash-for-an-event) |
 | `test_federation_conformance.cpp` | [Server-Server API](../../docs/matrix-v1.19-spec/server-server-api.md) |
 | `test_federation_media_conformance.cpp` | [SS API § Content Repository — GET /_matrix/federation/v1/media/download/{mediaId}](../../docs/matrix-v1.19-spec/server-server-api.md#content-repository) |
@@ -71,6 +72,7 @@ Every test in this directory directly encodes a **MUST** or **SHOULD** from the 
 | `test_signing_json_conformance.cpp` | [Appendices § Signing JSON](../../docs/matrix-v1.19-spec/appendices.md#signing-json) |
 | `test_sliding_sync_conformance.cpp` | [MSC4186 — Simplified Sliding Sync](https://github.com/matrix-org/matrix-spec-proposals/blob/main/proposals/4186-simplified-sliding-sync.md) (unstable; not part of v1.19) |
 | `test_state_resolution_conformance.cpp` | [SS API § State Resolution](../../docs/matrix-v1.19-spec/server-server-api.md#room-state-resolution) |
+| `test_sync_archive_conformance.cpp` | [CS API `GET /sync`](../../docs/matrix-v1.19-spec/client-server-api.md#get_matrixclientv3sync) (`rooms.leave`: the filtered timeline up to the leave or ban, state as of the leave, a leave reported once) |
 | `test_sync_filter_conformance.cpp` | [CS API § Filtering](../../docs/matrix-v1.19-spec/client-server-api.md#filtering) |
 | `test_sync_summary_conformance.cpp` | [CS API § Syncing](../../docs/matrix-v1.19-spec/client-server-api.md#syncing) |
 | `test_sync_state_conformance.cpp` | [CS API `GET /sync`](../../docs/matrix-v1.19-spec/client-server-api.md#get_matrixclientv3sync) (a joined room's `state` is the state up to the start of the timeline, not current state) |

@@ -154,7 +154,7 @@ namespace
                                           "avatar_url TEXT NOT NULL DEFAULT ''"                                                },
         SchemaTableDefinition{"client_txn_ids",
                               "user_id TEXT NOT NULL, room_id TEXT NOT NULL, event_type TEXT NOT NULL, "
-                              "txn_id TEXT NOT NULL, event_id TEXT NOT NULL, "
+                              "txn_id TEXT NOT NULL, event_id TEXT NOT NULL, device_id TEXT NOT NULL DEFAULT '', "
                               "PRIMARY KEY (user_id, room_id, event_type, txn_id)"                                                                                      },
         SchemaTableDefinition{"pushers",
                               "user_id TEXT NOT NULL, app_id TEXT NOT NULL, pushkey TEXT NOT NULL, "

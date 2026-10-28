@@ -4237,12 +4237,12 @@ namespace
 
     [[nodiscard]] auto insert_client_txn_statement(PersistentClientTxnRecord const& record) -> PreparedStatement
     {
-        return record_statement("insert_client_txn_id",
-                                "INSERT INTO client_txn_ids (user_id, room_id, event_type, txn_id, event_id) "
-                                "VALUES ($1, $2, $3, $4, $5) ON CONFLICT DO NOTHING",
-                                {public_value(record.user_id), public_value(record.room_id),
-                                 public_value(record.event_type), public_value(record.txn_id),
-                                 public_value(record.event_id)});
+        return record_statement(
+            "insert_client_txn_id",
+            "INSERT INTO client_txn_ids (user_id, room_id, event_type, txn_id, event_id, device_id) "
+            "VALUES ($1, $2, $3, $4, $5, $6) ON CONFLICT DO NOTHING",
+            {public_value(record.user_id), public_value(record.room_id), public_value(record.event_type),
+             public_value(record.txn_id), public_value(record.event_id), public_value(record.device_id)});
     }
 
 } // namespace

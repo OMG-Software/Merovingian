@@ -1008,12 +1008,12 @@ namespace
                    [&store](sqlite3_stmt& row) {
                        store.room_aliases.push_back({column_text(row, 0), column_text(row, 1), column_text(row, 2)});
                    }) &&
-               load_rows(connection, "SELECT user_id, room_id, event_type, txn_id, event_id FROM client_txn_ids",
-                         [&store](sqlite3_stmt& row) {
-                             store.client_txn_ids.push_back({column_text(row, 0), column_text(row, 1),
-                                                             column_text(row, 2), column_text(row, 3),
-                                                             column_text(row, 4)});
-                         }) &&
+               load_rows(
+                   connection, "SELECT user_id, room_id, event_type, txn_id, event_id, device_id FROM client_txn_ids",
+                   [&store](sqlite3_stmt& row) {
+                       store.client_txn_ids.push_back({column_text(row, 0), column_text(row, 1), column_text(row, 2),
+                                                       column_text(row, 3), column_text(row, 4), column_text(row, 5)});
+                   }) &&
                load_rows(connection,
                          "SELECT user_id, app_id, pushkey, kind, app_display_name, device_display_name, "
                          "profile_tag, lang, data_url, data_format, data_extra_json FROM pushers ORDER BY user_id, "
