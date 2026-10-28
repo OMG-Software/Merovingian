@@ -78,6 +78,11 @@ Complement has not yet been rerun against this version.
   `unsigned.membership` and, for the device that sent them, `unsigned.transaction_id`
   (`client_txn_ids` gained `device_id`; ADR-0258). Both lookups, and the send idempotency check,
   use in-memory indexes instead of scanning every stored transaction under `runtime.mutex`.
+- **FIXED (security):** a stored event's own `unsigned.transaction_id` and `unsigned.membership`
+  were passed on to clients. `unsigned` is outside an event's signatures, so a remote server could
+  set either on its PDU and a client could take the event for its own local echo. Every client
+  read path now drops both from the stored copy; this server sets them per viewer
+  (`[unsigned-forged]`).
 - **FIXED:** `/sync` kept one receipt where a user had both an unthreaded and a threaded `m.read`
   for one event; it now sends one `m.receipt` event per thread (ADR-0259).
 - **FIXED:** `GET /rooms/{roomId}/messages` with `lazy_load_members` returned the room's other state;

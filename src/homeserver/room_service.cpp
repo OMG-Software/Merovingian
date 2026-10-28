@@ -7900,7 +7900,33 @@ auto deliver_federation_push_notifications(HomeserverRuntime& runtime, federatio
     {
         return canonicaljson::Value{canonicaljson::Object{}};
     }
+    // `unsigned.transaction_id` and `unsigned.membership` describe the client reading the event
+    // (CS API, ClientEvent), and `unsigned` is outside the event's signatures, so a remote sender
+    // can put anything there. This server computes both per viewer (sync::ViewerEventUnsigned) and
+    // never passes on a stored copy of either.
+    auto const viewer_specific = [](std::string_view key) noexcept {
+        return key == "transaction_id" || key == "membership";
+    };
     auto client_obj = *obj;
+    for (auto& member : client_obj)
+    {
+        if (member.key == "unsigned")
+        {
+            if (auto const* stored_unsigned = std::get_if<canonicaljson::Object>(&member.value->storage());
+                stored_unsigned != nullptr)
+            {
+                auto kept = canonicaljson::Object{};
+                for (auto const& entry : *stored_unsigned)
+                {
+                    if (!viewer_specific(entry.key))
+                    {
+                        kept.push_back(entry);
+                    }
+                }
+                member.value = std::make_unique<canonicaljson::Value>(canonicaljson::Value{std::move(kept)});
+            }
+        }
+    }
     client_obj.push_back(canonicaljson::make_member("event_id", canonicaljson::Value{event.event_id}));
     // ClientEvent `room_id` is required everywhere but /sync. Room version 12 omits it from
     // the m.room.create PDU only, so a client still gets the room it belongs to.
@@ -7937,7 +7963,7 @@ auto deliver_federation_push_notifications(HomeserverRuntime& runtime, federatio
                     {
                         for (auto const& unsigned_member : *existing)
                         {
-                            if (unsigned_member.key != "replaces_state")
+                            if (unsigned_member.key != "replaces_state" && !viewer_specific(unsigned_member.key))
                             {
                                 unsigned_object.push_back(unsigned_member);
                             }

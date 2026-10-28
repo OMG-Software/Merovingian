@@ -9,10 +9,12 @@
 #include "../support/master_key.hpp"
 #include "../support/registration_token.hpp"
 #include "merovingian/config/config.hpp"
+#include "merovingian/database/persistent_store.hpp"
 #include "merovingian/homeserver/client_server.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <algorithm>
 #include <cstdint>
 #include <optional>
 #include <string>
@@ -224,6 +226,85 @@ SCENARIO("The device that sent an event is given its transaction ID, no other cl
 // state at the point of the event, including any changes caused by the event. If the user had
 // yet to join the room at the time of the event (i.e, they have no m.room.member state), this
 // property is set to leave." Homeservers SHOULD populate it wherever practical.
+// Spec: Matrix Client-Server API v1.19, ClientEvent `unsigned` (transaction_id, membership)
+// URL: ../../docs/matrix-v1.19-spec/client-server-api.md#get_matrixclientv3sync
+//
+// Both fields describe the client reading the event: `transaction_id` "if the client being given
+// the event is the same one which sent it", `membership` "the room membership of the user making
+// the request". `unsigned` is not covered by the event's signatures, so a PDU's sender can put
+// anything there; this server must never pass the sender's copy of either field on to a client.
+SCENARIO("A stored event's own unsigned.transaction_id and unsigned.membership never reach a client",
+         "[conformance][client-server][event-format][unsigned][unsigned-forged]")
+{
+    GIVEN("a message whose stored copy carries a transaction_id and membership its sender chose")
+    {
+        auto started = merovingian::homeserver::start_client_server(unsigned_config());
+        REQUIRE(started.started);
+        auto& rt = started.runtime;
+        std::ignore = register_user(rt, "alice");
+        std::ignore = register_user(rt, "bob");
+        auto const alice = login_device(rt, "alice", "DEVA");
+        auto const bob = login_device(rt, "bob", "BOBDEV");
+        auto const created = call(rt, "POST", "/_matrix/client/v3/createRoom", alice, R"({"preset":"public_chat"})");
+        REQUIRE(created.status == 200U);
+        auto const room_id = *string_member(parse_object(created.body), "room_id");
+        REQUIRE(call(rt, "POST", "/_matrix/client/v3/join/" + room_id, bob, "{}").status == 200U);
+        auto const event_id =
+            event_id_of(call(rt, "PUT", "/_matrix/client/v3/rooms/" + room_id + "/send/m.room.message/f1", alice,
+                             R"({"msgtype":"m.text","body":"hello"})"));
+
+        auto& store = rt.homeserver.database.persistent_store;
+        auto const stored = store.events.find(event_id);
+        REQUIRE(stored != store.events.end());
+        REQUIRE(stored->json.find("\"unsigned\"") == std::string::npos);
+        REQUIRE(stored->json.front() == '{');
+        auto forged = std::string{R"({"unsigned":{"age":5,"membership":"ban","transaction_id":"forged-txn"},)"} +
+                      stored->json.substr(1U);
+        REQUIRE(merovingian::database::replace_event_json(store, event_id, std::move(forged)));
+
+        WHEN("bob, who did not send it, reads it from /sync and GET /rooms/{roomId}/event/{eventId}")
+        {
+            auto const synced = synced_event(rt, bob, room_id, event_id);
+            auto const fetched = fetched_event(rt, bob, room_id, event_id);
+
+            THEN("neither carries the stored transaction_id, and the membership is bob's own")
+            {
+                REQUIRE(synced.has_value());
+                // Spec MUST: transaction_id only for "the same one which sent it".
+                REQUIRE_FALSE(unsigned_string(*synced, "transaction_id").has_value());
+                REQUIRE_FALSE(unsigned_string(fetched, "transaction_id").has_value());
+                // Spec MUST: membership is "the room membership of the user making the request".
+                REQUIRE(unsigned_string(*synced, "membership") == std::optional<std::string>{"join"});
+                REQUIRE(unsigned_string(fetched, "membership") == std::optional<std::string>{"join"});
+            }
+        }
+
+        WHEN("bob pages back over it with GET /rooms/{roomId}/messages")
+        {
+            auto const page = call(rt, "GET", "/_matrix/client/v3/rooms/" + room_id + "/messages?dir=b&limit=20", bob);
+            REQUIRE(page.status == 200U);
+            auto const body = parse_object(page.body);
+            auto const* chunk = object_member_as_array(body, "chunk");
+            REQUIRE(chunk != nullptr);
+            auto const found = std::ranges::find_if(*chunk, [&](merovingian::canonicaljson::Value const& entry) {
+                auto const* id =
+                    string_member(std::get<merovingian::canonicaljson::Object>(entry.storage()), "event_id");
+                return id != nullptr && *id == event_id;
+            });
+            REQUIRE(found != chunk->end());
+            auto const& event = std::get<merovingian::canonicaljson::Object>(found->storage());
+
+            THEN("the sender's transaction_id and membership are not passed on")
+            {
+                // Spec MUST: transaction_id only for "the same one which sent it".
+                REQUIRE_FALSE(unsigned_string(event, "transaction_id").has_value());
+                // Spec MUST: membership is the requesting user's, never the sender's choice.
+                REQUIRE(unsigned_string(event, "membership") != std::optional<std::string>{"ban"});
+            }
+        }
+    }
+}
+
 SCENARIO("An event carries the requesting user's membership at the time of the event",
          "[conformance][client-server][event-format][unsigned]")
 {
