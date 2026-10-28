@@ -436,6 +436,8 @@ SCENARIO("A membership event accepted for a requesting server is sent on to the 
         auto started = merovingian::homeserver::start_client_server(registration_enabled_config());
         REQUIRE(started.started);
         auto& runtime = started.runtime;
+        // make_fanout_room creates alice's room and joins carol of server C: the bystander that
+        // must hear about every membership change this server accepts for another server.
         auto const room = make_fanout_room(runtime, "public_chat");
 
         WHEN("server B's send_join for bob is accepted")
@@ -447,6 +449,8 @@ SCENARIO("A membership event accepted for a requesting server is sent on to the 
 
             THEN("server C is sent the stored copy of the join, and server B is sent nothing")
             {
+                // The copy the acceptor stored is the one sent on (for a restricted join it carries
+                // this server's co-signature), never the request body; B already holds the event.
                 auto const sent = queued_pdus_for(runtime, bystander_server);
                 REQUIRE_FALSE(joined.signed_event_json.empty());
                 REQUIRE(std::ranges::find(sent, canonical_form(joined.signed_event_json)) != sent.end());
@@ -458,6 +462,7 @@ SCENARIO("A membership event accepted for a requesting server is sent on to the 
 
         WHEN("server B's send_leave for bob, who had joined, is accepted")
         {
+            // Bob must be in the room before he can leave it, so his join is accepted first.
             REQUIRE(accept_membership(runtime, FederationEndpoint::send_join,
                                       membership_envelope(runtime, room.room_id, room.bob, "join",
                                                           "$bob_join:" + std::string{joiner_server}, 10U))
@@ -488,6 +493,7 @@ SCENARIO("A membership event accepted for a requesting server is sent on to the 
         REQUIRE(call(runtime, "PUT", "/_matrix/client/v3/rooms/" + room.room_id + "/state/m.room.join_rules/",
                      room.alice_token, R"({"join_rule":"knock"})")
                     .response.status == 200U);
+        // The auth rules accept a knock only in a room whose join rule allows it.
 
         WHEN("server B's send_knock for bob is accepted")
         {
@@ -518,6 +524,8 @@ SCENARIO("A membership event accepted for a requesting server is sent on to the 
 
         WHEN("server B's send_join for bob, who was never invited, is refused")
         {
+            // An invite-only room refuses an uninvited join on receipt; a rejected event never
+            // applies, so it must not be forwarded to anyone.
             auto const refused = accept_membership(runtime, FederationEndpoint::send_join,
                                                    membership_envelope(runtime, room.room_id, room.bob, "join",
                                                                        "$bob_join:" + std::string{joiner_server}, 10U));

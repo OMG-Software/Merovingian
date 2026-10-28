@@ -379,6 +379,8 @@ SCENARIO("A presence EDU is accepted only for the sending server's users who sha
         REQUIRE(started.started);
         auto& runtime = started.runtime;
         auto const token = register_alice(runtime);
+        // Bob counts as sharing a room only once his join is in this server's store; every case
+        // below starts from that, so only the EDU's own content decides what is kept.
         share_room_with_remote_bob(runtime);
 
         WHEN("remote.example.org reports bob's presence")
@@ -416,6 +418,7 @@ SCENARIO("A presence EDU is accepted only for the sending server's users who sha
 
         WHEN("another server reports bob's presence")
         {
+            // The EDU's origin is the authenticated sending server; bob belongs to another one.
             auto const result = deliver_presence_edu(runtime, "evil.example.net", push_content(remote_bob, "online"));
 
             THEN("it is refused and nothing is stored: only a user's own server speaks for them")
@@ -464,6 +467,7 @@ SCENARIO("A presence EDU is accepted only for the sending server's users who sha
 
         WHEN("remote.example.org reports a negative last_active_ago")
         {
+            // Written out in full: push_content always supplies a valid last_active_ago.
             std::ignore = deliver_presence_edu(
                 runtime, remote_server,
                 R"({"push":[{"user_id":"@bob:remote.example.org","presence":"online","last_active_ago":-9}]})");
@@ -485,6 +489,8 @@ SCENARIO("A presence EDU is accepted only for the sending server's users who sha
         auto& runtime = started.runtime;
         std::ignore = register_alice(runtime);
         share_room_with_remote_bob(runtime);
+        // One more EDU entry than the limit allows, each for a user who shares the room, so the
+        // only reason any is dropped is the per-EDU limit itself.
         auto const entries = merovingian::homeserver::max_inbound_presence_entries + 5U;
         auto content = std::string{R"({"push":[)"};
         auto& store = runtime.homeserver.database.persistent_store;
