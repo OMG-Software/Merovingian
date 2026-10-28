@@ -41,6 +41,13 @@ Chosen option: the first. `this_server_is_in_room` is the test, and `join_room` 
 `LocalRoom` before taking the federated path. `last_known_resident_servers` supplies the fallback;
 it matters for a room created here, whose ID names this server.
 
+One exception (review of #541): a room whose `m.room.create` was sent from this server, when the
+client names no server and no other server is known to have been in it at our last view, is
+joined here. Nobody holds newer state than this server, and there is nobody to ask; without the
+exception such a room answered every rejoin `404`. The exception is never taken for a room
+created elsewhere, whose last view here may be stale, nor while any resident is known: keeping
+every room with no candidate was rejected for that reason.
+
 The second option sends an event built on state this server no longer holds; a resident would
 judge it, but this server would already have told the user they joined. The third leaves a room
 created here unreachable by ID once its creator has left, though other servers are still in it.

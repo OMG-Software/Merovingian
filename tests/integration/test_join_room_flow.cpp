@@ -979,7 +979,9 @@ SCENARIO("A knock on a room on another server goes through make_knock and send_k
             return resident_remote_runtime();
         };
 
-        auto const room_id = std::string{"!knockable:"} + resident_server;
+        // The room ID names a server other than the resident the client routes through, so
+        // the knock, and its retraction, must go where the client sent it (ADR-0242).
+        auto const room_id = std::string{"!knockable:elsewhere.example.org"};
         auto const creator = std::string{"@creator:"} + resident_server;
         auto const policy = *merovingian::rooms::find_room_version_policy("10");
         auto const state_event = [&](std::string const& type, std::string const& content, int depth) {
@@ -1025,7 +1027,7 @@ SCENARIO("A knock on a room on another server goes through make_knock and send_k
             auto const knocked = merovingian::homeserver::handle_client_server_request(
                 rt,
                 {"POST",
-                 "/_matrix/client/v3/knock/%21knockable%3Aresident.example.org?server_name=" +
+                 "/_matrix/client/v3/knock/%21knockable%3Aelsewhere.example.org?server_name=" +
                      std::string{resident_server},
                  login.value, R"({"reason":"let me in"})"},
                 /*can_wait=*/false);
@@ -1124,7 +1126,7 @@ SCENARIO("A knock on a room on another server goes through make_knock and send_k
                     }};
                     auto const left = merovingian::homeserver::handle_client_server_request(
                         rt,
-                        {"POST", "/_matrix/client/v3/rooms/%21knockable%3Aresident.example.org/leave", login.value,
+                        {"POST", "/_matrix/client/v3/rooms/%21knockable%3Aelsewhere.example.org/leave", login.value,
                          "{}"},
                         /*can_wait=*/false);
                     leave_thread.join();

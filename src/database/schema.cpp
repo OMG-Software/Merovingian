@@ -75,7 +75,7 @@ namespace
                               "room_id TEXT NOT NULL, user_id TEXT NOT NULL, sender_user_id TEXT NOT NULL, "
                               "event_id TEXT NOT NULL DEFAULT '', signed_event_json TEXT NOT NULL DEFAULT '', "
                               "invite_state_json TEXT NOT NULL DEFAULT '[]', stream_ordering TEXT NOT NULL "
-                              "DEFAULT '0', "
+                              "DEFAULT '0', resident_server TEXT NOT NULL DEFAULT '', "
                               "PRIMARY KEY (room_id, user_id)"                                                                                                          },
         SchemaTableDefinition{"account_data",
                               "user_id TEXT NOT NULL, event_type TEXT NOT NULL, json TEXT NOT NULL, stream_id TEXT "

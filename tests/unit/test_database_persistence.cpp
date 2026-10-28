@@ -2382,6 +2382,50 @@ SCENARIO("Persistent store upserts inbound invite metadata for sync replay", "[d
     }
 }
 
+// A knock's withdrawal goes to the server that accepted it (Server-Server API v1.19,
+// "Knocking upon a room": retracted by leaving, as an invite is rejected), not to a server
+// inferred from the room ID, which a version 12 room ID does not even name. The knock record
+// keeps that server across a restart.
+SCENARIO("A knock record keeps the server that accepted the knock across a reopen",
+         "[database][persistence][invite][knock-resident]")
+{
+    GIVEN("a SQLite store holding a user's knock accepted by a resident server")
+    {
+        auto const sqlite_path = unique_sqlite_path();
+        std::filesystem::remove(sqlite_path);
+        auto opened = merovingian::database::open_sqlite_persistent_store(sqlite_path.string());
+        REQUIRE(opened.ok);
+        auto record = merovingian::database::PersistentInvite{
+            "!knocked:elsewhere.example.org",
+            "@alice:example.org",
+            "@alice:example.org",
+            "$knock:example.org",
+            R"({"type":"m.room.member","content":{"membership":"knock"}})",
+            {},
+            5U,
+        };
+        record.resident_server = "resident.example.org";
+        REQUIRE(merovingian::database::store_membership_projection(opened.store, "!knocked:elsewhere.example.org",
+                                                                   {"@alice:example.org", "knock", 5U, record}));
+
+        WHEN("the store is reopened")
+        {
+            auto reopened = merovingian::database::open_sqlite_persistent_store(sqlite_path.string());
+            REQUIRE(reopened.ok);
+            auto const stored = merovingian::database::find_invite(reopened.store, "!knocked:elsewhere.example.org",
+                                                                   "@alice:example.org");
+
+            THEN("the knock still names the server that accepted it")
+            {
+                REQUIRE(stored.has_value());
+                REQUIRE(stored->resident_server == "resident.example.org");
+            }
+        }
+
+        std::filesystem::remove(sqlite_path);
+    }
+}
+
 SCENARIO("Persistent store includes event depth in event statements", "[database][persistence][events]")
 {
     GIVEN("an opened persistent store with a room")

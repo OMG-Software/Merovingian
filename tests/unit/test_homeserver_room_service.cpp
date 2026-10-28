@@ -111,9 +111,10 @@ namespace
 // Builds the canonical JSON for a third-party signed blob and signs it with the
 // supplied Ed25519 secret key. The returned object matches the shape expected by
 // Matrix v1.19 POST /join/{roomId}: mxid, sender, token, and signatures.
-[[nodiscard]] auto make_signed_third_party_object(
-    std::string_view mxid, std::string_view sender, std::string_view token, std::string const& secret_key_bytes,
-    std::string_view signature_origin) -> merovingian::canonicaljson::Object
+[[nodiscard]] auto make_signed_third_party_object(std::string_view mxid, std::string_view sender,
+                                                  std::string_view token, std::string const& secret_key_bytes,
+                                                  std::string_view signature_origin)
+    -> merovingian::canonicaljson::Object
 {
     using merovingian::canonicaljson::make_member;
     using merovingian::canonicaljson::Object;
@@ -547,8 +548,8 @@ namespace
     return it == account_data.end() ? std::string{} : it->content_json;
 }
 
-[[nodiscard]] auto m_direct_rooms_for(std::string const& content_json,
-                                      std::string const& invitee_id) -> std::vector<std::string>
+[[nodiscard]] auto m_direct_rooms_for(std::string const& content_json, std::string const& invitee_id)
+    -> std::vector<std::string>
 {
     auto const parsed = merovingian::canonicaljson::parse_lossless(content_json);
     auto const* obj = std::get_if<merovingian::canonicaljson::Object>(&parsed.value.storage());
@@ -1742,6 +1743,47 @@ SCENARIO("join_room rejects a third_party_signed join with a forged signature",
             {
                 REQUIRE_FALSE(result.ok);
                 REQUIRE(result.status == 403U);
+            }
+        }
+    }
+}
+
+// ADR-0244: a room none of this server's users is joined to is joined through a resident;
+// but if no server is known to be in the room any more and the room was created here, there is
+// no resident to ask and no newer state than the state this server holds, so the join is
+// composed here and judged by the auth rules, as any local join is. A version 12 room ID
+// names no server, so nothing else could be tried.
+SCENARIO("A local user rejoins an emptied room this server created, with no server named",
+         "[homeserver][rooms][join][rejoin-local-room]")
+{
+    GIVEN("a public version 12 room alice created and then left, with nobody left in it")
+    {
+        REQUIRE(sodium_init() >= 0);
+        auto started = merovingian::homeserver::start_runtime(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        auto const reg = merovingian::homeserver::register_local_user(runtime, "alice", "CorrectHorse7!",
+                                                                      merovingian::tests::registration_token);
+        REQUIRE(reg.ok);
+        auto const login = merovingian::homeserver::login_local_user(runtime, reg.value, "CorrectHorse7!", "DEVICE1");
+        REQUIRE(login.ok);
+        auto options = merovingian::homeserver::CreateRoomOptions{};
+        options.preset = "public_chat";
+        auto const room = merovingian::homeserver::create_room(runtime, login.value, options);
+        REQUIRE(room.ok);
+        REQUIRE(merovingian::homeserver::leave_room(runtime, login.value, room.value).ok);
+
+        WHEN("alice joins it again without naming a server")
+        {
+            auto const rejoined = merovingian::homeserver::join_room(runtime, login.value, room.value);
+
+            THEN("the join is made here and alice is joined")
+            {
+                CAPTURE(rejoined.reason);
+                REQUIRE(rejoined.ok);
+                REQUIRE(std::ranges::any_of(runtime.database.persistent_store.memberships, [&](auto const& m) {
+                    return m.room_id == room.value && m.user_id == reg.value && m.membership == "join";
+                }));
             }
         }
     }

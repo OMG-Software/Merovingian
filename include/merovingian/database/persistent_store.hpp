@@ -298,6 +298,10 @@ struct PersistentInvite final
     std::string signed_event_json{};
     std::vector<std::string> invite_state_events_json{};
     std::uint64_t stream_ordering{0U};
+    // A knock's record: the resident server that accepted the knock, where its
+    // withdrawal goes (ADR-0251). Empty for an invite and for a knock on a room
+    // this server is in.
+    std::string resident_server{};
 };
 
 // DB-4: the `membership` row, and the change to the user's invite metadata, that

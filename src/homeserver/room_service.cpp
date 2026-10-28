@@ -1139,6 +1139,22 @@ namespace
         return servers;
     }
 
+    // Whether the room's stored m.room.create was sent by a user of this server.
+    [[nodiscard]] auto room_created_here(HomeserverRuntime const& runtime, std::string_view room_id) -> bool
+    {
+        auto const& store = runtime.database.persistent_store;
+        auto const create = std::ranges::find_if(store.state, [&](database::PersistentStateEvent const& entry) {
+            return entry.room_id == room_id && entry.event_type == "m.room.create" && entry.state_key.empty();
+        });
+        if (create == store.state.end())
+        {
+            return false;
+        }
+        auto const event = store.events.find_in_room(room_id, create->event_id);
+        return event != store.events.end() &&
+               auth::identifier_server_name(event->sender_user_id) == runtime.config.server().server_name;
+    }
+
     [[nodiscard]] auto room_exists(HomeserverRuntime const& runtime, std::string_view room_id) -> bool
     {
         return find_room(runtime.database, room_id) != nullptr ||
@@ -5015,8 +5031,17 @@ namespace
     // to, is a room this server is not in. Its state stops at our last user's leave, so
     // a join composed here would be judged by nobody who holds the room's current
     // state; it goes through a resident, which decides it (Server-Server API, "Joining
-    // Rooms").
-    if (room != nullptr && !this_server_is_in_room(runtime, room_id))
+    // Rooms"). The exception is a room created here that no server is known to be in
+    // any more: there is no resident to ask and no newer state than ours, so the join
+    // is composed here and the auth rules judge it. A room created elsewhere is never
+    // composed here: what this server last held of it may be stale.
+    auto const no_resident_known = [&] {
+        auto const our_server = runtime.config.server().server_name;
+        return join_candidate_servers(via_servers, room_id, our_server).empty() &&
+               last_known_resident_servers(runtime, room_id).empty();
+    };
+    if (room != nullptr && !this_server_is_in_room(runtime, room_id) &&
+        !(no_resident_known() && room_created_here(runtime, room_id)))
     {
         auto const erase_it = std::ranges::find_if(runtime.database.rooms, [room_id](LocalRoom const& r) {
             return r.room_id == room_id;
@@ -5748,14 +5773,28 @@ namespace
 
     // For rooms hosted on a remote server, perform a federated leave:
     // make_leave (get a signed template) → sign → send_leave.
+    // A knock this server sent over federation is withdrawn through the resident
+    // that accepted it (ADR-0251): the room ID's domain need not be in the room,
+    // and a version 12 room ID names no server at all.
     auto const our_server = runtime.config.server().server_name;
-    auto const room_domain = server_name_from_room_id(room_id);
-    auto const is_remote = !room_domain.empty() && room_domain != our_server;
+    auto remote_server = std::string{};
+    if (membership_it->membership == "knock")
+    {
+        if (auto const knock = database::find_invite(runtime.database.persistent_store, room_id, *user_id);
+            knock.has_value())
+        {
+            remote_server = knock->resident_server;
+        }
+    }
+    if (auto const room_domain = server_name_from_room_id(room_id);
+        remote_server.empty() && !room_domain.empty() && room_domain != our_server)
+    {
+        remote_server = std::string{room_domain};
+    }
 
-    if (is_remote)
+    if (!remote_server.empty())
     {
         wire_federation_callbacks(runtime);
-        auto const remote_server = std::string{room_domain};
         auto const signing_key = find_active_server_signing_key(runtime);
         auto const key_id = signing_key.has_value() ? signing_key->key_id : std::string{};
         auto secret_key = core::SecretBuffer{runtime.database.signing_secret_key.bytes()};
@@ -6377,6 +6416,8 @@ namespace
         std::string event_id{};
         std::string signed_event_json{};
         std::vector<std::string> knock_state_json{};
+        // The resident that accepted the knock: where its withdrawal goes (ADR-0251).
+        std::string resident_server{};
     };
 
     [[nodiscard]] auto federated_knock_failure(std::string reason, std::uint16_t status) -> FederatedKnockOutcome
@@ -6540,6 +6581,7 @@ namespace
         auto outcome = FederatedKnockOutcome{};
         outcome.event_id = event_id.event_id;
         outcome.signed_event_json = signed_event.event_json;
+        outcome.resident_server = remote_server;
         auto const send_response = canonicaljson::parse_lossless(send.body);
         if (auto const* knock_state = knock_room_state_of(send_response.value); knock_state != nullptr)
         {
@@ -6622,7 +6664,8 @@ namespace
                                              knocked.event_id,
                                              knocked.signed_event_json,
                                              std::move(knocked.knock_state_json),
-                                             stream_ordering};
+                                             stream_ordering,
+                                             std::move(knocked.resident_server)};
     if (!database::store_membership_projection(runtime.database.persistent_store, room_id,
                                                {user, "knock", stream_ordering, std::move(record)}))
     {

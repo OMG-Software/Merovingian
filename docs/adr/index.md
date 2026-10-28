@@ -227,12 +227,13 @@
 * [0240 - power_level_content_override replaces top-level keys](0240-power-level-content-override-replaces-top-level-keys.md)
 * [0241 - A federated join verifies and persists all returned state before it returns](0241-a-federated-join-verifies-and-persists-all-returned-state-before-it-returns.md)
 * [0242 - A join tries only the servers the client names](0242-a-join-tries-only-the-servers-the-client-names.md)
-* [0243 - A remote knock keeps its stripped state in the invite record](0243-a-remote-knock-keeps-its-stripped-state-in-the-invite-record.md)
+* [0243 - A remote knock keeps its stripped state in the invite record](0243-a-remote-knock-keeps-its-stripped-state-in-the-invite-record.md) — Refined by ADR-0251: the record also keeps the resident that accepted the knock, where its withdrawal goes
 * [0244 - A server that has left a room rejoins through a resident](0244-a-server-that-has-left-a-room-rejoins-through-a-resident.md)
 * [0245 - Login matches a user ID exactly, then downcased](0245-login-matches-a-user-id-exactly-then-downcased.md)
 * [0246 - The password-hashing concurrency cap is configurable](0246-the-password-hashing-concurrency-cap-is-configurable.md)
 * [0247 - No sync position passes a stream ordering still being committed](0247-no-sync-position-passes-a-stream-ordering-still-being-committed.md)
 * [0250 - SonarQube Cloud analysis runs in CI against the build's compilation database](0250-sonarqube-cloud-analysis-runs-in-ci-against-the-build-s-compilation-database.md)
+* [0251 - A knock is withdrawn through the resident that accepted it](0251-a-knock-is-withdrawn-through-the-resident-that-accepted-it.md)
 
 ## Proposed Records
 

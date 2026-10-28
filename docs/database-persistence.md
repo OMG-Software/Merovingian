@@ -1231,9 +1231,10 @@ even if the write fails. No schema change (ADR-0149).
 
 Since 0.12.59 a `knock` projection may carry the invite record too: a knock on a room on another server
 keeps its signed knock event and the resident's verified `knock_room_state` there, which `/sync` shows as
-`knock_state` (ADR-0243). Join, leave and ban end it, and an invite answering the knock replaces it. Every
-reader looks the record up only for a user whose membership is `invite`, or deletes it; a new reader must
-check the membership too.
+`knock_state` (ADR-0243). Its `resident_server` column names the server that accepted the knock, where
+`POST /leave` sends the knock's withdrawal (ADR-0251); it is empty for an invite. Join, leave and ban end
+it, and an invite answering the knock replaces it. Every reader looks the record up only for a user whose
+membership is `invite` or `knock`, or deletes it; a new reader must check the membership too.
 
 ### Write connection pool (DB-7, 0.12.26)
 

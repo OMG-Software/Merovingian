@@ -173,9 +173,16 @@ Cloud analysis from SonarSource's automatic analysis into this repository's CI.
   displaces a later event for its key. `POST /rooms/{roomId}/leave` treated a knock as already
   left and did nothing; it now retracts it, through the resident's `make_leave`/`send_leave` for a
   room this server is not in, clearing the stored knock (Client-Server API "Leaving rooms",
-  Server-Server API "Knocking upon a room"). Tests: `test_send_join_snapshot_store.cpp`
-  (`[send-join-snapshot]`, SQLite) and the knock-retraction WHEN in `test_join_room_flow.cpp`
-  (`[knock-remote]`).
+  Server-Server API "Knocking upon a room"). The withdrawal goes to the server that accepted the
+  knock, now kept in the knock's `invites` row (`resident_server`, a column added to the v1 schema),
+  not to the room ID's domain, which a `via`-routed knock never contacted and a version 12 room ID
+  does not name (ADR-0251). Tests: `test_send_join_snapshot_store.cpp` (`[send-join-snapshot]`,
+  SQLite), the knock-retraction WHEN in `test_join_room_flow.cpp` (`[knock-remote]`, its room ID now
+  on a domain other than the resident's), and the reopen case in `test_database_persistence.cpp`
+  (`[knock-resident]`). A room created here that every user had left answered a local rejoin
+  `404` (no resident to join through, ADR-0244); with no server named and none known to be in it,
+  it is now joined here and judged by the auth rules (`[rejoin-local-room]`). A room created
+  elsewhere still goes through a resident.
 - **FIXED:** `POST /login` did not log `@user:server` in when named `@USER:server`, `USER` or
   `User`. A user ID is looked up exactly, then with its localpart's ASCII letters downcased
   (ADR-0245), so historical upper-case localparts still log in as themselves. Regression:
