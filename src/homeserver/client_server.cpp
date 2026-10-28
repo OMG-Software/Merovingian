@@ -3909,6 +3909,67 @@ namespace
         return event_content_string(*event_json, content_key);
     }
 
+    // Spec (User Directory): a search must "at a minimum consider users who are visible to the
+    // requester based on their membership in rooms known to the homeserver": users that share a
+    // room with the requester, and users joined to a room with a `public` join rule or a
+    // `world_readable` history visibility. The owner decided (Complement
+    // TestRoomSpecificUsernameAtJoin) that these are exactly the users searched. Of `candidates`
+    // (the accounts whose profile matched the term), returns those visible to `requester`.
+    // Linear in the memberships and the current state, once per request; each room's join rule
+    // and history visibility are read through the state index and cached. The requester is
+    // visible to themselves only through a public or world-readable room.
+    [[nodiscard]] auto directory_visible_users(database::PersistentStore const& store, std::string_view requester,
+                                               std::unordered_set<std::string_view> const& candidates)
+        -> std::unordered_set<std::string_view>
+    {
+        auto visible = std::unordered_set<std::string_view>{};
+        if (candidates.empty())
+        {
+            return visible;
+        }
+        auto requester_rooms = std::unordered_set<std::string_view>{};
+        for (auto const& membership : store.memberships)
+        {
+            if (membership.membership == "join" && membership.user_id == requester)
+            {
+                requester_rooms.insert(membership.room_id);
+            }
+        }
+        auto state_index = std::optional<StateIndex>{};
+        auto public_rooms = std::unordered_map<std::string_view, bool>{};
+        auto const room_is_public = [&](std::string_view room_id) {
+            if (auto const cached = public_rooms.find(room_id); cached != public_rooms.end())
+            {
+                return cached->second;
+            }
+            if (!state_index.has_value())
+            {
+                state_index = build_state_index(store);
+            }
+            auto const join_rule = room_state_string(store, *state_index, room_id, "m.room.join_rules", "join_rule");
+            auto const history =
+                room_state_string(store, *state_index, room_id, "m.room.history_visibility", "history_visibility");
+            auto const is_public = (join_rule.has_value() && *join_rule == "public") ||
+                                   (history.has_value() && *history == "world_readable");
+            public_rooms.emplace(room_id, is_public);
+            return is_public;
+        };
+        for (auto const& membership : store.memberships)
+        {
+            if (membership.membership != "join" || !candidates.contains(membership.user_id) ||
+                visible.contains(membership.user_id))
+            {
+                continue;
+            }
+            if ((membership.user_id != requester && requester_rooms.contains(membership.room_id)) ||
+                room_is_public(membership.room_id))
+            {
+                visible.insert(membership.user_id);
+            }
+        }
+        return visible;
+    }
+
     [[nodiscard]] auto joined_member_count(ClientServerRuntime const& rt, std::string_view room_id) -> std::size_t
     {
         auto const room = std::ranges::find_if(rt.homeserver.database.rooms, [&](LocalRoom const& current) {
@@ -4659,10 +4720,14 @@ namespace
     // Spec: GET /messages `state` is "a list of state events relevant to showing
     // the `chunk`... if `lazy_load_members` is enabled in the filter then this
     // may contain the membership events for the senders of events in the
-    // `chunk`". Returning the room's whole current member list instead defeats
-    // the flag exactly where it matters most: pagination repeats the payload
-    // for every page. Non-member state is unaffected — it is all relevant to
-    // rendering the chunk regardless.
+    // `chunk`", and "Lazy-loading room members": lazy-loading aware endpoints
+    // "will only include membership events for the `sender` of events being
+    // included in the response". Returning the room's whole current member list
+    // instead defeats the flag exactly where it matters most: pagination repeats
+    // the payload for every page. With lazy loading `state` is those members'
+    // `m.room.member` events and nothing else (Complement
+    // TestRoomMessagesLazyLoading); redundant ones are not tracked across calls,
+    // which the spec permits.
     [[nodiscard]] auto apply_lazy_member_loading(sync::EventTypeFilter const& filter,
                                                  std::unordered_set<std::string> const& chunk_senders,
                                                  canonicaljson::Array state_events) -> canonicaljson::Array
@@ -4682,7 +4747,6 @@ namespace
             auto const* type = string_member(*event, "type");
             if (type == nullptr || *type != "m.room.member")
             {
-                lazy.push_back(std::move(value));
                 continue;
             }
             auto const* state_key = string_member(*event, "state_key");
@@ -5084,6 +5148,35 @@ namespace
         });
     }
 
+    // Spec (Push Rules: Events): `m.push_rules` "Describes all push rules for this user", and its
+    // content "is the current push rules for the user". An initial /sync gives the user's effective
+    // ruleset (the defaults and their changes) even when they never changed a rule, so a client
+    // has the rules without a GET /pushrules (Complement TestPushSync). A user who has changed a
+    // rule already has the event among their account data, with the same content, and gets no second.
+    auto add_initial_push_rules_event(database::PersistentStore const& store, sync::EventTypeFilter const& filter,
+                                      std::string_view user, std::size_t max_user_rules, canonicaljson::Array& events)
+        -> void
+    {
+        if (!sync::event_passes_filter(filter, push_rules_account_data_type, user))
+        {
+            return;
+        }
+        auto const present = std::ranges::any_of(events, [](canonicaljson::Value const& event) {
+            auto const* object = std::get_if<canonicaljson::Object>(&event.storage());
+            auto const* type = object == nullptr ? nullptr : string_member(*object, "type");
+            return type != nullptr && *type == push_rules_account_data_type;
+        });
+        if (present)
+        {
+            return;
+        }
+        auto const rules = load_user_push_rules(store, user, max_user_rules);
+        events.push_back(json_obj({
+            json_member("type", json_str(std::string{push_rules_account_data_type})),
+            json_member("content", json_obj({json_member("global", json_obj(rules.ruleset()))})),
+        }));
+    }
+
     [[nodiscard]] auto sync_json(ClientServerRuntime& rt, std::string_view user, std::string_view device_id,
                                  core::SyncRequest const& request, bool can_wait = true) -> DispatchResult
     {
@@ -5454,6 +5547,12 @@ namespace
                                    : canonicaljson::Array{};
         auto global_account_data = build_account_data_events(store, filter.account_data, user, std::string_view{},
                                                              since_sync_stream_id, max_observed_sync_stream_id);
+        if (!since_token.has_value())
+        {
+            add_initial_push_rules_event(store, filter.account_data, user,
+                                         static_cast<std::size_t>(rt.limits.max_push_rules_per_user),
+                                         global_account_data);
+        }
         auto otk_counts = build_otk_counts(store, user, device_id);
         auto fallback_key_types = build_fallback_key_types(store, user, device_id);
 
@@ -7116,34 +7215,75 @@ namespace
         return true;
     }
 
-    [[nodiscard]] auto validate_device_keys_object(canonicaljson::Object const& object,
-                                                   std::string_view authenticated_user,
-                                                   std::string_view authenticated_device_id) -> std::string
+    // Why an uploaded `device_keys` object was refused: `reason` is empty for an acceptable one.
+    // A shape that breaks the spec's `DeviceKeys` schema is M_BAD_JSON (Complement
+    // TestUploadKey "Rejects invalid device keys"); a well-formed object that names another
+    // user or device, or lacks the key pair this server looks up, is M_INVALID_PARAM.
+    struct DeviceKeysRefusal final
     {
-        auto const* user_id = string_member(object, "user_id");
-        if (user_id == nullptr || *user_id != authenticated_user)
+        std::string_view errcode{};
+        std::string reason{};
+    };
+
+    [[nodiscard]] auto device_keys_is_malformed(canonicaljson::Object const& object) -> std::string
+    {
+        if (string_member(object, "user_id") == nullptr)
         {
-            return "device_keys.user_id must match the authenticated user";
+            return "device_keys.user_id must be a string";
         }
-        auto const* device_id = string_member(object, "device_id");
-        if (device_id == nullptr || *device_id != authenticated_device_id)
+        if (string_member(object, "device_id") == nullptr)
         {
-            return "device_keys.device_id must match the authenticated device";
+            return "device_keys.device_id must be a string";
         }
-        auto const* keys = object_member_as_object(object, "keys");
-        if (keys == nullptr)
+        if (object_member_as_object(object, "keys") == nullptr)
         {
             return "device_keys.keys must be a JSON object";
         }
+        if (auto const* algorithms = object_member(object, "algorithms"); algorithms != nullptr)
+        {
+            auto const* list = std::get_if<canonicaljson::Array>(&algorithms->storage());
+            if (list == nullptr || !std::ranges::all_of(*list, [](canonicaljson::Value const& entry) {
+                    return std::get_if<std::string>(&entry.storage()) != nullptr;
+                }))
+            {
+                return "device_keys.algorithms must be a list of strings";
+            }
+        }
+        if (object_member(object, "signatures") != nullptr && object_member_as_object(object, "signatures") == nullptr)
+        {
+            return "device_keys.signatures must be a JSON object";
+        }
+        return {};
+    }
+
+    [[nodiscard]] auto validate_device_keys_object(canonicaljson::Object const& object,
+                                                   std::string_view authenticated_user,
+                                                   std::string_view authenticated_device_id) -> DeviceKeysRefusal
+    {
+        if (auto malformed = device_keys_is_malformed(object); !malformed.empty())
+        {
+            return {"M_BAD_JSON", std::move(malformed)};
+        }
+        auto const* user_id = string_member(object, "user_id");
+        if (*user_id != authenticated_user)
+        {
+            return {"M_INVALID_PARAM", "device_keys.user_id must match the authenticated user"};
+        }
+        auto const* device_id = string_member(object, "device_id");
+        if (*device_id != authenticated_device_id)
+        {
+            return {"M_INVALID_PARAM", "device_keys.device_id must match the authenticated device"};
+        }
+        auto const* keys = object_member_as_object(object, "keys");
         auto const curve_key = string_member(*keys, "curve25519:" + std::string{authenticated_device_id});
         if (curve_key == nullptr || curve_key->empty())
         {
-            return "device_keys.keys must contain curve25519:<device_id>";
+            return {"M_INVALID_PARAM", "device_keys.keys must contain curve25519:<device_id>"};
         }
         auto const ed_key = string_member(*keys, "ed25519:" + std::string{authenticated_device_id});
         if (ed_key == nullptr || ed_key->empty())
         {
-            return "device_keys.keys must contain ed25519:<device_id>";
+            return {"M_INVALID_PARAM", "device_keys.keys must contain ed25519:<device_id>"};
         }
         return {};
     }
@@ -7174,9 +7314,10 @@ namespace
         }
         if (device_keys_object != nullptr)
         {
-            if (auto const reason = validate_device_keys_object(*device_keys_object, user, device_id); !reason.empty())
+            if (auto const refusal = validate_device_keys_object(*device_keys_object, user, device_id);
+                !refusal.reason.empty())
             {
-                return err(400U, "M_INVALID_PARAM", reason);
+                return err(400U, refusal.errcode, refusal.reason);
             }
             auto normalized_device_keys = *device_keys_object;
             normalize_device_key_object_for_client(rt, normalized_device_keys, user, device_id);
@@ -8595,13 +8736,16 @@ namespace
         {
             start_token = from_text;
         }
-        // A room the filter excludes has no chunk, so no state "relevant to showing" it.
-        auto state =
-            room_selected
-                ? apply_lazy_member_loading(event_filter, chunk_senders,
-                                            messages_state_events(store, event_filter, room_id,
-                                                                  sync::room_read_access_for(store, room_id, user_id)))
-                : canonicaljson::Array{};
+        // A room the filter excludes has no chunk, so no state "relevant to showing" it. With lazy
+        // loading the state is the chunk senders' memberships, which the filter's own `types` and
+        // `senders` (they select the chunk's events) must not remove.
+        auto state = room_selected
+                         ? apply_lazy_member_loading(
+                               event_filter, chunk_senders,
+                               messages_state_events(
+                                   store, event_filter.lazy_load_members ? sync::EventTypeFilter{} : event_filter,
+                                   room_id, sync::room_read_access_for(store, room_id, user_id)))
+                         : canonicaljson::Array{};
         return json_serialize(json_obj({
             json_member("chunk", json_arr(std::move(chunk))),
             json_member("start", json_str(start_token)),
@@ -13718,10 +13862,13 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                                 "this account already has the maximum of " + std::to_string(max_pushers) +
                                     " pushers; remove one before adding another");
         }
+        // The pusher remembers the device whose token set it, so a password change that revokes
+        // that device's tokens deletes it too (Complement TestChangePasswordPushers).
         auto const stored = database::store_pusher(
             store, database::PersistentPusher{*user, body->app_id, body->pushkey, *body->kind, body->app_display_name,
                                               body->device_display_name, body->profile_tag, body->lang, body->data_url,
-                                              body->data_format, body->data_extra_json});
+                                              body->data_format, body->data_extra_json,
+                                              authenticated_request_device_id(rt, req.access_token)});
         if (!stored)
         {
             return dispatch_err(req, rt, 500U, "M_UNKNOWN", "failed to store pusher");
@@ -16746,6 +16893,8 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
         {
             auto const& store = rt.homeserver.database.persistent_store;
             auto const term_lower = to_lower(*search_term);
+            auto matched = std::vector<database::PersistentProfile const*>{};
+            auto candidates = std::unordered_set<std::string_view>{};
             for (auto const& profile : store.profiles)
             {
                 if (to_lower(profile.displayname).find(term_lower) == std::string::npos &&
@@ -16758,6 +16907,19 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                 if (std::ranges::any_of(store.users, [&profile](database::PersistentUser const& account) {
                         return account.user_id == profile.user_id && account.deactivated;
                     }))
+                {
+                    continue;
+                }
+                matched.push_back(&profile);
+                candidates.insert(profile.user_id);
+            }
+            // Only users visible to the requester through rooms are searched (see
+            // directory_visible_users).
+            auto const visible = directory_visible_users(store, *user, candidates);
+            for (auto const* profile_match : matched)
+            {
+                auto const& profile = *profile_match;
+                if (!visible.contains(profile.user_id))
                 {
                     continue;
                 }
@@ -17133,6 +17295,13 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             if (req.body.empty())
             {
                 return dispatch_err(req, rt, 400U, "M_BAD_JSON", "filter body must not be empty");
+            }
+            // The body is a `Filter`: a field of the wrong type is refused (Complement
+            // TestFilter), and nothing is stored, counted against the user's cap or logged
+            // as a stored filter.
+            if (auto const problem = sync::validate_filter_definition(req.body); problem.has_value())
+            {
+                return dispatch_err(req, rt, 400U, "M_BAD_JSON", *problem);
             }
             // CSAZ-10: an identical definition returns the filter the user already
             // has instead of storing a duplicate; a distinct one is refused once

@@ -221,7 +221,7 @@ value. Test fixtures that do not exercise persistence select it through
   P1: the Push Gateway API's notify Device object is defined as "the data
   dictionary passed in at pusher creation minus the url key", so a custom
   member beyond `url`/`format` must survive a restart and reach the gateway,
-  not just be discarded), with a primary key on `(user_id, app_id,
+  not just be discarded), and `device_id` (the device whose access token set the pusher, empty when none did; a password change that revokes a device deletes its pushers, 0.12.60), with a primary key on `(user_id, app_id,
   pushkey)` — the spec's uniqueness rule: setting a pusher with the same
   `app_id` and `pushkey` for the same user replaces it in place. The `PersistentPusher` struct and the
   `store_pusher` / `find_pusher` / `delete_pusher` / `list_pushers_for_user`

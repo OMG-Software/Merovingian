@@ -1438,10 +1438,11 @@ namespace
 
         if (table_load_profile_includes("pushers", profile))
         {
-            auto pushers = query_rows(connection, "postgresql_load_pushers",
-                                      "SELECT user_id, app_id, pushkey, kind, app_display_name, device_display_name, "
-                                      "profile_tag, lang, data_url, data_format, data_extra_json FROM pushers "
-                                      "ORDER BY user_id, app_id, pushkey");
+            auto pushers =
+                query_rows(connection, "postgresql_load_pushers",
+                           "SELECT user_id, app_id, pushkey, kind, app_display_name, device_display_name, "
+                           "profile_tag, lang, data_url, data_format, data_extra_json, device_id FROM pushers "
+                           "ORDER BY user_id, app_id, pushkey");
             if (!pushers.ok)
             {
                 return false;
@@ -1464,6 +1465,10 @@ namespace
                     if (row.size() >= 11U)
                     {
                         entry.data_extra_json = row[10];
+                    }
+                    if (row.size() >= 12U)
+                    {
+                        entry.device_id = row[11];
                     }
                     store.pushers.push_back(std::move(entry));
                 }

@@ -162,6 +162,7 @@ namespace
                               "device_display_name TEXT NOT NULL DEFAULT '', profile_tag TEXT NOT NULL DEFAULT '', "
                               "lang TEXT NOT NULL DEFAULT '', data_url TEXT NOT NULL DEFAULT '', "
                               "data_format TEXT NOT NULL DEFAULT '', data_extra_json TEXT NOT NULL DEFAULT '', "
+                              "device_id TEXT NOT NULL DEFAULT '', "
                               "PRIMARY KEY (user_id, app_id, pushkey)"                                                                                                  },
         SchemaTableDefinition{"notifications",
                               "user_id TEXT NOT NULL, room_id TEXT NOT NULL, event_id TEXT NOT NULL, "

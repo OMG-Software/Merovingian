@@ -28,6 +28,7 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <string>
+#include <vector>
 
 // Spec: Matrix Client-Server API v1.19 — Filtering
 // URL: ../../docs/matrix-v1.19-spec/client-server-api.md#filtering
@@ -736,6 +737,82 @@ SCENARIO("Filter types list with exact type and wildcard both applied correctly"
             // A type matching neither pattern must be excluded.
             REQUIRE_FALSE(
                 merovingian::sync::event_passes_filter(filter.room.timeline, "m.room.member", "@alice:example.org"));
+        }
+    }
+}
+
+// Spec: Matrix Client-Server API v1.19 — POST /user/{userId}/filter, "Filter" schema
+// URL: ../../docs/matrix-v1.19-spec/client-server-api.md#filtering
+//
+// The Filter schema types every field: `presence`, `account_data` and `room` are objects, `room`'s
+// `timeline`/`state`/`ephemeral`/`account_data` are RoomEventFilter objects, `types`/`not_types` are lists of
+// strings, `rooms`/`not_rooms` are lists of Room IDs and `senders`/`not_senders` are lists of User IDs. The spec
+// names no errcode for a definition of the wrong shape; the owner decided (Complement's TestFilter, sytest
+// "Check creating invalid filters returns 4xx") that it is refused, and the 400 request-invalid rule of the
+// endpoint's response table ("M_BAD_JSON" for a malformed body) is used.
+SCENARIO("A filter definition with a field of the wrong JSON type is invalid",
+         "[sync][filter][conformance][filter-validation]")
+{
+    GIVEN("filter definitions that give a field the wrong JSON type")
+    {
+        auto const invalid = std::vector<std::string>{
+            R"({"presence":"not_an_object"})",
+            R"({"account_data":"not_an_object"})",
+            R"({"room":"not_an_object"})",
+            R"({"room":{"timeline":"not_an_object"}})",
+            R"({"room":{"state":"not_an_object"}})",
+            R"({"room":{"ephemeral":"not_an_object"}})",
+            R"({"room":{"account_data":"not_an_object"}})",
+            R"({"room":{"timeline":{"rooms":"not_a_list"}}})",
+            R"({"room":{"timeline":{"not_rooms":"not_a_list"}}})",
+            R"({"room":{"timeline":{"senders":"not_a_list"}}})",
+            R"({"room":{"timeline":{"not_senders":"not_a_list"}}})",
+            R"({"room":{"timeline":{"types":"not_a_list"}}})",
+            R"({"room":{"timeline":{"not_types":"not_a_list"}}})",
+            R"({"room":{"timeline":{"types":[1]}}})",
+            R"({"room":{"timeline":{"rooms":["not_a_room_id"]}}})",
+            R"({"room":{"timeline":{"senders":["not_a_sender_id"]}}})",
+            R"({"room":{"not_rooms":["not_a_room_id"]}})",
+            R"({"room":{"include_leave":"yes"}})",
+            R"({"room":{"timeline":{"limit":"ten"}}})",
+            R"({"room":{"timeline":{"lazy_load_members":"yes"}}})",
+            R"({"event_fields":"content"})",
+            R"({"event_format":"matrix"})",
+            R"(["not","an","object"])",
+        };
+
+        THEN("each is reported as invalid with a reason")
+        {
+            for (auto const& definition : invalid)
+            {
+                INFO(definition);
+                auto const problem = merovingian::sync::validate_filter_definition(definition);
+                REQUIRE(problem.has_value());
+                REQUIRE_FALSE(problem->empty());
+            }
+        }
+    }
+
+    GIVEN("filter definitions that follow the schema")
+    {
+        auto const valid = std::vector<std::string>{
+            R"({})",
+            R"({"presence":{"types":["m.presence"],"not_senders":["@bob:example.org"]}})",
+            R"({"event_format":"client","event_fields":["content.body"]})",
+            R"({"event_format":"federation"})",
+            R"({"room":{"rooms":["!abc:example.org"],"not_rooms":["!def:example.org"],"include_leave":true}})",
+            R"({"room":{"timeline":{"limit":5,"types":["m.room.*"],"senders":["@alice:example.org"],"contains_url":false}}})",
+            R"({"room":{"state":{"lazy_load_members":true,"include_redundant_members":false}}})",
+            R"({"room":{"timeline":{"unread_thread_notifications":true,"rooms":["!v12roomid"]}}})",
+        };
+
+        THEN("none is reported as invalid")
+        {
+            for (auto const& definition : valid)
+            {
+                INFO(definition);
+                REQUIRE_FALSE(merovingian::sync::validate_filter_definition(definition).has_value());
+            }
         }
     }
 }

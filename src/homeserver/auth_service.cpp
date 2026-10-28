@@ -1993,6 +1993,40 @@ auto delete_local_device(HomeserverRuntime& runtime, std::string_view user_id, s
     return make_operation_result(true, std::string{device_id});
 }
 
+namespace
+{
+
+    // Deletes the pushers of `user_id` that a device other than `kept_device_id` set. A password
+    // change that revokes those devices' tokens ends their notifications with them (Complement
+    // TestChangePasswordPushers); the spec says nothing of pushers. A pusher with no recorded
+    // device is kept. Returns false when one could not be deleted. Call under runtime.mutex.
+    [[nodiscard]] auto delete_pushers_of_other_devices(HomeserverRuntime& runtime, std::string_view user_id,
+                                                       std::string_view kept_device_id) -> bool
+    {
+        auto& store = runtime.database.persistent_store;
+        auto all_deleted = true;
+        // A copy: delete_pusher erases from the store's mirror.
+        for (auto const& pusher : database::list_pushers_for_user(store, user_id))
+        {
+            if (pusher.device_id.empty() || pusher.device_id == kept_device_id)
+            {
+                continue;
+            }
+            if (!database::delete_pusher(store, user_id, pusher.app_id, pusher.pushkey))
+            {
+                all_deleted = false;
+                continue;
+            }
+            if (runtime.email_digest_queue_ != nullptr)
+            {
+                runtime.email_digest_queue_->forget(push::EmailDigestKey{std::string{user_id}, pusher.pushkey});
+            }
+        }
+        return all_deleted;
+    }
+
+} // namespace
+
 auto change_local_user_password(HomeserverRuntime& runtime, std::string_view access_token,
                                 std::string_view new_password, bool logout_devices) -> OperationResult
 {
@@ -2083,6 +2117,10 @@ auto change_local_user_password(HomeserverRuntime& runtime, std::string_view acc
             {
                 candidate.revoked = true;
             }
+        }
+        if (!delete_pushers_of_other_devices(runtime, user_id, session->device_id))
+        {
+            return make_operation_result(false, {}, "pusher removal persistence failed", 500U);
         }
     }
     append_local_audit(runtime.database, observability::AuditCategory::auth, "auth.password_changed", user_id,

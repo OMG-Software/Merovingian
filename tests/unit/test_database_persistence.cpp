@@ -2529,6 +2529,47 @@ SCENARIO("A knock record keeps the server that accepted the knock across a reope
     }
 }
 
+// A pusher keeps the device that set it, so a password change that revokes a device's
+// tokens can delete what that device registered. The device survives a restart.
+SCENARIO("A pusher keeps the device that set it across a reopen", "[database][persistence][push][pusher-device]")
+{
+    GIVEN("a SQLite store holding a pusher set from a device")
+    {
+        auto const sqlite_path = unique_sqlite_path();
+        std::filesystem::remove(sqlite_path);
+        auto opened = merovingian::database::open_sqlite_persistent_store(sqlite_path.string());
+        REQUIRE(opened.ok);
+        auto pusher = merovingian::database::PersistentPusher{"@alice:example.org",
+                                                              "org.example.app",
+                                                              "key-1",
+                                                              "http",
+                                                              "App",
+                                                              "Phone",
+                                                              "",
+                                                              "en",
+                                                              "https://push.example.org/_matrix/push/v1/notify",
+                                                              ""};
+        pusher.device_id = "DEVICE2";
+        REQUIRE(merovingian::database::store_pusher(opened.store, pusher));
+
+        WHEN("the store is reopened")
+        {
+            auto reopened = merovingian::database::open_sqlite_persistent_store(sqlite_path.string());
+            REQUIRE(reopened.ok);
+            auto const stored =
+                merovingian::database::find_pusher(reopened.store, "@alice:example.org", "org.example.app", "key-1");
+
+            THEN("the pusher still names the device that set it")
+            {
+                REQUIRE(stored.has_value());
+                REQUIRE(stored->device_id == "DEVICE2");
+            }
+        }
+
+        std::filesystem::remove(sqlite_path);
+    }
+}
+
 SCENARIO("Persistent store includes event depth in event statements", "[database][persistence][events]")
 {
     GIVEN("an opened persistent store with a room")

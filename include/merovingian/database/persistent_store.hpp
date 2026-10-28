@@ -698,6 +698,10 @@ struct PersistentPusher final
     std::string data_url{};
     std::string data_format{};
     std::string data_extra_json{};
+    // The device whose access token registered the pusher (`POST /pushers/set`), or empty when
+    // none did (a pusher stored before the column existed, or by an appservice). A password
+    // change that revokes a device's tokens deletes the pushers that device registered.
+    std::string device_id{};
 };
 
 // A recorded notification for `GET /_matrix/client/v3/notifications` (Matrix
