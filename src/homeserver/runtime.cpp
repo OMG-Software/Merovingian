@@ -889,6 +889,32 @@ PendingStreamOrdering::~PendingStreamOrdering()
     }
 }
 
+PublishedStreamOrdering::PublishedStreamOrdering(HomeserverRuntime& runtime, std::uint64_t ordering)
+    : m_runtime{runtime}
+    , m_pending{std::in_place, runtime.database, ordering}
+{
+}
+
+PublishedStreamOrdering::~PublishedStreamOrdering() noexcept
+{
+    try
+    {
+        auto const lock = std::lock_guard{m_runtime.mutex};
+        m_pending.reset();
+        if (m_runtime.sync_notifier != nullptr)
+        {
+            // The event stream only: a sync stream ID is the caller's to publish
+            // once its event is applied.
+            m_runtime.sync_notifier->publish(visible_stream_position(m_runtime.database), 0U);
+        }
+    }
+    catch (...)
+    {
+        // The reservation still ended with m_pending; only this wake-up is lost,
+        // and the next publish delivers it.
+    }
+}
+
 auto visible_stream_position(LocalDatabase const& database) noexcept -> std::uint64_t
 {
     auto const newest = database.next_stream_ordering - 1U;

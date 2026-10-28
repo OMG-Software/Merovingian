@@ -4034,8 +4034,9 @@ namespace
     // Every write is prepared against the store as it was before the batch, so
     // two events for one (event_type, state_key) would each prepare an INSERT
     // into current_state, whose primary key is that pair, and fail the whole
-    // transaction on a backend that runs the SQL. Only the last event kept for a
-    // key writes current_state; an earlier one is stored as the outlier it is.
+    // transaction on a backend that runs the SQL. Only the final event for a key,
+    // the last entry naming it, writes current_state, from its first stored copy;
+    // the others are stored as the outliers they are.
     struct SnapshotCandidate final
     {
         database::PersistentEvent event{};
@@ -4048,7 +4049,6 @@ namespace
         std::optional<database::PreparedStateUpdate> prepared{};
         std::optional<database::PersistentStateEvent> state{};
         std::string joined_member{};
-        bool repeated{false};
     };
     auto candidates = std::vector<SnapshotCandidate>{};
     auto batch_event_ids = std::set<std::string, std::less<>>{};
@@ -4166,12 +4166,15 @@ namespace
     }
 
     // The last first copy of an event for each key, by position in `candidates`.
-    auto last_for_key = std::map<std::pair<std::string, std::string>, std::size_t>{};
-    for (auto index = std::size_t{0U}; index < candidates.size(); ++index)
+    // The final event for each key: the last entry naming it, a repeated copy
+    // included, so A, B, A ends at A. Its first stored copy writes current_state.
+    auto final_for_key = std::map<std::pair<std::string, std::string>, std::string>{};
+    for (auto const& candidate : candidates)
     {
-        if (auto const& candidate = candidates[index]; !candidate.repeated && candidate.state.has_value())
+        if (candidate.state.has_value())
         {
-            last_for_key.insert_or_assign(std::pair{candidate.state->event_type, candidate.state->state_key}, index);
+            final_for_key.insert_or_assign(std::pair{candidate.state->event_type, candidate.state->state_key},
+                                           candidate.event.event_id);
         }
     }
     auto entries = std::vector<SnapshotEntry>{};
@@ -4183,7 +4186,6 @@ namespace
         auto entry = SnapshotEntry{};
         entry.state = candidate.state;
         entry.joined_member = std::move(candidate.joined_member);
-        entry.repeated = candidate.repeated;
         if (candidate.repeated)
         {
             // Recorded again only when its first copy was kept.
@@ -4195,7 +4197,7 @@ namespace
         }
         auto const writes_current_state =
             candidate.state.has_value() &&
-            last_for_key.at(std::pair{candidate.state->event_type, candidate.state->state_key}) == index;
+            final_for_key.at(std::pair{candidate.state->event_type, candidate.state->state_key}) == event_id;
         entry.prepared = database::prepare_store_event_with_state(
             runtime.database.persistent_store, std::move(candidate.event),
             writes_current_state ? candidate.state : std::optional<database::PersistentStateEvent>{});
@@ -4251,7 +4253,7 @@ namespace
                 result.state_entries.push_back(std::move(recorded));
                 recorded_members.push_back(entry.joined_member);
             }
-            else if (!entry.repeated)
+            else
             {
                 result.state_entries[position->second] = std::move(recorded);
                 recorded_members[position->second] = entry.joined_member;

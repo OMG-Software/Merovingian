@@ -756,6 +756,28 @@ private:
     std::uint64_t m_ordering;
 };
 
+// ADR-0247: a PendingStreamOrdering whose end also wakes the syncs waiting on the
+// event stream. Ending a reservation can move the visible position past later
+// events already applied, whether its own event was applied or its commit failed;
+// a long-poll not told of it sleeps until something else is published. Use it on
+// every path that commits with runtime.mutex released. Its destructor takes
+// runtime.mutex itself (it is recursive), so it may end with a room stripe held.
+class PublishedStreamOrdering final
+{
+public:
+    PublishedStreamOrdering(HomeserverRuntime& runtime, std::uint64_t ordering);
+    ~PublishedStreamOrdering() noexcept;
+
+    PublishedStreamOrdering(PublishedStreamOrdering const&) = delete;
+    auto operator=(PublishedStreamOrdering const&) -> PublishedStreamOrdering& = delete;
+    PublishedStreamOrdering(PublishedStreamOrdering&&) = delete;
+    auto operator=(PublishedStreamOrdering&&) -> PublishedStreamOrdering& = delete;
+
+private:
+    HomeserverRuntime& m_runtime;
+    std::optional<PendingStreamOrdering> m_pending;
+};
+
 // The newest event stream position a sync token, a long-poll check or a
 // sliding-sync pos may name: just below the oldest pending ordering, or the
 // newest allocated one when none is pending. Read with runtime.mutex held.

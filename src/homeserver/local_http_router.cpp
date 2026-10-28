@@ -4072,7 +4072,7 @@ namespace
         }();
         // ADR-0247: the commit below releases runtime.mutex; until the event is
         // applied, no sync position may pass its ordering.
-        auto pending_ordering = std::optional<PendingStreamOrdering>{std::in_place, runtime.database, stream_ordering};
+        auto pending_ordering = std::optional<PublishedStreamOrdering>{std::in_place, runtime, stream_ordering};
 
         auto event = database::PersistentEvent{};
         event.event_id = envelope.event_id;
@@ -4848,7 +4848,7 @@ namespace
     // in allocate_stream_ordering now happens with the room stripe held, as the
     // event's own commit does.
     stream_ordering = allocate_stream_ordering(runtime.database);
-    auto pending_ordering = std::optional<PendingStreamOrdering>{std::in_place, runtime.database, stream_ordering};
+    auto pending_ordering = std::optional<PublishedStreamOrdering>{std::in_place, runtime, stream_ordering};
 
     auto event = database::PersistentEvent{};
     event.event_id = envelope.event_id;

@@ -20,6 +20,7 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <algorithm>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <mutex>
@@ -185,6 +186,39 @@ SCENARIO("No sync position passes a stream ordering whose event is still being c
                     REQUIRE(event_ordering_of(after) == rt.homeserver.database.next_stream_ordering - 1U);
                     REQUIRE(timeline_count(after, room_id, "later") == 1U);
                 }
+            }
+        }
+
+        // A reservation that ends without its event (the commit failed) still moves the visible
+        // position past later events already applied; a long-poll is told, or it sleeps until
+        // something else is published (review of #541).
+        WHEN("a later event is applied and the reserved event's commit then fails")
+        {
+            REQUIRE(rt.homeserver.sync_notifier != nullptr);
+            auto failing = std::uint64_t{0U};
+            auto published = std::optional<merovingian::homeserver::PublishedStreamOrdering>{};
+            {
+                auto const lock = std::lock_guard{rt.homeserver.mutex};
+                pending.reset();
+                failing = merovingian::homeserver::allocate_stream_ordering(rt.homeserver.database);
+                published.emplace(rt.homeserver, failing);
+            }
+            REQUIRE(call(rt, "PUT", "/_matrix/client/v3/rooms/" + room_id + "/send/m.room.message/t3", token,
+                         R"({"msgtype":"m.text","body":"after the failure"})")
+                        .response.status == 200U);
+            auto const sync_id = rt.homeserver.sync_notifier->current_sync_stream_id();
+            auto const announced_before =
+                rt.homeserver.sync_notifier->wait_for_change(failing - 1U, sync_id, std::chrono::milliseconds{0});
+            {
+                auto const lock = std::lock_guard{rt.homeserver.mutex};
+                published.reset();
+            }
+
+            THEN("the later event is announced only once the failed reservation ends")
+            {
+                REQUIRE_FALSE(announced_before);
+                REQUIRE(
+                    rt.homeserver.sync_notifier->wait_for_change(failing - 1U, sync_id, std::chrono::milliseconds{0}));
             }
         }
 

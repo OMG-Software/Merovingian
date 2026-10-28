@@ -42,6 +42,11 @@ Chosen option: the guard, with the reservation moved next to the commit. Every p
 with the mutex released holds a guard from the allocation until the event is applied; both today
 are in `local_http_router.cpp` (main ingestion and the verified backfill writer).
 
+Those paths hold a `PublishedStreamOrdering`, a guard over the reservation whose end also publishes
+the visible position to the `SyncNotifier`. Ending a reservation can move the visible position past
+later events already applied, and it can end without its own event (a failed commit); a long-poll
+told nothing of it would sleep until something else was published.
+
 Left up front, a reservation stayed pending across network fetches, and the guard would then have
 held every user's sync position back for as long as one room's history took to fetch. Committing
 under the mutex serialises every room's database writes behind it, which the unlocked commit
@@ -57,4 +62,4 @@ exists to avoid.
 * The main path's watermark write in `allocate_stream_ordering` now runs with the room stripe held,
   next to the event's own commit.
 * A new path that commits with the mutex released and forgets the guard brings the bug back;
-  `PendingStreamOrdering`'s comment and this record say so.
+  `PendingStreamOrdering`'s and `PublishedStreamOrdering`'s comments and this record say so.

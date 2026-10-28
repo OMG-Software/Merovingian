@@ -168,9 +168,9 @@ Cloud analysis from SonarSource's automatic analysis into this repository's CI.
 - **FIXED (review of #541):** a `send_join` snapshot holding two events for one
   `(event_type, state_key)` prepared two `INSERT`s into `current_state`, whose primary key is that
   pair, so on SQLite and PostgreSQL the snapshot transaction failed and the join with it (the
-  in-memory test backend runs no SQL and hid it). Only the last event kept for a key now writes
-  `current_state`; earlier ones are stored as outliers, and a repeated copy of an event no longer
-  displaces a later event for its key. `POST /rooms/{roomId}/leave` treated a knock as already
+  in-memory test backend runs no SQL and hid it). Only the final event for a key, the last entry
+  naming it (a repeated copy of an earlier event included, so A, B, A ends at A), now writes
+  `current_state`, from its first stored copy; the others are stored as outliers. `POST /rooms/{roomId}/leave` treated a knock as already
   left and did nothing; it now retracts it, through the resident's `make_leave`/`send_leave` for a
   room this server is not in, clearing the stored knock (Client-Server API "Leaving rooms",
   Server-Server API "Knocking upon a room"). The withdrawal goes to the server that accepted the
@@ -195,6 +195,12 @@ Cloud analysis from SonarSource's automatic analysis into this repository's CI.
   state before the earliest such event. A leave above the token was reported now and again by the
   next sync; it now waits for that sync. Tests: the empty-timeline and leave WHENs in
   `test_sync_stream_position.cpp` (`[sync-position]`).
+- **FIXED (review of #541):** a reservation that ended without its event (a federated PDU's or a
+  backfilled event's commit failed) moved the visible position past later events already applied
+  but woke no `/sync` long-poll, which slept until something else was published or timed out. Both
+  commit paths now hold a `PublishedStreamOrdering`, whose end, applied or not, publishes the visible
+  position (ADR-0247). Test: the failed-commit WHEN in `test_sync_stream_position.cpp`
+  (`[sync-position]`), and the repeated-final-entry scenario in `test_send_join_snapshot_store.cpp`.
 - **FIXED (review of #541):** an initial `/sync` whose timeline starts at a federated join
   left the user's membership out of `state`. The join's state group holds only the state after it,
   and when the state before cannot be computed the join was dropped from that state without the
