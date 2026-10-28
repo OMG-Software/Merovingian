@@ -2049,7 +2049,7 @@ SCENARIO("Client-server typing and messages routes dispatch through the room blo
             auto const messages = merovingian::homeserver::handle_client_server_request(
                 runtime, {"GET", "/_matrix/client/v3/rooms/" + id + "/messages?dir=b&filter=" + filter, token, {}});
 
-            THEN("the page holds none of the room's events")
+            THEN("the page holds none of the room's events, timeline or state")
             {
                 CAPTURE(filter, messages.response.body);
                 REQUIRE(messages.response.status == 200U);
@@ -2057,6 +2057,9 @@ SCENARIO("Client-server typing and messages routes dispatch through the room blo
                 auto const* chunk = merovingian::tests::object_member_as_array(body, "chunk");
                 REQUIRE(chunk != nullptr);
                 REQUIRE(chunk->empty());
+                // `state` is "relevant to showing the chunk"; there is no chunk to show.
+                auto const* state = merovingian::tests::object_member_as_array(body, "state");
+                REQUIRE((state == nullptr || state->empty()));
             }
         }
     }

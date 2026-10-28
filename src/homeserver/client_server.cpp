@@ -8520,9 +8520,13 @@ namespace
         {
             start_token = from_text;
         }
-        auto state = apply_lazy_member_loading(
-            event_filter, chunk_senders,
-            messages_state_events(store, event_filter, room_id, sync::room_read_access_for(store, room_id, user_id)));
+        // A room the filter excludes has no chunk, so no state "relevant to showing" it.
+        auto state =
+            room_selected
+                ? apply_lazy_member_loading(event_filter, chunk_senders,
+                                            messages_state_events(store, event_filter, room_id,
+                                                                  sync::room_read_access_for(store, room_id, user_id)))
+                : canonicaljson::Array{};
         return json_serialize(json_obj({
             json_member("chunk", json_arr(std::move(chunk))),
             json_member("start", json_str(start_token)),

@@ -201,7 +201,7 @@ Cloud analysis from SonarSource's automatic analysis into this repository's CI.
   value it replaced; it is now taken from the join's `auth_events`, which name the user's previous
   membership (Server-Server API "Auth events selection"), and the same applies to the at-position
   state fallback. `GET /rooms/{roomId}/messages` ignored a filter's `rooms` and `not_rooms`; a room
-  they exclude now contributes no events. Tests: `[join-sync-state]` in `test_join_room_flow.cpp`
+  they exclude now contributes no events, timeline or state. Tests: `[join-sync-state]` in `test_join_room_flow.cpp`
   and the room-predicate case in `test_client_server.cpp`.
 - **CHANGED:** the SonarQube Cloud workflow, which holds `SONAR_TOKEN`, installs Meson and Ninja
   from hash-locked wheels only (`requirements-build.txt`, compiled from `requirements-build.in`
