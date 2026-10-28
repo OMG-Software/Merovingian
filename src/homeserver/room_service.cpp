@@ -684,11 +684,14 @@ namespace
         {
             return false;
         }
+        // The identity server signed this object for one Matrix ID; it vouches for no other.
         if (*mxid != expected_mxid)
         {
             return false;
         }
 
+        // The public keys come from the m.room.third_party_invite state event whose state key is
+        // the signed token, never from the signed object itself.
         auto const tpi_state = std::ranges::find_if(store.state, [&](database::PersistentStateEvent const& s) {
             return s.room_id == room_id && s.event_type == "m.room.third_party_invite" && s.state_key == *token;
         });
@@ -703,6 +706,7 @@ namespace
         {
             return false;
         }
+        // The signed object names who made the invite; it must be the invite event's sender.
         auto const* tpi_sender = string_member(*tpi_obj, "sender");
         if (tpi_sender == nullptr || *tpi_sender != *sender)
         {
@@ -715,6 +719,8 @@ namespace
             return false;
         }
 
+        // The signature covers the canonical JSON of the object without `signatures` and
+        // `unsigned` (appendices.md, Signing JSON).
         auto payload_obj = canonicaljson::Object{};
         payload_obj.reserve(signed_obj.size());
         for (auto const& member : signed_obj)
@@ -735,6 +741,8 @@ namespace
         {
             return false;
         }
+        // Any signature that verifies against any of the invite's keys proves the identity
+        // server signed it; the server and key ID it is filed under are not trusted.
         for (auto const& server_signatures : *signatures)
         {
             auto const* key_sigs = std::get_if<canonicaljson::Object>(&server_signatures.value->storage());
@@ -5206,7 +5214,6 @@ namespace
         auto const exchange = MembershipExchangeClaim{runtime, room_id, *user_id};
         auto joined = [&] {
             auto const released = RuntimeLockRelease{guard};
-            std::ignore = released;
             return perform_federated_join(runtime, room_id, *user_id, our_server, std::move(candidates),
                                           supported_versions, signing_key, key_id, std::move(secret_key),
                                           joining_profile);
@@ -5509,7 +5516,6 @@ namespace
             // recursion levels first, including a dispatcher's outer guard,
             // and restore them before guard/lease destruction on every path.
             auto const released = RuntimeLockRelease{guard};
-            std::ignore = released;
             for (auto const& pdu : pending_pdus)
             {
                 try
@@ -6202,7 +6208,6 @@ namespace
     // assigned inside it.
     auto const fetched = [&]() -> ThirdPartyInviteFetch {
         auto const released = RuntimeLockRelease{guard};
-        std::ignore = released;
         if (runtime.outbound_client == nullptr || runtime.cached_discovery == nullptr)
         {
             return third_party_invite_failure("identity server is not reachable", 502U);
@@ -8263,9 +8268,8 @@ namespace
 
     auto listed = std::vector<ThreadAggregate>{};
     listed.reserve(aggregates.size());
-    for (auto const& [root_id, aggregate] : aggregates)
+    for (auto const& aggregate : aggregates | std::views::values)
     {
-        std::ignore = root_id;
         if (aggregate.root == nullptr || aggregate.latest_child == nullptr)
         {
             continue;

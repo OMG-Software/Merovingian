@@ -312,6 +312,13 @@ Cloud analysis from SonarSource's automatic analysis into this repository's CI.
   the directory the compilation database is read from (and that directory is excluded), that the
   scan action is pinned to a commit, that it scans full history with the repository secret and
   read-only permissions, and that fork pull requests are skipped.
+- **CHANGED:** clears the five CodeQL warnings the pull request check reported in
+  `room_service.cpp`, all present on `main` before this branch. Nine `std::ignore = released;`
+  lines after a `RuntimeLockRelease` (in `room_service.cpp`, `local_http_router.cpp` and
+  `worker_pool.cpp`) are removed: a guard with a destructor is never an unused variable, and the
+  other 55 releases have no such line. The thread listing iterates `std::views::values` instead of
+  discarding the root ID it bound, and `verify_third_party_signed` now says in comments where each
+  check comes from in the spec. No behaviour changes.
 
 ## 0.12.58
 

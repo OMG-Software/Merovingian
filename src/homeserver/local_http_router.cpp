@@ -4108,7 +4108,6 @@ namespace
         }
         auto const committed = [&]() {
             auto const released = RuntimeLockRelease{global_guard};
-            std::ignore = released;
             return database::commit_persistent_transaction(runtime.database.persistent_store, prepared->statements);
         }();
         if (!committed)
@@ -4693,7 +4692,6 @@ namespace
             // Restore stripe BEFORE global on scope exit, matching the
             // ingestion lock order even when the backfill call throws.
             auto const global_released = RuntimeLockRelease{global_guard};
-            std::ignore = global_released;
             auto const stripe_released = ScopedStripeReacquire{stripe_guard};
             std::ignore = stripe_released;
             auto const backfill = backfill_missing_pdu_references(runtime, room_id, envelope, *room_policy);
@@ -4911,7 +4909,6 @@ namespace
     // throw from the backend.
     auto const committed = [&] {
         auto const released = RuntimeLockRelease{global_guard};
-        std::ignore = released;
         return database::commit_persistent_transaction(runtime.database.persistent_store, prepared->statements);
     }();
     if (!committed)
@@ -5456,7 +5453,6 @@ auto wire_federation_callbacks(HomeserverRuntime& runtime) -> void
         // call sites.
         auto const result = [&] {
             auto const released = RuntimeLockRelease{guard};
-            std::ignore = released;
             return create_room(runtime, request.access_token);
         }();
         return response_from_room_operation(result);
@@ -5538,7 +5534,6 @@ auto wire_federation_callbacks(HomeserverRuntime& runtime) -> void
         });
         auto const result = [&] {
             auto const released = RuntimeLockRelease{guard};
-            std::ignore = released;
             return join_room(runtime, request.access_token, room_id, *via_servers, third_party_signed);
         }();
         log_diagnostic(result.ok ? "room.join.accepted" : "room.join.rejected",
