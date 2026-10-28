@@ -4597,8 +4597,6 @@ namespace
         auto collect = [&]() {
             auto stripe_guard = std::unique_lock{runtime.room_stripe_mutexes[stripe]};
             auto global_guard = std::unique_lock<RuntimeMutex>{runtime.mutex};
-            std::ignore = stripe_guard;
-            std::ignore = global_guard;
             return collect_missing_pdu_references(runtime.database.persistent_store, envelope);
         };
         auto [missing_auth, missing_prev] = collect();
@@ -4629,8 +4627,6 @@ namespace
             auto earliest_events = [&]() {
                 auto stripe_guard = std::unique_lock{runtime.room_stripe_mutexes[stripe]};
                 auto global_guard = std::unique_lock<RuntimeMutex>{runtime.mutex};
-                std::ignore = stripe_guard;
-                std::ignore = global_guard;
                 return database::find_forward_extremities(runtime.database.persistent_store, room_id);
             }();
             std::ranges::sort(earliest_events);
@@ -4681,8 +4677,6 @@ namespace
         auto const is_stored = [&](std::string const& id) {
             auto stripe_guard = std::unique_lock{runtime.room_stripe_mutexes[stripe]};
             auto global_guard = std::unique_lock<RuntimeMutex>{runtime.mutex};
-            std::ignore = stripe_guard;
-            std::ignore = global_guard;
             return runtime.database.persistent_store.events.contains(id);
         };
         auto const fetch_and_place = [&](std::string const& id) {
@@ -4729,8 +4723,6 @@ namespace
         auto const targets = [&]() {
             auto stripe_guard = std::unique_lock{runtime.room_stripe_mutexes[stripe]};
             auto global_guard = std::unique_lock<RuntimeMutex>{runtime.mutex};
-            std::ignore = stripe_guard;
-            std::ignore = global_guard;
             return state_snapshot_targets(runtime.database.persistent_store, held, missing_prev,
                                           static_cast<std::size_t>(limits.max_outbound_calls));
         }();
