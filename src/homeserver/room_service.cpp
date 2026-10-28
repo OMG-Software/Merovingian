@@ -827,6 +827,18 @@ namespace
         {
             creators.insert(creators.end(), options.trusted_invitees.begin(), options.trusted_invitees.end());
         }
+        // Without an `events` override the tombstone level is generated one above
+        // state_default; at canonical JSON's largest integer, (2^53)-1, there is no
+        // level above it to give, and the event could not be signed.
+        constexpr auto max_canonical_integer = std::int64_t{9007199254740991};
+        if (object_member(options.power_level_content_override, "events") == nullptr)
+        {
+            if (auto const* state_default = integer_member(options.power_level_content_override, "state_default");
+                state_default != nullptr && *state_default >= max_canonical_integer)
+            {
+                return std::string{"power_level_content_override state_default leaves no tombstone level above it"};
+            }
+        }
         if (auto const* users_value = object_member(options.power_level_content_override, "users");
             users_value != nullptr)
         {
@@ -4105,6 +4117,10 @@ namespace
         return SendJoinStateIngestResult{};
     }
     auto recorded_keys = std::map<std::pair<std::string, std::string>, std::size_t>{};
+    // The joined member each recorded entry names (empty when it names none),
+    // parallel to result.state_entries: a later entry for the same key, a leave
+    // after a join, replaces it, so the roster matches the state group.
+    auto recorded_members = std::vector<std::string>{};
     for (auto const& entry : entries)
     {
         if (entry.prepared.has_value())
@@ -4124,15 +4140,20 @@ namespace
                 inserted)
             {
                 result.state_entries.push_back(std::move(recorded));
+                recorded_members.push_back(entry.joined_member);
             }
             else
             {
                 result.state_entries[position->second] = std::move(recorded);
+                recorded_members[position->second] = entry.joined_member;
             }
         }
-        if (!entry.joined_member.empty())
+    }
+    for (auto const& member : recorded_members)
+    {
+        if (!member.empty())
         {
-            append_unique_member(joined_members, entry.joined_member);
+            append_unique_member(joined_members, member);
         }
     }
     return result;

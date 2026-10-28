@@ -173,3 +173,34 @@ SCENARIO("A power_level_content_override of the wrong shape is refused before an
         }
     }
 }
+
+// Room version 12: without an `events` override the tombstone level is generated one above
+// state_default. At canonical JSON's largest integer there is none, and the power levels event
+// could not be signed after the room was stored (review of #541).
+SCENARIO("A version 12 state_default that leaves no tombstone level above it is refused",
+         "[homeserver][rooms][create-room][power-level-override][room-v12]")
+{
+    GIVEN("a logged-in user")
+    {
+        auto started = merovingian::homeserver::start_client_server(override_config());
+        REQUIRE(started.started);
+        auto& rt = started.runtime;
+        auto const token = register_and_login(rt);
+        auto const rooms_before = rt.homeserver.database.persistent_store.rooms.size();
+
+        WHEN("it creates a version 12 room whose override sets state_default to (2^53)-1")
+        {
+            auto const created =
+                call(rt, "POST", "/_matrix/client/v3/createRoom", token,
+                     R"({"room_version":"12","power_level_content_override":{"state_default":9007199254740991}})");
+
+            THEN("the request is refused with 400 M_INVALID_ROOM_STATE and no room is stored")
+            {
+                CAPTURE(created.body);
+                REQUIRE(created.status == 400U);
+                REQUIRE(*string_member(parse_object(created.body), "errcode") == "M_INVALID_ROOM_STATE");
+                REQUIRE(rt.homeserver.database.persistent_store.rooms.size() == rooms_before);
+            }
+        }
+    }
+}

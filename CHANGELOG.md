@@ -160,7 +160,10 @@ Cloud analysis from SonarSource's automatic analysis into this repository's CI.
   rules only after the room and its first events were stored, leaving a half-made room behind a
   500. `createRoom` now checks the override with the auth rules' own content check
   (`events::power_levels_content_problem`, rule 9) and refuses it with `400 M_INVALID_ROOM_STATE`
-  before creating anything. The ADR-0064 call-site guard (`test_store_event_choke_point.cpp`) now
+  before creating anything; so is a version 12 override whose `state_default` is canonical JSON's
+  largest integer without an `events` map, which leaves no tombstone level above it. The send_join
+  roster now comes from the final entry for each member, so a join followed by a leave in a malformed
+  snapshot is not counted as joined. The ADR-0064 call-site guard (`test_store_event_choke_point.cpp`) now
   lists the `send_join` snapshot as a prepared, single-transaction outlier write.
 - **FIXED:** `POST /login` did not log `@user:server` in when named `@USER:server`, `USER` or
   `User`. A user ID is looked up exactly, then with its localpart's ASCII letters downcased

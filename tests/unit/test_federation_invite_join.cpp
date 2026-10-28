@@ -1682,6 +1682,37 @@ SCENARIO("ingest_send_join_state writes empty-state-key events to store.state",
             }
         }
 
+        WHEN("the array holds a member's join and then a later leave for the same member")
+        {
+            // A response may hold two entries for one key. The state group keeps the
+            // later, so the roster must too: a join followed by a leave is not joined
+            // (review of #541).
+            auto const leave_json = std::string{"{\"type\":\"m.room.member\",\"state_key\":\""} + creator +
+                                    "\",\"room_id\":\"" + room_id + "\",\"sender\":\"" + creator +
+                                    "\",\"depth\":4,\"origin_server_ts\":1001,"
+                                    "\"prev_events\":[],\"auth_events\":[],\"hashes\":{\"sha256\":\"aGFzaA\"},"
+                                    "\"content\":{\"membership\":\"leave\"},"
+                                    "\"signatures\":{\"matrix.example.org\":{\"ed25519:auto\":\"aaaa\"}}}";
+            auto const leave = merovingian::canonicaljson::parse_lossless(leave_json);
+            REQUIRE(leave.error == merovingian::canonicaljson::ParseError::none);
+            auto join_then_leave = *arr;
+            join_then_leave.push_back(leave.value);
+            auto const ingested =
+                merovingian::homeserver::ingest_send_join_state(runtime, room_id, join_then_leave, policy);
+
+            THEN("the member is not in the roster, and the state group holds the leave")
+            {
+                REQUIRE(std::find(ingested.joined_members.begin(), ingested.joined_members.end(), creator) ==
+                        ingested.joined_members.end());
+                auto const member_entry =
+                    std::find_if(ingested.state_entries.begin(), ingested.state_entries.end(), [&](auto const& entry) {
+                        return entry.event_type == "m.room.member" && entry.state_key == creator;
+                    });
+                REQUIRE(member_entry != ingested.state_entries.end());
+                REQUIRE(ingested.recorded_state_events == join_then_leave.size());
+            }
+        }
+
         WHEN("the array holds the same event twice and is ingested in one transaction")
         {
             // The snapshot is committed as one batch (review of #541): the second copy
