@@ -50,6 +50,7 @@
 #include "merovingian/homeserver/tls.hpp"
 #include "merovingian/net/tcp_acceptor.hpp"
 #include "merovingian/rooms/room_version_policy.hpp"
+#include "merovingian/sync/device_list_delta.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/generators/catch_generators.hpp>
@@ -856,6 +857,29 @@ SCENARIO("join_room completes a live federated join with every member of the ret
                     CAPTURE(ingest_result.reason);
                     REQUIRE(ingest_result.status == merovingian::federation::PduIngestionStatus::accepted);
                 }
+            }
+
+            // Spec: Client-Server API v1.19, "Tracking the device list for a user" and the /sync
+            // `DeviceLists` table: `changed` lists the users "who now share an encrypted room with the
+            // client". The joiner's server learns the whole roster at once, so every member is listed;
+            // the joiner's own ID is listed too, which the spec permits ("a server may add Alice to
+            // `changed` when Alice and Bob share a new room") and which tells their other devices to
+            // refresh the account's device list (Complement TestDeviceListsUpdateOverFederation).
+            THEN("the joiner's client is told to refresh every member's devices, its own included")
+            {
+                CAPTURE(template_has_hashes, profile_mode, result.reason);
+                REQUIRE(result.ok);
+                auto const lock = std::lock_guard{runtime.mutex};
+                auto const delta =
+                    merovingian::sync::collect_device_list_delta(runtime.database.persistent_store, alice, 0U);
+                REQUIRE(std::ranges::find(delta.changed, alice) != delta.changed.end());
+                for (auto member_index = std::size_t{0U}; member_index < k_other_member_count; ++member_index)
+                {
+                    auto const member_id = "@member" + std::to_string(member_index) + ":" + resident_server;
+                    CAPTURE(member_id);
+                    REQUIRE(std::ranges::find(delta.changed, member_id) != delta.changed.end());
+                }
+                REQUIRE(delta.left.empty());
             }
         }
     }

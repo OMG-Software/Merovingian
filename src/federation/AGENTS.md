@@ -64,6 +64,9 @@ Federation is the highest-risk surface: **all input comes from untrusted remote 
    most 7 days after the fetch (`min(valid_until_ts, fetched_at + 7 days)`). From room v5 an event's
    signing key must be valid at the event's own `origin_server_ts`, never judged against the
    current time; v1-v4 ignore `valid_until_ts` (ADR-0075).
+   A federation worker's key mirror is a snapshot taken at start-up, so its resolver is built with
+   `KeyMirrorRefresh::on_miss` and re-reads the one server's public key rows (never `secret_key`) from
+   the database before it fetches; main's resolver never does (its mirror is authoritative).
    Never call `remote_key_resolver` directly for a network fetch: go through an admitted path so
    the fetch counts against `key_resolution_max_in_flight` and the server/key failure cache
    (FED-10). Inbound and relay verification refuse over budget (`resolve_verification_key`);
@@ -109,7 +112,12 @@ Federation is the highest-risk surface: **all input comes from untrusted remote 
    `max_inbound_direct_to_device_deliveries` messages. A `m.device_list_update` /
    `m.signing_key_update` writes a `device_list_changes` row only for local users who share a
    joined room with the subject, as one batch (`record_device_list_changes`), one row per
-   (observer, subject). Every new EDU type needs the same three answers: whose claim is this,
+   (observer, subject). A remote user's own membership change reaches the same table through
+   `apply_membership_to_roster` (the membership acceptor and `ingest_pdu_event` both call it),
+   never by editing `LocalRoom::members` directly: a join is `changed` and the leave of the last
+   shared room is `left` for the local members. A published device's `unsigned.device_display_name`
+   is its current name (`published_device_keys`), and `m.device_list_update` carries
+   `device_display_name`. Every new EDU type needs the same three answers: whose claim is this,
    who may it reach, and what bounds its cost (audit FED-3, FED-7).
 
 9. **An inbound `/invite` for a room whose state we hold is authorised against that state
@@ -175,7 +183,7 @@ Federation is the highest-risk surface: **all input comes from untrusted remote 
 | `dispatch_worker.cpp` | Background outbound PDU/EDU delivery with per-destination retry and back-off |
 | `event_query.cpp` | Serves the room-scoped reads `event`, `state`, `state_ids`, `backfill`, `get_missing_events`, and owns the origin-in-room gate (`origin_may_read_room`) |
 | `outbound_membership.cpp` | Outbound `make_join` / `make_leave` / `make_knock` calls |
-| `cached_server_discovery.cpp` | TTL-bounded in-memory cache in front of server discovery |
+| `cached_server_discovery.cpp` | TTL-bounded in-memory cache in front of server discovery. `DiscoveryCachePolicy::successes_only` is what a call a client request triggers (the federated join's `make_join`/`send_join`) uses, so a remembered failure never refuses a retry; `remember_failures` stays the default for key resolution, pushers and appservices |
 | `runtime_federation.cpp` | Federation route registration and per-origin request caps |
 
 ## Adding a new federation endpoint

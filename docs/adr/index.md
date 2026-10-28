@@ -236,6 +236,18 @@
 * [0251 - A knock is withdrawn through the resident that accepted it](0251-a-knock-is-withdrawn-through-the-resident-that-accepted-it.md)
 * [0252 - One membership exchange per user and room at a time](0252-one-membership-exchange-per-user-and-room-at-a-time.md)
 * [0253 - Branch coverage excludes branches on lines without code](0253-branch-coverage-excludes-branches-on-lines-without-code.md)
+* [0254 - A resident forwards the membership events it accepts](0254-a-resident-forwards-the-membership-events-it-accepts.md)
+* [0255 - Gap recovery fetches events with GET /event and keeps /event_auth as a last resort](0255-gap-recovery-fetches-events-with-get-event-and-keeps-event-auth-as-a-last-resort.md)
+* [0256 - A backfilled event whose auth events fail is stored rejected, not dropped](0256-a-backfilled-event-whose-auth-events-fail-is-stored-rejected-not-dropped.md)
+* [0257 - /sync reports a leave once](0257-sync-reports-a-leave-once.md)
+* [0258 - unsigned.transaction_id goes to the sending device](0258-unsigned-transaction-id-goes-to-the-sending-device.md)
+* [0259 - /sync sends one m.receipt event per thread](0259-sync-sends-one-m-receipt-event-per-thread.md)
+* [0260 - A remote space hierarchy answer is untrusted and runs under the outbound budget](0260-a-remote-space-hierarchy-answer-is-untrusted-and-runs-under-the-outbound-budget.md)
+* [0261 - Presence is shown only to users who share a room](0261-presence-is-shown-only-to-users-who-share-a-room.md)
+* [0262 - A join reuses server discovery but never a remembered failure](0262-a-join-reuses-server-discovery-but-never-a-remembered-failure.md)
+* [0263 - A federation worker reads public keys main cached before fetching](0263-a-federation-worker-reads-public-keys-main-cached-before-fetching.md)
+* [0264 - Follow Complement on client-server points the spec leaves open](0264-follow-complement-on-client-server-points-the-spec-leaves-open.md)
+* [0265 - Membership changes reach the room roster through one function](0265-membership-changes-reach-the-room-roster-through-one-function.md)
 
 ## Proposed Records
 
@@ -267,8 +279,11 @@
 * [0163 - Appservice delivery is a durable outbox drained by one thread](0163-appservice-delivery-is-a-durable-outbox-drained-by-one-thread.md) — Refined by ADR-0191: the queue of one appservice is capped at `appservice.max_queued_events`, and ADR-0190: ephemeral data rides the same transactions but is not durable
 * [0173 - Cap a user's global account-data types; room account data stays bounded by membership](0173-cap-global-account-data-types-per-user.md) — Refined by ADR-0197: room account data also needs a membership row and is capped per room
 * [0216 - The upgrade path is tested from a forward-only schema seam and a database the previous release wrote](0216-upgrade-path-is-tested-from-a-forward-only-seam-and-a-real-previous-release-fixture.md) — Refined by ADR-0224: the migrations collapsed in 0.12.47, before 1.0.0, and the 0.11.13 fixture is gone; the seam and synthetic scenarios stay
-* [0064 - Spec-conformant PDU ingestion with delta state groups](0064-spec-conformant-pdu-ingestion-with-delta-state-groups.md) — Refined by ADR-0225: when the state across a room's forward extremities cannot be resolved, a local event is built on the newest extremity alone and the others are retired, instead of being refused; and by ADR-0228: local and federated-join bookkeeping commits in one transaction with the event
+* [0064 - Spec-conformant PDU ingestion with delta state groups](0064-spec-conformant-pdu-ingestion-with-delta-state-groups.md) — Refined by ADR-0225: when the state across a room's forward extremities cannot be resolved, a local event is built on the newest extremity alone and the others are retired, instead of being refused; and by ADR-0228: local and federated-join bookkeeping commits in one transaction with the event; Refined by ADR-0256: a backfilled event whose resolvable auth events fail is stored rejected, not dropped
 * [0092 - Normalize known rate-limit routes and evict least-recently-used buckets](0092-normalize-rate-limit-routes-and-evict-lru.md) — Refined by ADR-0230: the matcher is also the list of served paths, so every implemented route, static or dynamic, must be recognised, and a path it cannot place is answered 404 M_UNRECOGNIZED before authentication
 * [0234 - A Complement run is judged by a summariser over a checked-in skip list](0234-a-complement-run-is-judged-by-a-summariser-over-a-checked-in-skip-list.md) — Refined by ADR-0237: only Complement's `./tests` and `./tests/csapi` packages run; the `tests/msc*` packages test proposals outside v1.19
 * [0090 - Bound Argon2id work with a process-wide admission semaphore](0090-bound-argon2id-work-with-admission.md) — Refined by ADR-0246: the semaphore's capacity is `security.password_hashing.max_concurrent` (default 4, 1 to 128), taken at start-up
 * [0229 - SonarQube Cloud ignores tests and tooling, and keeps the server, packaging and workflows](0229-sonarqube-cloud-ignores-tests-and-tooling-and-keeps-the-server-packaging-and-workflows.md) — Refined by ADR-0250: the analysis runs in CI against the build's compilation database, and the exclusions live in `sonar-project.properties`
+* [0069 - Spec-conformant /state_ids fallback via /event_auth](0069-spec-conformant-state-ids-fallback-via-event-auth.md) — Refined by ADR-0255: events a `/state_ids` snapshot names are fetched with `GET /event`; `/event_auth` is a last resort
+* [0238 - The key resolver uses the key it fetched, not a cache read-back](0238-the-key-resolver-uses-the-key-it-fetched-not-a-cache-read-back.md) — Refined by ADR-0263: a worker re-reads public key rows main cached before fetching
+* [0204 - Keep a user's push rules as their m.push_rules account data, applied over the current defaults](0204-keep-a-users-push-rules-as-their-m-push-rules-account-data.md) — Refined by ADR-0264: an initial `/sync` carries the effective ruleset even for a user who never changed a rule

@@ -22,6 +22,7 @@
 #include "merovingian/events/event_signer.hpp"
 #include "merovingian/events/limits.hpp"
 #include "merovingian/events/redaction.hpp"
+#include "merovingian/federation/cached_server_discovery.hpp"
 #include "merovingian/federation/inbound_request.hpp"
 #include "merovingian/federation/membership_endpoints.hpp"
 #include "merovingian/federation/outbound_membership.hpp"
@@ -35,6 +36,7 @@
 #include "merovingian/homeserver/federation_proxy.hpp"
 #include "merovingian/homeserver/local_http_router.hpp"
 #include "merovingian/homeserver/local_services.hpp"
+#include "merovingian/homeserver/presence_service.hpp"
 #include "merovingian/homeserver/push_badge_count.hpp"
 #include "merovingian/homeserver/push_retry.hpp"
 #include "merovingian/homeserver/push_room_facts.hpp"
@@ -85,6 +87,7 @@
 #include <thread>
 #include <tuple>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <variant>
 #include <vector>
@@ -264,7 +267,7 @@ namespace
 
     // Why compose_signed_event produced no event. too_large means the event would
     // break the spec's size limits (CSAZ-9) and is the client's to fix, so callers
-    // answer 400 M_TOO_LARGE; rejected covers everything else (malformed input,
+    // answer 413 M_TOO_LARGE; rejected covers everything else (malformed input,
     // authorization, signing); invalid_state_key is refused with 400 before
     // composition can allocate any stream ordering or persistence state.
     enum class ComposeFailure : std::uint8_t
@@ -301,11 +304,12 @@ namespace
                 .count());
     }
 
-    // Spec v1.19 "Size limits": the refusal for an event over 65536 bytes, or
+    // Spec v1.19 "Size limits": the refusal (413, the owner's reading: the spec names no
+    // status) for an event over 65536 bytes, or
     // whose type or state_key is over 255 bytes.
     [[nodiscard]] auto event_too_large_result() -> OperationResult
     {
-        auto result = make_operation_result(false, {}, "event exceeds the Matrix event size limits", 400U);
+        auto result = make_operation_result(false, {}, "event exceeds the Matrix event size limits", 413U);
         result.errcode = "M_TOO_LARGE";
         return result;
     }
@@ -1248,22 +1252,27 @@ namespace
     // the room's other servers. Every path that composes and stores an event must call
     // it; a membership event that did not (a join, leave, kick, ban or local knock)
     // never reached another server.
-    auto federate_local_event(HomeserverRuntime& runtime, std::string_view room_id, LocalRoom const& room,
-                              ComposedEvent const& composed, std::string_view target_user_id = {}) -> void
+    //
+    // `excluded_server` (empty for none) is never sent the event: a resident that accepted
+    // a send_join, send_leave or send_knock does not send it back to the server that made
+    // the request, which already holds it.
+    auto queue_event_to_room_servers(HomeserverRuntime& runtime, std::string_view room_id,
+                                     std::vector<std::string> const& members, std::string_view event_id,
+                                     std::string const& event_json, std::string_view target_user_id,
+                                     std::string_view excluded_server) -> void
     {
-        wire_federation_callbacks(runtime);
         if (runtime.dispatch_worker != nullptr)
         {
             auto const& server_name = runtime.config.server().server_name;
             auto remote_servers = std::vector<std::string>{};
-            for (auto const& member : room.members)
+            for (auto const& member : members)
             {
                 auto const member_server = std::string{auth::user_id_server_name(member)};
                 if (member_server.empty())
                 {
                     continue;
                 }
-                if (member_server != server_name &&
+                if (member_server != server_name && member_server != excluded_server &&
                     std::ranges::find(remote_servers, member_server) == remote_servers.end())
                 {
                     remote_servers.emplace_back(member_server);
@@ -1273,7 +1282,7 @@ namespace
             // not yet) among the room's members once the event applies. An invite reaches
             // the invitee's server through /invite instead.
             if (auto const target_server = std::string{auth::user_id_server_name(target_user_id)};
-                !target_server.empty() && target_server != server_name &&
+                !target_server.empty() && target_server != server_name && target_server != excluded_server &&
                 std::ranges::find(remote_servers, target_server) == remote_servers.end())
             {
                 remote_servers.push_back(target_server);
@@ -1282,13 +1291,13 @@ namespace
             // `origin_server_ts`; a hand-built body without them was refused by strict receivers.
             auto const tx_body_result = remote_servers.empty()
                                             ? std::optional<std::string>{}
-                                            : federation::build_pdu_transaction_body(server_name, composed.json);
+                                            : federation::build_pdu_transaction_body(server_name, event_json);
             if (!remote_servers.empty() && !tx_body_result.has_value())
             {
                 log_diagnostic("room.event.dispatch_refused",
                                {
                                    {"room_id",  std::string{room_id},                  false},
-                                   {"event_id", composed.event_id,                     false},
+                                   {"event_id", std::string{event_id},                 false},
                                    {"reason",   "transaction body could not be built", false}
                 },
                                observability::LogEventSeverity::error);
@@ -1324,7 +1333,7 @@ namespace
                     log_diagnostic("room.event.dispatch_refused",
                                    {
                                        {"room_id",      std::string{room_id},           false},
-                                       {"event_id",     composed.event_id,              false},
+                                       {"event_id",     std::string{event_id},          false},
                                        {"refused",      std::to_string(refused.size()), false},
                                        {"destinations", names,                          false}
                     },
@@ -1333,11 +1342,19 @@ namespace
                 log_diagnostic("room.event.dispatched",
                                {
                                    {"room_id",      std::string{room_id},                                   false},
-                                   {"event_id",     composed.event_id,                                      false},
+                                   {"event_id",     std::string{event_id},                                  false},
                                    {"destinations", std::to_string(remote_servers.size() - refused.size()), false}
                 });
             }
         }
+    }
+
+    auto federate_local_event(HomeserverRuntime& runtime, std::string_view room_id, LocalRoom const& room,
+                              ComposedEvent const& composed, std::string_view target_user_id = {}) -> void
+    {
+        wire_federation_callbacks(runtime);
+        queue_event_to_room_servers(runtime, room_id, room.members, composed.event_id, composed.json, target_user_id,
+                                    {});
     }
 
     // Forward declaration: defined further down this file, after
@@ -1518,29 +1535,22 @@ namespace
         });
     }
 
-    [[nodiscard]] auto users_share_joined_room(LocalDatabase const& database, std::string_view left_user_id,
-                                               std::string_view right_user_id,
-                                               std::string_view excluding_room_id = {}) noexcept -> bool
+    // The accounts on this server, as a set, so a roster of any size is classified in one pass.
+    [[nodiscard]] auto local_user_ids(LocalDatabase const& database) -> std::unordered_set<std::string_view>
     {
-        return std::ranges::any_of(database.rooms, [&](LocalRoom const& room) {
-            return room.room_id != excluding_room_id && room_has_member(room, left_user_id) &&
-                   room_has_member(room, right_user_id);
-        });
-    }
-
-    [[nodiscard]] auto record_local_device_list_change(LocalDatabase& database, std::string_view observer_user_id,
-                                                       std::string_view subject_user_id, std::string_view change_type)
-        -> bool
-    {
-        if (observer_user_id == subject_user_id || !is_local_user(database, observer_user_id))
+        auto ids = std::unordered_set<std::string_view>{};
+        ids.reserve(database.users.size());
+        for (auto const& user : database.users)
         {
-            return true;
+            ids.insert(user.user_id);
         }
-        return database::record_device_list_change(
-            database.persistent_store,
-            {0U, std::string{observer_user_id}, std::string{subject_user_id}, std::string{change_type}});
+        return ids;
     }
 
+    // Spec (client-server-api.md, "Tracking the device list for a user"): a user who starts sharing a
+    // room with a local user is added to that user's `device_lists.changed`. Called once the joiner is
+    // on the room's roster. One batch, so one stream position and one commit however large the room is
+    // (the roster of a federated room is chosen by a remote server).
     [[nodiscard]] auto record_room_share_started_device_changes(HomeserverRuntime& runtime, std::string_view room_id,
                                                                 std::string_view joining_user_id) -> bool
     {
@@ -1549,21 +1559,31 @@ namespace
         {
             return true;
         }
+        auto const local_users = local_user_ids(runtime.database);
+        auto const joiner_is_local = local_users.contains(joining_user_id);
+        auto changes = std::vector<database::PersistentDeviceListChange>{};
         for (auto const& member : room->members)
         {
             if (member == joining_user_id)
             {
                 continue;
             }
-            if (!record_local_device_list_change(runtime.database, member, joining_user_id, "changed") ||
-                !record_local_device_list_change(runtime.database, joining_user_id, member, "changed"))
+            // Only a local user has a client to tell; a remote user's server tracks its own.
+            if (local_users.contains(member))
             {
-                return false;
+                changes.push_back({0U, member, std::string{joining_user_id}, "changed"});
+            }
+            if (joiner_is_local)
+            {
+                changes.push_back({0U, std::string{joining_user_id}, member, "changed"});
             }
         }
-        return true;
+        return database::record_device_list_changes(runtime.database.persistent_store, std::move(changes));
     }
 
+    // Spec (same section): "Bob can also be notified when he stops sharing any room with Alice by
+    // inspecting the `left` property". Called while the departing user is still on the roster. A
+    // member who still shares another joined room with them is not told they left.
     [[nodiscard]] auto record_room_share_ended_device_changes(HomeserverRuntime& runtime, std::string_view room_id,
                                                               std::string_view departing_user_id) -> bool
     {
@@ -1572,20 +1592,49 @@ namespace
         {
             return true;
         }
-        for (auto const& member : room->members)
+        auto still_sharing = std::unordered_set<std::string_view>{};
+        for (auto const& other : runtime.database.rooms)
         {
-            if (member == departing_user_id ||
-                users_share_joined_room(runtime.database, departing_user_id, member, room_id))
+            if (other.room_id == room_id || !room_has_member(other, departing_user_id))
             {
                 continue;
             }
-            if (!record_local_device_list_change(runtime.database, member, departing_user_id, "left") ||
-                !record_local_device_list_change(runtime.database, departing_user_id, member, "left"))
+            still_sharing.insert(other.members.begin(), other.members.end());
+        }
+        auto const local_users = local_user_ids(runtime.database);
+        auto const departing_is_local = local_users.contains(departing_user_id);
+        auto changes = std::vector<database::PersistentDeviceListChange>{};
+        for (auto const& member : room->members)
+        {
+            if (member == departing_user_id || still_sharing.contains(member))
             {
-                return false;
+                continue;
+            }
+            if (local_users.contains(member))
+            {
+                changes.push_back({0U, member, std::string{departing_user_id}, "left"});
+            }
+            if (departing_is_local)
+            {
+                changes.push_back({0U, std::string{departing_user_id}, member, "left"});
             }
         }
-        return true;
+        return database::record_device_list_changes(runtime.database.persistent_store, std::move(changes));
+    }
+
+    // A user who joins a room over federation is told to refresh their own account's device list too:
+    // their server has just learned the whole roster, and their other devices have to be told the
+    // account now shares a room with these users. The spec lets a server list a user in `changed`
+    // when they start sharing a further room (client-server-api.md, DeviceLists note); Complement
+    // TestDeviceListsUpdateOverFederation expects the joiner to be listed.
+    [[nodiscard]] auto record_own_device_list_change(HomeserverRuntime& runtime, std::string_view user_id) -> bool
+    {
+        if (!is_local_user(runtime.database, user_id))
+        {
+            return true;
+        }
+        return database::record_device_list_change(runtime.database.persistent_store,
+                                                   {0U, std::string{user_id}, std::string{user_id}, "changed"});
     }
 
     [[nodiscard]] auto find_event_json(database::PersistentStore const& store, std::string_view event_id)
@@ -2121,17 +2170,7 @@ namespace
             }
         }
 
-        auto const* room = find_room(runtime.database, room_id);
-        auto const was_joined = room != nullptr && room_has_member(*room, target);
-        // Device lists (spec v1.19 "Tracking the device list for a user"): leaving
-        // the room's joined set is recorded while the user is still in it, joining
-        // once they are, matching what each helper reads.
-        if (was_joined && membership != "join" && !record_room_share_ended_device_changes(runtime, room_id, target))
-        {
-            return false;
-        }
-        apply_runtime_membership(runtime.database, room_id, target, membership);
-        return was_joined || membership != "join" || record_room_share_started_device_changes(runtime, room_id, target);
+        return apply_membership_to_roster(runtime, room_id, target, membership);
     }
 
     // Composes, signs, and persists a single room state event.  Used by create_room to
@@ -2403,6 +2442,43 @@ namespace
 
 } // namespace
 
+auto federate_accepted_membership_event(HomeserverRuntime& runtime, std::string_view room_id, std::string_view event_id,
+                                        std::string const& event_json, std::string_view requesting_server) -> void
+{
+    // The room's joined members are those of the in-memory roster, which the caller has
+    // already brought up to date for this event. A room with no roster entry has none.
+    auto const room = find_room(runtime.database, room_id);
+    if (room == nullptr)
+    {
+        return;
+    }
+    queue_event_to_room_servers(runtime, room_id, room->members, event_id, event_json, {}, requesting_server);
+}
+
+// The one place a membership change reaches the live roster and the device lists. The roster is always
+// updated, since the member event is already stored; a device-list write that fails is reported through
+// the result, not by leaving the roster behind the store.
+auto apply_membership_to_roster(HomeserverRuntime& runtime, std::string_view room_id, std::string_view user_id,
+                                std::string_view membership) -> bool
+{
+    auto const* room = find_room(runtime.database, room_id);
+    auto const was_joined = room != nullptr && room_has_member(*room, user_id);
+    // Device lists (spec v1.19 "Tracking the device list for a user"): leaving the room's joined set
+    // is recorded while the user is still in it, joining once they are, matching what each helper
+    // reads.
+    auto recorded = true;
+    if (was_joined && membership != "join")
+    {
+        recorded = record_room_share_ended_device_changes(runtime, room_id, user_id);
+    }
+    apply_runtime_membership(runtime.database, room_id, user_id, membership);
+    if (!was_joined && membership == "join")
+    {
+        recorded = record_room_share_started_device_changes(runtime, room_id, user_id) && recorded;
+    }
+    return recorded;
+}
+
 // Perform a single synchronous outbound federation call. Returns the raw
 // response body on success (HTTP 2xx), or an error description on failure.
 // The request is signed in-process; if a federation proxy is wired the actual
@@ -2478,8 +2554,22 @@ namespace
         }
         // Discovery is a DNS/well-known cascade that can burn the full timeout
         // against an unreachable peer, so it must not run under runtime.mutex.
+        //
+        // A join makes two calls (make_join, send_join), each of which used to
+        // run the whole cascade again. A fresh success is reused for the cache's
+        // lifetime (server-server-api.md, "Resolving server names": responses
+        // "should be cached"); a remembered failure is not served, so a retry
+        // after the peer recovers is not refused. The cache is used only while it
+        // wraps this runtime's current discovery network.
+        auto* const cached = runtime.cached_discovery.get();
+        auto const use_cache = cached != nullptr && &cached->upstream() == discovery_network;
         auto const resolution = [&]() {
             auto const unlocked = RuntimeLockRelease{};
+            if (use_cache)
+            {
+                return cached->discover(transaction.destination, timeout_seconds,
+                                        federation::DiscoveryCachePolicy::successes_only);
+            }
             return federation::discover_server(transaction.destination, *discovery_network, timeout_seconds);
         }();
         if (!resolution.discovery_allowed)
@@ -3515,7 +3605,7 @@ auto ensure_crypto_provider_holds_key(HomeserverRuntime& runtime, std::string_vi
     auto created_events = CreatedEventQueue{runtime, room_id, *user_id};
 
     // Set when an initial state event is refused for the spec's size limits, so
-    // the request answers 400 M_TOO_LARGE rather than a 500 (CSAZ-9).
+    // the request answers 413 M_TOO_LARGE rather than a 500 (CSAZ-9).
     auto initial_state_too_large = false;
     auto emit_state = [&](std::string_view event_type, canonicaljson::Object content,
                           std::string_view state_key = std::string_view{}) -> bool {
@@ -5474,7 +5564,8 @@ namespace
             }
         }
         runtime.database.rooms.push_back({std::string{room_id}, *user_id, std::move(joined_members), {}});
-        if (!record_room_share_started_device_changes(runtime, room_id, *user_id))
+        if (!record_room_share_started_device_changes(runtime, room_id, *user_id) ||
+            !record_own_device_list_change(runtime, *user_id))
         {
             log_diagnostic("room.join.rejected", {
                                                      {"actor",   *user_id,                                false},
@@ -7648,21 +7739,26 @@ namespace
     // containing the current presence state of the user". Storing the user's presence again gives
     // it a new sync stream position, so every peer's next /sync carries it; /sync adds the profile.
     // A user who has never set a presence is offline.
+    // With presence off (`presence.enabled=false`) none is tracked, so there is none to send.
     auto& mutable_store = runtime.database.persistent_store;
-    auto const current = std::ranges::find_if(mutable_store.presence_states, [&](auto const& state) {
-        return state.user_id == *user_id;
-    });
-    auto presence = current != mutable_store.presence_states.end() ? *current : database::PersistentPresence{};
-    presence.user_id = *user_id;
-    auto const presence_sent = database::upsert_presence(mutable_store, presence);
-    if (presence_sent)
+    auto presence_sent = true;
+    if (presence_enabled(runtime))
     {
+        auto const current = std::ranges::find_if(mutable_store.presence_states, [&](auto const& state) {
+            return state.user_id == *user_id;
+        });
+        auto presence = current != mutable_store.presence_states.end() ? *current : database::PersistentPresence{};
+        presence.user_id = *user_id;
+        // The stored time since the user was active is as of an earlier moment; record_presence
+        // restamps the row, so bring it up to date first.
+        presence.last_active_ago = presence_last_active_ago(presence, presence_now_ms());
         // Appservices that receive ephemeral data are sent the new profile the same way (R08).
-        queue_appservice_presence(runtime, presence);
-    }
-    if (presence_sent && runtime.sync_notifier != nullptr)
-    {
-        runtime.sync_notifier->publish(visible_stream_position(runtime.database), mutable_store.next_sync_stream_id);
+        presence_sent = record_presence(runtime, presence);
+        if (presence_sent && runtime.sync_notifier != nullptr)
+        {
+            runtime.sync_notifier->publish(visible_stream_position(runtime.database),
+                                           mutable_store.next_sync_stream_id);
+        }
     }
     // The profile is already stored, so the change has happened whatever follows: the request
     // succeeds (ADR-0182). A room or presence update that failed is left for the next profile
@@ -7804,7 +7900,33 @@ auto deliver_federation_push_notifications(HomeserverRuntime& runtime, federatio
     {
         return canonicaljson::Value{canonicaljson::Object{}};
     }
+    // `unsigned.transaction_id` and `unsigned.membership` describe the client reading the event
+    // (CS API, ClientEvent), and `unsigned` is outside the event's signatures, so a remote sender
+    // can put anything there. This server computes both per viewer (sync::ViewerEventUnsigned) and
+    // never passes on a stored copy of either.
+    auto const viewer_specific = [](std::string_view key) noexcept {
+        return key == "transaction_id" || key == "membership";
+    };
     auto client_obj = *obj;
+    for (auto& member : client_obj)
+    {
+        if (member.key == "unsigned")
+        {
+            if (auto const* stored_unsigned = std::get_if<canonicaljson::Object>(&member.value->storage());
+                stored_unsigned != nullptr)
+            {
+                auto kept = canonicaljson::Object{};
+                for (auto const& entry : *stored_unsigned)
+                {
+                    if (!viewer_specific(entry.key))
+                    {
+                        kept.push_back(entry);
+                    }
+                }
+                member.value = std::make_unique<canonicaljson::Value>(canonicaljson::Value{std::move(kept)});
+            }
+        }
+    }
     client_obj.push_back(canonicaljson::make_member("event_id", canonicaljson::Value{event.event_id}));
     // ClientEvent `room_id` is required everywhere but /sync. Room version 12 omits it from
     // the m.room.create PDU only, so a client still gets the room it belongs to.
@@ -7841,7 +7963,7 @@ auto deliver_federation_push_notifications(HomeserverRuntime& runtime, federatio
                     {
                         for (auto const& unsigned_member : *existing)
                         {
-                            if (unsigned_member.key != "replaces_state")
+                            if (unsigned_member.key != "replaces_state" && !viewer_specific(unsigned_member.key))
                             {
                                 unsigned_object.push_back(unsigned_member);
                             }

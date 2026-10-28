@@ -130,6 +130,7 @@ namespace
             if (auto const* value = as_integer(*limit); value != nullptr && *value >= 0)
             {
                 target.limit = static_cast<std::size_t>(*value);
+                target.limit_given = true;
             }
         }
     }
@@ -267,6 +268,212 @@ auto parse_room_event_filter_argument(std::string_view filter_argument) -> std::
         out.not_rooms = extract_strings(*not_rooms);
     }
     return out;
+}
+
+namespace
+{
+
+    // Spec: Appendices, "Identifier Grammar". A filter lists IDs, and a list entry that cannot be an
+    // ID of its kind can only be a mistake, so it is refused. The check is the shape of an ID, not
+    // that the room or user exists: a filter may name a room the user has yet to join.
+    [[nodiscard]] auto has_no_blank_or_control(std::string_view text) noexcept -> bool
+    {
+        return std::ranges::none_of(text, [](char character) noexcept {
+            auto const byte = static_cast<unsigned char>(character);
+            return byte <= 0x20U || byte == 0x7FU;
+        });
+    }
+
+    // `@localpart:server_name`: the first colon ends the localpart (the server name may carry a port).
+    [[nodiscard]] auto looks_like_user_id(std::string_view id) noexcept -> bool
+    {
+        if (id.size() > 255U || id.size() < 4U || id.front() != '@' || !has_no_blank_or_control(id))
+        {
+            return false;
+        }
+        auto const colon = id.find(':');
+        return colon != std::string_view::npos && colon >= 2U && colon + 1U < id.size();
+    }
+
+    // `!opaque_id:server_name`, or `!opaque_id` alone for a version 12 room.
+    [[nodiscard]] auto looks_like_room_id(std::string_view id) noexcept -> bool
+    {
+        return id.size() >= 2U && id.size() <= 255U && id.front() == '!' && has_no_blank_or_control(id);
+    }
+
+    enum class ListOf : std::uint8_t
+    {
+        strings,
+        user_ids,
+        room_ids,
+    };
+
+    [[nodiscard]] auto list_problem(canonicaljson::Object const& source, std::string_view key, std::string_view where,
+                                    ListOf kind) -> std::optional<std::string>
+    {
+        auto const* member = find_member(source, key);
+        if (member == nullptr)
+        {
+            return std::nullopt;
+        }
+        auto const name = std::string{where} + std::string{key};
+        auto const* array = std::get_if<canonicaljson::Array>(&member->storage());
+        if (array == nullptr)
+        {
+            return name + " must be a list";
+        }
+        for (auto const& entry : *array)
+        {
+            auto const* text = as_string(entry);
+            if (text == nullptr)
+            {
+                return name + " must contain only strings";
+            }
+            if (kind == ListOf::user_ids && !looks_like_user_id(*text))
+            {
+                return name + " must contain only user IDs";
+            }
+            if (kind == ListOf::room_ids && !looks_like_room_id(*text))
+            {
+                return name + " must contain only room IDs";
+            }
+        }
+        return std::nullopt;
+    }
+
+    [[nodiscard]] auto flag_problem(canonicaljson::Object const& source, std::string_view key, std::string_view where)
+        -> std::optional<std::string>
+    {
+        auto const* member = find_member(source, key);
+        if (member != nullptr && as_boolean(*member) == nullptr)
+        {
+            return std::string{where} + std::string{key} + " must be a boolean";
+        }
+        return std::nullopt;
+    }
+
+    // A RoomEventFilter, or the `presence` / `account_data` event filter.
+    [[nodiscard]] auto event_filter_problem(canonicaljson::Object const& filter, std::string_view where)
+        -> std::optional<std::string>
+    {
+        for (auto const* key : {"types", "not_types"})
+        {
+            if (auto problem = list_problem(filter, key, where, ListOf::strings); problem.has_value())
+            {
+                return problem;
+            }
+        }
+        for (auto const* key : {"senders", "not_senders"})
+        {
+            if (auto problem = list_problem(filter, key, where, ListOf::user_ids); problem.has_value())
+            {
+                return problem;
+            }
+        }
+        for (auto const* key : {"rooms", "not_rooms"})
+        {
+            if (auto problem = list_problem(filter, key, where, ListOf::room_ids); problem.has_value())
+            {
+                return problem;
+            }
+        }
+        for (auto const* key :
+             {"contains_url", "include_redundant_members", "lazy_load_members", "unread_thread_notifications"})
+        {
+            if (auto problem = flag_problem(filter, key, where); problem.has_value())
+            {
+                return problem;
+            }
+        }
+        if (auto const* limit = find_member(filter, "limit"); limit != nullptr && as_integer(*limit) == nullptr)
+        {
+            return std::string{where} + "limit must be an integer";
+        }
+        return std::nullopt;
+    }
+
+    // `parent[key]`, when present, is an event filter object.
+    [[nodiscard]] auto sub_filter_problem(canonicaljson::Object const& parent, std::string_view key,
+                                          std::string_view where) -> std::optional<std::string>
+    {
+        auto const* member = find_member(parent, key);
+        if (member == nullptr)
+        {
+            return std::nullopt;
+        }
+        auto const* object = as_object(*member);
+        if (object == nullptr)
+        {
+            return std::string{where} + std::string{key} + " must be an object";
+        }
+        return event_filter_problem(*object, std::string{where} + std::string{key} + ".");
+    }
+
+    [[nodiscard]] auto room_filter_problem(canonicaljson::Object const& room) -> std::optional<std::string>
+    {
+        for (auto const* key : {"rooms", "not_rooms"})
+        {
+            if (auto problem = list_problem(room, key, "room.", ListOf::room_ids); problem.has_value())
+            {
+                return problem;
+            }
+        }
+        if (auto problem = flag_problem(room, "include_leave", "room."); problem.has_value())
+        {
+            return problem;
+        }
+        for (auto const* key : {"timeline", "state", "ephemeral", "account_data"})
+        {
+            if (auto problem = sub_filter_problem(room, key, "room."); problem.has_value())
+            {
+                return problem;
+            }
+        }
+        return std::nullopt;
+    }
+
+} // namespace
+
+auto validate_filter_definition(std::string_view filter_json) -> std::optional<std::string>
+{
+    auto const parsed = canonicaljson::parse_lossless(filter_json);
+    auto const* root = parsed.error == canonicaljson::ParseError::none ? as_object(parsed.value) : nullptr;
+    if (root == nullptr)
+    {
+        return std::string{"a filter must be a JSON object"};
+    }
+    for (auto const* key : {"presence", "account_data"})
+    {
+        if (auto problem = sub_filter_problem(*root, key, {}); problem.has_value())
+        {
+            return problem;
+        }
+    }
+    if (auto const* room = find_member(*root, "room"); room != nullptr)
+    {
+        auto const* room_object = as_object(*room);
+        if (room_object == nullptr)
+        {
+            return std::string{"room must be an object"};
+        }
+        if (auto problem = room_filter_problem(*room_object); problem.has_value())
+        {
+            return problem;
+        }
+    }
+    if (auto problem = list_problem(*root, "event_fields", {}, ListOf::strings); problem.has_value())
+    {
+        return problem;
+    }
+    if (auto const* format = find_member(*root, "event_format"); format != nullptr)
+    {
+        auto const* text = as_string(*format);
+        if (text == nullptr || (*text != "client" && *text != "federation"))
+        {
+            return std::string{"event_format must be \"client\" or \"federation\""};
+        }
+    }
+    return std::nullopt;
 }
 
 // Spec: Matrix CS API v1.19 § Filtering

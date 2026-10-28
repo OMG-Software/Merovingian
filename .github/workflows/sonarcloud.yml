@@ -136,6 +136,7 @@ jobs:
             --root . \
             --gcov-executable gcov-14 \
             --gcov-ignore-parse-errors \
+            --gcov-exclude-directories '.*/subprojects$' \
             --exclude-throw-branches \
             --exclude-unreachable-branches \
             --filter 'src/' \

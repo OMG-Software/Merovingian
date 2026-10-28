@@ -546,17 +546,31 @@ jobs:
       id-token: write
     steps:
       - name: Install EPEL and build dependencies
+        # A mirror occasionally answers with broken repository metadata ("Failed to
+        # download metadata for repo 'extras': repomd.xml parser error"), which fails
+        # the job before anything is built. Retry with the cached metadata cleared, as
+        # the OpenSUSE job retries zypper, and fail the step when the attempts run out.
         run: |
-          dnf install -y epel-release
-          dnf install -y ccache clang meson ninja-build pkgconf-pkg-config git \
-            openssl-devel \
-            libsodium-devel \
-            libpq-devel \
-            libpng-devel \
-            turbojpeg-devel \
-            libcurl-devel \
-            perl bison flex m4 \
-            rpm-build systemd-rpm-macros
+          for attempt in 1 2 3; do
+            if dnf install -y epel-release && \
+               dnf install -y ccache clang meson ninja-build pkgconf-pkg-config git \
+                 openssl-devel \
+                 libsodium-devel \
+                 libpq-devel \
+                 libpng-devel \
+                 turbojpeg-devel \
+                 libcurl-devel \
+                 perl bison flex m4 \
+                 rpm-build systemd-rpm-macros; then
+              break
+            fi
+            if [ "${attempt}" = 3 ]; then
+              exit 1
+            fi
+            echo "dnf attempt ${attempt} failed; retrying in 15s"
+            dnf clean metadata
+            sleep 15
+          done
       - uses: actions/checkout@v4
       - name: Cache compiler output with ccache
         uses: hendrikmuhs/ccache-action@v1.2

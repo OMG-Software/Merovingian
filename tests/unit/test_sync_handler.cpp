@@ -268,7 +268,9 @@ SCENARIO("Sync surfaces account_data, to_device, device_lists, presence, and key
                 // Spec MUST: account_data.events MUST be present and contain the queued event.
                 // Do NOT remove/change - removing this hides account-data delivery regressions.
                 REQUIRE(ad_events != nullptr);
-                REQUIRE(ad_events->size() == 1U);
+                // The queued m.tag, and the m.push_rules event every initial /sync carries with the
+                // effective push rules (owner decision 0.12.60, Complement TestPushSync).
+                REQUIRE(ad_events->size() == 2U);
 
                 auto const* to_device = as_object(*json_member(*root, "to_device"));
                 auto const* td_events = as_array(*json_member(*to_device, "events"));

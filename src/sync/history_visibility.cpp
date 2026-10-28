@@ -372,6 +372,34 @@ auto HistoryVisibility::joined_when_sent(database::PersistentEvent const& event)
     return latest == "join";
 }
 
+auto HistoryVisibility::membership_at(database::PersistentEvent const& event) -> std::optional<std::string>
+{
+    if (auto const group_id = state_group_of(event.event_id); group_id.has_value())
+    {
+        auto const& view = view_of_group(*group_id);
+        if (!view.valid)
+        {
+            return std::nullopt;
+        }
+        return view.membership.empty() ? std::string{"leave"} : view.membership;
+    }
+    auto const& timeline = membership_timeline(event.room_id);
+    if (!timeline.has_value())
+    {
+        return std::nullopt;
+    }
+    auto latest = std::string{"leave"};
+    for (auto const& step : *timeline)
+    {
+        if (step.ordering > event.stream_ordering)
+        {
+            break;
+        }
+        latest = step.membership;
+    }
+    return latest;
+}
+
 auto HistoryVisibility::allows(HistoryVisibilityValue visibility, std::string_view membership,
                                database::PersistentEvent const& event) -> bool
 {

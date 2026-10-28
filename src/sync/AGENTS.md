@@ -21,6 +21,7 @@ Spec authority:
 | `room_access.cpp` | `room_access_for()`: classifies a user's current membership of a room as joined / invited / none; `room_access_index()`: the same answer for all of a user's rooms in one pass |
 | `receipt_visibility.cpp` | `receipt_visible_to()`: the one rule deciding which viewers may see a stored receipt |
 | `receipt_content_builder.cpp` | `ReceiptContentBuilder`: the one builder of an `m.receipt` event's content (with `thread_id`), shared by `/sync` and sliding sync |
+| `viewer_event_unsigned.cpp` | `ViewerEventUnsigned`: adds the requesting user's `unsigned.membership` and, for the sending device, `unsigned.transaction_id` to a client event |
 | `read_markers.cpp` | `ReadMarkers`, `read_markers_for()`, `event_thread_id()`: where a user has read up to, unthreaded and per thread |
 | `history_visibility.cpp` | `HistoryVisibility`: the one per-request filter deciding which room events a user may see (Room History Visibility rules, state at the event, fail closed) |
 | `room_read_access.cpp` | `room_read_access_for()` / `room_state_event_ids()`: the one predicate deciding which room state a user may read (current, as of departure, or none) |
@@ -107,7 +108,40 @@ the owner's room account data), and an unknown type is withheld. Do not index
 
 Receipts are durable rows (`database::store_receipt`, ADR-0169), keyed by
 `(room, type, user, thread_id)`. Build `m.receipt` content with
-`ReceiptContentBuilder`, which carries `thread_id`.
+`ReceiptContentBuilder`, which carries `thread_id`. `/sync` emits
+`build_per_thread()`: one `m.receipt` event per categorisation (unthreaded, `main`, each
+thread root), because one event's content holds a single receipt per user, type and event
+and an unthreaded and a threaded `m.read` for one event are two receipts (Receipts, "one
+event per room and thread"). `build()` merges them, keeping the latest, for sliding sync,
+whose receipts extension carries one event per room.
+
+## Left rooms in `/sync`
+
+`rooms.leave` lists rooms the user left or was banned from (`membership` `leave` or `ban`).
+`build_left_room` (`client_server.cpp`) builds each: the room's events after `since` up to the
+event that ended the stay, selected by the request's timeline filter (`types`, `senders`,
+`contains_url`; `limit` 0 means none, `EventTypeFilter::limit_given`) and by
+`HistoryVisibility`, the newest `limit`, with `limited` and `prev_batch`. The user's own leave or
+ban is shown whatever the visibility says, so a rejected invite under `joined` visibility still
+reports it. Initial-sync `state` is the state at the start of the timeline, or as of the leave
+when the timeline is empty; an incremental sync's `state` carries the leave only when the
+timeline does not. An incremental sync lists a leave once, after `since`; `include_leave` lists
+left rooms on an initial sync only. A forgotten room has no membership row and is never listed
+(Leaving rooms: "forgotten ... will never appear in the response to `/sync`"). Do not add the
+events after the leave to a left room's timeline.
+
+## Viewer-dependent `unsigned`
+
+`unsigned.membership` and `unsigned.transaction_id` depend on who asks, so they are added per
+request by `ViewerEventUnsigned`, never stored. `transaction_id` is given only to the device
+that sent the event (`client_txn_ids.device_id`; a transaction ID is scoped to a device, and a
+login that names an existing `device_id`, or a token refresh, is the same device). It reads the
+record through `database::find_client_txn_by_event_id`, one hash lookup per event served; never
+scan `client_txn_ids` per request, the table grows with every message the server stores and
+nothing prunes it. `membership`
+comes from `HistoryVisibility::membership_at`: the user's `m.room.member` state in the state group
+after the event, `leave` before they had any. `/sync` timelines and `GET .../event/{eventId}`
+use it; a new read path that returns timeline events to a client should too.
 
 ## Unread counts
 
@@ -209,6 +243,14 @@ store's append-only change log to one entry per subject user, so a subject is
 never repeated however many rows the range covers, and resolves a subject that
 both changed and left to whichever came last. Do not walk
 `store.device_list_changes` directly.
+
+Rows are written where a membership is applied to the roster, whichever path learned it:
+`apply_membership_to_roster` (`room_service.hpp`) records `changed` when a user joins and
+`left` when they leave the last room they share with a local user, for local members of the
+room and, when the user is local, for them. The membership acceptor (`send_join`,
+`send_leave`) and `ingest_pdu_event` call it; a roster edit that skips it silently stops
+`device_lists.left` for remote users. A user who joins over federation is also `changed` for
+themselves (spec: a server may add a user to `changed` when they share a new room).
 
 ## Long-poll behaviour
 

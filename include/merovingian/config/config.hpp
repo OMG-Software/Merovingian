@@ -868,6 +868,15 @@ struct AppserviceConfig final
     std::uint32_t max_queued_events{100000U};
 };
 
+// Matrix v1.19 CS API "Presence". With `enabled=false` the server tracks and exchanges no
+// presence: GET answers 404, PUT answers 200 and keeps nothing, /sync carries no `presence`
+// events and does not mark users online, no m.presence EDU is sent, and an inbound one is
+// dropped. Restart required: main and the federation worker read it once at start-up.
+struct PresenceConfig final
+{
+    bool enabled{true};
+};
+
 struct SecurityConfig final
 {
     RegistrationSecurityConfig registration{};
@@ -895,7 +904,8 @@ public:
 
     Config(ServerConfig server, ListenersConfig listeners, DatabaseConfig database, SecurityConfig security,
            ClientRateLimitsConfig client_rate_limits, LogModulesConfig log_modules,
-           FederationWorkerConfig federation_worker = {}, AppserviceConfig appservice = {});
+           FederationWorkerConfig federation_worker = {}, AppserviceConfig appservice = {},
+           PresenceConfig presence = {});
 
     [[nodiscard]] auto server() const noexcept -> ServerConfig const&;
     [[nodiscard]] auto server() noexcept -> ServerConfig&;
@@ -913,6 +923,8 @@ public:
     [[nodiscard]] auto federation_worker() noexcept -> FederationWorkerConfig&;
     [[nodiscard]] auto appservice() const noexcept -> AppserviceConfig const&;
     [[nodiscard]] auto appservice() noexcept -> AppserviceConfig&;
+    [[nodiscard]] auto presence() const noexcept -> PresenceConfig const&;
+    [[nodiscard]] auto presence() noexcept -> PresenceConfig&;
 
 private:
     ServerConfig m_server{};
@@ -923,6 +935,7 @@ private:
     LogModulesConfig m_log_modules{};
     FederationWorkerConfig m_federation_worker{};
     AppserviceConfig m_appservice{};
+    PresenceConfig m_presence{};
 };
 
 struct ConfigValidationFinding final

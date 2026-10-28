@@ -221,7 +221,7 @@ value. Test fixtures that do not exercise persistence select it through
   P1: the Push Gateway API's notify Device object is defined as "the data
   dictionary passed in at pusher creation minus the url key", so a custom
   member beyond `url`/`format` must survive a restart and reach the gateway,
-  not just be discarded), with a primary key on `(user_id, app_id,
+  not just be discarded), and `device_id` (the device whose access token set the pusher, empty when none did; a password change that revokes a device deletes its pushers, 0.12.60), with a primary key on `(user_id, app_id,
   pushkey)` — the spec's uniqueness rule: setting a pusher with the same
   `app_id` and `pushkey` for the same user replaces it in place. The `PersistentPusher` struct and the
   `store_pusher` / `find_pusher` / `delete_pusher` / `list_pushers_for_user`
@@ -788,7 +788,15 @@ value. Test fixtures that do not exercise persistence select it through
 
 - Client transaction-idempotency dedup via the version-1 `client_txn_ids` table.
   Keyed on `(user_id, room_id, event_type, txn_id)`; `room_id` is empty string
-  for to-device sends. `event_id` stores the assigned event ID for room sends and
+  for to-device sends. `device_id` records the device that made the room-send
+  request (empty when it had none) so the sending device is given
+  `unsigned.transaction_id`; it is not part of the key. The in-memory rows are
+  indexed by event ID and by the key (`client_txn_event_index`,
+  `client_txn_key_index`), rebuilt after hydration and extended on every store,
+  so the idempotency check and the per-event transaction-ID lookup are hash
+  lookups. The indexes are trusted only while `client_txn_indexed_rows` equals
+  the row count; a caller that pushes rows directly falls back to a scan until
+  the next rebuild. Nothing prunes the table. `event_id` stores the assigned event ID for room sends and
   is empty for to-device entries. Both SQLite and PostgreSQL hydrate rows on
   startup. Handlers check the table before processing and store the result after
   a successful send, allowing clients to safely retry `PUT /rooms/{roomId}/send`
@@ -1091,6 +1099,23 @@ Two independent mechanisms close this, together:
    server the worker had not cached at start-up. The worker keeps a resolved
    remote in its in-memory `runtime.remotes`, so the failed write costs at most
    one fetch per server and key per worker start.
+
+   The worker's mirror of this table is a snapshot taken when it started, so a
+   key main cached afterwards used to be invisible to it and the first PDU main
+   had authenticated from that server waited on a second fetch (discovery, a
+   fresh connection and a TLS handshake) in the worker. The resolver the worker
+   runs is built with `KeyMirrorRefresh::on_miss`: when it finds no usable key in
+   the mirror it first calls `database::refresh_remote_signing_keys`, which
+   re-reads that one server's rows with the same four-column `SELECT` (never
+   `secret_key`; `detail::load_remote_signing_keys_from_sqlite` and
+   `…_from_postgresql`) and merges them into the mirror under
+   `server_signing_keys_mutex`, leaving a row that holds a secret alone. Only a
+   miss in the database too falls through to a fetch. The row was verified and
+   persisted by main under the same seven-day cap (`cache_remote_server_keys`),
+   so the worker trusts it no longer than main does; it is the trust the worker
+   already places in the rows it loaded at start-up. Main's mirror is
+   authoritative and never re-reads
+   ([ADR-0263](adr/0263-a-federation-worker-reads-public-keys-main-cached-before-fetching.md)).
 
    Every table `PersistentStore` can hold that is **not** in the allowlist is
    read by no worker-local code path — verified table by table during review

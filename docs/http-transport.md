@@ -296,7 +296,15 @@ that `discover_server`, well-known fetches, cached `discover`, the inbound origi
 check and the remote media re-check accept. Redirect resolution, URL preview and
 the filtered lookups used by pushers and identity servers never apply it. The server-name discovery cache retains at
 most 1024 positive and negative entries combined, with a 60-second freshness
-TTL; when full, a new name evicts the oldest retained result. Expired entries
+TTL; when full, a new name evicts the oldest retained result. The federated join's
+`make_join` and `send_join` (every `perform_outbound_call`) resolve their destination
+through this cache with `DiscoveryCachePolicy::successes_only`: a fresh success is
+reused, so the two calls of one join, and later joins to the same server, pay the
+`.well-known` + SRV + DNS cascade once per lifetime (server-server-api.md, "Resolving server
+names": responses, errors included, "should be cached"), while a remembered failure is
+ignored and the network asked again, so a retry after the destination recovers is never
+refused for the rest of the lifetime. A cache that does not wrap the runtime's current
+discovery network (a test replaced the network) is not used. Expired entries
 are swept before cache hits and insertion. Invalid server names are refused
 before network work and never cached; concurrent admissions obey the same cap.
 A zero constructor capacity disables caching.
@@ -1045,6 +1053,7 @@ The paths under the budget:
 | `GET /_matrix/client/v3/publicRooms?server=<remote>` | federation `GET /publicRooms` |
 | `POST /_matrix/client/v3/publicRooms?server=<remote>` | federation `GET` or `POST /publicRooms` |
 | `GET /_matrix/client/v3/directory/room/{alias}` for a remote alias | federation `GET /query/directory` |
+| `GET /_matrix/client/v1/rooms/{roomId}/hierarchy`, once a child room is not held locally | federation `GET /hierarchy/{roomId}` to the link's `via` servers: one slot and one 10 s deadline for the whole walk, at most 3 servers per room and 16 requests per walk; the slot is taken at the first such request and `429 M_LIMIT_EXCEEDED` answers the whole walk when it is refused |
 | `GET /_matrix/client/v3/thirdparty/*`, when an appservice will be called | appservice `GET /_matrix/app/v1/thirdparty/*` (ADR-0181) |
 | `GET /_matrix/media/v3/download` and `/thumbnail` for remote media, without a media fetch pool | discovery, federation media, legacy fallback, redirect follow |
 | `GET /_matrix/client/v1/media/download` and `/thumbnail` for remote media, without a media fetch pool | as above |

@@ -545,6 +545,18 @@ quickly finding everything a given `AGENTS.md` file contributed.
   sender the room authorised (ADR-0071, `docs/threat-model.md` #450).
   Source: `src/homeserver/AGENTS.md`.
 
+- **A federation worker re-reads only public signing keys, and only on a miss.** The one
+  table a worker reads after start-up is `server_signing_keys`, through
+  `federation::KeyMirrorRefresh::on_miss`, for the server whose signature it is verifying.
+  `database::refresh_remote_signing_keys` selects `server_name, key_id, public_key,
+  valid_until_ts` and never `secret_key`, and is enabled only for the `federation_worker`
+  load profile (`LocalDatabase::remote_signing_keys_read_through`). Do not widen that query,
+  read other tables on demand, or give main's resolver the same flag.
+  Why: only main writes those rows, after verifying the key and capping it at seven days, so
+  the worker trusts nothing it did not already trust at start-up; a wider read would hand the
+  most exposed process data it has no need for (ADR-0263).
+  Source: `src/federation_worker/AGENTS.md`.
+
 - **Every room-scoped federation read checks that the authenticated origin is in the room.**
   `GET /state`, `/state_ids`, `/event`, `/backfill` and `POST /get_missing_events` take the
   X-Matrix-verified `origin` (never a value from the request) and answer `403 M_FORBIDDEN`
@@ -610,6 +622,18 @@ quickly finding everything a given `AGENTS.md` file contributed.
   seat a local user in a room judged under different rule sets by different components (ADR-0179).
   Source: `src/homeserver/AGENTS.md`.
 
+- **Gap recovery for a PDU asks only for what the spec lets a peer serve, in the spec's terms,
+  and stores nothing until it has what it needs.** `/get_missing_events` takes the PDU itself as
+  `latest_events` and this room's forward extremities as `earliest_events`; a snapshot's named
+  events are all fetched with `GET /event/{eventId}` before any is stored, and `/event_auth` is
+  only the last resort for one event; held PDUs live in memory for one recovery and are verified
+  again when placed; an event whose resolvable `auth_events` are disallowed, rejected or deny it
+  is stored `rejected`, never dropped, and an unresolvable auth event stays a gap.
+  Why: the reversed `/get_missing_events` arguments and the dependence on `/event_auth` left a
+  PDU unplaced for ever against any peer that serves only the required endpoints, and dropping a
+  rejected-auth outlier left every later event that named it unplaced.
+  Source: `src/homeserver/AGENTS.md`.
+
 - **Every outbound destination holds a bounded share of the dispatch queue, and every queued
   transaction has its own transaction ID. Never discard `DispatchWorker::enqueue`'s result.**
   Why: one dead or hostile peer filled the shared queue and starved every other peer; a shared
@@ -668,6 +692,16 @@ quickly finding everything a given `AGENTS.md` file contributed.
   Why: typing, receipts and presence arrive far more often than events, from federation too; an
   unbounded or per-member-per-update cost under `runtime.mutex` is a denial of service (CWE-400;
   ADR-0190).
+  Source: `src/homeserver/AGENTS.md`.
+
+- **Presence answers the same for a user who does not exist as for one the caller may not see, and an
+  inbound `m.presence` EDU is kept only for a user of its origin who shares a joined room with a local
+  user.** `read_presence` answers 403 for both; `accept_inbound_presence` looks at the first
+  `max_inbound_presence_entries` (100) entries, refuses a `presence` outside the enumeration and a
+  `status_msg` over 1024 bytes, and does one pass over the memberships per EDU, not per entry.
+  Why: a 404 for a missing user would let any caller enumerate accounts, and unbounded rows keyed by
+  a remote server's invented users would grow memory and the database without limit (CWE-204,
+  CWE-770).
   Source: `src/homeserver/AGENTS.md`.
 
 - **The appservice ping takes a slot in the client-outbound budget before its outbound call**, as the
@@ -846,7 +880,9 @@ quickly finding everything a given `AGENTS.md` file contributed.
   never answers pinned all 8 request-pool threads (audit HTTP-2, OUT-7; ADR-0079). The caps are
   half of `server.http.request_threads`, never a separate setting. The `/thirdparty/*` lookups
   take the slot too, whenever they will call an appservice, but keep each appservice's own timeout
-  rather than one shared deadline (ADR-0181).
+  rather than one shared deadline (ADR-0181). The space hierarchy takes the slot at the first
+  child room it must ask another server for, holds it for the whole walk, and bounds the walk to
+  16 remote requests and 3 servers per room.
   Source: `src/homeserver/AGENTS.md`.
 
 - **Nothing may put a TLS client socket back into blocking mode after the handshake, and

@@ -359,7 +359,7 @@ SCENARIO("build_federation_space_hierarchy_response returns the room and immedia
         WHEN("the federation response is built for the root space")
         {
             auto const body = merovingian::homeserver::build_federation_space_hierarchy_response(
-                runtime, "!space:example.org", false);
+                runtime, "!space:example.org", false, "remote.example.org");
             THEN("it contains the root room and both children")
             {
                 REQUIRE(!body.empty());

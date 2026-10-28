@@ -1156,6 +1156,44 @@ auto write_connections_opened(PersistentStore const& store) -> std::uint64_t
     return store.server_signing_keys;
 }
 
+[[nodiscard]] auto refresh_remote_signing_keys(PersistentStore& store, std::string_view server_name) -> bool
+{
+    if (store.backend == PersistentStoreBackend::memory)
+    {
+        return true;
+    }
+    auto rows = detail::load_remote_signing_keys_from_backend(store, server_name);
+    if (!rows.has_value())
+    {
+        log_diagnostic("server_signing_keys.refresh_failed",
+                       {
+                           {"server_name", std::string{server_name}, false}
+        },
+                       observability::LogEventSeverity::warning);
+        return false;
+    }
+    auto const lock = std::lock_guard{*store.server_signing_keys_mutex};
+    for (auto& row : *rows)
+    {
+        // Only the public columns were read. A row this process holds with a
+        // secret is this server's own key: leave it exactly as it is.
+        auto const existing =
+            std::ranges::find_if(store.server_signing_keys, [&row](PersistentServerSigningKey const& held) {
+                return held.server_name == row.server_name && held.key_id == row.key_id;
+            });
+        if (existing == store.server_signing_keys.end())
+        {
+            store.server_signing_keys.push_back(std::move(row));
+        }
+        else if (existing->secret_key.empty())
+        {
+            existing->public_key = std::move(row.public_key);
+            existing->valid_until_ts = row.valid_until_ts;
+        }
+    }
+    return true;
+}
+
 [[nodiscard]] auto store_federation_destination(PersistentStore& store, PersistentFederationDestination destination)
     -> bool
 {
@@ -4237,12 +4275,49 @@ namespace
 
     [[nodiscard]] auto insert_client_txn_statement(PersistentClientTxnRecord const& record) -> PreparedStatement
     {
-        return record_statement("insert_client_txn_id",
-                                "INSERT INTO client_txn_ids (user_id, room_id, event_type, txn_id, event_id) "
-                                "VALUES ($1, $2, $3, $4, $5) ON CONFLICT DO NOTHING",
-                                {public_value(record.user_id), public_value(record.room_id),
-                                 public_value(record.event_type), public_value(record.txn_id),
-                                 public_value(record.event_id)});
+        return record_statement(
+            "insert_client_txn_id",
+            "INSERT INTO client_txn_ids (user_id, room_id, event_type, txn_id, event_id, device_id) "
+            "VALUES ($1, $2, $3, $4, $5, $6) ON CONFLICT DO NOTHING",
+            {public_value(record.user_id), public_value(record.room_id), public_value(record.event_type),
+             public_value(record.txn_id), public_value(record.event_id), public_value(record.device_id)});
+    }
+
+    // The idempotency key of a record: each part length-prefixed, so no part can run into the next.
+    [[nodiscard]] auto client_txn_key(std::string_view user_id, std::string_view room_id, std::string_view event_type,
+                                      std::string_view txn_id) -> std::string
+    {
+        auto key = std::string{};
+        for (auto const part : {user_id, room_id, event_type, txn_id})
+        {
+            key += std::to_string(part.size());
+            key.push_back(':');
+            key.append(part);
+        }
+        return key;
+    }
+
+    auto index_client_txn(PersistentStore& store, std::size_t position) -> void
+    {
+        auto const& record = store.client_txn_ids[position];
+        store.client_txn_key_index.emplace(
+            client_txn_key(record.user_id, record.room_id, record.event_type, record.txn_id), position);
+        if (!record.event_id.empty())
+        {
+            store.client_txn_event_index.emplace(record.event_id, position);
+        }
+    }
+
+    // Adds a record to `client_txn_ids` and, while the indexes cover every earlier record, to them.
+    auto append_client_txn(PersistentStore& store, PersistentClientTxnRecord record) -> void
+    {
+        auto const covered = store.client_txn_indexed_rows == store.client_txn_ids.size();
+        store.client_txn_ids.push_back(std::move(record));
+        if (covered)
+        {
+            index_client_txn(store, store.client_txn_ids.size() - 1U);
+            ++store.client_txn_indexed_rows;
+        }
     }
 
 } // namespace
@@ -4310,7 +4385,7 @@ namespace
         return false;
     }
     apply_to_device_batch(store, std::move(batch));
-    store.client_txn_ids.push_back(std::move(record));
+    append_client_txn(store, std::move(record));
     return true;
 }
 
@@ -4814,15 +4889,15 @@ auto restore_sync_stream_id(PersistentStore& store) -> void
     auto const statement = record_statement(
         "upsert_pusher",
         "INSERT INTO pushers (user_id, app_id, pushkey, kind, app_display_name, device_display_name, "
-        "profile_tag, lang, data_url, data_format, data_extra_json) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, "
-        "$11) "
+        "profile_tag, lang, data_url, data_format, data_extra_json, device_id) VALUES ($1, $2, $3, $4, $5, $6, $7, "
+        "$8, $9, $10, $11, $12) "
         "ON CONFLICT (user_id, app_id, pushkey) DO UPDATE SET kind = $4, app_display_name = $5, "
         "device_display_name = $6, profile_tag = $7, lang = $8, data_url = $9, data_format = $10, "
-        "data_extra_json = $11",
+        "data_extra_json = $11, device_id = $12",
         {public_value(pusher.user_id), public_value(pusher.app_id), public_value(pusher.pushkey),
          public_value(pusher.kind), public_value(pusher.app_display_name), public_value(pusher.device_display_name),
          public_value(pusher.profile_tag), public_value(pusher.lang), public_value(pusher.data_url),
-         public_value(pusher.data_format), public_value(pusher.data_extra_json)});
+         public_value(pusher.data_format), public_value(pusher.data_extra_json), public_value(pusher.device_id)});
     if (!record_and_persist(store, statement))
     {
         return false;
@@ -5514,14 +5589,67 @@ auto sort_appservice_outbox(PersistentStore& store) -> void
                                             std::string_view room_id, std::string_view event_type,
                                             std::string_view txn_id) -> std::optional<std::string>
 {
-    auto const it = std::ranges::find_if(store.client_txn_ids, [&](PersistentClientTxnRecord const& r) {
+    auto const matches = [&](PersistentClientTxnRecord const& r) {
         return r.user_id == user_id && r.room_id == room_id && r.event_type == event_type && r.txn_id == txn_id;
-    });
+    };
+    if (store.client_txn_indexed_rows == store.client_txn_ids.size())
+    {
+        auto const entry = store.client_txn_key_index.find(client_txn_key(user_id, room_id, event_type, txn_id));
+        if (entry == store.client_txn_key_index.end())
+        {
+            return std::nullopt;
+        }
+        if (entry->second < store.client_txn_ids.size() && matches(store.client_txn_ids[entry->second]))
+        {
+            return store.client_txn_ids[entry->second].event_id;
+        }
+        // An index that disagrees with its records is not trusted: scan.
+    }
+    auto const it = std::ranges::find_if(store.client_txn_ids, matches);
     if (it == store.client_txn_ids.end())
     {
         return std::nullopt;
     }
     return it->event_id;
+}
+
+auto rebuild_client_txn_index(PersistentStore& store) -> void
+{
+    store.client_txn_event_index.clear();
+    store.client_txn_key_index.clear();
+    store.client_txn_key_index.reserve(store.client_txn_ids.size());
+    store.client_txn_event_index.reserve(store.client_txn_ids.size());
+    for (auto position = std::size_t{0U}; position < store.client_txn_ids.size(); ++position)
+    {
+        index_client_txn(store, position);
+    }
+    store.client_txn_indexed_rows = store.client_txn_ids.size();
+}
+
+[[nodiscard]] auto find_client_txn_by_event_id(PersistentStore const& store, std::string_view event_id)
+    -> PersistentClientTxnRecord const*
+{
+    if (event_id.empty())
+    {
+        return nullptr;
+    }
+    if (store.client_txn_indexed_rows == store.client_txn_ids.size())
+    {
+        auto const entry = store.client_txn_event_index.find(std::string{event_id});
+        if (entry == store.client_txn_event_index.end())
+        {
+            return nullptr;
+        }
+        if (entry->second < store.client_txn_ids.size() && store.client_txn_ids[entry->second].event_id == event_id)
+        {
+            return &store.client_txn_ids[entry->second];
+        }
+        // An index that disagrees with its records is not trusted: scan.
+    }
+    auto const it = std::ranges::find_if(store.client_txn_ids, [&](PersistentClientTxnRecord const& record) {
+        return record.event_id == event_id;
+    });
+    return it == store.client_txn_ids.end() ? nullptr : &*it;
 }
 
 [[nodiscard]] auto store_client_txn(PersistentStore& store, PersistentClientTxnRecord record) -> bool
@@ -5539,7 +5667,7 @@ auto sort_appservice_outbox(PersistentStore& store) -> void
     {
         return false;
     }
-    store.client_txn_ids.push_back(std::move(record));
+    append_client_txn(store, std::move(record));
     return true;
 }
 

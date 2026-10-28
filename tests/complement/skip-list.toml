@@ -195,3 +195,16 @@ mode = "expect-fail"
 category = "non-spec"
 spec = "docs/matrix-v1.19-spec/rooms/v12.md"
 reason = "A second m.room.create is refused by the auth rules; the test wants 400, v1.19 gives no status, and this server answers auth-rule refusals 403 M_FORBIDDEN."
+
+# ADR-0257: a forgotten room is never listed in /sync. Client-Server API, "Leaving rooms":
+# "Rooms which have been forgotten will never appear in the response to the /sync API, until
+# the user re-joins, is re-invited, or knocks." Complement's own comment on this subtest says
+# it runs counter to the spec.
+
+[[entry]]
+test = "TestRoomForget/Parallel/Leave_for_forgotten_room_shows_up_in_v2_incremental_/sync"
+package = "tests/csapi"
+mode = "expect-fail"
+category = "spec"
+spec = "docs/matrix-v1.19-spec/client-server-api.md#leaving-rooms"
+reason = "Expects a forgotten room's leave in the next incremental /sync; the spec says forgotten rooms never appear in /sync until the user rejoins, is re-invited or knocks (ADR-0257)."

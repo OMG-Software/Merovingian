@@ -1387,17 +1387,18 @@ namespace
 
         if (table_load_profile_includes("client_txn_ids", profile))
         {
-            auto client_txns = query_rows(connection, "postgresql_load_client_txn_ids",
-                                          "SELECT user_id, room_id, event_type, txn_id, event_id FROM client_txn_ids");
+            auto client_txns =
+                query_rows(connection, "postgresql_load_client_txn_ids",
+                           "SELECT user_id, room_id, event_type, txn_id, event_id, device_id FROM client_txn_ids");
             if (!client_txns.ok)
             {
                 return false;
             }
             for (auto const& row : client_txns.rows)
             {
-                if (row.size() >= 5U)
+                if (row.size() >= 6U)
                 {
-                    store.client_txn_ids.push_back({row[0], row[1], row[2], row[3], row[4]});
+                    store.client_txn_ids.push_back({row[0], row[1], row[2], row[3], row[4], row[5]});
                 }
             }
         }
@@ -1437,10 +1438,11 @@ namespace
 
         if (table_load_profile_includes("pushers", profile))
         {
-            auto pushers = query_rows(connection, "postgresql_load_pushers",
-                                      "SELECT user_id, app_id, pushkey, kind, app_display_name, device_display_name, "
-                                      "profile_tag, lang, data_url, data_format, data_extra_json FROM pushers "
-                                      "ORDER BY user_id, app_id, pushkey");
+            auto pushers =
+                query_rows(connection, "postgresql_load_pushers",
+                           "SELECT user_id, app_id, pushkey, kind, app_display_name, device_display_name, "
+                           "profile_tag, lang, data_url, data_format, data_extra_json, device_id FROM pushers "
+                           "ORDER BY user_id, app_id, pushkey");
             if (!pushers.ok)
             {
                 return false;
@@ -1463,6 +1465,10 @@ namespace
                     if (row.size() >= 11U)
                     {
                         entry.data_extra_json = row[10];
+                    }
+                    if (row.size() >= 12U)
+                    {
+                        entry.device_id = row[11];
                     }
                     store.pushers.push_back(std::move(entry));
                 }
@@ -2307,6 +2313,7 @@ auto open_postgresql_persistent_store(std::string_view conninfo, std::string_vie
     sort_appservice_outbox(store);
     reconstruct_event_relations(store);
     rebuild_state_transition_index(store);
+    rebuild_client_txn_index(store);
     rebuild_redaction_state(store);
     rebuild_key_signature_index(store);
     restore_sync_stream_id(store);
@@ -2676,6 +2683,44 @@ namespace detail
             return std::nullopt;
         }
         return result.rows.front().front();
+    }
+
+    auto load_remote_signing_keys_from_postgresql(std::string_view conninfo, std::string_view runtime_role,
+                                                  std::string_view server_name)
+        -> std::optional<std::vector<PersistentServerSigningKey>>
+    {
+        if (conninfo.empty())
+        {
+            return std::nullopt;
+        }
+        auto opened = open_postgresql_connection(conninfo);
+        if (!opened.ok)
+        {
+            return std::nullopt;
+        }
+        if (!runtime_role.empty() && !set_postgresql_role(opened.connection, runtime_role))
+        {
+            return std::nullopt;
+        }
+        // The same four columns the worker role is granted and the start-up load
+        // selects: secret_key is never named, and the role could not read it.
+        auto result = opened.connection.execute(
+            {"postgresql_load_remote_signing_keys",
+             "SELECT server_name, key_id, public_key, valid_until_ts FROM server_signing_keys WHERE server_name = $1",
+             {{std::string{server_name}, false}}});
+        if (!result.ok)
+        {
+            return std::nullopt;
+        }
+        auto keys = std::vector<PersistentServerSigningKey>{};
+        for (auto const& row : result.rows)
+        {
+            if (row.size() >= 4U)
+            {
+                keys.push_back({row[0], row[1], row[2], parse_u64(row[3]), {}});
+            }
+        }
+        return keys;
     }
 
     auto load_audit_events_from_postgresql(std::string_view conninfo, std::string_view runtime_role,

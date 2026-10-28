@@ -1100,3 +1100,91 @@ SCENARIO("an event the user sends marks the events before it in its thread as re
         }
     }
 }
+
+// Spec: Matrix Client-Server API v1.19
+// Endpoint / Section: Receipts, `m.receipt` event, Server behaviour
+// URL: ../../docs/matrix-v1.19-spec/client-server-api.md#receipts
+//
+// "Each user_id, receipt_type, and categorisation (unthreaded, or thread_id) tuple must be
+// associated with only a single event_id", and "receipts SHOULD be batched into one event per
+// room and thread before delivering them to clients". A user's unthreaded and threaded
+// m.read receipts for the same event are two receipts, and both come down /sync.
+SCENARIO("An unthreaded and a threaded m.read receipt for one event both reach /sync",
+         "[conformance][client-server][receipt][threads]")
+{
+    GIVEN("a user with a message and a threaded reply in a room")
+    {
+        auto started = merovingian::homeserver::start_client_server(conformance_config());
+        REQUIRE(started.started);
+        auto const token = logged_in_token(started.runtime);
+        auto const create = merovingian::homeserver::handle_client_server_request(
+            started.runtime, {"POST", "/_matrix/client/v3/createRoom", token, R"({"name":"thread receipts"})"});
+        REQUIRE(create.response.status == 200U);
+        auto const room_id = room_id_from_create(create.response.body);
+        auto const root = merovingian::homeserver::handle_client_server_request(
+            started.runtime, {"PUT", "/_matrix/client/v3/rooms/" + room_id + "/send/m.room.message/root", token,
+                              R"({"msgtype":"m.text","body":"root"})"});
+        REQUIRE(root.response.status == 200U);
+        auto const root_id = event_id_from_send(root.response.body);
+        auto const reply = merovingian::homeserver::handle_client_server_request(
+            started.runtime,
+            {"PUT", "/_matrix/client/v3/rooms/" + room_id + "/send/m.room.message/reply", token,
+             R"({"msgtype":"m.text","body":"reply","m.relates_to":{"rel_type":"m.thread","event_id":")" + root_id +
+                 R"("}})"});
+        REQUIRE(reply.response.status == 200U);
+        auto const reply_id = event_id_from_send(reply.response.body);
+
+        WHEN("it sends an unthreaded and then a threaded m.read receipt for the reply")
+        {
+            auto const unthreaded = merovingian::homeserver::handle_client_server_request(
+                started.runtime,
+                {"POST", "/_matrix/client/v3/rooms/" + room_id + "/receipt/m.read/" + reply_id, token, "{}"});
+            REQUIRE(unthreaded.response.status == 200U);
+            auto const threaded = merovingian::homeserver::handle_client_server_request(
+                started.runtime, {"POST", "/_matrix/client/v3/rooms/" + room_id + "/receipt/m.read/" + reply_id, token,
+                                  R"({"thread_id":")" + root_id + R"("})"});
+            REQUIRE(threaded.response.status == 200U);
+
+            THEN("one m.receipt event carries the unthreaded receipt and another the threaded one")
+            {
+                auto const ephemeral = first_room_ephemeral_events(started.runtime, token, room_id);
+                auto saw_unthreaded = false;
+                auto saw_threaded = false;
+                for (auto const& entry : ephemeral)
+                {
+                    auto const* event = std::get_if<merovingian::canonicaljson::Object>(&entry.storage());
+                    REQUIRE(event != nullptr);
+                    auto const* type = string_member(*event, "type");
+                    if (type == nullptr || *type != "m.receipt")
+                    {
+                        continue;
+                    }
+                    auto const* content = object_member_as_object(*event, "content");
+                    REQUIRE(content != nullptr);
+                    auto const* by_type = object_member_as_object(*content, reply_id);
+                    if (by_type == nullptr)
+                    {
+                        continue;
+                    }
+                    auto const* users = object_member_as_object(*by_type, "m.read");
+                    REQUIRE(users != nullptr);
+                    auto const* receipt = object_member_as_object(*users, "@alice:example.org");
+                    REQUIRE(receipt != nullptr);
+                    auto const* thread_id = string_member(*receipt, "thread_id");
+                    if (thread_id == nullptr)
+                    {
+                        saw_unthreaded = true;
+                    }
+                    else if (*thread_id == root_id)
+                    {
+                        saw_threaded = true;
+                    }
+                }
+                // Spec MUST: the (user, m.read, unthreaded) receipt is its own tuple, not replaced.
+                REQUIRE(saw_unthreaded);
+                // Spec MUST: the (user, m.read, thread) receipt is a second tuple, not replaced.
+                REQUIRE(saw_threaded);
+            }
+        }
+    }
+}

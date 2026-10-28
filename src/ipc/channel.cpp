@@ -195,6 +195,15 @@ auto IpcChannel::stop() noexcept -> void
     // Wake the dispatch thread so it drains any queued request frames and
     // exits (running_ is already false). Joined after the reader so no new
     // frames can be queued behind the drain.
+    //
+    // dispatch_mu_ is taken (and released) after running_ was cleared and
+    // before the notify. The dispatcher tests running_ under that mutex and
+    // then waits; without this, the store and notify could fall between its
+    // test and its wait, the wakeup would be lost, and the join below would
+    // never return (a FreeBSD CI run hung here).
+    {
+        auto const lk = std::lock_guard{dispatch_mu_};
+    }
     dispatch_cv_.notify_all();
     if (dispatch_thread_.joinable())
     {

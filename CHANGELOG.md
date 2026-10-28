@@ -1,3 +1,159 @@
+## 0.12.60
+
+Fixes from the triage of the ninth Complement run (0.12.59 at 90974603: 415 pass, 255 fail, 93
+top-level tests with unexpected failures), branched from PR #541: membership events accepted for
+other servers are forwarded, gap recovery uses the endpoints peers must serve, presence is
+implemented, and `/sync`, device lists, the space hierarchy and federation latency are fixed.
+Complement has not yet been rerun against this version.
+
+### Federation
+
+- **FIXED:** a `send_join`, `send_leave` or `send_knock` this server accepted as the resident was
+  stored and answered but never sent to the room's other servers, so a third server never learnt of
+  the join, leave or knock and sent that user nothing. The stored copy (co-signed for a restricted
+  join) is now queued to every server with a joined member, except this server and the requesting
+  one; a rejected or soft-failed event goes to no one. Events composed here and events accepted
+  here share one queueing function (ADR-0254).
+- **FIXED:** `/get_missing_events` was sent with `latest_events` and `earliest_events` reversed
+  against the spec, so the origin skipped exactly the events asked for, and `/state_ids` was asked
+  about an event already fetched. `latest_events` is now the PDU and `earliest_events` up to ten
+  forward extremities; a fetched PDU that cannot yet be placed is held for the recovery (bounded,
+  unpersisted, verified again when placed) and the state is asked at the nearest missing prev
+  event.
+- **FIXED:** a PDU whose history was missing was never placed when the sender did not serve
+  `/event_auth` (Complement's servers do not). Every event a `/state_ids` snapshot names is now
+  fetched with `GET /event/{eventId}`, auth chain first and all before any is stored; `/event_auth`
+  is a last resort for one event (ADR-0255).
+- **FIXED:** a backfilled event whose auth events resolved but failed (a disallowed selection, a
+  rejected auth event, an auth denial) was dropped, so every event built on it stayed unplaced. It
+  is now stored rejected with an after-state equal to its state-before (ADR-0256). One stored
+  rejected before its state-before was known gains that state once a later snapshot supplies it,
+  so an event naming it as a prev event can be placed (`[a8_rejected_outlier_promoted]`).
+- **FIXED:** a remote user's join or leave learnt over federation (`send_join`, `send_leave`, or a
+  PDU in `/send`) now records `device_lists.changed` or `device_lists.left` for the local members
+  who share the room; only local membership changes did. Every path changes the roster through
+  `apply_membership_to_roster`, which writes the device-list rows as one batch (ADR-0265).
+- **FIXED:** renaming a device (`PUT /devices/{deviceId}`) now sends `m.device_list_update` to every
+  server sharing a room with the user, and published device keys and the EDU carry the device's
+  current `device_display_name`, not the name at key upload. A user who joins over federation is
+  listed in their own `device_lists.changed` (ADR-0265).
+- **FIXED:** `GET /_matrix/federation/v1/hierarchy/{roomId}` is judged for the authenticated
+  requesting server: a room that server already has a user joined to is always served, a
+  restricted room is served only while a user of that server is joined to one of its allowed
+  rooms, and children it may not peek or join are listed in the required `inaccessible_children`
+  (ADR-0260).
+- **CHANGED:** a federated join resolves its destination once per discovery-cache lifetime instead
+  of once per call (`make_join` and `send_join` shared one `.well-known`, SRV and DNS cascade); a
+  remembered discovery failure is never served to a join (ADR-0262).
+- **CHANGED:** a federation worker re-reads a server's public signing keys (four columns, never
+  `secret_key`) from the database before fetching them again, so a key main already verified is not
+  fetched a second time in front of that server's first PDU (ADR-0263).
+- **ADDED:** debug log `relay.runtime_lock_acquired wait_ms` (module `worker_pool`) records how long
+  a PDU relayed by a worker waited for `runtime.mutex`.
+
+### Presence
+
+- **ADDED:** presence. `GET /presence/{userId}/status` answers your own presence, or another user's
+  when you share a joined room (403 otherwise, also for a user who does not exist). `GET /sync`
+  takes `set_presence` (omitted or `online`, `unavailable`, `offline`; anything else is 400
+  `M_INVALID_PARAM`), and only a change of state is stored and sent. `/sync` `presence.events`
+  carries the presence of users sharing a room, including a user who started sharing one since the
+  token. Local changes go to every server sharing a room as `m.presence`; an inbound one is kept
+  only for a user of its origin who shares a joined room with a local user, at most 100 entries and
+  1024 bytes of `status_msg`. Both wake long-polling syncs (ADR-0261).
+- **ADDED:** `presence.enabled` (default `true`, restart required). When `false`: GET answers 404,
+  PUT 200 and stores nothing, `/sync` carries no presence, and no `m.presence` is sent or kept.
+
+### Sync and events
+
+- **FIXED:** `rooms.leave` lists rooms the user was banned from as well as left ("The rooms that the
+  user has left or been banned from"), each with its filtered timeline up to the leave or ban and,
+  on an initial sync, the state at the start of that timeline (as of the leave when it is empty).
+- **FIXED:** with `include_leave`, every incremental `/sync` listed every left room. A leave is now
+  reported once, after `since`; `include_leave` governs initial syncs; a forgotten room is never
+  listed, as the spec says (ADR-0257).
+- **FIXED:** a `/sync` timeline ignored the filter's `types`, `not_types` and `contains_url`, and a
+  `limit` of 0 returned the default number of events.
+- **FIXED:** events in `/sync` timelines and from `GET /rooms/{roomId}/event/{eventId}` now carry
+  `unsigned.membership` and, for the device that sent them, `unsigned.transaction_id`
+  (`client_txn_ids` gained `device_id`; ADR-0258). Both lookups, and the send idempotency check,
+  use in-memory indexes instead of scanning every stored transaction under `runtime.mutex`.
+- **FIXED (security):** a stored event's own `unsigned.transaction_id` and `unsigned.membership`
+  were passed on to clients. `unsigned` is outside an event's signatures, so a remote server could
+  set either on its PDU and a client could take the event for its own local echo. Every client
+  read path now drops both from the stored copy; this server sets them per viewer
+  (`[unsigned-forged]`).
+- **FIXED:** `/sync` kept one receipt where a user had both an unthreaded and a threaded `m.read`
+  for one event; it now sends one `m.receipt` event per thread (ADR-0259).
+- **FIXED:** `GET /rooms/{roomId}/messages` with `lazy_load_members` returned the room's other state;
+  `state` is now only the chunk senders' memberships.
+- **FIXED:** an initial `/sync` carries an `m.push_rules` event with the effective ruleset even for a
+  user who never changed a rule.
+
+### Client-Server API
+
+- **CHANGED:** an event over the size limits is refused 413 `M_TOO_LARGE` (was 400) on `/send`,
+  `/state`, membership endpoints and `createRoom` (ADR-0264).
+- **FIXED:** `POST /user/{userId}/filter` accepted a filter with a field of the wrong type; it now
+  answers 400 `M_BAD_JSON`, including for non-ID `senders` and `rooms` entries.
+- **FIXED:** `POST /keys/upload` with malformed `device_keys` answers `M_BAD_JSON` (was
+  `M_INVALID_PARAM`).
+- **CHANGED:** `POST /user_directory/search` searches only users visible to the requester (a shared
+  room, or a `public` or `world_readable` room); it matched every local profile (ADR-0264).
+- **FIXED:** a password change with `logout_devices` left the pushers of the devices it revoked;
+  they are now deleted (`pushers.device_id` added to the v1 schema). They are deleted before the
+  password or any token is written, so a failure to delete one answers 500 with the old password
+  still valid and the change can be retried.
+- **FIXED:** the space hierarchy (`GET /_matrix/client/v1/rooms/{roomId}/hierarchy`): `suggested_only`
+  now also narrows each space's `children_state`; a restricted room appears for a user joined to one
+  of its allowed rooms; child rooms held only by other servers are fetched with the federation
+  hierarchy on the link's `via` servers (at most 16 calls per walk, 3 servers per room, one
+  client-outbound slot and one deadline, 429 when the slot is refused). A remote answer is untrusted
+  and filtered per user (ADR-0260).
+
+### Complement
+
+- **CHANGED:** the Complement image fetches remote media and serves it (`remote_fetch_enabled=true`,
+  `remote_fetch_media_policy=allow`, as the example config ships).
+- **CHANGED:** `TestRoomForget/Parallel/Leave_for_forgotten_room_shows_up_in_v2_incremental_/sync` is
+  an expected failure: it contradicts the spec's rule that forgotten rooms never appear in `/sync`.
+
+### CI
+
+- **FIXED:** the SonarQube Cloud and Codecov coverage steps ran gcov on the vendored subprojects'
+  counter files, whose coverage the report filters out anyway; a damaged `sqlite3.c.gcda` made
+  gcovr exit 64 and failed the job. gcovr now skips `subprojects/` with
+  `--gcov-exclude-directories`; the reported numbers are unchanged.
+- **FIXED:** `IpcChannel::stop()` could hang for ever. It cleared `running_` and notified the
+  dispatch thread without taking `dispatch_mu_`, so a stop that fell between the dispatcher's check
+  of `running_` and its wait lost the wakeup and the join never returned (a FreeBSD unit-test run
+  hung 18 minutes in the stopped-channel scenario). `stop()` now takes and releases `dispatch_mu_`
+  before notifying. This affected the main process and the federation worker at shutdown.
+  `[ipc][stop-race]` repeats start and stop 300 times.
+- **FIXED:** the RHEL-compatible (AlmaLinux 10) package job failed outright when a mirror answered
+  with broken repository metadata. Its `dnf` install now retries three times with the cached
+  metadata cleared, as the OpenSUSE job retries `zypper`, and fails the step when they run out.
+
+### Tests
+
+- **TESTS:** `[membership-acceptor-fanout]` (`test_outbound_pdu_transaction_flow.cpp`);
+  `[a8_get_missing_events]`, `[a8_state_at_gap]`, `[a8_snapshot_by_event]`,
+  `[a8_rejected_auth_event]`, `[a8_window_beyond_gme]`, `[a8_event_auth_last_resort]`
+  (`test_pdu_ingestion_backfill_flow.cpp`, four existing scenarios adapted to the new request
+  order); `test_sync_archive_conformance.cpp`, `test_event_unsigned_conformance.cpp`, a threaded
+  receipts scenario, `[client-txn][index]`, and a `limit_given` filter scenario;
+  `test_space_hierarchy_access.cpp`, `test_space_hierarchy_federation_flow.cpp` and an origin
+  scenario in `test_federation_space_media_conformance.cpp`; `test_presence_sync_conformance.cpp`,
+  `test_presence_flow.cpp`, `test_config_presence.cpp`; `test_remote_membership_device_lists.cpp`,
+  `test_remote_device_list_flow.cpp`, `[device-list-update]` scenarios and a federated-joiner check
+  in `[join-full-state]`; `test_outbound_discovery_cache.cpp`, `test_remote_key_read_through.cpp`;
+  `[size-limits]` (now 413), `[filter-validation]`, `[device-keys-validation]`,
+  `[lazyload-only-members]`, `[push-rules-initial-sync]`, `[directory-visibility]`,
+  `[password-change-pushers]`, `[pusher-device]`; and the Complement image's remote-media config.
+  Existing tests that encoded the old behaviour were updated: `GET /presence` (was 404), two
+  long-poll listener tests (now `set_presence=offline`), the inbound presence EDU regression, five
+  user-directory scenarios, and the initial-sync account data count.
+
 ## 0.12.59
 
 Fixes from the triage of the second Complement run (0.12.58, 133 failing top-level tests): three

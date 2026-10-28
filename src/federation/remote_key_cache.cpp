@@ -506,10 +506,11 @@ namespace
     [[nodiscard]] auto make_resolver_impl(database::PersistentStore& store, http::OutboundClient& client,
                                           std::uint32_t timeout_seconds, RemoteKeyClock clock,
                                           RemoteKeyDiscoverFn discover, RemoteKeyFetchFn fetch_keys,
-                                          std::string own_server_name) -> RemoteKeyResolver
+                                          std::string own_server_name, KeyMirrorRefresh mirror_refresh)
+        -> RemoteKeyResolver
     {
         return [&store, &client, timeout_seconds, clock = std::move(clock), discover = std::move(discover),
-                fetch_keys = std::move(fetch_keys), own_server_name = std::move(own_server_name)](
+                fetch_keys = std::move(fetch_keys), own_server_name = std::move(own_server_name), mirror_refresh](
                    std::string_view server_name, std::string_view key_id) -> std::optional<FederationRemoteRuntime> {
             // FED-1 (ADR-0083): our own keys come from our own secret-holding
             // rows only. A fetch for our own name would go through DNS and
@@ -530,6 +531,27 @@ namespace
             }
             auto const now = clock();
             auto cached_key = find_cached_remote_key(store, server_name, key_id);
+            // A worker's mirror is a snapshot from its start: a key main verified
+            // and cached since is in the database but not here. Read that one
+            // server's public rows before paying a fetch (discovery, a fresh
+            // connection and a TLS handshake) for a key main already holds. The
+            // row carries main's seven-day cap, so it is trusted no longer than
+            // main trusts it. An absent or lapsed row still falls through to a
+            // verified fetch.
+            if (mirror_refresh == KeyMirrorRefresh::on_miss &&
+                (!cached_key.has_value() || remote_key_needs_refresh(cached_key->valid_until_ts, now)))
+            {
+                if (database::refresh_remote_signing_keys(store, server_name))
+                {
+                    cached_key = find_cached_remote_key(store, server_name, key_id);
+                }
+                else
+                {
+                    log_resolver("mirror_refresh_failed", {
+                                                              {"server_name", std::string{server_name}, false},
+                    });
+                }
+            }
             auto const discovery = discover(server_name, timeout_seconds);
             if (!discovery.discovery_allowed)
             {
@@ -615,7 +637,8 @@ namespace
 
 auto make_persistent_remote_key_resolver(database::PersistentStore& store, http::OutboundClient& client,
                                          ServerDiscoveryNetwork& network, std::uint32_t timeout_seconds,
-                                         RemoteKeyClock now_ms, std::string_view own_server_name) -> RemoteKeyResolver
+                                         RemoteKeyClock now_ms, std::string_view own_server_name,
+                                         KeyMirrorRefresh mirror_refresh) -> RemoteKeyResolver
 {
     // Fall back to the real wall clock when the caller passes an empty
     // callback. Returning 0 from a missing clock made every cached key look
@@ -629,12 +652,13 @@ auto make_persistent_remote_key_resolver(database::PersistentStore& store, http:
         [&network](http::OutboundClient& c, std::string_view sn, std::uint32_t ts) {
             return fetch_remote_server_keys(c, network, sn, ts);
         },
-        std::string{own_server_name});
+        std::string{own_server_name}, mirror_refresh);
 }
 
 auto make_persistent_remote_key_resolver(database::PersistentStore& store, http::OutboundClient& client,
                                          CachedServerDiscovery& discovery, std::uint32_t timeout_seconds,
-                                         RemoteKeyClock now_ms, std::string_view own_server_name) -> RemoteKeyResolver
+                                         RemoteKeyClock now_ms, std::string_view own_server_name,
+                                         KeyMirrorRefresh mirror_refresh) -> RemoteKeyResolver
 {
     auto clock = now_ms ? std::move(now_ms) : RemoteKeyClock{default_wall_clock_ms};
     // Both the resolver's own discovery lookup and the fetch's internal lookup
@@ -648,16 +672,17 @@ auto make_persistent_remote_key_resolver(database::PersistentStore& store, http:
         [&discovery](http::OutboundClient& c, std::string_view sn, std::uint32_t ts) {
             return fetch_remote_server_keys(c, discovery, sn, ts);
         },
-        std::string{own_server_name});
+        std::string{own_server_name}, mirror_refresh);
 }
 
 auto make_remote_key_resolver(database::PersistentStore& store, http::OutboundClient& client,
                               std::uint32_t timeout_seconds, RemoteKeyClock now_ms, RemoteKeyDiscoverFn discover,
-                              RemoteKeyFetchFn fetch_keys, std::string_view own_server_name) -> RemoteKeyResolver
+                              RemoteKeyFetchFn fetch_keys, std::string_view own_server_name,
+                              KeyMirrorRefresh mirror_refresh) -> RemoteKeyResolver
 {
     auto clock = now_ms ? std::move(now_ms) : RemoteKeyClock{default_wall_clock_ms};
     return make_resolver_impl(store, client, timeout_seconds, std::move(clock), std::move(discover),
-                              std::move(fetch_keys), std::string{own_server_name});
+                              std::move(fetch_keys), std::string{own_server_name}, mirror_refresh);
 }
 
 } // namespace merovingian::federation

@@ -769,6 +769,109 @@ SCENARIO("Room aliases require an existing room and reject duplicate mappings", 
     }
 }
 
+// A /sync or GET /event for a client reads the transaction ID of each event it serves, and every
+// send reads its own idempotency record. Both are index lookups, not scans of every record the server
+// has ever stored (work under runtime.mutex is bounded by the request), so the index must agree
+// with the records after every way they come to exist: stored, hydrated, copied.
+SCENARIO("The client transaction index stays consistent through insert, hydrate and copy",
+         "[database][persistence][client-txn][index]")
+{
+    GIVEN("a SQLite store holding two transaction records from alice's device and one from bob's")
+    {
+        auto const sqlite_path = unique_sqlite_path();
+        std::filesystem::remove(sqlite_path);
+        auto opened = merovingian::database::open_sqlite_persistent_store(sqlite_path.string());
+        REQUIRE(opened.ok);
+        auto& store = opened.store;
+        REQUIRE(merovingian::database::store_client_txn(
+            store, {"@alice:example.org", "!room:example.org", "m.room.message", "t1", "$e1", "DEVA"}));
+        REQUIRE(merovingian::database::store_client_txn(
+            store, {"@alice:example.org", "!room:example.org", "m.room.message", "t2", "$e2", "DEVA"}));
+        REQUIRE(merovingian::database::store_client_txn(
+            store, {"@bob:example.org", "!room:example.org", "m.room.message", "t1", "$e3", "DEVB"}));
+
+        auto const check = [](merovingian::database::PersistentStore const& checked) {
+            // State: every record is indexed.
+            REQUIRE(checked.client_txn_ids.size() == 3U);
+            REQUIRE(checked.client_txn_indexed_rows == checked.client_txn_ids.size());
+            // Behaviour: a record is found by its event, with its sender, device and transaction ID.
+            auto const second = merovingian::database::find_client_txn_by_event_id(checked, "$e2");
+            REQUIRE(second != nullptr);
+            REQUIRE(second->user_id == "@alice:example.org");
+            REQUIRE(second->device_id == "DEVA");
+            REQUIRE(second->txn_id == "t2");
+            auto const third = merovingian::database::find_client_txn_by_event_id(checked, "$e3");
+            REQUIRE(third != nullptr);
+            REQUIRE(third->user_id == "@bob:example.org");
+            REQUIRE(merovingian::database::find_client_txn_by_event_id(checked, "$unknown") == nullptr);
+            // Behaviour: the idempotency lookup still answers by its own key.
+            REQUIRE(merovingian::database::find_client_txn_event_id(checked, "@alice:example.org", "!room:example.org",
+                                                                    "m.room.message",
+                                                                    "t1") == std::optional<std::string>{"$e1"});
+            REQUIRE(merovingian::database::find_client_txn_event_id(checked, "@bob:example.org", "!room:example.org",
+                                                                    "m.room.message",
+                                                                    "t1") == std::optional<std::string>{"$e3"});
+            REQUIRE_FALSE(merovingian::database::find_client_txn_event_id(checked, "@bob:example.org",
+                                                                          "!room:example.org", "m.room.message", "t2")
+                              .has_value());
+        };
+
+        WHEN("the records were just stored")
+        {
+            THEN("the index covers them")
+            {
+                check(store);
+            }
+        }
+
+        WHEN("the store is reopened and hydrated")
+        {
+            auto reopened = merovingian::database::open_sqlite_persistent_store(sqlite_path.string());
+            REQUIRE(reopened.ok);
+
+            THEN("the index covers the hydrated records")
+            {
+                check(reopened.store);
+            }
+        }
+
+        WHEN("the store is copied, by construction and by assignment")
+        {
+            auto const copied = merovingian::database::PersistentStore{store};
+            auto assigned = merovingian::database::PersistentStore{};
+            assigned = store;
+
+            THEN("both copies carry an index that covers their records")
+            {
+                check(copied);
+                check(assigned);
+            }
+        }
+
+        WHEN("a record is stored after a hydrate and a copy")
+        {
+            auto reopened = merovingian::database::open_sqlite_persistent_store(sqlite_path.string());
+            REQUIRE(reopened.ok);
+            auto copied = merovingian::database::PersistentStore{reopened.store};
+            REQUIRE(merovingian::database::store_client_txn(
+                copied, {"@alice:example.org", "!room:example.org", "m.room.message", "t3", "$e4", "DEVA"}));
+
+            THEN("it is indexed too, and a record pushed past the store is still found")
+            {
+                REQUIRE(copied.client_txn_indexed_rows == copied.client_txn_ids.size());
+                REQUIRE(merovingian::database::find_client_txn_by_event_id(copied, "$e4") != nullptr);
+                copied.client_txn_ids.push_back(
+                    {"@carol:example.org", "!room:example.org", "m.room.message", "t9", "$e9", "DEVC"});
+                REQUIRE(merovingian::database::find_client_txn_by_event_id(copied, "$e9") != nullptr);
+                REQUIRE(merovingian::database::find_client_txn_event_id(copied, "@carol:example.org",
+                                                                        "!room:example.org", "m.room.message",
+                                                                        "t9") == std::optional<std::string>{"$e9"});
+            }
+        }
+        std::filesystem::remove(sqlite_path);
+    }
+}
+
 SCENARIO("A room alias keeps its creator across a reopen and can be deleted",
          "[database][persistence][room-alias][csaz-12]")
 {
@@ -2419,6 +2522,47 @@ SCENARIO("A knock record keeps the server that accepted the knock across a reope
             {
                 REQUIRE(stored.has_value());
                 REQUIRE(stored->resident_server == "resident.example.org");
+            }
+        }
+
+        std::filesystem::remove(sqlite_path);
+    }
+}
+
+// A pusher keeps the device that set it, so a password change that revokes a device's
+// tokens can delete what that device registered. The device survives a restart.
+SCENARIO("A pusher keeps the device that set it across a reopen", "[database][persistence][push][pusher-device]")
+{
+    GIVEN("a SQLite store holding a pusher set from a device")
+    {
+        auto const sqlite_path = unique_sqlite_path();
+        std::filesystem::remove(sqlite_path);
+        auto opened = merovingian::database::open_sqlite_persistent_store(sqlite_path.string());
+        REQUIRE(opened.ok);
+        auto pusher = merovingian::database::PersistentPusher{"@alice:example.org",
+                                                              "org.example.app",
+                                                              "key-1",
+                                                              "http",
+                                                              "App",
+                                                              "Phone",
+                                                              "",
+                                                              "en",
+                                                              "https://push.example.org/_matrix/push/v1/notify",
+                                                              ""};
+        pusher.device_id = "DEVICE2";
+        REQUIRE(merovingian::database::store_pusher(opened.store, pusher));
+
+        WHEN("the store is reopened")
+        {
+            auto reopened = merovingian::database::open_sqlite_persistent_store(sqlite_path.string());
+            REQUIRE(reopened.ok);
+            auto const stored =
+                merovingian::database::find_pusher(reopened.store, "@alice:example.org", "org.example.app", "key-1");
+
+            THEN("the pusher still names the device that set it")
+            {
+                REQUIRE(stored.has_value());
+                REQUIRE(stored->device_id == "DEVICE2");
             }
         }
 

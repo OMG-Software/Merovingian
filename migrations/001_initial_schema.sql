@@ -96,9 +96,9 @@ CREATE TABLE "event_stream_watermark" (singleton INTEGER PRIMARY KEY CHECK (sing
 -- statement create_profiles
 CREATE TABLE "profiles" (user_id TEXT PRIMARY KEY, displayname TEXT NOT NULL DEFAULT '', avatar_url TEXT NOT NULL DEFAULT '')
 -- statement create_client_txn_ids
-CREATE TABLE "client_txn_ids" (user_id TEXT NOT NULL, room_id TEXT NOT NULL, event_type TEXT NOT NULL, txn_id TEXT NOT NULL, event_id TEXT NOT NULL, PRIMARY KEY (user_id, room_id, event_type, txn_id))
+CREATE TABLE "client_txn_ids" (user_id TEXT NOT NULL, room_id TEXT NOT NULL, event_type TEXT NOT NULL, txn_id TEXT NOT NULL, event_id TEXT NOT NULL, device_id TEXT NOT NULL DEFAULT '', PRIMARY KEY (user_id, room_id, event_type, txn_id))
 -- statement create_pushers
-CREATE TABLE "pushers" (user_id TEXT NOT NULL, app_id TEXT NOT NULL, pushkey TEXT NOT NULL, kind TEXT NOT NULL, app_display_name TEXT NOT NULL DEFAULT '', device_display_name TEXT NOT NULL DEFAULT '', profile_tag TEXT NOT NULL DEFAULT '', lang TEXT NOT NULL DEFAULT '', data_url TEXT NOT NULL DEFAULT '', data_format TEXT NOT NULL DEFAULT '', data_extra_json TEXT NOT NULL DEFAULT '', PRIMARY KEY (user_id, app_id, pushkey))
+CREATE TABLE "pushers" (user_id TEXT NOT NULL, app_id TEXT NOT NULL, pushkey TEXT NOT NULL, kind TEXT NOT NULL, app_display_name TEXT NOT NULL DEFAULT '', device_display_name TEXT NOT NULL DEFAULT '', profile_tag TEXT NOT NULL DEFAULT '', lang TEXT NOT NULL DEFAULT '', data_url TEXT NOT NULL DEFAULT '', data_format TEXT NOT NULL DEFAULT '', data_extra_json TEXT NOT NULL DEFAULT '', device_id TEXT NOT NULL DEFAULT '', PRIMARY KEY (user_id, app_id, pushkey))
 -- statement create_notifications
 CREATE TABLE "notifications" (user_id TEXT NOT NULL, room_id TEXT NOT NULL, event_id TEXT NOT NULL, stream_ordering TEXT NOT NULL DEFAULT '0', ts TEXT NOT NULL DEFAULT '0', actions TEXT NOT NULL DEFAULT '[]', profile_tag TEXT NOT NULL DEFAULT '', highlight TEXT NOT NULL DEFAULT 'false', PRIMARY KEY (user_id, event_id))
 -- statement create_openid_tokens

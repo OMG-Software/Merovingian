@@ -17,6 +17,7 @@
 #include "merovingian/canonicaljson/serializer.hpp"
 #include "merovingian/canonicaljson/value.hpp"
 #include "merovingian/config/config.hpp"
+#include "merovingian/core/query_params.hpp"
 #include "merovingian/core/socket_handle.hpp"
 #include "merovingian/database/persistent_store.hpp"
 #include "merovingian/events/event_signer.hpp"
@@ -37,7 +38,11 @@
 #include <chrono>
 #include <cstdint>
 #include <filesystem>
+#include <functional>
 #include <future>
+#include <map>
+#include <memory>
+#include <mutex>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -1610,9 +1615,10 @@ SCENARIO("ingest_pdu_event falls back to /state_ids when /get_missing_events can
         auto const member_bob_id = room_id + ":member:bob";
         auto const auth_event_ids = std::vector<std::string>{create_id, pl_id, member_bob_id};
 
-        // `old` is missing and unreachable, so `mid` cannot be verified through
-        // the normal /event/{id} path. The /state_ids fallback supplies the
-        // state before `mid` directly from the verified genesis snapshot.
+        // `old` is missing, so `mid` cannot be verified through the normal
+        // /event/{id} path. The /state_ids fallback supplies the state at `old`
+        // directly from the verified genesis snapshot, `old` is stored against
+        // it, and `mid` is placed on top.
         auto const old_event = make_remote_message_pdu(room_id, {member_bob_id}, auth_event_ids, 4, 10);
         auto const old_event_id = old_event.event_id;
         auto const mid_event = make_remote_message_pdu(room_id, {old_event_id}, auth_event_ids, 5, 11);
@@ -1648,10 +1654,12 @@ SCENARIO("ingest_pdu_event falls back to /state_ids when /get_missing_events can
 
             auto const state_ids_body = make_state_ids_response(auth_event_ids, auth_event_ids);
             auto const mid_event_body = make_event_transaction_response(mid_event.json, remote_server);
-            // The first /event/{id} fetch tries to store `mid` directly and
-            // fails because `mid`'s own prev_event has no state group. The
-            // /state_ids fallback then fetches `mid` a second time and stores
-            // it against the verified snapshot. Both fetches need a response.
+            auto const old_event_body = make_event_transaction_response(old_event.json, remote_server);
+            // The first /event/{id} fetch gets `mid`, which cannot be stored
+            // because its own prev_event (`old`) has no state group, so it is
+            // held. The state is then asked at `old`, the event nothing in hand
+            // supplies, and `old` is stored against the verified snapshot; then
+            // `mid` is placed on top of it. Both fetches need a response.
             auto const path_responses = std::vector<std::pair<std::string, std::string>>{
                 {"POST /_matrix/federation/v1/get_missing_events/",
                  merovingian::tests::tls_mock::json_http_response("200 OK", make_empty_get_missing_events_response())},
@@ -1660,7 +1668,7 @@ SCENARIO("ingest_pdu_event falls back to /state_ids when /get_missing_events can
                 {"GET /_matrix/federation/v1/event/",
                  merovingian::tests::tls_mock::json_http_response("200 OK", mid_event_body)                          },
                 {"GET /_matrix/federation/v1/event/",
-                 merovingian::tests::tls_mock::json_http_response("200 OK", mid_event_body)                          },
+                 merovingian::tests::tls_mock::json_http_response("200 OK", old_event_body)                          },
             };
             auto captured_requests = std::vector<std::string>{};
             auto server_thread = std::thread{[&]() {
@@ -2540,12 +2548,14 @@ SCENARIO("ingest_pdu_event rejects a /state_ids snapshot containing a non-state 
 //
 // ADR-0069: when a /state_ids snapshot names a historical state event whose
 // prev_events have no recorded state groups, the fallback must still be able
-// to verify and store that state event. It does so by batch-fetching the
-// event's auth chain via /event_auth, verifying the state event as an outlier
-// against that chain, and using the verified state as the snapshot for the
-// missing target event.
-SCENARIO("ingest_pdu_event verifies a /state_ids snapshot state event via /event_auth when its prev_events have no "
-         "state groups",
+// to verify and store that state event. It does so by fetching the event with
+// GET /event/{eventId} and verifying it as an outlier against its own
+// auth_events (whose events are stored), and using the verified state as the
+// snapshot for the missing target event. A peer that does not serve /event_auth
+// is no obstacle (A8); the last resort that does use it is covered by
+// [a8_event_auth_last_resort].
+SCENARIO("ingest_pdu_event verifies a /state_ids snapshot state event against its own auth_events when its "
+         "prev_events have no state groups",
          "[pdu_ingestion][backfill][conformance]")
 {
     GIVEN("a fresh runtime seeded with a room genesis state group")
@@ -2568,8 +2578,8 @@ SCENARIO("ingest_pdu_event verifies a /state_ids snapshot state event via /event
 
         // `old_event` is missing and has no recorded state group, so a normal
         // /event/{id} fetch for `historical_state` would fail: its prev_event
-        // cannot supply a state-before. The /event_auth path supplies the auth
-        // chain needed to verify `historical_state` as an outlier anyway.
+        // cannot supply a state-before. Its own auth_events are all stored, so it is verified
+        // against them alone and stored as an outlier anyway, without /event_auth.
         auto const old_event = make_remote_message_pdu(room_id, {member_bob_id}, auth_event_ids, 4, 10);
         auto const old_event_id = old_event.event_id;
 
@@ -2586,7 +2596,8 @@ SCENARIO("ingest_pdu_event verifies a /state_ids snapshot state event via /event
 
         auto const pdu = make_remote_message_pdu(room_id, {mid_event_id}, auth_event_ids, 7, 20);
 
-        AND_GIVEN("a mock sending server that returns /state_ids, the snapshot state event, and /event_auth for it")
+        AND_GIVEN("a mock sending server that returns /state_ids and the snapshot state event, and does not serve "
+                  "/event_auth")
         {
             auto certificate = merovingian::tests::tls_mock::write_test_tls_certificate("localhost");
             auto tls_context_result = merovingian::homeserver::make_tls_server_context(certificate.certificate_file,
@@ -2612,21 +2623,6 @@ SCENARIO("ingest_pdu_event verifies a /state_ids snapshot state event via /event
                 return remote_runtime();
             };
 
-            // The auth chain for the snapshot state event is the genesis state
-            // events, which are already in the store. Returning them here proves
-            // the /event_auth path is being used.
-            auto const lookup_json = [&](std::string const& id) -> std::string {
-                for (auto const& e : runtime.database.persistent_store.events)
-                {
-                    if (e.event_id == id)
-                    {
-                        return e.json;
-                    }
-                }
-                return id + ":json";
-            };
-            auto const genesis_auth_chain =
-                std::vector<std::string>{lookup_json(create_id), lookup_json(pl_id), lookup_json(member_bob_id)};
             // /state_ids returns the complete resolved state at the target event,
             // not just the single state event that changed. The auth_chain is the
             // chain needed to authenticate those state events.
@@ -2636,20 +2632,20 @@ SCENARIO("ingest_pdu_event verifies a /state_ids snapshot state event via /event
             auto const historical_state_body =
                 make_event_transaction_response(historical_state_pdu.json, remote_server);
             auto const mid_event_body = make_event_transaction_response(mid_event.json, remote_server);
-            auto const event_auth_body = make_event_auth_response(genesis_auth_chain);
+            // The first /event fetch, for `mid` in the per-reference stage, is
+            // answered 404, so `mid` is not in hand when the state is asked at it.
+            auto const not_found = merovingian::tests::tls_mock::json_http_response(
+                "404 Not Found", R"({"errcode":"M_NOT_FOUND","error":"not found"})");
             auto const path_responses = std::vector<std::pair<std::string, std::string>>{
                 {"POST /_matrix/federation/v1/get_missing_events/",
                  merovingian::tests::tls_mock::json_http_response("200 OK", make_empty_get_missing_events_response())},
-                {"GET /_matrix/federation/v1/event/",
-                 merovingian::tests::tls_mock::json_http_response("200 OK", mid_event_body)                          },
+                {"GET /_matrix/federation/v1/event/", not_found},
                 {"GET /_matrix/federation/v1/state_ids/",
-                 merovingian::tests::tls_mock::json_http_response("200 OK", state_ids_body)                          },
+                 merovingian::tests::tls_mock::json_http_response("200 OK", state_ids_body)},
                 {"GET /_matrix/federation/v1/event/",
-                 merovingian::tests::tls_mock::json_http_response("200 OK", historical_state_body)                   },
-                {"GET /_matrix/federation/v1/event_auth/",
-                 merovingian::tests::tls_mock::json_http_response("200 OK", event_auth_body)                         },
+                 merovingian::tests::tls_mock::json_http_response("200 OK", historical_state_body)},
                 {"GET /_matrix/federation/v1/event/",
-                 merovingian::tests::tls_mock::json_http_response("200 OK", mid_event_body)                          },
+                 merovingian::tests::tls_mock::json_http_response("200 OK", mid_event_body)},
             };
             auto captured_requests = std::vector<std::string>{};
             auto server_thread = std::thread{[&]() {
@@ -2708,17 +2704,11 @@ SCENARIO("ingest_pdu_event verifies a /state_ids snapshot state event via /event
                             .has_value());
                 }
 
-                THEN("/event_auth was called for the snapshot state event")
+                THEN("/event_auth was not needed")
                 {
-                    auto has_event_auth = false;
-                    for (auto const& req : captured_requests)
-                    {
-                        if (req.find("GET /_matrix/federation/v1/event_auth/") != std::string::npos)
-                        {
-                            has_event_auth = true;
-                        }
-                    }
-                    REQUIRE(has_event_auth);
+                    REQUIRE(std::ranges::none_of(captured_requests, [](std::string const& req) {
+                        return req.find("GET /_matrix/federation/v1/event_auth/") != std::string::npos;
+                    }));
                 }
             }
 
@@ -2727,169 +2717,17 @@ SCENARIO("ingest_pdu_event verifies a /state_ids snapshot state event via /event
     }
 }
 
-// Spec: Matrix Server-Server API v1.19
-// Endpoint / Section: Checks performed on receipt of a PDU (signatures)
-// URL: ../../docs/matrix-v1.19-spec/server-server-api.md#checks-performed-on-receipt-of-a-pdu
-//
-// Every event taken from a remote server is checked before it is used. An
-// event may skip that only when it is the very event already stored, not
-// merely one whose "event_id" field names a stored event: the field is the
-// origin's to write, and from room v3 an event's ID is its reference hash.
-SCENARIO("An /event_auth entry reusing a stored event's ID with different content is verified, not trusted",
-         "[pdu_ingestion][backfill][event_auth_forged_id]")
-{
-    GIVEN("a fresh runtime seeded with a room genesis state group")
-    {
-        auto const path = unique_sqlite_path();
-        std::filesystem::remove(path);
-        auto started = merovingian::homeserver::start_runtime(config_with_sqlite(path));
-        REQUIRE(started.started);
-        auto& runtime = started.runtime;
-        merovingian::homeserver::wire_federation_callbacks(runtime);
-
-        auto const room_id = std::string{"!backfill-event-auth-forged-id:local.example.org"};
-        seed_room_with_genesis_state_group(runtime, room_id);
-
-        auto const create_id = room_id + ":create";
-        auto const pl_id = room_id + ":pl";
-        auto const member_id = room_id + ":member";
-        auto const member_bob_id = room_id + ":member:bob";
-        auto const auth_event_ids = std::vector<std::string>{create_id, pl_id, member_bob_id};
-
-        // `old_event` is missing and has no recorded state group, so a normal
-        // /event/{id} fetch for `historical_state` would fail: its prev_event
-        // cannot supply a state-before. The /event_auth path supplies the auth
-        // chain needed to verify `historical_state` as an outlier anyway.
-        auto const old_event = make_remote_message_pdu(room_id, {member_bob_id}, auth_event_ids, 4, 10);
-        auto const old_event_id = old_event.event_id;
-
-        auto historical_state_content = canonicaljson::Object{};
-        historical_state_content.push_back(
-            canonicaljson::make_member("topic", canonicaljson::Value{std::string{"historical topic"}}));
-        auto const historical_state_pdu =
-            make_remote_event_pdu(room_id, "m.room.topic", std::string{}, "@bob:remote.example.org",
-                                  std::move(historical_state_content), {old_event_id}, auth_event_ids, 5, 11);
-        auto const historical_state_id = historical_state_pdu.event_id;
-
-        auto const mid_event = make_remote_message_pdu(room_id, {historical_state_id}, auth_event_ids, 6, 12);
-        auto const mid_event_id = mid_event.event_id;
-
-        auto const pdu = make_remote_message_pdu(room_id, {mid_event_id}, auth_event_ids, 7, 20);
-
-        AND_GIVEN("a mock sending server that returns /state_ids, the snapshot state event, and /event_auth for it")
-        {
-            auto certificate = merovingian::tests::tls_mock::write_test_tls_certificate("localhost");
-            auto tls_context_result = merovingian::homeserver::make_tls_server_context(certificate.certificate_file,
-                                                                                       certificate.private_key_file);
-            REQUIRE(tls_context_result.ok());
-            auto tls_context = std::move(*tls_context_result.context);
-            auto acceptor = merovingian::net::TcpAcceptor{};
-            REQUIRE(acceptor.bind("127.0.0.1", 0U).ok);
-            auto const port = acceptor.bound_port();
-            REQUIRE(port > 0U);
-
-            runtime.test_forced_outbound_resolution[remote_server] =
-                merovingian::homeserver::TestOnlyForcedOutboundResolution{
-                    "localhost", port, {"127.0.0.1"}, certificate.certificate_pem};
-
-            runtime.federation.remote_key_resolver =
-                [](std::string_view server_name,
-                   std::string_view key_id) -> std::optional<merovingian::federation::FederationRemoteRuntime> {
-                if (server_name != remote_server || key_id != remote_key_id)
-                {
-                    return std::nullopt;
-                }
-                return remote_runtime();
-            };
-
-            // The auth chain for the snapshot state event is the genesis state
-            // events, which are already in the store. Returning them here proves
-            // the /event_auth path is being used.
-            auto const lookup_json = [&](std::string const& id) -> std::string {
-                for (auto const& e : runtime.database.persistent_store.events)
-                {
-                    if (e.event_id == id)
-                    {
-                        return e.json;
-                    }
-                }
-                return id + ":json";
-            };
-            // The chain's copy of Bob's membership keeps the stored event's
-            // "event_id" but not its content: it turns the join into a ban, a
-            // field the signature covers, so its signature no longer verifies.
-            // Only an event identical to the stored one may skip verification.
-            auto forged_member_bob = lookup_json(member_bob_id);
-            auto const membership_at = forged_member_bob.find(R"("membership":"join")");
-            REQUIRE(membership_at != std::string::npos);
-            forged_member_bob.replace(membership_at, std::string_view{R"("membership":"join")"}.size(),
-                                      R"("membership":"ban")");
-            auto const genesis_auth_chain =
-                std::vector<std::string>{lookup_json(create_id), lookup_json(pl_id), forged_member_bob};
-            // /state_ids returns the complete resolved state at the target event,
-            // not just the single state event that changed. The auth_chain is the
-            // chain needed to authenticate those state events.
-            auto const snapshot_pdu_ids =
-                std::vector<std::string>{create_id, pl_id, member_bob_id, historical_state_id};
-            auto const state_ids_body = make_state_ids_response(snapshot_pdu_ids, auth_event_ids);
-            auto const historical_state_body =
-                make_event_transaction_response(historical_state_pdu.json, remote_server);
-            auto const mid_event_body = make_event_transaction_response(mid_event.json, remote_server);
-            auto const event_auth_body = make_event_auth_response(genesis_auth_chain);
-            auto const path_responses = std::vector<std::pair<std::string, std::string>>{
-                {"POST /_matrix/federation/v1/get_missing_events/",
-                 merovingian::tests::tls_mock::json_http_response("200 OK", make_empty_get_missing_events_response())},
-                {"GET /_matrix/federation/v1/event/",
-                 merovingian::tests::tls_mock::json_http_response("200 OK", mid_event_body)                          },
-                {"GET /_matrix/federation/v1/state_ids/",
-                 merovingian::tests::tls_mock::json_http_response("200 OK", state_ids_body)                          },
-                {"GET /_matrix/federation/v1/event/",
-                 merovingian::tests::tls_mock::json_http_response("200 OK", historical_state_body)                   },
-                {"GET /_matrix/federation/v1/event_auth/",
-                 merovingian::tests::tls_mock::json_http_response("200 OK", event_auth_body)                         },
-                {"GET /_matrix/federation/v1/event/",
-                 merovingian::tests::tls_mock::json_http_response("200 OK", mid_event_body)                          },
-            };
-            auto captured_requests = std::vector<std::string>{};
-            auto server_thread = std::thread{[&]() {
-                run_body_aware_dispatch_tls_server(acceptor, tls_context, path_responses, &captured_requests);
-            }};
-            auto const join_server = merovingian::tests::tls_mock::ScopedThreadJoin{server_thread};
-            std::ignore = join_server;
-
-            WHEN("the PDU is ingested")
-            {
-                auto const result = merovingian::homeserver::ingest_pdu_event(runtime, pdu);
-
-                THEN("the snapshot is refused, so the PDU is not accepted")
-                {
-                    REQUIRE(result.status != PduIngestionStatus::accepted);
-                }
-
-                THEN("the snapshot state event is not stored")
-                {
-                    REQUIRE(std::ranges::none_of(runtime.database.persistent_store.events,
-                                                 [&](merovingian::database::PersistentEvent const& e) {
-                                                     return e.event_id == historical_state_id;
-                                                 }));
-                }
-            }
-
-            std::filesystem::remove(path);
-        }
-    }
-}
-
-// ADR-0070: an event stored through the /event_auth path was checked against
-// its own auth_events only; the state before it is unknown. A later PDU that
+// ADR-0070: an event stored against its own auth_events only (a /state_ids
+// snapshot state event whose prev_events are unknown) was checked against its
+// own auth_events only; the state before it is unknown. A later PDU that
 // names it as a prev_event must therefore not inherit a state built from that
 // event's auth_events. Spec: server-server-api.md, "Checks performed on receipt
 // of a PDU", step 5 — the PDU must pass auth against the state before it, which
 // is the state after its prev_events.
-SCENARIO("ingest_pdu_event does not authorise a PDU against the auth_events of an /event_auth outlier",
+SCENARIO("ingest_pdu_event does not authorise a PDU against the auth_events of an auth-events-only outlier",
          "[pdu_ingestion][backfill][event_auth_outlier]")
 {
-    GIVEN("a runtime that has stored a /state_ids snapshot state event through the /event_auth path")
+    GIVEN("a runtime that has stored a /state_ids snapshot state event verified against its own auth_events only")
     {
         auto const path = unique_sqlite_path();
         std::filesystem::remove(path);
@@ -2917,7 +2755,7 @@ SCENARIO("ingest_pdu_event does not authorise a PDU against the auth_events of a
         auto const mid_event = make_remote_message_pdu(room_id, {historical_state_id}, auth_event_ids, 6, 12);
         auto const first_pdu = make_remote_message_pdu(room_id, {mid_event.event_id}, auth_event_ids, 7, 20);
 
-        // A second PDU whose only prev_event is the /event_auth outlier.
+        // A second PDU whose only prev_event is the auth-events-only outlier.
         auto const second_pdu = make_remote_message_pdu(room_id, {historical_state_id}, auth_event_ids, 6, 30);
 
         auto certificate = merovingian::tests::tls_mock::write_test_tls_certificate("localhost");
@@ -2943,18 +2781,6 @@ SCENARIO("ingest_pdu_event does not authorise a PDU against the auth_events of a
             return remote_runtime();
         };
 
-        auto const lookup_json = [&](std::string const& id) -> std::string {
-            for (auto const& e : runtime.database.persistent_store.events)
-            {
-                if (e.event_id == id)
-                {
-                    return e.json;
-                }
-            }
-            return id + ":json";
-        };
-        auto const genesis_auth_chain =
-            std::vector<std::string>{lookup_json(create_id), lookup_json(pl_id), lookup_json(member_bob_id)};
         using merovingian::tests::tls_mock::json_http_response;
         using PathResponses = std::vector<std::pair<std::string, std::string>>;
         auto const ok = [](std::string const& body) {
@@ -2987,16 +2813,19 @@ SCENARIO("ingest_pdu_event does not authorise a PDU against the auth_events of a
         auto const first_result = ingest_with_origin(
             first_pdu,
             PathResponses{
-                {"POST /_matrix/federation/v1/get_missing_events/", ok(make_empty_get_missing_events_response())    },
-                {"GET /_matrix/federation/v1/event/",               ok(mid_event_body)                              },
-                {"GET /_matrix/federation/v1/state_ids/",           ok(snapshot_with_outlier_body)                  },
-                {"GET /_matrix/federation/v1/event/",               ok(historical_state_body)                       },
-                {"GET /_matrix/federation/v1/event_auth/",          ok(make_event_auth_response(genesis_auth_chain))},
-                {"GET /_matrix/federation/v1/event/",               ok(mid_event_body)                              },
+                {"POST /_matrix/federation/v1/get_missing_events/", ok(make_empty_get_missing_events_response())},
+                {"GET /_matrix/federation/v1/event/",               not_found                                   },
+                {"GET /_matrix/federation/v1/state_ids/",           ok(snapshot_with_outlier_body)              },
+                {"GET /_matrix/federation/v1/event/",               ok(historical_state_body)                   },
+                {"GET /_matrix/federation/v1/event/",               ok(mid_event_body)                          },
         },
             first_requests);
         REQUIRE(first_result.status == PduIngestionStatus::accepted);
-        REQUIRE(count_requests(first_requests, "GET /_matrix/federation/v1/event_auth/") == 1U);
+        REQUIRE(count_requests(first_requests, "GET /_matrix/federation/v1/event_auth/") == 0U);
+        REQUIRE(stored_status(runtime, historical_state_id).value_or(std::string{}) == "outlier");
+        REQUIRE_FALSE(
+            merovingian::database::find_event_state_group(runtime.database.persistent_store, historical_state_id)
+                .has_value());
 
         WHEN("a PDU naming that outlier as its only prev_event is ingested and the origin cannot supply its state")
         {
@@ -3059,7 +2888,7 @@ SCENARIO("ingest_pdu_event does not authorise a PDU against the auth_events of a
                 third_pdu,
                 PathResponses{
                     {"POST /_matrix/federation/v1/get_missing_events/", ok(make_empty_get_missing_events_response())},
-                    {"GET /_matrix/federation/v1/event/",               ok(later_mid_body)                          },
+                    {"GET /_matrix/federation/v1/event/",               not_found                                   },
                     {"GET /_matrix/federation/v1/state_ids/",           ok(snapshot_with_outlier_body)              },
                     {"GET /_matrix/federation/v1/event/",               ok(later_mid_body)                          },
             },
@@ -3177,3 +3006,809 @@ SCENARIO("Backfill refuses a fetched join whose authorising server signature is 
         std::filesystem::remove(path);
     }
 }
+
+// ---------------------------------------------------------------------------
+// A8 (Complement run 9): placing a PDU whose prev_events and auth_events this
+// server lacks, using only what the Server-Server API guarantees a peer serves.
+//
+// Spec: docs/matrix-v1.19-spec/server-server-api.md — "Backfilling and
+// retrieving missing events" (POST /get_missing_events: `latest_events` are the
+// events to retrieve the previous events for, `earliest_events` the latest
+// events the sender already has), GET /state_ids (`pdu_ids`, `auth_chain_ids`),
+// GET /event/{eventId}, "Rejection", "Checks performed on receipt of a PDU" and
+// "Soft failure". A peer is not required to serve GET /event_auth to a server
+// that can fetch the same events one at a time.
+// ---------------------------------------------------------------------------
+
+namespace
+{
+
+// A federation peer that answers every request with whatever `respond` returns,
+// until it is destroyed, and records each request. `respond` runs on the peer's
+// thread: it must not use Catch2 assertions.
+class ScriptedFederationPeer final
+{
+public:
+    using Responder = std::function<std::string(std::string const&)>;
+
+    ScriptedFederationPeer(net::TcpAcceptor& acceptor, homeserver::TlsServerContext& tls_context, Responder responder)
+        : thread_{[this, &acceptor, &tls_context, responder = std::move(responder)] {
+            serve(acceptor, tls_context, responder);
+        }}
+    {
+    }
+
+    ~ScriptedFederationPeer()
+    {
+        stop_.store(true);
+        if (thread_.joinable())
+        {
+            thread_.join();
+        }
+    }
+
+    ScriptedFederationPeer(ScriptedFederationPeer const&) = delete;
+    auto operator=(ScriptedFederationPeer const&) -> ScriptedFederationPeer& = delete;
+    ScriptedFederationPeer(ScriptedFederationPeer&&) = delete;
+    auto operator=(ScriptedFederationPeer&&) -> ScriptedFederationPeer& = delete;
+
+    // Every request received so far, each the raw request text.
+    [[nodiscard]] auto requests() const -> std::vector<std::string>
+    {
+        auto const lock = std::scoped_lock{mutex_};
+        return requests_;
+    }
+
+private:
+    auto serve(net::TcpAcceptor& acceptor, homeserver::TlsServerContext& tls_context, Responder const& responder)
+        -> void
+    {
+        while (!stop_.load())
+        {
+            auto const fd = tests::tls_mock::accept_loopback(acceptor, 50);
+            if (fd < 0)
+            {
+                continue;
+            }
+            auto const owned_fd = core::SocketHandle{fd};
+            auto tls = homeserver::accept_tls_connection(tls_context, fd, 1000);
+            if (!tls.connection.has_value())
+            {
+                continue;
+            }
+            auto& connection = *tls.connection;
+            auto const request = read_full_http_request(connection);
+            {
+                auto const lock = std::scoped_lock{mutex_};
+                requests_.push_back(request);
+            }
+            std::ignore = connection.write(responder(request));
+        }
+    }
+
+    std::atomic<bool> stop_{false};
+    mutable std::mutex mutex_{};
+    std::vector<std::string> requests_{};
+    std::thread thread_;
+};
+
+// What the scripted peer serves. Anything not listed is a 404, as it is from a
+// server that does not implement the endpoint.
+struct PeerScript final
+{
+    // event ID -> PDU JSON, served by GET /event/{eventId}.
+    std::map<std::string, std::string> events{};
+    // event ID asked about -> the /state_ids response body.
+    std::map<std::string, std::string> state_ids{};
+    // The /get_missing_events response body for a request whose first
+    // `latest_events` entry is the argument; an empty body is a 404.
+    std::function<std::string(std::string const&)> missing_events{};
+    // The GET /event_auth response body; empty is a 404.
+    std::string event_auth{};
+};
+
+[[nodiscard]] auto events_array_body(std::vector<std::string> const& event_jsons) -> std::string
+{
+    auto body = std::string{R"({"events":[)"};
+    for (auto index = std::size_t{0U}; index < event_jsons.size(); ++index)
+    {
+        body += (index == 0U ? "" : ",") + event_jsons[index];
+    }
+    return body + "]}";
+}
+
+[[nodiscard]] auto scripted_response(PeerScript const& script, std::string const& request) -> std::string
+{
+    auto const not_found = tests::tls_mock::json_http_response("404 Not Found", R"({"errcode":"M_NOT_FOUND"})");
+    auto const line = request.substr(0U, request.find("\r\n"));
+    if (line.starts_with("POST /_matrix/federation/v1/get_missing_events/"))
+    {
+        auto const body_start = request.find("\r\n\r\n");
+        constexpr auto marker = std::string_view{R"("latest_events":[")"};
+        if (!script.missing_events || body_start == std::string::npos)
+        {
+            return not_found;
+        }
+        auto const at = request.find(marker, body_start);
+        if (at == std::string::npos)
+        {
+            return not_found;
+        }
+        auto const first = at + marker.size();
+        auto const body = script.missing_events(request.substr(first, request.find('"', first) - first));
+        return body.empty() ? not_found : tests::tls_mock::json_http_response("200 OK", body);
+    }
+    if (line.starts_with("GET /_matrix/federation/v1/state_ids/"))
+    {
+        for (auto const& [target, body] : script.state_ids)
+        {
+            if (line.find("event_id=" + core::percent_encode_path_component(target) + " ") != std::string::npos)
+            {
+                return tests::tls_mock::json_http_response("200 OK", body);
+            }
+        }
+        return not_found;
+    }
+    if (line.starts_with("GET /_matrix/federation/v1/event_auth/"))
+    {
+        return script.event_auth.empty() ? not_found : tests::tls_mock::json_http_response("200 OK", script.event_auth);
+    }
+    for (auto const& [id, json] : script.events)
+    {
+        if (line.starts_with("GET /_matrix/federation/v1/event/" + core::percent_encode_path_component(id) + " "))
+        {
+            return tests::tls_mock::json_http_response("200 OK", std::string{R"({"origin":")"} + remote_server +
+                                                                     R"(","origin_server_ts":0,"pdus":[)" + json +
+                                                                     "]}");
+        }
+    }
+    return not_found;
+}
+
+[[nodiscard]] auto count_requests_starting_with(std::vector<std::string> const& requests, std::string_view prefix)
+    -> std::size_t
+{
+    return static_cast<std::size_t>(std::ranges::count_if(requests, [&](std::string const& request) {
+        return request.starts_with(prefix);
+    }));
+}
+
+// True when a /state_ids request asked about `event_id`.
+[[nodiscard]] auto state_asked_at(std::vector<std::string> const& requests, std::string const& event_id) -> bool
+{
+    return std::ranges::any_of(requests, [&](std::string const& request) {
+        return request.starts_with("GET /_matrix/federation/v1/state_ids/") &&
+               request.find("event_id=" + core::percent_encode_path_component(event_id) + " ") != std::string::npos;
+    });
+}
+
+[[nodiscard]] auto member_content(std::string const& displayname) -> canonicaljson::Object
+{
+    auto content = canonicaljson::Object{};
+    content.push_back(canonicaljson::make_member("membership", canonicaljson::Value{std::string{"join"}}));
+    content.push_back(canonicaljson::make_member("displayname", canonicaljson::Value{displayname}));
+    return content;
+}
+
+// A seeded room (create, power_levels, two joins, one state group) on a runtime
+// that reaches a scripted remote server over loopback TLS.
+class RecoveryFixture final
+{
+public:
+    explicit RecoveryFixture(std::string room)
+        : room_id{std::move(room)}
+        , certificate_{tests::tls_mock::write_test_tls_certificate("localhost")}
+        , started_{homeserver::start_runtime(config_with_sqlite(certificate_.directory / "recovery.sqlite"))}
+        , tls_{homeserver::make_tls_server_context(certificate_.certificate_file, certificate_.private_key_file)}
+    {
+        REQUIRE(started_.started);
+        REQUIRE(tls_.ok());
+        REQUIRE(acceptor_.bind("127.0.0.1", 0U).ok);
+        homeserver::wire_federation_callbacks(started_.runtime);
+        started_.runtime.federation.remote_key_resolver = genuine_key_resolver();
+        // The remote server's key is already cached, as it is in production once
+        // any of its events has been verified: a recovery verifies many events,
+        // and resolving the key for each would exhaust the unknown-source
+        // key-resolution rate, which is not what these scenarios are about.
+        auto const public_key = remote_runtime().signing_key;
+        REQUIRE(database::store_server_signing_key(started_.runtime.database.persistent_store,
+                                                   {std::string{remote_server}, std::string{remote_key_id},
+                                                    events::matrix_base64_from_bytes(public_key.public_key_bytes),
+                                                    public_key.valid_until_ts}));
+        seed_room_with_genesis_state_group(started_.runtime, room_id);
+        started_.runtime.test_forced_outbound_resolution[remote_server] = homeserver::TestOnlyForcedOutboundResolution{
+            "localhost", acceptor_.bound_port(), {"127.0.0.1"}, certificate_.certificate_pem};
+    }
+
+    RecoveryFixture(RecoveryFixture const&) = delete;
+    auto operator=(RecoveryFixture const&) -> RecoveryFixture& = delete;
+    RecoveryFixture(RecoveryFixture&&) = delete;
+    auto operator=(RecoveryFixture&&) -> RecoveryFixture& = delete;
+    ~RecoveryFixture() = default;
+
+    [[nodiscard]] auto runtime() -> HomeserverRuntime&
+    {
+        return started_.runtime;
+    }
+
+    [[nodiscard]] auto create_id() const -> std::string
+    {
+        return room_id + ":create";
+    }
+    [[nodiscard]] auto pl_id() const -> std::string
+    {
+        return room_id + ":pl";
+    }
+    [[nodiscard]] auto admin_member_id() const -> std::string
+    {
+        return room_id + ":member";
+    }
+    [[nodiscard]] auto bob_member_id() const -> std::string
+    {
+        return room_id + ":member:bob";
+    }
+    // The auth_events a remote user's ordinary event names in this room.
+    [[nodiscard]] auto auth_ids() const -> std::vector<std::string>
+    {
+        return {create_id(), pl_id(), bob_member_id()};
+    }
+    // The seeded state: what /state_ids reports for an event that changed nothing.
+    [[nodiscard]] auto genesis_state_ids() const -> std::vector<std::string>
+    {
+        return {create_id(), pl_id(), admin_member_id(), bob_member_id()};
+    }
+
+    // Starts a peer answering from `script`, which must outlive the returned peer.
+    [[nodiscard]] auto serve(PeerScript const& script) -> std::unique_ptr<ScriptedFederationPeer>
+    {
+        return std::make_unique<ScriptedFederationPeer>(acceptor_, *tls_.context,
+                                                        [&script](std::string const& request) {
+                                                            return scripted_response(script, request);
+                                                        });
+    }
+
+    [[nodiscard]] auto ingest(InboundPduEnvelope const& pdu) -> federation::PduIngestionResult
+    {
+        return homeserver::ingest_pdu_event(started_.runtime, pdu);
+    }
+
+    [[nodiscard]] auto has_state_group(std::string_view event_id) -> bool
+    {
+        return database::find_event_state_group(started_.runtime.database.persistent_store, event_id).has_value();
+    }
+
+    std::string room_id;
+
+private:
+    tests::tls_mock::TlsTestCertificate certificate_;
+    homeserver::RuntimeStartResult started_;
+    homeserver::TlsServerContextResult tls_;
+    net::TcpAcceptor acceptor_{};
+};
+
+// Spec: server-server-api.md POST /get_missing_events — `latest_events` are
+// "the event IDs to retrieve the previous events for": the PDU whose ancestry is
+// incomplete, which the origin walks back from and does not return itself.
+// `earliest_events` are "the latest event IDs that the sender already has".
+// Naming the PDU's prev_events as the former makes the origin skip them, and
+// naming the events this server lacks as the latter makes it skip the very
+// events that were asked for.
+SCENARIO("Backfill asks /get_missing_events about the PDU itself and names the events it already has",
+         "[pdu_ingestion][backfill][a8_get_missing_events]")
+{
+    GIVEN("a room this server holds and a PDU whose prev_event it has never seen")
+    {
+        auto fixture = RecoveryFixture{"!a8-gme-request:local.example.org"};
+        auto const gap = make_remote_message_pdu(fixture.room_id, {fixture.bob_member_id()}, fixture.auth_ids(), 4, 10);
+        auto const pdu = make_remote_message_pdu(fixture.room_id, {gap.event_id}, fixture.auth_ids(), 5, 11);
+
+        AND_GIVEN("a sending server that serves nothing")
+        {
+            auto const script = PeerScript{};
+            auto const peer = fixture.serve(script);
+
+            WHEN("the PDU is ingested")
+            {
+                std::ignore = fixture.ingest(pdu);
+
+                THEN("the first request is /get_missing_events with the PDU as latest_events and this server's "
+                     "forward extremity as earliest_events")
+                {
+                    auto const requests = peer->requests();
+                    auto const first = std::ranges::find_if(requests, [](std::string const& request) {
+                        return request.starts_with("POST /_matrix/federation/v1/get_missing_events/");
+                    });
+                    REQUIRE(first != requests.end());
+                    auto const body = first->substr(first->find("\r\n\r\n") + 4U);
+                    CHECK(body.find(R"("latest_events":[")" + pdu.event_id + R"("])") != std::string::npos);
+                    CHECK(body.find(R"("earliest_events":[")" + fixture.admin_member_id() + R"("])") !=
+                          std::string::npos);
+                    CHECK(body.find(gap.event_id) == std::string::npos);
+                }
+            }
+        }
+    }
+}
+
+// Spec: server-server-api.md GET /state_ids and "Backfilling and retrieving
+// missing events". /get_missing_events returned one event whose own prev_event
+// is still unknown: the gap is that prev_event, so that is the event the state
+// is asked at, not the event /get_missing_events returned.
+SCENARIO("Backfill asks for the state at the prev_event that a fetched event is itself missing",
+         "[pdu_ingestion][backfill][a8_state_at_gap]")
+{
+    GIVEN("a PDU, its prev_event, and that event's own prev_event, only the first of which the origin lists")
+    {
+        auto fixture = RecoveryFixture{"!a8-state-at-gap:local.example.org"};
+        auto const older =
+            make_remote_message_pdu(fixture.room_id, {fixture.bob_member_id()}, fixture.auth_ids(), 4, 10);
+        auto const newer = make_remote_message_pdu(fixture.room_id, {older.event_id}, fixture.auth_ids(), 5, 11);
+        auto const pdu = make_remote_message_pdu(fixture.room_id, {newer.event_id}, fixture.auth_ids(), 6, 20);
+
+        AND_GIVEN("an origin that answers /get_missing_events with only the newer event, and serves /state_ids "
+                  "and /event but not /event_auth")
+        {
+            auto script = PeerScript{};
+            script.events = {
+                {older.event_id, older.json},
+                {newer.event_id, newer.json}
+            };
+            script.state_ids[older.event_id] = make_state_ids_response(fixture.genesis_state_ids(), fixture.auth_ids());
+            script.missing_events = [&](std::string const& latest) {
+                return latest == pdu.event_id ? events_array_body({newer.json}) : std::string{};
+            };
+            auto const peer = fixture.serve(script);
+
+            WHEN("the PDU is ingested")
+            {
+                auto const result = fixture.ingest(pdu);
+                auto const requests = peer->requests();
+
+                THEN("the PDU is accepted and both earlier events are placed")
+                {
+                    CHECK(result.status == PduIngestionStatus::accepted);
+                    CHECK(fixture.has_state_group(older.event_id));
+                    CHECK(fixture.has_state_group(newer.event_id));
+                }
+
+                THEN("the state was asked at the event nothing could supply, once, and never at the event that "
+                     "was already in hand")
+                {
+                    CHECK(count_requests_starting_with(requests, "GET /_matrix/federation/v1/state_ids/") == 1U);
+                    CHECK(state_asked_at(requests, older.event_id));
+                    CHECK_FALSE(state_asked_at(requests, newer.event_id));
+                }
+
+                THEN("/event_auth was not needed")
+                {
+                    CHECK(count_requests_starting_with(requests, "GET /_matrix/federation/v1/event_auth/") == 0U);
+                }
+            }
+        }
+    }
+}
+
+// Exercises a /state_ids snapshot that names events this server has never seen:
+// an auth chain event B1 (member), and the state event Z whose auth_events name
+// B1 and whose own prev_event Y is unavailable, so Z's state-before is unknown.
+// Only GET /event/{eventId} is served, never /event_auth. B1 is served only when
+// `serve_b1` is set.
+auto exercise_snapshot_auth_chain(bool serve_b1) -> void
+{
+    auto fixture =
+        RecoveryFixture{serve_b1 ? "!a8-chain-served:local.example.org" : "!a8-chain-missing:local.example.org"};
+    auto const& room = fixture.room_id;
+    auto const b1 = make_remote_event_pdu(room, "m.room.member", std::string{remote_member}, remote_member,
+                                          member_content("A"), {fixture.bob_member_id()}, fixture.auth_ids(), 4, 10);
+    auto const y = make_remote_message_pdu(room, {b1.event_id}, fixture.auth_ids(), 5, 11);
+    auto const z =
+        make_remote_event_pdu(room, "m.room.member", std::string{remote_member}, remote_member, member_content("B"),
+                              {y.event_id}, {fixture.create_id(), fixture.pl_id(), b1.event_id}, 6, 12);
+    auto const u = make_remote_message_pdu(room, {z.event_id}, fixture.auth_ids(), 7, 13);
+    auto const t = make_remote_message_pdu(room, {u.event_id}, fixture.auth_ids(), 8, 14);
+    auto const pdu = make_remote_message_pdu(room, {t.event_id}, fixture.auth_ids(), 9, 20);
+    auto const sentinel = make_remote_message_pdu(room, {fixture.bob_member_id()}, fixture.auth_ids(), 4, 30);
+
+    auto script = PeerScript{};
+    script.events = {
+        {z.event_id, z.json},
+        {u.event_id, u.json},
+        {t.event_id, t.json}
+    };
+    if (serve_b1)
+    {
+        script.events[b1.event_id] = b1.json;
+    }
+    auto pdu_ids = fixture.genesis_state_ids();
+    std::erase(pdu_ids, fixture.bob_member_id());
+    pdu_ids.push_back(z.event_id);
+    auto auth_chain_ids = fixture.auth_ids();
+    auth_chain_ids.push_back(b1.event_id);
+    script.state_ids[u.event_id] = make_state_ids_response(pdu_ids, auth_chain_ids);
+    auto const peer = fixture.serve(script);
+
+    auto const result = fixture.ingest(pdu);
+    auto const requests = peer->requests();
+    auto const& runtime = fixture.runtime();
+
+    CHECK(count_requests_starting_with(requests, "GET /_matrix/federation/v1/event_auth/") == 0U);
+    CHECK(std::ranges::any_of(requests, [&](std::string const& request) {
+        return request.starts_with("GET /_matrix/federation/v1/event/" +
+                                   core::percent_encode_path_component(b1.event_id) + " ");
+    }));
+
+    if (serve_b1)
+    {
+        CHECK(result.status == PduIngestionStatus::accepted);
+        CHECK(stored_status(runtime, b1.event_id).value_or(std::string{}) == "outlier");
+        // ADR-0070: Z was judged against its own auth_events only, so no
+        // after-state is recorded for it.
+        CHECK(stored_status(runtime, z.event_id).value_or(std::string{}) == "outlier");
+        CHECK_FALSE(fixture.has_state_group(z.event_id));
+        CHECK(fixture.has_state_group(u.event_id));
+        CHECK(fixture.has_state_group(t.event_id));
+    }
+    else
+    {
+        // The auth chain the origin listed cannot be completed, so none of the
+        // events that depend on it is stored: not Z, not the events above it.
+        CHECK(result.status != PduIngestionStatus::accepted);
+        for (auto const* id : {&b1.event_id, &z.event_id, &u.event_id, &t.event_id})
+        {
+            CHECK_FALSE(stored_status(runtime, *id).has_value());
+        }
+        // The failed attempt leaves the room as it was: an event on the known
+        // history is still placed and accepted.
+        auto const after = fixture.ingest(sentinel);
+        CHECK(after.status == PduIngestionStatus::accepted);
+    }
+}
+
+SCENARIO("A /state_ids snapshot's auth chain and state events are fetched with /event, not /event_auth",
+         "[pdu_ingestion][backfill][a8_snapshot_by_event]")
+{
+    GIVEN("a snapshot naming an auth chain event and a state event this server has never seen")
+    {
+        exercise_snapshot_auth_chain(true);
+    }
+}
+
+SCENARIO("A snapshot whose auth chain the origin will not supply stores nothing that depends on it",
+         "[pdu_ingestion][backfill][a8_snapshot_by_event]")
+{
+    GIVEN("a snapshot naming an auth chain event the origin answers 404 for")
+    {
+        exercise_snapshot_auth_chain(false);
+    }
+}
+
+// Spec: server-server-api.md "Rejection": "Subsequent events from other servers
+// that reference rejected events should be allowed if they still pass the auth
+// rules"; and room version auth rule 2.3 (rooms/v10.md): an event whose
+// auth_events include one that was itself rejected is rejected. A rejected event
+// is stored, not dropped, so that events naming it as a prev_event can be placed.
+SCENARIO("An event with a rejected auth event is stored rejected and a later event on top of it is accepted",
+         "[pdu_ingestion][backfill][a8_rejected_auth_event]")
+{
+    GIVEN("a power_levels event this server rejected and an outlier that names it as an auth event")
+    {
+        auto fixture = RecoveryFixture{"!a8-rejected-auth:local.example.org"};
+        auto const& room = fixture.room_id;
+
+        auto raised = canonicaljson::Object{};
+        raised.push_back(canonicaljson::make_member(std::string{local_admin}, canonicaljson::Value{std::int64_t{100}}));
+        raised.push_back(
+            canonicaljson::make_member(std::string{remote_member}, canonicaljson::Value{std::int64_t{100}}));
+        auto levels = canonicaljson::Object{};
+        levels.push_back(canonicaljson::make_member("users", canonicaljson::Value{std::move(raised)}));
+        auto const rejected_levels =
+            make_remote_event_pdu(room, "m.room.power_levels", std::string{}, remote_member, std::move(levels),
+                                  {fixture.bob_member_id()}, fixture.auth_ids(), 4, 10);
+        auto const outlier = make_remote_event_pdu(
+            room, "m.room.member", std::string{remote_member}, remote_member, member_content("outlier"),
+            {fixture.bob_member_id()}, {fixture.create_id(), rejected_levels.event_id, fixture.bob_member_id()}, 5, 11);
+        auto const outlier_auth = std::vector<std::string>{fixture.create_id(), fixture.pl_id(), outlier.event_id};
+        auto const first = make_remote_message_pdu(room, {fixture.bob_member_id()}, outlier_auth, 6, 12);
+        auto const second = make_remote_message_pdu(room, {first.event_id}, outlier_auth, 7, 13);
+        auto const sentinel = make_remote_message_pdu(room, {second.event_id}, fixture.auth_ids(), 8, 14);
+
+        AND_GIVEN("a sending server that serves /event for the outlier and nothing else")
+        {
+            auto script = PeerScript{};
+            script.events = {
+                {outlier.event_id, outlier.json}
+            };
+            auto const peer = fixture.serve(script);
+            REQUIRE(fixture.ingest(rejected_levels).status == PduIngestionStatus::rejected_auth);
+
+            WHEN("two events that name the outlier arrive, then an event on top of them")
+            {
+                auto const first_result = fixture.ingest(first);
+                auto const second_result = fixture.ingest(second);
+                auto const sentinel_result = fixture.ingest(sentinel);
+                auto const requests = peer->requests();
+                auto const& runtime = fixture.runtime();
+
+                THEN("the outlier and both events that name it are stored as rejected")
+                {
+                    CHECK(stored_status(runtime, outlier.event_id).value_or(std::string{}) == "rejected");
+                    CHECK(stored_status(runtime, first.event_id).value_or(std::string{}) == "rejected");
+                    CHECK(stored_status(runtime, second.event_id).value_or(std::string{}) == "rejected");
+                    CHECK(first_result.status == PduIngestionStatus::rejected_auth);
+                    CHECK(second_result.status == PduIngestionStatus::rejected_auth);
+                }
+
+                THEN("the event on top of a rejected prev_event is placed and accepted")
+                {
+                    CHECK(sentinel_result.status == PduIngestionStatus::accepted);
+                    CHECK(stored_status(runtime, sentinel.event_id).value_or(std::string{}) == "accepted");
+                }
+
+                THEN("no rejected event changed the room's power levels")
+                {
+                    auto const& state = runtime.database.persistent_store.state;
+                    auto const levels_entry =
+                        std::ranges::find_if(state, [&](database::PersistentStateEvent const& entry) {
+                            return entry.room_id == room && entry.event_type == "m.room.power_levels";
+                        });
+                    REQUIRE(levels_entry != state.end());
+                    CHECK(levels_entry->event_id == fixture.pl_id());
+                }
+
+                THEN("the only request the sending server saw was the /event fetch of the outlier")
+                {
+                    CHECK(requests.size() == 1U);
+                    CHECK(count_requests_starting_with(requests, "GET /_matrix/federation/v1/event/") == 1U);
+                }
+            }
+        }
+    }
+}
+
+// Spec: server-server-api.md POST /get_missing_events, GET /state_ids.
+// /get_missing_events returns a window of the events before the PDU; the window
+// does not reach history this server has, so its oldest event's prev_event is
+// the gap and the state is asked there, once. Every event in the window is then
+// placed oldest first and the PDU is accepted.
+SCENARIO("Backfill places a /get_missing_events window that does not reach known history through one state request",
+         "[pdu_ingestion][backfill][a8_window_beyond_gme]")
+{
+    GIVEN("a chain of thirty events of which /get_missing_events returns the newest twenty")
+    {
+        auto fixture = RecoveryFixture{"!a8-window:local.example.org"};
+        auto const& room = fixture.room_id;
+        auto chain = std::vector<InboundPduEnvelope>{};
+        auto prev = fixture.bob_member_id();
+        for (auto index = 1; index <= 30; ++index)
+        {
+            chain.push_back(make_remote_message_pdu(room, {prev}, fixture.auth_ids(), 3 + index, 10 + index));
+            prev = chain.back().event_id;
+        }
+        auto const pdu = make_remote_message_pdu(room, {prev}, fixture.auth_ids(), 40, 60);
+        // The tenth event is the newest one the window does not reach.
+        auto const& gap = chain[9];
+
+        auto script = PeerScript{};
+        script.events = {
+            {gap.event_id, gap.json}
+        };
+        script.state_ids[gap.event_id] = make_state_ids_response(fixture.genesis_state_ids(), fixture.auth_ids());
+        script.missing_events = [&](std::string const& latest) {
+            if (latest != pdu.event_id)
+            {
+                return std::string{};
+            }
+            auto window = std::vector<std::string>{};
+            for (auto index = std::size_t{30U}; index > 10U; --index)
+            {
+                window.push_back(chain[index - 1U].json);
+            }
+            return events_array_body(window);
+        };
+        auto const peer = fixture.serve(script);
+
+        WHEN("the PDU is ingested")
+        {
+            auto const result = fixture.ingest(pdu);
+            auto const requests = peer->requests();
+
+            THEN("the PDU is accepted and every event of the chain from the gap up is placed")
+            {
+                CHECK(result.status == PduIngestionStatus::accepted);
+                for (auto index = std::size_t{9U}; index < chain.size(); ++index)
+                {
+                    CHECK(fixture.has_state_group(chain[index].event_id));
+                }
+            }
+
+            THEN("one state request was made, at the gap, and /event_auth was not used")
+            {
+                CHECK(count_requests_starting_with(requests, "GET /_matrix/federation/v1/state_ids/") == 1U);
+                CHECK(count_requests_starting_with(requests, "GET /_matrix/federation/v1/event_auth/") == 0U);
+                CHECK(state_asked_at(requests, gap.event_id));
+            }
+        }
+    }
+}
+
+// The last resort. A snapshot's state event Z has no known state-before and
+// names an auth event B1 that neither the snapshot's auth chain nor the origin's
+// /event lists, so Z cannot be judged against its own auth_events. GET /event_auth
+// returns the auth chain in one call. `forged` makes that chain carry, alongside
+// B1, a copy of a stored event under the stored event's "event_id" with its join
+// turned into a ban: a field the signature covers, so it no longer verifies.
+// Only an event identical to the stored one may skip verification.
+auto exercise_event_auth_last_resort(bool forged) -> void
+{
+    auto fixture = RecoveryFixture{forged ? "!a8-event-auth-forged:local.example.org"
+                                          : "!a8-event-auth-genuine:local.example.org"};
+    auto const& room = fixture.room_id;
+    auto const b1 = make_remote_event_pdu(room, "m.room.member", std::string{remote_member}, remote_member,
+                                          member_content("A"), {fixture.bob_member_id()}, fixture.auth_ids(), 4, 10);
+    auto const y = make_remote_message_pdu(room, {b1.event_id}, fixture.auth_ids(), 5, 11);
+    auto const z =
+        make_remote_event_pdu(room, "m.room.member", std::string{remote_member}, remote_member, member_content("B"),
+                              {y.event_id}, {fixture.create_id(), fixture.pl_id(), b1.event_id}, 6, 12);
+    auto const u = make_remote_message_pdu(room, {z.event_id}, fixture.auth_ids(), 7, 13);
+    auto const t = make_remote_message_pdu(room, {u.event_id}, fixture.auth_ids(), 8, 14);
+    auto const pdu = make_remote_message_pdu(room, {t.event_id}, fixture.auth_ids(), 9, 20);
+
+    auto chain = std::vector<std::string>{};
+    if (forged)
+    {
+        auto const& stored = fixture.runtime().database.persistent_store.events;
+        auto const member_bob = std::ranges::find_if(stored, [&](database::PersistentEvent const& event) {
+            return event.event_id == fixture.bob_member_id();
+        });
+        REQUIRE(member_bob != stored.end());
+        auto forged_member_bob = member_bob->json;
+        auto const membership_at = forged_member_bob.find(R"("membership":"join")");
+        REQUIRE(membership_at != std::string::npos);
+        forged_member_bob.replace(membership_at, std::string_view{R"("membership":"join")"}.size(),
+                                  R"("membership":"ban")");
+        chain.push_back(forged_member_bob);
+    }
+    chain.push_back(b1.json);
+
+    auto script = PeerScript{};
+    script.events = {
+        {z.event_id, z.json},
+        {u.event_id, u.json},
+        {t.event_id, t.json}
+    };
+    auto pdu_ids = fixture.genesis_state_ids();
+    std::erase(pdu_ids, fixture.bob_member_id());
+    pdu_ids.push_back(z.event_id);
+    script.state_ids[u.event_id] = make_state_ids_response(pdu_ids, fixture.auth_ids());
+    script.event_auth = make_event_auth_response(chain);
+    auto const peer = fixture.serve(script);
+
+    auto const result = fixture.ingest(pdu);
+    auto const requests = peer->requests();
+    auto const& runtime = fixture.runtime();
+
+    CHECK(count_requests_starting_with(requests, "GET /_matrix/federation/v1/event_auth/") == 1U);
+    if (forged)
+    {
+        CHECK(result.status != PduIngestionStatus::accepted);
+        CHECK_FALSE(stored_status(runtime, z.event_id).has_value());
+        CHECK_FALSE(stored_status(runtime, b1.event_id).has_value());
+        CHECK_FALSE(stored_status(runtime, u.event_id).has_value());
+    }
+    else
+    {
+        CHECK(result.status == PduIngestionStatus::accepted);
+        CHECK(stored_status(runtime, z.event_id).value_or(std::string{}) == "outlier");
+        CHECK_FALSE(fixture.has_state_group(z.event_id));
+        CHECK(fixture.has_state_group(u.event_id));
+    }
+}
+
+SCENARIO("A snapshot state event whose auth events nobody listed is verified through /event_auth as a last resort",
+         "[pdu_ingestion][backfill][a8_event_auth_last_resort]")
+{
+    GIVEN("a state event whose auth event is in neither the snapshot's auth chain nor served by /event")
+    {
+        exercise_event_auth_last_resort(false);
+    }
+}
+
+SCENARIO("An /event_auth entry reusing a stored event's ID with different content is verified, not trusted",
+         "[pdu_ingestion][backfill][event_auth_forged_id][a8_event_auth_last_resort]")
+{
+    GIVEN("an /event_auth chain carrying a forged copy of a stored event")
+    {
+        exercise_event_auth_last_resort(true);
+    }
+}
+
+// Spec: server-server-api.md "Rejection": "The state used in the checks should be
+// calculated as normal, except not updating with the rejected event", so a
+// rejected event's after-state is its state-before, and later events that
+// reference it "should be allowed if they still pass the auth rules" (ADR-0256).
+// A rejected event can be stored with no state group: a /state_ids snapshot
+// lists it in its auth chain, its prev_event is unknown so its state-before is
+// too, and it is judged against its own auth_events only (ADR-0069, ADR-0070).
+// When a later snapshot supplies the state before it, it must gain the group, or
+// an event that names it as its prev_event stays unplaceable for ever.
+SCENARIO("A rejected event stored without a state group gains one when a snapshot supplies its state-before",
+         "[pdu_ingestion][backfill][a8_rejected_outlier_promoted]")
+{
+    GIVEN("a rejected power_levels event, and a snapshot auth chain event that names it, so is stored rejected "
+          "with no state group")
+    {
+        auto fixture = RecoveryFixture{"!a8-rejected-promoted:local.example.org"};
+        auto const& room = fixture.room_id;
+
+        auto raised = canonicaljson::Object{};
+        raised.push_back(canonicaljson::make_member(std::string{local_admin}, canonicaljson::Value{std::int64_t{100}}));
+        raised.push_back(
+            canonicaljson::make_member(std::string{remote_member}, canonicaljson::Value{std::int64_t{100}}));
+        auto levels = canonicaljson::Object{};
+        levels.push_back(canonicaljson::make_member("users", canonicaljson::Value{std::move(raised)}));
+        auto const rejected_levels =
+            make_remote_event_pdu(room, "m.room.power_levels", std::string{}, remote_member, std::move(levels),
+                                  {fixture.bob_member_id()}, fixture.auth_ids(), 4, 10);
+        // The rejected event's own prev_event is one nobody can supply.
+        auto const unseen = make_remote_message_pdu(room, {fixture.bob_member_id()}, fixture.auth_ids(), 5, 11);
+        auto const rejected = make_remote_event_pdu(
+            room, "m.room.member", std::string{remote_member}, remote_member, member_content("rejected"),
+            {unseen.event_id}, {fixture.create_id(), rejected_levels.event_id, fixture.bob_member_id()}, 6, 12);
+        auto const target = make_remote_message_pdu(room, {fixture.bob_member_id()}, fixture.auth_ids(), 7, 13);
+        auto const held = make_remote_message_pdu(room, {target.event_id}, fixture.auth_ids(), 8, 14);
+        auto const first = make_remote_message_pdu(room, {held.event_id}, fixture.auth_ids(), 9, 15);
+        auto const after_rejected = make_remote_message_pdu(room, {rejected.event_id}, fixture.auth_ids(), 7, 20);
+
+        auto auth_chain_ids = fixture.auth_ids();
+        auth_chain_ids.push_back(rejected.event_id);
+        auto script = PeerScript{};
+        script.events = {
+            {rejected.event_id, rejected.json},
+            {target.event_id,   target.json  },
+            {held.event_id,     held.json    }
+        };
+        script.state_ids[target.event_id] = make_state_ids_response(fixture.genesis_state_ids(), auth_chain_ids);
+        script.state_ids[rejected.event_id] = make_state_ids_response(fixture.genesis_state_ids(), fixture.auth_ids());
+        auto const peer = fixture.serve(script);
+        auto const& runtime = fixture.runtime();
+
+        REQUIRE(fixture.ingest(rejected_levels).status == PduIngestionStatus::rejected_auth);
+        REQUIRE(fixture.ingest(first).status == PduIngestionStatus::accepted);
+        REQUIRE(stored_status(runtime, rejected.event_id).value_or(std::string{}) == "rejected");
+        REQUIRE_FALSE(fixture.has_state_group(rejected.event_id));
+
+        WHEN("an event whose only prev_event is the rejected event arrives and the state is asked at it")
+        {
+            auto const result = fixture.ingest(after_rejected);
+            auto const requests = peer->requests();
+
+            THEN("the rejected event gains a state group and stays rejected")
+            {
+                CHECK(state_asked_at(requests, rejected.event_id));
+                CHECK(fixture.has_state_group(rejected.event_id));
+                CHECK(stored_status(runtime, rejected.event_id).value_or(std::string{}) == "rejected");
+            }
+
+            THEN("the event on top of it is placed and accepted")
+            {
+                CHECK(result.status == PduIngestionStatus::accepted);
+                CHECK(stored_status(runtime, after_rejected.event_id).value_or(std::string{}) == "accepted");
+            }
+
+            THEN("the rejected event changed neither the power levels nor the sender's membership")
+            {
+                auto const& state = runtime.database.persistent_store.state;
+                auto const state_event_id = [&](std::string_view type, std::string_view state_key) {
+                    auto const entry = std::ranges::find_if(state, [&](database::PersistentStateEvent const& item) {
+                        return item.room_id == room && item.event_type == type && item.state_key == state_key;
+                    });
+                    return entry == state.end() ? std::string{} : entry->event_id;
+                };
+                CHECK(state_event_id("m.room.power_levels", "") == fixture.pl_id());
+                CHECK(state_event_id("m.room.member", remote_member) == fixture.bob_member_id());
+            }
+        }
+    }
+}
+
+} // namespace

@@ -58,7 +58,8 @@ struct RemoteKeyQueryKeys final
 // Builds the content of an `m.device_list_update` EDU for one of `user_id`'s
 // devices. `keys` carries the device keys as published over federation —
 // with the owner's cross-signing signatures — and is omitted when the device
-// has published none. std::nullopt only if serialisation fails.
+// has published none. `device_display_name` is the device's current name and
+// is omitted when it has none. std::nullopt only if serialisation fails.
 [[nodiscard]] auto build_device_list_update_content(database::PersistentStore const& store, std::string_view user_id,
                                                     std::string_view device_id, std::int64_t stream_id)
     -> std::optional<std::string>;

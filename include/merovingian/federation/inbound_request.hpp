@@ -215,9 +215,11 @@ using MissingEventsQueryProvider =
 
 // Returns the canonical-JSON body for an inbound `GET /_matrix/federation/v1/hierarchy/{roomId}`
 // request. The `room_id` path component is already percent-decoded; `suggested_only` reflects the
-// `suggested_only` query parameter. An empty return signals failure and the handler responds
-// 404 M_NOT_FOUND. Optional: when unset the route responds 501 Not Implemented.
-using SpaceHierarchyProvider = std::function<std::string(std::string_view room_id, bool suggested_only)>;
+// `suggested_only` query parameter; `origin` is the authenticated requesting server, whose access
+// to the room (and to each child) the provider judges. An empty return signals failure and the
+// handler responds 404 M_NOT_FOUND. Optional: when unset the route responds 501 Not Implemented.
+using SpaceHierarchyProvider =
+    std::function<std::string(std::string_view room_id, bool suggested_only, std::string_view origin)>;
 
 // Serves a local media file for an inbound `GET /_matrix/federation/v1/media/download/{mediaId}`
 // request. The `media_id` path component is already percent-decoded. The handler maps a failed

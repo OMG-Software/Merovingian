@@ -24,6 +24,9 @@ struct EventTypeFilter final
     std::vector<std::string> senders{};
     std::vector<std::string> not_senders{};
     std::size_t limit{0U}; // 0 == no cap
+    // True when the filter named a `limit`. `limit: 0` then means no events, not no cap (a
+    // RoomEventFilter's "maximum number of events to return"); `limit` alone cannot say which.
+    bool limit_given{false};
     // RoomEventFilter, Matrix v1.19 CS API § Filtering. When lazy_load_members
     // is set the server may send only the membership events of the senders
     // appearing in the returned events, instead of the room's whole member
@@ -80,6 +83,18 @@ struct SyncFilter final
 // filter. An empty `filter_argument` yields a default (pass-everything)
 // filter.
 [[nodiscard]] auto parse_room_event_filter_argument(std::string_view filter_argument) -> std::optional<RoomFilter>;
+
+// Checks a `Filter` definition uploaded with `POST /user/{userId}/filter` against the spec's
+// Filter schema (Matrix v1.19 CS API § Filtering): the body is an object; `presence`,
+// `account_data` and `room` are objects; `room`'s `timeline`, `state`, `ephemeral` and
+// `account_data` are objects; in each event filter `types` and `not_types` are lists of
+// strings, `senders` and `not_senders` lists of user IDs, `rooms` and `not_rooms` lists of
+// room IDs, `limit` an integer and the flags booleans; `event_fields` is a list of strings and
+// `event_format` is "client" or "federation". Returns a reason naming the first field that
+// breaks the schema, or `std::nullopt` for a definition that follows it. Unknown members are
+// ignored, as the spec allows servers to. The parse functions above stay lenient, so a filter
+// stored before this check still loads.
+[[nodiscard]] auto validate_filter_definition(std::string_view filter_json) -> std::optional<std::string>;
 
 // Applies the EventType include/exclude rules. Returns true when the event
 // should be kept. `event_type` and `sender` are matched against the

@@ -1,5 +1,5 @@
 Name:           merovingian
-Version:        0.12.59
+Version:        0.12.60
 Release:        1%{?dist}
 Summary:        Secure Matrix Protocol homeserver
 
@@ -112,6 +112,10 @@ fi
 %{_sysconfdir}/merovingian/merovingian.conf.example
 
 %changelog
+* Wed Oct 28 2026 James Chapman <claude@ping.me.uk> - 0.12.60-1
+- Fixes from the ninth Complement run: membership events accepted for another server are
+  forwarded to the room, presence, and sync, backfill and device-list fixes.
+
 * Tue Oct 27 2026 James Chapman <claude@ping.me.uk> - 0.12.59-1
 - Federation workers resolve remote signing keys again, and joins and leaves set their own
   origin_server_ts instead of signing the resident server's.

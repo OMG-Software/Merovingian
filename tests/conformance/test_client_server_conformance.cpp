@@ -1639,6 +1639,106 @@ SCENARIO("POST /keys/upload rejects a one-time key whose signature bytes fail Ed
     }
 }
 
+// --- POST /_matrix/client/v3/keys/upload: malformed device_keys ---------------
+// Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#post_matrixclientv3keysupload
+//
+// The `DeviceKeys` object requires `device_id`, `keys`, `user_id` (and `algorithms`, `signatures`), with `keys`
+// and `signatures` objects and `algorithms` a list of strings. The spec's 400 row for /keys/upload is the
+// generic "request is invalid" one and names no errcode for a malformed `device_keys`; the owner decided
+// (Complement TestUploadKey "Rejects invalid device keys") that a device_keys object of the wrong shape is
+// `M_BAD_JSON`, as `device_keys` that is not an object already is. A well-formed object that names another
+// user or device, or lacks the key pair the server looks up, stays `M_INVALID_PARAM`.
+SCENARIO("POST /keys/upload refuses a malformed device_keys object with M_BAD_JSON",
+         "[conformance][client-server][e2ee][keys][device-keys-validation]")
+{
+    GIVEN("a logged-in device")
+    {
+        auto started = merovingian::homeserver::start_client_server(conformance_config());
+        REQUIRE(started.started);
+        auto const token = logged_in_token(started.runtime);
+        auto const device_id = std::string{"DEVICE1"};
+        auto const upload = [&](std::string const& device_keys_json) {
+            return merovingian::homeserver::handle_client_server_request(
+                started.runtime,
+                {"POST", "/_matrix/client/v3/keys/upload", token, R"({"device_keys":)" + device_keys_json + "}"});
+        };
+        auto const errcode_of = [](auto const& outcome) {
+            auto const parsed = parse_object(outcome.response.body);
+            auto const* errcode = string_member(parsed, "errcode");
+            return errcode == nullptr ? std::string{} : *errcode;
+        };
+
+        WHEN("device_keys lacks its keys object (algorithms, keys and signatures all missing)")
+        {
+            auto const outcome = upload(R"({"user_id":"@alice:example.org","device_id":"DEVICE1"})");
+
+            THEN("the server answers 400 M_BAD_JSON")
+            {
+                REQUIRE(outcome.response.status == 400U);
+                REQUIRE(errcode_of(outcome) == "M_BAD_JSON");
+            }
+        }
+
+        WHEN("device_keys.keys is not an object")
+        {
+            auto const outcome = upload(R"({"user_id":"@alice:example.org","device_id":"DEVICE1","keys":"nope"})");
+
+            THEN("the server answers 400 M_BAD_JSON")
+            {
+                REQUIRE(outcome.response.status == 400U);
+                REQUIRE(errcode_of(outcome) == "M_BAD_JSON");
+            }
+        }
+
+        WHEN("device_keys.algorithms is not a list of strings")
+        {
+            auto const outcome = upload(
+                R"({"user_id":"@alice:example.org","device_id":"DEVICE1","algorithms":"m.olm","keys":{"curve25519:DEVICE1":"c","ed25519:DEVICE1":"e"}})");
+
+            THEN("the server answers 400 M_BAD_JSON")
+            {
+                REQUIRE(outcome.response.status == 400U);
+                REQUIRE(errcode_of(outcome) == "M_BAD_JSON");
+            }
+        }
+
+        WHEN("device_keys.signatures is not an object")
+        {
+            auto const outcome = upload(
+                R"({"user_id":"@alice:example.org","device_id":"DEVICE1","keys":{"curve25519:DEVICE1":"c","ed25519:DEVICE1":"e"},"signatures":[]})");
+
+            THEN("the server answers 400 M_BAD_JSON")
+            {
+                REQUIRE(outcome.response.status == 400U);
+                REQUIRE(errcode_of(outcome) == "M_BAD_JSON");
+            }
+        }
+
+        WHEN("device_keys.user_id or device_id is not a string")
+        {
+            auto const outcome = upload(R"({"user_id":7,"device_id":"DEVICE1","keys":{}})");
+
+            THEN("the server answers 400 M_BAD_JSON")
+            {
+                REQUIRE(outcome.response.status == 400U);
+                REQUIRE(errcode_of(outcome) == "M_BAD_JSON");
+            }
+        }
+
+        WHEN("device_keys is well-formed but names another user")
+        {
+            auto const outcome = upload(
+                R"({"user_id":"@mallory:example.org","device_id":"DEVICE1","keys":{"curve25519:DEVICE1":"c","ed25519:DEVICE1":"e"}})");
+
+            THEN("the server still answers 400, M_INVALID_PARAM")
+            {
+                REQUIRE(outcome.response.status == 400U);
+                REQUIRE(errcode_of(outcome) == "M_INVALID_PARAM");
+            }
+        }
+    }
+}
+
 // --- POST /_matrix/client/v3/keys/query --------------------------------------
 // Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#post_matrixclientv3keysquery
 //
@@ -5047,6 +5147,83 @@ SCENARIO("POST /account/password with logout_devices omitted defaults to revokin
                 auto const other_probe = merovingian::homeserver::handle_client_server_request(
                     started.runtime, {"GET", "/_matrix/client/v3/account/whoami", other_token, {}});
                 REQUIRE(other_probe.response.status == 401U);
+            }
+        }
+    }
+}
+
+// Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#post_matrixclientv3accountpassword
+//
+// "logout_devices: Whether the user's other access tokens, and their associated devices, should be
+// revoked if the request succeeds. This defaults to true."
+// The spec says nothing of pushers. The owner decided (Complement TestChangePasswordPushers) that a
+// pusher set with an access token that a password change revokes goes with it, so a revoked device
+// stops being notified; a pusher set with the requesting device's token stays, and nothing is removed
+// when logout_devices is false.
+SCENARIO("POST /account/password deletes the pushers of the devices it revokes",
+         "[conformance][client-server][account][push][password-change-pushers]")
+{
+    GIVEN("alice with a pusher set from DEVICE1 (caller) and another set from DEVICE2")
+    {
+        auto started = merovingian::homeserver::start_client_server(conformance_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        auto const caller_token = logged_in_token(runtime); // alice on DEVICE1
+        auto const other_token = login_existing_user(runtime, "alice", "DEVICE2");
+        REQUIRE(!other_token.empty());
+        auto const set_pusher = [&](std::string const& token, std::string const& pushkey) {
+            REQUIRE(
+                merovingian::homeserver::handle_client_server_request(
+                    runtime,
+                    {"POST", "/_matrix/client/v3/pushers/set", token,
+                     R"({"app_display_name":"App","app_id":"org.example.app","data":{"url":"https://push.example.org/_matrix/push/v1/notify"},"device_display_name":"Phone","kind":"http","lang":"en","pushkey":")" +
+                         pushkey + R"("})"})
+                    .response.status == 200U);
+        };
+        set_pusher(caller_token, "caller-key");
+        set_pusher(other_token, "other-key");
+        auto const pushkeys = [&]() {
+            auto const listed = merovingian::homeserver::handle_client_server_request(
+                runtime, {"GET", "/_matrix/client/v3/pushers", caller_token, {}});
+            REQUIRE(listed.response.status == 200U);
+            auto keys = std::vector<std::string>{};
+            auto const body = parse_object(listed.response.body);
+            auto const* pushers = object_member_as_array(body, "pushers");
+            REQUIRE(pushers != nullptr);
+            for (auto const& value : *pushers)
+            {
+                auto const& pusher = std::get<merovingian::canonicaljson::Object>(value.storage());
+                keys.push_back(*string_member(pusher, "pushkey"));
+            }
+            return keys;
+        };
+        REQUIRE(pushkeys().size() == 2U);
+
+        WHEN("alice changes her password from DEVICE1 with logout_devices omitted (true)")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                runtime,
+                {"POST", "/_matrix/client/v3/account/password", caller_token,
+                 R"({"auth":{"type":"m.login.password","identifier":{"type":"m.id.user","user":"@alice:example.org"},"password":"CorrectHorse7!"},"new_password":"NewHorse7!+Ab"})"});
+            REQUIRE(response.response.status == 200U);
+
+            THEN("the pusher of the revoked DEVICE2 is gone and the requesting device's stays")
+            {
+                REQUIRE(pushkeys() == std::vector<std::string>{"caller-key"});
+            }
+        }
+
+        WHEN("alice changes her password from DEVICE1 with logout_devices false")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                runtime,
+                {"POST", "/_matrix/client/v3/account/password", caller_token,
+                 R"({"auth":{"type":"m.login.password","identifier":{"type":"m.id.user","user":"@alice:example.org"},"password":"CorrectHorse7!"},"new_password":"NewHorse7!+Ab","logout_devices":false})"});
+            REQUIRE(response.response.status == 200U);
+
+            THEN("both pushers remain, since no device was revoked")
+            {
+                REQUIRE(pushkeys().size() == 2U);
             }
         }
     }
@@ -12086,29 +12263,28 @@ SCENARIO("PUT /presence/{userId}/status sets the presence state", "[conformance]
 
 // --- GET /_matrix/client/v3/presence/{userId}/status -------------------------
 // Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#get_matrixclientv3presenceuseridstatus
-// IMPLEMENTATION GAP: presence retrieval not yet implemented.
-SCENARIO("GET /presence/{userId}/status returns 404 M_UNRECOGNIZED (implementation gap)",
-         "[conformance][client-server][presence]")
+// The endpoint is implemented (0.12.60); this scenario used to pin its absence (404 M_UNRECOGNIZED).
+// Spec: "Requires authentication: Yes". Behavioural coverage is in test_presence_sync_conformance.cpp.
+SCENARIO("GET /presence/{userId}/status requires authentication", "[conformance][client-server][presence]")
 {
-    GIVEN("a running client-server and a logged-in user")
+    GIVEN("a running client-server")
     {
         auto started = merovingian::homeserver::start_client_server(conformance_config());
         REQUIRE(started.started);
-        auto const token = logged_in_token(started.runtime);
 
-        WHEN("GET /presence/@alice:example.org/status is called")
+        WHEN("GET /presence/@alice:example.org/status is called without an access token")
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
-                started.runtime, {"GET", "/_matrix/client/v3/presence/%40alice%3Aexample.org/status", token, {}});
+                started.runtime, {"GET", "/_matrix/client/v3/presence/%40alice%3Aexample.org/status", {}, {}});
 
-            THEN("the server returns 404 M_UNRECOGNIZED until the endpoint is implemented")
+            THEN("the server returns 401 M_MISSING_TOKEN")
             {
-                // IMPLEMENTATION GAP: presence GET not supported.
-                REQUIRE(response.response.status == 404U);
+                // Spec MUST: "Requires authentication: Yes."
+                REQUIRE(response.response.status == 401U);
                 auto const body = parse_object(response.response.body);
                 auto const* errcode = string_member(body, "errcode");
                 REQUIRE(errcode != nullptr);
-                REQUIRE(*errcode == "M_UNRECOGNIZED");
+                REQUIRE(*errcode == "M_MISSING_TOKEN");
             }
         }
     }
@@ -12674,8 +12850,9 @@ SCENARIO("GET /voip/turnServer rejects unauthenticated requests", "[conformance]
 // 13.20  Presence — GET /presence/{userId}/status
 // ============================================================================
 // Spec: Matrix v1.19 §13.20.2 GET /_matrix/client/v3/presence/{userId}/status
-//       Returns the presence state of a user.
-//       IMPLEMENTATION GAP: not yet implemented. Must return 404 M_UNRECOGNIZED.
+//       Returns the presence state of a user: 200 with `presence` required.
+//       Implemented in 0.12.60 (this scenario used to pin 404 M_UNRECOGNIZED); the cases for
+//       other users and for 403 are in test_presence_sync_conformance.cpp.
 
 SCENARIO("GET /presence/{userId}/status conformance")
 {
@@ -12685,18 +12862,18 @@ SCENARIO("GET /presence/{userId}/status conformance")
         REQUIRE(started.started);
         auto const token = logged_in_token(started.runtime);
 
-        WHEN("GET /presence/%40alice%3Aexample.org/status is called")
+        WHEN("GET /presence/%40alice%3Aexample.org/status is called for the user's own presence")
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
                 started.runtime, {"GET", "/_matrix/client/v3/presence/%40alice%3Aexample.org/status", token, {}});
 
-            THEN("the server returns 404 M_UNRECOGNIZED")
+            THEN("the server returns 200 with a presence")
             {
-                REQUIRE(response.response.status == 404);
+                // Spec MUST: 200 "The presence state for this user" with `presence` required.
+                REQUIRE(response.response.status == 200);
                 auto const body = parse_object(response.response.body);
-                auto const* err = string_member(body, "errcode");
-                REQUIRE(err != nullptr);
-                REQUIRE(*err == "M_UNRECOGNIZED");
+                auto const* state = string_member(body, "presence");
+                REQUIRE(state != nullptr);
             }
         }
     }
@@ -14315,6 +14492,26 @@ SCENARIO("POST /user/{userId}/openid/request_token conformance")
 // Spec: Matrix v1.19 §24 POST /_matrix/client/v3/user_directory/search
 //       MUST return 200 with results matching the search term.
 
+namespace
+{
+
+// `token`'s user makes a public room that each of `joiners` joins, so that all of them are
+// "users who are joined to rooms known to the homeserver that have a public join rule" and
+// share a room with each other: the minimum the user directory spec requires a search to consider.
+auto share_a_public_room(merovingian::homeserver::ClientServerRuntime& runtime, std::string const& token,
+                         std::vector<std::string> const& joiners) -> void
+{
+    auto const room_id = create_public_room(runtime, token);
+    for (auto const& joiner : joiners)
+    {
+        REQUIRE(merovingian::homeserver::handle_client_server_request(
+                    runtime, {"POST", "/_matrix/client/v3/rooms/" + room_id + "/join", joiner, "{}"})
+                    .response.status == 200U);
+    }
+}
+
+} // namespace
+
 SCENARIO("POST /user_directory/search returns matching users", "[conformance][client-server][account-management]")
 {
     GIVEN("a running client-server with two registered users")
@@ -14322,8 +14519,10 @@ SCENARIO("POST /user_directory/search returns matching users", "[conformance][cl
         auto started = merovingian::homeserver::start_client_server(conformance_config());
         REQUIRE(started.started);
         auto const token = logged_in_token(started.runtime);
-        // Register a second user so the directory has more than one profile.
+        // Register a second user so the directory has more than one profile, who is visible to
+        // the first through a room they share.
         auto const bob_token = register_and_login(started.runtime, "bob");
+        share_a_public_room(started.runtime, token, {bob_token});
 
         WHEN("POST /user_directory/search is called with a search term matching a user")
         {
@@ -14400,7 +14599,8 @@ SCENARIO("POST /user_directory/search does not return deactivated accounts",
         REQUIRE(started.started);
         auto const token = logged_in_token(started.runtime);
         auto const bob_token = register_and_login(started.runtime, "bob");
-        std::ignore = register_and_login(started.runtime, "bobby");
+        auto const bobby_token = register_and_login(started.runtime, "bobby");
+        share_a_public_room(started.runtime, token, {bob_token, bobby_token});
         REQUIRE(merovingian::homeserver::handle_client_server_request(
                     started.runtime, {"POST",
                                       "/_matrix/client/v3/account/deactivate",
@@ -14434,10 +14634,12 @@ SCENARIO("POST /user_directory/search returns at most limit results and reports 
         auto started = merovingian::homeserver::start_client_server(conformance_config());
         REQUIRE(started.started);
         auto const token = logged_in_token(started.runtime);
+        auto match_tokens = std::vector<std::string>{};
         for (auto index = 0; index < 11; ++index)
         {
-            std::ignore = register_and_login(started.runtime, "match" + std::to_string(index));
+            match_tokens.push_back(register_and_login(started.runtime, "match" + std::to_string(index)));
         }
+        share_a_public_room(started.runtime, token, match_tokens);
 
         WHEN("the search asks for at most 3 results")
         {
@@ -14470,6 +14672,108 @@ SCENARIO("POST /user_directory/search returns at most limit results and reports 
             {
                 REQUIRE(result.user_ids.size() == 11U);
                 REQUIRE_FALSE(result.limited);
+            }
+        }
+    }
+}
+
+// Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#post_matrixclientv3user_directorysearch
+// "The homeserver may determine which subset of users are searched. However, the homeserver MUST at a
+// minimum consider users who are visible to the requester based on their membership in rooms known to
+// the homeserver. This means: users that share a room with the requesting user; users who are joined
+// to rooms known to the homeserver that have a `public` join rule; users who are joined to rooms ...
+// that have a `world_readable` history visibility."
+//
+// The spec lets the server search more than that. The owner decided (Complement
+// TestRoomSpecificUsernameAtJoin / TestRoomSpecificUsernameChange) that it searches exactly the
+// visible users, so a search never reveals an account the requester has no room-based connection to.
+// A requester is not offered themselves unless a public room makes them visible to everyone.
+SCENARIO("POST /user_directory/search offers only the users visible to the requester",
+         "[conformance][client-server][account-management][user_directory][directory-visibility]")
+{
+    GIVEN("Alice in a public room, Bob sharing a private room with Alice, and Eve in no room")
+    {
+        auto started = merovingian::homeserver::start_client_server(conformance_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        auto const alice = register_and_login(runtime, "dirone");
+        auto const bob = register_and_login(runtime, "dirtwo");
+        auto const eve = register_and_login(runtime, "dirthree");
+        std::ignore = create_public_room(runtime, alice);
+        auto const private_room = merovingian::homeserver::handle_client_server_request(
+            runtime, {"POST", "/_matrix/client/v3/createRoom", bob,
+                      R"({"visibility":"private","invite":["@dirone:example.org"]})"});
+        REQUIRE(private_room.response.status == 200U);
+        auto const private_room_id = *string_member(parse_object(private_room.response.body), "room_id");
+        REQUIRE(merovingian::homeserver::handle_client_server_request(
+                    runtime, {"POST", "/_matrix/client/v3/rooms/" + private_room_id + "/join", alice, "{}"})
+                    .response.status == 200U);
+
+        auto const term = R"({"search_term":"@dir"})";
+
+        WHEN("Eve searches for a term every account matches")
+        {
+            auto const result = search_directory(runtime, eve, term);
+
+            THEN("she finds only Alice, who is joined to a public room")
+            {
+                REQUIRE(result.user_ids == std::vector<std::string>{"@dirone:example.org"});
+            }
+        }
+
+        WHEN("Bob searches for a term every account matches")
+        {
+            auto const result = search_directory(runtime, bob, term);
+
+            THEN("he finds only Alice, with whom he shares a room, and not himself or Eve")
+            {
+                REQUIRE(result.user_ids == std::vector<std::string>{"@dirone:example.org"});
+            }
+        }
+
+        WHEN("Alice searches for a term every account matches")
+        {
+            auto const result = search_directory(runtime, alice, term);
+
+            THEN("she finds herself (public room) and Bob (shared room), and not Eve")
+            {
+                REQUIRE(result.user_ids.size() == 2U);
+                REQUIRE(std::ranges::find(result.user_ids, "@dirone:example.org") != result.user_ids.end());
+                REQUIRE(std::ranges::find(result.user_ids, "@dirtwo:example.org") != result.user_ids.end());
+            }
+        }
+
+        WHEN("Eve searches for Bob by his full user ID")
+        {
+            auto const result = search_directory(runtime, eve, R"({"search_term":"@dirtwo:example.org"})");
+
+            THEN("nothing is found, since Bob is in a private room she is not in")
+            {
+                REQUIRE(result.user_ids.empty());
+            }
+        }
+    }
+
+    GIVEN("a user in a room whose history is world readable and a requester in no room")
+    {
+        auto started = merovingian::homeserver::start_client_server(conformance_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        auto const alice = register_and_login(runtime, "readerone");
+        auto const eve = register_and_login(runtime, "readertwo");
+        REQUIRE(merovingian::homeserver::handle_client_server_request(
+                    runtime, {"POST", "/_matrix/client/v3/createRoom", alice,
+                              R"({"preset":"private_chat","initial_state":[{"type":"m.room.history_visibility",)"
+                              R"("state_key":"","content":{"history_visibility":"world_readable"}}]})"})
+                    .response.status == 200U);
+
+        WHEN("the requester searches for that user")
+        {
+            auto const result = search_directory(runtime, eve, R"({"search_term":"readerone"})");
+
+            THEN("the user is found")
+            {
+                REQUIRE(result.user_ids == std::vector<std::string>{"@readerone:example.org"});
             }
         }
     }
@@ -16614,6 +16918,8 @@ SCENARIO("POST /user_directory/search finds users whose user_id matches the sear
         auto& rt = started.runtime;
         auto const alice = logged_in_token(rt);
         std::ignore = register_and_login(rt, "bob");
+        // A user is found, by themselves too, through a room: Alice's public room.
+        std::ignore = create_public_room(rt, alice);
 
         WHEN("alice searches for 'alice'")
         {
@@ -16683,6 +16989,8 @@ SCENARIO("POST /user_directory/search result entries each contain a non-empty us
         REQUIRE(started.started);
         auto& rt = started.runtime;
         auto const token = logged_in_token(rt);
+        // Only users visible through a room are found: Alice is in her own public room.
+        std::ignore = create_public_room(rt, token);
 
         WHEN("a search returns at least one result")
         {
@@ -16796,6 +17104,73 @@ SCENARIO("GET /sync with a stored filter_id applies the stored filter", "[confor
                 auto const* next_batch = string_member(body, "next_batch");
                 REQUIRE(next_batch != nullptr);
                 REQUIRE_FALSE(next_batch->empty());
+            }
+        }
+    }
+}
+
+// Spec: Matrix Client-Server API v1.19 — POST /user/{userId}/filter
+// URL: ../../docs/matrix-v1.19-spec/client-server-api.md#post_matrixclientv3useruseridfilter
+//
+// The request body is a `Filter`, whose fields are typed (`presence` an object, `room.timeline` a
+// RoomEventFilter object, `types` a list of strings, `rooms` a list of Room IDs, ...). The spec leaves the
+// answer to a definition of the wrong shape open; the owner decided (Complement TestFilter) that it is
+// refused with 400 `M_BAD_JSON`, and that nothing is stored.
+SCENARIO("POST /user/{userId}/filter refuses a definition with a field of the wrong type with M_BAD_JSON",
+         "[conformance][client-server][filtering][filter-validation]")
+{
+    GIVEN("a logged-in user")
+    {
+        auto started = merovingian::homeserver::start_client_server(conformance_config());
+        REQUIRE(started.started);
+        auto const token = logged_in_token(started.runtime);
+
+        WHEN("a definition gives a field the wrong JSON type")
+        {
+            auto const bodies = std::vector<std::string>{
+                R"({"presence":"not_an_object"})",
+                R"({"room":{"timeline":"not_an_object"}})",
+                R"({"room":{"state":"not_an_object"}})",
+                R"({"room":{"ephemeral":"not_an_object"}})",
+                R"({"room":{"account_data":"not_an_object"}})",
+                R"({"room":{"timeline":{"rooms":"not_a_list"}}})",
+                R"({"room":{"timeline":{"not_rooms":"not_a_list"}}})",
+                R"({"room":{"timeline":{"senders":"not_a_list"}}})",
+                R"({"room":{"timeline":{"not_senders":"not_a_list"}}})",
+                R"({"room":{"timeline":{"types":"not_a_list"}}})",
+                R"({"room":{"timeline":{"not_types":"not_a_list"}}})",
+                R"({"room":{"timeline":{"types":[1]}}})",
+                R"({"room":{"timeline":{"rooms":["not_a_room_id"]}}})",
+                R"({"room":{"timeline":{"senders":["not_a_sender_id"]}}})",
+            };
+
+            THEN("each is answered 400 M_BAD_JSON")
+            {
+                for (auto const& body : bodies)
+                {
+                    INFO(body);
+                    auto const response = merovingian::homeserver::handle_client_server_request(
+                        started.runtime, {"POST", "/_matrix/client/v3/user/@alice:example.org/filter", token, body});
+                    REQUIRE(response.response.status == 400U);
+                    auto const parsed = parse_object(response.response.body);
+                    auto const* errcode = string_member(parsed, "errcode");
+                    REQUIRE(errcode != nullptr);
+                    REQUIRE(*errcode == "M_BAD_JSON");
+                }
+            }
+        }
+
+        WHEN("a definition follows the Filter schema")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                started.runtime,
+                {"POST", "/_matrix/client/v3/user/@alice:example.org/filter", token,
+                 R"({"room":{"timeline":{"limit":5,"types":["m.room.*"],"rooms":["!abc:example.org"]},)"
+                 R"("state":{"lazy_load_members":true}},"presence":{"not_types":["*"]}})"});
+
+            THEN("it is stored and answered 200 with a filter_id")
+            {
+                REQUIRE(response.response.status == 200U);
             }
         }
     }
@@ -17104,6 +17479,88 @@ SCENARIO("GET /rooms/{roomId}/messages honours lazy_load_members in the filter",
                 // Bob is a joined member of the room but sent nothing in the
                 // chunk, so lazy loading must omit his membership event.
                 REQUIRE(std::ranges::find(member_state_keys, "@bob:example.org") == member_state_keys.end());
+            }
+        }
+    }
+}
+
+// Spec: GET /_matrix/client/v3/rooms/{roomId}/messages, `state`, and "Lazy-loading room members":
+// "When enabled, lazy-loading aware endpoints (see below) will only include membership events for the
+// `sender` of events being included in the response." `state` is "A list of state events relevant to
+// showing the `chunk`. For example, if `lazy_load_members` is enabled in the filter then this may
+// contain the membership events for the senders of events in the `chunk`."
+//
+// The spec leaves which other state counts as "relevant" to the server; the owner decided (Complement
+// TestRoomMessagesLazyLoading and TestRoomMessagesLazyLoadingLocalUser) that with lazy loading `state`
+// holds the m.room.member events of the chunk's senders and nothing else. Redundant membership events
+// are not tracked across calls, which the spec permits ("the server MAY ... skip"); the sender's
+// membership is sent on every page.
+SCENARIO("GET /rooms/{roomId}/messages with lazy_load_members returns only the chunk senders' membership",
+         "[conformance][client-server][room-participation][lazyload][lazyload-only-members]")
+{
+    GIVEN("a public room with a silent member, a speaker and a spoken message")
+    {
+        auto started = merovingian::homeserver::start_client_server(conformance_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+
+        auto const alice_token = register_and_login(runtime, "alice");
+        auto const bob_token = register_and_login(runtime, "bob");
+        auto const room_id = create_room(runtime, alice_token);
+        REQUIRE(merovingian::homeserver::handle_client_server_request(
+                    runtime, {"POST", "/_matrix/client/v3/rooms/" + room_id + "/invite", alice_token,
+                              R"({"user_id":"@bob:example.org"})"})
+                    .response.status == 200U);
+        REQUIRE(merovingian::homeserver::handle_client_server_request(
+                    runtime, {"POST", "/_matrix/client/v3/rooms/" + room_id + "/join", bob_token, "{}"})
+                    .response.status == 200U);
+        std::ignore = send_message(runtime, alice_token, room_id);
+
+        auto const state_of = [&](std::string const& query) {
+            auto const target = "/_matrix/client/v3/rooms/" + room_id + "/messages?" + query;
+            auto const response =
+                merovingian::homeserver::handle_client_server_request(runtime, {"GET", target, alice_token, {}});
+            REQUIRE(response.response.status == 200U);
+            auto const body = parse_object(response.response.body);
+            auto const* state = object_member_as_array(body, "state");
+            REQUIRE(state != nullptr);
+            auto described = std::vector<std::string>{};
+            for (auto const& value : *state)
+            {
+                auto const* event = std::get_if<merovingian::canonicaljson::Object>(&value.storage());
+                REQUIRE(event != nullptr);
+                auto const* type = string_member(*event, "type");
+                auto const* state_key = string_member(*event, "state_key");
+                REQUIRE(type != nullptr);
+                REQUIRE(state_key != nullptr);
+                described.push_back(*type + "|" + *state_key);
+            }
+            return described;
+        };
+
+        WHEN("/messages is read backward over only the message, with lazy_load_members")
+        {
+            auto const state = state_of("dir=b&limit=1&filter=%7B%22lazy_load_members%22%3Atrue%7D");
+
+            THEN("state is exactly the sender's m.room.member event")
+            {
+                REQUIRE(state == std::vector<std::string>{"m.room.member|@alice:example.org"});
+            }
+        }
+
+        WHEN("/messages is read over several senders, with lazy_load_members")
+        {
+            auto const state = state_of("dir=b&limit=50&filter=%7B%22lazy_load_members%22%3Atrue%7D");
+
+            THEN("every state event is the m.room.member of a sender in the chunk, and Bob (who joined) is one")
+            {
+                REQUIRE_FALSE(state.empty());
+                for (auto const& entry : state)
+                {
+                    REQUIRE(entry.starts_with("m.room.member|"));
+                }
+                REQUIRE(std::ranges::find(state, "m.room.member|@alice:example.org") != state.end());
+                REQUIRE(std::ranges::find(state, "m.room.member|@bob:example.org") != state.end());
             }
         }
     }

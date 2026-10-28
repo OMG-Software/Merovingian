@@ -24,12 +24,13 @@ This is the largest and most complex module — read this file carefully before 
 | `redaction_service.cpp` | Applies redactions (judge, overwrite the target's stored JSON, withhold unapplied redactions from clients) and checks a local client's redaction |
 | `room_power.cpp` | `may_send_state_event()`: whether a user may send a state event of a type in a room's current state, judged as the auth rules judge it (CSAZ-12) |
 | `restricted_join.cpp` | `decide_restricted_join()`: as the resident, whether a user meets a restricted room's allow conditions and which local user authorises the join (R04, ADR-0185) |
-| `space_hierarchy.cpp` | `GET /_matrix/client/v1/rooms/{roomId}/hierarchy` |
+| `space_hierarchy.cpp` | `GET /_matrix/client/v1/rooms/{roomId}/hierarchy` (a child room this server holds no state for is asked for over federation, see "Client requests that call another server") and the answer to `GET /_matrix/federation/v1/hierarchy/{roomId}`, judged for the authenticated requesting server |
 | `default_push_ruleset.cpp` | The server-default push ruleset (`homeserver::default_push_ruleset`) |
 | `stored_push_rules.cpp` | `load_user_push_rules` / `load_push_ruleset`: a user's push rules from their `m.push_rules` account data over the defaults (ADR-0204) |
 | `push_room_facts.cpp` | `push_room_facts`, `room_member_display_name`, `push_evaluation_context`: the evaluation context push delivery and unread counting share |
 | `push_badge_count.cpp` | `count_push_badge`: the Push Gateway `counts.unread` from one walk of the events, newest first in stream order, that stops once every room is settled, at most 10000 rows (ADR-0207) |
 | `push_rule_unread_classifier.cpp` | `PushRuleUnreadClassifier`: counts unread events by the user's push rules, from the start of their current join (R15, ADR-0205) |
+| `presence_service.cpp` | Presence (CS API "Presence", SS API `m.presence`): `read_presence` (GET), `apply_sync_presence` (the `/sync` `set_presence` parameter), `build_sync_presence_events` (`presence.events`), `accept_inbound_presence` (the EDU sink's presence case) and `record_presence`, the one place a presence row is stored. `presence.enabled=false` turns every entry point into a no-op. Sending the EDU stays in `client_server.cpp` (`broadcast_presence_edu`), beside the other outbound EDUs |
 | `push_retry.cpp` | `attempt_push_delivery` (every push attempt: circuit breaker, rejected pushkeys, scheduling retries) and `PushRetryJob`, the one thread that sends retries (R14, ADR-0206) |
 | `email_push.cpp` | Kind `"email"` pushers (ADR-0219, ADR-0220): `owned_email_pusher_address` (the pushkey must be the account's own email 3PID), `remove_email_pushers_for_address`, and `EmailPushJob`, the one thread that sends due digests through `send_due_email_notifications`. It re-reads the pusher, the 3PID, the account and the badge count under `runtime.mutex`, then sends with the mutex released |
 | `runtime_signing_key_store.cpp` | Production `SigningKeyStore` over the persisted server signing-key rows |
@@ -134,6 +135,22 @@ the main pool's threads for the round trip. Every such call therefore:
 3. for media, is checked against `security.media.remote_fetch_enabled` and `allow_remote` before
    anything else (`remote_media_refusal`): 404 `M_NOT_FOUND`, counted but not audited.
 
+The space hierarchy (`handle_client_space_hierarchy`) is the same kind of request: a child room not held locally is asked
+for from the `via` servers of its link, so the walk takes one slot at its first such call (`RemoteHierarchy` in
+`space_hierarchy.cpp`, held until the walk ends), draws every call from one `OutboundDeadline`, makes at most 16 calls and
+asks at most 3 servers per room, and answers `429 M_LIMIT_EXCEEDED` when the slot is refused. A remote answer is untrusted:
+only spec fields are copied, only rooms the requested space's `children_state` names are cached from `children`, local
+state beats the remote answer, and a room is shown to the user only if the user may see it by the remote summary's own
+`join_rule` / `world_readable` / `allowed_room_ids`.
+
+`perform_outbound_call` (every federated join, leave, knock and proxied lookup) resolves its
+destination through `runtime.cached_discovery` with `DiscoveryCachePolicy::successes_only`, never
+`discover_server` directly: the two calls of one join used to repeat the whole `.well-known` cascade.
+It uses the cache only while the cache wraps `runtime.discovery_network` (compared by address; a test
+that swaps the network falls back to the raw network), and it must never serve a remembered failure
+(a retried join after the peer recovers is not refused). Keep the lookup inside the
+`RuntimeLockRelease` scope.
+
 The caps derive from the main request pool size (`server.http.request_threads`, applied by
 `start_runtime` through `client_outbound_proxy_policy_for_pool`); they have no configuration of their
 own. A new
@@ -188,6 +205,17 @@ frame whose user ID is malformed or local. The decision reads state under `runti
 the room version through `declared_room_version`, and is bounded by
 `max_restricted_join_conditions` (32).
 
+## The resident sends accepted membership events on
+
+As the resident, the `membership_acceptor` stores a `send_join`, `send_leave` or `send_knock` and then
+calls `federate_accepted_membership_event` (`room_service.cpp`) with the stored copy, so every other server
+with a joined member learns of it (spec, "Joining Rooms" and "Leaving Rooms"). The requesting server is
+excluded, and so is this one. It runs only for an accepted event, never a rejected or soft-failed one, with
+`runtime.mutex` held, and it only enqueues. It must stay in main: a federation worker has no dispatch
+worker and no signing key. A new path that stores a membership event received from another server as the
+resident calls it too; it shares `queue_event_to_room_servers` with `federate_local_event`, so do not build
+another transaction by hand.
+
 ## Federation worker relays are untrusted input
 
 A frame from the federation worker is input from the process most exposed to
@@ -205,6 +233,26 @@ Main never signs on a worker's behalf (ADR-0078). A `sign_request` frame is refu
 inline by `refuse_forbidden_worker_request`, which takes no runtime and so cannot take
 `runtime.mutex` or reach a crypto provider; the handler calls it before any other frame
 type. Do not add a worker-to-main frame that signs caller-supplied bytes.
+
+## Recovering a PDU whose history is missing (A8)
+
+`backfill_missing_pdu_references` (`local_http_router.cpp`) asks the sending server for what a PDU lacks, using
+only endpoints the spec requires and the origin may be asked for:
+
+- `POST /get_missing_events`: `latest_events` is the PDU itself (the spec: the events to retrieve the previous events
+  for; the origin does not return them) and `earliest_events` is this room's forward extremities, at most ten. Never
+  the PDU's `prev_events` as `latest_events`, and never the events this server is missing as `earliest_events`.
+- `GET /event/{eventId}` for each named event the store lacks, and for every event a `/state_ids` snapshot names.
+  `GET /event_auth` is the last resort for one event whose own auth events are not stored, never the first step: a
+  peer need not serve it.
+- A fetched PDU that cannot be placed yet goes into `HeldPdus` for that one recovery (bounded, in memory only, verified
+  from scratch when placed). The state is asked at `state_snapshot_targets`, the nearest `prev_event` no held PDU can
+  supply, never at a prev_event that was already fetched; held PDUs are placed oldest first afterwards.
+- A snapshot fetches every missing named event before it stores any, so an auth chain the origin cannot supply leaves
+  nothing stored.
+- `verify_and_store_backfilled_event` stores an event with resolvable but disallowed, rejected or denied `auth_events`
+  as `rejected` (after-state equal to its state-before), never drops it; only an unresolvable auth event is a gap.
+  Dropping it left every event that named it unplaced.
 
 ## Read paths that return room events or state
 
@@ -319,7 +367,7 @@ API's `error_code_for()` and `wrap()` return it. Do not encode an errcode into t
 ## Event size limits (CSAZ-9)
 
 `compose_signed_event` returns a `ComposeResult`. A caller that gets `ComposeFailure::too_large` answers
-`event_too_large_result()` (`400 M_TOO_LARGE`), never the 403 or 500 it uses for other failures. The limits are
+`event_too_large_result()` (`413 M_TOO_LARGE`, since 0.12.60; 400 before), never the 403 or 500 it uses for other failures. The limits are
 checked on the signed canonical JSON, so do not add a cheaper pre-check on the request body in their place.
 
 ## Membership projection (CSAZ-6, DB-4, ADR-0126, ADR-0149)
@@ -328,6 +376,9 @@ checked on the signed canonical JSON, so do not add a cheaper pre-check on the r
 `finish_local_membership`: the `memberships` row, `LocalRoom.members`, device-list share changes, invite
 metadata). A new membership path stores its event through `persist_composed_event` and does not touch those
 itself; projecting twice allocates a second stream ordering and duplicates device-list changes.
+A membership learned over federation (the membership acceptor, `ingest_pdu_event`) is applied to the live
+roster with `apply_membership_to_roster`, the same call `finish_local_membership` ends with, so the
+device-list `changed`/`left` rows follow; never edit `LocalRoom::members` for a membership change.
 
 The `memberships` row and invite change are never written in a transaction of their own after the event: pass
 a `database::MembershipProjection` to `store_event_with_state` / `prepare_store_event_with_state` (or
@@ -358,6 +409,24 @@ job's current sleep is not missed. Every read and write of `typing_users` holds 
 the federation EDU sink runs without it and takes it itself in the typing case. Every other EDU case
 that reads or writes store state (receipts, presence, device lists) or reads the visible stream
 position takes it the same way; `enqueue_direct_to_device_messages` takes it itself.
+
+## Presence
+
+Every presence row is written through `record_presence` (it stamps `observed_at_ms`, stores, tells
+appservices) and every entry point checks `presence_enabled` first: a path that stores or sends presence
+without that check ignores `presence.enabled=false`. Rules:
+
+- `GET /presence/{userId}/status` answers 403 for a user the caller shares no joined room with, whether or
+  not the user exists; never 404 for a missing user (account enumeration).
+- A `/sync` changes presence only on a change of state (`apply_sync_presence`), and only a change is sent
+  to other servers (`broadcast_presence_edu`); a sync loop must never cost a row, a stream position or an
+  EDU per poll.
+- `accept_inbound_presence` binds `user_id` to the sending origin, bounds the entries it looks at, and keeps
+  only users who share a joined room with a local user (one pass over the memberships per EDU). A new field
+  accepted from the EDU needs a bound.
+- Presence in `/sync` is built by `build_sync_presence_events`, which also sends a user's presence once to
+  someone who started sharing a room with them since the token, whatever its stream position: the row's own
+  position is older than the token.
 
 ## Appservice delivery (R01, ADR-0163)
 

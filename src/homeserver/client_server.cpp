@@ -43,6 +43,7 @@
 #include "merovingian/homeserver/local_http_router.hpp"
 #include "merovingian/homeserver/local_services.hpp"
 #include "merovingian/homeserver/media_service.hpp"
+#include "merovingian/homeserver/presence_service.hpp"
 #include "merovingian/homeserver/push_rule_unread_classifier.hpp"
 #include "merovingian/homeserver/remote_media_fetch_scope.hpp"
 #include "merovingian/homeserver/request_lock.hpp"
@@ -77,6 +78,7 @@
 #include "merovingian/sync/stream_token.hpp"
 #include "merovingian/sync/sync_filter.hpp"
 #include "merovingian/sync/sync_notifier.hpp"
+#include "merovingian/sync/viewer_event_unsigned.hpp"
 #include "merovingian/trust_safety/ignore_list.hpp"
 #include "merovingian/trust_safety/policy_engine.hpp"
 
@@ -456,12 +458,49 @@ namespace
         return servers;
     }
 
+    // Send one local user's presence to every server that shares a room with them, as an
+    // m.presence EDU (SS API "m.presence": "Servers should only send presence updates for users that
+    // the receiving server would be interested in. Such as the receiving server sharing a room with
+    // a given user"). Called by the caller holding runtime.mutex after a stored change of state, never
+    // per /sync poll. Does nothing with presence off.
+    auto broadcast_presence_edu(HomeserverRuntime& runtime, database::PersistentPresence const& state) -> void
+    {
+        if (!presence_enabled(runtime))
+        {
+            return;
+        }
+        auto const destinations = remote_servers_for_user(runtime, state.user_id);
+        if (destinations.empty())
+        {
+            return;
+        }
+        auto const content = presence_edu_content(state, presence_now_ms());
+        if (content.empty())
+        {
+            return;
+        }
+        for (auto const& destination : destinations)
+        {
+            if (!dispatch_edu_to_server(runtime, destination, "m.presence", content))
+            {
+                log_diagnostic("presence.outbound.refused",
+                               {
+                                   {"actor",       state.user_id, false},
+                                   {"destination", destination,   false}
+                },
+                               observability::LogEventSeverity::warning);
+            }
+        }
+    }
+
     // Send m.device_list_update EDUs for every device the user owns to each
     // server in destinations. Called after key upload or room join so remote
     // servers learn about the local user's devices and can establish Olm
     // sessions (Matrix spec v1.19 device-list-updates-between-servers).
+    // `only_device` limits the EDUs to one device, for a change that touched only it (a rename).
     auto broadcast_device_list_updates(ClientServerRuntime& rt, std::string_view user_id,
-                                       std::vector<std::string> const& destinations) -> void
+                                       std::vector<std::string> const& destinations,
+                                       std::optional<std::string_view> only_device = std::nullopt) -> void
     {
         if (destinations.empty())
         {
@@ -474,7 +513,7 @@ namespace
         auto const stream_id = static_cast<std::int64_t>(store.next_sync_stream_id);
         for (auto const& device : store.devices)
         {
-            if (device.user_id != user_id)
+            if (device.user_id != user_id || (only_device.has_value() && device.device_id != *only_device))
             {
                 continue;
             }
@@ -1163,49 +1202,6 @@ namespace
             {
                 result.push_back(std::move(*stripped));
             }
-        }
-        return result;
-    }
-
-    // Per spec, rooms.leave.<room_id>.timeline is "the timeline of messages
-    // and state changes in the room up to the point when the user left" —
-    // matrix-js-sdk (and other real clients) derive `room.getMyMembership()`
-    // by processing this timeline's state events, not merely from the
-    // room_id being present under rooms.leave. An empty timeline here means
-    // the client never learns *that* the caller left, so the room silently
-    // stays in the joined room list even though the server-side leave and
-    // /sync notification both succeeded. The current m.room.member state
-    // event for the user is still authoritative even on an idempotent
-    // repeat /leave call that didn't compose a new event — store.state is
-    // upserted in place, so it always points at the last real transition.
-    // ADR-0247: nothing above `upper_bound`, the response's position, or the next
-    // sync, starting from it, reports the leave again.
-    [[nodiscard]] auto build_leave_timeline_events_array(database::PersistentStore const& store,
-                                                         std::string_view room_id, std::string_view user_id,
-                                                         std::uint64_t upper_bound) -> canonicaljson::Array
-    {
-        auto result = canonicaljson::Array{};
-        auto const state = std::ranges::find_if(store.state, [&](database::PersistentStateEvent const& current) {
-            return current.room_id == room_id && current.event_type == "m.room.member" && current.state_key == user_id;
-        });
-        if (state == store.state.end())
-        {
-            return result;
-        }
-        if (auto const event = store.events.find(state->event_id);
-            event != store.events.end() && event->stream_ordering > upper_bound)
-        {
-            return result;
-        }
-        auto const event_json = event_json_for_id(store, state->event_id);
-        if (!event_json.has_value())
-        {
-            return result;
-        }
-        auto const parsed = canonicaljson::parse_lossless(*event_json);
-        if (parsed.error == canonicaljson::ParseError::none)
-        {
-            result.push_back(parsed.value);
         }
         return result;
     }
@@ -3915,6 +3911,67 @@ namespace
         return event_content_string(*event_json, content_key);
     }
 
+    // Spec (User Directory): a search must "at a minimum consider users who are visible to the
+    // requester based on their membership in rooms known to the homeserver": users that share a
+    // room with the requester, and users joined to a room with a `public` join rule or a
+    // `world_readable` history visibility. The owner decided (Complement
+    // TestRoomSpecificUsernameAtJoin) that these are exactly the users searched. Of `candidates`
+    // (the accounts whose profile matched the term), returns those visible to `requester`.
+    // Linear in the memberships and the current state, once per request; each room's join rule
+    // and history visibility are read through the state index and cached. The requester is
+    // visible to themselves only through a public or world-readable room.
+    [[nodiscard]] auto directory_visible_users(database::PersistentStore const& store, std::string_view requester,
+                                               std::unordered_set<std::string_view> const& candidates)
+        -> std::unordered_set<std::string_view>
+    {
+        auto visible = std::unordered_set<std::string_view>{};
+        if (candidates.empty())
+        {
+            return visible;
+        }
+        auto requester_rooms = std::unordered_set<std::string_view>{};
+        for (auto const& membership : store.memberships)
+        {
+            if (membership.membership == "join" && membership.user_id == requester)
+            {
+                requester_rooms.insert(membership.room_id);
+            }
+        }
+        auto state_index = std::optional<StateIndex>{};
+        auto public_rooms = std::unordered_map<std::string_view, bool>{};
+        auto const room_is_public = [&](std::string_view room_id) {
+            if (auto const cached = public_rooms.find(room_id); cached != public_rooms.end())
+            {
+                return cached->second;
+            }
+            if (!state_index.has_value())
+            {
+                state_index = build_state_index(store);
+            }
+            auto const join_rule = room_state_string(store, *state_index, room_id, "m.room.join_rules", "join_rule");
+            auto const history =
+                room_state_string(store, *state_index, room_id, "m.room.history_visibility", "history_visibility");
+            auto const is_public = (join_rule.has_value() && *join_rule == "public") ||
+                                   (history.has_value() && *history == "world_readable");
+            public_rooms.emplace(room_id, is_public);
+            return is_public;
+        };
+        for (auto const& membership : store.memberships)
+        {
+            if (membership.membership != "join" || !candidates.contains(membership.user_id) ||
+                visible.contains(membership.user_id))
+            {
+                continue;
+            }
+            if ((membership.user_id != requester && requester_rooms.contains(membership.room_id)) ||
+                room_is_public(membership.room_id))
+            {
+                visible.insert(membership.user_id);
+            }
+        }
+        return visible;
+    }
+
     [[nodiscard]] auto joined_member_count(ClientServerRuntime const& rt, std::string_view room_id) -> std::size_t
     {
         auto const room = std::ranges::find_if(rt.homeserver.database.rooms, [&](LocalRoom const& current) {
@@ -4426,6 +4483,36 @@ namespace
         return type == nullptr ? std::string{} : *type;
     }
 
+    // Whether a stored event passes a RoomEventFilter (/messages, /context). The content is
+    // parsed only when the filter asks about contains_url.
+    [[nodiscard]] auto passes_room_event_filter(sync::EventTypeFilter const& filter,
+                                                database::PersistentEvent const& event) -> bool
+    {
+        auto content_has_url = false;
+        if (filter.contains_url.has_value())
+        {
+            auto const parsed = canonicaljson::parse_lossless(event.json);
+            auto const* object = std::get_if<canonicaljson::Object>(&parsed.value.storage());
+            auto const* content = object == nullptr ? nullptr : object_member_as_object(*object, "content");
+            content_has_url = content != nullptr && object_member(*content, "url") != nullptr;
+        }
+        return sync::event_passes_room_event_filter(filter, stored_event_type(event), event.sender_user_id,
+                                                    content_has_url);
+    }
+
+    // Whether a stored event passes the RoomEventFilter a /sync request names for a room's timeline.
+    // The event's JSON is parsed only when the filter restricts types or asks about contains_url, so
+    // the common request, which restricts neither, costs no parse.
+    [[nodiscard]] auto passes_sync_timeline_filter(sync::EventTypeFilter const& filter,
+                                                   database::PersistentEvent const& event) -> bool
+    {
+        if (filter.types.empty() && filter.not_types.empty() && !filter.contains_url.has_value())
+        {
+            return sync::event_passes_filter(filter, std::string_view{}, event.sender_user_id);
+        }
+        return passes_room_event_filter(filter, event);
+    }
+
     // Builds a ClientEvent array from an explicit list of state event IDs
     // (e.g. from federation::resolve_state_event_ids_at), applying the same
     // RoomEventFilter type/sender predicate build_current_state_events_array
@@ -4635,10 +4722,14 @@ namespace
     // Spec: GET /messages `state` is "a list of state events relevant to showing
     // the `chunk`... if `lazy_load_members` is enabled in the filter then this
     // may contain the membership events for the senders of events in the
-    // `chunk`". Returning the room's whole current member list instead defeats
-    // the flag exactly where it matters most: pagination repeats the payload
-    // for every page. Non-member state is unaffected — it is all relevant to
-    // rendering the chunk regardless.
+    // `chunk`", and "Lazy-loading room members": lazy-loading aware endpoints
+    // "will only include membership events for the `sender` of events being
+    // included in the response". Returning the room's whole current member list
+    // instead defeats the flag exactly where it matters most: pagination repeats
+    // the payload for every page. With lazy loading `state` is those members'
+    // `m.room.member` events and nothing else (Complement
+    // TestRoomMessagesLazyLoading); redundant ones are not tracked across calls,
+    // which the spec permits.
     [[nodiscard]] auto apply_lazy_member_loading(sync::EventTypeFilter const& filter,
                                                  std::unordered_set<std::string> const& chunk_senders,
                                                  canonicaljson::Array state_events) -> canonicaljson::Array
@@ -4658,7 +4749,6 @@ namespace
             auto const* type = string_member(*event, "type");
             if (type == nullptr || *type != "m.room.member")
             {
-                lazy.push_back(std::move(value));
                 continue;
             }
             auto const* state_key = string_member(*event, "state_key");
@@ -4744,10 +4834,13 @@ namespace
             }
             receipts.add(receipt);
         }
-        if (!receipts.empty())
+        // Spec (Receipts, Server behaviour): "receipts SHOULD be batched into one event per room and
+        // thread before delivering them to clients". A user's unthreaded and threaded receipts for one
+        // event are distinct receipts that one event's content has no room for both of.
+        for (auto& content : receipts.build_per_thread())
         {
             events.push_back(json_obj(
-                {json_member("type", json_str("m.receipt")), json_member("content", json_obj(receipts.build()))}));
+                {json_member("type", json_str("m.receipt")), json_member("content", json_obj(std::move(content)))}));
         }
 
         return events;
@@ -4826,82 +4919,6 @@ namespace
             left.push_back(json_str(subject));
         }
         return {std::move(changed), std::move(left)};
-    }
-
-    [[nodiscard]] auto build_presence_events(database::PersistentStore const& store,
-                                             sync::EventTypeFilter const& filter, std::string_view user,
-                                             std::uint64_t since_sync_stream_id, std::uint64_t& max_observed_stream_id)
-        -> canonicaljson::Array
-    {
-        auto events = canonicaljson::Array{};
-        auto emitted = std::size_t{0U};
-        // Presence is shared only with current joined peers (Matrix v1.19
-        // Presence security considerations). Build the scope once per response.
-        auto joined_rooms = std::unordered_set<std::string_view>{};
-        for (auto const& membership : store.memberships)
-        {
-            if (membership.user_id == user && membership.membership == "join")
-            {
-                joined_rooms.insert(membership.room_id);
-            }
-        }
-        auto visible_users = std::unordered_set<std::string_view>{};
-        for (auto const& membership : store.memberships)
-        {
-            if (membership.membership == "join" && joined_rooms.contains(membership.room_id))
-            {
-                visible_users.insert(membership.user_id);
-            }
-        }
-        for (auto const& presence : store.presence_states)
-        {
-            if (presence.user_id == user || presence.stream_id <= since_sync_stream_id ||
-                !visible_users.contains(presence.user_id))
-            {
-                continue;
-            }
-            if (!sync::event_passes_filter(filter, "m.presence", presence.user_id))
-            {
-                continue;
-            }
-            if (filter.limit != 0U && emitted >= filter.limit)
-            {
-                break;
-            }
-            auto content = canonicaljson::Object{};
-            content.push_back(json_member("presence", json_str(presence.presence)));
-            if (!presence.status_msg.empty())
-            {
-                content.push_back(json_member("status_msg", json_str(presence.status_msg)));
-            }
-            content.push_back(json_member("last_active_ago", json_int(presence.last_active_ago)));
-            content.push_back(json_member("currently_active", json_bool(presence.currently_active)));
-            // Spec (m.presence): "displayname: The current display name for this user, if any" and
-            // "avatar_url: The current avatar URL for this user, if any" — this server knows them for
-            // the users whose profile it holds.
-            if (auto const profile = database::find_profile(store, presence.user_id); profile.has_value())
-            {
-                if (!profile->displayname.empty())
-                {
-                    content.push_back(json_member("displayname", json_str(profile->displayname)));
-                }
-                if (!profile->avatar_url.empty())
-                {
-                    content.push_back(json_member("avatar_url", json_str(profile->avatar_url)));
-                }
-            }
-            auto event = canonicaljson::Object{};
-            event.push_back(json_member("type", json_str(std::string{"m.presence"})));
-            event.push_back(json_member("sender", json_str(presence.user_id)));
-            event.push_back(json_member("content", canonicaljson::Value{std::move(content)}));
-            events.push_back(canonicaljson::Value{std::move(event)});
-            ++emitted;
-            if (presence.stream_id > max_observed_stream_id)
-            {
-                max_observed_stream_id = presence.stream_id;
-            }
-        }
-        return events;
     }
 
     [[nodiscard]] auto build_account_data_events(database::PersistentStore const& store,
@@ -4996,6 +5013,172 @@ namespace
         return out;
     }
 
+    // What `rooms.leave.<room_id>` holds for a room the user left or was banned from. Spec (GET /sync,
+    // LeftRoom): `timeline` is "the timeline of messages and state changes in the room up to the
+    // point when the user left", and `state` is "the state updates for the room up to the start of
+    // the timeline". The timeline is the room's events after `since` (all of them on an initial sync)
+    // up to the event that ended the user's stay, as the request's filter selects them and as the
+    // user may see them (m.room.history_visibility), the newest `timeline_cap` of them; nothing
+    // after the leave is in it, however much the room has moved on.
+    //
+    // The user's own leave or ban is the one event shown whatever the history visibility says: a
+    // client learns from it that it has left (a rejected invite under `joined` visibility included),
+    // and it is the user's own state. A timeline filter that excludes its type keeps it out of the
+    // timeline, so an incremental sync then reports it in `state`, or the client would never be told.
+    struct LeftRoomRequest final
+    {
+        std::string_view room_id{};
+        std::string_view user_id{};
+        // The stream ordering the user's membership row was written at; stands in for the leave
+        // event's own when the event is not in the store.
+        std::uint64_t membership_ordering{0U};
+        // The `since` ordering of an incremental sync; nullopt on an initial sync.
+        std::optional<std::uint64_t> since_ordering{};
+        std::uint64_t sync_position{0U};
+        std::size_t timeline_cap{0U};
+    };
+
+    [[nodiscard]] auto build_left_room(database::PersistentStore const& store, sync::SyncFilter const& filter,
+                                       sync::HistoryVisibility& history_visibility,
+                                       sync::ViewerEventUnsigned& viewer_unsigned,
+                                       std::unordered_set<std::string> const& ignored_senders,
+                                       LeftRoomRequest const& request) -> canonicaljson::Value
+    {
+        // The user's current m.room.member event is the one that ended their stay.
+        auto const member_state = std::ranges::find_if(store.state, [&](database::PersistentStateEvent const& entry) {
+            return entry.room_id == request.room_id && entry.event_type == "m.room.member" &&
+                   entry.state_key == request.user_id;
+        });
+        auto const leave_event =
+            member_state == store.state.end() ? store.events.end() : store.events.find(member_state->event_id);
+        auto const leave_ordering =
+            leave_event == store.events.end() ? request.membership_ordering : leave_event->stream_ordering;
+        // ADR-0247: nothing above the response's position, or the next sync, starting from it,
+        // would report it again.
+        auto const upper_bound = std::min(leave_ordering, request.sync_position);
+        auto const since_ordering = request.since_ordering.value_or(std::uint64_t{0U});
+
+        auto matched = std::vector<database::PersistentEvent const*>{};
+        for (auto const& event : store.events)
+        {
+            if (event.room_id != request.room_id || event.status == "rejected" || event.status == "soft_failed" ||
+                event.stream_ordering > upper_bound ||
+                (request.since_ordering.has_value() && event.stream_ordering <= since_ordering))
+            {
+                continue;
+            }
+            if (!passes_sync_timeline_filter(filter.room.timeline, event))
+            {
+                continue;
+            }
+            auto const is_leave = leave_event != store.events.end() && event.event_id == leave_event->event_id;
+            if (!is_leave &&
+                (trust_safety::is_delivery_suppressed(ignored_senders, event.sender_user_id,
+                                                      trust_safety::event_json_is_state_event(event.json)) ||
+                 !history_visibility.can_see(event)))
+            {
+                continue;
+            }
+            matched.push_back(&event);
+        }
+        std::ranges::sort(matched, [](auto const* lhs, auto const* rhs) noexcept {
+            return lhs->stream_ordering < rhs->stream_ordering;
+        });
+
+        auto const limited = matched.size() > request.timeline_cap;
+        auto const window_begin =
+            limited ? matched.end() - static_cast<std::ptrdiff_t>(request.timeline_cap) : matched.begin();
+        auto timeline_events = canonicaljson::Array{};
+        auto leave_in_timeline = false;
+        for (auto it = window_begin; it != matched.end(); ++it)
+        {
+            leave_in_timeline =
+                leave_in_timeline || (leave_event != store.events.end() && (*it)->event_id == leave_event->event_id);
+            timeline_events.push_back(viewer_unsigned.apply(**it, client_event_with_id(store, **it)));
+        }
+        // /messages?dir=b returns events strictly older than `from`: anchor it at the oldest event
+        // returned, or at `since` when the window is empty, as a joined room's prev_batch is.
+        auto const prev_batch = window_begin != matched.end() ? std::to_string((*window_begin)->stream_ordering)
+                                                              : std::to_string(since_ordering);
+
+        auto state_events = canonicaljson::Array{};
+        if (!request.since_ordering.has_value())
+        {
+            // An initial sync: all state up to the start of the timeline, or, with no timeline
+            // events, all state up to the leave itself.
+            auto at_start =
+                window_begin != matched.end()
+                    ? build_state_events_at_timeline_start(store, filter.room.state, request.room_id, **window_begin)
+                    : std::optional<canonicaljson::Array>{};
+            if (at_start.has_value())
+            {
+                state_events = std::move(*at_start);
+            }
+            else if (window_begin == matched.end() && leave_event != store.events.end())
+            {
+                if (auto const group = database::find_event_state_group(store, leave_event->event_id);
+                    group.has_value())
+                {
+                    if (auto const full = database::read_state_group_full_state(store, *group); full.has_value())
+                    {
+                        auto ids = std::vector<std::string>{};
+                        for (auto const& entry : *full)
+                        {
+                            ids.push_back(entry.event_id);
+                        }
+                        state_events = build_state_events_array_for_ids(store, filter.room.state, ids);
+                    }
+                }
+            }
+        }
+        else if (!leave_in_timeline && leave_event != store.events.end() &&
+                 sync::event_passes_filter(filter.room.state, stored_event_type(*leave_event),
+                                           leave_event->sender_user_id))
+        {
+            // An incremental sync's state is the delta since `since`; the leave is part of it when
+            // the timeline does not carry it.
+            state_events.push_back(viewer_unsigned.apply(*leave_event, client_event_with_id(store, *leave_event)));
+        }
+
+        return json_obj({
+            json_member("state", json_obj({json_member("events", json_arr(std::move(state_events)))})),
+            json_member("timeline", json_obj({
+                                        json_member("events", json_arr(std::move(timeline_events))),
+                                        json_member("limited", json_bool(limited)),
+                                        json_member("prev_batch", json_str(prev_batch)),
+                                    })),
+        });
+    }
+
+    // Spec (Push Rules: Events): `m.push_rules` "Describes all push rules for this user", and its
+    // content "is the current push rules for the user". An initial /sync gives the user's effective
+    // ruleset (the defaults and their changes) even when they never changed a rule, so a client
+    // has the rules without a GET /pushrules (Complement TestPushSync). A user who has changed a
+    // rule already has the event among their account data, with the same content, and gets no second.
+    auto add_initial_push_rules_event(database::PersistentStore const& store, sync::EventTypeFilter const& filter,
+                                      std::string_view user, std::size_t max_user_rules, canonicaljson::Array& events)
+        -> void
+    {
+        if (!sync::event_passes_filter(filter, push_rules_account_data_type, user))
+        {
+            return;
+        }
+        auto const present = std::ranges::any_of(events, [](canonicaljson::Value const& event) {
+            auto const* object = std::get_if<canonicaljson::Object>(&event.storage());
+            auto const* type = object == nullptr ? nullptr : string_member(*object, "type");
+            return type != nullptr && *type == push_rules_account_data_type;
+        });
+        if (present)
+        {
+            return;
+        }
+        auto const rules = load_user_push_rules(store, user, max_user_rules);
+        events.push_back(json_obj({
+            json_member("type", json_str(std::string{push_rules_account_data_type})),
+            json_member("content", json_obj({json_member("global", json_obj(rules.ruleset()))})),
+        }));
+    }
+
     [[nodiscard]] auto sync_json(ClientServerRuntime& rt, std::string_view user, std::string_view device_id,
                                  core::SyncRequest const& request, bool can_wait = true) -> DispatchResult
     {
@@ -5064,6 +5247,13 @@ namespace
         // R15 (ADR-0205): one push-rule classifier for the request's unread counts.
         auto const unread_classifier =
             PushRuleUnreadClassifier{store, user, rt.limits.max_push_rules_per_user, history_visibility};
+        // The request's own `unsigned.transaction_id` and `unsigned.membership` on every timeline event.
+        auto viewer_unsigned = sync::ViewerEventUnsigned{store, history_visibility, user, device_id};
+        // The RoomEventFilter's `limit` bounds each room's timeline, and a `limit` of 0 asks for none.
+        auto const max_timeline_events = static_cast<std::size_t>(rt.limits.max_sync_events_per_room);
+        auto const timeline_cap = filter.room.timeline.limit_given
+                                      ? std::min(filter.room.timeline.limit, max_timeline_events)
+                                      : max_timeline_events;
 
         log_diagnostic("sync.request",
                        {
@@ -5085,11 +5275,6 @@ namespace
             {
                 continue;
             }
-            auto const timeline_cap =
-                filter.room.timeline.limit != 0U
-                    ? std::min(filter.room.timeline.limit, static_cast<std::size_t>(rt.limits.max_sync_events_per_room))
-                    : static_cast<std::size_t>(rt.limits.max_sync_events_per_room);
-
             // Collect this room's timeline-eligible events that are newer than
             // `since`, in stream-ordering order. `limited` and `prev_batch` are
             // derived from THIS window per the Matrix sync spec — never from the
@@ -5119,13 +5304,9 @@ namespace
                 {
                     continue;
                 }
-                if (!sync::event_passes_filter(filter.room.timeline, std::string_view{}, event.sender_user_id))
+                // The RoomEventFilter's types, not_types, senders, not_senders and contains_url.
+                if (!passes_sync_timeline_filter(filter.room.timeline, event))
                 {
-                    // Event type isn't surfaced on PersistentEvent yet; the
-                    // sender filter is the only meaningful per-event predicate
-                    // until events expose their type. Passing an empty string
-                    // for event_type makes `event_passes_filter` apply the
-                    // sender rules without requiring a type match.
                     continue;
                 }
                 // Ignoring Users: non-state events from an ignored sender are
@@ -5166,7 +5347,7 @@ namespace
             auto timeline_events = canonicaljson::Array{};
             for (auto it = window_begin; it != matched.end(); ++it)
             {
-                timeline_events.push_back(client_event_with_id(store, **it));
+                timeline_events.push_back(viewer_unsigned.apply(**it, client_event_with_id(store, **it)));
             }
             auto const event_count = timeline_events.size();
 
@@ -5321,21 +5502,24 @@ namespace
                     ++invite_count;
                 }
             }
-            else if (membership.membership == "leave" && membership.stream_ordering <= sync_position &&
-                     (filter.room.include_leave ||
-                      (since_token.has_value() && membership.stream_ordering > since_ordering)))
+            else if ((membership.membership == "leave" || membership.membership == "ban") &&
+                     membership.stream_ordering <= sync_position &&
+                     (since_token.has_value() ? membership.stream_ordering > since_ordering
+                                              : filter.room.include_leave))
             {
-                // ADR-0247: a leave above sync_position waits for the next sync,
-                // which starts from it.
+                // Spec (GET /sync): `leave` is "the rooms that the user has left or been banned from". An
+                // incremental sync reports the leaves since `since`, once: a room left before it is not
+                // reported again, `include_leave` or not. An initial sync reports every left room if the
+                // filter asks. ADR-0247: a leave above sync_position waits for the next sync, which
+                // starts from it.
                 if (leave_count < rt.limits.max_sync_rooms)
                 {
-                    auto leave_timeline_events =
-                        build_leave_timeline_events_array(store, membership.room_id, user, sync_position);
-                    leave_members.push_back(json_member(
-                        membership.room_id,
-                        json_obj({json_member(
-                            "timeline",
-                            json_obj({json_member("events", json_arr(std::move(leave_timeline_events)))}))})));
+                    auto const left_room = build_left_room(
+                        store, filter, history_visibility, viewer_unsigned, ignored_senders,
+                        {membership.room_id, user, membership.stream_ordering,
+                         since_token.has_value() ? std::optional<std::uint64_t>{since_ordering} : std::nullopt,
+                         sync_position, timeline_cap});
+                    leave_members.push_back(json_member(membership.room_id, left_room));
                     ++leave_count;
                 }
             }
@@ -5358,10 +5542,19 @@ namespace
                                                              sync_stream_upper_bound, max_observed_sync_stream_id);
         auto [device_changed, device_left] =
             build_device_list_arrays(store, user, since_sync_stream_id, max_observed_sync_stream_id);
-        auto presence_events =
-            build_presence_events(store, filter.presence, user, since_sync_stream_id, max_observed_sync_stream_id);
+        auto presence_events = presence_enabled(rt.homeserver)
+                                   ? build_sync_presence_events(store, filter.presence, user, since_token.has_value(),
+                                                                since_sync_stream_id, since_ordering, sync_position,
+                                                                presence_now_ms(), max_observed_sync_stream_id)
+                                   : canonicaljson::Array{};
         auto global_account_data = build_account_data_events(store, filter.account_data, user, std::string_view{},
                                                              since_sync_stream_id, max_observed_sync_stream_id);
+        if (!since_token.has_value())
+        {
+            add_initial_push_rules_event(store, filter.account_data, user,
+                                         static_cast<std::size_t>(rt.limits.max_push_rules_per_user),
+                                         global_account_data);
+        }
         auto otk_counts = build_otk_counts(store, user, device_id);
         auto fallback_key_types = build_fallback_key_types(store, user, device_id);
 
@@ -7024,34 +7217,75 @@ namespace
         return true;
     }
 
-    [[nodiscard]] auto validate_device_keys_object(canonicaljson::Object const& object,
-                                                   std::string_view authenticated_user,
-                                                   std::string_view authenticated_device_id) -> std::string
+    // Why an uploaded `device_keys` object was refused: `reason` is empty for an acceptable one.
+    // A shape that breaks the spec's `DeviceKeys` schema is M_BAD_JSON (Complement
+    // TestUploadKey "Rejects invalid device keys"); a well-formed object that names another
+    // user or device, or lacks the key pair this server looks up, is M_INVALID_PARAM.
+    struct DeviceKeysRefusal final
     {
-        auto const* user_id = string_member(object, "user_id");
-        if (user_id == nullptr || *user_id != authenticated_user)
+        std::string_view errcode{};
+        std::string reason{};
+    };
+
+    [[nodiscard]] auto device_keys_is_malformed(canonicaljson::Object const& object) -> std::string
+    {
+        if (string_member(object, "user_id") == nullptr)
         {
-            return "device_keys.user_id must match the authenticated user";
+            return "device_keys.user_id must be a string";
         }
-        auto const* device_id = string_member(object, "device_id");
-        if (device_id == nullptr || *device_id != authenticated_device_id)
+        if (string_member(object, "device_id") == nullptr)
         {
-            return "device_keys.device_id must match the authenticated device";
+            return "device_keys.device_id must be a string";
         }
-        auto const* keys = object_member_as_object(object, "keys");
-        if (keys == nullptr)
+        if (object_member_as_object(object, "keys") == nullptr)
         {
             return "device_keys.keys must be a JSON object";
         }
+        if (auto const* algorithms = object_member(object, "algorithms"); algorithms != nullptr)
+        {
+            auto const* list = std::get_if<canonicaljson::Array>(&algorithms->storage());
+            if (list == nullptr || !std::ranges::all_of(*list, [](canonicaljson::Value const& entry) {
+                    return std::get_if<std::string>(&entry.storage()) != nullptr;
+                }))
+            {
+                return "device_keys.algorithms must be a list of strings";
+            }
+        }
+        if (object_member(object, "signatures") != nullptr && object_member_as_object(object, "signatures") == nullptr)
+        {
+            return "device_keys.signatures must be a JSON object";
+        }
+        return {};
+    }
+
+    [[nodiscard]] auto validate_device_keys_object(canonicaljson::Object const& object,
+                                                   std::string_view authenticated_user,
+                                                   std::string_view authenticated_device_id) -> DeviceKeysRefusal
+    {
+        if (auto malformed = device_keys_is_malformed(object); !malformed.empty())
+        {
+            return {"M_BAD_JSON", std::move(malformed)};
+        }
+        auto const* user_id = string_member(object, "user_id");
+        if (*user_id != authenticated_user)
+        {
+            return {"M_INVALID_PARAM", "device_keys.user_id must match the authenticated user"};
+        }
+        auto const* device_id = string_member(object, "device_id");
+        if (*device_id != authenticated_device_id)
+        {
+            return {"M_INVALID_PARAM", "device_keys.device_id must match the authenticated device"};
+        }
+        auto const* keys = object_member_as_object(object, "keys");
         auto const curve_key = string_member(*keys, "curve25519:" + std::string{authenticated_device_id});
         if (curve_key == nullptr || curve_key->empty())
         {
-            return "device_keys.keys must contain curve25519:<device_id>";
+            return {"M_INVALID_PARAM", "device_keys.keys must contain curve25519:<device_id>"};
         }
         auto const ed_key = string_member(*keys, "ed25519:" + std::string{authenticated_device_id});
         if (ed_key == nullptr || ed_key->empty())
         {
-            return "device_keys.keys must contain ed25519:<device_id>";
+            return {"M_INVALID_PARAM", "device_keys.keys must contain ed25519:<device_id>"};
         }
         return {};
     }
@@ -7082,9 +7316,10 @@ namespace
         }
         if (device_keys_object != nullptr)
         {
-            if (auto const reason = validate_device_keys_object(*device_keys_object, user, device_id); !reason.empty())
+            if (auto const refusal = validate_device_keys_object(*device_keys_object, user, device_id);
+                !refusal.reason.empty())
             {
-                return err(400U, "M_INVALID_PARAM", reason);
+                return err(400U, refusal.errcode, refusal.reason);
             }
             auto normalized_device_keys = *device_keys_object;
             normalize_device_key_object_for_client(rt, normalized_device_keys, user, device_id);
@@ -7206,6 +7441,17 @@ namespace
         // server so we can make a single federation key query per server.
         auto remote_by_server = std::map<std::string, std::vector<std::string>>{};
 
+        // The display names of every queried user's devices, read from the device table once.
+        auto const display_names = [&] {
+            auto queried_users = std::vector<std::string_view>{};
+            queried_users.reserve(requests->size());
+            for (auto const& user_request : *requests)
+            {
+                queried_users.emplace_back(user_request.key);
+            }
+            return federation::DeviceDisplayNames{store, queried_users};
+        }();
+
         auto users = canonicaljson::Object{};
         auto local_users = std::vector<std::string>{};
         for (auto const& user_request : *requests)
@@ -7235,7 +7481,7 @@ namespace
                     {
                         continue;
                     }
-                    auto device_object = federation::published_device_keys(store, key, requesting_user);
+                    auto device_object = federation::published_device_keys(store, key, requesting_user, display_names);
                     if (!device_object.has_value())
                     {
                         continue;
@@ -7258,7 +7504,7 @@ namespace
                     {
                         continue;
                     }
-                    auto device_object = federation::published_device_keys(store, *key, requesting_user);
+                    auto device_object = federation::published_device_keys(store, *key, requesting_user, display_names);
                     if (!device_object.has_value())
                     {
                         continue;
@@ -8349,23 +8595,6 @@ namespace
         return options;
     }
 
-    // Whether a stored event passes a RoomEventFilter (/messages, /context). The content is
-    // parsed only when the filter asks about contains_url.
-    [[nodiscard]] auto passes_room_event_filter(sync::EventTypeFilter const& filter,
-                                                database::PersistentEvent const& event) -> bool
-    {
-        auto content_has_url = false;
-        if (filter.contains_url.has_value())
-        {
-            auto const parsed = canonicaljson::parse_lossless(event.json);
-            auto const* object = std::get_if<canonicaljson::Object>(&parsed.value.storage());
-            auto const* content = object == nullptr ? nullptr : object_member_as_object(*object, "content");
-            content_has_url = content != nullptr && object_member(*content, "url") != nullptr;
-        }
-        return sync::event_passes_room_event_filter(filter, stored_event_type(event), event.sender_user_id,
-                                                    content_has_url);
-    }
-
     // May this user reach an endpoint that returns room events? Spec (Room History Visibility):
     // "In all cases except `world_readable`, a user needs to join a room to view events in that
     // room." A user who was joined keeps the events they were allowed to see (`as_of`), and a
@@ -8520,13 +8749,16 @@ namespace
         {
             start_token = from_text;
         }
-        // A room the filter excludes has no chunk, so no state "relevant to showing" it.
-        auto state =
-            room_selected
-                ? apply_lazy_member_loading(event_filter, chunk_senders,
-                                            messages_state_events(store, event_filter, room_id,
-                                                                  sync::room_read_access_for(store, room_id, user_id)))
-                : canonicaljson::Array{};
+        // A room the filter excludes has no chunk, so no state "relevant to showing" it. With lazy
+        // loading the state is the chunk senders' memberships, which the filter's own `types` and
+        // `senders` (they select the chunk's events) must not remove.
+        auto state = room_selected
+                         ? apply_lazy_member_loading(
+                               event_filter, chunk_senders,
+                               messages_state_events(
+                                   store, event_filter.lazy_load_members ? sync::EventTypeFilter{} : event_filter,
+                                   room_id, sync::room_read_access_for(store, room_id, user_id)))
+                         : canonicaljson::Array{};
         return json_serialize(json_obj({
             json_member("chunk", json_arr(std::move(chunk))),
             json_member("start", json_str(start_token)),
@@ -10351,6 +10583,11 @@ namespace
                     std::ignore = record_device_list_change(rt, change);
                 }
             }
+            // Spec (SS API, "Device Management"): m.device_list_update EDUs go to every server that
+            // shares a room with the user "whenever that user's device list changes ... or changes
+            // in device information such as the device's human-readable name".
+            broadcast_device_list_updates(rt, user, remote_servers_for_user(rt.homeserver, user),
+                                          std::string_view{device->device_id});
             append_local_audit(rt.homeserver.database, observability::AuditCategory::auth, "device.updated", user,
                                device->device_id, "display_name_updated");
             return resp(200U, "{}");
@@ -13643,10 +13880,13 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                                 "this account already has the maximum of " + std::to_string(max_pushers) +
                                     " pushers; remove one before adding another");
         }
+        // The pusher remembers the device whose token set it, so a password change that revokes
+        // that device's tokens deletes it too (Complement TestChangePasswordPushers).
         auto const stored = database::store_pusher(
             store, database::PersistentPusher{*user, body->app_id, body->pushkey, *body->kind, body->app_display_name,
                                               body->device_display_name, body->profile_tag, body->lang, body->data_url,
-                                              body->data_format, body->data_extra_json});
+                                              body->data_format, body->data_extra_json,
+                                              authenticated_request_device_id(rt, req.access_token)});
         if (!stored)
         {
             return dispatch_err(req, rt, 500U, "M_UNKNOWN", "failed to store pusher");
@@ -14960,6 +15200,28 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             }
         }
 
+        // Spec (GET /sync, `set_presence`): omitted means the client "is automatically marked as
+        // online when it uses this API", "offline" means it is not, "unavailable" marks it idle; the
+        // parameter is one of those three, so anything else is refused before the sync does anything.
+        auto const presence_mode = parse_sync_presence_mode(
+            sync_request.set_presence.has_value() ? std::optional<std::string_view>{*sync_request.set_presence}
+                                                  : std::nullopt);
+        if (!presence_mode.has_value())
+        {
+            return dispatch_err(req, rt, 400U, "M_INVALID_PARAM",
+                                "set_presence must be online, offline or unavailable");
+        }
+        if (auto const changed = apply_sync_presence(rt.homeserver, *user, *presence_mode); changed.has_value())
+        {
+            log_diagnostic("presence.sync.set", {
+                                                    {"actor",    *user,             false},
+                                                    {"presence", changed->presence, false}
+            });
+            broadcast_presence_edu(rt.homeserver, *changed);
+            // Wakes long-polling syncs of the users who share a room with this one.
+            std::ignore = ensure_sync_notifier(rt);
+        }
+
         log_diagnostic("sync.dispatch", {
                                             {"actor",     *user,     false},
                                             {"device_id", device_id, false}
@@ -15147,7 +15409,8 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                             {
                                 std::ignore =
                                     database::store_client_txn(rt.homeserver.database.persistent_store,
-                                                               {*user, redact->room_id, txn_scope, redact->txn_id, *s});
+                                                               {*user, redact->room_id, txn_scope, redact->txn_id, *s,
+                                                                authenticated_request_device_id(rt, req.access_token)});
                             }
                         }
                     }
@@ -15211,7 +15474,8 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                             {
                                 std::ignore = database::store_client_txn(
                                     rt.homeserver.database.persistent_store,
-                                    {*user, path->room_id, path->event_type, path->txn_id, *s});
+                                    {*user, path->room_id, path->event_type, path->txn_id, *s,
+                                     authenticated_request_device_id(rt, req.access_token)});
                             }
                         }
                     }
@@ -15356,12 +15620,17 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                 // failure") — treated the same as not found, so a member
                 // cannot distinguish "never existed" from "was filtered".
                 // An event the user may not see is the same 404, for the same reason.
+                auto visibility = sync::HistoryVisibility{store, *user};
                 if (event == store.events.end() || event->status == "rejected" || event->status == "soft_failed" ||
-                    !sync::HistoryVisibility{store, *user}.can_see(*event))
+                    !visibility.can_see(*event))
                 {
                     return dispatch_err(req, rt, 404U, "M_NOT_FOUND", "event not found");
                 }
-                auto const serialized = canonicaljson::serialize_canonical(client_event_with_id(store, *event));
+                // `unsigned.transaction_id` and `unsigned.membership` are the requesting client's own.
+                auto viewer_unsigned = sync::ViewerEventUnsigned{store, visibility, *user,
+                                                                 authenticated_request_device_id(rt, req.access_token)};
+                auto const serialized = canonicaljson::serialize_canonical(
+                    viewer_unsigned.apply(*event, client_event_with_id(store, *event)));
                 if (serialized.error != canonicaljson::CanonicalJsonError::none)
                 {
                     return dispatch_err(req, rt, 500U, "M_UNKNOWN", "failed to serialize event");
@@ -16642,6 +16911,8 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
         {
             auto const& store = rt.homeserver.database.persistent_store;
             auto const term_lower = to_lower(*search_term);
+            auto matched = std::vector<database::PersistentProfile const*>{};
+            auto candidates = std::unordered_set<std::string_view>{};
             for (auto const& profile : store.profiles)
             {
                 if (to_lower(profile.displayname).find(term_lower) == std::string::npos &&
@@ -16654,6 +16925,19 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                 if (std::ranges::any_of(store.users, [&profile](database::PersistentUser const& account) {
                         return account.user_id == profile.user_id && account.deactivated;
                     }))
+                {
+                    continue;
+                }
+                matched.push_back(&profile);
+                candidates.insert(profile.user_id);
+            }
+            // Only users visible to the requester through rooms are searched (see
+            // directory_visible_users).
+            auto const visible = directory_visible_users(store, *user, candidates);
+            for (auto const* profile_match : matched)
+            {
+                auto const& profile = *profile_match;
+                if (!visible.contains(profile.user_id))
                 {
                     continue;
                 }
@@ -16733,8 +17017,7 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                 return dispatch_err(req, rt, 400U, "M_BAD_JSON", "presence body must be Matrix JSON");
             }
             auto const* presence_str = string_member(*body_obj, "presence");
-            if (presence_str == nullptr ||
-                (*presence_str != "online" && *presence_str != "offline" && *presence_str != "unavailable"))
+            if (presence_str == nullptr || !presence_state_is_valid(*presence_str))
             {
                 return dispatch_err(req, rt, 400U, "M_INVALID_PARAM",
                                     "presence must be online, offline or unavailable");
@@ -16746,9 +17029,15 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                 return dispatch_err(req, rt, 400U, "M_INVALID_PARAM", "status_msg must be a string");
             }
             // Local resource policy, not a Matrix protocol limit (ADR-0098).
-            if (status_msg != nullptr && status_msg->size() > 1024U)
+            if (status_msg != nullptr && status_msg->size() > max_presence_status_msg_bytes)
             {
                 return dispatch_err(req, rt, 400U, "M_INVALID_PARAM", "status_msg exceeds 1024 UTF-8 bytes");
+            }
+            // With presence off the server tracks none. The spec gives this endpoint only 200 and
+            // 429, so the update is answered 200 and not kept.
+            if (!presence_enabled(rt.homeserver))
+            {
+                return dispatch_resp(req, rt, 200U, json_serialize(json_obj({})));
             }
             auto state = database::PersistentPresence{};
             state.stream_id = 0U;
@@ -16766,6 +17055,29 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                                                {"presence", presence_state, false}
             });
             return dispatch_resp(req, rt, 200U, json_serialize(json_obj({})));
+        }
+    }
+
+    // GET /_matrix/client/v3/presence/{userId}/status
+    // Spec: 200 the presence state, 403 "You are not allowed to see this user's presence status",
+    // 404 "There is no presence state for this user".
+    if (req.method == "GET" && starts_with(req.target, presence_prefix))
+    {
+        auto const path_after_prefix = request_path.substr(presence_prefix.size());
+        if (path_after_prefix.size() > presence_suffix.size() && path_after_prefix.ends_with(presence_suffix))
+        {
+            auto const target_user = core::percent_decode_path_component(
+                path_after_prefix.substr(0U, path_after_prefix.size() - presence_suffix.size()));
+            auto const read = read_presence(rt.homeserver, *user, target_user);
+            switch (read.status)
+            {
+            case PresenceReadStatus::ok:
+                return dispatch_resp(req, rt, 200U, json_serialize(canonicaljson::Value{read.body}));
+            case PresenceReadStatus::forbidden:
+                return dispatch_err(req, rt, 403U, "M_FORBIDDEN", "You are not allowed to see their presence");
+            case PresenceReadStatus::not_found:
+                return dispatch_err(req, rt, 404U, "M_NOT_FOUND", "There is no presence state for this user");
+            }
         }
     }
 
@@ -17001,6 +17313,13 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             if (req.body.empty())
             {
                 return dispatch_err(req, rt, 400U, "M_BAD_JSON", "filter body must not be empty");
+            }
+            // The body is a `Filter`: a field of the wrong type is refused (Complement
+            // TestFilter), and nothing is stored, counted against the user's cap or logged
+            // as a stored filter.
+            if (auto const problem = sync::validate_filter_definition(req.body); problem.has_value())
+            {
+                return dispatch_err(req, rt, 400U, "M_BAD_JSON", *problem);
             }
             // CSAZ-10: an identical definition returns the filter the user already
             // has instead of storing a duplicate; a distinct one is refused once
@@ -17406,7 +17725,15 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                 request.suggested_only = true;
             }
 
+            request.client_key = rate_limit_client_key(req, rt.homeserver.config.server());
+
             auto const result = handle_client_space_hierarchy(rt.homeserver, *user, request);
+            if (result.status == 429U)
+            {
+                // The client-outbound budget refused the federation call a child room
+                // needs (ADR-0079); the body is the Matrix error.
+                return client_proxy_refused(req, rt);
+            }
             return dispatch_resp(req, rt, result.status, result.body);
         }
     }
@@ -17567,12 +17894,17 @@ auto record_device_list_change(ClientServerRuntime& runtime, database::Persisten
 auto set_presence(ClientServerRuntime& runtime, database::PersistentPresence state) -> bool
 {
     auto guard = std::unique_lock<RuntimeMutex>{runtime.homeserver.mutex};
-    auto const stored = database::upsert_presence(runtime.homeserver.database.persistent_store, state);
+    if (!presence_enabled(runtime.homeserver))
+    {
+        // Nothing is tracked, so there is nothing to fail: the caller's update is accepted and dropped.
+        return true;
+    }
+    auto const stored = record_presence(runtime.homeserver, state);
     if (stored)
     {
         std::ignore = ensure_sync_notifier(runtime);
-        // Appservices that receive ephemeral data are told (R08).
-        queue_appservice_presence(runtime.homeserver, state);
+        // The servers that share a room with the user are told; the row is as stored just now.
+        broadcast_presence_edu(runtime.homeserver, state);
     }
     return stored;
 }

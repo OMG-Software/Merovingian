@@ -591,8 +591,13 @@ struct PersistentPresence final
     std::string user_id{};
     std::string presence{"offline"};
     std::string status_msg{};
+    // Milliseconds since `observed_at_ms`, as of that moment.
     std::int64_t last_active_ago{0};
     bool currently_active{false};
+    // Wall-clock milliseconds since the Unix epoch at which `last_active_ago` was true. It is what
+    // lets a read report "how long ago" up to date rather than as of the write. Never persisted: a
+    // row loaded from the database has 0 and reports `last_active_ago` as stored.
+    std::int64_t observed_at_ms{0};
 };
 
 // A client-uploaded sync filter. The server stores the raw JSON verbatim and
@@ -649,7 +654,8 @@ struct PersistentRoomAlias final
 };
 
 // Idempotency record for a client-issued room send or send-to-device PUT.
-// Keyed by (user_id, room_id, event_type, txn_id); room_id is empty for
+// Keyed by (user_id, room_id, event_type, txn_id) (device_id is not part of the key: a retry from
+// another device of the user is still the same request here); room_id is empty for
 // send-to-device entries. event_id holds the stored event ID for room sends
 // and is empty for send-to-device (whose response is always {}).
 struct PersistentClientTxnRecord final
@@ -659,6 +665,10 @@ struct PersistentClientTxnRecord final
     std::string event_type{};
     std::string txn_id{};
     std::string event_id{};
+    // The device that made the request, empty for a request with none. Spec (client-server-api.md,
+    // ClientEvent `unsigned.transaction_id`): the sending client is given the transaction ID, and a
+    // transaction ID is scoped to a device.
+    std::string device_id{};
 };
 
 // A push notification pusher registered via `POST
@@ -688,6 +698,10 @@ struct PersistentPusher final
     std::string data_url{};
     std::string data_format{};
     std::string data_extra_json{};
+    // The device whose access token registered the pusher (`POST /pushers/set`), or empty when
+    // none did (a pusher stored before the column existed, or by an appservice). A password
+    // change that revokes a device's tokens deletes the pushers that device registered.
+    std::string device_id{};
 };
 
 // A recorded notification for `GET /_matrix/client/v3/notifications` (Matrix
@@ -977,6 +991,9 @@ struct PersistentStore final
         , account_threepids{other.account_threepids}
         , room_aliases{other.room_aliases}
         , client_txn_ids{other.client_txn_ids}
+        , client_txn_event_index{other.client_txn_event_index}
+        , client_txn_key_index{other.client_txn_key_index}
+        , client_txn_indexed_rows{other.client_txn_indexed_rows}
         , pushers{other.pushers}
         , notifications{other.notifications}
         , openid_tokens{other.openid_tokens}
@@ -1062,6 +1079,9 @@ struct PersistentStore final
         account_threepids = other.account_threepids;
         room_aliases = other.room_aliases;
         client_txn_ids = other.client_txn_ids;
+        client_txn_event_index = other.client_txn_event_index;
+        client_txn_key_index = other.client_txn_key_index;
+        client_txn_indexed_rows = other.client_txn_indexed_rows;
         pushers = other.pushers;
         notifications = other.notifications;
         openid_tokens = other.openid_tokens;
@@ -1172,6 +1192,17 @@ struct PersistentStore final
     std::vector<PersistentThreePidBinding> account_threepids{};
     std::vector<PersistentRoomAlias> room_aliases{};
     std::vector<PersistentClientTxnRecord> client_txn_ids{};
+    // Positions in `client_txn_ids`, so a request reads the records it needs without scanning every
+    // record the server has ever stored (work under runtime.mutex is bounded by the request):
+    // `client_txn_event_index` by event_id, for the transaction ID a sending device is given;
+    // `client_txn_key_index` by (user_id, room_id, event_type, txn_id), for idempotency. Maintained
+    // by store_client_txn and enqueue_to_device_messages_with_client_txn, rebuilt after hydration. They
+    // are trusted only while `client_txn_indexed_rows == client_txn_ids.size()`; a caller that pushes
+    // rows directly leaves the counts unequal and lookups fall back to a scan until the next rebuild.
+    // Nothing prunes `client_txn_ids`.
+    std::unordered_map<std::string, std::size_t> client_txn_event_index{};
+    std::unordered_map<std::string, std::size_t> client_txn_key_index{};
+    std::size_t client_txn_indexed_rows{0U};
     std::vector<PersistentPusher> pushers{};
     std::vector<PersistentNotification> notifications{};
     std::vector<PersistentOpenidToken> openid_tokens{};
@@ -1356,6 +1387,14 @@ auto set_write_connection_limit(PersistentStore& store, std::uint32_t limit) -> 
 // Callers that iterate the keys use this rather than the vector itself.
 [[nodiscard]] auto snapshot_server_signing_keys(PersistentStore const& store)
     -> std::vector<PersistentServerSigningKey>;
+// Re-reads `server_name`'s signing-key rows from the backing database into this
+// store's in-memory mirror, public columns only: `secret_key` is never selected,
+// so a federation worker (whose mirror is otherwise a snapshot taken when it
+// started) can see a key main verified and cached since, without ever reading
+// this server's signing secret. A row already held with a secret is left as it
+// is. A successful no-op for an in-memory store. Returns false only on a
+// connection or query failure, which leaves the mirror unchanged.
+[[nodiscard]] auto refresh_remote_signing_keys(PersistentStore& store, std::string_view server_name) -> bool;
 [[nodiscard]] auto store_federation_destination(PersistentStore& store, PersistentFederationDestination destination)
     -> bool;
 [[nodiscard]] auto store_federation_transaction(PersistentStore& store, PersistentFederationTransaction transaction)
@@ -1574,6 +1613,15 @@ auto apply_forward_extremities_update(PersistentStore& store, std::string_view r
 // Rebuilds the in-memory state_transitions index from scratch. Called after
 // SQLite/PostgreSQL hydration and after any direct backfill of the vector.
 auto rebuild_state_transition_index(PersistentStore& store) -> void;
+
+// Rebuilds the in-memory client transaction indexes from `client_txn_ids`. Called after
+// SQLite/PostgreSQL hydration.
+auto rebuild_client_txn_index(PersistentStore& store) -> void;
+
+// The record of the room send that produced `event_id`, or nullptr (also for an empty ID). An
+// index lookup; the sender, device and transaction ID are the record's.
+[[nodiscard]] auto find_client_txn_by_event_id(PersistentStore const& store, std::string_view event_id)
+    -> PersistentClientTxnRecord const*;
 
 // ---- CSAZ-11: redactions ----
 //
@@ -2051,6 +2099,19 @@ namespace detail
     // result with `room == nullopt` inside the snapshot, not a nullopt return.
     [[nodiscard]] auto load_room_snapshot_from_backend(PersistentStore const& store, std::string_view room_id)
         -> std::optional<RoomReloadSnapshot>;
+    // Backend half of refresh_remote_signing_keys: `server_name`'s rows from
+    // server_signing_keys, selecting server_name, key_id, public_key and
+    // valid_until_ts only (never secret_key, so each row's secret_key is
+    // empty). nullopt on a connection/query failure and for a backend with no
+    // database; an unknown server is a successful empty result.
+    [[nodiscard]] auto load_remote_signing_keys_from_backend(PersistentStore const& store, std::string_view server_name)
+        -> std::optional<std::vector<PersistentServerSigningKey>>;
+    [[nodiscard]] auto load_remote_signing_keys_from_sqlite(std::string const& path, std::string_view server_name)
+        -> std::optional<std::vector<PersistentServerSigningKey>>;
+    [[nodiscard]] auto load_remote_signing_keys_from_postgresql(std::string_view conninfo,
+                                                                std::string_view runtime_role,
+                                                                std::string_view server_name)
+        -> std::optional<std::vector<PersistentServerSigningKey>>;
     // Backend half of load_audit_events_by_type_prefix: newest first, already
     // bounded by `limit`. Returns nullopt on a connection/query failure.
     [[nodiscard]] auto load_audit_events_from_backend(PersistentStore const& store, std::string_view prefix,

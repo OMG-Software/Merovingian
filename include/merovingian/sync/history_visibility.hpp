@@ -77,6 +77,13 @@ public:
     // True when the user may see `event`.
     [[nodiscard]] auto can_see(database::PersistentEvent const& event) -> bool;
 
+    // The user's `m.room.member` membership at `event`: the `membership` of their member state in the
+    // state immediately after the event, "leave" when they have none yet (client-server-api.md,
+    // ClientEvent `unsigned.membership`). For an event with no state group it is the latest of the
+    // user's own membership events at or before the event. nullopt when it cannot be determined (a
+    // broken group chain, an unfollowable membership timeline); the spec lets a server omit it then.
+    [[nodiscard]] auto membership_at(database::PersistentEvent const& event) -> std::optional<std::string>;
+
     // True when `event_id` names a stored event the user may see; false for an unknown ID.
     [[nodiscard]] auto can_see_event_id(std::string_view event_id) -> bool;
 

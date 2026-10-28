@@ -23,6 +23,7 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <cstddef>
 #include <cstdint>
 #include <string>
 #include <utility>
@@ -332,6 +333,116 @@ SCENARIO("A push rule change reaches /sync as m.push_rules account data that cli
                 // server manages by using a 405 error response."
                 REQUIRE(write_rules.status == 405U);
                 REQUIRE(write_fully_read.status == 405U);
+            }
+        }
+    }
+}
+
+// Spec: Matrix Client-Server API v1.19
+// Endpoint / Section: Push Rules: Events; GET /sync `account_data`
+// URL: ../../docs/matrix-v1.19-spec/client-server-api.md#push-rules-events
+//
+// "m.push_rules: Describes all push rules for this user." and "The content of the event is the
+// current push rules for the user." The spec does not say whether a user who never changed a rule
+// sees the event in an initial /sync; the owner decided (Complement TestPushSync "Push rules come
+// down in an initial /sync") that an initial /sync always carries it, holding the effective ruleset
+// (the server defaults plus the user's changes), and an incremental /sync carries it only after a
+// change.
+SCENARIO("An initial /sync carries the user's effective push rules as m.push_rules account data",
+         "[conformance][client-server][push][sync][push-rules-initial-sync]")
+{
+    GIVEN("a user who has never changed a push rule")
+    {
+        auto started = merovingian::homeserver::start_client_server(conformance_config());
+        REQUIRE(started.started);
+        auto const alice = register_and_login(started.runtime, "alice");
+
+        // The m.push_rules events of a /sync body, and the next_batch token.
+        auto const push_rules_in = [](std::string const& sync_body) {
+            auto const body = parse_object(sync_body);
+            auto const* account_data = object_member_as_object(body, "account_data");
+            REQUIRE(account_data != nullptr);
+            auto const* events = object_member_as_array(*account_data, "events");
+            REQUIRE(events != nullptr);
+            auto found = std::vector<std::vector<std::string>>{};
+            for (auto const& event : *events)
+            {
+                auto const& object = std::get<merovingian::canonicaljson::Object>(event.storage());
+                auto const* type = string_member(object, "type");
+                if (type == nullptr || *type != "m.push_rules")
+                {
+                    continue;
+                }
+                auto const* content = object_member_as_object(object, "content");
+                REQUIRE(content != nullptr);
+                auto const* global = object_member_as_object(*content, "global");
+                REQUIRE(global != nullptr);
+                auto const* override_rules = object_member_as_array(*global, "override");
+                REQUIRE(override_rules != nullptr);
+                auto ids = std::vector<std::string>{};
+                for (auto const& rule : *override_rules)
+                {
+                    auto const& rule_object = std::get<merovingian::canonicaljson::Object>(rule.storage());
+                    ids.push_back(*string_member(rule_object, "rule_id"));
+                }
+                found.push_back(std::move(ids));
+            }
+            return found;
+        };
+
+        WHEN("the user makes an initial /sync")
+        {
+            auto const sync = request(started.runtime, "GET", "/_matrix/client/v3/sync?timeout=0", alice);
+            REQUIRE(sync.status == 200U);
+            auto const found = push_rules_in(sync.body);
+
+            THEN("account_data holds one m.push_rules event with the same rules GET /pushrules serves")
+            {
+                REQUIRE(found.size() == 1U);
+                REQUIRE_FALSE(found.front().empty());
+                REQUIRE(found.front() == served_rule_ids(started.runtime, alice, "override"));
+            }
+
+            AND_WHEN("the user syncs again from the returned token with nothing changed")
+            {
+                auto const body = parse_object(sync.body);
+                auto const* next_batch = string_member(body, "next_batch");
+                REQUIRE(next_batch != nullptr);
+                auto const again =
+                    request(started.runtime, "GET", "/_matrix/client/v3/sync?timeout=0&since=" + *next_batch, alice);
+                REQUIRE(again.status == 200U);
+
+                THEN("the incremental /sync repeats no m.push_rules event")
+                {
+                    REQUIRE(push_rules_in(again.body).empty());
+                }
+            }
+        }
+    }
+
+    GIVEN("a user who changed a push rule before their first /sync")
+    {
+        auto started = merovingian::homeserver::start_client_server(conformance_config());
+        REQUIRE(started.started);
+        auto const alice = register_and_login(started.runtime, "alice");
+        REQUIRE(put_content_rule(started.runtime, alice, "cake") == 200U);
+
+        WHEN("the user makes an initial /sync")
+        {
+            auto const sync = request(started.runtime, "GET", "/_matrix/client/v3/sync?timeout=0", alice);
+            REQUIRE(sync.status == 200U);
+
+            THEN("exactly one m.push_rules event is carried, and it includes the user's rule")
+            {
+                auto count = std::size_t{0U};
+                auto position = std::size_t{0U};
+                while ((position = sync.body.find("\"m.push_rules\"", position)) != std::string::npos)
+                {
+                    ++count;
+                    ++position;
+                }
+                REQUIRE(count == 1U);
+                REQUIRE(sync.body.find("\"rule_id\":\"cake\"") != std::string::npos);
             }
         }
     }

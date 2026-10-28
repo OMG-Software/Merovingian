@@ -178,6 +178,8 @@ session cascade are outside that regression's scope.
 | `GET` | `/_matrix/client/v3/presence/{userId}/status` | `getPresence` | access token | - | 200, 403, 404 |
 | `PUT` | `/_matrix/client/v3/presence/{userId}/status` | `setPresence` | access token | required application/json | 200, 429 |
 
+`GET` answers the caller's own presence, or another user's when they share a joined room (otherwise 403 `M_FORBIDDEN`, also for a user who does not exist); a local user with no presence is `offline`, a remote one is 404. `GET /sync` takes `set_presence` (`online` when omitted, `unavailable`, `offline`; another value is 400 `M_INVALID_PARAM`) and carries `presence.events` for users sharing a joined room. `presence.enabled=false` makes `GET` 404, `PUT` a 200 that stores nothing, and `/sync` presence-free. See `docs/user-manual.md` "Presence".
+
 ## Push notifications
 
 | Method | Path | Operation ID | Auth | Request body | Responses |
@@ -359,6 +361,14 @@ expiry responses are outside that scenario's scope.
 | --- | --- | --- | --- | --- | --- |
 | `GET` | `/_matrix/client/v1/rooms/{roomId}/hierarchy` | `getSpaceHierarchy` | access token | - | 200, 400, 403, 429 |
 
+`getSpaceHierarchy` walks the space depth-first. A child room this server holds state for is judged from that state for the
+requesting user: joined or invited, `public`, `knock` / `knock_restricted`, `world_readable`, or `restricted` with the user joined
+to one of the rooms the join rule names. A child it holds no state for is asked for over federation
+(`GET /_matrix/federation/v1/hierarchy/{roomId}`) from the servers in the link's `via` (at most 3 per room, 16 requests per
+walk, one outbound-budget slot and one deadline per request, `429 M_LIMIT_EXCEEDED` when the budget is full) and kept only if
+the requesting user may see it according to what that server reported; local state, where the server has it, is always used
+instead of the remote answer. With `suggested_only=true` the walk and every space's `children_state` carry the suggested links only.
+
 ## Third-party Lookup
 
 | Method | Path | Operation ID | Auth | Request body | Responses |
@@ -427,6 +437,18 @@ The four `requestToken` endpoints (`/register/{email,msisdn}/requestToken`, `/ac
 ## Per-user key and filter caps (CSAZ-10)
 
 `POST /_matrix/client/v3/keys/upload` answers 400 `M_TOO_LARGE` and stores nothing (no device, one-time or fallback keys) when the request would leave a device holding more than `server.client_api.max_one_time_keys_per_device` one-time keys; key IDs already held are not counted twice. A device keeps one fallback key per algorithm: a newly uploaded fallback key replaces the previous key of that algorithm. `POST /_matrix/client/v3/keys/signatures/upload` answers 400 `M_TOO_LARGE` and stores nothing when it would take the signer past `server.client_api.max_key_signatures_per_user` distinct (target user, target key) signatures. `POST /_matrix/client/v3/user/{userId}/filter` returns the existing `filter_id` for a definition identical to a stored one after JSON canonicalisation, and otherwise answers 400 `M_TOO_LARGE` once the user holds `server.client_api.max_filters_per_user` filters. Over-cap requests are refused, never satisfied by evicting stored rows. See [operator budgets](user-manual.md#operational-budgets).
+
+## Readings of open spec points chosen to match Complement (0.12.60)
+
+In each case below the spec leaves the choice to the server; the owner decided to follow Complement's reading.
+
+- **Event size limit status.** A locally composed event over 65536 bytes (or with a `type` or `state_key` over 255 bytes) is refused `413 M_TOO_LARGE` on `PUT /send`, `PUT /state`, membership endpoints and `createRoom` (it was `400 M_TOO_LARGE`). The other `M_TOO_LARGE` refusals (per-user caps) stay 400.
+- **`POST /user/{userId}/filter` validates the Filter schema.** A field of the wrong JSON type, a `senders`/`not_senders` entry that is not a user ID, or a `rooms`/`not_rooms` entry that is not a room ID answers `400 M_BAD_JSON` and stores nothing (it was stored and answered 200). `/sync` and `/messages` still read leniently any filter stored before.
+- **`POST /keys/upload` and a malformed `device_keys`.** Missing or non-object `keys`, non-string `user_id`/`device_id`, non-list `algorithms` or non-object `signatures` answer `400 M_BAD_JSON`. A well-formed object naming another user or device, or lacking the `curve25519:`/`ed25519:` pair for the device, stays `M_INVALID_PARAM`. `algorithms` and `signatures` are checked only when present.
+- **`GET /rooms/{roomId}/messages` with `lazy_load_members`.** `state` holds only the `m.room.member` events of the senders of the returned `chunk` (no other state). Redundant membership events are not tracked across calls, so a sender's membership is sent on every page (the spec's `include_redundant_members` default permits it). `/context` is unchanged.
+- **Initial `/sync` carries `m.push_rules`.** An initial `/sync` (no usable `since`) always holds a global `m.push_rules` account-data event with the user's effective ruleset (the server defaults plus their changes), if the filter's `account_data` admits it. An incremental `/sync` carries it only after a change.
+- **`POST /user_directory/search` searches visible users only.** A search considers the users who share a joined room with the requester, and users joined to a room whose join rule is `public` or whose history visibility is `world_readable`. The requester is found only through a public or world-readable room. Before, every local profile matched.
+- **`POST /account/password` deletes pushers of revoked devices.** With `logout_devices` true (the default), the pushers set (`POST /pushers/set`) with the access token of a device whose tokens the change revokes are deleted. The requesting device's pushers, and pushers with no recorded device, stay. A pusher records its device in `pushers.device_id`.
 
 ## Configurable response budgets (0.12.18)
 

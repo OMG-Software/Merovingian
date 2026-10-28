@@ -174,3 +174,31 @@ SCENARIO("Room passes filter honours include and exclude room lists", "[sync][fi
         }
     }
 }
+
+// Spec: Matrix Client-Server API v1.19, Filtering, RoomEventFilter
+// URL:  ../../docs/matrix-v1.19-spec/client-server-api.md#filtering
+//
+// RoomEventFilter `limit`: "The maximum number of events to return." A limit of 0 is therefore a
+// request for no events, which the parsed filter must tell apart from a filter that names no limit.
+SCENARIO("Sync filter parser tells a limit of zero from no limit", "[sync][filter][limit]")
+{
+    GIVEN("a filter whose timeline names a limit of 0, one naming 5, and one naming none")
+    {
+        WHEN("the filters are parsed")
+        {
+            auto const zero = merovingian::sync::parse_filter_argument(R"({"room":{"timeline":{"limit":0}}})");
+            auto const five = merovingian::sync::parse_filter_argument(R"({"room":{"timeline":{"limit":5}}})");
+            auto const none =
+                merovingian::sync::parse_filter_argument(R"({"room":{"timeline":{"types":["m.room.message"]}}})");
+
+            THEN("only a named limit is marked as given")
+            {
+                REQUIRE(zero.room.timeline.limit_given);
+                REQUIRE(zero.room.timeline.limit == 0U);
+                REQUIRE(five.room.timeline.limit_given);
+                REQUIRE(five.room.timeline.limit == 5U);
+                REQUIRE_FALSE(none.room.timeline.limit_given);
+            }
+        }
+    }
+}

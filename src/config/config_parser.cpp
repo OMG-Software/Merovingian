@@ -41,8 +41,8 @@ namespace
     inline auto apply_config_value(ServerConfig& server, ListenersConfig& listeners, DatabaseConfig& database,
                                    SecurityConfig& security, ClientRateLimitsConfig& client_rate_limits,
                                    LogModulesConfig& log_modules, FederationWorkerConfig& federation_worker,
-                                   AppserviceConfig& appservice, std::string_view key, std::string_view value,
-                                   std::vector<ConfigValidationFinding>& findings) -> void
+                                   AppserviceConfig& appservice, PresenceConfig& presence, std::string_view key,
+                                   std::string_view value, std::vector<ConfigValidationFinding>& findings) -> void
     {
         // The client_rate_limits.per_ip, .per_user and .tier maps are keyed
         // by request target prefix (e.g. "/_matrix/client/v3/login") or tier
@@ -1282,6 +1282,13 @@ namespace
         {
             security.registration.token_file = std::string{value};
         }
+        else if (key == "presence.enabled")
+        {
+            if (!parse_bool_value(value, presence.enabled))
+            {
+                add_parse_finding(findings, std::string{key}, "expected boolean value");
+            }
+        }
         else if (key == "security.password_policy.min_length")
         {
             if (!parse_u32_value(value, security.password_policy.min_length))
@@ -2000,6 +2007,7 @@ auto parse_key_value_config(std::string_view input) -> ConfigParseResult
     auto log_modules = LogModulesConfig{};
     auto federation_worker = FederationWorkerConfig{};
     auto appservice = AppserviceConfig{};
+    auto presence = PresenceConfig{};
     auto findings = std::vector<ConfigValidationFinding>{};
     auto seen_keys = std::vector<std::string>{};
 
@@ -2043,7 +2051,7 @@ auto parse_key_value_config(std::string_view input) -> ConfigParseResult
                 {
                     seen_keys.emplace_back(key);
                     apply_config_value(server, listeners, database, security, client_rate_limits, log_modules,
-                                       federation_worker, appservice, key, value, findings);
+                                       federation_worker, appservice, presence, key, value, findings);
                 }
             }
         }
@@ -2056,8 +2064,8 @@ auto parse_key_value_config(std::string_view input) -> ConfigParseResult
         ++line_number;
     }
 
-    auto config =
-        Config{server, listeners, database, security, client_rate_limits, log_modules, federation_worker, appservice};
+    auto config = Config{server,      listeners,         database,   security, client_rate_limits,
+                         log_modules, federation_worker, appservice, presence};
     auto validation_findings = validate(config);
     findings.insert(findings.end(), validation_findings.begin(), validation_findings.end());
 

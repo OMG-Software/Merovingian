@@ -281,6 +281,18 @@ class RenderedConfigTests(unittest.TestCase):
         self.assertGreaterEqual(int(cap), 16)
         self.assertLessEqual(int(cap), 128)
 
+    def test_media_on_another_complement_server_is_fetched_and_served(self) -> None:
+        # GIVEN the rendered config.
+        # WHEN the remote media keys are read.
+        media = {key: self.config.get(f"security.media.{key}")
+                 for key in ("remote_fetch_enabled", "remote_fetch_media_policy")}
+        # THEN remote fetching is on and fetched media is served, not held for review:
+        # TestContentMediaV1, TestMediaFilenames, TestMediaWithoutFileNameCSMediaV1 and
+        # TestRemotePngThumbnail download hs1's media through hs2, which answered 404 while
+        # fetching was off (the default) and would answer 451 under the default
+        # quarantine policy.
+        self.assertEqual(media, {"remote_fetch_enabled": "true", "remote_fetch_media_policy": "allow"})
+
     def test_the_password_policy_admits_complements_passwords(self) -> None:
         # GIVEN the rendered config.
         # WHEN the password policy is read.

@@ -94,6 +94,16 @@ is full.
   `GET /login/sso/redirect[/{idpId}]` rejects a `redirectUrl` that is not
   covered by `server.sso.redirect_url_allowlist` — see `docs/threat-model.md`
   ("Open redirect and login-token exfiltration via SSO redirectUrl").
+- `presence.set` (debug, logger `client_server`) records a `PUT /presence/{userId}/status`
+  (fields `actor`, `presence`; never the status message). `presence.sync.set` (debug, logger
+  `presence`) records a `/sync` that changed the caller's state (fields `actor`, `presence`).
+  `presence.inbound.refused` (warning, logger `presence`) fires when an inbound `m.presence` EDU
+  has entries with a `presence` outside the enumeration or a `status_msg` that is not a string or
+  is over 1024 bytes (fields `origin`, `refused`). `presence.inbound.truncated` (warning, logger
+  `presence`) fires when an EDU names more than 100 entries and the rest are not looked at
+  (fields `origin`, `entries`, `limit`). `presence.outbound.refused` (warning, logger
+  `client_server`) fires when the dispatch queue refuses an `m.presence` EDU for a destination
+  (fields `actor`, `destination`). None logs a status message.
 - `federation.edu.direct_to_device.store_incomplete` (warning severity, via
   `log_diagnostic`) fires whenever an inbound `m.direct_to_device` EDU targets
   one or more devices but fewer messages persist to `to_device_messages` than

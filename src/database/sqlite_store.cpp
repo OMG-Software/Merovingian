@@ -1008,15 +1008,16 @@ namespace
                    [&store](sqlite3_stmt& row) {
                        store.room_aliases.push_back({column_text(row, 0), column_text(row, 1), column_text(row, 2)});
                    }) &&
-               load_rows(connection, "SELECT user_id, room_id, event_type, txn_id, event_id FROM client_txn_ids",
-                         [&store](sqlite3_stmt& row) {
-                             store.client_txn_ids.push_back({column_text(row, 0), column_text(row, 1),
-                                                             column_text(row, 2), column_text(row, 3),
-                                                             column_text(row, 4)});
-                         }) &&
+               load_rows(
+                   connection, "SELECT user_id, room_id, event_type, txn_id, event_id, device_id FROM client_txn_ids",
+                   [&store](sqlite3_stmt& row) {
+                       store.client_txn_ids.push_back({column_text(row, 0), column_text(row, 1), column_text(row, 2),
+                                                       column_text(row, 3), column_text(row, 4), column_text(row, 5)});
+                   }) &&
                load_rows(connection,
                          "SELECT user_id, app_id, pushkey, kind, app_display_name, device_display_name, "
-                         "profile_tag, lang, data_url, data_format, data_extra_json FROM pushers ORDER BY user_id, "
+                         "profile_tag, lang, data_url, data_format, data_extra_json, device_id FROM pushers ORDER BY "
+                         "user_id, "
                          "app_id, pushkey",
                          [&store](sqlite3_stmt& row) {
                              PersistentPusher entry{};
@@ -1031,6 +1032,7 @@ namespace
                              entry.data_url = column_text(row, 8);
                              entry.data_format = column_text(row, 9);
                              entry.data_extra_json = column_text(row, 10);
+                             entry.device_id = column_text(row, 11);
                              store.pushers.push_back(std::move(entry));
                          }) &&
                load_rows(connection, "SELECT watermark FROM sync_stream_watermark",
@@ -1566,6 +1568,7 @@ auto open_sqlite_persistent_store(std::string const& path, TableLoadProfile prof
     sort_appservice_outbox(store);
     reconstruct_event_relations(store);
     rebuild_state_transition_index(store);
+    rebuild_client_txn_index(store);
     rebuild_redaction_state(store);
     rebuild_key_signature_index(store);
     restore_sync_stream_id(store);
@@ -1762,6 +1765,54 @@ namespace detail
             return std::nullopt;
         }
         return rows;
+    }
+
+    auto load_remote_signing_keys_from_sqlite(std::string const& path, std::string_view server_name)
+        -> std::optional<std::vector<PersistentServerSigningKey>>
+    {
+        if (path.empty())
+        {
+            return std::nullopt;
+        }
+        auto connection = open_sqlite_connection(path, true);
+        if (!connection.has_value())
+        {
+            return std::nullopt;
+        }
+        // Public columns only: the secret_key column is never named, so the
+        // row cannot carry this server's signing secret into a worker whatever
+        // `server_name` says. The name is bound, never interpolated.
+        auto keys = std::vector<PersistentServerSigningKey>{};
+        auto const ok = load_rows_bound(
+            **connection,
+            "SELECT server_name, key_id, public_key, valid_until_ts FROM server_signing_keys WHERE server_name = ?1",
+            {std::string{server_name}}, [&keys](sqlite3_stmt& row) {
+                keys.push_back({column_text(row, 0),
+                                column_text(row, 1),
+                                column_text(row, 2),
+                                parse_u64(column_text(row, 3)),
+                                {}});
+            });
+        if (!ok)
+        {
+            return std::nullopt;
+        }
+        return keys;
+    }
+
+    auto load_remote_signing_keys_from_backend(PersistentStore const& store, std::string_view server_name)
+        -> std::optional<std::vector<PersistentServerSigningKey>>
+    {
+        if (store.backend == PersistentStoreBackend::postgresql)
+        {
+            return load_remote_signing_keys_from_postgresql(store.postgresql_conninfo, store.postgresql_runtime_role,
+                                                            server_name);
+        }
+        if (store.backend != PersistentStoreBackend::sqlite)
+        {
+            return std::nullopt;
+        }
+        return load_remote_signing_keys_from_sqlite(store.sqlite_path, server_name);
     }
 
     auto load_audit_events_from_backend(PersistentStore const& store, std::string_view prefix, std::size_t limit)

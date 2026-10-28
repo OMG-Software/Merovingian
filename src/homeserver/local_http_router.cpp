@@ -32,6 +32,7 @@
 #include "merovingian/homeserver/deferred_pdu_retry.hpp"
 #include "merovingian/homeserver/federation_request_routing.hpp"
 #include "merovingian/homeserver/media_service.hpp"
+#include "merovingian/homeserver/presence_service.hpp"
 #include "merovingian/homeserver/request_lock.hpp"
 #include "merovingian/homeserver/restricted_join.hpp"
 #include "merovingian/homeserver/room_service.hpp"
@@ -1967,66 +1968,17 @@ namespace
                 return {federation::EduDispositionStatus::accepted, {}};
             }
             case federation::EduType::presence: {
-                auto const parsed = canonicaljson::parse_lossless(envelope.content_json);
-                auto const* root = std::get_if<canonicaljson::Object>(&parsed.value.storage());
-                if (parsed.error != canonicaljson::ParseError::none || root == nullptr)
+                // The sink runs without runtime.mutex. Binding each entry to the sending origin,
+                // the bounds, the interest check and the row writes (under the mutex) are all in
+                // accept_inbound_presence; this case only wakes long-polling syncs.
+                auto const result = accept_inbound_presence(*rt, envelope.origin, envelope.content_json);
+                if (presence_enabled(*rt) && rt->sync_notifier != nullptr)
                 {
-                    return {federation::EduDispositionStatus::rejected_invalid, "presence content must be an object"};
-                }
-                auto const* push = object_member_as_array(*root, "push");
-                if (push == nullptr)
-                {
-                    return {federation::EduDispositionStatus::accepted, {}};
-                }
-                // The sink runs without runtime.mutex: presence rows, the appservice
-                // queue and the visible stream position are all read and written under it.
-                auto const guard = std::unique_lock<RuntimeMutex>{rt->mutex};
-                for (auto const& entry : *push)
-                {
-                    auto const* presence = std::get_if<canonicaljson::Object>(&entry.storage());
-                    if (presence == nullptr)
-                    {
-                        return {federation::EduDispositionStatus::rejected_invalid, "presence entry must be an object"};
-                    }
-                    auto const* user_id = object_member_as_string(*presence, "user_id");
-                    if (user_id == nullptr || !user_belongs_to_origin(*user_id, envelope.origin))
-                    {
-                        return {federation::EduDispositionStatus::rejected_invalid,
-                                "presence user_id must belong to the sending origin"};
-                    }
-                    auto state = database::PersistentPresence{};
-                    state.user_id = *user_id;
-                    if (auto const* presence_value = object_member_as_string(*presence, "presence");
-                        presence_value != nullptr && !presence_value->empty())
-                    {
-                        state.presence = *presence_value;
-                    }
-                    if (auto const* status_msg = object_member_as_string(*presence, "status_msg");
-                        status_msg != nullptr)
-                    {
-                        state.status_msg = *status_msg;
-                    }
-                    if (auto const* last_active_ago = object_member_as_int(*presence, "last_active_ago");
-                        last_active_ago != nullptr && *last_active_ago >= 0)
-                    {
-                        state.last_active_ago = *last_active_ago;
-                    }
-                    if (auto const* currently_active = object_member_as_bool(*presence, "currently_active");
-                        currently_active != nullptr)
-                    {
-                        state.currently_active = *currently_active;
-                    }
-                    if (database::upsert_presence(rt->database.persistent_store, state))
-                    {
-                        queue_appservice_presence(*rt, state);
-                    }
-                }
-                if (rt->sync_notifier != nullptr)
-                {
+                    auto const guard = std::unique_lock<RuntimeMutex>{rt->mutex};
                     rt->sync_notifier->publish(visible_stream_position(rt->database),
                                                rt->database.persistent_store.next_sync_stream_id);
                 }
-                return {federation::EduDispositionStatus::accepted, {}};
+                return result;
             }
             case federation::EduType::direct_to_device: {
                 auto const enqueue_result =
@@ -2695,7 +2647,13 @@ namespace
             auto const membership_changed = !membership.empty();
             if (membership_changed)
             {
-                apply_runtime_membership(rt->database, room_id, *envelope.state_key, membership);
+                // The roster and the device-list changes this membership causes (a remote
+                // user's join or leave is `changed` or `left` for the local members).
+                if (!apply_membership_to_roster(*rt, room_id, *envelope.state_key, membership))
+                {
+                    LOG_WARNING("Device-list change persistence failed after membership PDU was accepted; event_id=" +
+                                accepted_event_id + " room_id=" + std::string{room_id});
+                }
                 if (membership == "join")
                 {
                     broadcast_local_device_lists_to_remote_joiner(*rt, room_id, *envelope.state_key);
@@ -2725,6 +2683,18 @@ namespace
                 LOG_WARNING("Membership PDU rejected on receipt; event_id=" + accepted_event_id +
                             " room_id=" + std::string{room_id} + " reason=" + outcome_reason);
                 return {false, 403U, std::string{"event auth denied: "} + outcome_reason, {}, {}};
+            }
+            // Spec, "Joining Rooms": "The resident server must also send the event to other
+            // servers participating in the room"; "Leaving Rooms (Rejecting Invites)": "The
+            // resident server will then send the event to other servers in the room". Only the
+            // stored copy goes (it may carry our co-signature), and not back to the server that
+            // asked, which already has it. A soft-failed event never applied to the room's
+            // state, so no server is told of it. Runs with rt->mutex held, like the rest of this
+            // callback, on both of its call paths; it enqueues only, with no network I/O.
+            if (outcome == MembershipReceiptOutcome::accepted)
+            {
+                federate_accepted_membership_event(*rt, room_id, accepted_event_id, stored_json,
+                                                   server_name_from_user_id(envelope.sender));
             }
 
             auto auth_chain = std::vector<std::string>{};
@@ -3073,9 +3043,9 @@ namespace
                                                                  rt->federation.config.query_policy);
         };
 
-        runtime.federation.space_hierarchy_provider = [rt](std::string_view room_id,
-                                                           bool suggested_only) -> std::string {
-            return build_federation_space_hierarchy_response(*rt, room_id, suggested_only);
+        runtime.federation.space_hierarchy_provider = [rt](std::string_view room_id, bool suggested_only,
+                                                           std::string_view origin) -> std::string {
+            return build_federation_space_hierarchy_response(*rt, room_id, suggested_only, origin);
         };
 
         // Federation media download needs the local media repository, which is
@@ -3138,17 +3108,22 @@ namespace
             // resolves known-peer key rotation directly from the cache above;
             // every discovery-capable resolver call must still be admitted.
             runtime.federation.remote_key_cache_probe = {};
+            // A worker's key mirror is a start-up snapshot, so its resolver reads
+            // the database for a key main cached since before it fetches one.
+            auto const mirror_refresh = runtime.database.remote_signing_keys_read_through
+                                            ? federation::KeyMirrorRefresh::on_miss
+                                            : federation::KeyMirrorRefresh::never;
             if (cached != nullptr)
             {
                 runtime.federation.remote_key_resolver = federation::make_persistent_remote_key_resolver(
                     runtime.database.persistent_store, *outbound, *cached, timeout, key_clock,
-                    runtime.config.server().server_name);
+                    runtime.config.server().server_name, mirror_refresh);
             }
             else
             {
                 runtime.federation.remote_key_resolver = federation::make_persistent_remote_key_resolver(
                     runtime.database.persistent_store, *outbound, *discovery, timeout, key_clock,
-                    runtime.config.server().server_name);
+                    runtime.config.server().server_name, mirror_refresh);
             }
             auto key = ensure_runtime_server_signing_key(runtime);
             auto constexpr expected_secret_bytes = crypto::ed25519_secret_key_bytes;
@@ -3278,6 +3253,20 @@ namespace
         bool stored_any{};
         bool locally_denied{};
     };
+
+    // A PDU that was fetched during one recovery and could not be placed yet
+    // because the history before it is missing. It is kept for the rest of that
+    // recovery so that it is neither fetched twice nor lost: it names the
+    // prev_event the state snapshot must be asked about, and it is placed once
+    // that snapshot is in. Nothing here has been stored; every entry is verified
+    // from scratch when it is placed. Never outlives one
+    // backfill_missing_pdu_references call.
+    struct HeldPdu final
+    {
+        std::string json{};
+        federation::InboundPduEnvelope envelope{};
+    };
+    using HeldPdus = std::unordered_map<std::string, HeldPdu>;
 
     // Returns true when the store has an event with this event_id and it has a
     // recorded after-state group (so it can serve as a prev_event for state-
@@ -3918,14 +3907,36 @@ namespace
             return token == nullptr ? std::string{} : *token;
         }();
 
-        // ADR-0064 phase C: drop backfilled events whose own auth_events are
-        // unresolvable or disallowed; never use a failed event as state.
+        // ADR-0064 phase C: an auth_event this server cannot resolve at all stays
+        // a gap. The event is dropped (never used as state) and fetched again
+        // once that auth event is here.
+        //
+        // Spec: server-server-api.md "Checks performed on receipt of a PDU"
+        // steps 4 and 5, and "Rejection". An event whose auth_events resolve but
+        // are not a permitted selection, name a rejected event (room version
+        // auth rule 2.3) or deny the event is REJECTED, not dropped: it is stored
+        // with status `rejected` and an after-state equal to its state-before, so
+        // an event that names it as a prev_event can still be placed, while it
+        // never alters state.
+        enum class BackfillOutcome : std::uint8_t
+        {
+            accepted,
+            rejected,
+        };
+        auto outcome = BackfillOutcome::accepted;
+        auto outcome_reason = std::string{};
+
         auto const selection_check = validate_auth_events_selection(
             runtime.database.persistent_store, room_id, effective_pdu, policy, envelope.event_type, envelope.sender,
             envelope.state_key, third_party_invite_token, envelope.auth_event_ids);
-        if (selection_check != AuthEventsSelectionCheck::ok)
+        if (selection_check == AuthEventsSelectionCheck::unresolvable)
         {
             return false;
+        }
+        if (selection_check == AuthEventsSelectionCheck::disallowed)
+        {
+            outcome = BackfillOutcome::rejected;
+            outcome_reason = "auth_events selection is not permitted for this event";
         }
         auto auth_events_map = build_auth_event_map_from_entries(
             runtime.database.persistent_store,
@@ -3936,24 +3947,21 @@ namespace
         {
             auth_events_map.create = create_event_json_for_room(runtime.database.persistent_store, room_id);
         }
-        auto const auth_events_decision =
-            events::authorize_event_against_auth_events(effective_pdu, policy, auth_events_map);
-        if (!auth_events_decision.allowed)
+        if (outcome == BackfillOutcome::accepted)
         {
-            return false;
+            auto const auth_events_decision =
+                events::authorize_event_against_auth_events(effective_pdu, policy, auth_events_map);
+            if (!auth_events_decision.allowed)
+            {
+                outcome = BackfillOutcome::rejected;
+                outcome_reason = "event auth denied against its own auth_events: " + auth_events_decision.reason;
+            }
         }
 
         // ADR-0064 phase C: mirror the spec's step-5 check from ingest_pdu_event.
         // A backfilled event that passes its own auth_events can still be forged
         // against the state before it; it must then be stored as rejected with
         // after-state equal to state_before so it cannot influence later state.
-        enum class BackfillOutcome : std::uint8_t
-        {
-            accepted,
-            rejected,
-        };
-        auto outcome = BackfillOutcome::accepted;
-        auto outcome_reason = std::string{};
 
         auto const known_state_before = [&]() -> std::optional<std::vector<database::PersistentStateGroupStateEntry>> {
             if (forced_state_before.has_value())
@@ -3982,29 +3990,22 @@ namespace
         }
         auto const state_before = known_state_before.value_or(std::vector<database::PersistentStateGroupStateEntry>{});
 
-        auto state_before_map = events::AuthEventMap{};
-        auto state_before_decision = events::EventAuthorizationDecision{};
-        if (!state_before_known)
+        // With no local state-before the auth_events check above is the only one
+        // that can run. An event already rejected there needs no second verdict.
+        if (state_before_known && outcome == BackfillOutcome::accepted)
         {
-            // No local state-before is available; the auth_events check above
-            // has already passed and is the only check that can run.
-            state_before_map = auth_events_map;
-            state_before_decision = auth_events_decision;
-        }
-        else
-        {
-            state_before_map =
+            auto state_before_map =
                 build_auth_event_map_from_entries(runtime.database.persistent_store, state_before, envelope.sender,
                                                   envelope.state_key.value_or(std::string{}), envelope.event_type,
                                                   third_party_invite_token, join_authorising_user(effective_pdu));
             fill_create_from_room_state(state_before_map, runtime.database.persistent_store, room_id);
-            state_before_decision =
+            auto const state_before_decision =
                 events::authorize_event_against_auth_events(effective_pdu, policy, state_before_map);
-        }
-        if (!state_before_decision.allowed)
-        {
-            outcome = BackfillOutcome::rejected;
-            outcome_reason = "event auth denied against state before the event: " + state_before_decision.reason;
+            if (!state_before_decision.allowed)
+            {
+                outcome = BackfillOutcome::rejected;
+                outcome_reason = "event auth denied against state before the event: " + state_before_decision.reason;
+            }
         }
 
         // ADR-0070: with no known state-before there is no after-state to
@@ -4057,8 +4058,22 @@ namespace
             // groups) gains one once the state before it is known and it
             // passes auth against that state. It keeps its stored status. One
             // that fails is left without state, so nothing can build on it.
-            if (!state_after.has_value() || existing->status == "rejected" ||
-                event_has_state_group(runtime.database.persistent_store, envelope.event_id))
+            //
+            // Spec: server-server-api.md "Rejection" (ADR-0256): a rejected
+            // event's after-state is its state-before, not updated with the
+            // event. One stored rejected with no state group (judged against
+            // its own auth_events while its state-before was unknown) gets that
+            // state group now that the state before it is known, and keeps its
+            // status, so an event naming it as a prev_event can be placed.
+            if (existing->status == "rejected")
+            {
+                if (state_before_known && !event_has_state_group(runtime.database.persistent_store, envelope.event_id))
+                {
+                    record_state_group(state_before);
+                }
+                return true;
+            }
+            if (!state_after.has_value() || event_has_state_group(runtime.database.persistent_store, envelope.event_id))
             {
                 return true;
             }
@@ -4143,7 +4158,8 @@ namespace
     [[nodiscard]] auto backfill_state_ids_snapshot(HomeserverRuntime& runtime, std::string_view room_id,
                                                    std::string_view origin, std::string_view target_event_id,
                                                    rooms::RoomVersionPolicy const& policy, std::size_t& outbound_calls,
-                                                   std::size_t& snapshot_calls, BackfillBudget& budget) -> bool
+                                                   std::size_t& snapshot_calls, BackfillBudget& budget,
+                                                   HeldPdus const& held) -> bool
     {
         auto const& limits = runtime.federation.config.backfill;
         if (outbound_calls >= limits.max_outbound_calls || !budget.can_begin_call())
@@ -4169,10 +4185,12 @@ namespace
 
         auto needed_ids = std::vector<std::string>{};
         needed_ids.reserve(pdu_ids.size() + auth_chain_ids.size());
-        auto snapshot_state_ids = std::unordered_set<std::string>{};
         {
             auto seen = std::unordered_set<std::string>{};
-            for (auto const& id : pdu_ids)
+            // The auth chain is asked for first: a state event's own auth events
+            // are what it is judged against, and an auth chain the origin cannot
+            // supply must end the attempt before anything is stored.
+            for (auto const& id : auth_chain_ids)
             {
                 if (!budget.within_deadline() || budget.key_resolution_locally_denied)
                 {
@@ -4181,15 +4199,10 @@ namespace
                 if (id != target_event_id && seen.insert(id).second)
                 {
                     needed_ids.push_back(id);
-                    snapshot_state_ids.insert(id);
                 }
             }
-            for (auto const& id : auth_chain_ids)
+            for (auto const& id : pdu_ids)
             {
-                if (!budget.within_deadline() || budget.key_resolution_locally_denied)
-                {
-                    return false;
-                }
                 if (id != target_event_id && seen.insert(id).second)
                 {
                     needed_ids.push_back(id);
@@ -4207,6 +4220,20 @@ namespace
             return false;
         }
 
+        // Spec: server-server-api.md GET /state_ids names the events; GET /event/{eventId}
+        // is the spec's way to fetch one. Phase 1 fetches every named event this
+        // server lacks that way (a PDU already held from this recovery is not
+        // fetched again). Nothing is stored until all of them are in hand, so an
+        // event the origin cannot supply (a gap in the auth chain, a state event
+        // it will not serve) ends the attempt with nothing stored. The fetches
+        // are bounded by max_snapshot_outbound_calls and the shared budget.
+        struct SnapshotFetch final
+        {
+            std::string id{};
+            std::string json{};
+            std::uint64_t depth{};
+        };
+        auto fetched = std::vector<SnapshotFetch>{};
         for (auto const& id : needed_ids)
         {
             if (!budget.within_deadline() || budget.key_resolution_locally_denied)
@@ -4228,43 +4255,64 @@ namespace
                     continue;
                 }
             }
-            if (snapshot_calls >= limits.max_snapshot_outbound_calls)
+            auto json = std::string{};
+            if (auto const held_pdu = held.find(id); held_pdu != held.end())
+            {
+                json = held_pdu->second.json;
+            }
+            else
+            {
+                if (snapshot_calls >= limits.max_snapshot_outbound_calls)
+                {
+                    return false;
+                }
+                auto supplied =
+                    fetch_snapshot_event_by_id(runtime, room_id, origin, id, policy, snapshot_calls, budget);
+                if (!supplied.has_value())
+                {
+                    LOG_WARNING("backfill_state_ids_snapshot: a listed event could not be fetched with /event; "
+                                "room_id=" +
+                                std::string{room_id} + " target_event_id=" + std::string{target_event_id} +
+                                " event_id=" + id);
+                    return false;
+                }
+                json = std::move(*supplied);
+            }
+            auto const parsed_envelope = federation::parse_inbound_pdu_envelope(json, policy.id);
+            fetched.push_back(
+                {id, std::move(json),
+                 parsed_envelope.has_value() ? parsed_envelope->depth : std::numeric_limits<std::uint64_t>::max()});
+        }
+
+        // Phase 2: store in ascending depth, so an event's auth events and
+        // prev_events are in place before it is judged. Every event is verified
+        // (signature, hash, auth) exactly as one from /get_missing_events.
+        std::ranges::stable_sort(fetched, std::ranges::less{}, &SnapshotFetch::depth);
+        for (auto const& entry : fetched)
+        {
+            if (!budget.within_deadline() || budget.key_resolution_locally_denied)
             {
                 return false;
             }
-            auto const json = fetch_snapshot_event_by_id(runtime, room_id, origin, id, policy, snapshot_calls, budget);
-            if (!json.has_value())
-            {
-                return false;
-            }
-            if (verify_and_store_backfilled_event(runtime, room_id, origin, *json, policy, budget))
+            auto const& id = entry.id;
+            auto const& json = entry.json;
+            if (verify_and_store_backfilled_event(runtime, room_id, origin, json, policy, budget))
             {
                 continue;
             }
 
-            // ADR-0069 option A: a snapshot state event whose prev_events have no
-            // recorded state groups is a normal historical gap, not a failure.
-            // Fetch the full auth chain via /event_auth, verify and store each
-            // returned PDU against its own auth_events alone, then retry the
-            // snapshot event as an auth-events-only outlier. If this still fails,
-            // or if the event is not a snapshot state event, the snapshot is
-            // rejected fail-closed.
-            if (!snapshot_state_ids.contains(id))
-            {
-                LOG_WARNING("backfill_state_ids_snapshot: auth-chain event failed verification; room_id=" +
-                            std::string{room_id} + " event_id=" + id);
-                return false;
-            }
-            // Only spend an /event_auth call when the failure is plausibly due to
-            // a missing state-before. If all prev_events have state groups, the
-            // failure is for another reason (forged signature, bad auth_events,
-            // etc.) and the snapshot must be rejected immediately.
+            // ADR-0069 option A: an event whose prev_events have no recorded
+            // state groups is a normal historical gap, not a failure. Verify it
+            // against its own auth_events alone and store it as an outlier with
+            // no after-state (ADR-0070). If every prev_event does have a state
+            // group the failure is for another reason (forged signature, bad
+            // auth_events, ...) and the snapshot is rejected at once.
             auto prev_events_known = false;
             {
                 auto const stripe = std::hash<std::string>{}(std::string{room_id}) % room_mutex_stripe_count;
                 auto stripe_guard = std::unique_lock{runtime.room_stripe_mutexes[stripe]};
                 auto global_guard = std::unique_lock<RuntimeMutex>{runtime.mutex};
-                prev_events_known = prev_events_have_state_groups(runtime.database.persistent_store, policy, *json);
+                prev_events_known = prev_events_have_state_groups(runtime.database.persistent_store, policy, json);
             }
             if (prev_events_known)
             {
@@ -4274,6 +4322,17 @@ namespace
                     std::string{room_id} + " event_id=" + id);
                 return false;
             }
+            if (verify_and_store_backfilled_event(runtime, room_id, origin, json, policy, budget, std::nullopt, true))
+            {
+                continue;
+            }
+
+            // Last resort: its own auth events are not here either, and the
+            // origin did not name them. /event_auth returns the full auth chain
+            // in one call. Verify and store each returned PDU against its own
+            // auth_events alone, then retry the event. A deployment whose peers
+            // do not serve /event_auth ends here with the snapshot rejected
+            // fail-closed.
             auto const auth_pdus = fetch_event_auth(runtime, room_id, origin, id, snapshot_calls, budget);
             if (!auth_pdus.has_value())
             {
@@ -4295,7 +4354,7 @@ namespace
                     return false;
                 }
             }
-            if (!verify_and_store_backfilled_event(runtime, room_id, origin, *json, policy, budget, std::nullopt, true))
+            if (!verify_and_store_backfilled_event(runtime, room_id, origin, json, policy, budget, std::nullopt, true))
             {
                 LOG_WARNING("backfill_state_ids_snapshot: snapshot event failed verification after /event_auth "
                             "fallback; room_id=" +
@@ -4416,6 +4475,116 @@ namespace
         return ordered;
     }
 
+    // How many of this room's forward extremities a /get_missing_events request
+    // names as events this server already has (`earliest_events`). A request
+    // body is not the place to dump a room's whole extremity set.
+    constexpr auto max_earliest_events_named = std::size_t{10U};
+
+    // Keeps a fetched PDU that could not be placed yet for the rest of this
+    // recovery. At most `max_held` are kept; a remote that returns more has the
+    // rest dropped, which are fetched again if still needed.
+    auto hold_unplaced_pdu(HeldPdus& held, std::string const& json, rooms::RoomVersionPolicy const& policy,
+                           std::size_t max_held) -> void
+    {
+        if (held.size() >= max_held)
+        {
+            return;
+        }
+        auto envelope = federation::parse_inbound_pdu_envelope(json, policy.id);
+        if (!envelope.has_value())
+        {
+            return;
+        }
+        auto const id = envelope->event_id;
+        held.try_emplace(id, HeldPdu{json, std::move(*envelope)});
+    }
+
+    // Places held PDUs, lowest depth first, as far as the store now allows,
+    // repeating while a pass places any (a child may sort before its parent when
+    // the remote lies about depth). Every PDU is verified in full when placed.
+    // Returns true when at least one was stored. Network calls: none beyond the
+    // key resolution verification does; runtime.mutex is not held across it.
+    [[nodiscard]] auto place_held_pdus(HomeserverRuntime& runtime, std::string_view room_id, std::string_view origin,
+                                       rooms::RoomVersionPolicy const& policy, BackfillBudget& budget, HeldPdus& held)
+        -> bool
+    {
+        auto stored_any = false;
+        auto progress = true;
+        for (auto passes_left = held.size() + 1U; progress && passes_left > 0U && !held.empty(); --passes_left)
+        {
+            progress = false;
+            auto order = std::vector<std::pair<std::uint64_t, std::string>>{};
+            order.reserve(held.size());
+            for (auto const& [id, pdu] : held)
+            {
+                order.emplace_back(pdu.envelope.depth, id);
+            }
+            std::ranges::sort(order);
+            for (auto const& entry : order)
+            {
+                if (!budget.within_deadline() || budget.key_resolution_locally_denied)
+                {
+                    return stored_any;
+                }
+                auto const pdu = held.find(entry.second);
+                if (pdu == held.end())
+                {
+                    continue;
+                }
+                if (verify_and_store_backfilled_event(runtime, room_id, origin, pdu->second.json, policy, budget))
+                {
+                    held.erase(pdu);
+                    stored_any = true;
+                    progress = true;
+                }
+            }
+        }
+        return stored_any;
+    }
+
+    // The prev_events the origin must be asked the state at, when
+    // /get_missing_events and /event have left `missing_prev` unplaced. A
+    // missing prev_event that was fetched but could not be placed is not itself
+    // the gap: the gap is what lies before it. Walk back through the held PDUs
+    // (a PDU whose own prev_events are all placed is its own target) and return
+    // the nearest prev_events nothing held can supply, at most `max_targets`.
+    // The caller holds the room stripe and runtime.mutex.
+    [[nodiscard]] auto state_snapshot_targets(database::PersistentStore const& store, HeldPdus const& held,
+                                              std::vector<std::string> const& missing_prev, std::size_t max_targets)
+        -> std::vector<std::string>
+    {
+        auto targets = std::vector<std::string>{};
+        auto visited = std::unordered_set<std::string>{};
+        auto queue = missing_prev;
+        for (auto next = std::size_t{0U}; next < queue.size() && targets.size() < max_targets; ++next)
+        {
+            auto const id = queue[next];
+            if (!visited.insert(id).second)
+            {
+                continue;
+            }
+            auto const pdu = held.find(id);
+            if (pdu == held.end())
+            {
+                targets.push_back(id);
+                continue;
+            }
+            auto const queued_before = queue.size();
+            for (auto const& prev : pdu->second.envelope.prev_event_ids)
+            {
+                if (!event_has_state_group(store, prev))
+                {
+                    queue.push_back(prev);
+                }
+            }
+            if (queue.size() == queued_before)
+            {
+                targets.push_back(id);
+            }
+        }
+        return targets;
+    }
+
     // ADR-0064 phase C: fetch missing prev_events / auth_events from the sending
     // server, verify each returned event, and store the verified events as
     // outliers with state groups so a later ingestion attempt can resolve state.
@@ -4428,8 +4597,6 @@ namespace
         auto collect = [&]() {
             auto stripe_guard = std::unique_lock{runtime.room_stripe_mutexes[stripe]};
             auto global_guard = std::unique_lock<RuntimeMutex>{runtime.mutex};
-            std::ignore = stripe_guard;
-            std::ignore = global_guard;
             return collect_missing_pdu_references(runtime.database.persistent_store, envelope);
         };
         auto [missing_auth, missing_prev] = collect();
@@ -4444,12 +4611,33 @@ namespace
         auto const timeout = std::chrono::seconds{runtime.federation.config.backfill_timeout_seconds};
         auto budget = BackfillBudget{0U, limits.max_total_outbound_calls, std::chrono::steady_clock::now() + timeout};
         auto stored_any = false;
+        auto held = HeldPdus{};
+        auto const max_held =
+            static_cast<std::size_t>(limits.max_missing_events) + static_cast<std::size_t>(limits.max_outbound_calls);
 
         if (!missing_prev.empty() && outbound_calls < limits.max_outbound_calls && budget.can_begin_call())
         {
+            // Spec: server-server-api.md POST /get_missing_events. `latest_events`
+            // are "the event IDs to retrieve the previous events for": the PDU
+            // whose ancestry is incomplete. The origin walks back from it and
+            // does not return the named events themselves. `earliest_events`
+            // are "the latest event IDs that the sender already has", which are
+            // skipped: this server's forward extremities in the room, never the
+            // events it is missing.
+            auto earliest_events = [&]() {
+                auto stripe_guard = std::unique_lock{runtime.room_stripe_mutexes[stripe]};
+                auto global_guard = std::unique_lock<RuntimeMutex>{runtime.mutex};
+                return database::find_forward_extremities(runtime.database.persistent_store, room_id);
+            }();
+            std::ranges::sort(earliest_events);
+            if (earliest_events.size() > max_earliest_events_named)
+            {
+                earliest_events.resize(max_earliest_events_named);
+            }
             auto const calls_before = budget.calls;
-            auto const fetched = fetch_get_missing_events(runtime, room_id, envelope.origin, envelope.prev_event_ids,
-                                                          missing_prev, limits.max_missing_events, budget);
+            auto const fetched =
+                fetch_get_missing_events(runtime, room_id, envelope.origin, std::vector<std::string>{envelope.event_id},
+                                         earliest_events, limits.max_missing_events, budget);
             if (budget.calls != calls_before)
             {
                 ++outbound_calls;
@@ -4458,7 +4646,9 @@ namespace
             {
                 // A backfilled event needs its prev_events' state groups, so
                 // parents must be stored before children; the response order
-                // is the remote's choice (0.12.13 audit item 9).
+                // is the remote's choice (0.12.13 audit item 9). One that cannot
+                // be placed yet is held: it names the gap the state snapshot is
+                // asked about below.
                 for (auto const& json : order_by_ascending_depth(*fetched, policy))
                 {
                     if (!budget.within_deadline() || budget.key_resolution_locally_denied)
@@ -4469,53 +4659,84 @@ namespace
                     {
                         stored_any = true;
                     }
+                    else
+                    {
+                        hold_unplaced_pdu(held, json, policy, max_held);
+                    }
                 }
             }
         }
 
         std::tie(missing_auth, missing_prev) = collect();
 
-        for (auto const& id : missing_auth)
-        {
-            if (outbound_calls >= limits.max_outbound_calls || !budget.can_begin_call())
+        // Fetch what is still missing with GET /event/{eventId}. A PDU already
+        // held from /get_missing_events is not fetched again, nor is an event
+        // this server already stores (an outlier with no state group): fetching
+        // it would verify the very event it has, and it is the state at that
+        // event, not its content, that is missing.
+        auto const is_stored = [&](std::string const& id) {
+            auto stripe_guard = std::unique_lock{runtime.room_stripe_mutexes[stripe]};
+            auto global_guard = std::unique_lock<RuntimeMutex>{runtime.mutex};
+            return runtime.database.persistent_store.events.contains(id);
+        };
+        auto const fetch_and_place = [&](std::string const& id) {
+            if (held.contains(id) || outbound_calls >= limits.max_outbound_calls || !budget.can_begin_call() ||
+                is_stored(id))
             {
-                break;
+                return;
             }
             auto const json = fetch_event_by_id(runtime, room_id, envelope.origin, id, policy, outbound_calls, budget);
-            if (json.has_value() &&
-                verify_and_store_backfilled_event(runtime, room_id, envelope.origin, *json, policy, budget))
+            if (!json.has_value())
+            {
+                return;
+            }
+            if (verify_and_store_backfilled_event(runtime, room_id, envelope.origin, *json, policy, budget))
             {
                 stored_any = true;
             }
+            else
+            {
+                hold_unplaced_pdu(held, *json, policy, max_held);
+            }
+        };
+        for (auto const& id : missing_auth)
+        {
+            fetch_and_place(id);
         }
         for (auto const& id : missing_prev)
         {
-            if (outbound_calls >= limits.max_outbound_calls || !budget.can_begin_call())
-            {
-                break;
-            }
-            auto const json = fetch_event_by_id(runtime, room_id, envelope.origin, id, policy, outbound_calls, budget);
-            if (json.has_value() &&
-                verify_and_store_backfilled_event(runtime, room_id, envelope.origin, *json, policy, budget))
-            {
-                stored_any = true;
-            }
+            fetch_and_place(id);
+        }
+        if (place_held_pdus(runtime, room_id, envelope.origin, policy, budget, held))
+        {
+            stored_any = true;
         }
 
         std::tie(missing_auth, missing_prev) = collect();
 
         // ADR-0064 phase C: /state_ids fallback for prev_events that still have
         // no recorded state group after /get_missing_events and /event/{id}.
-        for (auto const& id : missing_prev)
+        // Spec: GET /state_ids returns the state at an event the origin has. The
+        // event to ask about is the nearest prev_event nothing fetched can
+        // supply (state_snapshot_targets), not a PDU this recovery already holds:
+        // once the state at the gap is in, the held PDUs above it are placed.
+        auto const targets = [&]() {
+            auto stripe_guard = std::unique_lock{runtime.room_stripe_mutexes[stripe]};
+            auto global_guard = std::unique_lock<RuntimeMutex>{runtime.mutex};
+            return state_snapshot_targets(runtime.database.persistent_store, held, missing_prev,
+                                          static_cast<std::size_t>(limits.max_outbound_calls));
+        }();
+        for (auto const& id : targets)
         {
             if (outbound_calls >= limits.max_outbound_calls || !budget.can_begin_call())
             {
                 break;
             }
             if (backfill_state_ids_snapshot(runtime, room_id, envelope.origin, id, policy, outbound_calls,
-                                            snapshot_calls, budget))
+                                            snapshot_calls, budget, held))
             {
                 stored_any = true;
+                std::ignore = place_held_pdus(runtime, room_id, envelope.origin, policy, budget, held);
             }
         }
 
@@ -4973,22 +5194,21 @@ namespace
         });
         if (room_it != runtime.database.rooms.end())
         {
-            auto& members = room_it->members;
+            // The roster and the device-list changes this membership causes (a remote user's
+            // join or leave is `changed` or `left` for the local members).
+            if (!apply_membership_to_roster(runtime, room_id, *envelope.state_key, membership))
+            {
+                LOG_WARNING("Device-list change persistence failed after PDU was processed; event_id=" +
+                            envelope.event_id + " room_id=" + room_id);
+            }
             if (membership == "join")
             {
-                if (!std::ranges::any_of(members, [&](std::string const& m) {
-                        return m == *envelope.state_key;
-                    }))
-                {
-                    members.push_back(*envelope.state_key);
-                }
                 broadcast_local_device_lists_to_remote_joiner(runtime, room_id, *envelope.state_key);
             }
-            else
-            {
-                auto const to_erase = std::ranges::remove(members, *envelope.state_key);
-                members.erase(to_erase.begin(), to_erase.end());
-            }
+            // Those device-list rows took stream ids after the one allocated above, and a long-poll
+            // is woken only by a stream id past its own.
+            result.accepted_sync_stream_id =
+                std::max(result.accepted_sync_stream_id, runtime.database.persistent_store.next_sync_stream_id);
         }
     }
 

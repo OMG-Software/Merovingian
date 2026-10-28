@@ -451,6 +451,18 @@ threat it closes; the controls above are the standing defences these reinforce.
   worker never signs (ADR-0078), so the pre-signed value crossing IPC is the
   design, not a gap to close by giving the worker a signing provider.
 
+  **The worker reads public signing-key rows main cached after it started
+  (A6, 0.12.60).** The worker's mirror of `server_signing_keys` is a start-up
+  snapshot, so it used to fetch again a key main had already verified. Its
+  resolver now re-reads that one server's rows (`server_name`, `key_id`,
+  `public_key`, `valid_until_ts`, never `secret_key`) from the database before it
+  fetches. No new capability: the worker already holds these columns for every
+  server cached at start-up, its PostgreSQL role is granted exactly them, a row
+  carries main's seven-day cap, and main still re-verifies every relayed PDU with
+  its own resolver (ADR-0071), so a forged row in a database the worker can only
+  read could not get an event past main. A compromised worker gains nothing it
+  could not already read.
+
   **Main re-verifies the signature of every PDU a worker relays (#450,
   resolved in 0.12.13, ADR-0071).** Until 0.12.13 main trusted the worker's
   signature check: a compromised worker, or a future bug that relayed before
@@ -2292,7 +2304,7 @@ any user could take any alias on this server for a room they had joined (`#admin
 member could upgrade a room, creating a replacement that names the old room as its predecessor, and anyone could file
 reports about any room or event as unbounded audit rows (CSAZ-12). Mitigations: every locally composed `m.room.member`
 event that becomes current state is projected in one place (ADR-0126); `compose_signed_event` refuses events over
-65536 signed bytes or with a `type` or `state_key` over 255 bytes (`400 M_TOO_LARGE`); directory visibility and alias
+65536 signed bytes or with a `type` or `state_key` over 255 bytes (`413 M_TOO_LARGE`); directory visibility and alias
 creation need the power to send `m.room.canonical_alias` (or a server administrator), aliases must be well formed and
 on this server's domain, alias deletion needs the creator, that power, or an administrator (ADR-0127); `/upgrade`
 needs the power to send `m.room.tombstone` before anything is created; a report needs a joined reporter and an event
@@ -2520,6 +2532,42 @@ Security audit run-1 (2026-10-20) found six LOW issues, all fixed in 0.12.34.
   address to them and letting a user point it at any public service within the caps; `http`
   previews can be altered in transit (the content is treated as hostile either way).
 
+### Presence (0.12.60)
+
+- **Presence read without sharing a room.** `GET /presence/{userId}/status` answers 403
+  `M_FORBIDDEN` for any user the caller shares no joined room with, whether or not that user
+  exists, so it neither discloses presence nor lets a caller enumerate accounts. `/sync` names only
+  users in a joined room, and a user who started sharing a room since the token is sent their
+  peer's presence once.
+- **Presence rows for users nobody here knows.** An inbound `m.presence` EDU is stored only for a
+  user of the sending origin who shares a joined room with a user of this server, so a hostile
+  server cannot make this one keep rows (in memory and in `presence_state`) for invented users.
+  Its first 100 entries are looked at, `presence` must be in the enumeration and `status_msg` at
+  most 1024 bytes. **Residual risk:** an origin can still set the presence of its own users who
+  do share a room with ours, and nothing expires a remote user's presence if their server stops
+  reporting it.
+- **Presence off.** `presence.enabled=false` stores and sends nothing, so an operator who does not
+  want to publish presence to the federation need not.
+
+### Remote space hierarchy answers (0.12.60)
+
+- **A remote server forging or leaking rooms through a space.** The client hierarchy now asks the
+  `via` servers of a space's links for child rooms this server holds no state for. Their answer is
+  untrusted (ADR-0260): only the room asked about is accepted, only children the space's own
+  `children_state` names are taken from `children`, only spec fields are copied with their types
+  checked, local state wins over the remote answer, and each room is shown only if the requesting
+  user may see it by the summary's own `join_rule`, `world_readable` and `allowed_room_ids`. A
+  remote server can still describe its own rooms falsely (a private room claimed public); the user
+  then sees that summary, the same exposure as any remote room preview.
+- **A client using the hierarchy to make this server call out.** The walk holds one ADR-0079
+  client-outbound slot and one 10 s deadline, makes at most 16 calls and asks at most 3 servers per
+  room; a refused slot answers 429. `via` names are validated and this server is never asked.
+- **Our hierarchy disclosing restricted rooms to other servers.** `GET /_matrix/federation/v1/hierarchy`
+  serves a restricted room only to an authenticated origin with a user joined to one of its
+  allowed rooms; other known children are listed only by ID in `inaccessible_children`.
+  **Residual risk:** an origin that has any user in an allowed room sees the restricted room's
+  summary, as the join rule intends.
+
 ### A resident server's timestamp on our joins; workers that could not verify new servers (0.12.59)
 
 - **Resident-chosen timestamps on our membership events.** When we joined or left a remote room we
@@ -2535,3 +2583,33 @@ Security audit run-1 (2026-10-20) found six LOW issues, all fixed in 0.12.34.
   failure, not a security one: nothing was accepted unverified. **Mitigation:** the resolver returns
   the key it fetched and self-verified, trusted for at most seven days, without widening the
   worker's database rights (ADR-0238).
+
+### Recovering a PDU whose history is missing, from peers that serve only the spec's endpoints (0.12.60, A8)
+
+- **Gap recovery depended on `/event_auth`, which a peer need not serve.** The `/state_ids` fallback
+  fetched the snapshot's state events first and, for one whose own `prev_events` were unknown, asked
+  `GET /event_auth`. A peer that answers 404 there (Complement's test servers, and any server that
+  does not implement it) left the PDU unplaced for good. **Mitigation:** every event a snapshot names
+  is fetched with `GET /event/{eventId}`, the auth chain first, all of them before any is stored. An
+  event whose state-before is unknown is judged against its own `auth_events` only and stored as an
+  outlier with no state group, the checks and the status ADR-0069 and ADR-0070 already gave an
+  `/event_auth` entry (signature, content hash, auth selection and auth rules are unchanged).
+  `/event_auth` runs only when that event's own auth events are not stored either.
+- **The state was asked about the wrong event, and `/get_missing_events` named the wrong ones.** The
+  request put the PDU's `prev_events` in `latest_events` and the events this server was missing in
+  `earliest_events`, the reverse of the spec, so an origin skipped exactly what was wanted; and the
+  snapshot was requested at a `prev_event` that had already been fetched. **Mitigation:** `latest_events`
+  is the PDU itself and `earliest_events` is at most ten of this room's forward extremities; the state
+  is asked at the nearest `prev_event` nothing fetched can supply. A fetched PDU that cannot be placed is
+  held in memory for the one recovery (bounded by `max_missing_events` plus the general call cap, never
+  persisted) and verified again from scratch when it is placed.
+- **A backfilled event with a rejected auth event was dropped, not rejected.** An outlier naming a
+  rejected `power_levels` event stayed unstored, so every event referencing it stayed unplaced and the
+  room stopped accepting that sender's later events. **Mitigation:** as for a PDU received directly,
+  such an event is stored `rejected` (after-state equal to its state-before, never state, never a forward
+  extremity), per the spec's "Rejection". An auth event that cannot be found at all remains a gap and the
+  event is still dropped. **Residual risk:** an origin can make this server store rejected rows for events
+  it has signed; each is bounded by the same per-PDU call budgets, and none can take part in state.
+- **Residual risk:** a snapshot of N unknown events costs N `/event` calls, bounded by
+  `max_snapshot_outbound_calls` (256 by default); a larger gap is left unplaced. Tests: `[a8_*]` in
+  `tests/integration/test_pdu_ingestion_backfill_flow.cpp`.

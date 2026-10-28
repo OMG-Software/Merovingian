@@ -96,3 +96,10 @@ security.federation.bad_signature_per_ip_rate=1000000000/1s
 security.login_throttle.max_failures_per_source=1000
 security.login_throttle.max_failures_per_account=100000
 security.login_throttle.window=1s
+
+# Complement downloads one server's media through another (TestContentMediaV1,
+# TestMediaFilenames, TestRemotePngThumbnail). Remote fetching is off by default,
+# and fetched media is quarantined by default; both are opened here. Fetches still
+# reach only the networks security.federation.allow_private_ip_ranges opens above.
+security.media.remote_fetch_enabled=true
+security.media.remote_fetch_media_policy=allow

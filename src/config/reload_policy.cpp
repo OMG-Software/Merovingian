@@ -109,6 +109,13 @@ auto reload_policy_for_key(std::string_view key) noexcept -> ReloadPolicy
         return ReloadPolicy::restart_required;
     }
 
+    // Presence: main and the federation worker copy `presence.enabled` at start-up (the worker
+    // reads its own config file once), and SIGHUP does not push a new value to either.
+    if (starts_with(key, "presence."))
+    {
+        return ReloadPolicy::restart_required;
+    }
+
     return ReloadPolicy::reloadable;
 }
 
