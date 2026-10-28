@@ -1249,6 +1249,9 @@ SCENARIO("An initial sync whose timeline starts at a federated join shows the in
             return resident_remote_runtime();
         };
 
+        // The resident's invite-only room, built as a chain: create, the creator's join, power
+        // levels, join rules, then alice's invite. Each event names the one before as its
+        // prev_event and the events that authorise it as auth_events, signed by the resident.
         auto const room_id = std::string{"!invited:"} + resident_server;
         auto const creator = std::string{"@creator:"} + resident_server;
         auto const policy = *merovingian::rooms::find_room_version_policy("10");
@@ -1283,9 +1286,12 @@ SCENARIO("An initial sync whose timeline starts at a federated join shows the in
                       quoted(join_rules_id));
         auto const invite_id = reference_event_id(invite, policy);
 
+        // send_join returns that whole chain as the state before the join, and as its auth chain.
         auto state_array = merovingian::canonicaljson::Array{create, creator_join, power_levels, join_rules, invite};
         auto const send_join_body = std::string{R"({"state":)"} + canonicaljson_array_to_string(state_array) +
                                     R"(,"auth_chain":)" + canonicaljson_array_to_string(state_array) + "}";
+        // The template follows the invite, and its auth_events name the invite as alice's
+        // current membership, as a resident's must.
         auto const make_join_event =
             std::string{R"({"type":"m.room.member","state_key":")"} + alice + R"(","room_id":")" + room_id +
             R"(","sender":")" + alice + R"(","depth":6,"origin_server_ts":1000,"prev_events":[)" + quoted(invite_id) +
@@ -1320,6 +1326,7 @@ SCENARIO("An initial sync whose timeline starts at a federated join shows the in
             auto const* join = rooms == nullptr ? nullptr : merovingian::tests::object_member_as_object(*rooms, "join");
             auto const* room = join == nullptr ? nullptr : merovingian::tests::object_member_as_object(*join, room_id);
             REQUIRE(room != nullptr);
+            // alice's memberships in the room's `timeline` or `state` section, in order.
             auto const membership_in = [&](std::string_view section) {
                 auto memberships = std::vector<std::string>{};
                 auto const* part = merovingian::tests::object_member_as_object(*room, section);
@@ -2536,10 +2543,13 @@ SCENARIO("join_room signs the join with its own origin and timestamp, whatever t
     GIVEN("a logged-in local user, a frozen event clock and a TLS resident server")
     {
         REQUIRE(sodium_init() >= 0);
+        // Both template shapes: one already carrying the resident's origin, timestamp and
+        // event_id, and one carrying none of them.
         auto const template_is_stamped = GENERATE(true, false);
         auto started = merovingian::homeserver::start_runtime(registration_enabled_config());
         REQUIRE(started.started);
         auto& runtime = started.runtime;
+        // A frozen clock, so the signed timestamp can be compared exactly.
         auto constexpr our_clock_ms = std::int64_t{1'800'000'000'000};
         runtime.test_frozen_event_clock_ms = our_clock_ms;
 
@@ -2571,6 +2581,8 @@ SCENARIO("join_room signs the join with its own origin and timestamp, whatever t
             return resident_remote_runtime();
         };
 
+        // The resident's room: the TLS mock answers make_join with the template below, and
+        // send_join with the create and power-levels state, signed by the resident's key.
         auto const room_id = std::string{"!stamproom:"} + resident_server;
         auto const creator = std::string{"@creator:"} + resident_server;
         auto const policy = *merovingian::rooms::find_room_version_policy("10");
@@ -2594,6 +2606,7 @@ SCENARIO("join_room signs the join with its own origin and timestamp, whatever t
                                         R"(","depth":2,"origin_server_ts":901,)"
                                         R"("prev_events":[],"auth_events":[],"content":{"users":{")" +
                                         creator + R"(":100}}})";
+        // The state before the join, and its auth chain: the same two events.
         auto state_array = merovingian::canonicaljson::Array{};
         state_array.push_back(
             sign_test_event(create_event, policy, resident_server, resident_key_id, resident_key_seed));
@@ -2626,6 +2639,7 @@ SCENARIO("join_room signs the join with its own origin and timestamp, whatever t
                 CAPTURE(template_is_stamped, result.reason);
                 REQUIRE(result.ok);
                 REQUIRE(captured_requests.size() == 2U);
+                // The second request is send_join; its body is the event this server signed.
                 auto const join_event = event_from_send_request(captured_requests[1]);
                 require_membership_event_integrity(runtime, join_event, policy);
                 auto const* join_object = std::get_if<merovingian::canonicaljson::Object>(&join_event.storage());
