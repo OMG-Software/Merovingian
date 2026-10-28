@@ -130,6 +130,9 @@ Complement has not yet been rerun against this version.
   hung 18 minutes in the stopped-channel scenario). `stop()` now takes and releases `dispatch_mu_`
   before notifying. This affected the main process and the federation worker at shutdown.
   `[ipc][stop-race]` repeats start and stop 300 times.
+- **FIXED:** the RHEL-compatible (AlmaLinux 10) package job failed outright when a mirror answered
+  with broken repository metadata. Its `dnf` install now retries three times with the cached
+  metadata cleared, as the OpenSUSE job retries `zypper`, and fails the step when they run out.
 
 ### Tests
 

@@ -190,6 +190,19 @@ class PackagesWorkflowTests(unittest.TestCase):
         # THEN EPEL is bootstrapped before the RHEL job installs its packages.
         self.assertIn("epel-release", workflow)
 
+    def test_rhel_dependency_install_retries_a_bad_mirror_answer(self) -> None:
+        # GIVEN the RHEL-compatible packaging job.
+        self.assertTrue(PACKAGES_WORKFLOW.is_file(), "packages workflow is missing")
+        job = workflow_job(PACKAGES_WORKFLOW.read_text(encoding="utf-8"), "rhel-rpm")
+
+        # WHEN its dnf install meets a broken mirror answer (PR #542: "Failed to download
+        # metadata for repo 'extras': repomd.xml parser error").
+        # THEN the install is retried with the cached repository metadata cleared, and the
+        # step still fails once the attempts run out rather than going on to the build.
+        self.assertRegex(job, r"for attempt in 1 2 3; do")
+        self.assertIn("dnf clean metadata", job)
+        self.assertRegex(job, r'if \[ "\$\{?attempt\}?" = 3 \]; then\s+exit 1')
+
     def test_all_bsd_platforms_have_package_build_jobs(self) -> None:
         # GIVEN the package publication workflow.
         self.assertTrue(PACKAGES_WORKFLOW.is_file(), "packages workflow is missing")
