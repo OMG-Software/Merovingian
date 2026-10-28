@@ -12,6 +12,10 @@
 // federation event format, including any signatures, and encoded as Canonical JSON."
 // Spec MUST: "`state_key` MUST NOT exceed 255 bytes." and "`type` MUST NOT exceed 255 bytes."
 // Spec (Standard error response): `M_TOO_LARGE` "The request or entity was too large."
+//
+// The spec names no HTTP status for a refused oversized event. The owner decided (Complement's
+// TestEvent, sytest "Event size limits") that it is 413 with errcode M_TOO_LARGE, the status the
+// spec itself uses for M_TOO_LARGE on the content repository; this supersedes the earlier 400.
 
 #include "../support/json_test_support.hpp"
 #include "../support/master_key.hpp"
@@ -144,10 +148,10 @@ SCENARIO("A locally composed event over 65536 bytes is refused with M_TOO_LARGE 
             auto const reply =
                 call(rt, "PUT", "/_matrix/client/v3/rooms/" + room_id + "/send/m.room.message/csaz9-big", token, body);
 
-            THEN("the server answers 400 M_TOO_LARGE")
+            THEN("the server answers 413 M_TOO_LARGE")
             {
                 // Spec MUST: "The complete event MUST NOT be larger than 65536 bytes".
-                REQUIRE(reply.status == 400U);
+                REQUIRE(reply.status == 413U);
                 REQUIRE(errcode_of(reply) == "M_TOO_LARGE");
             }
             THEN("no event was stored in the room")
@@ -193,10 +197,10 @@ SCENARIO("A state event whose state_key exceeds 255 bytes is refused with M_TOO_
                 call(rt, "PUT", "/_matrix/client/v3/rooms/" + room_id + "/state/org.example.k/" + state_key, token,
                      R"({"v":1})");
 
-            THEN("the server answers 400 M_TOO_LARGE and the state is not set")
+            THEN("the server answers 413 M_TOO_LARGE and the state is not set")
             {
                 // Spec MUST: "`state_key` MUST NOT exceed 255 bytes."
-                REQUIRE(reply.status == 400U);
+                REQUIRE(reply.status == 413U);
                 REQUIRE(errcode_of(reply) == "M_TOO_LARGE");
                 REQUIRE(
                     call(rt, "GET", "/_matrix/client/v3/rooms/" + room_id + "/state/org.example.k/" + state_key, token)
@@ -243,10 +247,10 @@ SCENARIO("An event whose type exceeds 255 bytes is refused with M_TOO_LARGE",
             auto const reply = call(rt, "PUT", "/_matrix/client/v3/rooms/" + room_id + "/send/" + type + "/csaz9-t",
                                     token, R"({"marker":"csaz9-longtype"})");
 
-            THEN("the server answers 400 M_TOO_LARGE and nothing is stored")
+            THEN("the server answers 413 M_TOO_LARGE and nothing is stored")
             {
                 // Spec MUST: "`type` MUST NOT exceed 255 bytes."
-                REQUIRE(reply.status == 400U);
+                REQUIRE(reply.status == 413U);
                 REQUIRE(errcode_of(reply) == "M_TOO_LARGE");
                 REQUIRE_FALSE(timeline_contains(rt, token, room_id, "csaz9-longtype"));
             }
@@ -293,9 +297,9 @@ SCENARIO("A kick whose reason makes the member event exceed 65536 bytes is refus
             auto const reply = call(rt, "POST", "/_matrix/client/v3/rooms/" + room_id + "/kick", alice,
                                     R"({"user_id":")" + user_id("bob") + R"(","reason":")" + reason + R"("})");
 
-            THEN("the server answers 400 M_TOO_LARGE and bob is still joined")
+            THEN("the server answers 413 M_TOO_LARGE and bob is still joined")
             {
-                REQUIRE(reply.status == 400U);
+                REQUIRE(reply.status == 413U);
                 REQUIRE(errcode_of(reply) == "M_TOO_LARGE");
                 auto const member = call(
                     rt, "GET", "/_matrix/client/v3/rooms/" + room_id + "/state/m.room.member/" + user_id("bob"), alice);
@@ -328,9 +332,9 @@ SCENARIO("createRoom with a topic too large for one event is refused with M_TOO_
             auto const reply = call(rt, "POST", "/_matrix/client/v3/createRoom", token,
                                     R"({"preset":"public_chat","topic":")" + topic + R"("})");
 
-            THEN("the server answers 400 M_TOO_LARGE and the user has joined no room")
+            THEN("the server answers 413 M_TOO_LARGE and the user has joined no room")
             {
-                REQUIRE(reply.status == 400U);
+                REQUIRE(reply.status == 413U);
                 REQUIRE(errcode_of(reply) == "M_TOO_LARGE");
                 auto const joined = call(rt, "GET", "/_matrix/client/v3/joined_rooms", token);
                 REQUIRE(joined.status == 200U);
@@ -361,7 +365,7 @@ SCENARIO("createRoom refuses each kind of oversized client content before creati
 
         auto const refused_without_room = [&](std::string const& body) {
             auto const reply = call(rt, "POST", "/_matrix/client/v3/createRoom", token, body);
-            REQUIRE(reply.status == 400U);
+            REQUIRE(reply.status == 413U);
             REQUIRE(errcode_of(reply) == "M_TOO_LARGE");
             auto const joined = call(rt, "GET", "/_matrix/client/v3/joined_rooms", token);
             REQUIRE(joined.body.find("\"joined_rooms\":[]") != std::string::npos);

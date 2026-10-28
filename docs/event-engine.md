@@ -705,7 +705,7 @@ no event was composed. `too_large` is the spec's "Size limits": an event `type` 
 (`events::max_event_type_length_bytes`, `events::max_state_key_length_bytes`), checked before anything is
 composed, or a signed event over 65536 bytes (`events::max_event_size_bytes`), measured on the signed canonical
 JSON, which is the federation format the spec measures, so a request body under the limit can still be refused
-once the envelope, hashes and signature are added. Every caller answers it with `400 M_TOO_LARGE`, carried to the
+once the envelope, hashes and signature are added. Every caller answers it with `413 M_TOO_LARGE` (the status Complement and sytest expect; the spec names none), carried to the
 client as `OperationResult::errcode` and `LocalHttpResponse::errcode`. `createRoom` also refuses client content
 that cannot fit in any event (`name`, `topic`, `creation_content`, `power_level_content_override`,
 `initial_state`) before it stores the room; content that fits alone but not once signed is refused after the

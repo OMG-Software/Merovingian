@@ -2304,7 +2304,7 @@ any user could take any alias on this server for a room they had joined (`#admin
 member could upgrade a room, creating a replacement that names the old room as its predecessor, and anyone could file
 reports about any room or event as unbounded audit rows (CSAZ-12). Mitigations: every locally composed `m.room.member`
 event that becomes current state is projected in one place (ADR-0126); `compose_signed_event` refuses events over
-65536 signed bytes or with a `type` or `state_key` over 255 bytes (`400 M_TOO_LARGE`); directory visibility and alias
+65536 signed bytes or with a `type` or `state_key` over 255 bytes (`413 M_TOO_LARGE`); directory visibility and alias
 creation need the power to send `m.room.canonical_alias` (or a server administrator), aliases must be well formed and
 on this server's domain, alias deletion needs the creator, that power, or an administrator (ADR-0127); `/upgrade`
 needs the power to send `m.room.tombstone` before anything is created; a report needs a joined reporter and an event

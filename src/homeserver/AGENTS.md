@@ -367,7 +367,7 @@ API's `error_code_for()` and `wrap()` return it. Do not encode an errcode into t
 ## Event size limits (CSAZ-9)
 
 `compose_signed_event` returns a `ComposeResult`. A caller that gets `ComposeFailure::too_large` answers
-`event_too_large_result()` (`400 M_TOO_LARGE`), never the 403 or 500 it uses for other failures. The limits are
+`event_too_large_result()` (`413 M_TOO_LARGE`, since 0.12.60; 400 before), never the 403 or 500 it uses for other failures. The limits are
 checked on the signed canonical JSON, so do not add a cheaper pre-check on the request body in their place.
 
 ## Membership projection (CSAZ-6, DB-4, ADR-0126, ADR-0149)

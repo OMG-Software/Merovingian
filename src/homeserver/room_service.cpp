@@ -266,7 +266,7 @@ namespace
 
     // Why compose_signed_event produced no event. too_large means the event would
     // break the spec's size limits (CSAZ-9) and is the client's to fix, so callers
-    // answer 400 M_TOO_LARGE; rejected covers everything else (malformed input,
+    // answer 413 M_TOO_LARGE; rejected covers everything else (malformed input,
     // authorization, signing); invalid_state_key is refused with 400 before
     // composition can allocate any stream ordering or persistence state.
     enum class ComposeFailure : std::uint8_t
@@ -303,11 +303,12 @@ namespace
                 .count());
     }
 
-    // Spec v1.19 "Size limits": the refusal for an event over 65536 bytes, or
+    // Spec v1.19 "Size limits": the refusal (413, the owner's reading: the spec names no
+    // status) for an event over 65536 bytes, or
     // whose type or state_key is over 255 bytes.
     [[nodiscard]] auto event_too_large_result() -> OperationResult
     {
-        auto result = make_operation_result(false, {}, "event exceeds the Matrix event size limits", 400U);
+        auto result = make_operation_result(false, {}, "event exceeds the Matrix event size limits", 413U);
         result.errcode = "M_TOO_LARGE";
         return result;
     }
@@ -3557,7 +3558,7 @@ auto ensure_crypto_provider_holds_key(HomeserverRuntime& runtime, std::string_vi
     auto created_events = CreatedEventQueue{runtime, room_id, *user_id};
 
     // Set when an initial state event is refused for the spec's size limits, so
-    // the request answers 400 M_TOO_LARGE rather than a 500 (CSAZ-9).
+    // the request answers 413 M_TOO_LARGE rather than a 500 (CSAZ-9).
     auto initial_state_too_large = false;
     auto emit_state = [&](std::string_view event_type, canonicaljson::Object content,
                           std::string_view state_key = std::string_view{}) -> bool {
