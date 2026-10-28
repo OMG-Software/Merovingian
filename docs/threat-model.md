@@ -2549,6 +2549,25 @@ Security audit run-1 (2026-10-20) found six LOW issues, all fixed in 0.12.34.
 - **Presence off.** `presence.enabled=false` stores and sends nothing, so an operator who does not
   want to publish presence to the federation need not.
 
+### Remote space hierarchy answers (0.12.60)
+
+- **A remote server forging or leaking rooms through a space.** The client hierarchy now asks the
+  `via` servers of a space's links for child rooms this server holds no state for. Their answer is
+  untrusted (ADR-0260): only the room asked about is accepted, only children the space's own
+  `children_state` names are taken from `children`, only spec fields are copied with their types
+  checked, local state wins over the remote answer, and each room is shown only if the requesting
+  user may see it by the summary's own `join_rule`, `world_readable` and `allowed_room_ids`. A
+  remote server can still describe its own rooms falsely (a private room claimed public); the user
+  then sees that summary, the same exposure as any remote room preview.
+- **A client using the hierarchy to make this server call out.** The walk holds one ADR-0079
+  client-outbound slot and one 10 s deadline, makes at most 16 calls and asks at most 3 servers per
+  room; a refused slot answers 429. `via` names are validated and this server is never asked.
+- **Our hierarchy disclosing restricted rooms to other servers.** `GET /_matrix/federation/v1/hierarchy`
+  serves a restricted room only to an authenticated origin with a user joined to one of its
+  allowed rooms; other known children are listed only by ID in `inaccessible_children`.
+  **Residual risk:** an origin that has any user in an allowed room sees the restricted room's
+  summary, as the join rule intends.
+
 ### A resident server's timestamp on our joins; workers that could not verify new servers (0.12.59)
 
 - **Resident-chosen timestamps on our membership events.** When we joined or left a remote room we
