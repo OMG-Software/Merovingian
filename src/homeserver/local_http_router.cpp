@@ -4527,6 +4527,10 @@ namespace
                     return stored_any;
                 }
                 auto const pdu = held.find(entry.second);
+                if (pdu == held.end())
+                {
+                    continue;
+                }
                 if (verify_and_store_backfilled_event(runtime, room_id, origin, pdu->second.json, policy, budget))
                 {
                     held.erase(pdu);
