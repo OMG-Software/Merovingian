@@ -217,6 +217,26 @@ inline by `refuse_forbidden_worker_request`, which takes no runtime and so canno
 `runtime.mutex` or reach a crypto provider; the handler calls it before any other frame
 type. Do not add a worker-to-main frame that signs caller-supplied bytes.
 
+## Recovering a PDU whose history is missing (A8)
+
+`backfill_missing_pdu_references` (`local_http_router.cpp`) asks the sending server for what a PDU lacks, using
+only endpoints the spec requires and the origin may be asked for:
+
+- `POST /get_missing_events`: `latest_events` is the PDU itself (the spec: the events to retrieve the previous events
+  for; the origin does not return them) and `earliest_events` is this room's forward extremities, at most ten. Never
+  the PDU's `prev_events` as `latest_events`, and never the events this server is missing as `earliest_events`.
+- `GET /event/{eventId}` for each named event the store lacks, and for every event a `/state_ids` snapshot names.
+  `GET /event_auth` is the last resort for one event whose own auth events are not stored, never the first step: a
+  peer need not serve it.
+- A fetched PDU that cannot be placed yet goes into `HeldPdus` for that one recovery (bounded, in memory only, verified
+  from scratch when placed). The state is asked at `state_snapshot_targets`, the nearest `prev_event` no held PDU can
+  supply, never at a prev_event that was already fetched; held PDUs are placed oldest first afterwards.
+- A snapshot fetches every missing named event before it stores any, so an auth chain the origin cannot supply leaves
+  nothing stored.
+- `verify_and_store_backfilled_event` stores an event with resolvable but disallowed, rejected or denied `auth_events`
+  as `rejected` (after-state equal to its state-before), never drops it; only an unresolvable auth event is a gap.
+  Dropping it left every event that named it unplaced.
+
 ## Read paths that return room events or state
 
 Every client-server endpoint that returns room events goes through `sync::HistoryVisibility`

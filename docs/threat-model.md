@@ -2535,3 +2535,33 @@ Security audit run-1 (2026-10-20) found six LOW issues, all fixed in 0.12.34.
   failure, not a security one: nothing was accepted unverified. **Mitigation:** the resolver returns
   the key it fetched and self-verified, trusted for at most seven days, without widening the
   worker's database rights (ADR-0238).
+
+### Recovering a PDU whose history is missing, from peers that serve only the spec's endpoints (0.12.60, A8)
+
+- **Gap recovery depended on `/event_auth`, which a peer need not serve.** The `/state_ids` fallback
+  fetched the snapshot's state events first and, for one whose own `prev_events` were unknown, asked
+  `GET /event_auth`. A peer that answers 404 there (Complement's test servers, and any server that
+  does not implement it) left the PDU unplaced for good. **Mitigation:** every event a snapshot names
+  is fetched with `GET /event/{eventId}`, the auth chain first, all of them before any is stored. An
+  event whose state-before is unknown is judged against its own `auth_events` only and stored as an
+  outlier with no state group, the checks and the status ADR-0069 and ADR-0070 already gave an
+  `/event_auth` entry (signature, content hash, auth selection and auth rules are unchanged).
+  `/event_auth` runs only when that event's own auth events are not stored either.
+- **The state was asked about the wrong event, and `/get_missing_events` named the wrong ones.** The
+  request put the PDU's `prev_events` in `latest_events` and the events this server was missing in
+  `earliest_events`, the reverse of the spec, so an origin skipped exactly what was wanted; and the
+  snapshot was requested at a `prev_event` that had already been fetched. **Mitigation:** `latest_events`
+  is the PDU itself and `earliest_events` is at most ten of this room's forward extremities; the state
+  is asked at the nearest `prev_event` nothing fetched can supply. A fetched PDU that cannot be placed is
+  held in memory for the one recovery (bounded by `max_missing_events` plus the general call cap, never
+  persisted) and verified again from scratch when it is placed.
+- **A backfilled event with a rejected auth event was dropped, not rejected.** An outlier naming a
+  rejected `power_levels` event stayed unstored, so every event referencing it stayed unplaced and the
+  room stopped accepting that sender's later events. **Mitigation:** as for a PDU received directly,
+  such an event is stored `rejected` (after-state equal to its state-before, never state, never a forward
+  extremity), per the spec's "Rejection". An auth event that cannot be found at all remains a gap and the
+  event is still dropped. **Residual risk:** an origin can make this server store rejected rows for events
+  it has signed; each is bounded by the same per-PDU call budgets, and none can take part in state.
+- **Residual risk:** a snapshot of N unknown events costs N `/event` calls, bounded by
+  `max_snapshot_outbound_calls` (256 by default); a larger gap is left unplaced. Tests: `[a8_*]` in
+  `tests/integration/test_pdu_ingestion_backfill_flow.cpp`.

@@ -889,30 +889,57 @@ fetches them from that origin before retrying the PDU.
   `backfill_missing_pdu_references` performs outbound federation calls while the
   server remains unlocked for other rooms.
 * The backfill strategy is `/_matrix/federation/v1/get_missing_events/{roomId}`
-  first, then per-event `/_matrix/federation/v1/event/{eventId}`. The
-  `/get_missing_events` call asks for up to 20 events; the whole PDU is allowed
+  first, then per-event `/_matrix/federation/v1/event/{eventId}`. The request
+  names the PDU being placed as `latest_events` (the spec's "event IDs to retrieve
+  the previous events for"; the origin walks back from it and does not return it)
+  and up to ten of this server's forward extremities in the room as
+  `earliest_events` (the spec's "latest event IDs that the sender already has").
+  It asks for up to 20 events; the whole PDU is allowed
   at most 16 general outbound calls by default. Snapshot materialisation has a separate 256-call default, and the entire recovery shares a 512-call budget and 45-second deadline for further work/HTTP timeouts. These configurable caps prevent a malicious or delayed origin
   from driving unbounded outbound work.
 * Every fetched event is verified independently: content hash (mismatch
   redacts), Ed25519 signature, the `auth_events` selection check, and
   authorisation against its own `auth_events`. A fetched event whose own
-  `prev_events` still lack state groups is dropped; its own state-before
+  `prev_events` still lack state groups is not stored yet; its own state-before
   cannot yet be computed, so it cannot safely serve as an anchor for another
-  event. Because of that, the `/get_missing_events` results are handled in
+  event. It is *held* for the rest of that recovery (`HeldPdu`, never persisted,
+  bounded by `max_missing_events` plus the general call cap): it is not fetched
+  twice, it names the gap the state snapshot is asked about (below), and it is
+  placed, verified from scratch, once the history under it is in. Because of
+  that, the `/get_missing_events` results are handled in
   ascending `depth` order, not in the order the origin listed them, so a
   parent is stored before any child that names it. An
   `/event/{eventId}` response (per-reference or `/state_ids` snapshot) is kept
   only if its ID, computed under the room version, is the one requested.
+* An event whose `auth_events` all resolve but are not a permitted selection,
+  name a `rejected` event (room version auth rule 2.3) or deny the event is
+  **stored as `rejected`**, with an after-state equal to its state-before, not
+  dropped (spec "Rejection": later events "that reference rejected events
+  should be allowed if they still pass the auth rules"). It never alters state
+  and is never a forward extremity, but an event naming it as a `prev_event` can
+  be placed. An `auth_event` this server cannot resolve at all stays a gap and the
+  event is still dropped.
 * A verified event is stored as `status == "outlier"` with a recorded
   after-state group (`accepted=false`). Outliers participate in later state
   resolution and can become `prev_events` for subsequent PDUs, but they never
   become forward extremities on their own.
 * If a `prev_event` still has no state group, `backfill_state_ids_snapshot`
-  asks the origin for `GET /_matrix/federation/v1/state_ids/{roomId}` at that
-  event (at most 65,536 IDs in each list by default, a 131,072-unique-event cap, and a shared 256-call snapshot budget). Every named event not already stored is fetched and verified. A
-  snapshot state event whose own `prev_events` have no state is verified
-  instead through `GET /_matrix/federation/v1/event_auth/{roomId}/{eventId}`,
-  against its own `auth_events` only (ADR-0069). An `/event_auth` entry skips
+  asks the origin for `GET /_matrix/federation/v1/state_ids/{roomId}` at the
+  nearest `prev_event` that nothing fetched can supply (`state_snapshot_targets`):
+  a missing `prev_event` that was fetched but could not be placed is not the
+  gap, what lies before it is, so the walk goes back through the held PDUs and
+  asks there (at most 65,536 IDs in each list by default, a 131,072-unique-event
+  cap, and a shared 256-call snapshot budget). Once the snapshot is in, the held
+  PDUs are placed oldest first. Every named event not already stored (auth chain
+  first, then the state events) is fetched with `GET /event/{eventId}`, all of
+  them before any is stored, so a chain the origin cannot supply ends the attempt
+  with nothing stored, and is then verified and stored in ascending depth. A
+  named event whose own `prev_events` have no state is verified against its own
+  `auth_events` only and stored as an outlier (ADR-0069, ADR-0070). Only if its
+  auth events are not stored either does the last resort
+  `GET /_matrix/federation/v1/event_auth/{roomId}/{eventId}` run, for the whole
+  auth chain at once; a peer that does not serve it ends the attempt, fail
+  closed. An `/event_auth` entry skips
   verification only if it is the very event already stored under its
   `"event_id"` field (equal reference hash); a matching field alone proves
   nothing, since the origin writes it. The snapshot is refused if it

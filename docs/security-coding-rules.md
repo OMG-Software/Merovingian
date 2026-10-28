@@ -610,6 +610,18 @@ quickly finding everything a given `AGENTS.md` file contributed.
   seat a local user in a room judged under different rule sets by different components (ADR-0179).
   Source: `src/homeserver/AGENTS.md`.
 
+- **Gap recovery for a PDU asks only for what the spec lets a peer serve, in the spec's terms,
+  and stores nothing until it has what it needs.** `/get_missing_events` takes the PDU itself as
+  `latest_events` and this room's forward extremities as `earliest_events`; a snapshot's named
+  events are all fetched with `GET /event/{eventId}` before any is stored, and `/event_auth` is
+  only the last resort for one event; held PDUs live in memory for one recovery and are verified
+  again when placed; an event whose resolvable `auth_events` are disallowed, rejected or deny it
+  is stored `rejected`, never dropped, and an unresolvable auth event stays a gap.
+  Why: the reversed `/get_missing_events` arguments and the dependence on `/event_auth` left a
+  PDU unplaced for ever against any peer that serves only the required endpoints, and dropping a
+  rejected-auth outlier left every later event that named it unplaced.
+  Source: `src/homeserver/AGENTS.md`.
+
 - **Every outbound destination holds a bounded share of the dispatch queue, and every queued
   transaction has its own transaction ID. Never discard `DispatchWorker::enqueue`'s result.**
   Why: one dead or hostile peer filled the shared queue and starved every other peer; a shared
