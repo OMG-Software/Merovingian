@@ -2058,8 +2058,13 @@ SCENARIO("Client-server typing and messages routes dispatch through the room blo
                 REQUIRE(chunk != nullptr);
                 REQUIRE(chunk->empty());
                 // `state` is "relevant to showing the chunk"; there is no chunk to show.
-                auto const* state = merovingian::tests::object_member_as_array(body, "state");
-                REQUIRE((state == nullptr || state->empty()));
+                // It may be omitted; when present it is an array, and empty.
+                if (merovingian::tests::object_member(body, "state") != nullptr)
+                {
+                    auto const* state = merovingian::tests::object_member_as_array(body, "state");
+                    REQUIRE(state != nullptr);
+                    REQUIRE(state->empty());
+                }
             }
         }
     }
