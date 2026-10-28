@@ -69,11 +69,11 @@ namespace
 [[nodiscard]] auto reviewed_call_sites() -> std::map<std::string, std::size_t>
 {
     return {
-        // ingest_send_join_state's critical-state loop (outlier) and
         // join_room's auth-chain persist loop (outlier). The join event
         // itself, like every local event, goes through
-        // homeserver::store_event_with_bookkeeping (ADR-0228).
-        {"src/homeserver/room_service.cpp",      2U},
+        // homeserver::store_event_with_bookkeeping (ADR-0228). The send_join
+        // snapshot moved to the prepare list below (one transaction).
+        {"src/homeserver/room_service.cpp",      1U},
         // membership_acceptor (inbound send_join/send_leave/send_knock
         // acceptance — has its own compute_state_before/record_event_state/
         // recompute_current_state sequence, the same trust boundary as
@@ -95,6 +95,12 @@ namespace
         // Backfill (outliers that never become forward extremities) and
         // ingest_pdu_event (records its own state group after the commit).
         {"src/homeserver/local_http_router.cpp", 2U},
+        // ingest_send_join_state: the send_join snapshot's events are outliers
+        // (no state group, no forward extremity; join_room builds the join's
+        // one snapshot group from them), prepared together and committed in
+        // one transaction so a large room is not one commit per member under
+        // runtime.mutex (review of #541).
+        {"src/homeserver/room_service.cpp",      1U},
     };
 }
 

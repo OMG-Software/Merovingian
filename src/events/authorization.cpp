@@ -848,6 +848,12 @@ namespace
 
 } // namespace
 
+auto power_levels_content_problem(canonicaljson::Object const& content, rooms::RoomVersionPolicy const& policy)
+    -> std::string
+{
+    return power_levels_content_rejection_reason(content, policy);
+}
+
 // MSC4289: room creators hold an effectively infinite power level that is
 // independent of (and overrides) any entry in the power_levels event.
 // Exposed publicly (moved out of the anonymous namespace) so state

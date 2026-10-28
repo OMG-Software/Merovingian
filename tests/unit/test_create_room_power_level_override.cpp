@@ -13,6 +13,7 @@
 #include "merovingian/homeserver/client_server.hpp"
 
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/generators/catch_generators.hpp>
 
 #include <cstdint>
 #include <string>
@@ -132,6 +133,42 @@ SCENARIO("A power_level_content_override key replaces the generated content's ke
                 REQUIRE(int_member(*events, "m.room.tombstone") != nullptr);
                 REQUIRE(*int_member(*events, "m.room.tombstone") == 150);
                 REQUIRE(*int_member(power_levels, "ban") == 60);
+            }
+        }
+    }
+}
+
+// Spec: CS API v1.19, POST /createRoom, 400 M_INVALID_ROOM_STATE: "The initial state implied by
+// the parameters to the createRoom request is invalid". An override key replaces the generated
+// key whole (ADR-0240), so one of the wrong shape is refused before anything is created; it
+// reached the auth rules only once the room and its first events were stored (review of #541).
+SCENARIO("A power_level_content_override of the wrong shape is refused before anything is created",
+         "[homeserver][rooms][create-room][power-level-override]")
+{
+    GIVEN("a logged-in user")
+    {
+        auto started = merovingian::homeserver::start_client_server(override_config());
+        REQUIRE(started.started);
+        auto& rt = started.runtime;
+        auto const token = register_and_login(rt);
+        auto const override_json =
+            GENERATE(as<std::string>{}, R"({"users":null})", R"({"users":{"@a:example.org":"x"}})", R"({"ban":"high"})",
+                     R"({"events":[1]})");
+        auto const version = GENERATE(as<std::string>{}, "10", "12");
+        auto const rooms_before = rt.homeserver.database.persistent_store.rooms.size();
+
+        WHEN("it creates a room with that override")
+        {
+            auto const created =
+                call(rt, "POST", "/_matrix/client/v3/createRoom", token,
+                     R"({"room_version":")" + version + R"(","power_level_content_override":)" + override_json + "}");
+
+            THEN("the request is refused with 400 M_INVALID_ROOM_STATE and no room is stored")
+            {
+                CAPTURE(override_json, version, created.body);
+                REQUIRE(created.status == 400U);
+                REQUIRE(*string_member(parse_object(created.body), "errcode") == "M_INVALID_ROOM_STATE");
+                REQUIRE(rt.homeserver.database.persistent_store.rooms.size() == rooms_before);
             }
         }
     }

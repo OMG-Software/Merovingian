@@ -155,6 +155,13 @@ Cloud analysis from SonarSource's automatic analysis into this repository's CI.
   (ADR-0250). Tests: `[sync-position]` (timeline and token agree; the later event arrives once),
   the repeated-entry case in `test_federation_invite_join.cpp`, the malformed-filter case in
   `test_client_server.cpp` (a unit test: v1.19 does not mandate the code), and `test_sonarcloud_config.py`.
+- **FIXED (review of #541):** a `power_level_content_override` key of the wrong shape
+  (`"users": null`, `"ban": "high"`) replaced the generated key whole (ADR-0240) and reached the auth
+  rules only after the room and its first events were stored, leaving a half-made room behind a
+  500. `createRoom` now checks the override with the auth rules' own content check
+  (`events::power_levels_content_problem`, rule 9) and refuses it with `400 M_INVALID_ROOM_STATE`
+  before creating anything. The ADR-0064 call-site guard (`test_store_event_choke_point.cpp`) now
+  lists the `send_join` snapshot as a prepared, single-transaction outlier write.
 - **FIXED:** `POST /login` did not log `@user:server` in when named `@USER:server`, `USER` or
   `User`. A user ID is looked up exactly, then with its localpart's ASCII letters downcased
   (ADR-0245), so historical upper-case localparts still log in as themselves. Regression:

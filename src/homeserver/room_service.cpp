@@ -3203,6 +3203,25 @@ auto ensure_crypto_provider_holds_key(HomeserverRuntime& runtime, std::string_vi
         });
         return event_too_large_result();
     }
+    // power_level_content_override replaces whole top-level keys (ADR-0240), so a key
+    // of the wrong shape ("users": null, "ban": "x") would reach the auth rules only
+    // once the room and its first events were stored, as a 500 over a half-made
+    // room. Spec (createRoom, 400 M_INVALID_ROOM_STATE): "The initial state implied
+    // by the parameters to the createRoom request is invalid".
+    if (auto const* override_policy = rooms::find_room_version_policy(options.room_version); override_policy != nullptr)
+    {
+        if (auto problem = events::power_levels_content_problem(options.power_level_content_override, *override_policy);
+            !problem.empty())
+        {
+            log_diagnostic("room.create.rejected",
+                           {
+                               {"actor",  *user_id, false},
+                               {"status", "400",    false},
+                               {"reason", problem,  false}
+            });
+            return invalid_room_state_result("power_level_content_override: " + problem);
+        }
+    }
     if (auto refusal = v12_creation_refusal(options, *user_id); refusal.has_value())
     {
         log_diagnostic("room.create.rejected",
