@@ -210,6 +210,7 @@ shell = find_program('sh')
       'unit/test_config_password_policy.cpp',
       'unit/test_config_password_hashing.cpp',
       'unit/test_sync_stream_position.cpp',
+      'unit/test_send_join_snapshot_store.cpp',
       'unit/test_config_client_rate_limits.cpp',
       'unit/test_config_log_modules.cpp',
       'unit/test_config_oidc_validation.cpp',

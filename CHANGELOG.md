@@ -165,6 +165,17 @@ Cloud analysis from SonarSource's automatic analysis into this repository's CI.
   roster now comes from the final entry for each member, so a join followed by a leave in a malformed
   snapshot is not counted as joined. The ADR-0064 call-site guard (`test_store_event_choke_point.cpp`) now
   lists the `send_join` snapshot as a prepared, single-transaction outlier write.
+- **FIXED (review of #541):** a `send_join` snapshot holding two events for one
+  `(event_type, state_key)` prepared two `INSERT`s into `current_state`, whose primary key is that
+  pair, so on SQLite and PostgreSQL the snapshot transaction failed and the join with it (the
+  in-memory test backend runs no SQL and hid it). Only the last event kept for a key now writes
+  `current_state`; earlier ones are stored as outliers, and a repeated copy of an event no longer
+  displaces a later event for its key. `POST /rooms/{roomId}/leave` treated a knock as already
+  left and did nothing; it now retracts it, through the resident's `make_leave`/`send_leave` for a
+  room this server is not in, clearing the stored knock (Client-Server API "Leaving rooms",
+  Server-Server API "Knocking upon a room"). Tests: `test_send_join_snapshot_store.cpp`
+  (`[send-join-snapshot]`, SQLite) and the knock-retraction WHEN in `test_join_room_flow.cpp`
+  (`[knock-remote]`).
 - **FIXED:** `POST /login` did not log `@user:server` in when named `@USER:server`, `USER` or
   `User`. A user ID is looked up exactly, then with its localpart's ASCII letters downcased
   (ADR-0245), so historical upper-case localparts still log in as themselves. Regression:

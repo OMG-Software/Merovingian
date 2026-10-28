@@ -1103,6 +1103,50 @@ SCENARIO("A knock on a room on another server goes through make_knock and send_k
                     // Spec: improperly signed entries "SHOULD be removed by the server".
                     REQUIRE_FALSE(has("m.room.topic", "topic", "forged by a middlebox"));
                 }
+
+                // Spec: Client-Server API v1.19, "Leaving rooms": leaving "can retract a knock";
+                // Server-Server API v1.19, "Knocking upon a room": servers retract knocks over
+                // federation by leaving the room, as for rejecting invites (make_leave, send_leave).
+                WHEN("the user then retracts the knock with POST /leave")
+                {
+                    auto const make_leave_event = std::string{R"({"type":"m.room.member","state_key":")"} + alice +
+                                                  R"(","room_id":")" + room_id + R"(","sender":")" + alice +
+                                                  R"(","depth":6,"origin_server_ts":1100,)"
+                                                  R"("prev_events":[],"auth_events":[],)"
+                                                  R"("content":{"membership":"leave"}})";
+                    auto const make_leave_response = json_http_response(
+                        "200 OK", std::string{R"({"room_version":"10","event":)"} + make_leave_event + "}");
+                    auto const send_leave_response = json_http_response("200 OK", "{}");
+                    auto leave_requests = std::vector<std::string>{};
+                    auto leave_thread = std::thread{[&]() {
+                        run_resident_server(acceptor, *tls_context.context, make_leave_response, send_leave_response,
+                                            leave_requests);
+                    }};
+                    auto const left = merovingian::homeserver::handle_client_server_request(
+                        rt,
+                        {"POST", "/_matrix/client/v3/rooms/%21knockable%3Aresident.example.org/leave", login.value,
+                         "{}"},
+                        /*can_wait=*/false);
+                    leave_thread.join();
+
+                    THEN("the leave goes to the resident, and the user no longer has a knock")
+                    {
+                        CAPTURE(left.response.body);
+                        REQUIRE(knocked.response.status == 200);
+                        REQUIRE(left.response.status == 200);
+                        REQUIRE(leave_requests.size() == 2U);
+                        REQUIRE(leave_requests[0].find("/_matrix/federation/v1/make_leave/") != std::string::npos);
+                        REQUIRE(leave_requests[1].find("/_matrix/federation/v2/send_leave/") != std::string::npos);
+                        auto const lock = std::lock_guard{runtime.mutex};
+                        REQUIRE(std::ranges::any_of(runtime.database.persistent_store.memberships, [&](auto const& m) {
+                            return m.room_id == room_id && m.user_id == alice && m.membership == "leave";
+                        }));
+                        REQUIRE_FALSE(
+                            std::ranges::any_of(runtime.database.persistent_store.invites, [&](auto const& i) {
+                                return i.room_id == room_id && i.user_id == alice;
+                            }));
+                    }
+                }
             }
         }
     }

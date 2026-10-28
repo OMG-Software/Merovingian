@@ -3967,13 +3967,27 @@ namespace
     // request back for the length of the join. Each entry is prepared in array
     // order; an event already stored, or repeated in the array, is recorded but
     // not written again.
+    //
+    // Every write is prepared against the store as it was before the batch, so
+    // two events for one (event_type, state_key) would each prepare an INSERT
+    // into current_state, whose primary key is that pair, and fail the whole
+    // transaction on a backend that runs the SQL. Only the last event kept for a
+    // key writes current_state; an earlier one is stored as the outlier it is.
+    struct SnapshotCandidate final
+    {
+        database::PersistentEvent event{};
+        std::optional<database::PersistentStateEvent> state{};
+        std::string joined_member{};
+        bool repeated{false};
+    };
     struct SnapshotEntry final
     {
         std::optional<database::PreparedStateUpdate> prepared{};
         std::optional<database::PersistentStateEvent> state{};
         std::string joined_member{};
+        bool repeated{false};
     };
-    auto entries = std::vector<SnapshotEntry>{};
+    auto candidates = std::vector<SnapshotCandidate>{};
     auto batch_event_ids = std::set<std::string, std::less<>>{};
     auto next_ordering = allocate_stream_orderings(runtime.database, state_arr.size());
     for (auto const& state_entry : state_arr)
@@ -4070,36 +4084,68 @@ namespace
                 // snapshot state group from the full state array below,
                 // used as the join event's state-before.
                 pe.status = "outlier";
-                auto entry = SnapshotEntry{};
-                entry.state = state;
+                auto candidate = SnapshotCandidate{};
+                candidate.state = std::move(state);
                 // Track joined members for the in-memory LocalRoom population step.
                 // state_key is non-empty for membership events (it holds the user ID).
                 if (parsed.event.event_type == "m.room.member" && !parsed.event.state_key.empty() &&
                     events::extract_content_membership(state_entry) == "join")
                 {
-                    entry.joined_member = parsed.event.state_key;
+                    candidate.joined_member = parsed.event.state_key;
                 }
-                // An event earlier in this batch was kept: this copy is recorded
+                // The same event earlier in this batch: this copy is recorded
                 // again, not written twice.
-                auto const kept_earlier_in_batch = batch_event_ids.contains(event_id);
-                if (!kept_earlier_in_batch)
-                {
-                    entry.prepared = database::prepare_store_event_with_state(runtime.database.persistent_store,
-                                                                              std::move(pe), state);
-                }
-                // A duplicate verified snapshot event is already committed; include
-                // it in the join snapshot rather than mistaking the store's
-                // duplicate-insert refusal for a failed initial state.
-                if (!kept_earlier_in_batch && !entry.prepared.has_value() &&
-                    runtime.database.persistent_store.events.find_in_room(room_id, event_id) ==
-                        runtime.database.persistent_store.events.end())
-                {
-                    continue;
-                }
-                batch_event_ids.insert(event_id);
-                entries.push_back(std::move(entry));
+                candidate.repeated = !batch_event_ids.insert(event_id).second;
+                candidate.event = std::move(pe);
+                candidates.push_back(std::move(candidate));
             }
         }
+    }
+
+    // The last first copy of an event for each key, by position in `candidates`.
+    auto last_for_key = std::map<std::pair<std::string, std::string>, std::size_t>{};
+    for (auto index = std::size_t{0U}; index < candidates.size(); ++index)
+    {
+        if (auto const& candidate = candidates[index]; !candidate.repeated && candidate.state.has_value())
+        {
+            last_for_key.insert_or_assign(std::pair{candidate.state->event_type, candidate.state->state_key}, index);
+        }
+    }
+    auto entries = std::vector<SnapshotEntry>{};
+    auto kept_event_ids = std::set<std::string, std::less<>>{};
+    for (auto index = std::size_t{0U}; index < candidates.size(); ++index)
+    {
+        auto& candidate = candidates[index];
+        auto const event_id = candidate.event.event_id;
+        auto entry = SnapshotEntry{};
+        entry.state = candidate.state;
+        entry.joined_member = std::move(candidate.joined_member);
+        entry.repeated = candidate.repeated;
+        if (candidate.repeated)
+        {
+            // Recorded again only when its first copy was kept.
+            if (kept_event_ids.contains(event_id))
+            {
+                entries.push_back(std::move(entry));
+            }
+            continue;
+        }
+        auto const writes_current_state =
+            candidate.state.has_value() &&
+            last_for_key.at(std::pair{candidate.state->event_type, candidate.state->state_key}) == index;
+        entry.prepared = database::prepare_store_event_with_state(
+            runtime.database.persistent_store, std::move(candidate.event),
+            writes_current_state ? candidate.state : std::optional<database::PersistentStateEvent>{});
+        // A duplicate verified snapshot event is already committed; include
+        // it in the join snapshot rather than mistaking the store's
+        // duplicate-insert refusal for a failed initial state.
+        if (!entry.prepared.has_value() && runtime.database.persistent_store.events.find_in_room(room_id, event_id) ==
+                                               runtime.database.persistent_store.events.end())
+        {
+            continue;
+        }
+        kept_event_ids.insert(event_id);
+        entries.push_back(std::move(entry));
     }
 
     auto statements = std::vector<database::PreparedStatement>{};
@@ -4142,7 +4188,7 @@ namespace
                 result.state_entries.push_back(std::move(recorded));
                 recorded_members.push_back(entry.joined_member);
             }
-            else
+            else if (!entry.repeated)
             {
                 result.state_entries[position->second] = std::move(recorded);
                 recorded_members[position->second] = entry.joined_member;
@@ -5669,7 +5715,11 @@ namespace
                        observability::LogEventSeverity::info);
         return make_operation_result(true, std::string{room_id});
     }
-    if (membership_it->membership != "join" && membership_it->membership != "invite")
+    // Leaving rejects an invite and retracts a knock (Client-Server API v1.19,
+    // "Leaving rooms"); a remote knock is retracted over federation as an invite
+    // is rejected (Server-Server API v1.19, "Knocking upon a room").
+    if (membership_it->membership != "join" && membership_it->membership != "invite" &&
+        membership_it->membership != "knock")
     {
         // Idempotent per spec on `membership` alone — but a caller retrying
         // /leave is itself evidence its view is stale (it still thinks it's
