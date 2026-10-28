@@ -733,17 +733,17 @@ namespace
             auto invites =
                 query_rows(connection, "postgresql_load_invites",
                            "SELECT room_id, user_id, sender_user_id, event_id, signed_event_json, invite_state_json, "
-                           "stream_ordering FROM invites ORDER BY room_id, user_id");
+                           "stream_ordering, resident_server FROM invites ORDER BY room_id, user_id");
             if (!invites.ok)
             {
                 return false;
             }
             for (auto const& row : invites.rows)
             {
-                if (row.size() >= 7U)
+                if (row.size() >= 8U)
                 {
                     store.invites.push_back({row[0], row[1], row[2], row[3], row[4],
-                                             parse_invite_state_events_json(row[5]), parse_u64(row[6])});
+                                             parse_invite_state_events_json(row[5]), parse_u64(row[6]), row[7]});
                 }
             }
         }
@@ -2447,10 +2447,11 @@ namespace
             }
         }
 
-        auto invites = connection.execute({"postgresql_reload_invites",
-                                           "SELECT room_id, user_id, sender_user_id, event_id, signed_event_json, "
-                                           "invite_state_json, stream_ordering FROM invites WHERE room_id = $1",
-                                           {{room_id_str, false}}});
+        auto invites =
+            connection.execute({"postgresql_reload_invites",
+                                "SELECT room_id, user_id, sender_user_id, event_id, signed_event_json, "
+                                "invite_state_json, stream_ordering, resident_server FROM invites WHERE room_id = $1",
+                                {{room_id_str, false}}});
         if (!invites.ok)
         {
             return std::nullopt;
@@ -2458,10 +2459,10 @@ namespace
         notify_read("invites");
         for (auto const& row : invites.rows)
         {
-            if (row.size() >= 7U)
+            if (row.size() >= 8U)
             {
                 snapshot.invites.push_back({row[0], row[1], row[2], row[3], row[4],
-                                            parse_invite_state_events_json(row[5]), parse_u64(row[6])});
+                                            parse_invite_state_events_json(row[5]), parse_u64(row[6]), row[7]});
             }
         }
 

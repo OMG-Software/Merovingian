@@ -34,6 +34,10 @@ struct EventTypeFilter final
     // RoomEventFilter: "If true, enables per-thread notification counts. Only
     // applies to the /sync endpoint." Read from room.timeline.
     bool unread_thread_notifications{false};
+    // RoomEventFilter `contains_url`: "If true, includes only events with a url key in
+    // their content. If false, excludes those events. If omitted, url key is not considered
+    // for filtering."
+    std::optional<bool> contains_url{};
 };
 
 struct RoomFilter final
@@ -85,6 +89,11 @@ struct SyncFilter final
 // allow/deny predicates are skipped while sender predicates still apply.
 [[nodiscard]] auto event_passes_filter(EventTypeFilter const& filter, std::string_view event_type,
                                        std::string_view sender) noexcept -> bool;
+
+// event_passes_filter, plus the RoomEventFilter's contains_url against whether the
+// event's content has a `url` key.
+[[nodiscard]] auto event_passes_room_event_filter(EventTypeFilter const& filter, std::string_view event_type,
+                                                  std::string_view sender, bool content_has_url) noexcept -> bool;
 
 // True when a room id is allowed by the room filter's `rooms` / `not_rooms`
 // constraint. The leave/invite/join classification is applied separately.

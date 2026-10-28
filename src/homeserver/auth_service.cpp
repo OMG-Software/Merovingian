@@ -1135,6 +1135,16 @@ auto login_local_user(HomeserverRuntime& runtime, std::string_view user_id, std:
     // pointer itself must not outlive the RuntimeLockRelease below: the vector
     // may be reallocated while runtime.mutex is dropped around Argon2id.
     auto const verified_user_id = std::string{user_id};
+    // AUTH-4: bound concurrent Argon2id work before it can start. Shedding load
+    // here returns 429/M_LIMIT_EXCEEDED and never counts as a failed login, so
+    // an admission-saturated pile-on does not also exhaust the lockout budget.
+    // Taken before the dummy hash below: its first use hashes, and that hash
+    // must count against the cap too (ADR-0246).
+    auto const argon_slot = runtime.argon2id_admission->try_acquire();
+    if (!argon_slot)
+    {
+        return argon2id_admission_refusal();
+    }
     // An unknown user is verified against the dummy hash so the response time
     // does not reveal which accounts exist. The dummy is absent only if hashing
     // it failed at first use; there is then nothing to verify against and the
@@ -1150,14 +1160,6 @@ auto login_local_user(HomeserverRuntime& runtime, std::string_view user_id, std:
         }
         return std::nullopt;
     }();
-    // AUTH-4: bound concurrent Argon2id work before it can start. Shedding load
-    // here returns 429/M_LIMIT_EXCEEDED and never counts as a failed login, so
-    // an admission-saturated pile-on does not also exhaust the lockout budget.
-    auto const argon_slot = runtime.argon2id_admission->try_acquire();
-    if (!argon_slot)
-    {
-        return argon2id_admission_refusal();
-    }
     // AUTH-4: release the runtime mutex around Argon2id verification so a pile
     // of login attempts cannot serialise every other request. Snapshot the hash
     // by value first; then verify outside the lock.

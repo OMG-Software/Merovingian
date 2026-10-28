@@ -80,6 +80,10 @@ client_rate_limits.per_user./_matrix/client/v3/login=1000000000/1s
 client_rate_limits.per_user./_matrix/client/v1/media/preview_url=1000000000/1s
 client_rate_limits.per_user./_matrix/media/v3/preview_url=1000000000/1s
 client_rate_limits.per_user./_matrix/media/v1/create=1000000000/1s
+# Complement logs in and registers from many parallel subtests; four concurrent
+# Argon2id hashes answered some of them 429 (ADR-0246). Each takes 64 MiB, so 32
+# bounds a homeserver container at 2 GiB of hashing.
+security.password_hashing.max_concurrent=32
 security.federation.per_origin_transaction_rate=1000000000/1s
 security.federation.per_origin_pdu_rate=1000000000/1s
 security.federation.per_origin_edu_rate=1000000000/1s

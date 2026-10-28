@@ -40,4 +40,158 @@
 #   reason = "The endpoint is not implemented."
 #   todo = "docs/todos/capability-gaps.md"
 #
-# Empty until the first full run against a release candidate.
+
+# G11: the legacy media freeze (ADR-0068). "By Matrix 1.12, servers SHOULD 'freeze' the
+# deprecated, unauthenticated, endpoints ... any media uploaded *after* (or *during*) the
+# freeze SHOULD only be accessible through the new, authenticated, endpoints. For remote
+# media, 'newly-uploaded' is determined by the date the cache was populated."
+# Each test below downloads or thumbnails media uploaded (or fetched) during the run through
+# /_matrix/media/v3, so this server answers 404 as the spec says; its
+# /_matrix/client/v1/media twin is not listed and must pass. Complement itself skips these
+# for Synapse and Venator.
+
+[[entry]]
+test = "TestContent"
+package = "tests/csapi"
+mode = "expect-fail"
+category = "spec"
+spec = "docs/matrix-v1.19-spec/client-server-api.md#client-behaviour"
+reason = "Downloads media uploaded during the run through /_matrix/media/v3/download, which the media freeze answers 404 (ADR-0068). TestContentCSAPIMediaV1 covers the authenticated route."
+
+[[entry]]
+test = "TestAsyncUpload/Not_yet_uploaded"
+package = "tests/csapi"
+mode = "expect-fail"
+category = "spec"
+spec = "docs/matrix-v1.19-spec/client-server-api.md#client-behaviour"
+reason = "Expects 504 for a reserved media ID on /_matrix/media/v3/download; media created after the freeze is not served there at all, so the frozen route answers 404 (ADR-0068)."
+
+[[entry]]
+test = "TestLocalPngThumbnail/test_/_matrix/media/v3_endpoint"
+package = "tests"
+mode = "expect-fail"
+category = "spec"
+spec = "docs/matrix-v1.19-spec/client-server-api.md#client-behaviour"
+reason = "Thumbnails media uploaded during the run through /_matrix/media/v3/thumbnail, which the media freeze answers 404 (ADR-0068); the /_matrix/client/v1/media subtest covers the authenticated route."
+
+[[entry]]
+test = "TestRemotePngThumbnail/test_/_matrix/media/v3_endpoint"
+package = "tests"
+mode = "expect-fail"
+category = "spec"
+spec = "docs/matrix-v1.19-spec/client-server-api.md#client-behaviour"
+reason = "Thumbnails remote media fetched during the run through /_matrix/media/v3; remote media cached after the freeze counts as new, so the frozen route answers 404 (ADR-0068)."
+
+[[entry]]
+test = "TestMediaFilenames/Parallel/ASCII/Can_download_file_'ascii'"
+package = "tests"
+mode = "expect-fail"
+category = "spec"
+spec = "docs/matrix-v1.19-spec/client-server-api.md#client-behaviour"
+reason = "Downloads media uploaded during the run through /_matrix/media/v3/download, frozen (ADR-0068); the 'over /_matrix/client/v1/media/download' subtest covers the authenticated route."
+
+[[entry]]
+test = "TestMediaFilenames/Parallel/ASCII/Can_download_file_'name_with_spaces'"
+package = "tests"
+mode = "expect-fail"
+category = "spec"
+spec = "docs/matrix-v1.19-spec/client-server-api.md#client-behaviour"
+reason = "Downloads media uploaded during the run through /_matrix/media/v3/download, frozen (ADR-0068); the 'over /_matrix/client/v1/media/download' subtest covers the authenticated route."
+
+[[entry]]
+test = "TestMediaFilenames/Parallel/ASCII/Can_download_file_'name;with;semicolons'"
+package = "tests"
+mode = "expect-fail"
+category = "spec"
+spec = "docs/matrix-v1.19-spec/client-server-api.md#client-behaviour"
+reason = "Downloads media uploaded during the run through /_matrix/media/v3/download, frozen (ADR-0068); the 'over /_matrix/client/v1/media/download' subtest covers the authenticated route."
+
+[[entry]]
+test = "TestMediaFilenames/Parallel/ASCII/Can_download_specifying_a_different_ASCII_file_name"
+package = "tests"
+mode = "expect-fail"
+category = "spec"
+spec = "docs/matrix-v1.19-spec/client-server-api.md#client-behaviour"
+reason = "Downloads media uploaded during the run through /_matrix/media/v3/download/{serverName}/{mediaId}/{fileName}, frozen (ADR-0068); its _matrix/client/v1 twin covers the authenticated route."
+
+[[entry]]
+test = "TestMediaFilenames/Parallel/Unicode/Can_download_specifying_a_different_Unicode_file_name"
+package = "tests"
+mode = "expect-fail"
+category = "spec"
+spec = "docs/matrix-v1.19-spec/client-server-api.md#client-behaviour"
+reason = "Downloads media uploaded during the run through /_matrix/media/v3/download/{serverName}/{mediaId}/{fileName}, frozen (ADR-0068); its _matrix/client/v1 twin covers the authenticated route."
+
+[[entry]]
+test = "TestMediaFilenames/Parallel/Unicode/Can_download_with_Unicode_file_name_locally"
+package = "tests"
+mode = "expect-fail"
+category = "spec"
+spec = "docs/matrix-v1.19-spec/client-server-api.md#client-behaviour"
+reason = "Downloads media uploaded during the run through /_matrix/media/v3/download, frozen (ADR-0068); its _matrix/client/v1 twin covers the authenticated route."
+
+[[entry]]
+test = "TestMediaFilenames/Parallel/Unicode/Can_download_with_Unicode_file_name_over_federation"
+package = "tests"
+mode = "expect-fail"
+category = "spec"
+spec = "docs/matrix-v1.19-spec/client-server-api.md#client-behaviour"
+reason = "Downloads remote media fetched during the run through /_matrix/media/v3/download; remote media cached after the freeze counts as new, so the frozen route answers 404 (ADR-0068)."
+
+[[entry]]
+test = "TestMediaWithoutFileName/parallel/Can_download_without_a_file_name_locally"
+package = "tests"
+mode = "expect-fail"
+category = "spec"
+spec = "docs/matrix-v1.19-spec/client-server-api.md#client-behaviour"
+reason = "Downloads media uploaded during the run through /_matrix/media/v3/download, frozen (ADR-0068); TestMediaWithoutFileNameCSMediaV1 covers the authenticated route."
+
+[[entry]]
+test = "TestMediaWithoutFileName/parallel/Can_download_without_a_file_name_over_federation"
+package = "tests"
+mode = "expect-fail"
+category = "spec"
+spec = "docs/matrix-v1.19-spec/client-server-api.md#client-behaviour"
+reason = "Downloads remote media fetched during the run through /_matrix/media/v3/download; remote media cached after the freeze counts as new, so the frozen route answers 404 (ADR-0068)."
+
+# Owner decisions, 2026-10-27: v1.19 does not settle these, and this server keeps its reading.
+
+[[entry]]
+test = "TestGetRoomMembersAtPoint"
+package = "tests/csapi"
+mode = "expect-fail"
+category = "non-spec"
+spec = "docs/matrix-v1.19-spec/client-server-api.md#get_matrixclientv3roomsroomidmembers"
+reason = "`at` is \"The point in time (pagination token) to return members for\"; the test's token is the sync timeline's prev_batch, which for this small room lies before anyone joined, so the strict answer is no members. The test assumes members as of the sync instead."
+
+[[entry]]
+test = "TestPowerLevels/PUT_power_levels_should_not_explode_if_the_old_power_levels_were_empty"
+package = "tests/csapi"
+mode = "expect-fail"
+category = "non-spec"
+spec = "docs/matrix-v1.19-spec/client-server-api.md#put_matrixclientv3roomsroomidstateeventtypestatekey"
+reason = "Expects 400 for power levels the auth rules refuse; v1.19 gives no status for an auth-rule refusal of invalid content, and this server answers every auth-rule refusal 403 M_FORBIDDEN."
+
+[[entry]]
+test = "TestMSC4289PrivilegedRoomCreators/creator_cannot_set_self_in_PL_event"
+package = "tests"
+mode = "expect-fail"
+category = "non-spec"
+spec = "docs/matrix-v1.19-spec/rooms/v12.md"
+reason = "A v12 creator named in power-level users is refused by the auth rules; the test wants 400, v1.19 gives no status, and this server answers auth-rule refusals 403 M_FORBIDDEN."
+
+[[entry]]
+test = "TestMSC4289PrivilegedRoomCreators_Additional"
+package = "tests"
+mode = "expect-fail"
+category = "non-spec"
+spec = "docs/matrix-v1.19-spec/rooms/v12.md"
+reason = "An additional creator named in power-level users is refused by the auth rules; the test wants 400, v1.19 gives no status, and this server answers auth-rule refusals 403 M_FORBIDDEN."
+
+[[entry]]
+test = "TestMSC4291RoomIDAsHashOfCreateEvent_CannotSendCreateEvent"
+package = "tests"
+mode = "expect-fail"
+category = "non-spec"
+spec = "docs/matrix-v1.19-spec/rooms/v12.md"
+reason = "A second m.room.create is refused by the auth rules; the test wants 400, v1.19 gives no status, and this server answers auth-rule refusals 403 M_FORBIDDEN."

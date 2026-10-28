@@ -100,10 +100,21 @@ SCENARIO("join_candidate_servers routes pre-v12 rooms by domain and v12 rooms by
 
         WHEN("via servers are also supplied")
         {
-            THEN("via servers come first, then the room ID domain")
+            THEN("only the via servers are candidates: the room ID's domain never overrides them (ADR-0242)")
             {
-                REQUIRE(join_candidate_servers({"s1.example"}, "!abc:remote.example", our) ==
-                        Servers{"s1.example", "remote.example"});
+                // Spec (appendices, Room IDs, Routing): room IDs "are not routable on their own".
+                // Complement TestRestrictedRoomsRemoteJoinFailOver: a join via a server that
+                // cannot authorise it must fail, not succeed through the room ID's domain.
+                REQUIRE(join_candidate_servers({"s1.example"}, "!abc:remote.example", our) == Servers{"s1.example"});
+            }
+        }
+
+        WHEN("the only via server is this server")
+        {
+            THEN("no usable via was named, so the room ID's domain is the candidate")
+            {
+                REQUIRE(join_candidate_servers({std::string{our}}, "!abc:remote.example", our) ==
+                        Servers{"remote.example"});
             }
         }
     }

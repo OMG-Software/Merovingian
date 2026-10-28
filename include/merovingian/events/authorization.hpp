@@ -48,6 +48,12 @@ struct AuthEventMap final
 };
 
 [[nodiscard]] auto membership_name(MembershipState membership) noexcept -> char const*;
+// Why `content` is not a valid m.room.power_levels content for the room version
+// (auth rule 9's shape checks: scalar levels, the events/notifications maps and
+// users), or an empty string when it is. For a caller that must refuse content
+// before building an event from it.
+[[nodiscard]] auto power_levels_content_problem(canonicaljson::Object const& content,
+                                                rooms::RoomVersionPolicy const& policy) -> std::string;
 [[nodiscard]] auto authorize_event_against_auth_events(canonicaljson::Value const& event,
                                                        rooms::RoomVersionPolicy const& policy,
                                                        AuthEventMap const& auth_events) -> EventAuthorizationDecision;

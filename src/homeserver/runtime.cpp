@@ -873,6 +873,71 @@ auto database_has_table(LocalDatabase const& database, std::string_view table_na
     });
 }
 
+PendingStreamOrdering::PendingStreamOrdering(LocalDatabase& database, std::uint64_t ordering)
+    : m_database{database}
+    , m_ordering{ordering}
+{
+    m_database.pending_stream_orderings.insert(m_ordering);
+}
+
+PendingStreamOrdering::~PendingStreamOrdering()
+{
+    if (auto const entry = m_database.pending_stream_orderings.find(m_ordering);
+        entry != m_database.pending_stream_orderings.end())
+    {
+        m_database.pending_stream_orderings.erase(entry);
+    }
+}
+
+PublishedStreamOrdering::PublishedStreamOrdering(HomeserverRuntime& runtime, std::uint64_t ordering)
+    : m_runtime{runtime}
+    , m_pending{std::in_place, runtime.database, ordering}
+{
+}
+
+PublishedStreamOrdering::~PublishedStreamOrdering() noexcept
+{
+    try
+    {
+        auto const lock = std::lock_guard{m_runtime.mutex};
+        m_pending.reset();
+        if (m_runtime.sync_notifier != nullptr)
+        {
+            // The event stream only: a sync stream ID is the caller's to publish
+            // once its event is applied.
+            m_runtime.sync_notifier->publish(visible_stream_position(m_runtime.database), 0U);
+        }
+    }
+    catch (...)
+    {
+        // The reservation still ended with m_pending; only this wake-up is lost,
+        // and the next publish delivers it.
+    }
+}
+
+auto visible_stream_position(LocalDatabase const& database) noexcept -> std::uint64_t
+{
+    auto const newest = database.next_stream_ordering - 1U;
+    if (database.pending_stream_orderings.empty())
+    {
+        return newest;
+    }
+    auto const oldest_pending = *database.pending_stream_orderings.begin();
+    return oldest_pending == 0U ? 0U : std::min(newest, oldest_pending - 1U);
+}
+
+auto allocate_stream_orderings(LocalDatabase& database, std::size_t count) -> std::uint64_t
+{
+    auto const first = database.next_stream_ordering;
+    database.next_stream_ordering += count;
+    if (count > 0U)
+    {
+        std::ignore =
+            database::persist_event_stream_watermark(database.persistent_store, database.next_stream_ordering - 1U);
+    }
+    return first;
+}
+
 auto allocate_stream_ordering(LocalDatabase& database) -> std::uint64_t
 {
     auto const ordering = database.next_stream_ordering++;
@@ -913,6 +978,12 @@ auto start_runtime(RuntimeStartOptions opts) -> RuntimeStartResult
 
     auto runtime = HomeserverRuntime{};
     runtime.config = config;
+    // ADR-0246: the Argon2id admission budget is the operator's, validated to
+    // 1..max_password_hashing_concurrency at parse time; built before any request can run.
+    static_assert(config::max_password_hashing_concurrency == auth::argon2id_admission_max_capacity,
+                  "the configured cap must not exceed what the admission semaphore can count");
+    runtime.argon2id_admission = std::make_unique<auth::Argon2idAdmission>(std::clamp<std::size_t>(
+        config.security().password_hashing.max_concurrent, 1U, auth::argon2id_admission_max_capacity));
     // ADR-0079 caps are a fraction of the main request pool, which is now
     // configured (server.http.request_threads, ADR-0077).
     runtime.client_outbound_proxy_policy = client_outbound_proxy_policy_for_pool(config.server().http.request_threads);

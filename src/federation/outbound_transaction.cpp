@@ -16,6 +16,7 @@
 #include <optional>
 #include <string>
 #include <utility>
+#include <variant>
 #include <vector>
 
 namespace merovingian::federation
@@ -107,6 +108,40 @@ auto make_federation_transaction_id() -> std::string
 {
     auto const id = crypto::secure_random_hex(16U);
     return id.value_or("");
+}
+
+auto build_pdu_transaction_body(std::string_view origin, std::string_view pdu_json) -> std::optional<std::string>
+{
+    if (origin.empty())
+    {
+        return std::nullopt;
+    }
+    auto pdu = canonicaljson::parse_lossless(pdu_json);
+    if (pdu.error != canonicaljson::ParseError::none ||
+        std::get_if<canonicaljson::Object>(&pdu.value.storage()) == nullptr)
+    {
+        return std::nullopt;
+    }
+    auto pdus = canonicaljson::Array{};
+    pdus.push_back(std::move(pdu.value));
+
+    // Transaction: `origin`, `origin_server_ts` and `pdus` are all Required. A strict
+    // receiver refuses a transaction without them.
+    auto tx_root = canonicaljson::Object{};
+    auto const now_ms = static_cast<std::int64_t>(
+        std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch())
+            .count());
+    tx_root.push_back(canonicaljson::make_member("origin", canonicaljson::Value{std::string{origin}}));
+    tx_root.push_back(canonicaljson::make_member("origin_server_ts", canonicaljson::Value{now_ms}));
+    tx_root.push_back(canonicaljson::make_member("pdus", canonicaljson::Value{std::move(pdus)}));
+    tx_root.push_back(canonicaljson::make_member("edus", canonicaljson::Value{canonicaljson::Array{}}));
+
+    auto const tx_body = canonicaljson::serialize_canonical(canonicaljson::Value{std::move(tx_root)});
+    if (tx_body.error != canonicaljson::CanonicalJsonError::none)
+    {
+        return std::nullopt;
+    }
+    return tx_body.output;
 }
 
 auto build_edu_transaction_body(std::string_view origin, std::string_view edu_type, std::string_view edu_content_json)

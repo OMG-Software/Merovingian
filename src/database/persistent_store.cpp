@@ -1434,16 +1434,22 @@ auto reconstruct_event_relations(PersistentStore& store) -> void
 namespace
 {
 
-    // DB-4: a join, leave or ban ends any pending invite; an invite records one.
+    // DB-4: a join, leave or ban ends any pending invite; an invite records one, and
+    // so does a knock on a room on another server (its knock_room_state, ADR-0243).
     [[nodiscard]] auto membership_ends_invite(std::string_view membership) noexcept -> bool
     {
         return membership == "join" || membership == "leave" || membership == "ban";
     }
 
+    [[nodiscard]] auto membership_records_invite(std::string_view membership) noexcept -> bool
+    {
+        return membership == "invite" || membership == "knock";
+    }
+
     [[nodiscard]] auto membership_projection_is_valid(MembershipProjection const& projection) noexcept -> bool
     {
         return !projection.user_id.empty() && !projection.membership.empty() &&
-               (!projection.invite.has_value() || projection.membership == "invite");
+               (!projection.invite.has_value() || membership_records_invite(projection.membership));
     }
 
     // The statements that write `projection` for `room_id`. Upserts, so the
@@ -1459,7 +1465,7 @@ namespace
             "$3, $4) ON CONFLICT (room_id, user_id) DO UPDATE SET membership = $3, stream_ordering = $4",
             {public_value(room_id), public_value(projection.user_id), public_value(projection.membership),
              public_value(std::to_string(projection.stream_ordering))}));
-        if (projection.membership == "invite" && projection.invite.has_value())
+        if (membership_records_invite(projection.membership) && projection.invite.has_value())
         {
             auto const& invite = *projection.invite;
             auto const invite_state_json = serialize_invite_state_events_json(invite.invite_state_events_json);
@@ -1470,13 +1476,13 @@ namespace
             statements.push_back(record_statement(
                 "upsert_invite",
                 "INSERT INTO invites (room_id, user_id, sender_user_id, event_id, signed_event_json, "
-                "invite_state_json, "
-                "stream_ordering) VALUES ($1, $2, $3, $4, $5, $6, $7) ON CONFLICT (room_id, user_id) DO UPDATE SET "
-                "sender_user_id = $3, event_id = $4, signed_event_json = $5, invite_state_json = $6, stream_ordering = "
-                "$7",
+                "invite_state_json, stream_ordering, resident_server) VALUES ($1, $2, $3, $4, $5, $6, $7, $8) "
+                "ON CONFLICT (room_id, user_id) DO UPDATE SET sender_user_id = $3, event_id = $4, "
+                "signed_event_json = $5, invite_state_json = $6, stream_ordering = $7, resident_server = $8",
                 {public_value(room_id), public_value(projection.user_id), public_value(invite.sender_user_id),
                  public_value(invite.event_id), sensitive_value(invite.signed_event_json),
-                 sensitive_value(*invite_state_json), public_value(std::to_string(invite.stream_ordering))}));
+                 sensitive_value(*invite_state_json), public_value(std::to_string(invite.stream_ordering)),
+                 public_value(invite.resident_server)}));
         }
         else if (membership_ends_invite(projection.membership))
         {
@@ -1508,7 +1514,7 @@ namespace
         auto const invite = std::ranges::find_if(store.invites, [&](PersistentInvite const& current) {
             return current.room_id == room_id && current.user_id == projection.user_id;
         });
-        if (projection.membership == "invite" && projection.invite.has_value())
+        if (membership_records_invite(projection.membership) && projection.invite.has_value())
         {
             auto written = *projection.invite;
             written.room_id = std::string{room_id};
@@ -1828,11 +1834,12 @@ namespace
     if (existing == store.invites.end())
     {
         if (!record_and_persist(
-                store, record_statement("insert_invite", "INSERT INTO invites VALUES ($1, $2, $3, $4, $5, $6, $7)",
+                store, record_statement("insert_invite", "INSERT INTO invites VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
                                         {public_value(invite.room_id), public_value(invite.user_id),
                                          public_value(invite.sender_user_id), public_value(invite.event_id),
                                          sensitive_value(invite.signed_event_json), sensitive_value(*invite_state_json),
-                                         public_value(std::to_string(invite.stream_ordering))})))
+                                         public_value(std::to_string(invite.stream_ordering)),
+                                         public_value(invite.resident_server)})))
         {
             log_diagnostic("invite.rejected", {
                                                   {"room_id", invite.room_id,                        false},
@@ -1852,13 +1859,15 @@ namespace
     }
 
     if (!record_and_persist(
-            store, record_statement("update_invite",
-                                    "UPDATE invites SET sender_user_id = $3, event_id = $4, signed_event_json = $5, "
-                                    "invite_state_json = $6, stream_ordering = $7 WHERE room_id = $1 AND user_id = $2",
-                                    {public_value(invite.room_id), public_value(invite.user_id),
-                                     public_value(invite.sender_user_id), public_value(invite.event_id),
-                                     sensitive_value(invite.signed_event_json), sensitive_value(*invite_state_json),
-                                     public_value(std::to_string(invite.stream_ordering))})))
+            store, record_statement(
+                       "update_invite",
+                       "UPDATE invites SET sender_user_id = $3, event_id = $4, signed_event_json = $5, "
+                       "invite_state_json = $6, stream_ordering = $7, resident_server = $8 WHERE room_id = "
+                       "$1 AND user_id = $2",
+                       {public_value(invite.room_id), public_value(invite.user_id), public_value(invite.sender_user_id),
+                        public_value(invite.event_id), sensitive_value(invite.signed_event_json),
+                        sensitive_value(*invite_state_json), public_value(std::to_string(invite.stream_ordering)),
+                        public_value(invite.resident_server)})))
     {
         log_diagnostic("invite.rejected", {
                                               {"room_id", invite.room_id,                        false},

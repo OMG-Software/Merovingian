@@ -800,12 +800,12 @@ namespace
                          }) &&
                load_rows(connection,
                          "SELECT room_id, user_id, sender_user_id, event_id, signed_event_json, invite_state_json, "
-                         "stream_ordering FROM invites",
+                         "stream_ordering, resident_server FROM invites",
                          [&store](sqlite3_stmt& row) {
                              store.invites.push_back({column_text(row, 0), column_text(row, 1), column_text(row, 2),
                                                       column_text(row, 3), column_text(row, 4),
                                                       parse_invite_state_events_json(column_text(row, 5)),
-                                                      parse_u64(column_text(row, 6))});
+                                                      parse_u64(column_text(row, 6)), column_text(row, 7)});
                          }) &&
                load_rows(connection,
                          "SELECT event_id, room_id, sender_user_id, json, depth, stream_ordering, status FROM events",
@@ -1248,13 +1248,13 @@ namespace
             ok &&
             load_rows_bound(connection,
                             "SELECT room_id, user_id, sender_user_id, event_id, signed_event_json, "
-                            "invite_state_json, stream_ordering FROM invites WHERE room_id = ?1",
+                            "invite_state_json, stream_ordering, resident_server FROM invites WHERE room_id = ?1",
                             {room_id_str},
                             [&](sqlite3_stmt& row) {
                                 snapshot.invites.push_back(
                                     {column_text(row, 0), column_text(row, 1), column_text(row, 2), column_text(row, 3),
                                      column_text(row, 4), parse_invite_state_events_json(column_text(row, 5)),
-                                     parse_u64(column_text(row, 6))});
+                                     parse_u64(column_text(row, 6)), column_text(row, 7)});
                             }) &&
             read_done("invites");
         ok = ok &&

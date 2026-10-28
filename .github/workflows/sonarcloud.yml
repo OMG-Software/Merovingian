@@ -1,0 +1,153 @@
+name: sonarcloud
+
+# SonarQube Cloud analysis from CI (ADR-0250). C and C++ are analysed against
+# the compilation database of a real build, so the analyser sees the flags,
+# include paths and C++ standard the code is compiled with. That build is
+# instrumented for coverage and runs every suite, and gcovr hands the scan a
+# SonarQube coverage report, so new code is measured against the tests. What is
+# analysed is set in sonar-project.properties (ADR-0229).
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+  pull-requests: read
+
+concurrency:
+  group: sonarcloud-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  sonarcloud:
+    # A pull request from a fork gets no secrets, so it cannot be analysed; it is
+    # analysed on main once merged.
+    if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    # The instrumented build and the suites take about half an hour, the scan as long again.
+    timeout-minutes: 150
+    env:
+      # GCC, as in coverage.yml: only GCC's gcov labels the unwinding edge of a
+      # call that may throw, which gcovr's --exclude-throw-branches relies on
+      # (ADR-0217).
+      CC: gcc-14
+      CXX: g++-14
+      # A live PostgreSQL, so the [postgresql] scenarios run and the PostgreSQL
+      # store is measured; the same database and roles as coverage.yml.
+      MEROVINGIAN_TEST_POSTGRESQL_URI: postgresql://merovingian_test:test-password@127.0.0.1:5432/merovingian_test
+      MEROVINGIAN_TEST_POSTGRESQL_MIGRATION_ROLE: merovingian_migration
+      MEROVINGIAN_TEST_POSTGRESQL_RUNTIME_ROLE: merovingian_runtime
+
+    services:
+      postgres:
+        # postgres:16, pinned by digest: this job holds SONAR_TOKEN.
+        image: postgres:16@sha256:1beaa3084eee2676f20a9cd9928f0bf2c5bf674f8e49f81017912183d377c61c
+        env:
+          POSTGRES_USER: merovingian_test
+          POSTGRES_PASSWORD: test-password
+          POSTGRES_DB: merovingian_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U merovingian_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+
+    steps:
+      # v4.4.0. Pinned to a commit: this job holds SONAR_TOKEN.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          # New-code detection and blame need the whole history.
+          fetch-depth: 0
+
+      # v5.6.0. Pinned to a commit: this job holds SONAR_TOKEN.
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: '3.x'
+
+      # libpng and libturbojpeg build the thumbnail worker; without them Meson drops
+      # media/thumbnail_worker_main.cpp and the analysis never sees it.
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            bison \
+            catch2 \
+            flex \
+            g++-14 \
+            gcc-14 \
+            gcovr \
+            libcurl4-openssl-dev \
+            libpng-dev \
+            libpq-dev \
+            libsodium-dev \
+            libssl-dev \
+            libturbojpeg0-dev \
+            m4 \
+            perl \
+            pkg-config \
+            postgresql-client
+          # Hash-locked wheels only: this job holds SONAR_TOKEN.
+          python -m pip install --require-hashes --only-binary :all: --requirement requirements-build.txt
+
+      # The roles and grants coverage.yml provisions; see its comments for why each exists.
+      - name: Provision migration and runtime roles
+        env:
+          PGHOST: 127.0.0.1
+          PGPORT: '5432'
+          PGUSER: merovingian_test
+          PGPASSWORD: test-password
+          PGDATABASE: merovingian_test
+        run: |
+          psql -v ON_ERROR_STOP=1 <<'SQL'
+            REVOKE CREATE ON SCHEMA public FROM PUBLIC;
+            CREATE ROLE merovingian_migration NOLOGIN;
+            CREATE ROLE merovingian_runtime NOLOGIN;
+            GRANT merovingian_migration TO merovingian_test;
+            GRANT merovingian_runtime TO merovingian_test;
+            GRANT CREATE, USAGE ON SCHEMA public TO merovingian_migration;
+            GRANT USAGE ON SCHEMA public TO merovingian_runtime;
+            ALTER DEFAULT PRIVILEGES FOR ROLE merovingian_test IN SCHEMA public
+              GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO merovingian_runtime;
+            ALTER DEFAULT PRIVILEGES FOR ROLE merovingian_test IN SCHEMA public
+              GRANT USAGE, SELECT, UPDATE ON SEQUENCES TO merovingian_runtime;
+            ALTER DEFAULT PRIVILEGES FOR ROLE merovingian_migration IN SCHEMA public
+              GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO merovingian_runtime;
+            ALTER DEFAULT PRIVILEGES FOR ROLE merovingian_migration IN SCHEMA public
+              GRANT USAGE, SELECT, UPDATE ON SEQUENCES TO merovingian_runtime;
+          SQL
+
+      # An instrumented build that also runs every suite (unit, conformance,
+      # integration, smoke). It writes the compilation database the analysis
+      # reads, with every generated file it names in place.
+      - name: Build and test with coverage
+        run: sh scripts/build-linux.sh --builddir build-sonar --coverage
+
+      # The same scope and options as coverage.yml's Codecov report, written in
+      # SonarQube's generic coverage format to the path sonar-project.properties
+      # names. gcov-14 must match the compiler (gcc-14) that wrote the counters.
+      - name: Generate the SonarQube coverage report
+        run: |
+          mkdir -p coverage
+          gcovr \
+            --root . \
+            --gcov-executable gcov-14 \
+            --gcov-ignore-parse-errors \
+            --exclude-throw-branches \
+            --exclude-unreachable-branches \
+            --filter 'src/' \
+            --filter 'include/merovingian/' \
+            --exclude 'src/main.cpp' \
+            --exclude 'tests/' \
+            --print-summary \
+            --sonarqube coverage/sonarqube.xml \
+            build-sonar
+
+      - name: SonarQube Cloud scan
+        # v8.3.0. Pinned to a commit because the action receives SONAR_TOKEN.
+        uses: SonarSource/sonarqube-scan-action@d209202bc7d53ff1cc128f7f907dac145c9d6ae9
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}

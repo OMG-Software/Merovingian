@@ -1680,7 +1680,16 @@ namespace
             {
                 if (rt->sync_notifier != nullptr)
                 {
-                    rt->sync_notifier->publish(result.accepted_stream_ordering, result.accepted_sync_stream_id);
+                    // ADR-0247: wake syncs only up to the visible position. An earlier
+                    // ordering may still be pending, and a waiter woken past it would
+                    // find nothing it may be given yet and wake again at once. Read under
+                    // runtime.mutex, which ingest_pdu_event no longer holds here; no room
+                    // stripe is held either, so this keeps the stripe-then-global order.
+                    auto const visible = [&] {
+                        auto const lock = std::unique_lock<RuntimeMutex>{rt->mutex};
+                        return visible_stream_position(rt->database);
+                    }();
+                    rt->sync_notifier->publish(visible, result.accepted_sync_stream_id);
                 }
                 // #479 P1 fix: this is the single convergence point for every
                 // accepted federation PDU — both the direct main-process path
@@ -1794,7 +1803,7 @@ namespace
                 auto const room_stream_id = update_room_typing_stream_id_if_changed(*rt, room_id, previous_users);
                 if (room_stream_id != std::uint64_t{0U} && rt->sync_notifier != nullptr)
                 {
-                    rt->sync_notifier->publish(rt->database.next_stream_ordering - 1U,
+                    rt->sync_notifier->publish(visible_stream_position(rt->database),
                                                rt->database.persistent_store.next_sync_stream_id);
                 }
                 return {federation::EduDispositionStatus::accepted, {}};
@@ -1952,7 +1961,7 @@ namespace
                 }
                 if (rt->sync_notifier != nullptr)
                 {
-                    rt->sync_notifier->publish(rt->database.next_stream_ordering - 1U,
+                    rt->sync_notifier->publish(visible_stream_position(rt->database),
                                                rt->database.persistent_store.next_sync_stream_id);
                 }
                 return {federation::EduDispositionStatus::accepted, {}};
@@ -1969,6 +1978,9 @@ namespace
                 {
                     return {federation::EduDispositionStatus::accepted, {}};
                 }
+                // The sink runs without runtime.mutex: presence rows, the appservice
+                // queue and the visible stream position are all read and written under it.
+                auto const guard = std::unique_lock<RuntimeMutex>{rt->mutex};
                 for (auto const& entry : *push)
                 {
                     auto const* presence = std::get_if<canonicaljson::Object>(&entry.storage());
@@ -2011,7 +2023,7 @@ namespace
                 }
                 if (rt->sync_notifier != nullptr)
                 {
-                    rt->sync_notifier->publish(rt->database.next_stream_ordering - 1U,
+                    rt->sync_notifier->publish(visible_stream_position(rt->database),
                                                rt->database.persistent_store.next_sync_stream_id);
                 }
                 return {federation::EduDispositionStatus::accepted, {}};
@@ -2064,7 +2076,9 @@ namespace
                 }
                 if (rt->sync_notifier != nullptr)
                 {
-                    rt->sync_notifier->publish(rt->database.next_stream_ordering - 1U,
+                    // Read under runtime.mutex, which the enqueue above took and released.
+                    auto const guard = std::unique_lock<RuntimeMutex>{rt->mutex};
+                    rt->sync_notifier->publish(visible_stream_position(rt->database),
                                                rt->database.persistent_store.next_sync_stream_id);
                 }
                 // A targeted device whose message did not persist is a lost
@@ -2110,6 +2124,9 @@ namespace
                     return {federation::EduDispositionStatus::rejected_invalid,
                             envelope.edu_type + " user_id must belong to the sending origin"};
                 }
+                // The sink runs without runtime.mutex: room membership, the device-list
+                // changes and the visible stream position are all read and written under it.
+                auto const guard = std::unique_lock<RuntimeMutex>{rt->mutex};
                 if (!user_id->empty())
                 {
                     // Audit FED-7. Only a local user who shares a joined room
@@ -2136,7 +2153,7 @@ namespace
                 }
                 if (rt->sync_notifier != nullptr)
                 {
-                    rt->sync_notifier->publish(rt->database.next_stream_ordering - 1U,
+                    rt->sync_notifier->publish(visible_stream_position(rt->database),
                                                rt->database.persistent_store.next_sync_stream_id);
                 }
                 return {federation::EduDispositionStatus::accepted, {}};
@@ -2691,8 +2708,14 @@ namespace
             }
             if (rt->sync_notifier != nullptr)
             {
-                rt->sync_notifier->publish(rt->database.next_stream_ordering - 1U, sync_stream_id);
+                rt->sync_notifier->publish(visible_stream_position(rt->database), sync_stream_id);
             }
+            // A federation worker usually accepted this request and relayed it here; it
+            // answers the room's next make_join, make_leave or send_leave from its own
+            // snapshot, which only this refreshes. Without it the worker's make_leave
+            // template omitted a just-joined user's membership from auth_events, and the
+            // worker then refused that user's leave against them.
+            notify_room_changed(*rt, room_id);
             // The event is now durably stored with its receipt status, so a
             // rejection can be reported to the peer without losing it: spec
             // "Rejection" keeps rejected events available for later events
@@ -2960,7 +2983,7 @@ namespace
             auto const sync_stream_id = database::allocate_sync_stream_id(rt->database.persistent_store);
             if (rt->sync_notifier != nullptr)
             {
-                rt->sync_notifier->publish(rt->database.next_stream_ordering - 1U, sync_stream_id);
+                rt->sync_notifier->publish(visible_stream_position(rt->database), sync_stream_id);
             }
             return {true, 200U, {}, std::move(*signed_event)};
         };
@@ -4055,6 +4078,9 @@ namespace
             auto const sync_id = database::allocate_sync_stream_id(runtime.database.persistent_store);
             return std::make_pair(ordering, sync_id);
         }();
+        // ADR-0247: the commit below releases runtime.mutex; until the event is
+        // applied, no sync position may pass its ordering.
+        auto pending_ordering = std::optional<PublishedStreamOrdering>{std::in_place, runtime, stream_ordering};
 
         auto event = database::PersistentEvent{};
         event.event_id = envelope.event_id;
@@ -4082,7 +4108,6 @@ namespace
         }
         auto const committed = [&]() {
             auto const released = RuntimeLockRelease{global_guard};
-            std::ignore = released;
             return database::commit_persistent_transaction(runtime.database.persistent_store, prepared->statements);
         }();
         if (!committed)
@@ -4090,6 +4115,14 @@ namespace
             return false;
         }
         database::apply_store_event_with_state(runtime.database.persistent_store, *prepared);
+        pending_ordering.reset();
+        // The visible position may have moved past later events that were held
+        // back behind this one; wake the syncs that wait for them.
+        if (runtime.sync_notifier != nullptr)
+        {
+            runtime.sync_notifier->publish(visible_stream_position(runtime.database),
+                                           runtime.database.persistent_store.next_sync_stream_id);
+        }
 
         if (state_after.has_value())
         {
@@ -4556,11 +4589,11 @@ namespace
         stored_json = serialized.output;
     }
 
-    // Reserve the global stream-ordering and sync-surface IDs up front under
-    // the global mutex. Allocating sync_stream_id writes to the backend, so it
-    // must not happen while a room stripe is also held — that would pin the
-    // stripe for the whole database write and prevent concurrent progress on
-    // unrelated rooms.
+    // Reserve the sync-surface ID up front under the global mutex. Allocating
+    // it writes to the backend, so it must not happen while a room stripe is
+    // also held — that would pin the stripe for the whole database write and
+    // prevent concurrent progress on unrelated rooms. The stream ordering is
+    // reserved later, where the event takes it (ADR-0247).
     auto stream_ordering = std::uint64_t{0U};
     auto sync_stream_id = std::uint64_t{0U};
     {
@@ -4598,7 +4631,6 @@ namespace
             queue.json_bytes += bytes;
             return {federation::PduIngestionStatus::deferred, "PDU deferred until outbound join commits"};
         }
-        stream_ordering = allocate_stream_ordering(runtime.database);
         sync_stream_id = database::allocate_sync_stream_id(runtime.database.persistent_store);
     }
 
@@ -4660,7 +4692,6 @@ namespace
             // Restore stripe BEFORE global on scope exit, matching the
             // ingestion lock order even when the backfill call throws.
             auto const global_released = RuntimeLockRelease{global_guard};
-            std::ignore = global_released;
             auto const stripe_released = ScopedStripeReacquire{stripe_guard};
             std::ignore = stripe_released;
             auto const backfill = backfill_missing_pdu_references(runtime, room_id, envelope, *room_policy);
@@ -4816,6 +4847,15 @@ namespace
         state = database::PersistentStateEvent{room_id, envelope.event_type, *envelope.state_key, envelope.event_id};
     }
 
+    // ADR-0247: the ordering is reserved here, with runtime.mutex held, and is
+    // pending until the event is applied below. Reserved up front, it stayed
+    // pending across missing-history fetches, and a sync in that window named a
+    // position past an event the client then never received. The watermark write
+    // in allocate_stream_ordering now happens with the room stripe held, as the
+    // event's own commit does.
+    stream_ordering = allocate_stream_ordering(runtime.database);
+    auto pending_ordering = std::optional<PublishedStreamOrdering>{std::in_place, runtime, stream_ordering};
+
     auto event = database::PersistentEvent{};
     event.event_id = envelope.event_id;
     event.room_id = room_id;
@@ -4869,7 +4909,6 @@ namespace
     // throw from the backend.
     auto const committed = [&] {
         auto const released = RuntimeLockRelease{global_guard};
-        std::ignore = released;
         return database::commit_persistent_transaction(runtime.database.persistent_store, prepared->statements);
     }();
     if (!committed)
@@ -4878,6 +4917,7 @@ namespace
     }
 
     database::apply_store_event_with_state(runtime.database.persistent_store, *prepared);
+    pending_ordering.reset();
 
     // ADR-0064 phase B1/B2: record this event's after-state group and
     // update forward extremities (only for an accepted event — a rejected
@@ -5413,7 +5453,6 @@ auto wire_federation_callbacks(HomeserverRuntime& runtime) -> void
         // call sites.
         auto const result = [&] {
             auto const released = RuntimeLockRelease{guard};
-            std::ignore = released;
             return create_room(runtime, request.access_token);
         }();
         return response_from_room_operation(result);
@@ -5495,7 +5534,6 @@ auto wire_federation_callbacks(HomeserverRuntime& runtime) -> void
         });
         auto const result = [&] {
             auto const released = RuntimeLockRelease{guard};
-            std::ignore = released;
             return join_room(runtime, request.access_token, room_id, *via_servers, third_party_signed);
         }();
         log_diagnostic(result.ok ? "room.join.accepted" : "room.join.rejected",

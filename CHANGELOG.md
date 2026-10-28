@@ -1,3 +1,325 @@
+## 0.12.59
+
+Fixes from the triage of the second Complement run (0.12.58, 133 failing top-level tests): three
+federation bugs that blocked over 50 of them, room version 12 creation and upgrades, room event
+pagination and filters, and the expected failures from the legacy media freeze. It also moves SonarQube
+Cloud analysis from SonarSource's automatic analysis into this repository's CI.
+
+- **FIXED:** a federation worker refused every `send_join`, `send_leave`, `send_knock`, `invite`
+  and `/send` from a server whose key it had not already held at start-up, with
+  `403 remote is unknown` (and `429` on retries, from the failure cache). The resolver fetched and
+  verified the key, wrote it to the key cache, and then read it back. A worker cannot write that
+  cache: its SQLite connection is read-only and its PostgreSQL role has `SELECT` only. The resolver
+  now returns the key it fetched, trusted for at most seven days as before, and caching is
+  best-effort (ADR-0238). `docs/database-persistence.md` already described this behaviour; the code now
+  matches it.
+- **FIXED:** joining or leaving a room on another server refused a `make_join` or `make_leave`
+  template without `origin_server_ts`, and signed the resident server's timestamp and `origin` when
+  the template had them. The spec says the joining server "is expected to add or replace the
+  `origin`, `origin_server_ts`, and `event_id`", so this server now always sets its own `origin`
+  and timestamp and drops any `event_id` (`claim_membership_event_template`). A resident server no
+  longer chooses the timestamp our signature vouches for, which from room version 5 decides which
+  of our keys must be valid (ADR-0075).
+- **TESTS:** `test_remote_key_resolver_worker_store.cpp`: a resolver over main's SQLite database
+  opened read-only, as a worker opens it, returns a fetched key it cannot cache; main's resolver
+  still caches; a refused discovery still refuses the key. The make_join validation scenario in
+  `test_homeserver_vertical_slice.cpp` now expects a template without `origin_server_ts` to be
+  accepted, as the spec says (it encoded the opposite); added scenarios for `make_leave`, a template
+  with the wrong membership, and the claim step.
+- **TESTS (regression):** `test_federation_worker_key_resolution_flow.cpp` sends a signed `/send`
+  from a server the worker has never seen through the real inbound gate and resolver, over main's
+  SQLite database opened read-only; it is accepted, and the second request needs no fetch.
+  `test_join_room_flow.cpp`: a new `join_room` scenario and the existing `leave_room` scenario
+  check, against a TLS resident server, that the event we sign carries our `origin` and clock and
+  no `event_id`, with and without those fields in the template. Run against the old behaviour,
+  every one of these fails as Complement did (`403`, a refused template, the resident's `origin`).
+- **FIXED:** the `/send` transaction carrying an event sent on this server had no `origin` and no
+  `origin_server_ts`, which the Transaction object marks Required. Synapse tolerated the omission,
+  but this server refuses such a transaction (`400 transaction origin is required`), so no event
+  ever reached another Merovingian server: in Complement, every two-server test saw joins succeed
+  and nothing after them arrive (the restricted-room tests filed as F1 among them). The room
+  service now builds the body with `federation::build_pdu_transaction_body`, beside the EDU builder
+  that already got this right. Regression: `test_outbound_pdu_transaction_flow.cpp` sends a message
+  in a room shared with another server and checks the queued transaction; it fails on the old code.
+- **FIXED:** after joining a room on another server, every event from a member who was already
+  joined was refused as "sender is not joined to the room" (Complement triage F1). The join
+  verified and persisted only the room-level part of the `send_join` state before returning, built
+  the join event's state group from that part alone, and left other members to a background task
+  that never added them to it; the auth rules judge an event against the state before it, which
+  for the first events after the join is that group. A join now verifies the whole `state` array,
+  with the same bounded key-resolution parallelism, and persists all of it before it returns, so
+  the join's state holds every member and `/members` is complete at once (ADR-0241). The fast-join
+  split (`split_send_join_state_events`) and the `room.join.background_state_complete` log event
+  are gone. A first join to a room spanning many servers now waits for their keys.
+- **TESTS (regression):** the live `join_room` scenario in `test_join_room_flow.cpp` (tag
+  `[join-full-state]`) now requires every member of the returned state to be joined, and in the
+  join event's state group, when `join_room` returns, and a signed message from one of them, sent
+  after the join, to be accepted; it fails on the old code. The six `split_send_join_state_events`
+  unit scenarios are removed with the function.
+- **FIXED:** a user who joined a room here over federation could not leave it: the federation
+  worker refused their `send_leave` (403, auth rule 7, "self-leave requires current membership").
+  Main stored the joins and leaves a worker relayed but never told the worker the room had
+  changed, as it does for a relayed `/send` PDU, so the worker answered the next `make_leave` from
+  a snapshot without the join and then judged the leave against it. The membership acceptor now
+  calls `notify_room_changed` once it has stored the event; `notify_room_changed` is now declared in
+  `room_service.hpp`. Regression: `[worker-room-sync]` in
+  `test_membership_acceptor_receipt_checks.cpp`, red on the old code. (Complement
+  `TestRestrictedRoomsRemoteJoin`, whose invite and mangled-join-rules subtests followed from it.)
+- **CHANGED:** a join tries only the `via` servers the client names, and falls back to the room
+  ID's domain only when it names none (ADR-0242, owner decision). The domain was always added, so
+  a join routed through a server that could not authorise it succeeded through the room's creator
+  (Complement `TestRestrictedRoomsRemoteJoinFailOver`). `test_join_routing.cpp` now pins the
+  rule; it pinned the opposite.
+- **FIXED:** when the resident server refuses a join (`make_join` or `send_join` answered 403),
+  `/join` answers 403, as the spec lists for "You do not have permission to join the room"; it
+  answered 502. `perform_outbound_call` now returns the remote's HTTP status
+  (`OutboundCallResult`). Reading the make_join race's last error after the wait also took no lock
+  while losing candidates could still write it; it is now copied under the race mutex.
+  Regression: `[join-refused]` in `test_join_room_flow.cpp`, red on the old code.
+- **ADDED:** knocking on a room on another server. `POST /knock/{roomIdOrAlias}` answered 404 for
+  any room this server was not in; it now goes through `make_knock` and `send_knock` to the servers
+  named by `via` or `server_name` (owner decision), puts the body's `reason` on the knock event,
+  and keeps the resident's `knock_room_state`, without entries whose signature does not check out
+  ("SHOULD be removed"), for the user's `/sync` `knock_state` (ADR-0243: it lives in the user's
+  invite record, which DB-4 ends with the knock). A resident's 403 is a 403. A local knock now
+  carries `reason` too. Not done: resolving a room alias in `/knock`. Regression: `[knock-remote]`
+  in `test_join_room_flow.cpp` drives the client route against a TLS resident, including a forged
+  unsigned entry in `knock_room_state`; red on the old code.
+- **FIXED:** membership events composed here never reached another server. Only messages and
+  state sent through `/send` and `/state` were sent to the room's other servers; a join, leave,
+  kick, ban, unban, local knock or third-party invite composed here was stored and went nowhere,
+  so another server never learnt that one of our users had left (Complement
+  `TestRestrictedRoomsRemoteJoin`, "Join should fail when left allowed room"). Every local compose
+  path now calls `federate_local_event`, `send_event`'s fan-out moved into one function, and a
+  kick, ban or unban also goes to its target's server, which is no longer among the room's members
+  once the event applies; an invite still reaches the invitee's server through `/invite`.
+  Regression: `[membership-fanout]` in `test_outbound_pdu_transaction_flow.cpp` (a join, a leave
+  and a ban), red on the old code.
+- **FIXED:** a server whose last user had left a room composed the next join itself, from the
+  state it held when that user left, and told the user they had joined; the resident never saw
+  it, so a join the resident would refuse succeeded (Complement `TestRestrictedRoomsRemoteJoin`,
+  "Join should fail with mangled join rules"). A server is in a room while one of its users is
+  joined to it; otherwise a join goes through a resident: the `via` servers, else the room ID's
+  domain, else the servers of users joined in the state this server last held (ADR-0244).
+  Regression: a join, leave and rejoin through a live TLS resident in `test_join_room_flow.cpp`
+  (`[state_groups]`); the rejoin must use `make_join` and `send_join`, and did not.
+- **FIXED:** an initial `/sync` (and a room newly joined since `since`) gave a joined room's
+  current state as `state`, not "all state up to the start of the timeline": a state event the
+  timeline carried was repeated in `state` with its later value. Complement `TestKnocking`,
+  "Users in the room see a user's membership update when they knock", read a second knock from
+  `state` before the first in the timeline. `state` is now the state before the timeline's first
+  event (from its `prev_events`; for an event whose `prev_events` this server never held, its own
+  after-state without the entry it set), and current state only when the timeline is empty.
+  Regression: `test_sync_state_conformance.cpp`, red on the old code. The
+  `GET /sync returns full event content and correct room version in state` conformance scenario
+  expected `m.room.create` in `state` for a room whose timeline starts at its creation, and
+  `test_client_server_flow.cpp` expected a newly joined user's own join in `state` though the
+  timeline carries it; both now look in the state followed by the timeline, citing the spec. Not done: an incremental sync
+  with a limited timeline still gives no state updates for the gap between `since` and the start
+  of the timeline.
+- **FIXED:** a local user's `/sync` could skip, for good, an event that arrived over federation.
+  Inbound ingestion reserves an event's stream ordering and commits with `runtime.mutex` released;
+  `/sync`, sliding sync and the long-poll check took the newest reserved ordering as "now", so a
+  sync in that window handed out a token past an event that was applied a moment later, below
+  every later `since` (Complement `TestRestrictedRoomsRemoteJoin` and relatives: a remote user's
+  leave, ordering 22, applied 4 ms after a sync returned 22). Reserved orderings are now pending
+  until applied (`PendingStreamOrdering`), and sync positions stop just below the oldest pending
+  one (`visible_stream_position`). The main ingest path reserves its ordering where the event takes
+  it, after any missing-history fetch, so a reservation spans one commit (ADR-0247). Regression:
+  `test_sync_stream_position.cpp` (`[sync-position]`).
+- **FIXED (review of #541):** a federated join's `send_join` state, the room's whole member list
+  since ADR-0241, was stored one transaction (and one watermark write) per event with
+  `runtime.mutex` held; it now commits in one transaction, its orderings allocated with one
+  watermark write (`allocate_stream_orderings`). A login for an unknown user built the dummy
+  Argon2id hash before taking an admission slot, so that first hash escaped the cap; the slot is
+  now taken first. A federated knock had no overall deadline across its candidate servers; it
+  shares one (`join_race_deadline`, else the remote timeout) across every `make_knock` and the
+  `send_knock`. A room upgrade rebuilt the server-wide state index for each state type it copies;
+  it builds it once. Start-up logs the effective password-hashing cap. The SonarQube Cloud
+  workflow installs `libpng-dev` and `libturbojpeg0-dev`, without which Meson drops the thumbnail
+  worker from the build the analysis reads (checked by `test_sonarcloud_config.py`).
+- **FIXED (second review of #541):** while an earlier stream ordering was pending, `/sync` and
+  sliding sync could still deliver a later event above the position they returned, and the next
+  request, starting from that position, delivered it again; each now takes one visible position per
+  response and holds nothing above it (`sync_position`; `build_room_response`'s
+  `timeline_upper_bound`). Every `SyncNotifier::publish` now announces the visible position, so a
+  long-poll is not woken for an event it cannot be given yet, and the verified backfill writer
+  publishes once its reservation ends. A federated knock passes its shared deadline to each call,
+  so server discovery counts against it too. A state event repeated in one `send_join` batch was dropped
+  and the join refused for the short count; it now counts towards completeness
+  (`recorded_state_events`) while the state group gets each key once, since `state_group_state`
+  rejects a key twice. `/messages` refuses a `filter`
+  that is not a JSON RoomEventFilter with `400 M_BAD_JSON`, as `/context` does, instead of serving
+  the page unfiltered. The SonarQube Cloud scan enables the analyser's experimental C++26 support
+  (`sonar.cfamily.experimental.cpp26.enabled`), without which it refused to start on this build
+  (ADR-0250). Tests: `[sync-position]` (timeline and token agree; the later event arrives once),
+  the repeated-entry case in `test_federation_invite_join.cpp`, the malformed-filter case in
+  `test_client_server.cpp` (a unit test: v1.19 does not mandate the code), and `test_sonarcloud_config.py`.
+- **FIXED (review of #541):** a `power_level_content_override` key of the wrong shape
+  (`"users": null`, `"ban": "high"`) replaced the generated key whole (ADR-0240) and reached the auth
+  rules only after the room and its first events were stored, leaving a half-made room behind a
+  500. `createRoom` now checks the override with the auth rules' own content check
+  (`events::power_levels_content_problem`, rule 9) and refuses it with `400 M_INVALID_ROOM_STATE`
+  before creating anything; so is a version 12 override whose `state_default` is canonical JSON's
+  largest integer without an `events` map, which leaves no tombstone level above it. The send_join
+  roster now comes from the final entry for each member, so a join followed by a leave in a malformed
+  snapshot is not counted as joined. The ADR-0064 call-site guard (`test_store_event_choke_point.cpp`) now
+  lists the `send_join` snapshot as a prepared, single-transaction outlier write.
+- **FIXED (review of #541):** a `send_join` snapshot holding two events for one
+  `(event_type, state_key)` prepared two `INSERT`s into `current_state`, whose primary key is that
+  pair, so on SQLite and PostgreSQL the snapshot transaction failed and the join with it (the
+  in-memory test backend runs no SQL and hid it). Only the final event for a key, the last entry
+  naming it (a repeated copy of an earlier event included, so A, B, A ends at A), now writes
+  `current_state`, from its first stored copy; the others are stored as outliers. `POST /rooms/{roomId}/leave` treated a knock as already
+  left and did nothing; it now retracts it, through the resident's `make_leave`/`send_leave` for a
+  room this server is not in, clearing the stored knock (Client-Server API "Leaving rooms",
+  Server-Server API "Knocking upon a room"). The withdrawal goes to the server that accepted the
+  knock, now kept in the knock's `invites` row (`resident_server`, a column added to the v1 schema),
+  not to the room ID's domain, which a `via`-routed knock never contacted and a version 12 room ID
+  does not name (ADR-0251). Tests: `test_send_join_snapshot_store.cpp` (`[send-join-snapshot]`,
+  SQLite), the knock-retraction WHEN in `test_join_room_flow.cpp` (`[knock-remote]`, its room ID now
+  on a domain other than the resident's), and the reopen case in `test_database_persistence.cpp`
+  (`[knock-resident]`). A room created here that every user had left answered a local rejoin
+  `404` (no resident to join through, ADR-0244); with no server named and none known to be in it,
+  it is now joined here and judged by the auth rules (`[rejoin-local-room]`). A room created
+  elsewhere still goes through a resident.
+- **FIXED (review of #541):** a federated join, knock or leave releases the request lock for its
+  exchange with the resident, and a second `/join`, `/knock` or `/leave` by the same user for the
+  same room could run meanwhile and be overwritten when the first committed (a `/leave` answered
+  200, then the accepted knock stored after it). While one is in flight the others are refused with
+  `429 M_LIMIT_EXCEEDED` and `retry_after_ms` (ADR-0252). Tests: `[membership-exchange]` and the
+  leave-during-knock WHEN in `test_join_room_flow.cpp` (`[knock-remote]`).
+- **FIXED (review of #541):** two `/sync` paths still read past the response's position
+  (ADR-0247). A joined room whose timeline window is empty took its `state` from current state,
+  which may hold an event above the token while an earlier ordering is pending; it now takes the
+  state before the earliest such event. A leave above the token was reported now and again by the
+  next sync; it now waits for that sync. Tests: the empty-timeline and leave WHENs in
+  `test_sync_stream_position.cpp` (`[sync-position]`).
+- **FIXED (review of #541):** a reservation that ended without its event (a federated PDU's or a
+  backfilled event's commit failed) moved the visible position past later events already applied
+  but woke no `/sync` long-poll, which slept until something else was published or timed out. Both
+  commit paths now hold a `PublishedStreamOrdering`, whose end, applied or not, publishes the visible
+  position (ADR-0247). Test: the failed-commit WHEN in `test_sync_stream_position.cpp`
+  (`[sync-position]`), and the repeated-final-entry scenario in `test_send_join_snapshot_store.cpp`.
+- **FIXED (review of #541):** the federation EDU sink runs without `runtime.mutex`, and its presence
+  and device-list cases wrote presence rows and device-list changes, read room membership and read
+  the visible stream position with no lock, racing request threads that touch the same store state
+  under it; the to-device case read the position after its enqueue had released the lock. Each now
+  takes `runtime.mutex` for that work, as the typing and receipt cases do. Test: the
+  presence/device-list concurrency scenario in `test_federation_runtime_callbacks.cpp`.
+- **FIXED (review of #541):** an initial `/sync` whose timeline starts at a federated join
+  left the user's membership out of `state`. The join's state group holds only the state after it,
+  and when the state before cannot be computed the join was dropped from that state without the
+  value it replaced; it is now taken from the join's `auth_events`, which name the user's previous
+  membership (Server-Server API "Auth events selection"), and the same applies to the at-position
+  state fallback. `GET /rooms/{roomId}/messages` ignored a filter's `rooms` and `not_rooms`; a room
+  they exclude now contributes no events, timeline or state. Tests: `[join-sync-state]` in `test_join_room_flow.cpp`
+  and the room-predicate case in `test_client_server.cpp`.
+- **CHANGED:** the SonarQube Cloud workflow, which holds `SONAR_TOKEN`, installs Meson and Ninja
+  from hash-locked wheels only (`requirements-build.txt`, compiled from `requirements-build.in`
+  with `uv pip compile --generate-hashes --only-binary :all:`), not whatever `pip install --upgrade`
+  resolved at run time; it no longer upgrades `pip` first, and pins `actions/checkout` (v4.4.0) and
+  `actions/setup-python` (v5.6.0) to commits as it already did the scan action (ADR-0250). Checked
+  by `test_sonarcloud_config.py`.
+- **CHANGED:** the SonarQube Cloud job reports coverage. It builds with coverage (GCC 14, a live
+  PostgreSQL, as `coverage.yml` does) instead of compiling only, runs every suite, and gcovr writes
+  `coverage/sonarqube.xml`, which `sonar.coverageReportPaths` names; until now the quality gate saw
+  0% coverage of new code, since the scan had no report. The PostgreSQL image is pinned by digest
+  (ADR-0250). Checked by `test_sonarcloud_config.py`.
+- **CHANGED:** both coverage jobs pass gcovr `--exclude-unreachable-branches`, leaving out the
+  branches gcov attributes to lines without code, such as a function's closing brace where the
+  compiler destroys its locals (ADR-0253, refining ADR-0217). Three such braces held 134 of the 467
+  uncovered new-code conditions SonarQube Cloud reported on this pull request. Checked by
+  `test_coverage_workflow.py` and `test_sonarcloud_config.py`.
+- **FIXED:** `POST /login` did not log `@user:server` in when named `@USER:server`, `USER` or
+  `User`. A user ID is looked up exactly, then with its localpart's ASCII letters downcased
+  (ADR-0245), so historical upper-case localparts still log in as themselves. Regression:
+  `[login-case]` in `test_client_server_conformance.cpp`, red on the old code.
+- **ADDED:** `security.password_hashing.max_concurrent` (default 4, 1 to 128, needs a restart):
+  how many Argon2id hashes run at once. The cap was fixed at four in code (ADR-0090), so
+  Complement's parallel `TestLogin` and `TestRegistration` subtests met
+  `429 too many concurrent authentication attempts`; the owner chose a config key whose default
+  is unchanged (ADR-0246). Zero and anything past the admission semaphore's maximum are startup
+  findings. The Complement template sets 32 (each hash takes 64 MiB). Tests:
+  `test_config_password_hashing.cpp` (default, configured value, out-of-range and malformed
+  values, reload policy, and the runtime admitting exactly the configured number), and
+  `test_complement_image.py` checks the rendered Complement config raises it.
+- **FIXED:** room version 12 creation. Every v12 room's initial power levels now define
+  `m.room.tombstone` above `state_default` (the spec's MUST; only `trusted_private_chat` did), and
+  a client's own tombstone level in `power_level_content_override` is kept. A
+  `power_level_content_override` naming a room creator in `users`, or `additional_creators` that is
+  not an array of valid user IDs, is refused with `400 M_INVALID_ROOM_STATE` before anything is
+  created; they had been silently stripped, answered 500, or (for a server name such as
+  `dom$ain$.com`) accepted.
+- **CHANGED:** `power_level_content_override` replaces each top-level key of the generated power
+  levels, nested maps included, instead of merging into them (ADR-0240). The v12 tombstone level
+  is part of the generated `events` map, so an override that supplies `events` decides it; one
+  that does not keeps it above the resulting `state_default`.
+- **ADDED:** `GET /rooms/{roomId}/state/{eventType}/{stateKey}?format=event` returns the whole
+  client-formatted event (v1.16); it had returned the content only.
+- **CHANGED:** the Complement skip list also expects five owner decisions where v1.19 is silent:
+  `/members?at` is the strict point the token names, and auth-rule refusals of invalid content
+  stay `403 M_FORBIDDEN` (Complement wants 400).
+- **FIXED:** the v12 `m.room.create` event reached clients without `room_id` on `/state`,
+  `/event`, `/context` and `/messages`. Room version 12 omits it from the PDU only; the client
+  format requires it.
+- **FIXED:** `POST /rooms/{roomId}/upgrade` ignored `additional_creators`, copied no state and did
+  not copy the old room's `type`. It now applies `additional_creators` to a v12 replacement,
+  copies `type`, and transfers the spec's recommended state (server ACL, encryption, name, avatar,
+  topic, guest access, history visibility, join rules, and power levels without the new room's
+  creators). Upgrading to version 12 or later omits `predecessor.event_id`, which the spec allows
+  (ADR-0239). `docs/todos/capability-gaps.md` had claimed a full state copy; it now names the
+  remaining gaps (aliases are not moved, the old room's power levels are not raised).
+- **FIXED:** `/messages` ignored a `/sync` `next_batch` as `from` and started at the room's
+  beginning, and `/relations` did the same; both now page from it, forward after the newest event
+  that sync delivered and backward including it. `/messages` and `/context` now apply the
+  request's RoomEventFilter to the events they return (`types`, `senders`, and the new
+  `contains_url`), not only to lazy-loaded state.
+- **FIXED:** `/messages` and `/members` answered `404 M_NOT_FOUND` for a room the server does not
+  know; their response tables list only 200 and 403, so they answer `403 M_FORBIDDEN`. The
+  conformance scenario and unit test that expected 404 now expect 403, citing the tables.
+- **FIXED:** `scripts/summarise_complement.py` judged a failing parent by its direct children,
+  found by counting slashes; Complement subtest names can hold slashes ("test /_matrix/media/v3
+  endpoint"), so a parent was reported although its only failure was listed, or explained although
+  a failure beneath it was not. It now requires every failing leaf beneath a parent to be listed.
+- **CHANGED:** `tests/complement/skip-list.toml` lists 13 subtests as expected failures (category
+  `spec`): each downloads or thumbnails media uploaded or fetched during the run through the
+  legacy `/_matrix/media/v3` routes, which the media freeze answers 404 as v1.19 says servers
+  SHOULD (ADR-0068). Their `/_matrix/client/v1/media` twins are not listed.
+- **TESTS:** `test_room_v12_creation_conformance.cpp` (tombstone level, creator in the override,
+  invalid `additional_creators`, `room_id` on the create event, upgrade with `additional_creators`
+  and transferred state) and `test_room_pagination_conformance.cpp` (sync tokens on `/messages`
+  and `/relations`, the RoomEventFilter on `/messages`, 403 for unknown rooms);
+  `test_room_upgrade_predecessor.cpp` (ADR-0239); two summariser cases for slash-holding subtest
+  names, which fail on the old summariser.
+- **ADDED:** `federation::make_remote_key_resolver`, the resolver with its discovery and fetch
+  steps supplied by the caller, for tests.
+- **CHANGED:** `.github/workflows/sonarcloud.yml` builds the project with
+  `scripts/build-linux.sh --builddir build-sonar --compile-only` and runs
+  `SonarSource/sonarqube-scan-action` (v8.3.0, pinned to its commit because it receives
+  `SONAR_TOKEN`) on pushes to `main` and on pull requests from this repository. C and C++ are
+  analysed against the `compile_commands.json` of that build, so the analyser sees the real flags,
+  include paths and C++ standard; automatic analysis had to guess them (ADR-0250). A fork's pull
+  request gets no secrets and is analysed once merged.
+- **CHANGED:** `sonar-project.properties` replaces `.sonarcloud.properties`: the organisation and
+  project key, the compilation database, and the ADR-0229 exclusions, plus `build-sonar/**` and
+  `subprojects/**`, which a CI checkout holds and automatic analysis never saw.
+- **REQUIRED before the first run:** switch automatic analysis off in the SonarQube Cloud project
+  (Administration > Analysis Method), since CI analyses fail while it is on, and add the
+  `SONAR_TOKEN` repository secret.
+- **TESTS:** `tests/tooling/test_sonarcloud_config.py` reads `sonar-project.properties` and now
+  also checks the project keys, that no automatic-analysis file remains, that the workflow builds
+  the directory the compilation database is read from (and that directory is excluded), that the
+  scan action is pinned to a commit, that it scans full history with the repository secret and
+  read-only permissions, and that fork pull requests are skipped.
+- **CHANGED:** clears the five CodeQL warnings the pull request check reported in
+  `room_service.cpp`, all present on `main` before this branch. Nine `std::ignore = released;`
+  lines after a `RuntimeLockRelease` (in `room_service.cpp`, `local_http_router.cpp` and
+  `worker_pool.cpp`) are removed: a guard with a destructor is never an unused variable, and the
+  other 55 releases have no such line. The thread listing iterates `std::views::values` instead of
+  discarding the root ID it bound, and `verify_third_party_signed` now says in comments where each
+  check comes from in the spec. No behaviour changes.
+
 ## 0.12.58
 
 The first full Complement run against 0.12.57 failed 322 tests, nearly all before reaching what

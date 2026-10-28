@@ -40,7 +40,7 @@ CREATE TABLE "state_group_edges" (state_group_id TEXT NOT NULL, prev_state_group
 -- statement create_membership
 CREATE TABLE "membership" (room_id TEXT NOT NULL, user_id TEXT NOT NULL, membership TEXT NOT NULL DEFAULT 'join', stream_ordering TEXT NOT NULL DEFAULT '0', PRIMARY KEY (room_id, user_id))
 -- statement create_invites
-CREATE TABLE "invites" (room_id TEXT NOT NULL, user_id TEXT NOT NULL, sender_user_id TEXT NOT NULL, event_id TEXT NOT NULL DEFAULT '', signed_event_json TEXT NOT NULL DEFAULT '', invite_state_json TEXT NOT NULL DEFAULT '[]', stream_ordering TEXT NOT NULL DEFAULT '0', PRIMARY KEY (room_id, user_id))
+CREATE TABLE "invites" (room_id TEXT NOT NULL, user_id TEXT NOT NULL, sender_user_id TEXT NOT NULL, event_id TEXT NOT NULL DEFAULT '', signed_event_json TEXT NOT NULL DEFAULT '', invite_state_json TEXT NOT NULL DEFAULT '[]', stream_ordering TEXT NOT NULL DEFAULT '0', resident_server TEXT NOT NULL DEFAULT '', PRIMARY KEY (room_id, user_id))
 -- statement create_account_data
 CREATE TABLE "account_data" (user_id TEXT NOT NULL, event_type TEXT NOT NULL, json TEXT NOT NULL, stream_id TEXT NOT NULL DEFAULT '0', PRIMARY KEY (user_id, event_type))
 -- statement create_room_account_data

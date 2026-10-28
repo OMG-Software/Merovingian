@@ -159,6 +159,15 @@ network before the deferral, so a refusal or cache hit never costs a pool slot. 
 file are coalesced (`RemoteMediaFetchCoalescer`): never wait on the coalescer with `runtime.mutex`
 held, and never take `runtime.mutex` while holding its mutex.
 
+## One membership exchange per user and room (ADR-0252)
+
+A federated join, knock or leave releases `runtime.mutex` for its exchange with the resident.
+Before releasing it, take a `MembershipExchangeClaim` for the (room, user) pair; `join_room`,
+`knock_room` and `leave_room` refuse a claimed pair with 429 `M_LIMIT_EXCEEDED` before reading
+anything. A new path that changes a user's own membership over federation takes the claim, and a
+new entry point that changes it checks `membership_exchange_refusal` first, or a concurrent request
+is overwritten when the exchange commits.
+
 ## Restricted joins as the resident (R04, ADR-0184, ADR-0185)
 
 `decide_restricted_join` (`restricted_join.cpp`) is the only place that decides whether a
@@ -346,7 +355,9 @@ entries, advances the room's typing stream position and sends `typing: false` fo
 runs on the "typing-expiry" `PeriodicJob` in `main.cpp`. A new path that adds a typing entry must
 set `expires_at`, or it never expires, and call `wake_typing_expiry` so an earlier deadline than the
 job's current sleep is not missed. Every read and write of `typing_users` holds `runtime.mutex`:
-the federation EDU sink runs without it and takes it itself in the typing case.
+the federation EDU sink runs without it and takes it itself in the typing case. Every other EDU case
+that reads or writes store state (receipts, presence, device lists) or reads the visible stream
+position takes it the same way; `enqueue_direct_to_device_messages` takes it itself.
 
 ## Appservice delivery (R01, ADR-0163)
 

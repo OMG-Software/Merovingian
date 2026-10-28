@@ -1681,6 +1681,60 @@ SCENARIO("ingest_send_join_state writes empty-state-key events to store.state",
                 REQUIRE(std::find(members.begin(), members.end(), creator) != members.end());
             }
         }
+
+        WHEN("the array holds a member's join and then a later leave for the same member")
+        {
+            // A response may hold two entries for one key. The state group keeps the
+            // later, so the roster must too: a join followed by a leave is not joined
+            // (review of #541).
+            auto const leave_json = std::string{"{\"type\":\"m.room.member\",\"state_key\":\""} + creator +
+                                    "\",\"room_id\":\"" + room_id + "\",\"sender\":\"" + creator +
+                                    "\",\"depth\":4,\"origin_server_ts\":1001,"
+                                    "\"prev_events\":[],\"auth_events\":[],\"hashes\":{\"sha256\":\"aGFzaA\"},"
+                                    "\"content\":{\"membership\":\"leave\"},"
+                                    "\"signatures\":{\"matrix.example.org\":{\"ed25519:auto\":\"aaaa\"}}}";
+            auto const leave = merovingian::canonicaljson::parse_lossless(leave_json);
+            REQUIRE(leave.error == merovingian::canonicaljson::ParseError::none);
+            auto join_then_leave = *arr;
+            join_then_leave.push_back(leave.value);
+            auto const ingested =
+                merovingian::homeserver::ingest_send_join_state(runtime, room_id, join_then_leave, policy);
+
+            THEN("the member is not in the roster, and the state group holds the leave")
+            {
+                REQUIRE(std::find(ingested.joined_members.begin(), ingested.joined_members.end(), creator) ==
+                        ingested.joined_members.end());
+                auto const member_entry =
+                    std::find_if(ingested.state_entries.begin(), ingested.state_entries.end(), [&](auto const& entry) {
+                        return entry.event_type == "m.room.member" && entry.state_key == creator;
+                    });
+                REQUIRE(member_entry != ingested.state_entries.end());
+                REQUIRE(ingested.recorded_state_events == join_then_leave.size());
+            }
+        }
+
+        WHEN("the array holds the same event twice and is ingested in one transaction")
+        {
+            // The snapshot is committed as one batch (review of #541): the second copy
+            // must still be recorded, or join_room's count of persisted entries falls
+            // short of the verified array and the join is refused.
+            auto repeated = *arr;
+            repeated.push_back((*arr)[1]);
+            auto const ingested = merovingian::homeserver::ingest_send_join_state(runtime, room_id, repeated, policy);
+
+            THEN("every entry counts towards completeness, each key enters the state group once, and the event is "
+                 "stored once")
+            {
+                // join_room compares the count with the verified array; the state group
+                // rejects a key twice, so the entries for it hold each key once.
+                REQUIRE(ingested.recorded_state_events == repeated.size());
+                REQUIRE(ingested.state_entries.size() == arr->size());
+                auto const& state = runtime.database.persistent_store.state;
+                REQUIRE(std::count_if(state.begin(), state.end(), [&](auto const& s) {
+                            return s.room_id == room_id && s.event_type == "m.room.encryption";
+                        }) == 1);
+            }
+        }
     }
 }
 
@@ -2737,184 +2791,6 @@ SCENARIO("send_join key resolution does not refetch a server and key that just f
                 CHECK(first.empty());
                 CHECK(second.empty());
                 CHECK(counting.calls.load() == 1U);
-            }
-        }
-    }
-}
-
-// --- split_send_join_state_events (fast join) --------------------------------
-// Fast join: a send_join `state` array is split into "critical" state (verified
-// and persisted synchronously, before the join response returns) and
-// "background" state (every OTHER member's m.room.member, verified and
-// persisted after the response returns — see room.join.background_state_complete).
-// These scenarios are pure JSON classification with no crypto involved, so
-// events below are unsigned; signature verification is filter_verified_send_join_events's
-// job, tested separately above.
-namespace
-{
-
-[[nodiscard]] auto bare_event(std::string const& type, std::string const& state_key, std::string const& sender)
-    -> merovingian::canonicaljson::Value
-{
-    auto const raw = std::string{"{\"type\":\""} + type + "\",\"state_key\":\"" + state_key + "\",\"sender\":\"" +
-                     sender +
-                     "\",\"room_id\":\"!room:matrix.example.org\",\"depth\":1,"
-                     "\"origin_server_ts\":1000,\"prev_events\":[],\"auth_events\":[],"
-                     "\"content\":{}}";
-    auto const parsed = merovingian::canonicaljson::parse_lossless(raw);
-    REQUIRE(parsed.error == merovingian::canonicaljson::ParseError::none);
-    return parsed.value;
-}
-
-} // namespace
-
-SCENARIO("split_send_join_state_events keeps non-membership state events critical",
-         "[homeserver][federation][send_join][fast-join]")
-{
-    GIVEN("a state array of room-level state events with empty state_key")
-    {
-        auto const alice = std::string{"@alice:"} + local_server;
-        auto array = merovingian::canonicaljson::Array{};
-        array.push_back(bare_event("m.room.create", "", alice));
-        array.push_back(bare_event("m.room.power_levels", "", alice));
-        array.push_back(bare_event("m.room.join_rules", "", alice));
-        array.push_back(bare_event("m.room.history_visibility", "", alice));
-        array.push_back(bare_event("m.room.encryption", "", alice));
-
-        WHEN("the state array is split")
-        {
-            auto const split = merovingian::homeserver::split_send_join_state_events(array, alice);
-
-            THEN("every event is critical and none are deferred")
-            {
-                REQUIRE(split.critical.size() == 5U);
-                REQUIRE(split.background.empty());
-            }
-        }
-    }
-}
-
-SCENARIO("split_send_join_state_events keeps the joining user's own membership critical",
-         "[homeserver][federation][send_join][fast-join]")
-{
-    GIVEN("a state array with only the joining user's own m.room.member event")
-    {
-        auto const alice = std::string{"@alice:"} + local_server;
-        auto array = merovingian::canonicaljson::Array{};
-        array.push_back(bare_event("m.room.member", alice, alice));
-
-        WHEN("the state array is split")
-        {
-            auto const split = merovingian::homeserver::split_send_join_state_events(array, alice);
-
-            THEN("the event is critical, not deferred")
-            {
-                REQUIRE(split.critical.size() == 1U);
-                REQUIRE(split.background.empty());
-            }
-        }
-    }
-}
-
-SCENARIO("split_send_join_state_events defers other members' membership events",
-         "[homeserver][federation][send_join][fast-join]")
-{
-    GIVEN("a state array with three OTHER users' m.room.member events")
-    {
-        auto const alice = std::string{"@alice:"} + local_server;
-        auto const bob = std::string{"@bob:"} + remote_origin;
-        auto const carol = std::string{"@carol:"} + remote_origin;
-        auto const dave = std::string{"@dave:"} + remote_origin;
-        auto array = merovingian::canonicaljson::Array{};
-        array.push_back(bare_event("m.room.member", bob, bob));
-        array.push_back(bare_event("m.room.member", carol, carol));
-        array.push_back(bare_event("m.room.member", dave, dave));
-
-        WHEN("the state array is split for the joining user alice")
-        {
-            auto const split = merovingian::homeserver::split_send_join_state_events(array, alice);
-
-            THEN("all three are deferred to background, none are critical")
-            {
-                REQUIRE(split.critical.empty());
-                REQUIRE(split.background.size() == 3U);
-            }
-        }
-    }
-}
-
-SCENARIO("split_send_join_state_events splits a realistic mixed state array correctly",
-         "[homeserver][federation][send_join][fast-join]")
-{
-    GIVEN("create, power_levels, the joining user's membership, and two other members")
-    {
-        auto const alice = std::string{"@alice:"} + local_server;
-        auto const bob = std::string{"@bob:"} + remote_origin;
-        auto const carol = std::string{"@carol:"} + remote_origin;
-        auto array = merovingian::canonicaljson::Array{};
-        array.push_back(bare_event("m.room.create", "", bob));
-        array.push_back(bare_event("m.room.power_levels", "", bob));
-        array.push_back(bare_event("m.room.member", alice, alice));
-        array.push_back(bare_event("m.room.member", bob, bob));
-        array.push_back(bare_event("m.room.member", carol, carol));
-
-        WHEN("the state array is split for the joining user alice")
-        {
-            auto const split = merovingian::homeserver::split_send_join_state_events(array, alice);
-
-            THEN("create, power_levels, and alice's own membership are critical; bob and carol are deferred")
-            {
-                REQUIRE(split.critical.size() == 3U);
-                REQUIRE(split.background.size() == 2U);
-            }
-        }
-    }
-}
-
-SCENARIO("split_send_join_state_events treats malformed entries as critical, not silently dropped",
-         "[homeserver][federation][send_join][fast-join]")
-{
-    GIVEN("a state array entry with no state_key field at all")
-    {
-        auto const alice = std::string{"@alice:"} + local_server;
-        auto const bob = std::string{"@bob:"} + remote_origin;
-        auto const raw = std::string{"{\"type\":\"m.room.member\",\"sender\":\""} + bob +
-                         "\",\"room_id\":\"!room:matrix.example.org\",\"depth\":1,"
-                         "\"origin_server_ts\":1000,\"prev_events\":[],\"auth_events\":[],\"content\":{}}";
-        auto const parsed = merovingian::canonicaljson::parse_lossless(raw);
-        REQUIRE(parsed.error == merovingian::canonicaljson::ParseError::none);
-        auto array = merovingian::canonicaljson::Array{};
-        array.push_back(parsed.value);
-
-        WHEN("the state array is split")
-        {
-            auto const split = merovingian::homeserver::split_send_join_state_events(array, alice);
-
-            THEN("the unclassifiable entry defaults to the synchronous critical path, not lost")
-            {
-                REQUIRE(split.critical.size() == 1U);
-                REQUIRE(split.background.empty());
-            }
-        }
-    }
-}
-
-SCENARIO("split_send_join_state_events returns an empty split for an empty state array",
-         "[homeserver][federation][send_join][fast-join]")
-{
-    GIVEN("an empty state array")
-    {
-        auto const alice = std::string{"@alice:"} + local_server;
-
-        WHEN("the state array is split")
-        {
-            auto const split =
-                merovingian::homeserver::split_send_join_state_events(merovingian::canonicaljson::Array{}, alice);
-
-            THEN("both halves are empty")
-            {
-                REQUIRE(split.critical.empty());
-                REQUIRE(split.background.empty());
             }
         }
     }

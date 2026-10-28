@@ -201,7 +201,7 @@
 * [0214 - The URL preview cache is keyed by URL alone and caches failures](0214-url-preview-cache-is-keyed-by-url-and-caches-failures.md)
 * [0215 - The event table owns its rows and indexes them by event ID and by stream order through positions](0215-the-event-table-indexes-by-id-and-by-stream-order-through-positions.md)
 * [0216 - The upgrade path is tested from a forward-only schema seam and a database the previous release wrote](0216-upgrade-path-is-tested-from-a-forward-only-seam-and-a-real-previous-release-fixture.md)
-* [0217 - Branch coverage excludes the compiler's exception edges](0217-branch-coverage-excludes-compiler-exception-edges.md)
+* [0217 - Branch coverage excludes the compiler's exception edges](0217-branch-coverage-excludes-compiler-exception-edges.md) — Refined by ADR-0253: branches on lines without code (a function's closing brace) are excluded too
 * [0218 - OS-supplied dependencies carry no wrap file](0218-os-supplied-dependencies-carry-no-wrap.md)
 * [0219 - Email pushers mail only the account's own addresses, an unread count, in a delayed digest](0219-email-pushers-mail-only-the-accounts-own-addresses-an-unread-count-in-a-delayed-digest.md)
 * [0220 - SMTP goes through libcurl, with TLS required except to a loopback literal](0220-smtp-goes-through-libcurl-with-tls-required-except-to-a-loopback-literal.md)
@@ -222,6 +222,20 @@
 * [0235 - Complement evidence is a maintainer-signed record tied to the shipped binary](0235-complement-evidence-is-a-maintainer-signed-record-tied-to-the-shipped-binary.md)
 * [0236 - The password policy is configurable, strict by default](0236-the-password-policy-is-configurable-strict-by-default.md)
 * [0237 - Complement runs only its federation and client-server packages](0237-complement-runs-only-its-federation-and-client-server-packages.md)
+* [0238 - The key resolver uses the key it fetched, not a cache read-back](0238-the-key-resolver-uses-the-key-it-fetched-not-a-cache-read-back.md)
+* [0239 - A room upgrade to version 12 omits predecessor.event_id](0239-a-room-upgrade-to-version-12-omits-predecessor-event-id.md)
+* [0240 - power_level_content_override replaces top-level keys](0240-power-level-content-override-replaces-top-level-keys.md)
+* [0241 - A federated join verifies and persists all returned state before it returns](0241-a-federated-join-verifies-and-persists-all-returned-state-before-it-returns.md)
+* [0242 - A join tries only the servers the client names](0242-a-join-tries-only-the-servers-the-client-names.md)
+* [0243 - A remote knock keeps its stripped state in the invite record](0243-a-remote-knock-keeps-its-stripped-state-in-the-invite-record.md) — Refined by ADR-0251: the record also keeps the resident that accepted the knock, where its withdrawal goes
+* [0244 - A server that has left a room rejoins through a resident](0244-a-server-that-has-left-a-room-rejoins-through-a-resident.md)
+* [0245 - Login matches a user ID exactly, then downcased](0245-login-matches-a-user-id-exactly-then-downcased.md)
+* [0246 - The password-hashing concurrency cap is configurable](0246-the-password-hashing-concurrency-cap-is-configurable.md)
+* [0247 - No sync position passes a stream ordering still being committed](0247-no-sync-position-passes-a-stream-ordering-still-being-committed.md)
+* [0250 - SonarQube Cloud analysis runs in CI against the build's compilation database](0250-sonarqube-cloud-analysis-runs-in-ci-against-the-build-s-compilation-database.md)
+* [0251 - A knock is withdrawn through the resident that accepted it](0251-a-knock-is-withdrawn-through-the-resident-that-accepted-it.md)
+* [0252 - One membership exchange per user and room at a time](0252-one-membership-exchange-per-user-and-room-at-a-time.md)
+* [0253 - Branch coverage excludes branches on lines without code](0253-branch-coverage-excludes-branches-on-lines-without-code.md)
 
 ## Proposed Records
 
@@ -256,3 +270,5 @@
 * [0064 - Spec-conformant PDU ingestion with delta state groups](0064-spec-conformant-pdu-ingestion-with-delta-state-groups.md) — Refined by ADR-0225: when the state across a room's forward extremities cannot be resolved, a local event is built on the newest extremity alone and the others are retired, instead of being refused; and by ADR-0228: local and federated-join bookkeeping commits in one transaction with the event
 * [0092 - Normalize known rate-limit routes and evict least-recently-used buckets](0092-normalize-rate-limit-routes-and-evict-lru.md) — Refined by ADR-0230: the matcher is also the list of served paths, so every implemented route, static or dynamic, must be recognised, and a path it cannot place is answered 404 M_UNRECOGNIZED before authentication
 * [0234 - A Complement run is judged by a summariser over a checked-in skip list](0234-a-complement-run-is-judged-by-a-summariser-over-a-checked-in-skip-list.md) — Refined by ADR-0237: only Complement's `./tests` and `./tests/csapi` packages run; the `tests/msc*` packages test proposals outside v1.19
+* [0090 - Bound Argon2id work with a process-wide admission semaphore](0090-bound-argon2id-work-with-admission.md) — Refined by ADR-0246: the semaphore's capacity is `security.password_hashing.max_concurrent` (default 4, 1 to 128), taken at start-up
+* [0229 - SonarQube Cloud ignores tests and tooling, and keeps the server, packaging and workflows](0229-sonarqube-cloud-ignores-tests-and-tooling-and-keeps-the-server-packaging-and-workflows.md) — Refined by ADR-0250: the analysis runs in CI against the build's compilation database, and the exclusions live in `sonar-project.properties`

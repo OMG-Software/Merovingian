@@ -8,6 +8,7 @@
 #include "merovingian/http/outbound_client.hpp"
 
 #include <cstdint>
+#include <functional>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -100,7 +101,9 @@ using RemoteKeyClock = std::function<std::uint64_t()>;
 // Composes the lookup/fetch/verify/cache flow into a single resolver suitable
 // for `FederationRuntimeState::remote_key_resolver`. Lookups hit the
 // persistent cache first; misses or near-expiry entries trigger an outbound
-// fetch which is verified and stored before being returned.
+// fetch, which is verified and returned. Caching the fetched key is
+// best-effort: a federation worker cannot write the cache, so the fetched key
+// is returned whether or not the write succeeds (ADR-0238).
 //
 // `own_server_name` is this server's name (FED-1, ADR-0083). A lookup for it
 // never goes to the network and never writes the cache: it is answered only
@@ -109,15 +112,28 @@ using RemoteKeyClock = std::function<std::uint64_t()>;
 // Empty means no own name is known (tests of remote behaviour only).
 [[nodiscard]] auto make_persistent_remote_key_resolver(database::PersistentStore& store, http::OutboundClient& client,
                                                        ServerDiscoveryNetwork& network, std::uint32_t timeout_seconds,
-                                                       RemoteKeyClock now_ms,
-                                                       std::string_view own_server_name = {}) -> RemoteKeyResolver;
+                                                       RemoteKeyClock now_ms, std::string_view own_server_name = {})
+    -> RemoteKeyResolver;
 
 // As above, but both the resolver's own discovery lookup and the fetch's
 // internal lookup go through a TTL-bounded `CachedServerDiscovery`, so cache
 // hits pay no DNS cascade and a miss pays it once for both.
 [[nodiscard]] auto make_persistent_remote_key_resolver(database::PersistentStore& store, http::OutboundClient& client,
                                                        CachedServerDiscovery& discovery, std::uint32_t timeout_seconds,
-                                                       RemoteKeyClock now_ms,
-                                                       std::string_view own_server_name = {}) -> RemoteKeyResolver;
+                                                       RemoteKeyClock now_ms, std::string_view own_server_name = {})
+    -> RemoteKeyResolver;
+
+// A resolver's two network steps: resolving a server name to a destination,
+// and fetching and self-verifying the server's published keys.
+using RemoteKeyDiscoverFn = std::function<ServerDiscoveryResult(std::string_view, std::uint32_t)>;
+using RemoteKeyFetchFn = std::function<RemoteKeyFetchResult(http::OutboundClient&, std::string_view, std::uint32_t)>;
+
+// As above, with the network steps supplied by the caller; the two overloads
+// above bind them to a discovery network or cache. Lets tests drive the
+// resolver's cache and trust decisions without a live network.
+[[nodiscard]] auto make_remote_key_resolver(database::PersistentStore& store, http::OutboundClient& client,
+                                            std::uint32_t timeout_seconds, RemoteKeyClock now_ms,
+                                            RemoteKeyDiscoverFn discover, RemoteKeyFetchFn fetch_keys,
+                                            std::string_view own_server_name = {}) -> RemoteKeyResolver;
 
 } // namespace merovingian::federation

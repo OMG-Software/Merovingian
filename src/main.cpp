@@ -63,7 +63,7 @@
 namespace
 {
 
-constexpr auto version = std::string_view{"0.12.58"};
+constexpr auto version = std::string_view{"0.12.59"};
 
 struct BootstrapConfigResult final
 {
@@ -670,6 +670,8 @@ auto log_startup_summary(BootstrapConfigResult const& result) -> void
     LOG_INFO("Registration enabled: " + std::string{config.security().registration.enabled ? "true" : "false"});
     LOG_INFO("Federation enabled: " + std::string{config.security().federation.enabled ? "true" : "false"});
     LOG_INFO("Media upload limit: " + config.security().media.max_upload_size);
+    // ADR-0246: the memory budget behind a 429 "too many concurrent authentication attempts".
+    LOG_INFO("Concurrent password hashes: " + std::to_string(config.security().password_hashing.max_concurrent));
     log_library_versions(runtime_media);
 }
 

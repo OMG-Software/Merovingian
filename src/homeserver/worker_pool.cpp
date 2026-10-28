@@ -676,7 +676,6 @@ namespace
         // the network, so runtime.mutex is released around it.
         auto const resolve = [&runtime](std::string_view server_name, std::string_view key_id) {
             auto const unlocked = RuntimeLockRelease{};
-            std::ignore = unlocked;
             return federation::resolve_verification_key(runtime.federation, {}, server_name, key_id);
         };
         // R05: every key ID listed for the sender's server, not only the first.

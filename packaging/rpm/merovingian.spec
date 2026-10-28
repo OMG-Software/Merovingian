@@ -1,5 +1,5 @@
 Name:           merovingian
-Version:        0.12.58
+Version:        0.12.59
 Release:        1%{?dist}
 Summary:        Secure Matrix Protocol homeserver
 
@@ -101,6 +101,10 @@ fi
 %{_sysconfdir}/merovingian/merovingian.conf.example
 
 %changelog
+* Tue Oct 27 2026 James Chapman <claude@ping.me.uk> - 0.12.59-1
+- Federation workers resolve remote signing keys again, and joins and leaves set their own
+  origin_server_ts instead of signing the resident server's.
+- Run the SonarQube Cloud analysis from CI against the build's compilation database.
 * Tue Oct 27 2026 James Chapman <claude@ping.me.uk> - 0.12.58-1
 - Make the password policy configurable (character classes and minimum length, strict by
   default), answer a refused password with M_WEAK_PASSWORD, and relax the policy for Complement.

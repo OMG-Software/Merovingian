@@ -270,6 +270,17 @@ class RenderedConfigTests(unittest.TestCase):
                 # THEN none is low enough for a Complement run to meet.
                 self.assert_out_of_reach(key)
 
+    def test_password_hashing_admits_complements_parallel_logins(self) -> None:
+        # GIVEN the rendered config.
+        # WHEN the concurrent password hashing cap is read.
+        cap = self.config.get("security.password_hashing.max_concurrent")
+        # THEN it is set, above the default of four, and within what the server accepts:
+        # TestLogin and TestRegistration run their subtests in parallel, and four
+        # concurrent Argon2id hashes answered some of them 429 (ADR-0246).
+        self.assertIsNotNone(cap)
+        self.assertGreaterEqual(int(cap), 16)
+        self.assertLessEqual(int(cap), 128)
+
     def test_the_password_policy_admits_complements_passwords(self) -> None:
         # GIVEN the rendered config.
         # WHEN the password policy is read.

@@ -650,7 +650,14 @@ SCENARIO("Integrated Matrix v1.19 interop flow works with registration-issued se
                 auto const* type = event == nullptr ? nullptr : string_member(*event, "type");
                 return type != nullptr && *type == "m.room.encryption";
             }));
-            REQUIRE(std::ranges::any_of(*bob_state_events, [&bob](merovingian::canonicaljson::Value const& value) {
+            // Spec (GET /sync, JoinedRoom `state`, v1.19): state "up to the start of the
+            // timeline". Bob's join is in this sync's timeline, so it is not repeated in `state`;
+            // a client takes the room's state from `state` followed by the timeline.
+            auto const* bob_timeline = object_member_as_object(*bob_room_entry, "timeline");
+            REQUIRE(bob_timeline != nullptr);
+            auto const* bob_timeline_events = object_member_as_array(*bob_timeline, "events");
+            REQUIRE(bob_timeline_events != nullptr);
+            auto const is_bob_join = [&bob](merovingian::canonicaljson::Value const& value) {
                 auto const* event = std::get_if<merovingian::canonicaljson::Object>(&value.storage());
                 auto const* type = event == nullptr ? nullptr : string_member(*event, "type");
                 auto const* state_key = event == nullptr ? nullptr : string_member(*event, "state_key");
@@ -658,7 +665,9 @@ SCENARIO("Integrated Matrix v1.19 interop flow works with registration-issued se
                 auto const* membership = content == nullptr ? nullptr : string_member(*content, "membership");
                 return type != nullptr && state_key != nullptr && content != nullptr && membership != nullptr &&
                        *type == "m.room.member" && *state_key == bob.user_id && *membership == "join";
-            }));
+            };
+            REQUIRE((std::ranges::any_of(*bob_state_events, is_bob_join) ||
+                     std::ranges::any_of(*bob_timeline_events, is_bob_join)));
 
             auto const alice_join_to_sync = merovingian::homeserver::handle_client_server_request(
                 runtime, {"GET", "/_matrix/client/v3/sync", alice.access_token, {}});

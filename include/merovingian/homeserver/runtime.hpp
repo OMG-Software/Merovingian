@@ -47,6 +47,7 @@
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <set>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -219,6 +220,11 @@ struct LocalDatabase final
     // move-constructible (std::mutex is not moveable).
     std::unique_ptr<KeyServerCache> key_server_cache{std::make_unique<KeyServerCache>()};
     std::uint64_t next_stream_ordering{1U};
+    // ADR-0247: orderings reserved for events that are committed with
+    // runtime.mutex released and not yet applied to the store. No sync
+    // position passes the oldest of them (visible_stream_position). Guarded by
+    // runtime.mutex; entries are added and removed only by PendingStreamOrdering.
+    std::multiset<std::uint64_t> pending_stream_orderings{};
 };
 
 // Caps on the in-memory ephemeral state a federating peer can create
@@ -435,18 +441,9 @@ struct HomeserverRuntime final
     // the *design contract* directly and cheaply: every room-residency
     // change must notify the worker, regardless of whether federation_proxy
     // happens to be wired to a real worker in that test. Always nullptr in
-    // production; never read except to append to it.
-    //
-    // Lifetime hazard for callers: join_room's background member-fill task
-    // (see orphan_futures_) captures `runtime` by reference and may call
-    // notify_room_changed() — writing through this pointer — for as long as
-    // it is still in flight, and this runtime's destructor blocks until that
-    // task drains. A test that points this at a local std::vector declared
-    // AFTER `runtime` gets the wrong destruction order (the vector frees
-    // first) and the background task can write through a dangling pointer.
-    // Declare the target vector BEFORE the runtime/HomeserverRuntime
-    // variable so it destructs after runtime's blocking dtor has drained
-    // every orphaned future.
+    // production; never read except to append to it. Declare the target
+    // vector BEFORE the runtime/HomeserverRuntime variable, so it outlives
+    // anything the runtime does while it is torn down.
     std::vector<std::string>* test_room_changed_log{nullptr};
     // Owned implementation of the runtime signing provider: the production
     // multi-key provider in main, or the refusing provider in the federation
@@ -535,6 +532,11 @@ struct HomeserverRuntime final
     // Established only by the outbound join RAII lease, before releasing mutex.
     // Same-room overlapping joins are refused; startup moves have no leases.
     std::map<std::string, PendingFederatedJoin, std::less<>> pending_federated_joins{};
+    // (room_id, user_id) pairs whose membership a federated join, knock or leave
+    // is changing with `mutex` released for its network exchange (ADR-0252).
+    // Every /join, /knock and /leave for a pair here is refused with 429 until the
+    // exchange ends. Guarded by `mutex`.
+    std::set<std::pair<std::string, std::string>> membership_exchanges{};
     // R03 (ADR-0165): when each retained federation PDU (store.deferred_pdus,
     // by event_id) may next be retried. In memory only: a row with no entry is
     // due at once, which is what every retained PDU is after a restart.
@@ -727,6 +729,59 @@ struct SessionRefreshResult final
 // event row, so a counter rebuilt from events alone regresses across
 // restarts and invalidates every pos/since token clients still hold.
 [[nodiscard]] auto allocate_stream_ordering(LocalDatabase& database) -> std::uint64_t;
+// Allocates `count` consecutive orderings and persists the high-water mark once,
+// for a caller that stores that many events in one transaction. Returns the
+// first; the caller may leave some unused.
+[[nodiscard]] auto allocate_stream_orderings(LocalDatabase& database, std::size_t count) -> std::uint64_t;
+
+// ADR-0247: marks `ordering` as reserved for an event not yet applied to the
+// store, for as long as it lives. Construct it right after allocating the
+// ordering, and destroy it once the event is applied (or abandoned), both with
+// runtime.mutex held: a path that commits with the mutex released must hold one
+// across the commit, or a sync in that window hands out a position past an
+// event the client then never receives.
+class PendingStreamOrdering final
+{
+public:
+    PendingStreamOrdering(LocalDatabase& database, std::uint64_t ordering);
+    ~PendingStreamOrdering();
+
+    PendingStreamOrdering(PendingStreamOrdering const&) = delete;
+    auto operator=(PendingStreamOrdering const&) -> PendingStreamOrdering& = delete;
+    PendingStreamOrdering(PendingStreamOrdering&&) = delete;
+    auto operator=(PendingStreamOrdering&&) -> PendingStreamOrdering& = delete;
+
+private:
+    LocalDatabase& m_database;
+    std::uint64_t m_ordering;
+};
+
+// ADR-0247: a PendingStreamOrdering whose end also wakes the syncs waiting on the
+// event stream. Ending a reservation can move the visible position past later
+// events already applied, whether its own event was applied or its commit failed;
+// a long-poll not told of it sleeps until something else is published. Use it on
+// every path that commits with runtime.mutex released. Its destructor takes
+// runtime.mutex itself (it is recursive), so it may end with a room stripe held.
+class PublishedStreamOrdering final
+{
+public:
+    PublishedStreamOrdering(HomeserverRuntime& runtime, std::uint64_t ordering);
+    ~PublishedStreamOrdering() noexcept;
+
+    PublishedStreamOrdering(PublishedStreamOrdering const&) = delete;
+    auto operator=(PublishedStreamOrdering const&) -> PublishedStreamOrdering& = delete;
+    PublishedStreamOrdering(PublishedStreamOrdering&&) = delete;
+    auto operator=(PublishedStreamOrdering&&) -> PublishedStreamOrdering& = delete;
+
+private:
+    HomeserverRuntime& m_runtime;
+    std::optional<PendingStreamOrdering> m_pending;
+};
+
+// The newest event stream position a sync token, a long-poll check or a
+// sliding-sync pos may name: just below the oldest pending ordering, or the
+// newest allocated one when none is pending. Read with runtime.mutex held.
+[[nodiscard]] auto visible_stream_position(LocalDatabase const& database) noexcept -> std::uint64_t;
 [[nodiscard]] auto start_runtime(config::Config const& config) -> RuntimeStartResult;
 [[nodiscard]] auto start_runtime(config::Config const& config, database::SchemaState existing_state)
     -> RuntimeStartResult;

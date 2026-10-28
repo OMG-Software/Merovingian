@@ -14,9 +14,11 @@
 #include "merovingian/federation/runtime_federation.hpp"
 #include "merovingian/homeserver/local_http_router.hpp"
 #include "merovingian/rooms/room_version_policy.hpp"
+#include "merovingian/sync/sync_notifier.hpp"
 #include "merovingian/trust_safety/policy_engine.hpp"
 
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/generators/catch_generators.hpp>
 
 #include <algorithm>
 #include <array>
@@ -1662,6 +1664,63 @@ SCENARIO("A typing EDU waits for runtime.mutex before touching typing state",
                 REQUIRE(merovingian::homeserver::current_typing_users_in_room(*runtime, "!room:matrix.example.org") ==
                         std::vector<std::string>{"@first:matrix.example.org",
                                                  "@second:matrix.example.org"}); // Fixture: both EDUs applied.
+            }
+        }
+    }
+}
+
+// The EDU sink runs without runtime.mutex, as above. A presence EDU writes presence rows and a
+// device-list EDU reads room membership and writes device-list changes, both shared store state
+// request threads read and write under the lock, and each then reads the visible stream position,
+// which must be read with it held (ADR-0247; review of #541). Each case takes the lock itself.
+SCENARIO("A presence or device-list EDU waits for runtime.mutex before touching store state",
+         "[homeserver][federation][presence][device-lists][concurrency]")
+{
+    GIVEN("a runtime whose federation callbacks are wired, and another thread holding runtime.mutex")
+    {
+        auto const origin = std::string{"matrix.example.org"};
+        auto const key_id = std::string{"ed25519:auto"};
+        // Declared before the runtime, so it outlives the runtime that points at it.
+        auto const notifier = std::make_unique<merovingian::sync::SyncNotifier>();
+        auto runtime = edu_runtime(origin, key_id, "store-lock-seed", {"!room:matrix.example.org"});
+        runtime->sync_notifier = notifier.get();
+        // A first transaction wires the federation callbacks, edu_sink among them.
+        REQUIRE(merovingian::homeserver::handle_federation_http_request(
+                    *runtime, edu_request(origin, key_id, "txn-store-lock-wire", "m.typing",
+                                          typing_content("!room:matrix.example.org", "@first:matrix.example.org")))
+                    .status == 200U);                             // Fixture: wires the callbacks.
+        REQUIRE(static_cast<bool>(runtime->federation.edu_sink)); // Fixture: the sink is installed.
+        auto const presence = merovingian::federation::InboundEduEnvelope{
+            merovingian::federation::EduType::presence, "m.presence",
+            R"({"push":[{"user_id":"@remote:matrix.example.org","presence":"online","last_active_ago":5}]})", origin};
+        auto const device_list = merovingian::federation::InboundEduEnvelope{
+            merovingian::federation::EduType::device_list_update, "m.device_list_update",
+            R"({"user_id":"@remote:matrix.example.org","device_id":"DEVICE","stream_id":1})", origin};
+        auto const envelope = GENERATE_COPY(presence, device_list);
+
+        WHEN("the EDU is delivered to the sink while the lock is held, then the lock is released")
+        {
+            auto held = std::unique_lock<merovingian::homeserver::RuntimeMutex>{runtime->mutex};
+            // As in the typing scenario: the sink cannot finish while the lock is held, so the
+            // timing can only miss a regression under extreme load, never fail a correct build.
+            auto entering = std::promise<void>{};
+            auto entered = entering.get_future();
+            auto delivered = std::async(std::launch::async, [&runtime, &envelope, &entering] {
+                entering.set_value();
+                return runtime->federation.edu_sink(envelope).status;
+            });
+            entered.wait();
+            auto const finished_while_locked =
+                delivered.wait_for(std::chrono::milliseconds{300}) == std::future_status::ready;
+            held.unlock();
+            auto const status = delivered.get();
+
+            THEN("the EDU completes only after the lock is released, and is accepted")
+            {
+                CAPTURE(envelope.edu_type);
+                REQUIRE_FALSE(finished_while_locked); // Project policy: store state is read and written under
+                                                      // runtime.mutex.
+                REQUIRE(status == merovingian::federation::EduDispositionStatus::accepted); // Fixture: a valid EDU.
             }
         }
     }

@@ -1084,10 +1084,13 @@ Two independent mechanisms close this, together:
    PostgreSQL column-level grant — so even a bug that widened the C++ query
    back to five columns would be refused at the database. The worker's
    *write* attempt (caching a freshly-fetched key) is expected to fail under
-   this SELECT-only grant; the caller already discards that result
-   (`std::ignore = cache_remote_server_keys(...)`,
-   `src/federation/remote_key_cache.cpp`) and simply re-fetches on the next
-   request, so the failure degrades performance, not correctness.
+   this SELECT-only grant, as it does on SQLite, where the worker's connection
+   is read-only. The resolver therefore returns the key it fetched and verified
+   directly, never a read-back of the cache (ADR-0238, 0.12.59); before that it
+   read the key back after the failed write, found nothing, and refused every
+   server the worker had not cached at start-up. The worker keeps a resolved
+   remote in its in-memory `runtime.remotes`, so the failed write costs at most
+   one fetch per server and key per worker start.
 
    Every table `PersistentStore` can hold that is **not** in the allowlist is
    read by no worker-local code path — verified table by table during review
@@ -1225,6 +1228,13 @@ one transaction. `reconcile_memberships_with_current_state` runs at main's hydra
 current member event's membership when the row is missing, says `join` while the event does not, or is older
 than the event; a newer row is kept. Corrected rows get a fresh stream ordering and are corrected in memory
 even if the write fails. No schema change (ADR-0149).
+
+Since 0.12.59 a `knock` projection may carry the invite record too: a knock on a room on another server
+keeps its signed knock event and the resident's verified `knock_room_state` there, which `/sync` shows as
+`knock_state` (ADR-0243). Its `resident_server` column names the server that accepted the knock, where
+`POST /leave` sends the knock's withdrawal (ADR-0251); it is empty for an invite. Join, leave and ban end
+it, and an invite answering the knock replaces it. Every reader looks the record up only for a user whose
+membership is `invite` or `knock`, or deletes it; a new reader must check the membership too.
 
 ### Write connection pool (DB-7, 0.12.26)
 

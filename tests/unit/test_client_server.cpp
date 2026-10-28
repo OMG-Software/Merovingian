@@ -35,6 +35,7 @@
 #include "merovingian/observability/logger.hpp"
 
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/generators/catch_generators.hpp>
 
 #include <algorithm>
 #include <array>
@@ -2015,10 +2016,55 @@ SCENARIO("Client-server typing and messages routes dispatch through the room blo
             auto const messages = merovingian::homeserver::handle_client_server_request(
                 runtime, {"GET", "/_matrix/client/v3/rooms/!nonexistent:example.org/messages", token, {}});
 
-            THEN("the response is 404 M_NOT_FOUND")
+            THEN("the response is 403 M_FORBIDDEN, the only refusal the /messages table lists")
             {
-                REQUIRE(messages.response.status == 404U);
-                REQUIRE(messages.response.body.find("M_NOT_FOUND") != std::string::npos);
+                REQUIRE(messages.response.status == 403U);
+                REQUIRE(messages.response.body.find("M_FORBIDDEN") != std::string::npos);
+            }
+        }
+
+        WHEN("the user requests messages with a filter that is not a JSON RoomEventFilter")
+        {
+            // `filter` is "A JSON RoomEventFilter"; one that is not JSON, or not an
+            // object, is refused as /context refuses it, never dropped for an
+            // unfiltered page (review of #541).
+            auto const filter = GENERATE(as<std::string>{}, "not-json", "%5B1%2C2%5D", "%22text%22");
+            auto const messages = merovingian::homeserver::handle_client_server_request(
+                runtime, {"GET", "/_matrix/client/v3/rooms/" + id + "/messages?dir=b&filter=" + filter, token, {}});
+
+            THEN("the response is 400 M_BAD_JSON")
+            {
+                CAPTURE(filter, messages.response.body);
+                REQUIRE(messages.response.status == 400U);
+                REQUIRE(messages.response.body.find("M_BAD_JSON") != std::string::npos);
+            }
+        }
+
+        WHEN("the user requests messages with a filter whose rooms or not_rooms excludes the room")
+        {
+            // A RoomEventFilter's `rooms` lists the rooms to include and `not_rooms` the rooms to
+            // exclude; the room's events pass only if the room does (review of #541).
+            auto const filter = GENERATE_COPY(std::string{"%7B%22not_rooms%22%3A%5B%22"} + id + "%22%5D%7D",
+                                              std::string{"%7B%22rooms%22%3A%5B%22%21other%3Aexample.org%22%5D%7D"});
+            auto const messages = merovingian::homeserver::handle_client_server_request(
+                runtime, {"GET", "/_matrix/client/v3/rooms/" + id + "/messages?dir=b&filter=" + filter, token, {}});
+
+            THEN("the page holds none of the room's events, timeline or state")
+            {
+                CAPTURE(filter, messages.response.body);
+                REQUIRE(messages.response.status == 200U);
+                auto const body = merovingian::tests::parse_object(messages.response.body);
+                auto const* chunk = merovingian::tests::object_member_as_array(body, "chunk");
+                REQUIRE(chunk != nullptr);
+                REQUIRE(chunk->empty());
+                // `state` is "relevant to showing the chunk"; there is no chunk to show.
+                // It may be omitted; when present it is an array, and empty.
+                if (merovingian::tests::object_member(body, "state") != nullptr)
+                {
+                    auto const* state = merovingian::tests::object_member_as_array(body, "state");
+                    REQUIRE(state != nullptr);
+                    REQUIRE(state->empty());
+                }
             }
         }
     }

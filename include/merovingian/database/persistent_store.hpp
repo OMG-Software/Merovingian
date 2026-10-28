@@ -298,6 +298,10 @@ struct PersistentInvite final
     std::string signed_event_json{};
     std::vector<std::string> invite_state_events_json{};
     std::uint64_t stream_ordering{0U};
+    // A knock's record: the resident server that accepted the knock, where its
+    // withdrawal goes (ADR-0251). Empty for an invite and for a knock on a room
+    // this server is in.
+    std::string resident_server{};
 };
 
 // DB-4: the `membership` row, and the change to the user's invite metadata, that
@@ -305,8 +309,11 @@ struct PersistentInvite final
 // (or prepare_store_event_with_state) so the event, its current_state row, the
 // membership row and the invite change commit in ONE transaction: a ban can never
 // be durable while the row still says join. The invite change follows the
-// membership: "invite" writes `invite` (when given); "join", "leave" and "ban"
-// delete the user's invite metadata; anything else leaves it alone.
+// membership: "invite" writes `invite` (when given), and so does "knock", whose
+// `invite` is the knock on a room on another server and the knock_room_state it
+// was answered with (ADR-0243); "join", "leave" and "ban" delete the user's invite
+// metadata; anything else leaves it alone. Readers of the record must check the
+// user's membership before treating it as an invite.
 struct MembershipProjection final
 {
     std::string user_id{};

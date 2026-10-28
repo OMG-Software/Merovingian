@@ -99,6 +99,12 @@ struct OutboundCall final
 [[nodiscard]] auto build_edu_transaction_body(std::string_view origin, std::string_view edu_type,
                                               std::string_view edu_content_json) -> std::optional<std::string>;
 
+// Builds a PUT /send/{txnId} body carrying one PDU (`pdu_json`, re-serialized canonically)
+// with the Matrix-required top-level `origin` and `origin_server_ts`, and an empty `edus`
+// array. An empty origin or a PDU that is not a JSON object yields std::nullopt.
+[[nodiscard]] auto build_pdu_transaction_body(std::string_view origin, std::string_view pdu_json)
+    -> std::optional<std::string>;
+
 // Builds the canonical-JSON *content* of an m.receipt EDU per Matrix spec
 // §receipts. Shape: { roomId: { receiptType: { userId: { event_ids: [eventId],
 // data: { ts: N, thread_id: T } } } } }; `thread_id` is omitted for an

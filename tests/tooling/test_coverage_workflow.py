@@ -43,6 +43,16 @@ class CoverageWorkflowTests(unittest.TestCase):
         self.assertRegex(workflow, r"(?m)^[ \t]+--gcov-executable gcov-14[ \t]*\\[ \t]*$")
         self.assertNotIn("llvm-cov gcov\" \\", workflow)
 
+    def test_branch_coverage_leaves_out_branches_on_lines_without_code(self) -> None:
+        # GIVEN the dedicated coverage workflow.
+        workflow = COVERAGE_WORKFLOW.read_text(encoding="utf-8")
+
+        # WHEN gcovr reports branch coverage.
+        # THEN branches gcov attributes to lines with no code of ours, such as a
+        # function's closing brace where the compiler runs the destructors of its
+        # locals, are left out (ADR-0253). Matched as an argument line of the call.
+        self.assertRegex(workflow, r"(?m)^[ \t]+--exclude-unreachable-branches[ \t]*\\[ \t]*$")
+
     def test_coverage_upload_excludes_the_real_server_entrypoint(self) -> None:
         # GIVEN the coverage workflow and the repository Codecov config.
         self.assertTrue(COVERAGE_WORKFLOW.is_file(), "coverage workflow is missing")

@@ -111,6 +111,13 @@ namespace
                 target.unread_thread_notifications = *flag;
             }
         }
+        if (auto const* contains_url = find_member(source, "contains_url"); contains_url != nullptr)
+        {
+            if (auto const* flag = std::get_if<bool>(&contains_url->storage()); flag != nullptr)
+            {
+                target.contains_url = *flag;
+            }
+        }
         if (auto const* redundant = find_member(source, "include_redundant_members"); redundant != nullptr)
         {
             if (auto const* flag = std::get_if<bool>(&redundant->storage()); flag != nullptr)
@@ -325,6 +332,16 @@ auto event_passes_filter(EventTypeFilter const& filter, std::string_view event_t
         return false;
     }
     return true;
+}
+
+auto event_passes_room_event_filter(EventTypeFilter const& filter, std::string_view event_type, std::string_view sender,
+                                    bool content_has_url) noexcept -> bool
+{
+    if (filter.contains_url.has_value() && *filter.contains_url != content_has_url)
+    {
+        return false;
+    }
+    return event_passes_filter(filter, event_type, sender);
 }
 
 auto room_passes_filter(RoomFilter const& filter, std::string_view room_id) noexcept -> bool
