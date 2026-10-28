@@ -218,15 +218,7 @@ SCENARIO("The device that sent an event is given its transaction ID, no other cl
 }
 
 // Spec: Matrix Client-Server API v1.19
-// Endpoint / Section: ClientEvent `unsigned.membership`
-// URL: ../../docs/matrix-v1.19-spec/client-server-api.md#get_matrixclientv3sync
-//
-// `membership`: "The room membership of the user making the request, at the time of the event.
-// This property is the value of the membership property of the requesting user's m.room.member
-// state at the point of the event, including any changes caused by the event. If the user had
-// yet to join the room at the time of the event (i.e, they have no m.room.member state), this
-// property is set to leave." Homeservers SHOULD populate it wherever practical.
-// Spec: Matrix Client-Server API v1.19, ClientEvent `unsigned` (transaction_id, membership)
+// Endpoint / Section: ClientEvent `unsigned.transaction_id` and `unsigned.membership`
 // URL: ../../docs/matrix-v1.19-spec/client-server-api.md#get_matrixclientv3sync
 //
 // Both fields describe the client reading the event: `transaction_id` "if the client being given
@@ -305,6 +297,15 @@ SCENARIO("A stored event's own unsigned.transaction_id and unsigned.membership n
     }
 }
 
+// Spec: Matrix Client-Server API v1.19
+// Endpoint / Section: ClientEvent `unsigned.membership`
+// URL: ../../docs/matrix-v1.19-spec/client-server-api.md#get_matrixclientv3sync
+//
+// `membership`: "The room membership of the user making the request, at the time of the event.
+// This property is the value of the membership property of the requesting user's m.room.member
+// state at the point of the event, including any changes caused by the event. If the user had
+// yet to join the room at the time of the event (i.e, they have no m.room.member state), this
+// property is set to leave." Homeservers SHOULD populate it wherever practical.
 SCENARIO("An event carries the requesting user's membership at the time of the event",
          "[conformance][client-server][event-format][unsigned]")
 {
