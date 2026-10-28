@@ -858,7 +858,9 @@ quickly finding everything a given `AGENTS.md` file contributed.
   never answers pinned all 8 request-pool threads (audit HTTP-2, OUT-7; ADR-0079). The caps are
   half of `server.http.request_threads`, never a separate setting. The `/thirdparty/*` lookups
   take the slot too, whenever they will call an appservice, but keep each appservice's own timeout
-  rather than one shared deadline (ADR-0181).
+  rather than one shared deadline (ADR-0181). The space hierarchy takes the slot at the first
+  child room it must ask another server for, holds it for the whole walk, and bounds the walk to
+  16 remote requests and 3 servers per room.
   Source: `src/homeserver/AGENTS.md`.
 
 - **Nothing may put a TLS client socket back into blocking mode after the handshake, and

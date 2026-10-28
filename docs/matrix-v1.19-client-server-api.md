@@ -359,6 +359,14 @@ expiry responses are outside that scenario's scope.
 | --- | --- | --- | --- | --- | --- |
 | `GET` | `/_matrix/client/v1/rooms/{roomId}/hierarchy` | `getSpaceHierarchy` | access token | - | 200, 400, 403, 429 |
 
+`getSpaceHierarchy` walks the space depth-first. A child room this server holds state for is judged from that state for the
+requesting user: joined or invited, `public`, `knock` / `knock_restricted`, `world_readable`, or `restricted` with the user joined
+to one of the rooms the join rule names. A child it holds no state for is asked for over federation
+(`GET /_matrix/federation/v1/hierarchy/{roomId}`) from the servers in the link's `via` (at most 3 per room, 16 requests per
+walk, one outbound-budget slot and one deadline per request, `429 M_LIMIT_EXCEEDED` when the budget is full) and kept only if
+the requesting user may see it according to what that server reported; local state, where the server has it, is always used
+instead of the remote answer. With `suggested_only=true` the walk and every space's `children_state` carry the suggested links only.
+
 ## Third-party Lookup
 
 | Method | Path | Operation ID | Auth | Request body | Responses |

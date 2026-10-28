@@ -1811,7 +1811,7 @@ namespace
         {
             suggested_only = true;
         }
-        auto body = runtime.space_hierarchy_provider(room_id, suggested_only);
+        auto body = runtime.space_hierarchy_provider(room_id, suggested_only, request.origin);
         if (body.empty())
         {
             return {404U, homeserver::matrix_error("M_NOT_FOUND", "Room not found")};

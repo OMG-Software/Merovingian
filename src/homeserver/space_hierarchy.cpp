@@ -6,14 +6,24 @@
 #include "merovingian/canonicaljson/parser.hpp"
 #include "merovingian/canonicaljson/serializer.hpp"
 #include "merovingian/canonicaljson/value.hpp"
+#include "merovingian/core/query_params.hpp"
+#include "merovingian/core/secret_buffer.hpp"
 #include "merovingian/crypto/encoding.hpp"
 #include "merovingian/database/persistent_store.hpp"
+#include "merovingian/federation/event_query.hpp"
+#include "merovingian/federation/outbound_transaction.hpp"
+#include "merovingian/federation/security.hpp"
+#include "merovingian/homeserver/client_outbound_proxy.hpp"
+#include "merovingian/homeserver/local_http_router.hpp"
+#include "merovingian/homeserver/request_lock.hpp"
+#include "merovingian/homeserver/room_service.hpp"
 
 #include <algorithm>
 #include <array>
 #include <cstddef>
 #include <cstdint>
 #include <limits>
+#include <map>
 #include <optional>
 #include <ranges>
 #include <set>
@@ -403,6 +413,22 @@ namespace
 
     // ---- Visibility checks ----------------------------------------------------
 
+    // True when `user_id` is joined to at least one of `room_ids`, as this server's current state of
+    // each of them says. A room this server holds no state for counts as not joined: a local user
+    // can only be joined to a room the server holds.
+    [[nodiscard]] auto user_joined_to_any(database::PersistentStore const& store, std::string_view user_id,
+                                          std::vector<std::string> const& room_ids) -> bool
+    {
+        return std::ranges::any_of(room_ids, [&](std::string const& room_id) {
+            auto const membership = user_membership(store, room_id, user_id);
+            return membership.has_value() && membership.value() == "join";
+        });
+    }
+
+    // Spec (CS API, GET /hierarchy, 200 `rooms`): the server returns a room the user is joined to or
+    // invited to, or that is `public`, `knock`/`knock_restricted`, or `world_readable`, or that is
+    // `restricted` "provided the user meets one of the specified conditions": here, joined to one of
+    // the rooms the join rule names.
     [[nodiscard]] auto can_view_room_client(database::PersistentStore const& store, std::string_view user_id,
                                             std::string_view room_id) -> bool
     {
@@ -427,6 +453,10 @@ namespace
             {
                 return true;
             }
+            if (rule.value() == "restricted" && user_joined_to_any(store, user_id, allowed_room_ids(store, room_id)))
+            {
+                return true;
+            }
         }
 
         if (world_readable(store, room_id))
@@ -437,8 +467,12 @@ namespace
         return false;
     }
 
-    [[nodiscard]] auto can_view_room_federation(database::PersistentStore const& store, std::string_view room_id)
-        -> bool
+    // Spec (SS API, GET /hierarchy): "the space-room's children the requesting server could feasibly
+    // peek/join". A restricted room is joinable by `origin` while a user of `origin` is joined to a
+    // room its join rule names, which is what a resident server checks when it is asked to join one
+    // (CS API, Restricted rooms).
+    [[nodiscard]] auto can_view_room_federation(database::PersistentStore const& store, std::string_view room_id,
+                                                std::string_view origin) -> bool
     {
         auto const rule = join_rule(store, room_id);
         if (rule.has_value())
@@ -451,12 +485,57 @@ namespace
             {
                 return true;
             }
+            if (rule.value() == "restricted")
+            {
+                auto const allowed = allowed_room_ids(store, room_id);
+                if (std::ranges::any_of(allowed, [&](std::string const& allowed_room) {
+                        return federation::origin_has_joined_user_in_room(store, allowed_room, origin);
+                    }))
+                {
+                    return true;
+                }
+            }
         }
         if (world_readable(store, room_id))
         {
             return true;
         }
         return false;
+    }
+
+    // The same test for a room this server holds no state for, from the summary another server gave
+    // of it: its own `world_readable`, `join_rule` ("When not present, the room is assumed to be
+    // `public`") and `allowed_room_ids`. Invites cannot apply: an invite to a local user would have
+    // made the room one this server holds.
+    [[nodiscard]] auto remote_summary_visible_to(database::PersistentStore const& store, std::string_view user_id,
+                                                 canonicaljson::Object const& summary) -> bool
+    {
+        auto const* readable = bool_member(summary, "world_readable");
+        if (readable != nullptr && *readable)
+        {
+            return true;
+        }
+        auto const* rule = string_member(summary, "join_rule");
+        if (rule == nullptr || *rule == "public" || *rule == "knock" || *rule == "knock_restricted")
+        {
+            return true;
+        }
+        if (*rule != "restricted")
+        {
+            return false;
+        }
+        auto allowed = std::vector<std::string>{};
+        if (auto const* ids = object_member_as_array(summary, "allowed_room_ids"))
+        {
+            for (auto const& id : *ids)
+            {
+                if (auto const* text = std::get_if<std::string>(&id.storage()))
+                {
+                    allowed.push_back(*text);
+                }
+            }
+        }
+        return user_joined_to_any(store, user_id, allowed);
     }
 
     // ---- Space child events ---------------------------------------------------
@@ -533,8 +612,10 @@ namespace
 
     // ---- Room summary chunk ---------------------------------------------------
 
+    // With `suggested_only`, `children_state` carries the suggested links only: the request asks the
+    // server to "only consider suggested rooms", and a link to an unsuggested room is not one.
     [[nodiscard]] auto room_summary_object(database::PersistentStore const& store, std::string_view room_id,
-                                           bool include_children_state) -> canonicaljson::Object
+                                           bool include_children_state, bool suggested_only) -> canonicaljson::Object
     {
         auto summary = canonicaljson::Object{};
         summary.push_back(json_member("room_id", json_str(room_id)));
@@ -609,6 +690,10 @@ namespace
             auto children_state = canonicaljson::Array{};
             for (auto const& child : space_children(store, room_id))
             {
+                if (suggested_only && !child.suggested)
+                {
+                    continue;
+                }
                 children_state.push_back(json_obj(stripped_child_state_event(child)));
             }
             summary.push_back(json_member("children_state", json_arr(std::move(children_state))));
@@ -623,45 +708,515 @@ namespace
 
     // ---- Depth-first traversal ------------------------------------------------
 
-    [[nodiscard]] auto collect_visible_room_ids_client(database::PersistentStore const& store, std::string_view user_id,
-                                                       std::string_view root_room_id, std::size_t max_depth,
-                                                       bool suggested_only) -> std::vector<std::string>
+    // ---- Child rooms this server holds no state for ------------------------------
+    //
+    // Spec (CS API, Server behaviour): "In the case where the server does not have access to the
+    // state of a child room, it can request the information over federation with the
+    // GET /hierarchy API ... the local data should be used instead of the remote server's data."
+    // Everything a remote server says is untrusted: only spec fields are copied, each with its
+    // type checked, and the user is shown a room only if the summary itself says they may see it.
+
+    // Bounds on one walk, so a space whose links name many unknown rooms, or a server that answers
+    // with a very large body, cannot make one request do unbounded work.
+    constexpr auto max_remote_requests_per_walk = std::size_t{16U};
+    constexpr auto max_remote_servers_per_room = std::size_t{3U};
+    constexpr auto max_remote_links_per_room = std::size_t{1024U};
+    constexpr auto max_remote_allowed_rooms = std::size_t{32U};
+
+    // A room as another server described it: the summary to show, and the links to follow.
+    struct RemoteRoom final
     {
-        auto result = std::vector<std::string>{};
+        canonicaljson::Object summary{};
+        std::vector<SpaceChild> links{};
+        bool is_space{false};
+        // True when the answer carried the room's `children_state`, so the links are complete. A
+        // federation `children` chunk need not carry it (the spec's chunk has none).
+        bool has_links{false};
+    };
+
+    struct RemoteAnswer final
+    {
+        RemoteRoom room{};
+        std::vector<RemoteRoom> children{};
+        std::vector<std::string> inaccessible{};
+    };
+
+    // Copies `key` from `in` to `out` when it is a string. False when it is present with another type.
+    [[nodiscard]] auto copy_optional_string(canonicaljson::Object const& in, std::string_view key,
+                                            canonicaljson::Object& out) -> bool
+    {
+        auto const* value = object_member(in, key);
+        if (value == nullptr)
+        {
+            return true;
+        }
+        auto const* text = std::get_if<std::string>(&value->storage());
+        if (text == nullptr)
+        {
+            return false;
+        }
+        out.push_back(json_member(std::string{key}, json_str(*text)));
+        return true;
+    }
+
+    // One `m.space.child` entry of a remote `children_state`, rebuilt from its spec fields only.
+    [[nodiscard]] auto sanitise_remote_link(canonicaljson::Value const& item) -> std::optional<SpaceChild>
+    {
+        auto const* event = std::get_if<canonicaljson::Object>(&item.storage());
+        if (event == nullptr)
+        {
+            return std::nullopt;
+        }
+        auto const* type = string_member(*event, "type");
+        auto const* state_key = string_member(*event, "state_key");
+        auto const* sender = string_member(*event, "sender");
+        auto const* timestamp = int_member(*event, "origin_server_ts");
+        auto const* content = object_member_as_object(*event, "content");
+        if (type == nullptr || *type != "m.space.child" || state_key == nullptr || state_key->empty() ||
+            sender == nullptr || timestamp == nullptr || content == nullptr)
+        {
+            return std::nullopt;
+        }
+        auto const* via = object_member_as_array(*content, "via");
+        if (via == nullptr)
+        {
+            return std::nullopt;
+        }
+        auto servers = string_array_values(*via);
+        if (servers.empty())
+        {
+            // An empty `via` removes the child from the space.
+            return std::nullopt;
+        }
+        auto link = SpaceChild{};
+        link.room_id = *state_key;
+        link.via = std::move(servers);
+        auto const* suggested = bool_member(*content, "suggested");
+        link.suggested = suggested != nullptr && *suggested;
+        link.origin_server_ts = *timestamp;
+        link.sender = *sender;
+        auto kept = canonicaljson::Object{};
+        auto via_values = canonicaljson::Array{};
+        for (auto const& server : link.via)
+        {
+            via_values.push_back(json_str(server));
+        }
+        kept.push_back(json_member("via", json_arr(std::move(via_values))));
+        if (suggested != nullptr)
+        {
+            kept.push_back(json_member("suggested", json_bool(*suggested)));
+        }
+        if (auto const* order = string_member(*content, "order"))
+        {
+            kept.push_back(json_member("order", json_str(*order)));
+        }
+        link.content = std::move(kept);
+        return link;
+    }
+
+    // A remote room chunk (the `room` or one entry of `children`), or nullopt when it is not one.
+    [[nodiscard]] auto sanitise_remote_room(canonicaljson::Value const& value, bool suggested_only)
+        -> std::optional<RemoteRoom>
+    {
+        auto const* in = std::get_if<canonicaljson::Object>(&value.storage());
+        if (in == nullptr)
+        {
+            return std::nullopt;
+        }
+        auto const* room_id = string_member(*in, "room_id");
+        if (room_id == nullptr || room_id->empty())
+        {
+            return std::nullopt;
+        }
+
+        auto summary = canonicaljson::Object{};
+        summary.push_back(json_member("room_id", json_str(*room_id)));
+
+        auto const* joined = int_member(*in, "num_joined_members");
+        summary.push_back(json_member("num_joined_members", json_int(joined == nullptr || *joined < 0 ? 0 : *joined)));
+        for (auto const* flag : {"guest_can_join", "world_readable"})
+        {
+            auto const* member = object_member(*in, flag);
+            if (member != nullptr && std::get_if<bool>(&member->storage()) == nullptr)
+            {
+                return std::nullopt;
+            }
+            auto const* value_bool = bool_member(*in, flag);
+            summary.push_back(json_member(flag, json_bool(value_bool != nullptr && *value_bool)));
+        }
+        for (auto const* key :
+             {"name", "topic", "canonical_alias", "avatar_url", "join_rule", "room_type", "room_version", "encryption"})
+        {
+            if (!copy_optional_string(*in, key, summary))
+            {
+                return std::nullopt;
+            }
+        }
+        if (auto const* allowed = object_member_as_array(*in, "allowed_room_ids"))
+        {
+            auto ids = canonicaljson::Array{};
+            for (auto const& id : *allowed)
+            {
+                if (auto const* text = std::get_if<std::string>(&id.storage());
+                    text != nullptr && ids.size() < max_remote_allowed_rooms)
+                {
+                    ids.push_back(json_str(*text));
+                }
+            }
+            if (!ids.empty())
+            {
+                summary.push_back(json_member("allowed_room_ids", json_arr(std::move(ids))));
+            }
+        }
+
+        auto room = RemoteRoom{};
+        auto const* type = string_member(*in, "room_type");
+        room.is_space = type != nullptr && *type == "m.space";
+
+        auto children_state = canonicaljson::Array{};
+        if (room.is_space)
+        {
+            if (auto const* links = object_member_as_array(*in, "children_state"))
+            {
+                room.has_links = true;
+                for (auto const& item : *links)
+                {
+                    if (room.links.size() >= max_remote_links_per_room)
+                    {
+                        break;
+                    }
+                    auto link = sanitise_remote_link(item);
+                    if (!link.has_value() || (suggested_only && !link->suggested))
+                    {
+                        continue;
+                    }
+                    children_state.push_back(json_obj(stripped_child_state_event(*link)));
+                    room.links.push_back(std::move(*link));
+                }
+            }
+        }
+        summary.push_back(json_member("children_state", json_arr(std::move(children_state))));
+        room.summary = std::move(summary);
+        return room;
+    }
+
+    // Spec (SS API, GET /hierarchy, 200): `room`, `children` and `inaccessible_children`. The answer
+    // is accepted only for the room that was asked about.
+    [[nodiscard]] auto parse_remote_answer(std::string_view body, std::string_view requested_room_id,
+                                           bool suggested_only) -> std::optional<RemoteAnswer>
+    {
+        auto const parsed = canonicaljson::parse_lossless(body);
+        if (parsed.error != canonicaljson::ParseError::none)
+        {
+            return std::nullopt;
+        }
+        auto const* object = std::get_if<canonicaljson::Object>(&parsed.value.storage());
+        if (object == nullptr)
+        {
+            return std::nullopt;
+        }
+        auto const* room_value = object_member(*object, "room");
+        if (room_value == nullptr)
+        {
+            return std::nullopt;
+        }
+        auto room = sanitise_remote_room(*room_value, suggested_only);
+        if (!room.has_value())
+        {
+            return std::nullopt;
+        }
+        auto const* answered_id = string_member(*std::get_if<canonicaljson::Object>(&room_value->storage()), "room_id");
+        if (answered_id == nullptr || *answered_id != requested_room_id)
+        {
+            return std::nullopt;
+        }
+
+        auto answer = RemoteAnswer{};
+        answer.room = std::move(*room);
+
+        // Only a room the answered space itself links to is taken from `children`: another server
+        // does not get to describe rooms nothing in the walk refers to.
+        auto declared = std::unordered_set<std::string>{};
+        for (auto const& link : answer.room.links)
+        {
+            declared.insert(link.room_id);
+        }
+        if (auto const* children = object_member_as_array(*object, "children"))
+        {
+            for (auto const& item : *children)
+            {
+                if (answer.children.size() >= max_remote_links_per_room)
+                {
+                    break;
+                }
+                auto child = sanitise_remote_room(item, suggested_only);
+                if (!child.has_value())
+                {
+                    continue;
+                }
+                auto const* child_id = string_member(child->summary, "room_id");
+                if (child_id != nullptr && declared.contains(*child_id))
+                {
+                    answer.children.push_back(std::move(*child));
+                }
+            }
+        }
+        if (auto const* inaccessible = object_member_as_array(*object, "inaccessible_children"))
+        {
+            for (auto const& item : *inaccessible)
+            {
+                if (auto const* text = std::get_if<std::string>(&item.storage());
+                    text != nullptr && declared.contains(*text) &&
+                    answer.inaccessible.size() < max_remote_links_per_room)
+                {
+                    answer.inaccessible.push_back(*text);
+                }
+            }
+        }
+        return answer;
+    }
+
+    enum class RemoteStatus : std::uint8_t
+    {
+        found,
+        absent,
+        refused,
+    };
+
+    struct RemoteLookup final
+    {
+        RemoteStatus status{RemoteStatus::absent};
+        RemoteRoom room{};
+    };
+
+    // Asks other servers for the rooms of one hierarchy walk. The first request takes a slot in the
+    // client-outbound budget, held until the walk ends, and starts the one deadline every request
+    // draws from (ADR-0079); a refused slot refuses the walk. The runtime lock is released only
+    // around the network call, so every read of runtime state happens outside it.
+    class RemoteHierarchy final
+    {
+    public:
+        RemoteHierarchy(HomeserverRuntime& runtime, std::string client_key, bool suggested_only)
+            : m_runtime{runtime}
+            , m_client_key{std::move(client_key)}
+            , m_suggested_only{suggested_only}
+        {
+        }
+
+        [[nodiscard]] auto lookup(std::string const& room_id, std::vector<std::string> const& via) -> RemoteLookup
+        {
+            if (m_inaccessible.contains(room_id))
+            {
+                return {};
+            }
+            if (auto const known = m_known.find(room_id); known != m_known.end())
+            {
+                return {RemoteStatus::found, known->second};
+            }
+            for (auto const& server : candidate_servers(via))
+            {
+                if (m_requests >= max_remote_requests_per_walk)
+                {
+                    break;
+                }
+                if (!m_slot.has_value())
+                {
+                    auto taken = admit_client_outbound_proxy(m_runtime, m_client_key);
+                    if (!taken.has_value())
+                    {
+                        return {RemoteStatus::refused, {}};
+                    }
+                    m_slot.emplace(std::move(*taken));
+                    m_deadline.emplace(effective_client_outbound_deadline(
+                        m_runtime, m_runtime.client_outbound_proxy_policy.directory_deadline_seconds));
+                }
+                if (m_deadline->expired())
+                {
+                    break;
+                }
+                ++m_requests;
+                auto answer = ask(server, room_id);
+                if (!answer.has_value())
+                {
+                    continue;
+                }
+                remember(room_id, std::move(*answer));
+                if (auto const known = m_known.find(room_id); known != m_known.end())
+                {
+                    return {RemoteStatus::found, known->second};
+                }
+            }
+            return {};
+        }
+
+    private:
+        // The servers named by a link's `via`, other than this one, in order, without repeats.
+        [[nodiscard]] auto candidate_servers(std::vector<std::string> const& via) const -> std::vector<std::string>
+        {
+            auto const our_server = std::string{m_runtime.config.server().server_name};
+            auto servers = std::vector<std::string>{};
+            for (auto const& server : via)
+            {
+                if (servers.size() >= max_remote_servers_per_room)
+                {
+                    break;
+                }
+                if (server == our_server || !federation::server_name_is_valid(server) ||
+                    std::ranges::find(servers, server) != servers.end())
+                {
+                    continue;
+                }
+                servers.push_back(server);
+            }
+            return servers;
+        }
+
+        [[nodiscard]] auto ask(std::string const& server, std::string const& room_id) -> std::optional<RemoteAnswer>
+        {
+            wire_federation_callbacks(m_runtime);
+            auto const our_server = std::string{m_runtime.config.server().server_name};
+            auto const signing_key = ensure_runtime_server_signing_key(m_runtime);
+            auto const key_id = signing_key.has_value() ? signing_key->key_id : std::string{};
+            // Copied while the runtime lock is held, moved into the call: it signs after the lock is released.
+            auto secret = core::SecretBuffer{m_runtime.database.signing_secret_key.bytes()};
+            auto target =
+                std::string{"/_matrix/federation/v1/hierarchy/"} + core::percent_encode_path_component(room_id);
+            if (m_suggested_only)
+            {
+                target += "?suggested_only=true";
+            }
+            auto const transaction = federation::make_outbound_transaction(server, "GET", target, our_server, {});
+            auto const [ok, body] = [&] {
+                auto const released = RuntimeLockRelease{};
+                return perform_bounded_outbound_call(m_runtime, room_id, transaction, key_id, std::move(secret),
+                                                     "space_hierarchy.fetch", m_deadline->remaining_seconds());
+            }();
+            if (!ok)
+            {
+                return std::nullopt;
+            }
+            return parse_remote_answer(body, room_id, m_suggested_only);
+        }
+
+        auto remember(std::string const& room_id, RemoteAnswer answer) -> void
+        {
+            for (auto& child : answer.children)
+            {
+                auto const* child_id = string_member(child.summary, "room_id");
+                // A child space whose answer carried no `children_state` is asked for itself when the
+                // walk reaches it; a room already known is not replaced.
+                if (child_id == nullptr || *child_id == room_id || (child.is_space && !child.has_links))
+                {
+                    continue;
+                }
+                m_known.emplace(*child_id, std::move(child));
+            }
+            for (auto& id : answer.inaccessible)
+            {
+                m_inaccessible.insert(std::move(id));
+            }
+            m_known.insert_or_assign(room_id, std::move(answer.room));
+        }
+
+        HomeserverRuntime& m_runtime;
+        std::string m_client_key;
+        bool m_suggested_only;
+        std::optional<http::InFlightBudget::Slot> m_slot{};
+        std::optional<OutboundDeadline> m_deadline{};
+        std::size_t m_requests{0U};
+        std::map<std::string, RemoteRoom, std::less<>> m_known{};
+        std::unordered_set<std::string> m_inaccessible{};
+    };
+
+    // ---- Depth-first walk for a local user --------------------------------------
+
+    // One room of the walk: a room this server holds is described from its state when the page is
+    // built; a remote one carries the summary its server gave.
+    struct WalkEntry final
+    {
+        std::string room_id{};
+        std::optional<canonicaljson::Object> remote_summary{};
+    };
+
+    struct WalkResult final
+    {
+        std::vector<WalkEntry> entries{};
+        // The client-outbound budget refused a request the walk needed (ADR-0079).
+        bool refused{false};
+    };
+
+    struct WalkFrame final
+    {
+        std::string room_id{};
+        std::vector<std::string> via{};
+        std::size_t depth{0U};
+    };
+
+    [[nodiscard]] auto walk_hierarchy_client(HomeserverRuntime& runtime, std::string_view user_id,
+                                             std::string_view root_room_id, std::size_t max_depth, bool suggested_only,
+                                             std::string const& client_key) -> WalkResult
+    {
+        auto const& store = runtime.database.persistent_store;
+        auto remote = RemoteHierarchy{runtime, client_key, suggested_only};
+        auto result = WalkResult{};
         auto visited = std::unordered_set<std::string>{};
-        auto stack = std::vector<std::pair<std::string, std::size_t>>{};
-        stack.emplace_back(std::string{root_room_id}, 0U);
+        auto stack = std::vector<WalkFrame>{};
+        stack.push_back({std::string{root_room_id}, {}, 0U});
 
         while (!stack.empty())
         {
-            auto [room_id, depth] = stack.back();
+            auto frame = std::move(stack.back());
             stack.pop_back();
-
-            if (!room_exists(store, room_id) || !can_view_room_client(store, user_id, room_id))
-            {
-                continue;
-            }
-            if (!visited.insert(room_id).second)
-            {
-                continue;
-            }
-            result.push_back(room_id);
-
-            if (depth >= max_depth || !is_space(store, room_id))
+            if (!visited.insert(frame.room_id).second)
             {
                 continue;
             }
 
-            auto children = space_children(store, room_id);
+            auto entry = WalkEntry{frame.room_id, std::nullopt};
+            auto links = std::vector<SpaceChild>{};
+            if (room_exists(store, frame.room_id))
+            {
+                // Local state decides, never a remote answer about the same room.
+                if (!can_view_room_client(store, user_id, frame.room_id))
+                {
+                    continue;
+                }
+                if (is_space(store, frame.room_id))
+                {
+                    links = space_children(store, frame.room_id);
+                }
+            }
+            else
+            {
+                auto found = remote.lookup(frame.room_id, frame.via);
+                if (found.status == RemoteStatus::refused)
+                {
+                    result.refused = true;
+                    return result;
+                }
+                if (found.status != RemoteStatus::found ||
+                    !remote_summary_visible_to(store, user_id, found.room.summary))
+                {
+                    continue;
+                }
+                entry.remote_summary = std::move(found.room.summary);
+                links = std::move(found.room.links);
+            }
+            result.entries.push_back(std::move(entry));
+
+            if (frame.depth >= max_depth)
+            {
+                continue;
+            }
             // Push in reverse order so that when popped the original order is preserved
             // (children are emitted in the order they appear in state).
-            for (auto it = children.rbegin(); it != children.rend(); ++it)
+            for (auto it = links.rbegin(); it != links.rend(); ++it)
             {
                 if (suggested_only && !it->suggested)
                 {
                     continue;
                 }
-                stack.emplace_back(it->room_id, depth + 1U);
+                stack.push_back({it->room_id, std::move(it->via), frame.depth + 1U});
             }
         }
         return result;
@@ -780,24 +1335,34 @@ auto handle_client_space_hierarchy(HomeserverRuntime& runtime, std::string_view 
         offset = token->offset;
     }
 
-    auto const all_room_ids =
-        collect_visible_room_ids_client(store, user_id, request.room_id, max_depth, suggested_only);
-
-    if (offset > all_room_ids.size())
+    auto const walk =
+        walk_hierarchy_client(runtime, user_id, request.room_id, max_depth, suggested_only, request.client_key);
+    if (walk.refused)
     {
-        offset = all_room_ids.size();
+        auto refusal = SpaceHierarchyResult{
+            429U, matrix_error("M_LIMIT_EXCEEDED", "too many concurrent remote lookups, retry shortly")};
+        refusal.retry_after_ms = runtime.client_outbound_proxy_policy.retry_after_ms;
+        return refusal;
+    }
+    auto const& all_rooms = walk.entries;
+
+    if (offset > all_rooms.size())
+    {
+        offset = all_rooms.size();
     }
 
     auto rooms = canonicaljson::Array{};
-    auto const end = std::min(offset + limit, all_room_ids.size());
+    auto const end = std::min(offset + limit, all_rooms.size());
     for (auto i = offset; i < end; ++i)
     {
-        rooms.push_back(json_obj(room_summary_object(store, all_room_ids[i], true)));
+        rooms.push_back(json_obj(all_rooms[i].remote_summary.has_value()
+                                     ? *all_rooms[i].remote_summary
+                                     : room_summary_object(store, all_rooms[i].room_id, true, suggested_only)));
     }
 
     auto response = canonicaljson::Object{};
     response.push_back(json_member("rooms", json_arr(std::move(rooms))));
-    if (end < all_room_ids.size())
+    if (end < all_rooms.size())
     {
         auto const next_token =
             encode_pagination_token(PaginationToken{std::string{request.room_id}, max_depth, suggested_only, end});
@@ -816,16 +1381,17 @@ auto handle_client_space_hierarchy(HomeserverRuntime& runtime, std::string_view 
 }
 
 auto build_federation_space_hierarchy_response(HomeserverRuntime const& runtime, std::string_view room_id,
-                                               bool suggested_only) -> std::string
+                                               bool suggested_only, std::string_view origin) -> std::string
 {
     auto const& store = runtime.database.persistent_store;
 
-    if (!room_exists(store, room_id) || !can_view_room_federation(store, room_id))
+    if (!room_exists(store, room_id) || !can_view_room_federation(store, room_id, origin))
     {
         return {};
     }
 
     auto children = canonicaljson::Array{};
+    auto inaccessible = canonicaljson::Array{};
     if (is_space(store, room_id))
     {
         for (auto const& child : space_children(store, room_id))
@@ -834,17 +1400,25 @@ auto build_federation_space_hierarchy_response(HomeserverRuntime const& runtime,
             {
                 continue;
             }
-            if (!room_exists(store, child.room_id) || !can_view_room_federation(store, child.room_id))
+            if (!room_exists(store, child.room_id))
             {
+                // Spec: "Rooms which the responding server cannot provide details on will be
+                // outright excluded from the response instead."
                 continue;
             }
-            children.push_back(json_obj(room_summary_object(store, child.room_id, true)));
+            if (!can_view_room_federation(store, child.room_id, origin))
+            {
+                inaccessible.push_back(json_str(child.room_id));
+                continue;
+            }
+            children.push_back(json_obj(room_summary_object(store, child.room_id, true, suggested_only)));
         }
     }
 
     auto response = canonicaljson::Object{};
-    response.push_back(json_member("room", json_obj(room_summary_object(store, room_id, true))));
+    response.push_back(json_member("room", json_obj(room_summary_object(store, room_id, true, suggested_only))));
     response.push_back(json_member("children", json_arr(std::move(children))));
+    response.push_back(json_member("inaccessible_children", json_arr(std::move(inaccessible))));
 
     auto const serialized = canonicaljson::serialize_canonical(json_obj(std::move(response)));
     return serialized.error == canonicaljson::CanonicalJsonError::none ? serialized.output : std::string{};

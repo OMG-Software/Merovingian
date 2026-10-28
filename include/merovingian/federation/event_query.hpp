@@ -29,6 +29,15 @@ inline constexpr auto default_missing_events_limit = std::size_t{10U};
 [[nodiscard]] auto origin_may_read_room(database::PersistentStore const& store, std::string_view room_id,
                                         std::string_view origin) -> bool;
 
+// True when the room's CURRENT state holds a `m.room.member` event with
+// `membership: join` for a user whose server name is exactly `origin`. Unlike
+// `origin_may_read_room`, `world_readable` history does not count: this is the
+// "a server of ours is in the room" test a restricted room's allow condition
+// asks of the rooms it names (space hierarchy over federation). An unknown
+// room or an empty origin answer false.
+[[nodiscard]] auto origin_has_joined_user_in_room(database::PersistentStore const& store, std::string_view room_id,
+                                                  std::string_view origin) -> bool;
+
 // Builds the response for an inbound federation
 // `GET /_matrix/federation/v1/event/{eventId}` request. The event's own room is
 // resolved from the store and `origin` must pass `origin_may_read_room` and the

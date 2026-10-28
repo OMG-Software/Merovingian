@@ -3085,9 +3085,9 @@ namespace
                                                                  rt->federation.config.query_policy);
         };
 
-        runtime.federation.space_hierarchy_provider = [rt](std::string_view room_id,
-                                                           bool suggested_only) -> std::string {
-            return build_federation_space_hierarchy_response(*rt, room_id, suggested_only);
+        runtime.federation.space_hierarchy_provider = [rt](std::string_view room_id, bool suggested_only,
+                                                           std::string_view origin) -> std::string {
+            return build_federation_space_hierarchy_response(*rt, room_id, suggested_only, origin);
         };
 
         // Federation media download needs the local media repository, which is

@@ -424,6 +424,16 @@ namespace
 
 } // namespace
 
+auto origin_has_joined_user_in_room(database::PersistentStore const& store, std::string_view room_id,
+                                    std::string_view origin) -> bool
+{
+    if (origin.empty() || room_id.empty())
+    {
+        return false;
+    }
+    return origin_has_joined_user(store, room_id, origin);
+}
+
 auto origin_may_read_room(database::PersistentStore const& store, std::string_view room_id, std::string_view origin)
     -> bool
 {

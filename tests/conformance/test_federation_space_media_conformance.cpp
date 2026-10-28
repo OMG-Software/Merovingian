@@ -99,8 +99,8 @@ SCENARIO("GET /hierarchy/{roomId} returns the space hierarchy when provider is w
         auto runtime = merovingian::federation::make_federation_runtime_state(runtime_config());
         merovingian::federation::upsert_remote(runtime, remote_for(origin, key_id, key_seed));
 
-        runtime.space_hierarchy_provider = [](std::string_view queried_room_id,
-                                              bool /*suggested_only*/) -> std::string {
+        runtime.space_hierarchy_provider = [](std::string_view queried_room_id, bool /*suggested_only*/,
+                                              std::string_view /*origin*/) -> std::string {
             if (queried_room_id == "!conformance:local.example.org")
             {
                 return std::string{"{\"rooms\":[],\"children\":[]}"};
@@ -168,6 +168,44 @@ SCENARIO("GET /hierarchy/{roomId} returns the space hierarchy when provider is w
             {
                 // Architectural invariant: no provider installed -> 501.
                 REQUIRE(response.status == 501U);
+            }
+        }
+    }
+}
+
+// Spec: Matrix Server-Server API v1.19
+// Endpoint: GET /_matrix/federation/v1/hierarchy/{roomId}
+// URL: ../../docs/matrix-v1.19-spec/server-server-api.md#get_matrixfederationv1hierarchyroomid
+//
+// The response holds "all the space-room's children the requesting server could feasibly
+// peek/join", and `children` excludes "Rooms which the requesting server cannot peek/join". What
+// the requesting server may join differs per server, so the provider is told the X-Matrix
+// authenticated origin, never a value taken from the request.
+SCENARIO("GET /hierarchy/{roomId} judges the room for the authenticated requesting server",
+         "[federation][conformance][space_hierarchy]")
+{
+    GIVEN("a provider that records the origin it is asked about")
+    {
+        auto runtime = merovingian::federation::make_federation_runtime_state(runtime_config());
+        merovingian::federation::upsert_remote(runtime, remote_for(origin, key_id, key_seed));
+        auto seen_origin = std::string{};
+        runtime.space_hierarchy_provider = [&seen_origin](std::string_view, bool, std::string_view asking) {
+            seen_origin = std::string{asking};
+            return std::string{"{\"room\":{},\"children\":[],\"inaccessible_children\":[]}"};
+        };
+
+        WHEN("a signed request that also carries a forged origin in its query string is dispatched")
+        {
+            auto const target = std::string{
+                "/_matrix/federation/v1/hierarchy/!conformance:local.example.org?origin=forged.example.org"};
+            auto const response = merovingian::federation::handle_inbound_federation_request(
+                runtime, signed_get_request(origin, key_id, key_seed, target));
+
+            THEN("the provider is asked about the signing server")
+            {
+                // Spec: the response is for "the requesting server", identified by request authentication.
+                REQUIRE(response.status == 200U);
+                REQUIRE(seen_origin == origin);
             }
         }
     }

@@ -24,7 +24,7 @@ This is the largest and most complex module — read this file carefully before 
 | `redaction_service.cpp` | Applies redactions (judge, overwrite the target's stored JSON, withhold unapplied redactions from clients) and checks a local client's redaction |
 | `room_power.cpp` | `may_send_state_event()`: whether a user may send a state event of a type in a room's current state, judged as the auth rules judge it (CSAZ-12) |
 | `restricted_join.cpp` | `decide_restricted_join()`: as the resident, whether a user meets a restricted room's allow conditions and which local user authorises the join (R04, ADR-0185) |
-| `space_hierarchy.cpp` | `GET /_matrix/client/v1/rooms/{roomId}/hierarchy` |
+| `space_hierarchy.cpp` | `GET /_matrix/client/v1/rooms/{roomId}/hierarchy` (a child room this server holds no state for is asked for over federation, see "Client requests that call another server") and the answer to `GET /_matrix/federation/v1/hierarchy/{roomId}`, judged for the authenticated requesting server |
 | `default_push_ruleset.cpp` | The server-default push ruleset (`homeserver::default_push_ruleset`) |
 | `stored_push_rules.cpp` | `load_user_push_rules` / `load_push_ruleset`: a user's push rules from their `m.push_rules` account data over the defaults (ADR-0204) |
 | `push_room_facts.cpp` | `push_room_facts`, `room_member_display_name`, `push_evaluation_context`: the evaluation context push delivery and unread counting share |
@@ -133,6 +133,14 @@ the main pool's threads for the round trip. Every such call therefore:
    `remote_timeout`;
 3. for media, is checked against `security.media.remote_fetch_enabled` and `allow_remote` before
    anything else (`remote_media_refusal`): 404 `M_NOT_FOUND`, counted but not audited.
+
+The space hierarchy (`handle_client_space_hierarchy`) is the same kind of request: a child room not held locally is asked
+for from the `via` servers of its link, so the walk takes one slot at its first such call (`RemoteHierarchy` in
+`space_hierarchy.cpp`, held until the walk ends), draws every call from one `OutboundDeadline`, makes at most 16 calls and
+asks at most 3 servers per room, and answers `429 M_LIMIT_EXCEEDED` when the slot is refused. A remote answer is untrusted:
+only spec fields are copied, only rooms the requested space's `children_state` names are cached from `children`, local
+state beats the remote answer, and a room is shown to the user only if the user may see it by the remote summary's own
+`join_rule` / `world_readable` / `allowed_room_ids`.
 
 The caps derive from the main request pool size (`server.http.request_threads`, applied by
 `start_runtime` through `client_outbound_proxy_policy_for_pool`); they have no configuration of their

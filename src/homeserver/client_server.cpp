@@ -17525,7 +17525,15 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                 request.suggested_only = true;
             }
 
+            request.client_key = rate_limit_client_key(req, rt.homeserver.config.server());
+
             auto const result = handle_client_space_hierarchy(rt.homeserver, *user, request);
+            if (result.status == 429U)
+            {
+                // The client-outbound budget refused the federation call a child room
+                // needs (ADR-0079); the body is the Matrix error.
+                return client_proxy_refused(req, rt);
+            }
             return dispatch_resp(req, rt, result.status, result.body);
         }
     }
