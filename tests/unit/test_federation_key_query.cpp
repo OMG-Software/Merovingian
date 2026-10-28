@@ -22,6 +22,7 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <variant>
@@ -836,6 +837,115 @@ SCENARIO("The m.device_list_update EDU carries the device keys with the owner's 
                 auto const root = parse_root(*content);
                 REQUIRE(json_get(root, "device_id") != nullptr);
                 REQUIRE(json_get(root, "keys") == nullptr);
+            }
+        }
+    }
+}
+
+// --- A device's current display name --------------------------------------
+// Spec: ../../docs/matrix-v1.19-spec/server-server-api.md, "Device Management":
+// an `m.device_list_update` EDU is sent "for new or deleted devices ... or
+// changes in device information such as the device's human-readable name", and
+// carries `device_display_name`; /user/keys/query returns it as
+// `unsigned.device_display_name`. The name changes after the keys were
+// uploaded, so what is published is the name the device has now, not the one
+// stored with its keys.
+namespace
+{
+
+[[nodiscard]] auto store_with_renamed_device(std::string const& current_name) -> merovingian::database::PersistentStore
+{
+    auto store = merovingian::database::PersistentStore{};
+    store.devices.push_back({"@alice:example.org", "ADEVICE", current_name});
+    store.device_keys.push_back(
+        {"@alice:example.org", "ADEVICE",
+         R"({"algorithms":["m.olm.v1.curve25519-aes-sha2"],"device_id":"ADEVICE","keys":{"curve25519:ADEVICE":"curve","ed25519:ADEVICE":"edkey"},"signatures":{"@alice:example.org":{"ed25519:ADEVICE":"self-sig"}},"unsigned":{"device_display_name":"Name at upload"},"user_id":"@alice:example.org"})"});
+    return store;
+}
+
+[[nodiscard]] auto published_display_name(cj::Object const& root) -> std::optional<std::string>
+{
+    auto const* device_keys = object_at(root, "device_keys");
+    auto const* alice_devices = device_keys == nullptr ? nullptr : object_at(*device_keys, "@alice:example.org");
+    auto const* device = alice_devices == nullptr ? nullptr : object_at(*alice_devices, "ADEVICE");
+    REQUIRE(device != nullptr);
+    auto const* unsigned_data = object_at(*device, "unsigned");
+    if (unsigned_data == nullptr)
+    {
+        return std::nullopt;
+    }
+    auto const* name = string_at(*unsigned_data, "device_display_name");
+    return name == nullptr ? std::nullopt : std::optional<std::string>{*name};
+}
+
+} // namespace
+
+SCENARIO("Federation publishes a device's current display name, not the one it had when its keys were uploaded",
+         "[federation][keys][query][device-list-update][regression]")
+{
+    GIVEN("a device renamed after it uploaded its keys")
+    {
+        auto const store = store_with_renamed_device("My new displayname");
+
+        WHEN("a remote server queries the user's keys")
+        {
+            auto const root = parse_root(
+                fed::build_device_keys_query_response(store, R"({"device_keys":{"@alice:example.org":[]}})"));
+
+            THEN("the device carries its current display name")
+            {
+                auto const name = published_display_name(root);
+                REQUIRE(name.has_value());
+                REQUIRE(*name == "My new displayname");
+            }
+        }
+
+        WHEN("the EDU content is built for the device")
+        {
+            auto const content = fed::build_device_list_update_content(store, "@alice:example.org", "ADEVICE", 7);
+
+            THEN("it names the device's current display name as device_display_name")
+            {
+                REQUIRE(content.has_value());
+                auto const root = parse_root(*content);
+                auto const* name = string_at(root, "device_display_name");
+                REQUIRE(name != nullptr);
+                REQUIRE(*name == "My new displayname");
+                // The keys inside the EDU agree with what a query returns.
+                auto const* keys = object_at(root, "keys");
+                REQUIRE(keys != nullptr);
+                auto const* unsigned_data = object_at(*keys, "unsigned");
+                REQUIRE(unsigned_data != nullptr);
+                auto const* keys_name = string_at(*unsigned_data, "device_display_name");
+                REQUIRE(keys_name != nullptr);
+                REQUIRE(*keys_name == "My new displayname");
+            }
+        }
+    }
+
+    GIVEN("a device whose display name has been cleared")
+    {
+        auto const store = store_with_renamed_device("");
+
+        WHEN("a remote server queries the user's keys")
+        {
+            auto const root = parse_root(
+                fed::build_device_keys_query_response(store, R"({"device_keys":{"@alice:example.org":[]}})"));
+
+            THEN("no display name is published, rather than the stale one")
+            {
+                REQUIRE_FALSE(published_display_name(root).has_value());
+            }
+        }
+
+        WHEN("the EDU content is built for the device")
+        {
+            auto const content = fed::build_device_list_update_content(store, "@alice:example.org", "ADEVICE", 7);
+
+            THEN("device_display_name is absent, as the spec says for a device with no name")
+            {
+                REQUIRE(content.has_value());
+                REQUIRE(json_get(parse_root(*content), "device_display_name") == nullptr);
             }
         }
     }
