@@ -724,6 +724,10 @@ struct SessionRefreshResult final
 // event row, so a counter rebuilt from events alone regresses across
 // restarts and invalidates every pos/since token clients still hold.
 [[nodiscard]] auto allocate_stream_ordering(LocalDatabase& database) -> std::uint64_t;
+// Allocates `count` consecutive orderings and persists the high-water mark once,
+// for a caller that stores that many events in one transaction. Returns the
+// first; the caller may leave some unused.
+[[nodiscard]] auto allocate_stream_orderings(LocalDatabase& database, std::size_t count) -> std::uint64_t;
 
 // ADR-0247: marks `ordering` as reserved for an event not yet applied to the
 // store, for as long as it lives. Construct it right after allocating the

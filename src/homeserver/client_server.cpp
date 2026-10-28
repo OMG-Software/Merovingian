@@ -8086,11 +8086,13 @@ namespace
         return std::nullopt;
     }
 
-    // The current content of a room's state event, or nothing.
-    [[nodiscard]] auto current_state_content(database::PersistentStore const& store, std::string_view room_id,
-                                             std::string_view event_type) -> std::optional<canonicaljson::Object>
+    // The current content of a room's state event, or nothing. `index` is
+    // build_state_index(store), built once by the caller: it covers every room.
+    [[nodiscard]] auto current_state_content(database::PersistentStore const& store, StateIndex const& index,
+                                             std::string_view room_id, std::string_view event_type)
+        -> std::optional<canonicaljson::Object>
     {
-        auto const event_json = state_event_json(store, build_state_index(store), room_id, event_type);
+        auto const event_json = state_event_json(store, index, room_id, event_type);
         if (!event_json.has_value())
         {
             return std::nullopt;
@@ -8115,6 +8117,7 @@ namespace
     {
         auto options = CreateRoomOptions{};
         options.room_version = new_version;
+        auto const index = build_state_index(store);
         auto predecessor = canonicaljson::Object{};
         predecessor.push_back(json_member("room_id", json_str(old_room.room_id)));
         if (!new_policy.create_event_is_room_id && !old_room.events.empty())
@@ -8122,7 +8125,7 @@ namespace
             predecessor.push_back(json_member("event_id", json_str(old_room.events.back())));
         }
         options.creation_content.push_back(json_member("predecessor", json_obj(std::move(predecessor))));
-        if (auto const old_create = current_state_content(store, old_room.room_id, "m.room.create");
+        if (auto const old_create = current_state_content(store, index, old_room.room_id, "m.room.create");
             old_create.has_value())
         {
             if (auto const* type = string_member(*old_create, "type"); type != nullptr)
@@ -8148,7 +8151,7 @@ namespace
             "m.room.guest_access", "m.room.history_visibility", "m.room.join_rules"};
         for (auto const type : transferable)
         {
-            if (auto content = current_state_content(store, old_room.room_id, type); content.has_value())
+            if (auto content = current_state_content(store, index, old_room.room_id, type); content.has_value())
             {
                 options.initial_state.push_back(json_obj({
                     json_member("type", json_str(std::string{type})),
@@ -8157,7 +8160,7 @@ namespace
                 }));
             }
         }
-        if (auto power_levels = current_state_content(store, old_room.room_id, "m.room.power_levels");
+        if (auto power_levels = current_state_content(store, index, old_room.room_id, "m.room.power_levels");
             power_levels.has_value())
         {
             auto users = canonicaljson::Object{};

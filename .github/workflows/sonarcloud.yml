@@ -39,6 +39,8 @@ jobs:
         with:
           python-version: '3.x'
 
+      # libpng and libturbojpeg build the thumbnail worker; without them Meson drops
+      # media/thumbnail_worker_main.cpp and the analysis never sees it.
       - name: Install dependencies
         run: |
           sudo apt-get update
@@ -48,9 +50,11 @@ jobs:
             catch2 \
             flex \
             libcurl4-openssl-dev \
+            libpng-dev \
             libpq-dev \
             libsodium-dev \
             libssl-dev \
+            libturbojpeg0-dev \
             m4 \
             perl \
             pkg-config

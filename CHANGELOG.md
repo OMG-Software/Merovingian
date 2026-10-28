@@ -127,6 +127,17 @@ Cloud analysis from SonarSource's automatic analysis into this repository's CI.
   one (`visible_stream_position`). The main ingest path reserves its ordering where the event takes
   it, after any missing-history fetch, so a reservation spans one commit (ADR-0247). Regression:
   `test_sync_stream_position.cpp` (`[sync-position]`).
+- **FIXED (review of #541):** a federated join's `send_join` state, the room's whole member list
+  since ADR-0241, was stored one transaction (and one watermark write) per event with
+  `runtime.mutex` held; it now commits in one transaction, its orderings allocated with one
+  watermark write (`allocate_stream_orderings`). A login for an unknown user built the dummy
+  Argon2id hash before taking an admission slot, so that first hash escaped the cap; the slot is
+  now taken first. A federated knock had no overall deadline across its candidate servers; it
+  shares one (`join_race_deadline`, else the remote timeout) across every `make_knock` and the
+  `send_knock`. A room upgrade rebuilt the server-wide state index for each state type it copies;
+  it builds it once. Start-up logs the effective password-hashing cap. The SonarQube Cloud
+  workflow installs `libpng-dev` and `libturbojpeg0-dev`, without which Meson drops the thumbnail
+  worker from the build the analysis reads (checked by `test_sonarcloud_config.py`).
 - **FIXED:** `POST /login` did not log `@user:server` in when named `@USER:server`, `USER` or
   `User`. A user ID is looked up exactly, then with its localpart's ASCII letters downcased
   (ADR-0245), so historical upper-case localparts still log in as themselves. Regression:

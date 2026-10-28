@@ -141,6 +141,12 @@ class SonarCloudCiScanTest(unittest.TestCase):
         self.assertIn("SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}", self.workflow)
         self.assertRegex(self.workflow, r"(?m)^permissions:\n  contents: read")
 
+    def test_given_the_workflow_when_read_then_it_installs_what_the_thumbnail_worker_needs(self) -> None:
+        # Without libpng and libturbojpeg Meson drops the thumbnail worker, and the
+        # compilation database, so the analysis, never holds media/thumbnail_worker_main.cpp.
+        self.assertIn("libpng-dev", self.workflow)
+        self.assertIn("libturbojpeg0-dev", self.workflow)
+
     def test_given_a_pull_request_from_a_fork_when_the_workflow_runs_then_the_scan_is_skipped(self) -> None:
         # A fork's pull request gets no secrets; it is analysed once merged.
         self.assertIn("github.event.pull_request.head.repo.full_name == github.repository", self.workflow)

@@ -3931,6 +3931,20 @@ namespace
 {
     auto result = SendJoinStateIngestResult{};
     auto& joined_members = result.joined_members;
+    // The whole snapshot commits in one transaction, under runtime.mutex: one
+    // write per event, a room's full member list since ADR-0241, held every other
+    // request back for the length of the join. Each entry is prepared in array
+    // order; an event already stored, or repeated in the array, is recorded but
+    // not written again.
+    struct SnapshotEntry final
+    {
+        std::optional<database::PreparedStateUpdate> prepared{};
+        std::optional<database::PersistentStateEvent> state{};
+        std::string joined_member{};
+    };
+    auto entries = std::vector<SnapshotEntry>{};
+    auto batch_event_ids = std::set<std::string, std::less<>>{};
+    auto next_ordering = allocate_stream_orderings(runtime.database, state_arr.size());
     for (auto const& state_entry : state_arr)
     {
         // FED-1 (ADR-0083): an entry for any other room is never stored and
@@ -3985,7 +3999,7 @@ namespace
                         auth_ids = json_string_array(*av);
                     }
                 }
-                auto const stream_ordering = allocate_stream_ordering(runtime.database);
+                auto const stream_ordering = next_ordering++;
                 // A state event is identified by the PRESENCE of the "state_key" field
                 // in the raw JSON, even when its value is "". EventEnvelope::state_key
                 // defaults to "" both for state events with state_key="" AND for
@@ -4025,27 +4039,62 @@ namespace
                 // snapshot state group from the full state array below,
                 // used as the join event's state-before.
                 pe.status = "outlier";
-                if (!database::store_event_with_state(runtime.database.persistent_store, std::move(pe), state) &&
-                    runtime.database.persistent_store.events.find_in_room(room_id, event_id) ==
-                        runtime.database.persistent_store.events.end())
-                {
-                    continue;
-                }
-                // A duplicate verified snapshot event is already committed;
-                // include it in the new join snapshot rather than mistaking the
-                // store's duplicate-insert refusal for a failed initial state.
-                if (state.has_value())
-                {
-                    result.state_entries.push_back({{}, state->event_type, state->state_key, state->event_id});
-                }
+                auto entry = SnapshotEntry{};
+                entry.state = state;
                 // Track joined members for the in-memory LocalRoom population step.
                 // state_key is non-empty for membership events (it holds the user ID).
                 if (parsed.event.event_type == "m.room.member" && !parsed.event.state_key.empty() &&
                     events::extract_content_membership(state_entry) == "join")
                 {
-                    append_unique_member(joined_members, parsed.event.state_key);
+                    entry.joined_member = parsed.event.state_key;
                 }
+                if (batch_event_ids.insert(event_id).second)
+                {
+                    entry.prepared = database::prepare_store_event_with_state(runtime.database.persistent_store,
+                                                                              std::move(pe), state);
+                }
+                // A duplicate verified snapshot event is already committed;
+                // include it in the new join snapshot rather than mistaking the
+                // store's duplicate-insert refusal for a failed initial state.
+                if (!entry.prepared.has_value() &&
+                    runtime.database.persistent_store.events.find_in_room(room_id, event_id) ==
+                        runtime.database.persistent_store.events.end())
+                {
+                    continue;
+                }
+                entries.push_back(std::move(entry));
             }
+        }
+    }
+
+    auto statements = std::vector<database::PreparedStatement>{};
+    for (auto const& entry : entries)
+    {
+        if (entry.prepared.has_value())
+        {
+            statements.insert(statements.end(), entry.prepared->statements.begin(), entry.prepared->statements.end());
+        }
+    }
+    if (!statements.empty() && !database::commit_persistent_transaction(runtime.database.persistent_store, statements))
+    {
+        // Nothing of the snapshot is stored; join_room refuses the join on the
+        // missing state entries.
+        return SendJoinStateIngestResult{};
+    }
+    for (auto const& entry : entries)
+    {
+        if (entry.prepared.has_value())
+        {
+            database::apply_store_event_with_state(runtime.database.persistent_store, *entry.prepared);
+        }
+        if (entry.state.has_value())
+        {
+            result.state_entries.push_back(
+                {{}, entry.state->event_type, entry.state->state_key, entry.state->event_id});
+        }
+        if (!entry.joined_member.empty())
+        {
+            append_unique_member(joined_members, entry.joined_member);
         }
     }
     return result;
@@ -6259,8 +6308,22 @@ namespace
         auto make_body = std::string{};
         auto last_error = std::string{"no server offered a knock template"};
         auto refused = false;
+        // One deadline for every make_knock attempt and the send_knock, as join_room
+        // bounds its race: a client naming many unreachable servers must not hold a
+        // request thread for one remote timeout per server.
+        auto const deadline = OutboundDeadline{runtime.federation.config.join_race_deadline_seconds > 0U
+                                                   ? runtime.federation.config.join_race_deadline_seconds
+                                                   : runtime.federation.config.remote_timeout_seconds};
+        auto const call_timeout = [&runtime, &deadline] {
+            return std::min(runtime.federation.config.remote_timeout_seconds, deadline.remaining_seconds());
+        };
         for (auto const& candidate : candidates)
         {
+            if (call_timeout() == 0U)
+            {
+                last_error = "knock deadline exceeded";
+                break;
+            }
             log_diagnostic("room.knock.remote.make_knock", {
                                                                {"actor",         user_id,              false},
                                                                {"room_id",       std::string{room_id}, false},
@@ -6271,8 +6334,7 @@ namespace
                                                           our_server, room_id, user_id, supported_versions);
             auto call =
                 perform_outbound_call(runtime, room_id, tx, signing_key.key_id, core::SecretBuffer{secret_key.bytes()},
-                                      "room.knock.remote.make_knock_failed",
-                                      runtime.federation.config.remote_timeout_seconds, 0U, std::nullopt);
+                                      "room.knock.remote.make_knock_failed", call_timeout(), 0U, std::nullopt);
             if (call.ok)
             {
                 remote_server = candidate;
@@ -6344,9 +6406,13 @@ namespace
                                                            {"remote_server", remote_server,        false},
                                                            {"event_id",      event_id.event_id,    false}
         });
-        auto send = perform_outbound_call(runtime, room_id, send_tx, signing_key.key_id,
-                                          core::SecretBuffer{secret_key.bytes()}, "room.knock.remote.send_knock_failed",
-                                          runtime.federation.config.remote_timeout_seconds, 0U, std::nullopt);
+        if (call_timeout() == 0U)
+        {
+            return federated_knock_failure("knock deadline exceeded before send_knock", 502U);
+        }
+        auto send =
+            perform_outbound_call(runtime, room_id, send_tx, signing_key.key_id, core::SecretBuffer{secret_key.bytes()},
+                                  "room.knock.remote.send_knock_failed", call_timeout(), 0U, std::nullopt);
         if (!send.ok)
         {
             return federated_knock_failure("send_knock failed: " + send.body, send.remote_status == 403U ? 403U : 502U);

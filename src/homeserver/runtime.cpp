@@ -900,6 +900,18 @@ auto visible_stream_position(LocalDatabase const& database) noexcept -> std::uin
     return oldest_pending == 0U ? 0U : std::min(newest, oldest_pending - 1U);
 }
 
+auto allocate_stream_orderings(LocalDatabase& database, std::size_t count) -> std::uint64_t
+{
+    auto const first = database.next_stream_ordering;
+    database.next_stream_ordering += count;
+    if (count > 0U)
+    {
+        std::ignore =
+            database::persist_event_stream_watermark(database.persistent_store, database.next_stream_ordering - 1U);
+    }
+    return first;
+}
+
 auto allocate_stream_ordering(LocalDatabase& database) -> std::uint64_t
 {
     auto const ordering = database.next_stream_ordering++;
