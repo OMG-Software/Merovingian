@@ -458,6 +458,39 @@ SCENARIO("IpcChannel send_request returns nullopt on a stopped channel", "[ipc][
     }
 }
 
+// stop() must wake the dispatcher however its thread is scheduled. The dispatcher tests
+// `running_` under dispatch_mu_ before it waits; a stop() that changed `running_` and
+// notified without that mutex could land between the test and the wait, lose the wakeup,
+// and leave stop() joining a thread that never wakes (a FreeBSD CI run hung here for 18
+// minutes). The race window is a few instructions wide, so this cannot fail on demand: it
+// repeats start and stop, and a reintroduced lost wakeup shows up as this test hanging.
+SCENARIO("IpcChannel stop always returns, however its dispatcher is scheduled", "[ipc][channel][lifecycle][stop-race]")
+{
+    GIVEN("many freshly started channel pairs")
+    {
+        constexpr auto rounds = 300;
+
+        WHEN("each is stopped straight after it starts")
+        {
+            auto stopped = 0;
+            for (auto round = 0; round < rounds; ++round)
+            {
+                auto pair = make_channel_pair();
+                pair.server->start();
+                pair.client->start();
+                pair.client->stop();
+                pair.server->stop();
+                ++stopped;
+            }
+
+            THEN("every stop returned")
+            {
+                CHECK(stopped == rounds);
+            }
+        }
+    }
+}
+
 SCENARIO("IpcChannel handles multiple concurrent requests with matching replies", "[ipc][channel][concurrent]")
 {
     GIVEN("a server that echoes each request id back")

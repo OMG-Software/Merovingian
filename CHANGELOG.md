@@ -119,6 +119,12 @@ Complement has not yet been rerun against this version.
   counter files, whose coverage the report filters out anyway; a damaged `sqlite3.c.gcda` made
   gcovr exit 64 and failed the job. gcovr now skips `subprojects/` with
   `--gcov-exclude-directories`; the reported numbers are unchanged.
+- **FIXED:** `IpcChannel::stop()` could hang for ever. It cleared `running_` and notified the
+  dispatch thread without taking `dispatch_mu_`, so a stop that fell between the dispatcher's check
+  of `running_` and its wait lost the wakeup and the join never returned (a FreeBSD unit-test run
+  hung 18 minutes in the stopped-channel scenario). `stop()` now takes and releases `dispatch_mu_`
+  before notifying. This affected the main process and the federation worker at shutdown.
+  `[ipc][stop-race]` repeats start and stop 300 times.
 
 ### Tests
 
