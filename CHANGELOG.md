@@ -209,6 +209,11 @@ Cloud analysis from SonarSource's automatic analysis into this repository's CI.
   resolved at run time; it no longer upgrades `pip` first, and pins `actions/checkout` (v4.4.0) and
   `actions/setup-python` (v5.6.0) to commits as it already did the scan action (ADR-0250). Checked
   by `test_sonarcloud_config.py`.
+- **CHANGED:** the SonarQube Cloud job reports coverage. It builds with coverage (GCC 14, a live
+  PostgreSQL, as `coverage.yml` does) instead of compiling only, runs every suite, and gcovr writes
+  `coverage/sonarqube.xml`, which `sonar.coverageReportPaths` names; until now the quality gate saw
+  0% coverage of new code, since the scan had no report. The PostgreSQL image is pinned by digest
+  (ADR-0250). Checked by `test_sonarcloud_config.py`.
 - **FIXED:** `POST /login` did not log `@user:server` in when named `@USER:server`, `USER` or
   `User`. A user ID is looked up exactly, then with its localpart's ASCII letters downcased
   (ADR-0245), so historical upper-case localparts still log in as themselves. Regression:

@@ -148,7 +148,8 @@ Use this checklist for every release candidate.
   `scripts/`, `build.py`, `llvm.sh`, `.codex/`) are excluded in
   `sonar-project.properties` (ADR-0229). The analysis runs in CI
   (`.github/workflows/sonarcloud.yml`) against the build's compilation
-  database (ADR-0250); a `sonarcloud` job that did not run for the commit is
+  database, with coverage from every suite (ADR-0250); a `sonarcloud` job that
+  did not run for the commit is
   not a pass. A finding in an analysed path is
   fixed or reviewed in SonarQube, never hidden by widening that list.
 - Dependency vulnerability triage artifacts were reviewed before tagging.

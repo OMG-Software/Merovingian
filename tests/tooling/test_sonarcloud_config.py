@@ -126,7 +126,8 @@ class SonarCloudCiScanTest(unittest.TestCase):
         builddir, _, filename = compile_commands.rpartition("/")
         self.assertEqual(filename, "compile_commands.json")
         self.assertTrue(builddir)
-        self.assertIn(f"scripts/build-linux.sh --builddir {builddir} --compile-only", self.workflow)
+        # The coverage build also writes the compilation database the analysis reads.
+        self.assertIn(f"scripts/build-linux.sh --builddir {builddir} --coverage", self.workflow)
         # The build directory's generated files are not project sources.
         patterns = [sonar_pattern(p.strip()) for p in sonar_property("sonar.exclusions").split(",") if p.strip()]
         self.assertTrue(excluded(f"{builddir}/meson-private/sanitycheckcpp.cc", patterns))
@@ -171,6 +172,31 @@ class SonarCloudCiScanTest(unittest.TestCase):
         requirements = (REPO_ROOT / "requirements-build.txt").read_text(encoding="utf-8")
         for package in ("meson", "ninja"):
             self.assertRegex(requirements, rf"(?m)^{package}==[0-9][^ ]* \\\n    --hash=sha256:[0-9a-f]{{64}}")
+
+    def test_given_the_properties_when_read_then_the_scan_reads_a_sonarqube_coverage_report(self) -> None:
+        # Without a report every new line reads as uncovered and the quality gate fails.
+        self.assertEqual(sonar_property("sonar.coverageReportPaths"), "coverage/sonarqube.xml")
+
+    def test_given_the_workflow_when_read_then_it_builds_with_coverage_and_runs_the_suites_with_gcc(self) -> None:
+        # --coverage builds instrumented and runs meson test; --compile-only would run nothing.
+        self.assertNotIn("--compile-only", self.workflow)
+        # GCC, as in coverage.yml: only GCC's gcov labels the throw edges that
+        # --exclude-throw-branches drops (ADR-0217).
+        self.assertIn("CC: gcc-14", self.workflow)
+        self.assertIn("CXX: g++-14", self.workflow)
+
+    def test_given_the_workflow_when_read_then_gcovr_writes_the_report_the_scan_reads(self) -> None:
+        report = sonar_property("sonar.coverageReportPaths")
+        self.assertIn(f"--sonarqube {report}", self.workflow)
+        for option in ("--gcov-executable gcov-14", "--exclude-throw-branches", "--filter 'src/'",
+                       "--filter 'include/merovingian/'"):
+            self.assertIn(option, self.workflow)
+
+    def test_given_the_workflow_when_read_then_postgresql_scenarios_run_against_a_pinned_image(self) -> None:
+        # Without a live PostgreSQL the [postgresql] scenarios skip and the PostgreSQL store
+        # reads as uncovered. The image is pinned by digest: this job holds SONAR_TOKEN.
+        self.assertRegex(self.workflow, r"image: postgres:16@sha256:[0-9a-f]{64}")
+        self.assertIn("MEROVINGIAN_TEST_POSTGRESQL_URI:", self.workflow)
 
     def test_given_a_pull_request_from_a_fork_when_the_workflow_runs_then_the_scan_is_skipped(self) -> None:
         # A fork's pull request gets no secrets; it is analysed once merged.
