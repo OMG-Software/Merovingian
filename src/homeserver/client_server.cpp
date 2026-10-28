@@ -4883,7 +4883,7 @@ namespace
         if (can_wait && request.timeout.has_value() && *request.timeout > 0U)
         {
             auto const capped_timeout_ms = std::min(*request.timeout, sync::k_max_sync_timeout_ms);
-            auto const has_timeline_advance = rt.homeserver.database.next_stream_ordering - 1U > since_ordering;
+            auto const has_timeline_advance = visible_stream_position(rt.homeserver.database) > since_ordering;
             auto const has_sync_advance = store.next_sync_stream_id > since_sync_stream_id;
             if (!has_timeline_advance && !has_sync_advance)
             {
@@ -5224,8 +5224,8 @@ namespace
 
         auto const advanced_sync_stream_id = std::max(max_observed_sync_stream_id, sync_stream_upper_bound);
         auto const next_token =
-            sync::StreamToken{rt.homeserver.database.next_stream_ordering - 1U,
-                              rt.homeserver.database.next_stream_ordering - 1U, advanced_sync_stream_id};
+            sync::StreamToken{visible_stream_position(rt.homeserver.database),
+                              visible_stream_position(rt.homeserver.database), advanced_sync_stream_id};
 
         auto const body = json_serialize(json_obj({
             json_member("next_batch", json_str(sync::encode_stream_token(next_token))),
@@ -5646,7 +5646,7 @@ namespace
         // delivered, while the server kept echoing the inflated token back.
         if (pos.has_value())
         {
-            auto const event_watermark = rt.homeserver.database.next_stream_ordering - 1U;
+            auto const event_watermark = visible_stream_position(rt.homeserver.database);
             auto const sync_watermark = store.next_sync_stream_id;
             if (pos->event_ordering > event_watermark || pos->membership_ordering > event_watermark ||
                 pos->sync_stream_id > sync_watermark)
@@ -5786,7 +5786,7 @@ namespace
         // irrelevant bumps by advancing both since cursors in the needs_wait params.
         if (can_wait && timeout_ms > 0U && expansions_to_answer.empty())
         {
-            auto const cur_event = rt.homeserver.database.next_stream_ordering - 1U;
+            auto const cur_event = visible_stream_position(rt.homeserver.database);
             auto const cur_sync = store.next_sync_stream_id;
 
             // Only wake for a surface this specific connection actually requested.
@@ -6069,7 +6069,7 @@ namespace
 
         // ── pos token and list op responses ─────────────────────────────────
 
-        auto const cur_event = rt.homeserver.database.next_stream_ordering - 1U;
+        auto const cur_event = visible_stream_position(rt.homeserver.database);
         auto const cur_sync = store.next_sync_stream_id;
         // The returned pos is always the live stream watermarks.  A request
         // pos ahead of the watermarks was already rejected with M_UNKNOWN_POS

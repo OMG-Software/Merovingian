@@ -117,6 +117,16 @@ Cloud analysis from SonarSource's automatic analysis into this repository's CI.
   timeline carries it; both now look in the state followed by the timeline, citing the spec. Not done: an incremental sync
   with a limited timeline still gives no state updates for the gap between `since` and the start
   of the timeline.
+- **FIXED:** a local user's `/sync` could skip, for good, an event that arrived over federation.
+  Inbound ingestion reserves an event's stream ordering and commits with `runtime.mutex` released;
+  `/sync`, sliding sync and the long-poll check took the newest reserved ordering as "now", so a
+  sync in that window handed out a token past an event that was applied a moment later, below
+  every later `since` (Complement `TestRestrictedRoomsRemoteJoin` and relatives: a remote user's
+  leave, ordering 22, applied 4 ms after a sync returned 22). Reserved orderings are now pending
+  until applied (`PendingStreamOrdering`), and sync positions stop just below the oldest pending
+  one (`visible_stream_position`). The main ingest path reserves its ordering where the event takes
+  it, after any missing-history fetch, so a reservation spans one commit (ADR-0247). Regression:
+  `test_sync_stream_position.cpp` (`[sync-position]`).
 - **FIXED:** `POST /login` did not log `@user:server` in when named `@USER:server`, `USER` or
   `User`. A user ID is looked up exactly, then with its localpart's ASCII letters downcased
   (ADR-0245), so historical upper-case localparts still log in as themselves. Regression:

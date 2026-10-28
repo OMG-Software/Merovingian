@@ -4061,6 +4061,9 @@ namespace
             auto const sync_id = database::allocate_sync_stream_id(runtime.database.persistent_store);
             return std::make_pair(ordering, sync_id);
         }();
+        // ADR-0247: the commit below releases runtime.mutex; until the event is
+        // applied, no sync position may pass its ordering.
+        auto pending_ordering = std::optional<PendingStreamOrdering>{std::in_place, runtime.database, stream_ordering};
 
         auto event = database::PersistentEvent{};
         event.event_id = envelope.event_id;
@@ -4096,6 +4099,7 @@ namespace
             return false;
         }
         database::apply_store_event_with_state(runtime.database.persistent_store, *prepared);
+        pending_ordering.reset();
 
         if (state_after.has_value())
         {
@@ -4562,11 +4566,11 @@ namespace
         stored_json = serialized.output;
     }
 
-    // Reserve the global stream-ordering and sync-surface IDs up front under
-    // the global mutex. Allocating sync_stream_id writes to the backend, so it
-    // must not happen while a room stripe is also held — that would pin the
-    // stripe for the whole database write and prevent concurrent progress on
-    // unrelated rooms.
+    // Reserve the sync-surface ID up front under the global mutex. Allocating
+    // it writes to the backend, so it must not happen while a room stripe is
+    // also held — that would pin the stripe for the whole database write and
+    // prevent concurrent progress on unrelated rooms. The stream ordering is
+    // reserved later, where the event takes it (ADR-0247).
     auto stream_ordering = std::uint64_t{0U};
     auto sync_stream_id = std::uint64_t{0U};
     {
@@ -4604,7 +4608,6 @@ namespace
             queue.json_bytes += bytes;
             return {federation::PduIngestionStatus::deferred, "PDU deferred until outbound join commits"};
         }
-        stream_ordering = allocate_stream_ordering(runtime.database);
         sync_stream_id = database::allocate_sync_stream_id(runtime.database.persistent_store);
     }
 
@@ -4822,6 +4825,15 @@ namespace
         state = database::PersistentStateEvent{room_id, envelope.event_type, *envelope.state_key, envelope.event_id};
     }
 
+    // ADR-0247: the ordering is reserved here, with runtime.mutex held, and is
+    // pending until the event is applied below. Reserved up front, it stayed
+    // pending across missing-history fetches, and a sync in that window named a
+    // position past an event the client then never received. The watermark write
+    // in allocate_stream_ordering now happens with the room stripe held, as the
+    // event's own commit does.
+    stream_ordering = allocate_stream_ordering(runtime.database);
+    auto pending_ordering = std::optional<PendingStreamOrdering>{std::in_place, runtime.database, stream_ordering};
+
     auto event = database::PersistentEvent{};
     event.event_id = envelope.event_id;
     event.room_id = room_id;
@@ -4884,6 +4896,7 @@ namespace
     }
 
     database::apply_store_event_with_state(runtime.database.persistent_store, *prepared);
+    pending_ordering.reset();
 
     // ADR-0064 phase B1/B2: record this event's after-state group and
     // update forward extremities (only for an accepted event — a rejected

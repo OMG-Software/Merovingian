@@ -47,6 +47,7 @@
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <set>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -219,6 +220,11 @@ struct LocalDatabase final
     // move-constructible (std::mutex is not moveable).
     std::unique_ptr<KeyServerCache> key_server_cache{std::make_unique<KeyServerCache>()};
     std::uint64_t next_stream_ordering{1U};
+    // ADR-0247: orderings reserved for events that are committed with
+    // runtime.mutex released and not yet applied to the store. No sync
+    // position passes the oldest of them (visible_stream_position). Guarded by
+    // runtime.mutex; entries are added and removed only by PendingStreamOrdering.
+    std::multiset<std::uint64_t> pending_stream_orderings{};
 };
 
 // Caps on the in-memory ephemeral state a federating peer can create
@@ -718,6 +724,33 @@ struct SessionRefreshResult final
 // event row, so a counter rebuilt from events alone regresses across
 // restarts and invalidates every pos/since token clients still hold.
 [[nodiscard]] auto allocate_stream_ordering(LocalDatabase& database) -> std::uint64_t;
+
+// ADR-0247: marks `ordering` as reserved for an event not yet applied to the
+// store, for as long as it lives. Construct it right after allocating the
+// ordering, and destroy it once the event is applied (or abandoned), both with
+// runtime.mutex held: a path that commits with the mutex released must hold one
+// across the commit, or a sync in that window hands out a position past an
+// event the client then never receives.
+class PendingStreamOrdering final
+{
+public:
+    PendingStreamOrdering(LocalDatabase& database, std::uint64_t ordering);
+    ~PendingStreamOrdering();
+
+    PendingStreamOrdering(PendingStreamOrdering const&) = delete;
+    auto operator=(PendingStreamOrdering const&) -> PendingStreamOrdering& = delete;
+    PendingStreamOrdering(PendingStreamOrdering&&) = delete;
+    auto operator=(PendingStreamOrdering&&) -> PendingStreamOrdering& = delete;
+
+private:
+    LocalDatabase& m_database;
+    std::uint64_t m_ordering;
+};
+
+// The newest event stream position a sync token, a long-poll check or a
+// sliding-sync pos may name: just below the oldest pending ordering, or the
+// newest allocated one when none is pending. Read with runtime.mutex held.
+[[nodiscard]] auto visible_stream_position(LocalDatabase const& database) noexcept -> std::uint64_t;
 [[nodiscard]] auto start_runtime(config::Config const& config) -> RuntimeStartResult;
 [[nodiscard]] auto start_runtime(config::Config const& config, database::SchemaState existing_state)
     -> RuntimeStartResult;

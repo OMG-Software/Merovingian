@@ -873,6 +873,33 @@ auto database_has_table(LocalDatabase const& database, std::string_view table_na
     });
 }
 
+PendingStreamOrdering::PendingStreamOrdering(LocalDatabase& database, std::uint64_t ordering)
+    : m_database{database}
+    , m_ordering{ordering}
+{
+    m_database.pending_stream_orderings.insert(m_ordering);
+}
+
+PendingStreamOrdering::~PendingStreamOrdering()
+{
+    if (auto const entry = m_database.pending_stream_orderings.find(m_ordering);
+        entry != m_database.pending_stream_orderings.end())
+    {
+        m_database.pending_stream_orderings.erase(entry);
+    }
+}
+
+auto visible_stream_position(LocalDatabase const& database) noexcept -> std::uint64_t
+{
+    auto const newest = database.next_stream_ordering - 1U;
+    if (database.pending_stream_orderings.empty())
+    {
+        return newest;
+    }
+    auto const oldest_pending = *database.pending_stream_orderings.begin();
+    return oldest_pending == 0U ? 0U : std::min(newest, oldest_pending - 1U);
+}
+
 auto allocate_stream_ordering(LocalDatabase& database) -> std::uint64_t
 {
     auto const ordering = database.next_stream_ordering++;
