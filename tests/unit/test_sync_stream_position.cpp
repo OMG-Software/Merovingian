@@ -103,6 +103,33 @@ using merovingian::homeserver::ClientServerRuntime;
     }));
 }
 
+// How many state events of `type` the joined room `room_id` carries in `body`.
+[[nodiscard]] auto state_count(merovingian::canonicaljson::Object const& body, std::string const& room_id,
+                               std::string_view type) -> std::size_t
+{
+    auto const* rooms = object_member_as_object(body, "rooms");
+    auto const* join = rooms == nullptr ? nullptr : object_member_as_object(*rooms, "join");
+    auto const* room = join == nullptr ? nullptr : object_member_as_object(*join, room_id);
+    auto const* state = room == nullptr ? nullptr : object_member_as_object(*room, "state");
+    auto const* events = state == nullptr ? nullptr : object_member_as_array(*state, "events");
+    if (events == nullptr)
+    {
+        return 0U;
+    }
+    return static_cast<std::size_t>(std::ranges::count_if(*events, [type](auto const& entry) {
+        auto const* event_type = string_member(std::get<merovingian::canonicaljson::Object>(entry.storage()), "type");
+        return event_type != nullptr && *event_type == type;
+    }));
+}
+
+// Whether `body` reports `room_id` under rooms.leave.
+[[nodiscard]] auto left_room(merovingian::canonicaljson::Object const& body, std::string const& room_id) -> bool
+{
+    auto const* rooms = object_member_as_object(body, "rooms");
+    auto const* leave = rooms == nullptr ? nullptr : object_member_as_object(*rooms, "leave");
+    return leave != nullptr && object_member_as_object(*leave, room_id) != nullptr;
+}
+
 } // namespace
 
 SCENARIO("No sync position passes a stream ordering whose event is still being committed",
@@ -157,6 +184,60 @@ SCENARIO("No sync position passes a stream ordering whose event is still being c
                     REQUIRE(event_ordering_of(after) >= reserved);
                     REQUIRE(event_ordering_of(after) == rt.homeserver.database.next_stream_ordering - 1U);
                     REQUIRE(timeline_count(after, room_id, "later") == 1U);
+                }
+            }
+        }
+
+        // An initial sync whose timeline window is empty falls back to the room's state; that
+        // state stops at the same position as the token (review of #541).
+        WHEN("a state event is applied and the user makes an initial sync whose timeline is empty")
+        {
+            REQUIRE(call(rt, "PUT", "/_matrix/client/v3/rooms/" + room_id + "/state/m.room.topic/", token,
+                         R"({"topic":"later topic"})")
+                        .response.status == 200U);
+            auto const empty_timeline = call(rt, "GET",
+                                             "/_matrix/client/v3/"
+                                             "sync?filter=%7B%22room%22%3A%7B%22timeline%22%3A%7B%22senders%22%3A%5B%"
+                                             "22%40nobody%3Aexample.org%22%5D%7D%7D%7D",
+                                             token);
+            REQUIRE(empty_timeline.response.status == 200U);
+            auto const body = parse_object(empty_timeline.response.body);
+
+            THEN("the room's state holds nothing above the token")
+            {
+                REQUIRE(event_ordering_of(body) < reserved);
+                REQUIRE(state_count(body, room_id, "m.room.topic") == 0U);
+                REQUIRE(state_count(body, room_id, "m.room.create") == 1U);
+            }
+        }
+
+        // A leave above the token would be reported now and again by the next sync, which
+        // starts from the token (review of #541).
+        WHEN("the user leaves while the reservation is pending and syncs from before the leave")
+        {
+            auto const before_leave = next_batch_of(sync_body(rt, token));
+            REQUIRE(call(rt, "POST", "/_matrix/client/v3/rooms/" + room_id + "/leave", token, "{}").response.status ==
+                    200U);
+            auto const while_pending = sync_body(rt, token, before_leave);
+
+            THEN("the leave waits with the pending ordering")
+            {
+                REQUIRE(event_ordering_of(while_pending) < reserved);
+                REQUIRE_FALSE(left_room(while_pending, room_id));
+            }
+
+            AND_WHEN("the reservation ends and the user syncs again")
+            {
+                {
+                    auto const lock = std::lock_guard{rt.homeserver.mutex};
+                    pending.reset();
+                }
+                auto const after = sync_body(rt, token, next_batch_of(while_pending));
+
+                THEN("the leave is reported once")
+                {
+                    REQUIRE(left_room(after, room_id));
+                    REQUIRE_FALSE(left_room(sync_body(rt, token, next_batch_of(after)), room_id));
                 }
             }
         }

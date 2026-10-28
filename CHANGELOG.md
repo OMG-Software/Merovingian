@@ -189,6 +189,12 @@ Cloud analysis from SonarSource's automatic analysis into this repository's CI.
   200, then the accepted knock stored after it). While one is in flight the others are refused with
   `429 M_LIMIT_EXCEEDED` and `retry_after_ms` (ADR-0252). Tests: `[membership-exchange]` and the
   leave-during-knock WHEN in `test_join_room_flow.cpp` (`[knock-remote]`).
+- **FIXED (review of #541):** two `/sync` paths still read past the response's position
+  (ADR-0247). A joined room whose timeline window is empty took its `state` from current state,
+  which may hold an event above the token while an earlier ordering is pending; it now takes the
+  state before the earliest such event. A leave above the token was reported now and again by the
+  next sync; it now waits for that sync. Tests: the empty-timeline and leave WHENs in
+  `test_sync_stream_position.cpp` (`[sync-position]`).
 - **FIXED:** `POST /login` did not log `@user:server` in when named `@USER:server`, `USER` or
   `User`. A user ID is looked up exactly, then with its localpart's ASCII letters downcased
   (ADR-0245), so historical upper-case localparts still log in as themselves. Regression:

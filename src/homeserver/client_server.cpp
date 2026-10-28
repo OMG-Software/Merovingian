@@ -1178,15 +1178,22 @@ namespace
     // event for the user is still authoritative even on an idempotent
     // repeat /leave call that didn't compose a new event — store.state is
     // upserted in place, so it always points at the last real transition.
+    // ADR-0247: nothing above `upper_bound`, the response's position, or the next
+    // sync, starting from it, reports the leave again.
     [[nodiscard]] auto build_leave_timeline_events_array(database::PersistentStore const& store,
-                                                         std::string_view room_id, std::string_view user_id)
-        -> canonicaljson::Array
+                                                         std::string_view room_id, std::string_view user_id,
+                                                         std::uint64_t upper_bound) -> canonicaljson::Array
     {
         auto result = canonicaljson::Array{};
         auto const state = std::ranges::find_if(store.state, [&](database::PersistentStateEvent const& current) {
             return current.room_id == room_id && current.event_type == "m.room.member" && current.state_key == user_id;
         });
         if (state == store.state.end())
+        {
+            return result;
+        }
+        if (auto const event = store.events.find(state->event_id);
+            event != store.events.end() && event->stream_ordering > upper_bound)
         {
             return result;
         }
@@ -4485,6 +4492,54 @@ namespace
         return build_state_events_array_for_ids(store, filter, ids);
     }
 
+    // ADR-0247: the room's state as of `position`, for a response whose token is
+    // `position` and whose timeline is empty. Current state holds an event above
+    // `position` only while an earlier ordering is pending; then the state is the
+    // state before the earliest such event, which no event at or below `position`
+    // follows. Failing that, the events above `position` are left out.
+    [[nodiscard]] auto build_state_events_at_position(database::PersistentStore const& store,
+                                                      sync::EventTypeFilter const& filter, std::string_view room_id,
+                                                      std::uint64_t position) -> canonicaljson::Array
+    {
+        auto earliest_above = store.events.end();
+        auto ids = std::vector<std::string>{};
+        for (auto const& entry : store.state)
+        {
+            if (entry.room_id != room_id)
+            {
+                continue;
+            }
+            auto const event = store.events.find(entry.event_id);
+            if (event != store.events.end() && event->stream_ordering > position)
+            {
+                if (earliest_above == store.events.end() || event->stream_ordering < earliest_above->stream_ordering)
+                {
+                    earliest_above = event;
+                }
+                continue;
+            }
+            ids.push_back(entry.event_id);
+        }
+        if (earliest_above == store.events.end())
+        {
+            return build_current_state_events_array(store, filter, room_id);
+        }
+        if (auto const* policy = stored_room_version_policy(store, room_id); policy != nullptr)
+        {
+            if (auto const before = compute_state_before(store, room_id, *policy, earliest_above->prev_event_ids);
+                before.ok)
+            {
+                auto before_ids = std::vector<std::string>{};
+                for (auto const& entry : before.state)
+                {
+                    before_ids.push_back(entry.event_id);
+                }
+                return build_state_events_array_for_ids(store, filter, before_ids);
+            }
+        }
+        return build_state_events_array_for_ids(store, filter, ids);
+    }
+
     // Spec: GET /messages `state` is "a list of state events relevant to showing
     // the `chunk`... if `lazy_load_members` is enabled in the filter then this
     // may contain the membership events for the senders of events in the
@@ -5047,9 +5102,9 @@ namespace
                     window_begin != matched.end()
                         ? build_state_events_at_timeline_start(store, filter.room.state, room.room_id, **window_begin)
                         : std::nullopt;
-                state_events = at_start.has_value()
-                                   ? std::move(*at_start)
-                                   : build_current_state_events_array(store, filter.room.state, room.room_id);
+                state_events = at_start.has_value() ? std::move(*at_start)
+                                                    : build_state_events_at_position(store, filter.room.state,
+                                                                                     room.room_id, sync_position);
             }
             auto ephemeral_events = build_room_ephemeral_events_array(
                 rt.homeserver, room.room_id, user, since_sync_stream_id, max_observed_sync_stream_id, ignored_senders);
@@ -5174,13 +5229,16 @@ namespace
                     ++invite_count;
                 }
             }
-            else if (membership.membership == "leave" &&
+            else if (membership.membership == "leave" && membership.stream_ordering <= sync_position &&
                      (filter.room.include_leave ||
                       (since_token.has_value() && membership.stream_ordering > since_ordering)))
             {
+                // ADR-0247: a leave above sync_position waits for the next sync,
+                // which starts from it.
                 if (leave_count < rt.limits.max_sync_rooms)
                 {
-                    auto leave_timeline_events = build_leave_timeline_events_array(store, membership.room_id, user);
+                    auto leave_timeline_events =
+                        build_leave_timeline_events_array(store, membership.room_id, user, sync_position);
                     leave_members.push_back(json_member(
                         membership.room_id,
                         json_obj({json_member(
