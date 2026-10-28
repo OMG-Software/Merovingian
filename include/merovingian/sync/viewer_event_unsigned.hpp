@@ -6,9 +6,9 @@
 #include "merovingian/database/persistent_store.hpp"
 #include "merovingian/sync/history_visibility.hpp"
 
+#include <optional>
 #include <string>
 #include <string_view>
-#include <unordered_map>
 
 namespace merovingian::sync
 {
@@ -23,9 +23,11 @@ namespace merovingian::sync
 //   - `membership`: "The room membership of the user making the request, at the time of the
 //     event", `leave` for a user with no membership yet.
 //
-// One instance serves one request: it reads the requesting device's transaction IDs from the
-// store once, on first use, and answers memberships through the request's HistoryVisibility.
-// It is not thread-safe and must not outlive the store or the visibility it was built with.
+// One instance serves one request. It looks up only the events it is applied to: the transaction
+// ID through the store's client transaction index (`database::find_client_txn_by_event_id`, one hash
+// lookup per event, no scan of the records), the membership through the request's
+// HistoryVisibility. It is not thread-safe and must not outlive the store or the visibility it was
+// built with.
 class ViewerEventUnsigned final
 {
 public:
@@ -38,15 +40,13 @@ public:
         -> canonicaljson::Value;
 
 private:
-    auto ensure_transactions() -> void;
+    // The transaction ID `event` was sent with, when this user's device sent it.
+    [[nodiscard]] auto transaction_id_of(database::PersistentEvent const& event) const -> std::optional<std::string>;
 
     database::PersistentStore const& store_;
     HistoryVisibility& visibility_;
     std::string user_id_;
     std::string device_id_;
-    bool transactions_built_{false};
-    // event_id -> transaction ID, for the events this user's device sent with one.
-    std::unordered_map<std::string, std::string> transactions_{};
 };
 
 } // namespace merovingian::sync

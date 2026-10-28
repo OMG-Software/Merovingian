@@ -2308,6 +2308,7 @@ auto open_postgresql_persistent_store(std::string_view conninfo, std::string_vie
     sort_appservice_outbox(store);
     reconstruct_event_relations(store);
     rebuild_state_transition_index(store);
+    rebuild_client_txn_index(store);
     rebuild_redaction_state(store);
     rebuild_key_signature_index(store);
     restore_sync_stream_id(store);

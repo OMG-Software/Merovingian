@@ -4245,6 +4245,43 @@ namespace
              public_value(record.txn_id), public_value(record.event_id), public_value(record.device_id)});
     }
 
+    // The idempotency key of a record: each part length-prefixed, so no part can run into the next.
+    [[nodiscard]] auto client_txn_key(std::string_view user_id, std::string_view room_id, std::string_view event_type,
+                                      std::string_view txn_id) -> std::string
+    {
+        auto key = std::string{};
+        for (auto const part : {user_id, room_id, event_type, txn_id})
+        {
+            key += std::to_string(part.size());
+            key.push_back(':');
+            key.append(part);
+        }
+        return key;
+    }
+
+    auto index_client_txn(PersistentStore& store, std::size_t position) -> void
+    {
+        auto const& record = store.client_txn_ids[position];
+        store.client_txn_key_index.emplace(
+            client_txn_key(record.user_id, record.room_id, record.event_type, record.txn_id), position);
+        if (!record.event_id.empty())
+        {
+            store.client_txn_event_index.emplace(record.event_id, position);
+        }
+    }
+
+    // Adds a record to `client_txn_ids` and, while the indexes cover every earlier record, to them.
+    auto append_client_txn(PersistentStore& store, PersistentClientTxnRecord record) -> void
+    {
+        auto const covered = store.client_txn_indexed_rows == store.client_txn_ids.size();
+        store.client_txn_ids.push_back(std::move(record));
+        if (covered)
+        {
+            index_client_txn(store, store.client_txn_ids.size() - 1U);
+            ++store.client_txn_indexed_rows;
+        }
+    }
+
 } // namespace
 
 [[nodiscard]] auto enqueue_to_device_messages(PersistentStore& store, std::vector<PersistentToDeviceMessage> messages)
@@ -4310,7 +4347,7 @@ namespace
         return false;
     }
     apply_to_device_batch(store, std::move(batch));
-    store.client_txn_ids.push_back(std::move(record));
+    append_client_txn(store, std::move(record));
     return true;
 }
 
@@ -5514,14 +5551,67 @@ auto sort_appservice_outbox(PersistentStore& store) -> void
                                             std::string_view room_id, std::string_view event_type,
                                             std::string_view txn_id) -> std::optional<std::string>
 {
-    auto const it = std::ranges::find_if(store.client_txn_ids, [&](PersistentClientTxnRecord const& r) {
+    auto const matches = [&](PersistentClientTxnRecord const& r) {
         return r.user_id == user_id && r.room_id == room_id && r.event_type == event_type && r.txn_id == txn_id;
-    });
+    };
+    if (store.client_txn_indexed_rows == store.client_txn_ids.size())
+    {
+        auto const entry = store.client_txn_key_index.find(client_txn_key(user_id, room_id, event_type, txn_id));
+        if (entry == store.client_txn_key_index.end())
+        {
+            return std::nullopt;
+        }
+        if (entry->second < store.client_txn_ids.size() && matches(store.client_txn_ids[entry->second]))
+        {
+            return store.client_txn_ids[entry->second].event_id;
+        }
+        // An index that disagrees with its records is not trusted: scan.
+    }
+    auto const it = std::ranges::find_if(store.client_txn_ids, matches);
     if (it == store.client_txn_ids.end())
     {
         return std::nullopt;
     }
     return it->event_id;
+}
+
+auto rebuild_client_txn_index(PersistentStore& store) -> void
+{
+    store.client_txn_event_index.clear();
+    store.client_txn_key_index.clear();
+    store.client_txn_key_index.reserve(store.client_txn_ids.size());
+    store.client_txn_event_index.reserve(store.client_txn_ids.size());
+    for (auto position = std::size_t{0U}; position < store.client_txn_ids.size(); ++position)
+    {
+        index_client_txn(store, position);
+    }
+    store.client_txn_indexed_rows = store.client_txn_ids.size();
+}
+
+[[nodiscard]] auto find_client_txn_by_event_id(PersistentStore const& store, std::string_view event_id)
+    -> PersistentClientTxnRecord const*
+{
+    if (event_id.empty())
+    {
+        return nullptr;
+    }
+    if (store.client_txn_indexed_rows == store.client_txn_ids.size())
+    {
+        auto const entry = store.client_txn_event_index.find(std::string{event_id});
+        if (entry == store.client_txn_event_index.end())
+        {
+            return nullptr;
+        }
+        if (entry->second < store.client_txn_ids.size() && store.client_txn_ids[entry->second].event_id == event_id)
+        {
+            return &store.client_txn_ids[entry->second];
+        }
+        // An index that disagrees with its records is not trusted: scan.
+    }
+    auto const it = std::ranges::find_if(store.client_txn_ids, [&](PersistentClientTxnRecord const& record) {
+        return record.event_id == event_id;
+    });
+    return it == store.client_txn_ids.end() ? nullptr : &*it;
 }
 
 [[nodiscard]] auto store_client_txn(PersistentStore& store, PersistentClientTxnRecord record) -> bool
@@ -5539,7 +5629,7 @@ auto sort_appservice_outbox(PersistentStore& store) -> void
     {
         return false;
     }
-    store.client_txn_ids.push_back(std::move(record));
+    append_client_txn(store, std::move(record));
     return true;
 }
 

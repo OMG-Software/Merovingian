@@ -135,7 +135,10 @@ events after the leave to a left room's timeline.
 `unsigned.membership` and `unsigned.transaction_id` depend on who asks, so they are added per
 request by `ViewerEventUnsigned`, never stored. `transaction_id` is given only to the device
 that sent the event (`client_txn_ids.device_id`; a transaction ID is scoped to a device, and a
-login that names an existing `device_id`, or a token refresh, is the same device). `membership`
+login that names an existing `device_id`, or a token refresh, is the same device). It reads the
+record through `database::find_client_txn_by_event_id`, one hash lookup per event served; never
+scan `client_txn_ids` per request, the table grows with every message the server stores and
+nothing prunes it. `membership`
 comes from `HistoryVisibility::membership_at`: the user's `m.room.member` state in the state group
 after the event, `leave` before they had any. `/sync` timelines and `GET .../event/{eventId}`
 use it; a new read path that returns timeline events to a client should too.

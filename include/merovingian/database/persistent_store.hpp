@@ -982,6 +982,9 @@ struct PersistentStore final
         , account_threepids{other.account_threepids}
         , room_aliases{other.room_aliases}
         , client_txn_ids{other.client_txn_ids}
+        , client_txn_event_index{other.client_txn_event_index}
+        , client_txn_key_index{other.client_txn_key_index}
+        , client_txn_indexed_rows{other.client_txn_indexed_rows}
         , pushers{other.pushers}
         , notifications{other.notifications}
         , openid_tokens{other.openid_tokens}
@@ -1067,6 +1070,9 @@ struct PersistentStore final
         account_threepids = other.account_threepids;
         room_aliases = other.room_aliases;
         client_txn_ids = other.client_txn_ids;
+        client_txn_event_index = other.client_txn_event_index;
+        client_txn_key_index = other.client_txn_key_index;
+        client_txn_indexed_rows = other.client_txn_indexed_rows;
         pushers = other.pushers;
         notifications = other.notifications;
         openid_tokens = other.openid_tokens;
@@ -1177,6 +1183,17 @@ struct PersistentStore final
     std::vector<PersistentThreePidBinding> account_threepids{};
     std::vector<PersistentRoomAlias> room_aliases{};
     std::vector<PersistentClientTxnRecord> client_txn_ids{};
+    // Positions in `client_txn_ids`, so a request reads the records it needs without scanning every
+    // record the server has ever stored (work under runtime.mutex is bounded by the request):
+    // `client_txn_event_index` by event_id, for the transaction ID a sending device is given;
+    // `client_txn_key_index` by (user_id, room_id, event_type, txn_id), for idempotency. Maintained
+    // by store_client_txn and enqueue_to_device_messages_with_client_txn, rebuilt after hydration. They
+    // are trusted only while `client_txn_indexed_rows == client_txn_ids.size()`; a caller that pushes
+    // rows directly leaves the counts unequal and lookups fall back to a scan until the next rebuild.
+    // Nothing prunes `client_txn_ids`.
+    std::unordered_map<std::string, std::size_t> client_txn_event_index{};
+    std::unordered_map<std::string, std::size_t> client_txn_key_index{};
+    std::size_t client_txn_indexed_rows{0U};
     std::vector<PersistentPusher> pushers{};
     std::vector<PersistentNotification> notifications{};
     std::vector<PersistentOpenidToken> openid_tokens{};
@@ -1579,6 +1596,15 @@ auto apply_forward_extremities_update(PersistentStore& store, std::string_view r
 // Rebuilds the in-memory state_transitions index from scratch. Called after
 // SQLite/PostgreSQL hydration and after any direct backfill of the vector.
 auto rebuild_state_transition_index(PersistentStore& store) -> void;
+
+// Rebuilds the in-memory client transaction indexes from `client_txn_ids`. Called after
+// SQLite/PostgreSQL hydration.
+auto rebuild_client_txn_index(PersistentStore& store) -> void;
+
+// The record of the room send that produced `event_id`, or nullptr (also for an empty ID). An
+// index lookup; the sender, device and transaction ID are the record's.
+[[nodiscard]] auto find_client_txn_by_event_id(PersistentStore const& store, std::string_view event_id)
+    -> PersistentClientTxnRecord const*;
 
 // ---- CSAZ-11: redactions ----
 //

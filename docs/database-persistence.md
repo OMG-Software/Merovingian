@@ -790,7 +790,13 @@ value. Test fixtures that do not exercise persistence select it through
   Keyed on `(user_id, room_id, event_type, txn_id)`; `room_id` is empty string
   for to-device sends. `device_id` records the device that made the room-send
   request (empty when it had none) so the sending device is given
-  `unsigned.transaction_id`; it is not part of the key. `event_id` stores the assigned event ID for room sends and
+  `unsigned.transaction_id`; it is not part of the key. The in-memory rows are
+  indexed by event ID and by the key (`client_txn_event_index`,
+  `client_txn_key_index`), rebuilt after hydration and extended on every store,
+  so the idempotency check and the per-event transaction-ID lookup are hash
+  lookups. The indexes are trusted only while `client_txn_indexed_rows` equals
+  the row count; a caller that pushes rows directly falls back to a scan until
+  the next rebuild. Nothing prunes the table. `event_id` stores the assigned event ID for room sends and
   is empty for to-device entries. Both SQLite and PostgreSQL hydrate rows on
   startup. Handlers check the table before processing and store the result after
   a successful send, allowing clients to safely retry `PUT /rooms/{roomId}/send`

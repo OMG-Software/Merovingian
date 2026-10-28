@@ -28,24 +28,18 @@ ViewerEventUnsigned::ViewerEventUnsigned(database::PersistentStore const& store,
 {
 }
 
-auto ViewerEventUnsigned::ensure_transactions() -> void
+auto ViewerEventUnsigned::transaction_id_of(database::PersistentEvent const& event) const -> std::optional<std::string>
 {
-    if (transactions_built_)
-    {
-        return;
-    }
-    transactions_built_ = true;
     if (device_id_.empty())
     {
-        return;
+        return std::nullopt;
     }
-    for (auto const& record : store_.client_txn_ids)
+    auto const* record = database::find_client_txn_by_event_id(store_, event.event_id);
+    if (record == nullptr || record->user_id != user_id_ || record->device_id != device_id_)
     {
-        if (record.user_id == user_id_ && record.device_id == device_id_ && !record.event_id.empty())
-        {
-            transactions_.emplace(record.event_id, record.txn_id);
-        }
+        return std::nullopt;
     }
+    return record->txn_id;
 }
 
 auto ViewerEventUnsigned::apply(database::PersistentEvent const& event, canonicaljson::Value client_event)
@@ -56,11 +50,10 @@ auto ViewerEventUnsigned::apply(database::PersistentEvent const& event, canonica
     {
         return client_event;
     }
-    ensure_transactions();
     auto added = canonicaljson::Object{};
-    if (auto const transaction = transactions_.find(event.event_id); transaction != transactions_.end())
+    if (auto transaction = transaction_id_of(event); transaction.has_value())
     {
-        added.push_back(canonicaljson::make_member("transaction_id", canonicaljson::Value{transaction->second}));
+        added.push_back(canonicaljson::make_member("transaction_id", canonicaljson::Value{std::move(*transaction)}));
     }
     if (auto membership = visibility_.membership_at(event); membership.has_value())
     {
