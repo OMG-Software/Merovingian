@@ -120,10 +120,15 @@ pagination and filters, and the expected failures from the legacy media freeze.
   `User`. A user ID is looked up exactly, then with its localpart's ASCII letters downcased
   (ADR-0245), so historical upper-case localparts still log in as themselves. Regression:
   `[login-case]` in `test_client_server_conformance.cpp`, red on the old code.
-- **CHANGED (not fixed):** Complement `TestLogin`'s parallel subtests still meet
-  `429 too many concurrent authentication attempts`: the Argon2id admission cap is 4 and not
-  configurable (ADR-0090). Lifting it for Complement needs a configuration key, which is an owner
-  decision.
+- **ADDED:** `security.password_hashing.max_concurrent` (default 4, 1 to 128, needs a restart):
+  how many Argon2id hashes run at once. The cap was fixed at four in code (ADR-0090), so
+  Complement's parallel `TestLogin` and `TestRegistration` subtests met
+  `429 too many concurrent authentication attempts`; the owner chose a config key whose default
+  is unchanged (ADR-0246). Zero and anything past the admission semaphore's maximum are startup
+  findings. The Complement template sets 32 (each hash takes 64 MiB). Tests:
+  `test_config_password_hashing.cpp` (default, configured value, out-of-range and malformed
+  values, reload policy, and the runtime admitting exactly the configured number), and
+  `test_complement_image.py` checks the rendered Complement config raises it.
 - **FIXED:** room version 12 creation. Every v12 room's initial power levels now define
   `m.room.tombstone` above `state_default` (the spec's MUST; only `trusted_private_chat` did), and
   a client's own tombstone level in `power_level_content_override` is kept. A

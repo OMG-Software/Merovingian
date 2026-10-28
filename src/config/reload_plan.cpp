@@ -220,6 +220,10 @@ auto build_reload_plan(Config const& current, Config const& next) -> ReloadPlan
     {
         add_change(plan, "security.password_policy.require_character_classes");
     }
+    if (current.security().password_hashing.max_concurrent != next.security().password_hashing.max_concurrent)
+    {
+        add_change(plan, "security.password_hashing.max_concurrent");
+    }
     if (current.security().registration.token_file != next.security().registration.token_file)
     {
         add_change(plan, "security.registration.token_file");

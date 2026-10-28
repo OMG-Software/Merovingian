@@ -433,6 +433,17 @@ struct PasswordPolicyConfig final
     bool require_character_classes{true};
 };
 
+// ADR-0246 (refines ADR-0090): how many Argon2id hashes (password logins, registrations,
+// user-interactive password checks, registration-token checks) the process runs at once. A
+// request past it is answered 429 M_LIMIT_EXCEEDED before any hash work. 1 to
+// max_password_hashing_concurrency; taken at start-up.
+inline constexpr std::uint32_t max_password_hashing_concurrency = 128U;
+
+struct PasswordHashingConfig final
+{
+    std::uint32_t max_concurrent{4U};
+};
+
 // AUTH-2: the failed-password-login throttle. A password login is refused once
 // the account has `max_failures_per_source` failures from one client source
 // inside `window` (that source only), or `max_failures_per_account` failures
@@ -861,6 +872,7 @@ struct SecurityConfig final
 {
     RegistrationSecurityConfig registration{};
     PasswordPolicyConfig password_policy{};
+    PasswordHashingConfig password_hashing{};
     LoginThrottleSecurityConfig login_throttle{};
     EncryptionSecurityConfig encryption{};
     FederationSecurityConfig federation{};

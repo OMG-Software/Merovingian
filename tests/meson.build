@@ -208,6 +208,7 @@ shell = find_program('sh')
       'unit/test_config_private_range_allowlist.cpp',
       'unit/test_config_open_registration.cpp',
       'unit/test_config_password_policy.cpp',
+      'unit/test_config_password_hashing.cpp',
       'unit/test_config_client_rate_limits.cpp',
       'unit/test_config_log_modules.cpp',
       'unit/test_config_oidc_validation.cpp',

@@ -895,6 +895,7 @@ live TLS handshakes or worker certificate-file access. See
 | `security.registration.allow_open_registration` | `false` | The explicit acknowledgement that `enabled=true` with `require_token=false` is intended: anyone who can reach the client API can create an account. Logged as `registration.open` at CRITICAL on every start (ADR-0232). |
 | `security.password_policy.min_length` | `12` | Minimum length in bytes (1-1024) of a password a person chooses: registration, the bootstrap administrator and `POST /account/password`. A refused password gets `400 M_WEAK_PASSWORD`. Below 12 is logged at CRITICAL on every start (ADR-0236). |
 | `security.password_policy.require_character_classes` | `true` | Require a lower-case and an upper-case ASCII letter, an ASCII digit and an ASCII symbol. `false` is logged at CRITICAL on every start. Appservice users' generated credentials are never checked. |
+| `security.password_hashing.max_concurrent` | `4` | How many Argon2id hashes (password logins, registrations, user-interactive password checks, registration-token checks) run at once (1-128). A request past it is answered `429 M_LIMIT_EXCEEDED` with `retry_after_ms` 1000 at once, before any hash work, and is never counted as a failed attempt. Each hash is memory-hard: raise it only with the memory to match (ADR-0246, ADR-0090). |
 | `security.registration.token_file` | (empty) | **Required** when registration is enabled with `require_token=true` (the default). Owner-only file containing the registration token. The shipped example sets `/etc/merovingian/registration-token`. |
 
 The token file is read on startup and should contain the registration token
@@ -1198,6 +1199,7 @@ rejection and pinned resolved addresses used during federation discovery.
 | `security.federation.allow_private_ip_ranges` | (empty) | requires restart | Opens the named RFC 1918 / ULA networks to federation only (ADR-0231). Copied into the discovery network at startup. |
 | `security.password_policy.min_length` | `12` | requires restart | A weaker policy is logged at CRITICAL at start-up; a reload cannot loosen it without that line (ADR-0236). |
 | `security.password_policy.require_character_classes` | `true` | requires restart | As above. |
+| `security.password_hashing.max_concurrent` | `4` | requires restart | The admission semaphore is built at start-up (ADR-0246). |
 | `security.federation.key_resolution_*` | see above | requires restart | Budgets pre-authentication remote-key resolution. Snapshotted into the federation runtime config at startup, which SIGHUP does not rebuild. |
 | `federation.worker.relay_threads` | `32` | requires restart | Thread pool for worker paths that can block on outbound HTTP or synchronous main-process relays. |
 

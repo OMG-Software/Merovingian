@@ -1296,6 +1296,13 @@ namespace
                 add_parse_finding(findings, std::string{key}, "expected boolean value");
             }
         }
+        else if (key == "security.password_hashing.max_concurrent")
+        {
+            if (!parse_u32_value(value, security.password_hashing.max_concurrent))
+            {
+                add_parse_finding(findings, std::string{key}, "expected unsigned integer");
+            }
+        }
         else if (key == "security.login_throttle.max_failures_per_source")
         {
             if (!parse_u32_value(value, security.login_throttle.max_failures_per_source))

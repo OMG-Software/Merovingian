@@ -230,6 +230,7 @@
 * [0243 - A remote knock keeps its stripped state in the invite record](0243-a-remote-knock-keeps-its-stripped-state-in-the-invite-record.md)
 * [0244 - A server that has left a room rejoins through a resident](0244-a-server-that-has-left-a-room-rejoins-through-a-resident.md)
 * [0245 - Login matches a user ID exactly, then downcased](0245-login-matches-a-user-id-exactly-then-downcased.md)
+* [0246 - The password-hashing concurrency cap is configurable](0246-the-password-hashing-concurrency-cap-is-configurable.md)
 
 ## Proposed Records
 
@@ -264,3 +265,4 @@
 * [0064 - Spec-conformant PDU ingestion with delta state groups](0064-spec-conformant-pdu-ingestion-with-delta-state-groups.md) — Refined by ADR-0225: when the state across a room's forward extremities cannot be resolved, a local event is built on the newest extremity alone and the others are retired, instead of being refused; and by ADR-0228: local and federated-join bookkeeping commits in one transaction with the event
 * [0092 - Normalize known rate-limit routes and evict least-recently-used buckets](0092-normalize-rate-limit-routes-and-evict-lru.md) — Refined by ADR-0230: the matcher is also the list of served paths, so every implemented route, static or dynamic, must be recognised, and a path it cannot place is answered 404 M_UNRECOGNIZED before authentication
 * [0234 - A Complement run is judged by a summariser over a checked-in skip list](0234-a-complement-run-is-judged-by-a-summariser-over-a-checked-in-skip-list.md) — Refined by ADR-0237: only Complement's `./tests` and `./tests/csapi` packages run; the `tests/msc*` packages test proposals outside v1.19
+* [0090 - Bound Argon2id work with a process-wide admission semaphore](0090-bound-argon2id-work-with-admission.md) — Refined by ADR-0246: the semaphore's capacity is `security.password_hashing.max_concurrent` (default 4, 1 to 128), taken at start-up

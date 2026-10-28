@@ -913,6 +913,12 @@ auto start_runtime(RuntimeStartOptions opts) -> RuntimeStartResult
 
     auto runtime = HomeserverRuntime{};
     runtime.config = config;
+    // ADR-0246: the Argon2id admission budget is the operator's, validated to
+    // 1..max_password_hashing_concurrency at parse time; built before any request can run.
+    static_assert(config::max_password_hashing_concurrency == auth::argon2id_admission_max_capacity,
+                  "the configured cap must not exceed what the admission semaphore can count");
+    runtime.argon2id_admission = std::make_unique<auth::Argon2idAdmission>(std::clamp<std::size_t>(
+        config.security().password_hashing.max_concurrent, 1U, auth::argon2id_admission_max_capacity));
     // ADR-0079 caps are a fraction of the main request pool, which is now
     // configured (server.http.request_threads, ADR-0077).
     runtime.client_outbound_proxy_policy = client_outbound_proxy_policy_for_pool(config.server().http.request_threads);
