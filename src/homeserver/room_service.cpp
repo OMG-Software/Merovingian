@@ -4085,6 +4085,7 @@ namespace
         // missing state entries.
         return SendJoinStateIngestResult{};
     }
+    auto recorded_keys = std::map<std::pair<std::string, std::string>, std::size_t>{};
     for (auto const& entry : entries)
     {
         if (entry.prepared.has_value())
@@ -4093,8 +4094,22 @@ namespace
         }
         if (entry.state.has_value())
         {
-            result.state_entries.push_back(
-                {{}, entry.state->event_type, entry.state->state_key, entry.state->event_id});
+            ++result.recorded_state_events;
+            // One entry per key: the state group rejects a key twice. A later
+            // entry for the same key replaces the earlier, as current_state does.
+            // Indexed, not searched: a large room's snapshot is all member events.
+            auto recorded = database::PersistentStateGroupStateEntry{
+                {}, entry.state->event_type, entry.state->state_key, entry.state->event_id};
+            if (auto const [position, inserted] = recorded_keys.try_emplace(
+                    std::pair{entry.state->event_type, entry.state->state_key}, result.state_entries.size());
+                inserted)
+            {
+                result.state_entries.push_back(std::move(recorded));
+            }
+            else
+            {
+                result.state_entries[position->second] = std::move(recorded);
+            }
         }
         if (!entry.joined_member.empty())
         {
@@ -5054,7 +5069,7 @@ namespace
         // Never open/drain admission on an incomplete or failed initial state
         // commit. The verified snapshot must contain create and every verified
         // state entry must have been persisted by the bootstrap writer.
-        if (send_join_state.state_entries.size() != verified_state.size() ||
+        if (send_join_state.recorded_state_events != verified_state.size() ||
             !std::ranges::any_of(send_join_state.state_entries, [](auto const& entry) {
                 return entry.event_type == "m.room.create" && entry.state_key.empty();
             }))

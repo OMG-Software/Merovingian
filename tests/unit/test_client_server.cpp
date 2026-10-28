@@ -35,6 +35,7 @@
 #include "merovingian/observability/logger.hpp"
 
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/generators/catch_generators.hpp>
 
 #include <algorithm>
 #include <array>
@@ -2019,6 +2020,23 @@ SCENARIO("Client-server typing and messages routes dispatch through the room blo
             {
                 REQUIRE(messages.response.status == 403U);
                 REQUIRE(messages.response.body.find("M_FORBIDDEN") != std::string::npos);
+            }
+        }
+
+        WHEN("the user requests messages with a filter that is not a JSON RoomEventFilter")
+        {
+            // `filter` is "A JSON RoomEventFilter"; one that is not JSON, or not an
+            // object, is refused as /context refuses it, never dropped for an
+            // unfiltered page (review of #541).
+            auto const filter = GENERATE(as<std::string>{}, "not-json", "%5B1%2C2%5D", "%22text%22");
+            auto const messages = merovingian::homeserver::handle_client_server_request(
+                runtime, {"GET", "/_matrix/client/v3/rooms/" + id + "/messages?dir=b&filter=" + filter, token, {}});
+
+            THEN("the response is 400 M_BAD_JSON")
+            {
+                CAPTURE(filter, messages.response.body);
+                REQUIRE(messages.response.status == 400U);
+                REQUIRE(messages.response.body.find("M_BAD_JSON") != std::string::npos);
             }
         }
     }

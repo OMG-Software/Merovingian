@@ -146,13 +146,15 @@ Cloud analysis from SonarSource's automatic analysis into this repository's CI.
   long-poll is not woken for an event it cannot be given yet, and the verified backfill writer
   publishes once its reservation ends. A federated knock passes its shared deadline to each call,
   so server discovery counts against it too. A state event repeated in one `send_join` batch was dropped
-  and the join refused for the short count; the repeat is recorded. `/messages` refuses a `filter`
+  and the join refused for the short count; it now counts towards completeness
+  (`recorded_state_events`) while the state group gets each key once, since `state_group_state`
+  rejects a key twice. `/messages` refuses a `filter`
   that is not a JSON RoomEventFilter with `400 M_BAD_JSON`, as `/context` does, instead of serving
   the page unfiltered. The SonarQube Cloud scan enables the analyser's experimental C++26 support
   (`sonar.cfamily.experimental.cpp26.enabled`), without which it refused to start on this build
   (ADR-0250). Tests: `[sync-position]` (timeline and token agree; the later event arrives once),
-  the repeated-entry case in `test_federation_invite_join.cpp`, the malformed-filter scenario in
-  `test_room_pagination_conformance.cpp`, and `test_sonarcloud_config.py`.
+  the repeated-entry case in `test_federation_invite_join.cpp`, the malformed-filter case in
+  `test_client_server.cpp` (a unit test: v1.19 does not mandate the code), and `test_sonarcloud_config.py`.
 - **FIXED:** `POST /login` did not log `@user:server` in when named `@USER:server`, `USER` or
   `User`. A user ID is looked up exactly, then with its localpart's ASCII letters downcased
   (ADR-0245), so historical upper-case localparts still log in as themselves. Regression:

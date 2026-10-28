@@ -1691,9 +1691,13 @@ SCENARIO("ingest_send_join_state writes empty-state-key events to store.state",
             repeated.push_back((*arr)[1]);
             auto const ingested = merovingian::homeserver::ingest_send_join_state(runtime, room_id, repeated, policy);
 
-            THEN("every entry is recorded, the repeated one included, and the event is stored once")
+            THEN("every entry counts towards completeness, each key enters the state group once, and the event is "
+                 "stored once")
             {
-                REQUIRE(ingested.state_entries.size() == repeated.size());
+                // join_room compares the count with the verified array; the state group
+                // rejects a key twice, so the entries for it hold each key once.
+                REQUIRE(ingested.recorded_state_events == repeated.size());
+                REQUIRE(ingested.state_entries.size() == arr->size());
                 auto const& state = runtime.database.persistent_store.state;
                 REQUIRE(std::count_if(state.begin(), state.end(), [&](auto const& s) {
                             return s.room_id == room_id && s.event_type == "m.room.encryption";

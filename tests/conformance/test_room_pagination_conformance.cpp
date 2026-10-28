@@ -291,41 +291,6 @@ SCENARIO("/messages applies the RoomEventFilter to the events it returns",
 // `from`: "The pagination token to start returning results from ... Can be a next_batch or
 // prev_batch token from a previous call, or a returned start token from /messages, or a
 // next_batch token from /sync."
-// Spec: Matrix Client-Server API v1.19
-// Endpoint / Section: GET /_matrix/client/v3/rooms/{roomId}/messages
-// URL:  ../../docs/matrix-v1.19-spec/client-server-api.md#get_matrixclientv3roomsroomidmessages
-//
-// `filter` is "A JSON RoomEventFilter". One that is not JSON, or not an object, is refused
-// with 400 M_BAD_JSON, as /context refuses it; serving the page unfiltered would answer a
-// request the client did not make.
-SCENARIO("/messages refuses a filter that is not a JSON RoomEventFilter",
-         "[conformance][client-server][messages][filter]")
-{
-    GIVEN("a room the user is in")
-    {
-        auto started = merovingian::homeserver::start_client_server(pagination_config());
-        REQUIRE(started.started);
-        auto& rt = started.runtime;
-        auto const token = register_and_login(rt, "alice");
-        auto const room_id = create_room(rt, token);
-        auto const filter = GENERATE(as<std::string>{}, "not-json", "%5B1%2C2%5D", "%22text%22");
-
-        WHEN("/messages is asked with that filter")
-        {
-            auto const reply =
-                call(rt, "GET", "/_matrix/client/v3/rooms/" + room_id + "/messages?dir=b&filter=" + filter, token);
-
-            THEN("it answers 400 M_BAD_JSON")
-            {
-                CAPTURE(filter, reply.body);
-                // Spec: `filter` is "A JSON RoomEventFilter".
-                REQUIRE(reply.status == 400U);
-                REQUIRE(*string_member(parse_object(reply.body), "errcode") == "M_BAD_JSON");
-            }
-        }
-    }
-}
-
 SCENARIO("/relations paginates from a /sync next_batch token", "[conformance][client-server][relations][pagination]")
 {
     GIVEN("a root event with one reply before a sync and one after")
