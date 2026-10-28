@@ -226,6 +226,11 @@ Cloud analysis from SonarSource's automatic analysis into this repository's CI.
   `coverage/sonarqube.xml`, which `sonar.coverageReportPaths` names; until now the quality gate saw
   0% coverage of new code, since the scan had no report. The PostgreSQL image is pinned by digest
   (ADR-0250). Checked by `test_sonarcloud_config.py`.
+- **CHANGED:** both coverage jobs pass gcovr `--exclude-unreachable-branches`, leaving out the
+  branches gcov attributes to lines without code, such as a function's closing brace where the
+  compiler destroys its locals (ADR-0253, refining ADR-0217). Three such braces held 134 of the 467
+  uncovered new-code conditions SonarQube Cloud reported on this pull request. Checked by
+  `test_coverage_workflow.py` and `test_sonarcloud_config.py`.
 - **FIXED:** `POST /login` did not log `@user:server` in when named `@USER:server`, `USER` or
   `User`. A user ID is looked up exactly, then with its localpart's ASCII letters downcased
   (ADR-0245), so historical upper-case localparts still log in as themselves. Regression:

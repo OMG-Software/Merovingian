@@ -189,11 +189,15 @@ jobs:
           # only an injected allocation failure reaches, so counting them marks
           # executed lines as partial. Decision branches are still counted. It
           # works only because this job builds with GCC (see env above).
+          # --exclude-unreachable-branches drops branches gcov attributes to lines with
+          # no code of ours, such as a closing brace where the compiler destroys the
+          # function's locals (ADR-0253).
           gcovr \
             --root . \
             --gcov-executable gcov-14 \
             --gcov-ignore-parse-errors \
             --exclude-throw-branches \
+            --exclude-unreachable-branches \
             --filter 'src/' \
             --filter 'include/merovingian/' \
             --exclude 'src/main.cpp' \

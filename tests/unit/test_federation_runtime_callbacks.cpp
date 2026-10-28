@@ -1680,9 +1680,10 @@ SCENARIO("A presence or device-list EDU waits for runtime.mutex before touching 
     {
         auto const origin = std::string{"matrix.example.org"};
         auto const key_id = std::string{"ed25519:auto"};
+        // Declared before the runtime, so it outlives the runtime that points at it.
+        auto const notifier = std::make_unique<merovingian::sync::SyncNotifier>();
         auto runtime = edu_runtime(origin, key_id, "store-lock-seed", {"!room:matrix.example.org"});
-        auto notifier = merovingian::sync::SyncNotifier{};
-        runtime->sync_notifier = &notifier;
+        runtime->sync_notifier = notifier.get();
         // A first transaction wires the federation callbacks, edu_sink among them.
         REQUIRE(merovingian::homeserver::handle_federation_http_request(
                     *runtime, edu_request(origin, key_id, "txn-store-lock-wire", "m.typing",

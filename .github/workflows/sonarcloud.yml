@@ -137,6 +137,7 @@ jobs:
             --gcov-executable gcov-14 \
             --gcov-ignore-parse-errors \
             --exclude-throw-branches \
+            --exclude-unreachable-branches \
             --filter 'src/' \
             --filter 'include/merovingian/' \
             --exclude 'src/main.cpp' \

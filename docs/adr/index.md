@@ -201,7 +201,7 @@
 * [0214 - The URL preview cache is keyed by URL alone and caches failures](0214-url-preview-cache-is-keyed-by-url-and-caches-failures.md)
 * [0215 - The event table owns its rows and indexes them by event ID and by stream order through positions](0215-the-event-table-indexes-by-id-and-by-stream-order-through-positions.md)
 * [0216 - The upgrade path is tested from a forward-only schema seam and a database the previous release wrote](0216-upgrade-path-is-tested-from-a-forward-only-seam-and-a-real-previous-release-fixture.md)
-* [0217 - Branch coverage excludes the compiler's exception edges](0217-branch-coverage-excludes-compiler-exception-edges.md)
+* [0217 - Branch coverage excludes the compiler's exception edges](0217-branch-coverage-excludes-compiler-exception-edges.md) — Refined by ADR-0253: branches on lines without code (a function's closing brace) are excluded too
 * [0218 - OS-supplied dependencies carry no wrap file](0218-os-supplied-dependencies-carry-no-wrap.md)
 * [0219 - Email pushers mail only the account's own addresses, an unread count, in a delayed digest](0219-email-pushers-mail-only-the-accounts-own-addresses-an-unread-count-in-a-delayed-digest.md)
 * [0220 - SMTP goes through libcurl, with TLS required except to a loopback literal](0220-smtp-goes-through-libcurl-with-tls-required-except-to-a-loopback-literal.md)
@@ -235,6 +235,7 @@
 * [0250 - SonarQube Cloud analysis runs in CI against the build's compilation database](0250-sonarqube-cloud-analysis-runs-in-ci-against-the-build-s-compilation-database.md)
 * [0251 - A knock is withdrawn through the resident that accepted it](0251-a-knock-is-withdrawn-through-the-resident-that-accepted-it.md)
 * [0252 - One membership exchange per user and room at a time](0252-one-membership-exchange-per-user-and-room-at-a-time.md)
+* [0253 - Branch coverage excludes branches on lines without code](0253-branch-coverage-excludes-branches-on-lines-without-code.md)
 
 ## Proposed Records
 
