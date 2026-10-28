@@ -5,6 +5,7 @@
 
 #include "merovingian/canonicaljson/parser.hpp"
 
+#include <algorithm>
 #include <utility>
 #include <variant>
 
@@ -53,6 +54,44 @@ namespace
             return std::nullopt;
         }
         return std::move(*object);
+    }
+
+    // Puts the device's display name as it is now into `unsigned.device_display_name`.
+    // The name stored with the uploaded keys is the name at upload time, and a rename
+    // (`PUT /devices/{deviceId}`) does not rewrite it, so publishing the stored value
+    // told other servers the old name. `unsigned` is not part of what the device
+    // signs. A device the store holds no row for keeps whatever was stored.
+    auto apply_current_display_name(canonicaljson::Object& key_object, database::PersistentStore const& store,
+                                    database::PersistentDeviceKey const& device_key) -> void
+    {
+        auto const device = std::ranges::find_if(store.devices, [&](database::PersistentDevice const& candidate) {
+            return candidate.user_id == device_key.user_id && candidate.device_id == device_key.device_id;
+        });
+        if (device == store.devices.end())
+        {
+            return;
+        }
+        auto unsigned_data = canonicaljson::Object{};
+        if (auto const* stored = member_object(key_object, "unsigned"); stored != nullptr)
+        {
+            unsigned_data = *stored;
+        }
+        std::erase_if(unsigned_data, [](canonicaljson::ObjectMember const& member) {
+            return member.key == "device_display_name";
+        });
+        if (!device->display_name.empty())
+        {
+            unsigned_data.push_back(
+                canonicaljson::make_member("device_display_name", canonicaljson::Value{device->display_name}));
+        }
+        if (unsigned_data.empty())
+        {
+            std::erase_if(key_object, [](canonicaljson::ObjectMember const& member) {
+                return member.key == "unsigned";
+            });
+            return;
+        }
+        set_member(key_object, "unsigned", canonicaljson::Value{std::move(unsigned_data)});
     }
 
     // The visibility rule (ADR-0060): the owner's own uploads are public;
@@ -144,6 +183,7 @@ auto published_device_keys(database::PersistentStore const& store, database::Per
         return std::nullopt;
     }
     merge_visible_key_signatures(*object, store, device_key.user_id, device_key.device_id, viewer_user_id);
+    apply_current_display_name(*object, store, device_key);
     return object;
 }
 

@@ -112,7 +112,12 @@ Federation is the highest-risk surface: **all input comes from untrusted remote 
    `max_inbound_direct_to_device_deliveries` messages. A `m.device_list_update` /
    `m.signing_key_update` writes a `device_list_changes` row only for local users who share a
    joined room with the subject, as one batch (`record_device_list_changes`), one row per
-   (observer, subject). Every new EDU type needs the same three answers: whose claim is this,
+   (observer, subject). A remote user's own membership change reaches the same table through
+   `apply_membership_to_roster` (the membership acceptor and `ingest_pdu_event` both call it),
+   never by editing `LocalRoom::members` directly: a join is `changed` and the leave of the last
+   shared room is `left` for the local members. A published device's `unsigned.device_display_name`
+   is its current name (`published_device_keys`), and `m.device_list_update` carries
+   `device_display_name`. Every new EDU type needs the same three answers: whose claim is this,
    who may it reach, and what bounds its cost (audit FED-3, FED-7).
 
 9. **An inbound `/invite` for a room whose state we hold is authorised against that state

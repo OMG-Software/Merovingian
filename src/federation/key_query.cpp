@@ -348,6 +348,16 @@ auto build_device_list_update_content(database::PersistentStore const& store, st
                                       std::string_view device_id, std::int64_t stream_id) -> std::optional<std::string>
 {
     auto content = canonicaljson::Object{};
+    // Spec (SS API, m.device_list_update): `device_display_name` is "the public human-readable
+    // name of this device. Will be absent if the device has no name."
+    auto const device = std::ranges::find_if(store.devices, [user_id, device_id](database::PersistentDevice const& d) {
+        return d.user_id == user_id && d.device_id == device_id;
+    });
+    if (device != store.devices.end() && !device->display_name.empty())
+    {
+        content.push_back(
+            canonicaljson::make_member("device_display_name", canonicaljson::Value{std::string{device->display_name}}));
+    }
     content.push_back(canonicaljson::make_member("device_id", canonicaljson::Value{std::string{device_id}}));
     auto const device_key =
         std::ranges::find_if(store.device_keys, [user_id, device_id](database::PersistentDeviceKey const& key) {

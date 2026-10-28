@@ -123,6 +123,15 @@ auto notify_room_changed(HomeserverRuntime& runtime, std::string_view room_id) -
 auto federate_accepted_membership_event(HomeserverRuntime& runtime, std::string_view room_id, std::string_view event_id,
                                         std::string const& event_json, std::string_view requesting_server) -> void;
 
+// Applies a stored membership change to the live roster and records the device-list changes it causes
+// (spec "Tracking the device list for a user": a user who starts sharing a room with a local user is
+// `changed`, one who stops sharing any is `left`). Every path that learns a membership, local or over
+// federation (send_join, send_leave, PDUs in a transaction), goes through this and never edits
+// `LocalRoom::members` itself. The roster is updated even when recording a device-list change fails;
+// the result is false in that case.
+[[nodiscard]] auto apply_membership_to_roster(HomeserverRuntime& runtime, std::string_view room_id,
+                                              std::string_view user_id, std::string_view membership) -> bool;
+
 // send_join against. When the client names via servers, only those, in request
 // order: room IDs "are not routable on their own" (appendices, Room IDs), so the
 // room ID's domain never overrides the client's choice (ADR-0242). With no via

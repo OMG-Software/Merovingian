@@ -2647,7 +2647,13 @@ namespace
             auto const membership_changed = !membership.empty();
             if (membership_changed)
             {
-                apply_runtime_membership(rt->database, room_id, *envelope.state_key, membership);
+                // The roster and the device-list changes this membership causes (a remote
+                // user's join or leave is `changed` or `left` for the local members).
+                if (!apply_membership_to_roster(*rt, room_id, *envelope.state_key, membership))
+                {
+                    LOG_WARNING("Device-list change persistence failed after membership PDU was accepted; event_id=" +
+                                accepted_event_id + " room_id=" + std::string{room_id});
+                }
                 if (membership == "join")
                 {
                     broadcast_local_device_lists_to_remote_joiner(*rt, room_id, *envelope.state_key);
@@ -5178,22 +5184,21 @@ namespace
         });
         if (room_it != runtime.database.rooms.end())
         {
-            auto& members = room_it->members;
+            // The roster and the device-list changes this membership causes (a remote user's
+            // join or leave is `changed` or `left` for the local members).
+            if (!apply_membership_to_roster(runtime, room_id, *envelope.state_key, membership))
+            {
+                LOG_WARNING("Device-list change persistence failed after PDU was processed; event_id=" +
+                            envelope.event_id + " room_id=" + room_id);
+            }
             if (membership == "join")
             {
-                if (!std::ranges::any_of(members, [&](std::string const& m) {
-                        return m == *envelope.state_key;
-                    }))
-                {
-                    members.push_back(*envelope.state_key);
-                }
                 broadcast_local_device_lists_to_remote_joiner(runtime, room_id, *envelope.state_key);
             }
-            else
-            {
-                auto const to_erase = std::ranges::remove(members, *envelope.state_key);
-                members.erase(to_erase.begin(), to_erase.end());
-            }
+            // Those device-list rows took stream ids after the one allocated above, and a long-poll
+            // is woken only by a stream id past its own.
+            result.accepted_sync_stream_id =
+                std::max(result.accepted_sync_stream_id, runtime.database.persistent_store.next_sync_stream_id);
         }
     }
 

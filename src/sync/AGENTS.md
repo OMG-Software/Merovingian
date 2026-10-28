@@ -244,6 +244,14 @@ never repeated however many rows the range covers, and resolves a subject that
 both changed and left to whichever came last. Do not walk
 `store.device_list_changes` directly.
 
+Rows are written where a membership is applied to the roster, whichever path learned it:
+`apply_membership_to_roster` (`room_service.hpp`) records `changed` when a user joins and
+`left` when they leave the last room they share with a local user, for local members of the
+room and, when the user is local, for them. The membership acceptor (`send_join`,
+`send_leave`) and `ingest_pdu_event` call it; a roster edit that skips it silently stops
+`device_lists.left` for remote users. A user who joins over federation is also `changed` for
+themselves (spec: a server may add a user to `changed` when they share a new room).
+
 ## Long-poll behaviour
 
 `sync_notifier` holds requests until an event arrives or `timeout` expires.

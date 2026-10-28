@@ -87,6 +87,7 @@
 #include <thread>
 #include <tuple>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <variant>
 #include <vector>
@@ -1534,29 +1535,22 @@ namespace
         });
     }
 
-    [[nodiscard]] auto users_share_joined_room(LocalDatabase const& database, std::string_view left_user_id,
-                                               std::string_view right_user_id,
-                                               std::string_view excluding_room_id = {}) noexcept -> bool
+    // The accounts on this server, as a set, so a roster of any size is classified in one pass.
+    [[nodiscard]] auto local_user_ids(LocalDatabase const& database) -> std::unordered_set<std::string_view>
     {
-        return std::ranges::any_of(database.rooms, [&](LocalRoom const& room) {
-            return room.room_id != excluding_room_id && room_has_member(room, left_user_id) &&
-                   room_has_member(room, right_user_id);
-        });
-    }
-
-    [[nodiscard]] auto record_local_device_list_change(LocalDatabase& database, std::string_view observer_user_id,
-                                                       std::string_view subject_user_id, std::string_view change_type)
-        -> bool
-    {
-        if (observer_user_id == subject_user_id || !is_local_user(database, observer_user_id))
+        auto ids = std::unordered_set<std::string_view>{};
+        ids.reserve(database.users.size());
+        for (auto const& user : database.users)
         {
-            return true;
+            ids.insert(user.user_id);
         }
-        return database::record_device_list_change(
-            database.persistent_store,
-            {0U, std::string{observer_user_id}, std::string{subject_user_id}, std::string{change_type}});
+        return ids;
     }
 
+    // Spec (client-server-api.md, "Tracking the device list for a user"): a user who starts sharing a
+    // room with a local user is added to that user's `device_lists.changed`. Called once the joiner is
+    // on the room's roster. One batch, so one stream position and one commit however large the room is
+    // (the roster of a federated room is chosen by a remote server).
     [[nodiscard]] auto record_room_share_started_device_changes(HomeserverRuntime& runtime, std::string_view room_id,
                                                                 std::string_view joining_user_id) -> bool
     {
@@ -1565,21 +1559,31 @@ namespace
         {
             return true;
         }
+        auto const local_users = local_user_ids(runtime.database);
+        auto const joiner_is_local = local_users.contains(joining_user_id);
+        auto changes = std::vector<database::PersistentDeviceListChange>{};
         for (auto const& member : room->members)
         {
             if (member == joining_user_id)
             {
                 continue;
             }
-            if (!record_local_device_list_change(runtime.database, member, joining_user_id, "changed") ||
-                !record_local_device_list_change(runtime.database, joining_user_id, member, "changed"))
+            // Only a local user has a client to tell; a remote user's server tracks its own.
+            if (local_users.contains(member))
             {
-                return false;
+                changes.push_back({0U, member, std::string{joining_user_id}, "changed"});
+            }
+            if (joiner_is_local)
+            {
+                changes.push_back({0U, std::string{joining_user_id}, member, "changed"});
             }
         }
-        return true;
+        return database::record_device_list_changes(runtime.database.persistent_store, std::move(changes));
     }
 
+    // Spec (same section): "Bob can also be notified when he stops sharing any room with Alice by
+    // inspecting the `left` property". Called while the departing user is still on the roster. A
+    // member who still shares another joined room with them is not told they left.
     [[nodiscard]] auto record_room_share_ended_device_changes(HomeserverRuntime& runtime, std::string_view room_id,
                                                               std::string_view departing_user_id) -> bool
     {
@@ -1588,20 +1592,49 @@ namespace
         {
             return true;
         }
-        for (auto const& member : room->members)
+        auto still_sharing = std::unordered_set<std::string_view>{};
+        for (auto const& other : runtime.database.rooms)
         {
-            if (member == departing_user_id ||
-                users_share_joined_room(runtime.database, departing_user_id, member, room_id))
+            if (other.room_id == room_id || !room_has_member(other, departing_user_id))
             {
                 continue;
             }
-            if (!record_local_device_list_change(runtime.database, member, departing_user_id, "left") ||
-                !record_local_device_list_change(runtime.database, departing_user_id, member, "left"))
+            still_sharing.insert(other.members.begin(), other.members.end());
+        }
+        auto const local_users = local_user_ids(runtime.database);
+        auto const departing_is_local = local_users.contains(departing_user_id);
+        auto changes = std::vector<database::PersistentDeviceListChange>{};
+        for (auto const& member : room->members)
+        {
+            if (member == departing_user_id || still_sharing.contains(member))
             {
-                return false;
+                continue;
+            }
+            if (local_users.contains(member))
+            {
+                changes.push_back({0U, member, std::string{departing_user_id}, "left"});
+            }
+            if (departing_is_local)
+            {
+                changes.push_back({0U, std::string{departing_user_id}, member, "left"});
             }
         }
-        return true;
+        return database::record_device_list_changes(runtime.database.persistent_store, std::move(changes));
+    }
+
+    // A user who joins a room over federation is told to refresh their own account's device list too:
+    // their server has just learned the whole roster, and their other devices have to be told the
+    // account now shares a room with these users. The spec lets a server list a user in `changed`
+    // when they start sharing a further room (client-server-api.md, DeviceLists note); Complement
+    // TestDeviceListsUpdateOverFederation expects the joiner to be listed.
+    [[nodiscard]] auto record_own_device_list_change(HomeserverRuntime& runtime, std::string_view user_id) -> bool
+    {
+        if (!is_local_user(runtime.database, user_id))
+        {
+            return true;
+        }
+        return database::record_device_list_change(runtime.database.persistent_store,
+                                                   {0U, std::string{user_id}, std::string{user_id}, "changed"});
     }
 
     [[nodiscard]] auto find_event_json(database::PersistentStore const& store, std::string_view event_id)
@@ -2137,17 +2170,7 @@ namespace
             }
         }
 
-        auto const* room = find_room(runtime.database, room_id);
-        auto const was_joined = room != nullptr && room_has_member(*room, target);
-        // Device lists (spec v1.19 "Tracking the device list for a user"): leaving
-        // the room's joined set is recorded while the user is still in it, joining
-        // once they are, matching what each helper reads.
-        if (was_joined && membership != "join" && !record_room_share_ended_device_changes(runtime, room_id, target))
-        {
-            return false;
-        }
-        apply_runtime_membership(runtime.database, room_id, target, membership);
-        return was_joined || membership != "join" || record_room_share_started_device_changes(runtime, room_id, target);
+        return apply_membership_to_roster(runtime, room_id, target, membership);
     }
 
     // Composes, signs, and persists a single room state event.  Used by create_room to
@@ -2430,6 +2453,30 @@ auto federate_accepted_membership_event(HomeserverRuntime& runtime, std::string_
         return;
     }
     queue_event_to_room_servers(runtime, room_id, room->members, event_id, event_json, {}, requesting_server);
+}
+
+// The one place a membership change reaches the live roster and the device lists. The roster is always
+// updated, since the member event is already stored; a device-list write that fails is reported through
+// the result, not by leaving the roster behind the store.
+auto apply_membership_to_roster(HomeserverRuntime& runtime, std::string_view room_id, std::string_view user_id,
+                                std::string_view membership) -> bool
+{
+    auto const* room = find_room(runtime.database, room_id);
+    auto const was_joined = room != nullptr && room_has_member(*room, user_id);
+    // Device lists (spec v1.19 "Tracking the device list for a user"): leaving the room's joined set
+    // is recorded while the user is still in it, joining once they are, matching what each helper
+    // reads.
+    auto recorded = true;
+    if (was_joined && membership != "join")
+    {
+        recorded = record_room_share_ended_device_changes(runtime, room_id, user_id);
+    }
+    apply_runtime_membership(runtime.database, room_id, user_id, membership);
+    if (!was_joined && membership == "join")
+    {
+        recorded = record_room_share_started_device_changes(runtime, room_id, user_id) && recorded;
+    }
+    return recorded;
 }
 
 // Perform a single synchronous outbound federation call. Returns the raw
@@ -5517,7 +5564,8 @@ namespace
             }
         }
         runtime.database.rooms.push_back({std::string{room_id}, *user_id, std::move(joined_members), {}});
-        if (!record_room_share_started_device_changes(runtime, room_id, *user_id))
+        if (!record_room_share_started_device_changes(runtime, room_id, *user_id) ||
+            !record_own_device_list_change(runtime, *user_id))
         {
             log_diagnostic("room.join.rejected", {
                                                      {"actor",   *user_id,                                false},

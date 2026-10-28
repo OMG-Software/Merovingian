@@ -41,8 +41,10 @@ auto merge_visible_key_signatures(canonicaljson::Object& key_object, database::P
                                   std::optional<std::string_view> viewer_user_id) -> void;
 
 // `device_key` as published to `viewer_user_id`: the stored DeviceKeys object
-// with the visible signatures merged. std::nullopt when the stored JSON is not
-// an object.
+// with the visible signatures merged and `unsigned.device_display_name` set to
+// the device's display name as it is now (absent when it has none), since the
+// stored object holds the name at upload time. std::nullopt when the stored
+// JSON is not an object.
 [[nodiscard]] auto published_device_keys(database::PersistentStore const& store,
                                          database::PersistentDeviceKey const& device_key,
                                          std::optional<std::string_view> viewer_user_id)

@@ -252,7 +252,17 @@ production-gated.
   rather than change events — and `broadcast_device_list_updates()` emits `m.device_list_update`
   EDUs on cross-signing/key changes. Inbound `m.device_list_update` and `m.signing_key_update`
   EDUs record a change only for local users who share a joined room with the subject, one row
-  per (observer, subject), written as one batch (audit FED-7). Per-algorithm `device_one_time_keys_count` is wired into
+  per (observer, subject), written as one batch (audit FED-7). A remote user's join or leave
+  learned over federation (`send_join`, `send_leave`, a PDU in a `/send` transaction) records
+  `changed` or `left` for the local members the same way a local membership change does:
+  every path that learns a membership goes through `apply_membership_to_roster`
+  (`room_service.hpp`), which updates the roster and writes one batch of rows. A user who joins
+  a room over federation is also listed in their own `changed`, which the spec permits ("a
+  server may add Alice to `changed` when Alice and Bob share a new room"). `PUT
+  /devices/{deviceId}` sends an `m.device_list_update` for the renamed device to every server
+  that shares a room with the user, and the EDU and every published copy of the device's keys
+  carry its current display name (`unsigned.device_display_name`), not the name it had when the
+  keys were uploaded. Per-algorithm `device_one_time_keys_count` is wired into
   `/sync` as well. A `device_lists.changed` self-notification is recorded at two trigger points
   so a user's own devices discover each other without relying on room co-membership: on
   `POST /_matrix/client/v3/keys/upload` (key upload) and on `POST /_matrix/client/v3/login`

@@ -497,8 +497,10 @@ namespace
     // server in destinations. Called after key upload or room join so remote
     // servers learn about the local user's devices and can establish Olm
     // sessions (Matrix spec v1.19 device-list-updates-between-servers).
+    // `only_device` limits the EDUs to one device, for a change that touched only it (a rename).
     auto broadcast_device_list_updates(ClientServerRuntime& rt, std::string_view user_id,
-                                       std::vector<std::string> const& destinations) -> void
+                                       std::vector<std::string> const& destinations,
+                                       std::optional<std::string_view> only_device = std::nullopt) -> void
     {
         if (destinations.empty())
         {
@@ -511,7 +513,7 @@ namespace
         auto const stream_id = static_cast<std::int64_t>(store.next_sync_stream_id);
         for (auto const& device : store.devices)
         {
-            if (device.user_id != user_id)
+            if (device.user_id != user_id || (only_device.has_value() && device.device_id != *only_device))
             {
                 continue;
             }
@@ -10570,6 +10572,11 @@ namespace
                     std::ignore = record_device_list_change(rt, change);
                 }
             }
+            // Spec (SS API, "Device Management"): m.device_list_update EDUs go to every server that
+            // shares a room with the user "whenever that user's device list changes ... or changes
+            // in device information such as the device's human-readable name".
+            broadcast_device_list_updates(rt, user, remote_servers_for_user(rt.homeserver, user),
+                                          std::string_view{device->device_id});
             append_local_audit(rt.homeserver.database, observability::AuditCategory::auth, "device.updated", user,
                                device->device_id, "display_name_updated");
             return resp(200U, "{}");
