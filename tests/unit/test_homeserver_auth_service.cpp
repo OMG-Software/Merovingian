@@ -1692,53 +1692,6 @@ SCENARIO("change_local_user_password fails closed when other-device revocation c
     }
 }
 
-SCENARIO("change_local_user_password commits nothing when a revoked device's pusher cannot be removed",
-         "[homeserver][auth][password_change][security][db-5][password-change-pushers]")
-{
-    GIVEN("a user signed in on two devices, with a pusher set from the other device")
-    {
-        REQUIRE(sodium_init() >= 0);
-        auto started = merovingian::homeserver::start_runtime(registration_enabled_config());
-        REQUIRE(started.started);
-        auto& runtime = started.runtime;
-
-        auto const reg = merovingian::homeserver::register_local_user(runtime, "alice", "OldPassword7!",
-                                                                      merovingian::tests::registration_token);
-        REQUIRE(reg.ok);
-        auto const caller = merovingian::homeserver::login_local_user(runtime, reg.value, "OldPassword7!", "DEVICE1");
-        REQUIRE(caller.ok);
-        auto const other = merovingian::homeserver::login_local_user(runtime, reg.value, "OldPassword7!", "DEVICE2");
-        REQUIRE(other.ok);
-        auto pusher = merovingian::database::PersistentPusher{};
-        pusher.user_id = reg.value;
-        pusher.app_id = "com.example.app";
-        pusher.pushkey = "device2-key";
-        pusher.kind = "http";
-        pusher.device_id = "DEVICE2";
-        REQUIRE(merovingian::database::store_pusher(runtime.database.persistent_store, pusher));
-
-        WHEN("removing that pusher is forced to fail during a password change")
-        {
-            merovingian::database::force_persist_failure_for_statement(runtime.database.persistent_store,
-                                                                       "delete_pusher");
-            auto const result =
-                merovingian::homeserver::change_local_user_password(runtime, caller.value, "NewPassword99!");
-
-            THEN("the change is reported as failed and nothing it would change was committed")
-            {
-                // A failure must mean the password is unchanged, so the client can retry with the old one.
-                REQUIRE_FALSE(result.ok);
-                REQUIRE(result.status == 500U);
-                REQUIRE(merovingian::homeserver::login_local_user(runtime, reg.value, "OldPassword7!", "DEVICE3").ok);
-                REQUIRE_FALSE(
-                    merovingian::homeserver::login_local_user(runtime, reg.value, "NewPassword99!", "DEVICE4").ok);
-                // The other device keeps its session, since its tokens were never revoked.
-                REQUIRE(merovingian::homeserver::authenticated_user(runtime, other.value).has_value());
-            }
-        }
-    }
-}
-
 SCENARIO("refresh_local_session fails closed when token revocation cannot persist",
          "[homeserver][auth][refresh][security][db-5]")
 {

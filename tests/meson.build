@@ -571,6 +571,7 @@ shell = find_program('sh')
       'integration/test_security_audit_directory_flow.cpp',
       'integration/test_security_audit_presence_flow.cpp',
       'integration/test_presence_flow.cpp',
+      'integration/test_password_change_flow.cpp',
       'integration/test_security_audit_to_device_flow.cpp',
       'integration/test_security_audit_login_snapshot_flow.cpp',
       'integration/test_security_audit_auth_4_admission_flow.cpp',
