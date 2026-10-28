@@ -26,7 +26,9 @@ Complement has not yet been rerun against this version.
   is a last resort for one event (ADR-0255).
 - **FIXED:** a backfilled event whose auth events resolved but failed (a disallowed selection, a
   rejected auth event, an auth denial) was dropped, so every event built on it stayed unplaced. It
-  is now stored rejected with an after-state equal to its state-before (ADR-0256).
+  is now stored rejected with an after-state equal to its state-before (ADR-0256). One stored
+  rejected before its state-before was known gains that state once a later snapshot supplies it,
+  so an event naming it as a prev event can be placed (`[a8_rejected_outlier_promoted]`).
 - **FIXED:** a remote user's join or leave learnt over federation (`send_join`, `send_leave`, or a
   PDU in `/send`) now records `device_lists.changed` or `device_lists.left` for the local members
   who share the room; only local membership changes did. Every path changes the roster through
