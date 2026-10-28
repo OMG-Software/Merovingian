@@ -113,6 +113,13 @@ Complement has not yet been rerun against this version.
 - **CHANGED:** `TestRoomForget/Parallel/Leave_for_forgotten_room_shows_up_in_v2_incremental_/sync` is
   an expected failure: it contradicts the spec's rule that forgotten rooms never appear in `/sync`.
 
+### CI
+
+- **FIXED:** the SonarQube Cloud and Codecov coverage steps ran gcov on the vendored subprojects'
+  counter files, whose coverage the report filters out anyway; a damaged `sqlite3.c.gcda` made
+  gcovr exit 64 and failed the job. gcovr now skips `subprojects/` with
+  `--gcov-exclude-directories`; the reported numbers are unchanged.
+
 ### Tests
 
 - **TESTS:** `[membership-acceptor-fanout]` (`test_outbound_pdu_transaction_flow.cpp`);

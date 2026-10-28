@@ -23,6 +23,17 @@ class CoverageWorkflowTests(unittest.TestCase):
         self.assertIn("--filter 'include/merovingian/'", workflow)
         self.assertNotIn("--filter 'include/'", workflow)
 
+    def test_gcov_never_reads_the_vendored_subprojects(self) -> None:
+        # GIVEN the dedicated coverage workflow.
+        self.assertTrue(COVERAGE_WORKFLOW.is_file(), "coverage workflow is missing")
+        workflow = COVERAGE_WORKFLOW.read_text(encoding="utf-8")
+
+        # WHEN gcovr searches the build directory for counter files.
+        # THEN it skips the vendored subprojects (SQLite and the other wraps): their
+        # coverage is filtered out of the report anyway, and a damaged counter file
+        # there failed the whole job (PR #542, sqlite3.c.gcda, gcov exit 4).
+        self.assertRegex(workflow, r"(?m)^[ \t]+--gcov-exclude-directories '\.\*/subprojects/'[ \t]*\\[ \t]*$")
+
     def test_branch_coverage_counts_decisions_not_exception_edges(self) -> None:
         # GIVEN the dedicated coverage workflow.
         self.assertTrue(COVERAGE_WORKFLOW.is_file(), "coverage workflow is missing")

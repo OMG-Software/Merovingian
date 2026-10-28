@@ -189,6 +189,7 @@ class SonarCloudCiScanTest(unittest.TestCase):
         report = sonar_property("sonar.coverageReportPaths")
         self.assertIn(f"--sonarqube {report}", self.workflow)
         for option in ("--gcov-executable gcov-14", "--exclude-throw-branches", "--exclude-unreachable-branches",
+                       "--gcov-exclude-directories '.*/subprojects/'",
                        "--filter 'src/'",
                        "--filter 'include/merovingian/'"):
             self.assertIn(option, self.workflow)
