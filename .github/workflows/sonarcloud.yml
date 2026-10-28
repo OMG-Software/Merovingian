@@ -58,8 +58,8 @@ jobs:
             m4 \
             perl \
             pkg-config
-          python -m pip install --upgrade pip
-          python -m pip install --upgrade meson ninja
+          # Hash-locked wheels only: this job holds SONAR_TOKEN.
+          python -m pip install --require-hashes --only-binary :all: --requirement requirements-build.txt
 
       # A full compile, not just a configure: every file the compilation
       # database names, generated ones included, then exists for the analyser.

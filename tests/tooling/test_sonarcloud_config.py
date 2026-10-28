@@ -151,6 +151,20 @@ class SonarCloudCiScanTest(unittest.TestCase):
         self.assertIn("libpng-dev", self.workflow)
         self.assertIn("libturbojpeg0-dev", self.workflow)
 
+    def test_given_the_workflow_when_read_then_build_tools_install_from_hashed_wheels_only(self) -> None:
+        # The job holds SONAR_TOKEN: a dependency resolved at run time, or an sdist's setup
+        # script run during installation, would run unreviewed code next to it.
+        self.assertIn(
+            "python -m pip install --require-hashes --only-binary :all: --requirement requirements-build.txt",
+            self.workflow,
+        )
+        self.assertNotRegex(self.workflow, r"pip install (--upgrade )?(pip|meson)")
+
+    def test_given_the_build_requirements_when_read_then_meson_and_ninja_are_pinned_with_hashes(self) -> None:
+        requirements = (REPO_ROOT / "requirements-build.txt").read_text(encoding="utf-8")
+        for package in ("meson", "ninja"):
+            self.assertRegex(requirements, rf"(?m)^{package}==[0-9][^ ]* \\\n    --hash=sha256:[0-9a-f]{{64}}")
+
     def test_given_a_pull_request_from_a_fork_when_the_workflow_runs_then_the_scan_is_skipped(self) -> None:
         # A fork's pull request gets no secrets; it is analysed once merged.
         self.assertIn("github.event.pull_request.head.repo.full_name == github.repository", self.workflow)

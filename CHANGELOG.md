@@ -203,6 +203,11 @@ Cloud analysis from SonarSource's automatic analysis into this repository's CI.
   state fallback. `GET /rooms/{roomId}/messages` ignored a filter's `rooms` and `not_rooms`; a room
   they exclude now contributes no events. Tests: `[join-sync-state]` in `test_join_room_flow.cpp`
   and the room-predicate case in `test_client_server.cpp`.
+- **CHANGED:** the SonarQube Cloud workflow, which holds `SONAR_TOKEN`, installs Meson and Ninja
+  from hash-locked wheels only (`requirements-build.txt`, compiled from `requirements-build.in`
+  with `uv pip compile --generate-hashes --only-binary :all:`), not whatever `pip install --upgrade`
+  resolved at run time; it no longer upgrades `pip` first (ADR-0250). Checked by
+  `test_sonarcloud_config.py`.
 - **FIXED:** `POST /login` did not log `@user:server` in when named `@USER:server`, `USER` or
   `User`. A user ID is looked up exactly, then with its localpart's ASCII letters downcased
   (ADR-0245), so historical upper-case localparts still log in as themselves. Regression:

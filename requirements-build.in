@@ -1,0 +1,5 @@
+# Build tools for the CI jobs that hold a secret (the SonarQube Cloud scan). requirements-build.txt
+# is the hash-locked, wheel-only resolution of this file; regenerate it with:
+#   uv pip compile requirements-build.in --universal --python-version 3.13 --generate-hashes --only-binary :all: -o requirements-build.txt
+meson==1.12.1
+ninja==1.13.2
