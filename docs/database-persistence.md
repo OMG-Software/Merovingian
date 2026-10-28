@@ -1100,6 +1100,22 @@ Two independent mechanisms close this, together:
    remote in its in-memory `runtime.remotes`, so the failed write costs at most
    one fetch per server and key per worker start.
 
+   The worker's mirror of this table is a snapshot taken when it started, so a
+   key main cached afterwards used to be invisible to it and the first PDU main
+   had authenticated from that server waited on a second fetch (discovery, a
+   fresh connection and a TLS handshake) in the worker. The resolver the worker
+   runs is built with `KeyMirrorRefresh::on_miss`: when it finds no usable key in
+   the mirror it first calls `database::refresh_remote_signing_keys`, which
+   re-reads that one server's rows with the same four-column `SELECT` (never
+   `secret_key`; `detail::load_remote_signing_keys_from_sqlite` and
+   `…_from_postgresql`) and merges them into the mirror under
+   `server_signing_keys_mutex`, leaving a row that holds a secret alone. Only a
+   miss in the database too falls through to a fetch. The row was verified and
+   persisted by main under the same seven-day cap (`cache_remote_server_keys`),
+   so the worker trusts it no longer than main does; it is the trust the worker
+   already places in the rows it loaded at start-up. Main's mirror is
+   authoritative and never re-reads (ADR draft: worker key read-through).
+
    Every table `PersistentStore` can hold that is **not** in the allowlist is
    read by no worker-local code path — verified table by table during review
    and listed under "Every table classified" below. This code-path audit is

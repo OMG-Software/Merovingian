@@ -451,6 +451,18 @@ threat it closes; the controls above are the standing defences these reinforce.
   worker never signs (ADR-0078), so the pre-signed value crossing IPC is the
   design, not a gap to close by giving the worker a signing provider.
 
+  **The worker reads public signing-key rows main cached after it started
+  (A6, 0.12.60).** The worker's mirror of `server_signing_keys` is a start-up
+  snapshot, so it used to fetch again a key main had already verified. Its
+  resolver now re-reads that one server's rows (`server_name`, `key_id`,
+  `public_key`, `valid_until_ts`, never `secret_key`) from the database before it
+  fetches. No new capability: the worker already holds these columns for every
+  server cached at start-up, its PostgreSQL role is granted exactly them, a row
+  carries main's seven-day cap, and main still re-verifies every relayed PDU with
+  its own resolver (ADR-0071), so a forged row in a database the worker can only
+  read could not get an event past main. A compromised worker gains nothing it
+  could not already read.
+
   **Main re-verifies the signature of every PDU a worker relays (#450,
   resolved in 0.12.13, ADR-0071).** Until 0.12.13 main trusted the worker's
   signature check: a compromised worker, or a future bug that relayed before

@@ -75,6 +75,14 @@ one exception to the `merovingian/` include-path rule in `src/AGENTS.md`.
    `worker_event_loop.cpp`. `membership_template_provider` relays `make_join` (only) as
    `membership_template_ingest`: a restricted room's allow conditions name rooms another shard
    owns (R04, ADR-0184).
+   The one table the worker re-reads on demand is `server_signing_keys`, and only for the public
+   key of the server it is verifying: its resolver is built with `federation::KeyMirrorRefresh::on_miss`
+   (`HomeserverRuntime`'s `LocalDatabase::remote_signing_keys_read_through`, set from the
+   `federation_worker` load profile), so a key main verified and cached after the worker started is
+   read from the database instead of being fetched again in front of the first PDU main already
+   authenticated. `database::refresh_remote_signing_keys` selects `server_name, key_id, public_key,
+   valid_until_ts` and never `secret_key`; do not widen that query and do not give main's resolver
+   the same flag.
 5. **`local_pool` and `relay_pool` stay separate.** `local_pool` (`federation.worker.threads`)
    serves endpoints answerable from the snapshot; `relay_pool` (`federation.worker.relay_threads`)
    serves endpoints that block on an IPC round trip or outbound HTTP.

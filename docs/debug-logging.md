@@ -88,6 +88,14 @@ extension names, room counts, and response byte count. It never records the
 connection ID itself, request bodies, access tokens, event content, or
 encryption material.
 
+## Relayed-PDU lock wait (0.12.60)
+
+At debug level the `worker_pool` module logs `event=relay.runtime_lock_acquired wait_ms=<n>` when
+main takes `runtime.mutex` to read the room version of a PDU a federation worker relayed
+(`pdu_ingest`, `membership_ingest`, `invite_ingest`). `wait_ms` is how long the relay queued behind
+whatever held the lock (a join, a send, a sync); it is the part of a delivery's latency the worker
+cannot see. The worker's own debug lines (key fetches, discovery) are not in main's log.
+
 ## Per-module level overrides (0.5.0)
 
 `--debug` lowers the **default** level to `debug` for every module that

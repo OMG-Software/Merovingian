@@ -296,7 +296,15 @@ that `discover_server`, well-known fetches, cached `discover`, the inbound origi
 check and the remote media re-check accept. Redirect resolution, URL preview and
 the filtered lookups used by pushers and identity servers never apply it. The server-name discovery cache retains at
 most 1024 positive and negative entries combined, with a 60-second freshness
-TTL; when full, a new name evicts the oldest retained result. Expired entries
+TTL; when full, a new name evicts the oldest retained result. The federated join's
+`make_join` and `send_join` (every `perform_outbound_call`) resolve their destination
+through this cache with `DiscoveryCachePolicy::successes_only`: a fresh success is
+reused, so the two calls of one join, and later joins to the same server, pay the
+`.well-known` + SRV + DNS cascade once per lifetime (server-server-api.md, "Resolving server
+names": responses, errors included, "should be cached"), while a remembered failure is
+ignored and the network asked again, so a retry after the destination recovers is never
+refused for the rest of the lifetime. A cache that does not wrap the runtime's current
+discovery network (a test replaced the network) is not used. Expired entries
 are swept before cache hits and insertion. Invalid server names are refused
 before network work and never cached; concurrent admissions obey the same cap.
 A zero constructor capacity disables caching.

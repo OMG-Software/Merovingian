@@ -143,6 +143,14 @@ only spec fields are copied, only rooms the requested space's `children_state` n
 state beats the remote answer, and a room is shown to the user only if the user may see it by the remote summary's own
 `join_rule` / `world_readable` / `allowed_room_ids`.
 
+`perform_outbound_call` (every federated join, leave, knock and proxied lookup) resolves its
+destination through `runtime.cached_discovery` with `DiscoveryCachePolicy::successes_only`, never
+`discover_server` directly: the two calls of one join used to repeat the whole `.well-known` cascade.
+It uses the cache only while the cache wraps `runtime.discovery_network` (compared by address; a test
+that swaps the network falls back to the raw network), and it must never serve a remembered failure
+(a retried join after the peer recovers is not refused). Keep the lookup inside the
+`RuntimeLockRelease` scope.
+
 The caps derive from the main request pool size (`server.http.request_threads`, applied by
 `start_runtime` through `client_outbound_proxy_policy_for_pool`); they have no configuration of their
 own. A new
