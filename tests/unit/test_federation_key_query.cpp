@@ -18,6 +18,7 @@
 #include "merovingian/canonicaljson/parser.hpp"
 #include "merovingian/canonicaljson/value.hpp"
 #include "merovingian/federation/key_query.hpp"
+#include "merovingian/federation/key_signatures.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -25,6 +26,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <variant>
 #include <vector>
 
@@ -879,6 +881,82 @@ namespace
 }
 
 } // namespace
+
+// A query names the users it is about, and the names are read from the device table in one pass over
+// it, not once per published key (work under the runtime lock is bounded by the request).
+SCENARIO("The display names of a query's users are read in one pass and keyed by user and device",
+         "[federation][keys][query][device-list-update]")
+{
+    GIVEN("two users with a device of the same ID, a third user who is not queried, and a device with no name")
+    {
+        auto store = merovingian::database::PersistentStore{};
+        store.devices.push_back({"@alice:example.org", "SHARED", "Alice phone"});
+        store.devices.push_back({"@bob:example.org", "SHARED", "Bob phone"});
+        store.devices.push_back({"@carol:example.org", "CAROLDEV", "Carol phone"});
+        store.devices.push_back({"@alice:example.org", "NONAME", ""});
+        auto const queried = std::vector<std::string_view>{"@alice:example.org", "@bob:example.org"};
+
+        WHEN("the lookup is built for the two queried users")
+        {
+            auto const names = fed::DeviceDisplayNames{store, queried};
+
+            THEN("each user's device gets that user's own name, though the device IDs match")
+            {
+                auto const alice = names.find("@alice:example.org", "SHARED");
+                auto const bob = names.find("@bob:example.org", "SHARED");
+                REQUIRE(alice.has_value());
+                REQUIRE(bob.has_value());
+                REQUIRE(*alice == "Alice phone");
+                REQUIRE(*bob == "Bob phone");
+            }
+
+            THEN("a device with no name is known to have none, which is not the same as an unknown device")
+            {
+                auto const unnamed = names.find("@alice:example.org", "NONAME");
+                REQUIRE(unnamed.has_value());
+                REQUIRE(unnamed->empty());
+                REQUIRE_FALSE(names.find("@alice:example.org", "NOSUCHDEVICE").has_value());
+            }
+
+            THEN("a user the query was not about is not looked up")
+            {
+                REQUIRE_FALSE(names.find("@carol:example.org", "CAROLDEV").has_value());
+            }
+        }
+
+        WHEN("a remote server queries both users' keys")
+        {
+            store.device_keys.push_back(
+                {"@alice:example.org", "SHARED", R"({"device_id":"SHARED","user_id":"@alice:example.org"})"});
+            store.device_keys.push_back(
+                {"@bob:example.org", "SHARED", R"({"device_id":"SHARED","user_id":"@bob:example.org"})"});
+            auto const root = parse_root(fed::build_device_keys_query_response(
+                store, R"({"device_keys":{"@alice:example.org":[],"@bob:example.org":[]}})"));
+
+            THEN("each user's device is published under that user's own name")
+            {
+                auto const* device_keys = object_at(root, "device_keys");
+                REQUIRE(device_keys != nullptr);
+                for (auto const& [user, expected] : std::vector<std::pair<std::string, std::string>>{
+                         {"@alice:example.org", "Alice phone"},
+                         {"@bob:example.org",   "Bob phone"  }
+                })
+                {
+                    CAPTURE(user);
+                    auto const* devices = object_at(*device_keys, user);
+                    REQUIRE(devices != nullptr);
+                    auto const* device = object_at(*devices, "SHARED");
+                    REQUIRE(device != nullptr);
+                    auto const* unsigned_data = object_at(*device, "unsigned");
+                    REQUIRE(unsigned_data != nullptr);
+                    auto const* name = string_at(*unsigned_data, "device_display_name");
+                    REQUIRE(name != nullptr);
+                    REQUIRE(*name == expected);
+                }
+            }
+        }
+    }
+}
 
 SCENARIO("Federation publishes a device's current display name, not the one it had when its keys were uploaded",
          "[federation][keys][query][device-list-update][regression]")

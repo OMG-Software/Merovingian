@@ -11,6 +11,7 @@
 #include "merovingian/observability/observability.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <optional>
@@ -180,6 +181,16 @@ auto build_device_keys_query_response(database::PersistentStore const& store, st
     auto device_keys = canonicaljson::Object{};
     auto master_keys = canonicaljson::Object{};
     auto self_signing_keys = canonicaljson::Object{};
+    // The display names of every queried user's devices, read from the device table once.
+    auto const display_names = [&] {
+        auto queried_users = std::vector<std::string_view>{};
+        queried_users.reserve(requested->size());
+        for (auto const& user_member : *requested)
+        {
+            queried_users.emplace_back(user_member.key);
+        }
+        return DeviceDisplayNames{store, queried_users};
+    }();
     for (auto const& user_member : *requested)
     {
         auto const* list = std::get_if<canonicaljson::Array>(&user_member.value->storage());
@@ -222,7 +233,7 @@ auto build_device_keys_query_response(database::PersistentStore const& store, st
             }
             // Published with the owner's self-signing signature: without it
             // the remote user cannot tell the device is trusted by its owner.
-            auto published = published_device_keys(store, device_key, std::nullopt);
+            auto published = published_device_keys(store, device_key, std::nullopt, display_names);
             if (published.has_value())
             {
                 user_devices.push_back(
@@ -350,13 +361,11 @@ auto build_device_list_update_content(database::PersistentStore const& store, st
     auto content = canonicaljson::Object{};
     // Spec (SS API, m.device_list_update): `device_display_name` is "the public human-readable
     // name of this device. Will be absent if the device has no name."
-    auto const device = std::ranges::find_if(store.devices, [user_id, device_id](database::PersistentDevice const& d) {
-        return d.user_id == user_id && d.device_id == device_id;
-    });
-    if (device != store.devices.end() && !device->display_name.empty())
+    auto const owner = std::array<std::string_view, 1U>{user_id};
+    auto const display_names = DeviceDisplayNames{store, owner};
+    if (auto const name = display_names.find(user_id, device_id); name.has_value() && !name->empty())
     {
-        content.push_back(
-            canonicaljson::make_member("device_display_name", canonicaljson::Value{std::string{device->display_name}}));
+        content.push_back(canonicaljson::make_member("device_display_name", canonicaljson::Value{std::string{*name}}));
     }
     content.push_back(canonicaljson::make_member("device_id", canonicaljson::Value{std::string{device_id}}));
     auto const device_key =
@@ -367,7 +376,7 @@ auto build_device_list_update_content(database::PersistentStore const& store, st
     {
         // A receiving server may apply these keys directly instead of
         // refetching, so they must be exactly what /user/keys/query serves.
-        if (auto keys = published_device_keys(store, *device_key, std::nullopt); keys.has_value())
+        if (auto keys = published_device_keys(store, *device_key, std::nullopt, display_names); keys.has_value())
         {
             content.push_back(canonicaljson::make_member("keys", canonicaljson::Value{std::move(*keys)}));
         }
@@ -489,13 +498,15 @@ auto build_user_devices_response(database::PersistentStore const& store, std::st
                                                 {"user_id", std::string{user_id}, false}
     });
     auto devices = canonicaljson::Array{};
+    auto const owner = std::array<std::string_view, 1U>{user_id};
+    auto const display_names = DeviceDisplayNames{store, owner};
     for (auto const& device_key : store.device_keys)
     {
         if (device_key.user_id != user_id)
         {
             continue;
         }
-        auto keys = published_device_keys(store, device_key, std::nullopt);
+        auto keys = published_device_keys(store, device_key, std::nullopt, display_names);
         if (!keys.has_value())
         {
             continue;

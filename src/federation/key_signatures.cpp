@@ -6,6 +6,8 @@
 #include "merovingian/canonicaljson/parser.hpp"
 
 #include <algorithm>
+#include <array>
+#include <set>
 #include <utility>
 #include <variant>
 
@@ -61,13 +63,11 @@ namespace
     // (`PUT /devices/{deviceId}`) does not rewrite it, so publishing the stored value
     // told other servers the old name. `unsigned` is not part of what the device
     // signs. A device the store holds no row for keeps whatever was stored.
-    auto apply_current_display_name(canonicaljson::Object& key_object, database::PersistentStore const& store,
+    auto apply_current_display_name(canonicaljson::Object& key_object, DeviceDisplayNames const& names,
                                     database::PersistentDeviceKey const& device_key) -> void
     {
-        auto const device = std::ranges::find_if(store.devices, [&](database::PersistentDevice const& candidate) {
-            return candidate.user_id == device_key.user_id && candidate.device_id == device_key.device_id;
-        });
-        if (device == store.devices.end())
+        auto const display_name = names.find(device_key.user_id, device_key.device_id);
+        if (!display_name.has_value())
         {
             return;
         }
@@ -79,10 +79,10 @@ namespace
         std::erase_if(unsigned_data, [](canonicaljson::ObjectMember const& member) {
             return member.key == "device_display_name";
         });
-        if (!device->display_name.empty())
+        if (!display_name->empty())
         {
             unsigned_data.push_back(
-                canonicaljson::make_member("device_display_name", canonicaljson::Value{device->display_name}));
+                canonicaljson::make_member("device_display_name", canonicaljson::Value{std::string{*display_name}}));
         }
         if (unsigned_data.empty())
         {
@@ -174,8 +174,40 @@ auto merge_visible_key_signatures(canonicaljson::Object& key_object, database::P
     }
 }
 
+DeviceDisplayNames::DeviceDisplayNames(database::PersistentStore const& store, std::span<std::string_view const> users)
+{
+    if (users.empty())
+    {
+        return;
+    }
+    auto const wanted = std::set<std::string_view>{users.begin(), users.end()};
+    for (auto const& device : store.devices)
+    {
+        if (wanted.contains(device.user_id))
+        {
+            names_.emplace(std::pair<std::string_view, std::string_view>{device.user_id, device.device_id},
+                           std::string_view{device.display_name});
+        }
+    }
+}
+
+auto DeviceDisplayNames::find(std::string_view user_id, std::string_view device_id) const
+    -> std::optional<std::string_view>
+{
+    auto const found = names_.find(std::pair<std::string_view, std::string_view>{user_id, device_id});
+    return found == names_.end() ? std::nullopt : std::optional<std::string_view>{found->second};
+}
+
 auto published_device_keys(database::PersistentStore const& store, database::PersistentDeviceKey const& device_key,
                            std::optional<std::string_view> viewer_user_id) -> std::optional<canonicaljson::Object>
+{
+    auto const users = std::array<std::string_view, 1U>{device_key.user_id};
+    return published_device_keys(store, device_key, viewer_user_id, DeviceDisplayNames{store, users});
+}
+
+auto published_device_keys(database::PersistentStore const& store, database::PersistentDeviceKey const& device_key,
+                           std::optional<std::string_view> viewer_user_id, DeviceDisplayNames const& names)
+    -> std::optional<canonicaljson::Object>
 {
     auto object = parsed_object(device_key.json);
     if (!object.has_value())
@@ -183,7 +215,7 @@ auto published_device_keys(database::PersistentStore const& store, database::Per
         return std::nullopt;
     }
     merge_visible_key_signatures(*object, store, device_key.user_id, device_key.device_id, viewer_user_id);
-    apply_current_display_name(*object, store, device_key);
+    apply_current_display_name(*object, names, device_key);
     return object;
 }
 

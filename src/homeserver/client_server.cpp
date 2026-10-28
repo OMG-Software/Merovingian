@@ -7441,6 +7441,17 @@ namespace
         // server so we can make a single federation key query per server.
         auto remote_by_server = std::map<std::string, std::vector<std::string>>{};
 
+        // The display names of every queried user's devices, read from the device table once.
+        auto const display_names = [&] {
+            auto queried_users = std::vector<std::string_view>{};
+            queried_users.reserve(requests->size());
+            for (auto const& user_request : *requests)
+            {
+                queried_users.emplace_back(user_request.key);
+            }
+            return federation::DeviceDisplayNames{store, queried_users};
+        }();
+
         auto users = canonicaljson::Object{};
         auto local_users = std::vector<std::string>{};
         for (auto const& user_request : *requests)
@@ -7470,7 +7481,7 @@ namespace
                     {
                         continue;
                     }
-                    auto device_object = federation::published_device_keys(store, key, requesting_user);
+                    auto device_object = federation::published_device_keys(store, key, requesting_user, display_names);
                     if (!device_object.has_value())
                     {
                         continue;
@@ -7493,7 +7504,7 @@ namespace
                     {
                         continue;
                     }
-                    auto device_object = federation::published_device_keys(store, *key, requesting_user);
+                    auto device_object = federation::published_device_keys(store, *key, requesting_user, display_names);
                     if (!device_object.has_value())
                     {
                         continue;

@@ -5,9 +5,12 @@
 #include "merovingian/canonicaljson/value.hpp"
 #include "merovingian/database/persistent_store.hpp"
 
+#include <map>
 #include <optional>
+#include <span>
 #include <string>
 #include <string_view>
+#include <utility>
 
 namespace merovingian::federation
 {
@@ -40,11 +43,38 @@ auto merge_visible_key_signatures(canonicaljson::Object& key_object, database::P
                                   std::string_view target_user_id, std::string_view target_key_id,
                                   std::optional<std::string_view> viewer_user_id) -> void;
 
+// The display names of the devices of a set of users, read from `store.devices` in one pass. A key query
+// names its users up front; building this once for them keeps the lookup for every published key off the
+// device table, which holds every device on the server and is scanned under the runtime lock (work there is
+// bounded by the request). Holds views into `store`, so it is valid only while `store.devices` is unchanged:
+// build it inside the request and drop it with the response.
+class DeviceDisplayNames final
+{
+public:
+    DeviceDisplayNames(database::PersistentStore const& store, std::span<std::string_view const> users);
+
+    // The device's display name, empty when it has none. std::nullopt when the lookup holds no row for the
+    // device: it does not exist, or its user was not among those the lookup was built for.
+    [[nodiscard]] auto find(std::string_view user_id, std::string_view device_id) const
+        -> std::optional<std::string_view>;
+
+private:
+    std::map<std::pair<std::string_view, std::string_view>, std::string_view> names_{};
+};
+
 // `device_key` as published to `viewer_user_id`: the stored DeviceKeys object
 // with the visible signatures merged and `unsigned.device_display_name` set to
 // the device's display name as it is now (absent when it has none), since the
-// stored object holds the name at upload time. std::nullopt when the stored
-// JSON is not an object.
+// stored object holds the name at upload time. `names` must cover the device's
+// user; a device it holds no row for keeps whatever name was stored. std::nullopt
+// when the stored JSON is not an object.
+[[nodiscard]] auto published_device_keys(database::PersistentStore const& store,
+                                         database::PersistentDeviceKey const& device_key,
+                                         std::optional<std::string_view> viewer_user_id,
+                                         DeviceDisplayNames const& names) -> std::optional<canonicaljson::Object>;
+
+// As above for one key on its own: builds the lookup for the key's user, so it walks the device table once
+// per call. Use the overload taking `names` wherever several keys are published.
 [[nodiscard]] auto published_device_keys(database::PersistentStore const& store,
                                          database::PersistentDeviceKey const& device_key,
                                          std::optional<std::string_view> viewer_user_id)
