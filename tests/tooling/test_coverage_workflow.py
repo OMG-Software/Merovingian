@@ -32,7 +32,7 @@ class CoverageWorkflowTests(unittest.TestCase):
         # THEN it skips the vendored subprojects (SQLite and the other wraps): their
         # coverage is filtered out of the report anyway, and a damaged counter file
         # there failed the whole job (PR #542, sqlite3.c.gcda, gcov exit 4).
-        self.assertRegex(workflow, r"(?m)^[ \t]+--gcov-exclude-directories '\.\*/subprojects/'[ \t]*\\[ \t]*$")
+        self.assertRegex(workflow, r"(?m)^[ \t]+--gcov-exclude-directories '\.\*/subprojects\$'[ \t]*\\[ \t]*$")
 
     def test_branch_coverage_counts_decisions_not_exception_edges(self) -> None:
         # GIVEN the dedicated coverage workflow.
