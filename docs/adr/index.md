@@ -234,6 +234,7 @@
 * [0247 - No sync position passes a stream ordering still being committed](0247-no-sync-position-passes-a-stream-ordering-still-being-committed.md)
 * [0250 - SonarQube Cloud analysis runs in CI against the build's compilation database](0250-sonarqube-cloud-analysis-runs-in-ci-against-the-build-s-compilation-database.md)
 * [0251 - A knock is withdrawn through the resident that accepted it](0251-a-knock-is-withdrawn-through-the-resident-that-accepted-it.md)
+* [0252 - One membership exchange per user and room at a time](0252-one-membership-exchange-per-user-and-room-at-a-time.md)
 
 ## Proposed Records
 

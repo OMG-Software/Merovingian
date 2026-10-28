@@ -1788,3 +1788,57 @@ SCENARIO("A local user rejoins an emptied room this server created, with no serv
         }
     }
 }
+
+// A federated join, knock or leave changes a user's membership with runtime.mutex released for
+// its network exchange. A second change for the same user and room meanwhile would be
+// overwritten when the first commits (a leave answered 200, then a knock stored after it), so
+// it is refused with 429, which /join, /knock and /leave may answer (Client-Server API v1.19).
+SCENARIO("A membership change is refused while another for the same user and room is in flight",
+         "[homeserver][rooms][membership-exchange]")
+{
+    GIVEN("a public room alice is joined to, and a membership exchange for alice in it in flight")
+    {
+        REQUIRE(sodium_init() >= 0);
+        auto started = merovingian::homeserver::start_runtime(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        auto const reg = merovingian::homeserver::register_local_user(runtime, "alice", "CorrectHorse7!",
+                                                                      merovingian::tests::registration_token);
+        REQUIRE(reg.ok);
+        auto const login = merovingian::homeserver::login_local_user(runtime, reg.value, "CorrectHorse7!", "DEVICE1");
+        REQUIRE(login.ok);
+        auto options = merovingian::homeserver::CreateRoomOptions{};
+        options.preset = "public_chat";
+        auto const room = merovingian::homeserver::create_room(runtime, login.value, options);
+        REQUIRE(room.ok);
+        runtime.membership_exchanges.emplace(room.value, reg.value);
+
+        WHEN("alice leaves, joins and knocks")
+        {
+            auto const left = merovingian::homeserver::leave_room(runtime, login.value, room.value);
+            auto const joined = merovingian::homeserver::join_room(runtime, login.value, room.value);
+            auto const knocked = merovingian::homeserver::knock_room(runtime, login.value, room.value);
+
+            THEN("each is refused with 429 and alice is still joined")
+            {
+                REQUIRE(left.status == 429U);
+                REQUIRE(joined.status == 429U);
+                REQUIRE(knocked.status == 429U);
+                REQUIRE(std::ranges::any_of(runtime.database.persistent_store.memberships, [&](auto const& m) {
+                    return m.room_id == room.value && m.user_id == reg.value && m.membership == "join";
+                }));
+            }
+        }
+
+        WHEN("the exchange ends and alice leaves")
+        {
+            runtime.membership_exchanges.clear();
+            auto const left = merovingian::homeserver::leave_room(runtime, login.value, room.value);
+
+            THEN("the leave goes ahead")
+            {
+                REQUIRE(left.ok);
+            }
+        }
+    }
+}

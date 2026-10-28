@@ -183,6 +183,12 @@ Cloud analysis from SonarSource's automatic analysis into this repository's CI.
   `404` (no resident to join through, ADR-0244); with no server named and none known to be in it,
   it is now joined here and judged by the auth rules (`[rejoin-local-room]`). A room created
   elsewhere still goes through a resident.
+- **FIXED (review of #541):** a federated join, knock or leave releases the request lock for its
+  exchange with the resident, and a second `/join`, `/knock` or `/leave` by the same user for the
+  same room could run meanwhile and be overwritten when the first committed (a `/leave` answered
+  200, then the accepted knock stored after it). While one is in flight the others are refused with
+  `429 M_LIMIT_EXCEEDED` and `retry_after_ms` (ADR-0252). Tests: `[membership-exchange]` and the
+  leave-during-knock WHEN in `test_join_room_flow.cpp` (`[knock-remote]`).
 - **FIXED:** `POST /login` did not log `@user:server` in when named `@USER:server`, `USER` or
   `User`. A user ID is looked up exactly, then with its localpart's ASCII letters downcased
   (ADR-0245), so historical upper-case localparts still log in as themselves. Regression:

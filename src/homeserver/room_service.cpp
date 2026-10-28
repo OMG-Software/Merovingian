@@ -1139,6 +1139,53 @@ namespace
         return servers;
     }
 
+    // ADR-0252: a federated join, knock or leave changes the user's membership with
+    // runtime.mutex released for its network exchange. A refused request is told to
+    // retry after about one federation round trip.
+    constexpr auto membership_exchange_retry_after_ms = std::uint32_t{1000U};
+
+    // The claim marks the pair for
+    // that whole time; any other /join, /knock or /leave for it is refused meanwhile,
+    // or its result would be overwritten when the exchange commits. Constructed
+    // with runtime.mutex held; the destructor takes it (it is recursive) to release.
+    class MembershipExchangeClaim final
+    {
+    public:
+        MembershipExchangeClaim(HomeserverRuntime& runtime, std::string_view room_id, std::string_view user_id)
+            : runtime_{runtime}
+            , key_{std::string{room_id}, std::string{user_id}}
+        {
+            runtime_.membership_exchanges.insert(key_);
+        }
+        ~MembershipExchangeClaim() noexcept
+        {
+            auto const lock = std::lock_guard{runtime_.mutex};
+            runtime_.membership_exchanges.erase(key_);
+        }
+        MembershipExchangeClaim(MembershipExchangeClaim const&) = delete;
+        auto operator=(MembershipExchangeClaim const&) -> MembershipExchangeClaim& = delete;
+        MembershipExchangeClaim(MembershipExchangeClaim&&) = delete;
+        auto operator=(MembershipExchangeClaim&&) -> MembershipExchangeClaim& = delete;
+
+    private:
+        HomeserverRuntime& runtime_;
+        std::pair<std::string, std::string> key_;
+    };
+
+    // 429 while a membership exchange for this user and room is in flight; called
+    // with runtime.mutex held, before anything is read or written.
+    [[nodiscard]] auto membership_exchange_refusal(HomeserverRuntime const& runtime, std::string_view room_id,
+                                                   std::string_view user_id) -> std::optional<OperationResult>
+    {
+        if (!runtime.membership_exchanges.contains(std::pair{std::string{room_id}, std::string{user_id}}))
+        {
+            return std::nullopt;
+        }
+        auto refused = make_operation_result(false, {}, "a membership change for this room is in progress", 429U);
+        refused.retry_after_ms = membership_exchange_retry_after_ms;
+        return refused;
+    }
+
     // Whether the room's stored m.room.create was sent by a user of this server.
     [[nodiscard]] auto room_created_here(HomeserverRuntime const& runtime, std::string_view room_id) -> bool
     {
@@ -4975,6 +5022,10 @@ namespace
         });
         return make_operation_result(false, {}, "unauthenticated", 401U);
     }
+    if (auto refused = membership_exchange_refusal(runtime, room_id, *user_id); refused.has_value())
+    {
+        return *refused;
+    }
 
     auto* room = find_room(runtime.database, room_id);
     // Guard: if the room is known in-memory but the user's PERSISTENT membership is
@@ -5150,6 +5201,7 @@ namespace
         {
             return make_operation_result(false, {}, "outbound join already active or capacity exhausted", 429U);
         }
+        auto const exchange = MembershipExchangeClaim{runtime, room_id, *user_id};
         auto joined = [&] {
             auto const released = RuntimeLockRelease{guard};
             std::ignore = released;
@@ -5681,6 +5733,10 @@ namespace
         });
         return make_operation_result(false, {}, "unauthenticated", 401U);
     }
+    if (auto refused = membership_exchange_refusal(runtime, room_id, *user_id); refused.has_value())
+    {
+        return *refused;
+    }
 
     // Look up the membership row. If missing, attempt recovery from current_state:
     // a server restart or partial persistence can leave the room known but the
@@ -5803,6 +5859,7 @@ namespace
         // in step 5 needs the lock), so it must outlive that scope.
         auto send_ok = false;
         auto send_body = std::string{};
+        auto const exchange = MembershipExchangeClaim{runtime, room_id, *user_id};
 
         // The whole remote-leave exchange runs with runtime.mutex released:
         // three federation round trips must not freeze every other request.
@@ -6610,6 +6667,10 @@ namespace
     {
         return make_operation_result(false, {}, "unauthenticated", 401U);
     }
+    if (auto refused = membership_exchange_refusal(runtime, room_id, *user_id); refused.has_value())
+    {
+        return *refused;
+    }
     if (this_server_is_in_room(runtime, room_id))
     {
         auto const result = persist_membership_transition(runtime, room_id, *user_id, *user_id, "knock", reason);
@@ -6637,6 +6698,7 @@ namespace
     }
     auto const secret_key = core::SecretBuffer{runtime.database.signing_secret_key.bytes()};
     auto const user = *user_id;
+    auto const exchange = MembershipExchangeClaim{runtime, room_id, user};
     auto knocked = [&] {
         auto const released = RuntimeLockRelease{guard};
         return perform_federated_knock(runtime, room_id, user, reason, candidates, our_server, *signing_key,

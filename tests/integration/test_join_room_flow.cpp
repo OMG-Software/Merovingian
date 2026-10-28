@@ -1017,6 +1017,54 @@ SCENARIO("A knock on a room on another server goes through make_knock and send_k
         auto const send_knock_response = json_http_response(
             "200 OK", std::string{R"({"knock_room_state":)"} + canonicaljson_array_to_string(knock_state) + "}");
 
+        // A /leave for the same room while the knock's exchange is in flight would find no
+        // membership, answer 200, and be overwritten when the accepted knock commits: it is
+        // refused instead, and the knock stands.
+        if (!refuse)
+        {
+            WHEN("the user leaves while the resident is answering the knock")
+            {
+                auto captured_requests = std::vector<std::string>{};
+                auto leave_status = 0;
+                auto server_thread = std::thread{[&]() {
+                    run_resident_server(acceptor, *tls_context.context, make_knock_response, send_knock_response,
+                                        captured_requests, [&](std::string const& request) {
+                                            if (request.find("/send_knock/") == std::string::npos)
+                                            {
+                                                return;
+                                            }
+                                            leave_status = merovingian::homeserver::handle_client_server_request(
+                                                               rt,
+                                                               {"POST",
+                                                                "/_matrix/client/v3/rooms/"
+                                                                "%21knockable%3Aelsewhere.example.org/leave",
+                                                                login.value, "{}"},
+                                                               /*can_wait=*/false)
+                                                               .response.status;
+                                        });
+                }};
+                auto const knocked = merovingian::homeserver::handle_client_server_request(
+                    rt,
+                    {"POST",
+                     "/_matrix/client/v3/knock/%21knockable%3Aelsewhere.example.org?server_name=" +
+                         std::string{resident_server},
+                     login.value, "{}"},
+                    /*can_wait=*/false);
+                server_thread.join();
+
+                THEN("the leave is refused with 429 and the knock stands")
+                {
+                    CAPTURE(knocked.response.body);
+                    REQUIRE(knocked.response.status == 200);
+                    REQUIRE(leave_status == 429);
+                    auto const lock = std::lock_guard{runtime.mutex};
+                    REQUIRE(std::ranges::any_of(runtime.database.persistent_store.memberships, [&](auto const& m) {
+                        return m.room_id == room_id && m.user_id == alice && m.membership == "knock";
+                    }));
+                }
+            }
+        }
+
         WHEN("the user knocks through POST /knock naming the resident with server_name, with a reason")
         {
             auto captured_requests = std::vector<std::string>{};

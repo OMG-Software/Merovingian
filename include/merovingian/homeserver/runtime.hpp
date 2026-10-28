@@ -532,6 +532,11 @@ struct HomeserverRuntime final
     // Established only by the outbound join RAII lease, before releasing mutex.
     // Same-room overlapping joins are refused; startup moves have no leases.
     std::map<std::string, PendingFederatedJoin, std::less<>> pending_federated_joins{};
+    // (room_id, user_id) pairs whose membership a federated join, knock or leave
+    // is changing with `mutex` released for its network exchange (ADR-0252).
+    // Every /join, /knock and /leave for a pair here is refused with 429 until the
+    // exchange ends. Guarded by `mutex`.
+    std::set<std::pair<std::string, std::string>> membership_exchanges{};
     // R03 (ADR-0165): when each retained federation PDU (store.deferred_pdus,
     // by event_id) may next be retried. In memory only: a row with no entry is
     // due at once, which is what every retained PDU is after a restart.

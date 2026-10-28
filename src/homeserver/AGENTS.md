@@ -159,6 +159,15 @@ network before the deferral, so a refusal or cache hit never costs a pool slot. 
 file are coalesced (`RemoteMediaFetchCoalescer`): never wait on the coalescer with `runtime.mutex`
 held, and never take `runtime.mutex` while holding its mutex.
 
+## One membership exchange per user and room (ADR-0252)
+
+A federated join, knock or leave releases `runtime.mutex` for its exchange with the resident.
+Before releasing it, take a `MembershipExchangeClaim` for the (room, user) pair; `join_room`,
+`knock_room` and `leave_room` refuse a claimed pair with 429 `M_LIMIT_EXCEEDED` before reading
+anything. A new path that changes a user's own membership over federation takes the claim, and a
+new entry point that changes it checks `membership_exchange_refusal` first, or a concurrent request
+is overwritten when the exchange commits.
+
 ## Restricted joins as the resident (R04, ADR-0184, ADR-0185)
 
 `decide_restricted_join` (`restricted_join.cpp`) is the only place that decides whether a
