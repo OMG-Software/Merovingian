@@ -22,6 +22,7 @@
 #include "merovingian/events/event_signer.hpp"
 #include "merovingian/events/limits.hpp"
 #include "merovingian/events/redaction.hpp"
+#include "merovingian/federation/cached_server_discovery.hpp"
 #include "merovingian/federation/inbound_request.hpp"
 #include "merovingian/federation/membership_endpoints.hpp"
 #include "merovingian/federation/outbound_membership.hpp"
@@ -2505,8 +2506,22 @@ auto federate_accepted_membership_event(HomeserverRuntime& runtime, std::string_
         }
         // Discovery is a DNS/well-known cascade that can burn the full timeout
         // against an unreachable peer, so it must not run under runtime.mutex.
+        //
+        // A join makes two calls (make_join, send_join), each of which used to
+        // run the whole cascade again. A fresh success is reused for the cache's
+        // lifetime (server-server-api.md, "Resolving server names": responses
+        // "should be cached"); a remembered failure is not served, so a retry
+        // after the peer recovers is not refused. The cache is used only while it
+        // wraps this runtime's current discovery network.
+        auto* const cached = runtime.cached_discovery.get();
+        auto const use_cache = cached != nullptr && &cached->upstream() == discovery_network;
         auto const resolution = [&]() {
             auto const unlocked = RuntimeLockRelease{};
+            if (use_cache)
+            {
+                return cached->discover(transaction.destination, timeout_seconds,
+                                        federation::DiscoveryCachePolicy::successes_only);
+            }
             return federation::discover_server(transaction.destination, *discovery_network, timeout_seconds);
         }();
         if (!resolution.discovery_allowed)

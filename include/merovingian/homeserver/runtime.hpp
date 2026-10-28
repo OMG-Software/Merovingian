@@ -205,6 +205,12 @@ struct LocalDatabase final
     // request (AUTH-1, ADR-0080). Guarded by the runtime mutex like the audit rows.
     observability::AuditRateGate audit_rate_gate{};
     database::PersistentStore persistent_store{};
+    // True in a federation worker (the `federation_worker` load profile), whose
+    // in-memory `server_signing_keys` is a snapshot taken at start-up: its remote
+    // key resolver then re-reads a server's public key rows from the database
+    // before it fetches (`federation::KeyMirrorRefresh::on_miss`). Main keeps
+    // the authoritative mirror and leaves it false.
+    bool remote_signing_keys_read_through{false};
     core::SecretBuffer signing_secret_key{};
     // All currently-active server signing secrets loaded into the runtime, keyed
     // by key_id. Used to build the multi-key Ed25519 provider so events and

@@ -1383,6 +1383,14 @@ auto set_write_connection_limit(PersistentStore& store, std::uint32_t limit) -> 
 // Callers that iterate the keys use this rather than the vector itself.
 [[nodiscard]] auto snapshot_server_signing_keys(PersistentStore const& store)
     -> std::vector<PersistentServerSigningKey>;
+// Re-reads `server_name`'s signing-key rows from the backing database into this
+// store's in-memory mirror, public columns only: `secret_key` is never selected,
+// so a federation worker (whose mirror is otherwise a snapshot taken when it
+// started) can see a key main verified and cached since, without ever reading
+// this server's signing secret. A row already held with a secret is left as it
+// is. A successful no-op for an in-memory store. Returns false only on a
+// connection or query failure, which leaves the mirror unchanged.
+[[nodiscard]] auto refresh_remote_signing_keys(PersistentStore& store, std::string_view server_name) -> bool;
 [[nodiscard]] auto store_federation_destination(PersistentStore& store, PersistentFederationDestination destination)
     -> bool;
 [[nodiscard]] auto store_federation_transaction(PersistentStore& store, PersistentFederationTransaction transaction)
@@ -2087,6 +2095,19 @@ namespace detail
     // result with `room == nullopt` inside the snapshot, not a nullopt return.
     [[nodiscard]] auto load_room_snapshot_from_backend(PersistentStore const& store, std::string_view room_id)
         -> std::optional<RoomReloadSnapshot>;
+    // Backend half of refresh_remote_signing_keys: `server_name`'s rows from
+    // server_signing_keys, selecting server_name, key_id, public_key and
+    // valid_until_ts only (never secret_key, so each row's secret_key is
+    // empty). nullopt on a connection/query failure and for a backend with no
+    // database; an unknown server is a successful empty result.
+    [[nodiscard]] auto load_remote_signing_keys_from_backend(PersistentStore const& store, std::string_view server_name)
+        -> std::optional<std::vector<PersistentServerSigningKey>>;
+    [[nodiscard]] auto load_remote_signing_keys_from_sqlite(std::string const& path, std::string_view server_name)
+        -> std::optional<std::vector<PersistentServerSigningKey>>;
+    [[nodiscard]] auto load_remote_signing_keys_from_postgresql(std::string_view conninfo,
+                                                                std::string_view runtime_role,
+                                                                std::string_view server_name)
+        -> std::optional<std::vector<PersistentServerSigningKey>>;
     // Backend half of load_audit_events_by_type_prefix: newest first, already
     // bounded by `limit`. Returns nullopt on a connection/query failure.
     [[nodiscard]] auto load_audit_events_from_backend(PersistentStore const& store, std::string_view prefix,

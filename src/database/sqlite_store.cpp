@@ -1765,6 +1765,54 @@ namespace detail
         return rows;
     }
 
+    auto load_remote_signing_keys_from_sqlite(std::string const& path, std::string_view server_name)
+        -> std::optional<std::vector<PersistentServerSigningKey>>
+    {
+        if (path.empty())
+        {
+            return std::nullopt;
+        }
+        auto connection = open_sqlite_connection(path, true);
+        if (!connection.has_value())
+        {
+            return std::nullopt;
+        }
+        // Public columns only: the secret_key column is never named, so the
+        // row cannot carry this server's signing secret into a worker whatever
+        // `server_name` says. The name is bound, never interpolated.
+        auto keys = std::vector<PersistentServerSigningKey>{};
+        auto const ok = load_rows_bound(
+            **connection,
+            "SELECT server_name, key_id, public_key, valid_until_ts FROM server_signing_keys WHERE server_name = ?1",
+            {std::string{server_name}}, [&keys](sqlite3_stmt& row) {
+                keys.push_back({column_text(row, 0),
+                                column_text(row, 1),
+                                column_text(row, 2),
+                                parse_u64(column_text(row, 3)),
+                                {}});
+            });
+        if (!ok)
+        {
+            return std::nullopt;
+        }
+        return keys;
+    }
+
+    auto load_remote_signing_keys_from_backend(PersistentStore const& store, std::string_view server_name)
+        -> std::optional<std::vector<PersistentServerSigningKey>>
+    {
+        if (store.backend == PersistentStoreBackend::postgresql)
+        {
+            return load_remote_signing_keys_from_postgresql(store.postgresql_conninfo, store.postgresql_runtime_role,
+                                                            server_name);
+        }
+        if (store.backend != PersistentStoreBackend::sqlite)
+        {
+            return std::nullopt;
+        }
+        return load_remote_signing_keys_from_sqlite(store.sqlite_path, server_name);
+    }
+
     auto load_audit_events_from_backend(PersistentStore const& store, std::string_view prefix, std::size_t limit)
         -> std::optional<std::vector<PersistentAuditEvent>>
     {

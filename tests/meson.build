@@ -256,6 +256,8 @@ shell = find_program('sh')
       'unit/test_federation_denied_ranges.cpp',
       'unit/test_federation_private_range_allowlist.cpp',
       'unit/test_cached_server_discovery_bounds.cpp',
+      'unit/test_outbound_discovery_cache.cpp',
+      'unit/test_remote_key_read_through.cpp',
       'unit/test_federation_edu_idempotence.cpp',
       'unit/test_federation_server_acl.cpp',
       'unit/test_federation_tls_origin.cpp',

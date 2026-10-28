@@ -619,7 +619,17 @@ namespace
         auto version = std::string{};
         if (runtime.federation.room_version_resolver)
         {
+            // A relayed PDU queues here behind whatever holds runtime.mutex (a
+            // join, a send, a sync). Complement run 9 (A6) lost a race by tens of
+            // milliseconds with no log line to say where, so the wait is logged.
+            auto const waiting_since = std::chrono::steady_clock::now();
             auto guard = std::unique_lock{runtime.mutex};
+            auto const waited =
+                std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - waiting_since);
+            observability::log_diagnostic("worker_pool", "relay.runtime_lock_acquired",
+                                          {
+                                              {"wait_ms", std::to_string(waited.count()), false}
+            });
             version = runtime.federation.room_version_resolver(room_id);
         }
         if (version.empty())

@@ -23,8 +23,8 @@ CachedServerDiscovery::CachedServerDiscovery(ServerDiscoveryNetwork& upstream, s
 {
 }
 
-auto CachedServerDiscovery::discover(std::string_view server_name, std::uint32_t timeout_seconds)
-    -> ServerDiscoveryResult
+auto CachedServerDiscovery::discover(std::string_view server_name, std::uint32_t timeout_seconds,
+                                     DiscoveryCachePolicy policy) -> ServerDiscoveryResult
 {
     if (!server_name_is_valid(server_name))
     {
@@ -44,7 +44,12 @@ auto CachedServerDiscovery::discover(std::string_view server_name, std::uint32_t
             return now < item.second.fetched_at_ms || now - item.second.fetched_at_ms >= ttl_ms_;
         });
         auto const it = cache_.find(key);
-        if (it != cache_.end() && (now - it->second.fetched_at_ms) < ttl_ms_)
+        // A caller that must not be refused on a remembered failure asks the
+        // network again; whatever it answers replaces the entry below.
+        auto const servable =
+            it != cache_.end() && (now - it->second.fetched_at_ms) < ttl_ms_ &&
+            (policy == DiscoveryCachePolicy::remember_failures || it->second.result.discovery_allowed);
+        if (servable)
         {
             return it->second.result;
         }

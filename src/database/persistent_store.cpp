@@ -1156,6 +1156,44 @@ auto write_connections_opened(PersistentStore const& store) -> std::uint64_t
     return store.server_signing_keys;
 }
 
+[[nodiscard]] auto refresh_remote_signing_keys(PersistentStore& store, std::string_view server_name) -> bool
+{
+    if (store.backend == PersistentStoreBackend::memory)
+    {
+        return true;
+    }
+    auto rows = detail::load_remote_signing_keys_from_backend(store, server_name);
+    if (!rows.has_value())
+    {
+        log_diagnostic("server_signing_keys.refresh_failed",
+                       {
+                           {"server_name", std::string{server_name}, false}
+        },
+                       observability::LogEventSeverity::warning);
+        return false;
+    }
+    auto const lock = std::lock_guard{*store.server_signing_keys_mutex};
+    for (auto& row : *rows)
+    {
+        // Only the public columns were read. A row this process holds with a
+        // secret is this server's own key: leave it exactly as it is.
+        auto const existing =
+            std::ranges::find_if(store.server_signing_keys, [&row](PersistentServerSigningKey const& held) {
+                return held.server_name == row.server_name && held.key_id == row.key_id;
+            });
+        if (existing == store.server_signing_keys.end())
+        {
+            store.server_signing_keys.push_back(std::move(row));
+        }
+        else if (existing->secret_key.empty())
+        {
+            existing->public_key = std::move(row.public_key);
+            existing->valid_until_ts = row.valid_until_ts;
+        }
+    }
+    return true;
+}
+
 [[nodiscard]] auto store_federation_destination(PersistentStore& store, PersistentFederationDestination destination)
     -> bool
 {

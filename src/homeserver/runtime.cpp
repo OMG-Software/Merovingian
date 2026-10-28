@@ -810,6 +810,7 @@ auto bootstrap_local_database(config::Config const& config, database::SchemaStat
                               database::TableLoadProfile profile) -> LocalDatabase
 {
     auto database = LocalDatabase{};
+    database.remote_signing_keys_read_through = profile == database::TableLoadProfile::federation_worker;
     auto opened = database::PersistentStoreOpenResult{};
     switch (config.database().backend)
     {

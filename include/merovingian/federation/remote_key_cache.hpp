@@ -98,6 +98,19 @@ class CachedServerDiscovery;
 // tests can drive deterministic refresh boundaries.
 using RemoteKeyClock = std::function<std::uint64_t()>;
 
+// Whether a resolver that finds no usable cached key first re-reads that
+// server's key rows from the database. A federation worker's in-memory mirror
+// is a snapshot taken when it started, so a key main cached afterwards is
+// invisible to it; `on_miss` lets it read the row main verified and persisted
+// instead of fetching the key again over a fresh connection. Public columns
+// only (`database::refresh_remote_signing_keys`). Main's mirror is
+// authoritative, so main leaves this `never`.
+enum class KeyMirrorRefresh
+{
+    never,
+    on_miss,
+};
+
 // Composes the lookup/fetch/verify/cache flow into a single resolver suitable
 // for `FederationRuntimeState::remote_key_resolver`. Lookups hit the
 // persistent cache first; misses or near-expiry entries trigger an outbound
@@ -112,7 +125,8 @@ using RemoteKeyClock = std::function<std::uint64_t()>;
 // Empty means no own name is known (tests of remote behaviour only).
 [[nodiscard]] auto make_persistent_remote_key_resolver(database::PersistentStore& store, http::OutboundClient& client,
                                                        ServerDiscoveryNetwork& network, std::uint32_t timeout_seconds,
-                                                       RemoteKeyClock now_ms, std::string_view own_server_name = {})
+                                                       RemoteKeyClock now_ms, std::string_view own_server_name = {},
+                                                       KeyMirrorRefresh mirror_refresh = KeyMirrorRefresh::never)
     -> RemoteKeyResolver;
 
 // As above, but both the resolver's own discovery lookup and the fetch's
@@ -120,7 +134,8 @@ using RemoteKeyClock = std::function<std::uint64_t()>;
 // hits pay no DNS cascade and a miss pays it once for both.
 [[nodiscard]] auto make_persistent_remote_key_resolver(database::PersistentStore& store, http::OutboundClient& client,
                                                        CachedServerDiscovery& discovery, std::uint32_t timeout_seconds,
-                                                       RemoteKeyClock now_ms, std::string_view own_server_name = {})
+                                                       RemoteKeyClock now_ms, std::string_view own_server_name = {},
+                                                       KeyMirrorRefresh mirror_refresh = KeyMirrorRefresh::never)
     -> RemoteKeyResolver;
 
 // A resolver's two network steps: resolving a server name to a destination,
@@ -134,6 +149,8 @@ using RemoteKeyFetchFn = std::function<RemoteKeyFetchResult(http::OutboundClient
 [[nodiscard]] auto make_remote_key_resolver(database::PersistentStore& store, http::OutboundClient& client,
                                             std::uint32_t timeout_seconds, RemoteKeyClock now_ms,
                                             RemoteKeyDiscoverFn discover, RemoteKeyFetchFn fetch_keys,
-                                            std::string_view own_server_name = {}) -> RemoteKeyResolver;
+                                            std::string_view own_server_name = {},
+                                            KeyMirrorRefresh mirror_refresh = KeyMirrorRefresh::never)
+    -> RemoteKeyResolver;
 
 } // namespace merovingian::federation

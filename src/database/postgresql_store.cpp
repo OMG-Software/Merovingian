@@ -2680,6 +2680,44 @@ namespace detail
         return result.rows.front().front();
     }
 
+    auto load_remote_signing_keys_from_postgresql(std::string_view conninfo, std::string_view runtime_role,
+                                                  std::string_view server_name)
+        -> std::optional<std::vector<PersistentServerSigningKey>>
+    {
+        if (conninfo.empty())
+        {
+            return std::nullopt;
+        }
+        auto opened = open_postgresql_connection(conninfo);
+        if (!opened.ok)
+        {
+            return std::nullopt;
+        }
+        if (!runtime_role.empty() && !set_postgresql_role(opened.connection, runtime_role))
+        {
+            return std::nullopt;
+        }
+        // The same four columns the worker role is granted and the start-up load
+        // selects: secret_key is never named, and the role could not read it.
+        auto result = opened.connection.execute(
+            {"postgresql_load_remote_signing_keys",
+             "SELECT server_name, key_id, public_key, valid_until_ts FROM server_signing_keys WHERE server_name = $1",
+             {{std::string{server_name}, false}}});
+        if (!result.ok)
+        {
+            return std::nullopt;
+        }
+        auto keys = std::vector<PersistentServerSigningKey>{};
+        for (auto const& row : result.rows)
+        {
+            if (row.size() >= 4U)
+            {
+                keys.push_back({row[0], row[1], row[2], parse_u64(row[3]), {}});
+            }
+        }
+        return keys;
+    }
+
     auto load_audit_events_from_postgresql(std::string_view conninfo, std::string_view runtime_role,
                                            std::string_view prefix, std::size_t limit)
         -> std::optional<std::vector<PersistentAuditEvent>>

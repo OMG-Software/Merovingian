@@ -3102,17 +3102,22 @@ namespace
             // resolves known-peer key rotation directly from the cache above;
             // every discovery-capable resolver call must still be admitted.
             runtime.federation.remote_key_cache_probe = {};
+            // A worker's key mirror is a start-up snapshot, so its resolver reads
+            // the database for a key main cached since before it fetches one.
+            auto const mirror_refresh = runtime.database.remote_signing_keys_read_through
+                                            ? federation::KeyMirrorRefresh::on_miss
+                                            : federation::KeyMirrorRefresh::never;
             if (cached != nullptr)
             {
                 runtime.federation.remote_key_resolver = federation::make_persistent_remote_key_resolver(
                     runtime.database.persistent_store, *outbound, *cached, timeout, key_clock,
-                    runtime.config.server().server_name);
+                    runtime.config.server().server_name, mirror_refresh);
             }
             else
             {
                 runtime.federation.remote_key_resolver = federation::make_persistent_remote_key_resolver(
                     runtime.database.persistent_store, *outbound, *discovery, timeout, key_clock,
-                    runtime.config.server().server_name);
+                    runtime.config.server().server_name, mirror_refresh);
             }
             auto key = ensure_runtime_server_signing_key(runtime);
             auto constexpr expected_secret_bytes = crypto::ed25519_secret_key_bytes;
