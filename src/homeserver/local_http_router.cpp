@@ -4058,8 +4058,22 @@ namespace
             // groups) gains one once the state before it is known and it
             // passes auth against that state. It keeps its stored status. One
             // that fails is left without state, so nothing can build on it.
-            if (!state_after.has_value() || existing->status == "rejected" ||
-                event_has_state_group(runtime.database.persistent_store, envelope.event_id))
+            //
+            // Spec: server-server-api.md "Rejection" (ADR-0256): a rejected
+            // event's after-state is its state-before, not updated with the
+            // event. One stored rejected with no state group (judged against
+            // its own auth_events while its state-before was unknown) gets that
+            // state group now that the state before it is known, and keeps its
+            // status, so an event naming it as a prev_event can be placed.
+            if (existing->status == "rejected")
+            {
+                if (state_before_known && !event_has_state_group(runtime.database.persistent_store, envelope.event_id))
+                {
+                    record_state_group(state_before);
+                }
+                return true;
+            }
+            if (!state_after.has_value() || event_has_state_group(runtime.database.persistent_store, envelope.event_id))
             {
                 return true;
             }

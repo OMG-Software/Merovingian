@@ -3722,4 +3722,93 @@ SCENARIO("An /event_auth entry reusing a stored event's ID with different conten
     }
 }
 
+// Spec: server-server-api.md "Rejection": "The state used in the checks should be
+// calculated as normal, except not updating with the rejected event", so a
+// rejected event's after-state is its state-before, and later events that
+// reference it "should be allowed if they still pass the auth rules" (ADR-0256).
+// A rejected event can be stored with no state group: a /state_ids snapshot
+// lists it in its auth chain, its prev_event is unknown so its state-before is
+// too, and it is judged against its own auth_events only (ADR-0069, ADR-0070).
+// When a later snapshot supplies the state before it, it must gain the group, or
+// an event that names it as its prev_event stays unplaceable for ever.
+SCENARIO("A rejected event stored without a state group gains one when a snapshot supplies its state-before",
+         "[pdu_ingestion][backfill][a8_rejected_outlier_promoted]")
+{
+    GIVEN("a rejected power_levels event, and a snapshot auth chain event that names it, so is stored rejected "
+          "with no state group")
+    {
+        auto fixture = RecoveryFixture{"!a8-rejected-promoted:local.example.org"};
+        auto const& room = fixture.room_id;
+
+        auto raised = canonicaljson::Object{};
+        raised.push_back(canonicaljson::make_member(std::string{local_admin}, canonicaljson::Value{std::int64_t{100}}));
+        raised.push_back(
+            canonicaljson::make_member(std::string{remote_member}, canonicaljson::Value{std::int64_t{100}}));
+        auto levels = canonicaljson::Object{};
+        levels.push_back(canonicaljson::make_member("users", canonicaljson::Value{std::move(raised)}));
+        auto const rejected_levels =
+            make_remote_event_pdu(room, "m.room.power_levels", std::string{}, remote_member, std::move(levels),
+                                  {fixture.bob_member_id()}, fixture.auth_ids(), 4, 10);
+        // The rejected event's own prev_event is one nobody can supply.
+        auto const unseen = make_remote_message_pdu(room, {fixture.bob_member_id()}, fixture.auth_ids(), 5, 11);
+        auto const rejected = make_remote_event_pdu(
+            room, "m.room.member", std::string{remote_member}, remote_member, member_content("rejected"),
+            {unseen.event_id}, {fixture.create_id(), rejected_levels.event_id, fixture.bob_member_id()}, 6, 12);
+        auto const target = make_remote_message_pdu(room, {fixture.bob_member_id()}, fixture.auth_ids(), 7, 13);
+        auto const held = make_remote_message_pdu(room, {target.event_id}, fixture.auth_ids(), 8, 14);
+        auto const first = make_remote_message_pdu(room, {held.event_id}, fixture.auth_ids(), 9, 15);
+        auto const after_rejected = make_remote_message_pdu(room, {rejected.event_id}, fixture.auth_ids(), 7, 20);
+
+        auto auth_chain_ids = fixture.auth_ids();
+        auth_chain_ids.push_back(rejected.event_id);
+        auto script = PeerScript{};
+        script.events = {
+            {rejected.event_id, rejected.json},
+            {target.event_id,   target.json  },
+            {held.event_id,     held.json    }
+        };
+        script.state_ids[target.event_id] = make_state_ids_response(fixture.genesis_state_ids(), auth_chain_ids);
+        script.state_ids[rejected.event_id] = make_state_ids_response(fixture.genesis_state_ids(), fixture.auth_ids());
+        auto const peer = fixture.serve(script);
+        auto const& runtime = fixture.runtime();
+
+        REQUIRE(fixture.ingest(rejected_levels).status == PduIngestionStatus::rejected_auth);
+        REQUIRE(fixture.ingest(first).status == PduIngestionStatus::accepted);
+        REQUIRE(stored_status(runtime, rejected.event_id).value_or(std::string{}) == "rejected");
+        REQUIRE_FALSE(fixture.has_state_group(rejected.event_id));
+
+        WHEN("an event whose only prev_event is the rejected event arrives and the state is asked at it")
+        {
+            auto const result = fixture.ingest(after_rejected);
+            auto const requests = peer->requests();
+
+            THEN("the rejected event gains a state group and stays rejected")
+            {
+                CHECK(state_asked_at(requests, rejected.event_id));
+                CHECK(fixture.has_state_group(rejected.event_id));
+                CHECK(stored_status(runtime, rejected.event_id).value_or(std::string{}) == "rejected");
+            }
+
+            THEN("the event on top of it is placed and accepted")
+            {
+                CHECK(result.status == PduIngestionStatus::accepted);
+                CHECK(stored_status(runtime, after_rejected.event_id).value_or(std::string{}) == "accepted");
+            }
+
+            THEN("the rejected event changed neither the power levels nor the sender's membership")
+            {
+                auto const& state = runtime.database.persistent_store.state;
+                auto const state_event_id = [&](std::string_view type, std::string_view state_key) {
+                    auto const entry = std::ranges::find_if(state, [&](database::PersistentStateEvent const& item) {
+                        return item.room_id == room && item.event_type == type && item.state_key == state_key;
+                    });
+                    return entry == state.end() ? std::string{} : entry->event_id;
+                };
+                CHECK(state_event_id("m.room.power_levels", "") == fixture.pl_id());
+                CHECK(state_event_id("m.room.member", remote_member) == fixture.bob_member_id());
+            }
+        }
+    }
+}
+
 } // namespace
