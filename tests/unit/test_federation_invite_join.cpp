@@ -1681,6 +1681,25 @@ SCENARIO("ingest_send_join_state writes empty-state-key events to store.state",
                 REQUIRE(std::find(members.begin(), members.end(), creator) != members.end());
             }
         }
+
+        WHEN("the array holds the same event twice and is ingested in one transaction")
+        {
+            // The snapshot is committed as one batch (review of #541): the second copy
+            // must still be recorded, or join_room's count of persisted entries falls
+            // short of the verified array and the join is refused.
+            auto repeated = *arr;
+            repeated.push_back((*arr)[1]);
+            auto const ingested = merovingian::homeserver::ingest_send_join_state(runtime, room_id, repeated, policy);
+
+            THEN("every entry is recorded, the repeated one included, and the event is stored once")
+            {
+                REQUIRE(ingested.state_entries.size() == repeated.size());
+                auto const& state = runtime.database.persistent_store.state;
+                REQUIRE(std::count_if(state.begin(), state.end(), [&](auto const& s) {
+                            return s.room_id == room_id && s.event_type == "m.room.encryption";
+                        }) == 1);
+            }
+        }
     }
 }
 

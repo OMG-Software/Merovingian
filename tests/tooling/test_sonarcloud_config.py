@@ -141,6 +141,10 @@ class SonarCloudCiScanTest(unittest.TestCase):
         self.assertIn("SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}", self.workflow)
         self.assertRegex(self.workflow, r"(?m)^permissions:\n  contents: read")
 
+    def test_given_a_cpp26_build_when_the_properties_are_read_then_cpp26_analysis_is_enabled(self) -> None:
+        # The analyser stops with "C++26 standard detected" unless this is set.
+        self.assertEqual(sonar_property("sonar.cfamily.experimental.cpp26.enabled"), "true")
+
     def test_given_the_workflow_when_read_then_it_installs_what_the_thumbnail_worker_needs(self) -> None:
         # Without libpng and libturbojpeg Meson drops the thumbnail worker, and the
         # compilation database, so the analysis, never holds media/thumbnail_worker_main.cpp.

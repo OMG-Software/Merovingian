@@ -4371,7 +4371,7 @@ namespace
         queue_appservice_receipt(runtime.homeserver, receipt);
         if (runtime.sync_notifier != nullptr)
         {
-            runtime.sync_notifier->publish(runtime.homeserver.database.next_stream_ordering - 1U,
+            runtime.sync_notifier->publish(visible_stream_position(runtime.homeserver.database),
                                            runtime.homeserver.database.persistent_store.next_sync_stream_id);
         }
         return true;
@@ -4897,6 +4897,10 @@ namespace
         }
 
         auto const sync_stream_upper_bound = store.next_sync_stream_id;
+        // ADR-0247: the one event position this response names. The timeline
+        // holds nothing above it, or the next sync, starting from it, would
+        // deliver that event again.
+        auto const sync_position = visible_stream_position(rt.homeserver.database);
         auto max_observed_sync_stream_id = since_sync_stream_id;
         auto join_members = canonicaljson::Object{};
         auto join_count = std::size_t{0U};
@@ -4961,6 +4965,10 @@ namespace
                     continue;
                 }
                 if (since_ordering > 0U && event.stream_ordering <= since_ordering)
+                {
+                    continue;
+                }
+                if (event.stream_ordering > sync_position)
                 {
                     continue;
                 }
@@ -5223,9 +5231,7 @@ namespace
         });
 
         auto const advanced_sync_stream_id = std::max(max_observed_sync_stream_id, sync_stream_upper_bound);
-        auto const next_token =
-            sync::StreamToken{visible_stream_position(rt.homeserver.database),
-                              visible_stream_position(rt.homeserver.database), advanced_sync_stream_id};
+        auto const next_token = sync::StreamToken{sync_position, sync_position, advanced_sync_stream_id};
 
         auto const body = json_serialize(json_obj({
             json_member("next_batch", json_str(sync::encode_stream_token(next_token))),
@@ -5933,6 +5939,9 @@ namespace
         auto const empty_lazy_members_set = std::unordered_set<std::string>{};
         auto lazy_members_included_by_room = std::unordered_map<std::string, std::unordered_set<std::string>>{};
         auto room_timeline_limits_built = std::unordered_map<std::string, std::uint64_t>{};
+        // ADR-0247: the one event position this response's pos names; no room's
+        // timeline holds an event above it, or the next request would send it again.
+        auto const visible_event_ordering = visible_stream_position(rt.homeserver.database);
         for (auto const& room_id : response_room_ids)
         {
             auto sub = sync::SlidingSyncRoomSubscription{};
@@ -5995,9 +6004,9 @@ namespace
             room_timeline_limits_built[room_id] = sub.timeline_limit;
             // The floor is the later of the request pos and the room's last send; the room's
             // last send alone decides what counts as resent (`expanded_timeline`).
-            auto room = sync::build_room_response(rt.homeserver, room_id, user, sub, room_since, is_initial, store,
-                                                  lazy_already_sent, ignored_senders, history_visibility,
-                                                  *unread_classifier, expansion, room_last_ordering);
+            auto room = sync::build_room_response(
+                rt.homeserver, room_id, user, sub, room_since, is_initial, store, lazy_already_sent, ignored_senders,
+                history_visibility, *unread_classifier, expansion, room_last_ordering, visible_event_ordering);
             if (!room.lazy_members_included.empty())
             {
                 lazy_members_included_by_room[room_id] = room.lazy_members_included;
@@ -6069,7 +6078,7 @@ namespace
 
         // ── pos token and list op responses ─────────────────────────────────
 
-        auto const cur_event = visible_stream_position(rt.homeserver.database);
+        auto const cur_event = visible_event_ordering;
         auto const cur_sync = store.next_sync_stream_id;
         // The returned pos is always the live stream watermarks.  A request
         // pos ahead of the watermarks was already rejected with M_UNKNOWN_POS
@@ -10600,7 +10609,7 @@ auto start_client_server(config::Config const& config, ClientServerStartOptions 
     apply_log_modules(config.log_modules());
     rt.sync_notifier = std::make_unique<sync::SyncNotifier>();
     rt.homeserver.sync_notifier = rt.sync_notifier.get();
-    rt.sync_notifier->publish(rt.homeserver.database.next_stream_ordering - 1U,
+    rt.sync_notifier->publish(visible_stream_position(rt.homeserver.database),
                               rt.homeserver.database.persistent_store.next_sync_stream_id);
     rt.devices.reserve(rt.homeserver.database.persistent_store.devices.size());
     for (auto const& device : rt.homeserver.database.persistent_store.devices)
@@ -15085,7 +15094,7 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                         }
                         if (room_stream_id != std::uint64_t{0U} && rt.sync_notifier != nullptr)
                         {
-                            rt.sync_notifier->publish(rt.homeserver.database.next_stream_ordering - 1U,
+                            rt.sync_notifier->publish(visible_stream_position(rt.homeserver.database),
                                                       rt.homeserver.database.persistent_store.next_sync_stream_id);
                         }
                     }
@@ -15786,7 +15795,7 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                         });
                         if (rt.sync_notifier != nullptr)
                         {
-                            rt.sync_notifier->publish(rt.homeserver.database.next_stream_ordering - 1U,
+                            rt.sync_notifier->publish(visible_stream_position(rt.homeserver.database),
                                                       rt.homeserver.database.persistent_store.next_sync_stream_id);
                         }
                     }
@@ -15924,6 +15933,12 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                                        {"reason",  "user is not a member of this room", false}
                     });
                     return dispatch_err(req, rt, 403U, "M_FORBIDDEN", "user is not a member of this room");
+                }
+                // `filter` is "A JSON RoomEventFilter": a malformed one is refused, as on
+                // /context, never silently dropped for an unfiltered page.
+                if (!sync::parse_room_event_filter_argument(messages_query_value(req.target, "filter")).has_value())
+                {
+                    return dispatch_err(req, rt, 400U, "M_BAD_JSON", "filter parameter is not valid JSON");
                 }
                 log_diagnostic("room.messages.response",
                                {
@@ -17365,7 +17380,7 @@ auto ensure_sync_notifier(ClientServerRuntime& runtime) -> sync::SyncNotifier&
         runtime.homeserver.sync_notifier = runtime.sync_notifier.get();
     }
     auto const& db = runtime.homeserver.database;
-    runtime.sync_notifier->publish(db.next_stream_ordering - 1U, db.persistent_store.next_sync_stream_id);
+    runtime.sync_notifier->publish(visible_stream_position(db), db.persistent_store.next_sync_stream_id);
     return *runtime.sync_notifier;
 }
 

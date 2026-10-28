@@ -56,3 +56,6 @@ before this workflow first runs: SonarSource's CI analyses fail while it is on.
 * Each analysed push and pull request pays for a full build on a GitHub runner.
 * Pull requests from forks are not analysed before merge.
 * The analysis needs the `SONAR_TOKEN` repository secret; without it the job fails.
+* The analyser's C++26 support is experimental and partial: `sonar.cfamily.experimental.cpp26.enabled=true`
+  is required, or the scan refuses to start on a C++26 build, and some C++26 code may be analysed
+  less thoroughly than the rest.

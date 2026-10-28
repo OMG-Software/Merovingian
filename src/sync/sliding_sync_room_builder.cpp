@@ -537,7 +537,8 @@ auto build_room_response(homeserver::HomeserverRuntime const& rt, std::string_vi
                          bool is_initial, database::PersistentStore const& store,
                          std::unordered_set<std::string> const& lazy_members_already_sent,
                          std::unordered_set<std::string> const& ignored_senders, TimelineExpansion expansion,
-                         std::optional<std::uint64_t> room_last_sent_ordering) -> SlidingSyncRoomResponse
+                         std::optional<std::uint64_t> room_last_sent_ordering,
+                         std::optional<std::uint64_t> timeline_upper_bound) -> SlidingSyncRoomResponse
 {
     // One filter for the request: the classifier borrows it, so both share its lazy indexes.
     auto visibility = HistoryVisibility{store, user};
@@ -545,7 +546,7 @@ auto build_room_response(homeserver::HomeserverRuntime const& rt, std::string_vi
         store, user, static_cast<std::size_t>(rt.config.server().client_api.max_push_rules_per_user), visibility};
     return build_room_response(rt, room_id, user, sub, room_since_event_ordering, is_initial, store,
                                lazy_members_already_sent, ignored_senders, visibility, unread, expansion,
-                               room_last_sent_ordering);
+                               room_last_sent_ordering, timeline_upper_bound);
 }
 
 auto timeline_limit_expands(SlidingSyncConnectionState const& conn, std::string_view room_id,
@@ -624,7 +625,8 @@ auto build_room_response(homeserver::HomeserverRuntime const& rt, std::string_vi
                          std::unordered_set<std::string> const& lazy_members_already_sent,
                          std::unordered_set<std::string> const& ignored_senders, HistoryVisibility& visibility,
                          UnreadEventClassifier const& unread, TimelineExpansion expansion,
-                         std::optional<std::uint64_t> room_last_sent_ordering) -> SlidingSyncRoomResponse
+                         std::optional<std::uint64_t> room_last_sent_ordering,
+                         std::optional<std::uint64_t> timeline_upper_bound) -> SlidingSyncRoomResponse
 {
     auto resp = SlidingSyncRoomResponse{};
 
@@ -713,6 +715,10 @@ auto build_room_response(homeserver::HomeserverRuntime const& rt, std::string_vi
         // untouched — a soft-failed *state* event that resolution later
         // admits into current state is still delivered there.
         if (ev.status == "rejected" || ev.status == "soft_failed")
+        {
+            continue;
+        }
+        if (timeline_upper_bound.has_value() && ev.stream_ordering > *timeline_upper_bound)
         {
             continue;
         }

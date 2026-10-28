@@ -1312,7 +1312,7 @@ namespace
         auto const sync_stream_id = database::allocate_sync_stream_id(runtime.database.persistent_store);
         if (runtime.sync_notifier != nullptr)
         {
-            runtime.sync_notifier->publish(runtime.database.next_stream_ordering - 1U, sync_stream_id);
+            runtime.sync_notifier->publish(visible_stream_position(runtime.database), sync_stream_id);
         }
         // Push delivery: covers invite/ban/kick/leave/knock, all funneled
         // through this one function. `target_user_id` is passed as an extra
@@ -3773,7 +3773,7 @@ auto ensure_crypto_provider_holds_key(HomeserverRuntime& runtime, std::string_vi
     }
     if (runtime.sync_notifier != nullptr)
     {
-        runtime.sync_notifier->publish(runtime.database.next_stream_ordering - 1U, sync_stream_id);
+        runtime.sync_notifier->publish(visible_stream_position(runtime.database), sync_stream_id);
     }
     notify_room_changed(runtime, room_id);
     return make_operation_result(true, room_id);
@@ -4048,20 +4048,24 @@ namespace
                 {
                     entry.joined_member = parsed.event.state_key;
                 }
-                if (batch_event_ids.insert(event_id).second)
+                // An event earlier in this batch was kept: this copy is recorded
+                // again, not written twice.
+                auto const kept_earlier_in_batch = batch_event_ids.contains(event_id);
+                if (!kept_earlier_in_batch)
                 {
                     entry.prepared = database::prepare_store_event_with_state(runtime.database.persistent_store,
                                                                               std::move(pe), state);
                 }
-                // A duplicate verified snapshot event is already committed;
-                // include it in the new join snapshot rather than mistaking the
-                // store's duplicate-insert refusal for a failed initial state.
-                if (!entry.prepared.has_value() &&
+                // A duplicate verified snapshot event is already committed; include
+                // it in the join snapshot rather than mistaking the store's
+                // duplicate-insert refusal for a failed initial state.
+                if (!kept_earlier_in_batch && !entry.prepared.has_value() &&
                     runtime.database.persistent_store.events.find_in_room(room_id, event_id) ==
                         runtime.database.persistent_store.events.end())
                 {
                     continue;
                 }
+                batch_event_ids.insert(event_id);
                 entries.push_back(std::move(entry));
             }
         }
@@ -5309,7 +5313,7 @@ namespace
         auto const sync_stream_id = database::allocate_sync_stream_id(runtime.database.persistent_store);
         if (runtime.sync_notifier != nullptr)
         {
-            runtime.sync_notifier->publish(runtime.database.next_stream_ordering - 1U, sync_stream_id);
+            runtime.sync_notifier->publish(visible_stream_position(runtime.database), sync_stream_id);
         }
         // Tell the federation worker to refresh its copy of this room now that
         // we are a resident participant — otherwise its PersistentStore stays
@@ -5527,7 +5531,7 @@ namespace
     auto const sync_stream_id = database::allocate_sync_stream_id(runtime.database.persistent_store);
     if (runtime.sync_notifier != nullptr)
     {
-        runtime.sync_notifier->publish(runtime.database.next_stream_ordering - 1U, sync_stream_id);
+        runtime.sync_notifier->publish(visible_stream_position(runtime.database), sync_stream_id);
     }
     notify_room_changed(runtime, room_id);
     return make_operation_result(true, std::string{room_id});
@@ -5625,7 +5629,7 @@ namespace
         auto const sync_stream_id = database::allocate_sync_stream_id(runtime.database.persistent_store);
         if (runtime.sync_notifier != nullptr)
         {
-            runtime.sync_notifier->publish(runtime.database.next_stream_ordering - 1U, sync_stream_id);
+            runtime.sync_notifier->publish(visible_stream_position(runtime.database), sync_stream_id);
         }
         log_diagnostic("room.leave.accepted",
                        {
@@ -5840,7 +5844,7 @@ namespace
         auto const sync_stream_id = database::allocate_sync_stream_id(runtime.database.persistent_store);
         if (runtime.sync_notifier != nullptr)
         {
-            runtime.sync_notifier->publish(runtime.database.next_stream_ordering - 1U, sync_stream_id);
+            runtime.sync_notifier->publish(visible_stream_position(runtime.database), sync_stream_id);
         }
         append_local_audit(runtime.database, observability::AuditCategory::admin, "room.left_remote", *user_id, room_id,
                            "left via federation");
@@ -6079,7 +6083,7 @@ namespace
     auto const sync_stream_id = database::allocate_sync_stream_id(runtime.database.persistent_store);
     if (runtime.sync_notifier != nullptr)
     {
-        runtime.sync_notifier->publish(runtime.database.next_stream_ordering - 1U, sync_stream_id);
+        runtime.sync_notifier->publish(visible_stream_position(runtime.database), sync_stream_id);
     }
 
     // Push delivery: no real mxid to add as an extra recipient here -- the
@@ -6249,7 +6253,7 @@ namespace
     auto const sync_stream_id = database::allocate_sync_stream_id(runtime.database.persistent_store);
     if (runtime.sync_notifier != nullptr)
     {
-        runtime.sync_notifier->publish(runtime.database.next_stream_ordering - 1U, sync_stream_id);
+        runtime.sync_notifier->publish(visible_stream_position(runtime.database), sync_stream_id);
     }
     append_local_audit(runtime.database, observability::AuditCategory::admin, "room.forgotten", *user_id, room_id,
                        "forgotten");
@@ -6317,6 +6321,12 @@ namespace
         auto const call_timeout = [&runtime, &deadline] {
             return std::min(runtime.federation.config.remote_timeout_seconds, deadline.remaining_seconds());
         };
+        // Passed with each call so the time server discovery takes counts against the
+        // deadline too: perform_outbound_call recomputes what is left after it.
+        auto const bounds = std::optional<BoundedOutboundLimits>{
+            BoundedOutboundLimits{deadline,
+                                  std::chrono::seconds{runtime.client_outbound_proxy_policy.worker_margin_seconds}}
+        };
         for (auto const& candidate : candidates)
         {
             if (call_timeout() == 0U)
@@ -6334,7 +6344,7 @@ namespace
                                                           our_server, room_id, user_id, supported_versions);
             auto call =
                 perform_outbound_call(runtime, room_id, tx, signing_key.key_id, core::SecretBuffer{secret_key.bytes()},
-                                      "room.knock.remote.make_knock_failed", call_timeout(), 0U, std::nullopt);
+                                      "room.knock.remote.make_knock_failed", call_timeout(), 0U, bounds);
             if (call.ok)
             {
                 remote_server = candidate;
@@ -6412,7 +6422,7 @@ namespace
         }
         auto send =
             perform_outbound_call(runtime, room_id, send_tx, signing_key.key_id, core::SecretBuffer{secret_key.bytes()},
-                                  "room.knock.remote.send_knock_failed", call_timeout(), 0U, std::nullopt);
+                                  "room.knock.remote.send_knock_failed", call_timeout(), 0U, bounds);
         if (!send.ok)
         {
             return federated_knock_failure("send_knock failed: " + send.body, send.remote_status == 403U ? 403U : 502U);
@@ -6516,7 +6526,7 @@ namespace
     auto const sync_stream_id = database::allocate_sync_stream_id(runtime.database.persistent_store);
     if (runtime.sync_notifier != nullptr)
     {
-        runtime.sync_notifier->publish(runtime.database.next_stream_ordering - 1U, sync_stream_id);
+        runtime.sync_notifier->publish(visible_stream_position(runtime.database), sync_stream_id);
     }
     append_local_audit(runtime.database, observability::AuditCategory::admin, "room.knocked_remote", user, room_id,
                        "knocked via federation");
@@ -7277,7 +7287,7 @@ namespace
     });
     if (runtime.sync_notifier != nullptr)
     {
-        runtime.sync_notifier->publish(runtime.database.next_stream_ordering - 1U,
+        runtime.sync_notifier->publish(visible_stream_position(runtime.database),
                                        runtime.database.persistent_store.next_sync_stream_id);
     }
     // Refresh any federation worker's snapshot of this room the same way the
@@ -7435,7 +7445,7 @@ namespace
     }
     if (presence_sent && runtime.sync_notifier != nullptr)
     {
-        runtime.sync_notifier->publish(runtime.database.next_stream_ordering - 1U, mutable_store.next_sync_stream_id);
+        runtime.sync_notifier->publish(visible_stream_position(runtime.database), mutable_store.next_sync_stream_id);
     }
     // The profile is already stored, so the change has happened whatever follows: the request
     // succeeds (ADR-0182). A room or presence update that failed is left for the next profile

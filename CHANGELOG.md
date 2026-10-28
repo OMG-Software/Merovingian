@@ -138,6 +138,21 @@ Cloud analysis from SonarSource's automatic analysis into this repository's CI.
   it builds it once. Start-up logs the effective password-hashing cap. The SonarQube Cloud
   workflow installs `libpng-dev` and `libturbojpeg0-dev`, without which Meson drops the thumbnail
   worker from the build the analysis reads (checked by `test_sonarcloud_config.py`).
+- **FIXED (second review of #541):** while an earlier stream ordering was pending, `/sync` and
+  sliding sync could still deliver a later event above the position they returned, and the next
+  request, starting from that position, delivered it again; each now takes one visible position per
+  response and holds nothing above it (`sync_position`; `build_room_response`'s
+  `timeline_upper_bound`). Every `SyncNotifier::publish` now announces the visible position, so a
+  long-poll is not woken for an event it cannot be given yet, and the verified backfill writer
+  publishes once its reservation ends. A federated knock passes its shared deadline to each call,
+  so server discovery counts against it too. A state event repeated in one `send_join` batch was dropped
+  and the join refused for the short count; the repeat is recorded. `/messages` refuses a `filter`
+  that is not a JSON RoomEventFilter with `400 M_BAD_JSON`, as `/context` does, instead of serving
+  the page unfiltered. The SonarQube Cloud scan enables the analyser's experimental C++26 support
+  (`sonar.cfamily.experimental.cpp26.enabled`), without which it refused to start on this build
+  (ADR-0250). Tests: `[sync-position]` (timeline and token agree; the later event arrives once),
+  the repeated-entry case in `test_federation_invite_join.cpp`, the malformed-filter scenario in
+  `test_room_pagination_conformance.cpp`, and `test_sonarcloud_config.py`.
 - **FIXED:** `POST /login` did not log `@user:server` in when named `@USER:server`, `USER` or
   `User`. A user ID is looked up exactly, then with its localpart's ASCII letters downcased
   (ADR-0245), so historical upper-case localparts still log in as themselves. Regression:

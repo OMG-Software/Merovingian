@@ -1680,7 +1680,16 @@ namespace
             {
                 if (rt->sync_notifier != nullptr)
                 {
-                    rt->sync_notifier->publish(result.accepted_stream_ordering, result.accepted_sync_stream_id);
+                    // ADR-0247: wake syncs only up to the visible position. An earlier
+                    // ordering may still be pending, and a waiter woken past it would
+                    // find nothing it may be given yet and wake again at once. Read under
+                    // runtime.mutex, which ingest_pdu_event no longer holds here; no room
+                    // stripe is held either, so this keeps the stripe-then-global order.
+                    auto const visible = [&] {
+                        auto const lock = std::unique_lock<RuntimeMutex>{rt->mutex};
+                        return visible_stream_position(rt->database);
+                    }();
+                    rt->sync_notifier->publish(visible, result.accepted_sync_stream_id);
                 }
                 // #479 P1 fix: this is the single convergence point for every
                 // accepted federation PDU — both the direct main-process path
@@ -1794,7 +1803,7 @@ namespace
                 auto const room_stream_id = update_room_typing_stream_id_if_changed(*rt, room_id, previous_users);
                 if (room_stream_id != std::uint64_t{0U} && rt->sync_notifier != nullptr)
                 {
-                    rt->sync_notifier->publish(rt->database.next_stream_ordering - 1U,
+                    rt->sync_notifier->publish(visible_stream_position(rt->database),
                                                rt->database.persistent_store.next_sync_stream_id);
                 }
                 return {federation::EduDispositionStatus::accepted, {}};
@@ -1952,7 +1961,7 @@ namespace
                 }
                 if (rt->sync_notifier != nullptr)
                 {
-                    rt->sync_notifier->publish(rt->database.next_stream_ordering - 1U,
+                    rt->sync_notifier->publish(visible_stream_position(rt->database),
                                                rt->database.persistent_store.next_sync_stream_id);
                 }
                 return {federation::EduDispositionStatus::accepted, {}};
@@ -2011,7 +2020,7 @@ namespace
                 }
                 if (rt->sync_notifier != nullptr)
                 {
-                    rt->sync_notifier->publish(rt->database.next_stream_ordering - 1U,
+                    rt->sync_notifier->publish(visible_stream_position(rt->database),
                                                rt->database.persistent_store.next_sync_stream_id);
                 }
                 return {federation::EduDispositionStatus::accepted, {}};
@@ -2064,7 +2073,7 @@ namespace
                 }
                 if (rt->sync_notifier != nullptr)
                 {
-                    rt->sync_notifier->publish(rt->database.next_stream_ordering - 1U,
+                    rt->sync_notifier->publish(visible_stream_position(rt->database),
                                                rt->database.persistent_store.next_sync_stream_id);
                 }
                 // A targeted device whose message did not persist is a lost
@@ -2136,7 +2145,7 @@ namespace
                 }
                 if (rt->sync_notifier != nullptr)
                 {
-                    rt->sync_notifier->publish(rt->database.next_stream_ordering - 1U,
+                    rt->sync_notifier->publish(visible_stream_position(rt->database),
                                                rt->database.persistent_store.next_sync_stream_id);
                 }
                 return {federation::EduDispositionStatus::accepted, {}};
@@ -2691,7 +2700,7 @@ namespace
             }
             if (rt->sync_notifier != nullptr)
             {
-                rt->sync_notifier->publish(rt->database.next_stream_ordering - 1U, sync_stream_id);
+                rt->sync_notifier->publish(visible_stream_position(rt->database), sync_stream_id);
             }
             // A federation worker usually accepted this request and relayed it here; it
             // answers the room's next make_join, make_leave or send_leave from its own
@@ -2966,7 +2975,7 @@ namespace
             auto const sync_stream_id = database::allocate_sync_stream_id(rt->database.persistent_store);
             if (rt->sync_notifier != nullptr)
             {
-                rt->sync_notifier->publish(rt->database.next_stream_ordering - 1U, sync_stream_id);
+                rt->sync_notifier->publish(visible_stream_position(rt->database), sync_stream_id);
             }
             return {true, 200U, {}, std::move(*signed_event)};
         };
@@ -4100,6 +4109,13 @@ namespace
         }
         database::apply_store_event_with_state(runtime.database.persistent_store, *prepared);
         pending_ordering.reset();
+        // The visible position may have moved past later events that were held
+        // back behind this one; wake the syncs that wait for them.
+        if (runtime.sync_notifier != nullptr)
+        {
+            runtime.sync_notifier->publish(visible_stream_position(runtime.database),
+                                           runtime.database.persistent_store.next_sync_stream_id);
+        }
 
         if (state_after.has_value())
         {

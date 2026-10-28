@@ -73,6 +73,9 @@ enum class TimelineExpansion : std::uint8_t
 //                the previous sync request"). The floor can be later, when the
 //                request's pos is; absent means the two are the same.
 //
+// `timeline_upper_bound`, when given, is the event position the response's pos
+// names (ADR-0247): the timeline holds nothing above it.
+//
 // The timeline is the newest timeline_limit visible events. `limited` is set when
 // older visible events exist that it does not hold (after the floor, or at all for
 // an initial or expanded room), and `prev_batch` names the position /messages
@@ -82,7 +85,8 @@ enum class TimelineExpansion : std::uint8_t
     SlidingSyncRoomSubscription const& sub, std::uint64_t room_since_event_ordering, bool is_initial,
     database::PersistentStore const& store, std::unordered_set<std::string> const& lazy_members_already_sent = {},
     std::unordered_set<std::string> const& ignored_senders = {}, TimelineExpansion expansion = TimelineExpansion::none,
-    std::optional<std::uint64_t> room_last_sent_ordering = std::nullopt) -> SlidingSyncRoomResponse;
+    std::optional<std::uint64_t> room_last_sent_ordering = std::nullopt,
+    std::optional<std::uint64_t> timeline_upper_bound = std::nullopt) -> SlidingSyncRoomResponse;
 
 // As above, with the request's shared `visibility` filter (CSAZ-3). A sliding sync request
 // serves many rooms for one user, so the caller builds ONE HistoryVisibility for the whole
@@ -96,7 +100,8 @@ enum class TimelineExpansion : std::uint8_t
     database::PersistentStore const& store, std::unordered_set<std::string> const& lazy_members_already_sent,
     std::unordered_set<std::string> const& ignored_senders, HistoryVisibility& visibility,
     UnreadEventClassifier const& unread, TimelineExpansion expansion = TimelineExpansion::none,
-    std::optional<std::uint64_t> room_last_sent_ordering = std::nullopt) -> SlidingSyncRoomResponse;
+    std::optional<std::uint64_t> room_last_sent_ordering = std::nullopt,
+    std::optional<std::uint64_t> timeline_upper_bound = std::nullopt) -> SlidingSyncRoomResponse;
 
 // Combine a list's room-config fields with a room_subscription's, per MSC4186
 // room-config combination: when a room matches both a list and a
