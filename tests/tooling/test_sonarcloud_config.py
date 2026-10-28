@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""SonarQube Cloud analyses the server, packaging and workflows, and ignores tests and tooling (ADR-0229)."""
+"""SonarQube Cloud analyses the server, packaging and workflows, and ignores tests and tooling (ADR-0229),
+from a CI scan that reads the build's compilation database (ADR-0250)."""
 from __future__ import annotations
 
 import re
@@ -9,7 +10,9 @@ from pathlib import Path
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-SONAR_CONFIG = REPO_ROOT / ".sonarcloud.properties"
+SONAR_CONFIG = REPO_ROOT / "sonar-project.properties"
+AUTOMATIC_ANALYSIS_CONFIG = REPO_ROOT / ".sonarcloud.properties"
+SONAR_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "sonarcloud.yml"
 
 # Paths whose findings must keep reaching the quality gate: the server itself,
 # what packages install on a user's system, and the CI workflows.
@@ -102,6 +105,45 @@ class SonarCloudExclusionsTest(unittest.TestCase):
         self.assertTrue(excluded("build.py", patterns))
         self.assertFalse(excluded("src/build.py", patterns))
         self.assertFalse(excluded("teststuff/x.cpp", patterns))
+
+
+class SonarCloudCiScanTest(unittest.TestCase):
+    """ADR-0250: the scan runs in CI, against the compilation database of a real build."""
+
+    def setUp(self) -> None:
+        self.workflow = SONAR_WORKFLOW.read_text(encoding="utf-8")
+
+    def test_given_the_properties_when_read_then_they_name_this_project(self) -> None:
+        self.assertEqual(sonar_property("sonar.organization"), "omg-software")
+        self.assertEqual(sonar_property("sonar.projectKey"), "OMG-Software_Merovingian")
+
+    def test_given_ci_analysis_when_the_repository_is_read_then_no_automatic_analysis_config_remains(self) -> None:
+        # Automatic analysis and CI analysis must not both run; one configuration file says what is analysed.
+        self.assertFalse(AUTOMATIC_ANALYSIS_CONFIG.exists())
+
+    def test_given_the_compile_commands_property_when_read_then_ci_builds_that_directory(self) -> None:
+        compile_commands = sonar_property("sonar.cfamily.compile-commands")
+        builddir, _, filename = compile_commands.rpartition("/")
+        self.assertEqual(filename, "compile_commands.json")
+        self.assertTrue(builddir)
+        self.assertIn(f"scripts/build-linux.sh --builddir {builddir} --compile-only", self.workflow)
+        # The build directory's generated files are not project sources.
+        patterns = [sonar_pattern(p.strip()) for p in sonar_property("sonar.exclusions").split(",") if p.strip()]
+        self.assertTrue(excluded(f"{builddir}/meson-private/sanitycheckcpp.cc", patterns))
+
+    def test_given_the_workflow_when_read_then_the_scan_action_is_pinned_to_a_commit(self) -> None:
+        # The action receives SONAR_TOKEN: a tag can be moved, a commit cannot.
+        self.assertRegex(self.workflow, r"uses: SonarSource/sonarqube-scan-action@[0-9a-f]{40}\b")
+        self.assertNotRegex(self.workflow, r"uses: SonarSource/sonarqube-scan-action@v")
+
+    def test_given_the_workflow_when_read_then_it_scans_full_history_with_the_repository_secret(self) -> None:
+        self.assertIn("fetch-depth: 0", self.workflow)
+        self.assertIn("SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}", self.workflow)
+        self.assertRegex(self.workflow, r"(?m)^permissions:\n  contents: read")
+
+    def test_given_a_pull_request_from_a_fork_when_the_workflow_runs_then_the_scan_is_skipped(self) -> None:
+        # A fork's pull request gets no secrets; it is analysed once merged.
+        self.assertIn("github.event.pull_request.head.repo.full_name == github.repository", self.workflow)
 
 
 if __name__ == "__main__":

@@ -1,0 +1,69 @@
+name: sonarcloud
+
+# SonarQube Cloud analysis from CI (ADR-0250). C and C++ are analysed against
+# the compilation database of a real build, so the analyser sees the flags,
+# include paths and C++ standard the code is compiled with. What is analysed is
+# set in sonar-project.properties (ADR-0229).
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+  pull-requests: read
+
+concurrency:
+  group: sonarcloud-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  sonarcloud:
+    # A pull request from a fork gets no secrets, so it cannot be analysed; it is
+    # analysed on main once merged.
+    if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      CC: clang
+      CXX: clang++
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # New-code detection and blame need the whole history.
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            bison \
+            clang \
+            catch2 \
+            flex \
+            libcurl4-openssl-dev \
+            libpq-dev \
+            libsodium-dev \
+            libssl-dev \
+            m4 \
+            perl \
+            pkg-config
+          python -m pip install --upgrade pip
+          python -m pip install --upgrade meson ninja
+
+      # A full compile, not just a configure: every file the compilation
+      # database names, generated ones included, then exists for the analyser.
+      - name: Build and write the compilation database
+        run: sh scripts/build-linux.sh --builddir build-sonar --compile-only
+
+      - name: SonarQube Cloud scan
+        # v8.3.0. Pinned to a commit because the action receives SONAR_TOKEN.
+        uses: SonarSource/sonarqube-scan-action@d209202bc7d53ff1cc128f7f907dac145c9d6ae9
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}

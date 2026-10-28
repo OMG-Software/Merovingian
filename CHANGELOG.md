@@ -2,7 +2,8 @@
 
 Fixes from the triage of the second Complement run (0.12.58, 133 failing top-level tests): three
 federation bugs that blocked over 50 of them, room version 12 creation and upgrades, room event
-pagination and filters, and the expected failures from the legacy media freeze.
+pagination and filters, and the expected failures from the legacy media freeze. It also moves SonarQube
+Cloud analysis from SonarSource's automatic analysis into this repository's CI.
 
 - **FIXED:** a federation worker refused every `send_join`, `send_leave`, `send_knock`, `invite`
   and `/send` from a server whose key it had not already held at start-up, with
@@ -179,6 +180,24 @@ pagination and filters, and the expected failures from the legacy media freeze.
   names, which fail on the old summariser.
 - **ADDED:** `federation::make_remote_key_resolver`, the resolver with its discovery and fetch
   steps supplied by the caller, for tests.
+- **CHANGED:** `.github/workflows/sonarcloud.yml` builds the project with
+  `scripts/build-linux.sh --builddir build-sonar --compile-only` and runs
+  `SonarSource/sonarqube-scan-action` (v8.3.0, pinned to its commit because it receives
+  `SONAR_TOKEN`) on pushes to `main` and on pull requests from this repository. C and C++ are
+  analysed against the `compile_commands.json` of that build, so the analyser sees the real flags,
+  include paths and C++ standard; automatic analysis had to guess them (ADR-0250). A fork's pull
+  request gets no secrets and is analysed once merged.
+- **CHANGED:** `sonar-project.properties` replaces `.sonarcloud.properties`: the organisation and
+  project key, the compilation database, and the ADR-0229 exclusions, plus `build-sonar/**` and
+  `subprojects/**`, which a CI checkout holds and automatic analysis never saw.
+- **REQUIRED before the first run:** switch automatic analysis off in the SonarQube Cloud project
+  (Administration > Analysis Method), since CI analyses fail while it is on, and add the
+  `SONAR_TOKEN` repository secret.
+- **TESTS:** `tests/tooling/test_sonarcloud_config.py` reads `sonar-project.properties` and now
+  also checks the project keys, that no automatic-analysis file remains, that the workflow builds
+  the directory the compilation database is read from (and that directory is excluded), that the
+  scan action is pinned to a commit, that it scans full history with the repository secret and
+  read-only permissions, and that fork pull requests are skipped.
 
 ## 0.12.58
 

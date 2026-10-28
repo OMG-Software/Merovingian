@@ -146,7 +146,10 @@ Use this checklist for every release candidate.
   It analyses the server (`src/`, `include/`), `packaging/` and the
   `.github/` workflows; test code and developer tooling (`tests/`,
   `scripts/`, `build.py`, `llvm.sh`, `.codex/`) are excluded in
-  `.sonarcloud.properties` (ADR-0229). A finding in an analysed path is
+  `sonar-project.properties` (ADR-0229). The analysis runs in CI
+  (`.github/workflows/sonarcloud.yml`) against the build's compilation
+  database (ADR-0250); a `sonarcloud` job that did not run for the commit is
+  not a pass. A finding in an analysed path is
   fixed or reviewed in SonarQube, never hidden by widening that list.
 - Dependency vulnerability triage artifacts were reviewed before tagging.
 - SBOM and package checksums are attached.
