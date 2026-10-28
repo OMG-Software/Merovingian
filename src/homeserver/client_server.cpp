@@ -43,6 +43,7 @@
 #include "merovingian/homeserver/local_http_router.hpp"
 #include "merovingian/homeserver/local_services.hpp"
 #include "merovingian/homeserver/media_service.hpp"
+#include "merovingian/homeserver/presence_service.hpp"
 #include "merovingian/homeserver/push_rule_unread_classifier.hpp"
 #include "merovingian/homeserver/remote_media_fetch_scope.hpp"
 #include "merovingian/homeserver/request_lock.hpp"
@@ -455,6 +456,41 @@ namespace
             }
         }
         return servers;
+    }
+
+    // Send one local user's presence to every server that shares a room with them, as an
+    // m.presence EDU (SS API "m.presence": "Servers should only send presence updates for users that
+    // the receiving server would be interested in. Such as the receiving server sharing a room with
+    // a given user"). Called by the caller holding runtime.mutex after a stored change of state, never
+    // per /sync poll. Does nothing with presence off.
+    auto broadcast_presence_edu(HomeserverRuntime& runtime, database::PersistentPresence const& state) -> void
+    {
+        if (!presence_enabled(runtime))
+        {
+            return;
+        }
+        auto const destinations = remote_servers_for_user(runtime, state.user_id);
+        if (destinations.empty())
+        {
+            return;
+        }
+        auto const content = presence_edu_content(state, presence_now_ms());
+        if (content.empty())
+        {
+            return;
+        }
+        for (auto const& destination : destinations)
+        {
+            if (!dispatch_edu_to_server(runtime, destination, "m.presence", content))
+            {
+                log_diagnostic("presence.outbound.refused",
+                               {
+                                   {"actor",       state.user_id, false},
+                                   {"destination", destination,   false}
+                },
+                               observability::LogEventSeverity::warning);
+            }
+        }
     }
 
     // Send m.device_list_update EDUs for every device the user owns to each
@@ -4819,82 +4855,6 @@ namespace
         return {std::move(changed), std::move(left)};
     }
 
-    [[nodiscard]] auto build_presence_events(database::PersistentStore const& store,
-                                             sync::EventTypeFilter const& filter, std::string_view user,
-                                             std::uint64_t since_sync_stream_id, std::uint64_t& max_observed_stream_id)
-        -> canonicaljson::Array
-    {
-        auto events = canonicaljson::Array{};
-        auto emitted = std::size_t{0U};
-        // Presence is shared only with current joined peers (Matrix v1.19
-        // Presence security considerations). Build the scope once per response.
-        auto joined_rooms = std::unordered_set<std::string_view>{};
-        for (auto const& membership : store.memberships)
-        {
-            if (membership.user_id == user && membership.membership == "join")
-            {
-                joined_rooms.insert(membership.room_id);
-            }
-        }
-        auto visible_users = std::unordered_set<std::string_view>{};
-        for (auto const& membership : store.memberships)
-        {
-            if (membership.membership == "join" && joined_rooms.contains(membership.room_id))
-            {
-                visible_users.insert(membership.user_id);
-            }
-        }
-        for (auto const& presence : store.presence_states)
-        {
-            if (presence.user_id == user || presence.stream_id <= since_sync_stream_id ||
-                !visible_users.contains(presence.user_id))
-            {
-                continue;
-            }
-            if (!sync::event_passes_filter(filter, "m.presence", presence.user_id))
-            {
-                continue;
-            }
-            if (filter.limit != 0U && emitted >= filter.limit)
-            {
-                break;
-            }
-            auto content = canonicaljson::Object{};
-            content.push_back(json_member("presence", json_str(presence.presence)));
-            if (!presence.status_msg.empty())
-            {
-                content.push_back(json_member("status_msg", json_str(presence.status_msg)));
-            }
-            content.push_back(json_member("last_active_ago", json_int(presence.last_active_ago)));
-            content.push_back(json_member("currently_active", json_bool(presence.currently_active)));
-            // Spec (m.presence): "displayname: The current display name for this user, if any" and
-            // "avatar_url: The current avatar URL for this user, if any" — this server knows them for
-            // the users whose profile it holds.
-            if (auto const profile = database::find_profile(store, presence.user_id); profile.has_value())
-            {
-                if (!profile->displayname.empty())
-                {
-                    content.push_back(json_member("displayname", json_str(profile->displayname)));
-                }
-                if (!profile->avatar_url.empty())
-                {
-                    content.push_back(json_member("avatar_url", json_str(profile->avatar_url)));
-                }
-            }
-            auto event = canonicaljson::Object{};
-            event.push_back(json_member("type", json_str(std::string{"m.presence"})));
-            event.push_back(json_member("sender", json_str(presence.user_id)));
-            event.push_back(json_member("content", canonicaljson::Value{std::move(content)}));
-            events.push_back(canonicaljson::Value{std::move(event)});
-            ++emitted;
-            if (presence.stream_id > max_observed_stream_id)
-            {
-                max_observed_stream_id = presence.stream_id;
-            }
-        }
-        return events;
-    }
-
     [[nodiscard]] auto build_account_data_events(database::PersistentStore const& store,
                                                  sync::EventTypeFilter const& filter, std::string_view user,
                                                  std::string_view room_scope, std::uint64_t since_sync_stream_id,
@@ -5487,8 +5447,11 @@ namespace
                                                              sync_stream_upper_bound, max_observed_sync_stream_id);
         auto [device_changed, device_left] =
             build_device_list_arrays(store, user, since_sync_stream_id, max_observed_sync_stream_id);
-        auto presence_events =
-            build_presence_events(store, filter.presence, user, since_sync_stream_id, max_observed_sync_stream_id);
+        auto presence_events = presence_enabled(rt.homeserver)
+                                   ? build_sync_presence_events(store, filter.presence, user, since_token.has_value(),
+                                                                since_sync_stream_id, since_ordering, sync_position,
+                                                                presence_now_ms(), max_observed_sync_stream_id)
+                                   : canonicaljson::Array{};
         auto global_account_data = build_account_data_events(store, filter.account_data, user, std::string_view{},
                                                              since_sync_stream_id, max_observed_sync_stream_id);
         auto otk_counts = build_otk_counts(store, user, device_id);
@@ -15072,6 +15035,28 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             }
         }
 
+        // Spec (GET /sync, `set_presence`): omitted means the client "is automatically marked as
+        // online when it uses this API", "offline" means it is not, "unavailable" marks it idle; the
+        // parameter is one of those three, so anything else is refused before the sync does anything.
+        auto const presence_mode = parse_sync_presence_mode(
+            sync_request.set_presence.has_value() ? std::optional<std::string_view>{*sync_request.set_presence}
+                                                  : std::nullopt);
+        if (!presence_mode.has_value())
+        {
+            return dispatch_err(req, rt, 400U, "M_INVALID_PARAM",
+                                "set_presence must be online, offline or unavailable");
+        }
+        if (auto const changed = apply_sync_presence(rt.homeserver, *user, *presence_mode); changed.has_value())
+        {
+            log_diagnostic("presence.sync.set", {
+                                                    {"actor",    *user,             false},
+                                                    {"presence", changed->presence, false}
+            });
+            broadcast_presence_edu(rt.homeserver, *changed);
+            // Wakes long-polling syncs of the users who share a room with this one.
+            std::ignore = ensure_sync_notifier(rt);
+        }
+
         log_diagnostic("sync.dispatch", {
                                             {"actor",     *user,     false},
                                             {"device_id", device_id, false}
@@ -16852,8 +16837,7 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                 return dispatch_err(req, rt, 400U, "M_BAD_JSON", "presence body must be Matrix JSON");
             }
             auto const* presence_str = string_member(*body_obj, "presence");
-            if (presence_str == nullptr ||
-                (*presence_str != "online" && *presence_str != "offline" && *presence_str != "unavailable"))
+            if (presence_str == nullptr || !presence_state_is_valid(*presence_str))
             {
                 return dispatch_err(req, rt, 400U, "M_INVALID_PARAM",
                                     "presence must be online, offline or unavailable");
@@ -16865,9 +16849,15 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                 return dispatch_err(req, rt, 400U, "M_INVALID_PARAM", "status_msg must be a string");
             }
             // Local resource policy, not a Matrix protocol limit (ADR-0098).
-            if (status_msg != nullptr && status_msg->size() > 1024U)
+            if (status_msg != nullptr && status_msg->size() > max_presence_status_msg_bytes)
             {
                 return dispatch_err(req, rt, 400U, "M_INVALID_PARAM", "status_msg exceeds 1024 UTF-8 bytes");
+            }
+            // With presence off the server tracks none. The spec gives this endpoint only 200 and
+            // 429, so the update is answered 200 and not kept.
+            if (!presence_enabled(rt.homeserver))
+            {
+                return dispatch_resp(req, rt, 200U, json_serialize(json_obj({})));
             }
             auto state = database::PersistentPresence{};
             state.stream_id = 0U;
@@ -16885,6 +16875,29 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                                                {"presence", presence_state, false}
             });
             return dispatch_resp(req, rt, 200U, json_serialize(json_obj({})));
+        }
+    }
+
+    // GET /_matrix/client/v3/presence/{userId}/status
+    // Spec: 200 the presence state, 403 "You are not allowed to see this user's presence status",
+    // 404 "There is no presence state for this user".
+    if (req.method == "GET" && starts_with(req.target, presence_prefix))
+    {
+        auto const path_after_prefix = request_path.substr(presence_prefix.size());
+        if (path_after_prefix.size() > presence_suffix.size() && path_after_prefix.ends_with(presence_suffix))
+        {
+            auto const target_user = core::percent_decode_path_component(
+                path_after_prefix.substr(0U, path_after_prefix.size() - presence_suffix.size()));
+            auto const read = read_presence(rt.homeserver, *user, target_user);
+            switch (read.status)
+            {
+            case PresenceReadStatus::ok:
+                return dispatch_resp(req, rt, 200U, json_serialize(canonicaljson::Value{read.body}));
+            case PresenceReadStatus::forbidden:
+                return dispatch_err(req, rt, 403U, "M_FORBIDDEN", "You are not allowed to see their presence");
+            case PresenceReadStatus::not_found:
+                return dispatch_err(req, rt, 404U, "M_NOT_FOUND", "There is no presence state for this user");
+            }
         }
     }
 
@@ -17694,12 +17707,17 @@ auto record_device_list_change(ClientServerRuntime& runtime, database::Persisten
 auto set_presence(ClientServerRuntime& runtime, database::PersistentPresence state) -> bool
 {
     auto guard = std::unique_lock<RuntimeMutex>{runtime.homeserver.mutex};
-    auto const stored = database::upsert_presence(runtime.homeserver.database.persistent_store, state);
+    if (!presence_enabled(runtime.homeserver))
+    {
+        // Nothing is tracked, so there is nothing to fail: the caller's update is accepted and dropped.
+        return true;
+    }
+    auto const stored = record_presence(runtime.homeserver, state);
     if (stored)
     {
         std::ignore = ensure_sync_notifier(runtime);
-        // Appservices that receive ephemeral data are told (R08).
-        queue_appservice_presence(runtime.homeserver, state);
+        // The servers that share a room with the user are told; the row is as stored just now.
+        broadcast_presence_edu(runtime.homeserver, state);
     }
     return stored;
 }

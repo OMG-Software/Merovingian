@@ -32,6 +32,7 @@
 #include "merovingian/homeserver/deferred_pdu_retry.hpp"
 #include "merovingian/homeserver/federation_request_routing.hpp"
 #include "merovingian/homeserver/media_service.hpp"
+#include "merovingian/homeserver/presence_service.hpp"
 #include "merovingian/homeserver/request_lock.hpp"
 #include "merovingian/homeserver/restricted_join.hpp"
 #include "merovingian/homeserver/room_service.hpp"
@@ -1967,66 +1968,17 @@ namespace
                 return {federation::EduDispositionStatus::accepted, {}};
             }
             case federation::EduType::presence: {
-                auto const parsed = canonicaljson::parse_lossless(envelope.content_json);
-                auto const* root = std::get_if<canonicaljson::Object>(&parsed.value.storage());
-                if (parsed.error != canonicaljson::ParseError::none || root == nullptr)
+                // The sink runs without runtime.mutex. Binding each entry to the sending origin,
+                // the bounds, the interest check and the row writes (under the mutex) are all in
+                // accept_inbound_presence; this case only wakes long-polling syncs.
+                auto const result = accept_inbound_presence(*rt, envelope.origin, envelope.content_json);
+                if (presence_enabled(*rt) && rt->sync_notifier != nullptr)
                 {
-                    return {federation::EduDispositionStatus::rejected_invalid, "presence content must be an object"};
-                }
-                auto const* push = object_member_as_array(*root, "push");
-                if (push == nullptr)
-                {
-                    return {federation::EduDispositionStatus::accepted, {}};
-                }
-                // The sink runs without runtime.mutex: presence rows, the appservice
-                // queue and the visible stream position are all read and written under it.
-                auto const guard = std::unique_lock<RuntimeMutex>{rt->mutex};
-                for (auto const& entry : *push)
-                {
-                    auto const* presence = std::get_if<canonicaljson::Object>(&entry.storage());
-                    if (presence == nullptr)
-                    {
-                        return {federation::EduDispositionStatus::rejected_invalid, "presence entry must be an object"};
-                    }
-                    auto const* user_id = object_member_as_string(*presence, "user_id");
-                    if (user_id == nullptr || !user_belongs_to_origin(*user_id, envelope.origin))
-                    {
-                        return {federation::EduDispositionStatus::rejected_invalid,
-                                "presence user_id must belong to the sending origin"};
-                    }
-                    auto state = database::PersistentPresence{};
-                    state.user_id = *user_id;
-                    if (auto const* presence_value = object_member_as_string(*presence, "presence");
-                        presence_value != nullptr && !presence_value->empty())
-                    {
-                        state.presence = *presence_value;
-                    }
-                    if (auto const* status_msg = object_member_as_string(*presence, "status_msg");
-                        status_msg != nullptr)
-                    {
-                        state.status_msg = *status_msg;
-                    }
-                    if (auto const* last_active_ago = object_member_as_int(*presence, "last_active_ago");
-                        last_active_ago != nullptr && *last_active_ago >= 0)
-                    {
-                        state.last_active_ago = *last_active_ago;
-                    }
-                    if (auto const* currently_active = object_member_as_bool(*presence, "currently_active");
-                        currently_active != nullptr)
-                    {
-                        state.currently_active = *currently_active;
-                    }
-                    if (database::upsert_presence(rt->database.persistent_store, state))
-                    {
-                        queue_appservice_presence(*rt, state);
-                    }
-                }
-                if (rt->sync_notifier != nullptr)
-                {
+                    auto const guard = std::unique_lock<RuntimeMutex>{rt->mutex};
                     rt->sync_notifier->publish(visible_stream_position(rt->database),
                                                rt->database.persistent_store.next_sync_stream_id);
                 }
-                return {federation::EduDispositionStatus::accepted, {}};
+                return result;
             }
             case federation::EduType::direct_to_device: {
                 auto const enqueue_result =

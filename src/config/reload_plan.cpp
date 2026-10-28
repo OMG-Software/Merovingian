@@ -1084,6 +1084,10 @@ auto build_reload_plan(Config const& current, Config const& next) -> ReloadPlan
     {
         add_change(plan, "appservice.max_queued_events");
     }
+    if (current.presence().enabled != next.presence().enabled)
+    {
+        add_change(plan, "presence.enabled");
+    }
     return plan;
 }
 

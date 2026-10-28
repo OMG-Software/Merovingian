@@ -30,6 +30,7 @@ This is the largest and most complex module — read this file carefully before 
 | `push_room_facts.cpp` | `push_room_facts`, `room_member_display_name`, `push_evaluation_context`: the evaluation context push delivery and unread counting share |
 | `push_badge_count.cpp` | `count_push_badge`: the Push Gateway `counts.unread` from one walk of the events, newest first in stream order, that stops once every room is settled, at most 10000 rows (ADR-0207) |
 | `push_rule_unread_classifier.cpp` | `PushRuleUnreadClassifier`: counts unread events by the user's push rules, from the start of their current join (R15, ADR-0205) |
+| `presence_service.cpp` | Presence (CS API "Presence", SS API `m.presence`): `read_presence` (GET), `apply_sync_presence` (the `/sync` `set_presence` parameter), `build_sync_presence_events` (`presence.events`), `accept_inbound_presence` (the EDU sink's presence case) and `record_presence`, the one place a presence row is stored. `presence.enabled=false` turns every entry point into a no-op. Sending the EDU stays in `client_server.cpp` (`broadcast_presence_edu`), beside the other outbound EDUs |
 | `push_retry.cpp` | `attempt_push_delivery` (every push attempt: circuit breaker, rejected pushkeys, scheduling retries) and `PushRetryJob`, the one thread that sends retries (R14, ADR-0206) |
 | `email_push.cpp` | Kind `"email"` pushers (ADR-0219, ADR-0220): `owned_email_pusher_address` (the pushkey must be the account's own email 3PID), `remove_email_pushers_for_address`, and `EmailPushJob`, the one thread that sends due digests through `send_due_email_notifications`. It re-reads the pusher, the 3PID, the account and the badge count under `runtime.mutex`, then sends with the mutex released |
 | `runtime_signing_key_store.cpp` | Production `SigningKeyStore` over the persisted server signing-key rows |
@@ -397,6 +398,24 @@ job's current sleep is not missed. Every read and write of `typing_users` holds 
 the federation EDU sink runs without it and takes it itself in the typing case. Every other EDU case
 that reads or writes store state (receipts, presence, device lists) or reads the visible stream
 position takes it the same way; `enqueue_direct_to_device_messages` takes it itself.
+
+## Presence
+
+Every presence row is written through `record_presence` (it stamps `observed_at_ms`, stores, tells
+appservices) and every entry point checks `presence_enabled` first: a path that stores or sends presence
+without that check ignores `presence.enabled=false`. Rules:
+
+- `GET /presence/{userId}/status` answers 403 for a user the caller shares no joined room with, whether or
+  not the user exists; never 404 for a missing user (account enumeration).
+- A `/sync` changes presence only on a change of state (`apply_sync_presence`), and only a change is sent
+  to other servers (`broadcast_presence_edu`); a sync loop must never cost a row, a stream position or an
+  EDU per poll.
+- `accept_inbound_presence` binds `user_id` to the sending origin, bounds the entries it looks at, and keeps
+  only users who share a joined room with a local user (one pass over the memberships per EDU). A new field
+  accepted from the EDU needs a bound.
+- Presence in `/sync` is built by `build_sync_presence_events`, which also sends a user's presence once to
+  someone who started sharing a room with them since the token, whatever its stream position: the row's own
+  position is older than the token.
 
 ## Appservice delivery (R01, ADR-0163)
 

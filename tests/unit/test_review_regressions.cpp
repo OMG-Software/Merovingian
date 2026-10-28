@@ -690,6 +690,10 @@ SCENARIO("Inbound presence EDUs persist non-negative last_active_ago values from
         auto constexpr remote_key_seed = "presence-last-active-review-seed";
         merovingian::federation::upsert_remote(runtime.homeserver.federation,
                                                remote_runtime(remote_origin, remote_key_id, remote_key_seed));
+        // Presence is kept only for a remote user who shares a joined room with a local user.
+        auto& memberships = runtime.homeserver.database.persistent_store.memberships;
+        memberships.push_back({"!shared:example.org", "@local:example.org", "join", 1U});
+        memberships.push_back({"!shared:example.org", "@alice:remote.example.org", "join", 2U});
 
         auto const presence_content = R"({
             "push":[

@@ -1788,7 +1788,10 @@ SCENARIO("sync admission bounds one account across devices without holding the r
             auto const request =
                 (sliding ? "POST /_matrix/client/unstable/org.matrix.simplified_msc3575/sync?pos="
                          : "GET /_matrix/client/v3/sync?since=") +
-                since + "&timeout=1500 HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer " + token +
+                // set_presence=offline: this test is about admission of parked polls; a /sync that marks
+                // its user online changes the stream and is answered at once instead of parking.
+                since + "&timeout=1500" + (sliding ? "" : "&set_presence=offline") +
+                " HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer " + token +
                 (sliding ? "\r\nConnection: close\r\nContent-Length: 2\r\n\r\n{}" : "\r\nConnection: close\r\n\r\n");
             REQUIRE(send_all(client.get(), request));
             auto const transferred = merovingian::homeserver::serve_one_http_connection(
@@ -1879,7 +1882,10 @@ SCENARIO("A waiting sync is counted against the rate limit once, however often i
             merovingian::sync::encode_stream_token({runtime.homeserver.database.next_stream_ordering - 1U, 0U,
                                                     runtime.homeserver.database.persistent_store.next_sync_stream_id});
         auto const sync_target = [&since](std::string_view timeout_ms) {
-            return "/_matrix/client/v3/sync?since=" + since + "&timeout=" + std::string{timeout_ms};
+            // set_presence=offline: these tests are about how a long-poll is parked and woken, and a
+            // sync that marks its user online changes the stream (once, on the first sync).
+            return "/_matrix/client/v3/sync?since=" + since + "&timeout=" + std::string{timeout_ms} +
+                   "&set_presence=offline";
         };
         auto stats = merovingian::homeserver::HttpServeStats{};
         // Serves one request on a socketpair, as a request-pool worker does, and

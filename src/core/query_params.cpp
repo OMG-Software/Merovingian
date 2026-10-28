@@ -217,6 +217,10 @@ auto parse_query_params(std::string_view target) -> SyncRequest
         {
             request.filter = std::string{value};
         }
+        else if (key == "set_presence")
+        {
+            request.set_presence = std::string{value};
+        }
     }
     return request;
 }

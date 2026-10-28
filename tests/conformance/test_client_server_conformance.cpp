@@ -12086,29 +12086,28 @@ SCENARIO("PUT /presence/{userId}/status sets the presence state", "[conformance]
 
 // --- GET /_matrix/client/v3/presence/{userId}/status -------------------------
 // Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#get_matrixclientv3presenceuseridstatus
-// IMPLEMENTATION GAP: presence retrieval not yet implemented.
-SCENARIO("GET /presence/{userId}/status returns 404 M_UNRECOGNIZED (implementation gap)",
-         "[conformance][client-server][presence]")
+// The endpoint is implemented (0.12.60); this scenario used to pin its absence (404 M_UNRECOGNIZED).
+// Spec: "Requires authentication: Yes". Behavioural coverage is in test_presence_sync_conformance.cpp.
+SCENARIO("GET /presence/{userId}/status requires authentication", "[conformance][client-server][presence]")
 {
-    GIVEN("a running client-server and a logged-in user")
+    GIVEN("a running client-server")
     {
         auto started = merovingian::homeserver::start_client_server(conformance_config());
         REQUIRE(started.started);
-        auto const token = logged_in_token(started.runtime);
 
-        WHEN("GET /presence/@alice:example.org/status is called")
+        WHEN("GET /presence/@alice:example.org/status is called without an access token")
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
-                started.runtime, {"GET", "/_matrix/client/v3/presence/%40alice%3Aexample.org/status", token, {}});
+                started.runtime, {"GET", "/_matrix/client/v3/presence/%40alice%3Aexample.org/status", {}, {}});
 
-            THEN("the server returns 404 M_UNRECOGNIZED until the endpoint is implemented")
+            THEN("the server returns 401 M_MISSING_TOKEN")
             {
-                // IMPLEMENTATION GAP: presence GET not supported.
-                REQUIRE(response.response.status == 404U);
+                // Spec MUST: "Requires authentication: Yes."
+                REQUIRE(response.response.status == 401U);
                 auto const body = parse_object(response.response.body);
                 auto const* errcode = string_member(body, "errcode");
                 REQUIRE(errcode != nullptr);
-                REQUIRE(*errcode == "M_UNRECOGNIZED");
+                REQUIRE(*errcode == "M_MISSING_TOKEN");
             }
         }
     }
@@ -12674,8 +12673,9 @@ SCENARIO("GET /voip/turnServer rejects unauthenticated requests", "[conformance]
 // 13.20  Presence — GET /presence/{userId}/status
 // ============================================================================
 // Spec: Matrix v1.19 §13.20.2 GET /_matrix/client/v3/presence/{userId}/status
-//       Returns the presence state of a user.
-//       IMPLEMENTATION GAP: not yet implemented. Must return 404 M_UNRECOGNIZED.
+//       Returns the presence state of a user: 200 with `presence` required.
+//       Implemented in 0.12.60 (this scenario used to pin 404 M_UNRECOGNIZED); the cases for
+//       other users and for 403 are in test_presence_sync_conformance.cpp.
 
 SCENARIO("GET /presence/{userId}/status conformance")
 {
@@ -12685,18 +12685,18 @@ SCENARIO("GET /presence/{userId}/status conformance")
         REQUIRE(started.started);
         auto const token = logged_in_token(started.runtime);
 
-        WHEN("GET /presence/%40alice%3Aexample.org/status is called")
+        WHEN("GET /presence/%40alice%3Aexample.org/status is called for the user's own presence")
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
                 started.runtime, {"GET", "/_matrix/client/v3/presence/%40alice%3Aexample.org/status", token, {}});
 
-            THEN("the server returns 404 M_UNRECOGNIZED")
+            THEN("the server returns 200 with a presence")
             {
-                REQUIRE(response.response.status == 404);
+                // Spec MUST: 200 "The presence state for this user" with `presence` required.
+                REQUIRE(response.response.status == 200);
                 auto const body = parse_object(response.response.body);
-                auto const* err = string_member(body, "errcode");
-                REQUIRE(err != nullptr);
-                REQUIRE(*err == "M_UNRECOGNIZED");
+                auto const* state = string_member(body, "presence");
+                REQUIRE(state != nullptr);
             }
         }
     }

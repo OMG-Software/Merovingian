@@ -2520,6 +2520,23 @@ Security audit run-1 (2026-10-20) found six LOW issues, all fixed in 0.12.34.
   address to them and letting a user point it at any public service within the caps; `http`
   previews can be altered in transit (the content is treated as hostile either way).
 
+### Presence (0.12.60)
+
+- **Presence read without sharing a room.** `GET /presence/{userId}/status` answers 403
+  `M_FORBIDDEN` for any user the caller shares no joined room with, whether or not that user
+  exists, so it neither discloses presence nor lets a caller enumerate accounts. `/sync` names only
+  users in a joined room, and a user who started sharing a room since the token is sent their
+  peer's presence once.
+- **Presence rows for users nobody here knows.** An inbound `m.presence` EDU is stored only for a
+  user of the sending origin who shares a joined room with a user of this server, so a hostile
+  server cannot make this one keep rows (in memory and in `presence_state`) for invented users.
+  Its first 100 entries are looked at, `presence` must be in the enumeration and `status_msg` at
+  most 1024 bytes. **Residual risk:** an origin can still set the presence of its own users who
+  do share a room with ours, and nothing expires a remote user's presence if their server stops
+  reporting it.
+- **Presence off.** `presence.enabled=false` stores and sends nothing, so an operator who does not
+  want to publish presence to the federation need not.
+
 ### A resident server's timestamp on our joins; workers that could not verify new servers (0.12.59)
 
 - **Resident-chosen timestamps on our membership events.** When we joined or left a remote room we

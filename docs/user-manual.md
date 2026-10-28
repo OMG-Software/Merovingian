@@ -729,6 +729,25 @@ client-supplied gateway URLs on upgrade.
 | `server.push.connect_timeout_seconds` | `10` | Outbound connect timeout when contacting a pusher's gateway URL (client-supplied, untrusted). |
 | `server.push.total_timeout_seconds` | `30` | Outbound total timeout for a gateway push request. Must be `>=` `connect_timeout_seconds`. |
 
+#### Presence — `presence.*`
+
+Presence (Matrix v1.19 CS API "Presence", SS API `m.presence`) is **on by default**: a user's
+state (`online`, `unavailable` or `offline`, with an optional status message) is stored, shown to
+the users who share a room with them in `/sync` (`presence.events`) and by
+`GET /presence/{userId}/status`, and sent to other servers that share a room with them as an
+`m.presence` EDU. `PUT /presence/{userId}/status` sets it, and so does `/sync`: omitting
+`set_presence` marks the user online, `unavailable` marks them idle, `offline` leaves it as it
+is. Presence reaches only users who share a joined room with the user; anyone else asking for it
+gets `403 M_FORBIDDEN`, as for a user who does not exist.
+
+| Key | Default | When to change |
+|---|---|---|
+| `presence.enabled` | `true` | Set `false` to track no presence at all. `GET /presence/{userId}/status` then answers `404 M_NOT_FOUND`, `PUT` answers `200` and keeps nothing, `/sync` carries no presence events and does not mark anyone online, no `m.presence` EDU is sent, and one that arrives is dropped. **Requires restart.** |
+
+A status message is at most 1024 UTF-8 bytes. An inbound `m.presence` EDU is kept only for a user
+of the server that sent it who shares a joined room with a user of this server, and only its first
+100 entries are looked at.
+
 #### Email notifications — `server.email.*`
 
 Email pushers (`kind: "email"` in `POST /pushers/set`) are **refused unless
@@ -1540,6 +1559,7 @@ only reports what *would* happen.
 | `server.push.*` | Restart required |
 | `server.email.*` | Restart required |
 | `appservice.*` | Restart required |
+| `presence.*` | Restart required |
 | `database.pool_size` | Restart required |
 | `server.turn.*` | Reloadable |
 | `security.trust_safety.*` | Reloadable |

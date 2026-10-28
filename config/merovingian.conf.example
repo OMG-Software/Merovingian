@@ -525,6 +525,15 @@ security.media.decode_in_sandbox=true
 # server.push.connect_timeout_seconds=10
 # server.push.total_timeout_seconds=30
 
+# Presence (CS API "Presence", SS API m.presence)
+# On by default: a user's online/unavailable/offline state and status message are
+# shown to the users who share a room with them (in /sync and by GET
+# /presence/{userId}/status) and sent to other servers that share a room with them.
+# Set false to track and send none: GET answers 404, PUT answers 200 and keeps
+# nothing, /sync carries no presence, and inbound m.presence EDUs are dropped.
+# Needs a restart.
+# presence.enabled=false
+
 # Email notifications (kind "email" pushers)
 # Commented out by default: with smtp_url empty, POST /pushers/set refuses kind
 # "email". Independent of server.push.enabled. Every key needs a restart.

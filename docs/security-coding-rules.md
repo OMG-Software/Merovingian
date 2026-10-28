@@ -682,6 +682,16 @@ quickly finding everything a given `AGENTS.md` file contributed.
   ADR-0190).
   Source: `src/homeserver/AGENTS.md`.
 
+- **Presence answers the same for a user who does not exist as for one the caller may not see, and an
+  inbound `m.presence` EDU is kept only for a user of its origin who shares a joined room with a local
+  user.** `read_presence` answers 403 for both; `accept_inbound_presence` looks at the first
+  `max_inbound_presence_entries` (100) entries, refuses a `presence` outside the enumeration and a
+  `status_msg` over 1024 bytes, and does one pass over the memberships per EDU, not per entry.
+  Why: a 404 for a missing user would let any caller enumerate accounts, and unbounded rows keyed by
+  a remote server's invented users would grow memory and the database without limit (CWE-204,
+  CWE-770).
+  Source: `src/homeserver/AGENTS.md`.
+
 - **The appservice ping takes a slot in the client-outbound budget before its outbound call**, as the
   `/thirdparty/*` lookups do (ADR-0181).
   Why: it holds a request-pool thread for up to the appservice timeout (ADR-0079).

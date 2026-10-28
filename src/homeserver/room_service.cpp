@@ -35,6 +35,7 @@
 #include "merovingian/homeserver/federation_proxy.hpp"
 #include "merovingian/homeserver/local_http_router.hpp"
 #include "merovingian/homeserver/local_services.hpp"
+#include "merovingian/homeserver/presence_service.hpp"
 #include "merovingian/homeserver/push_badge_count.hpp"
 #include "merovingian/homeserver/push_retry.hpp"
 #include "merovingian/homeserver/push_room_facts.hpp"
@@ -7674,21 +7675,26 @@ namespace
     // containing the current presence state of the user". Storing the user's presence again gives
     // it a new sync stream position, so every peer's next /sync carries it; /sync adds the profile.
     // A user who has never set a presence is offline.
+    // With presence off (`presence.enabled=false`) none is tracked, so there is none to send.
     auto& mutable_store = runtime.database.persistent_store;
-    auto const current = std::ranges::find_if(mutable_store.presence_states, [&](auto const& state) {
-        return state.user_id == *user_id;
-    });
-    auto presence = current != mutable_store.presence_states.end() ? *current : database::PersistentPresence{};
-    presence.user_id = *user_id;
-    auto const presence_sent = database::upsert_presence(mutable_store, presence);
-    if (presence_sent)
+    auto presence_sent = true;
+    if (presence_enabled(runtime))
     {
+        auto const current = std::ranges::find_if(mutable_store.presence_states, [&](auto const& state) {
+            return state.user_id == *user_id;
+        });
+        auto presence = current != mutable_store.presence_states.end() ? *current : database::PersistentPresence{};
+        presence.user_id = *user_id;
+        // The stored time since the user was active is as of an earlier moment; record_presence
+        // restamps the row, so bring it up to date first.
+        presence.last_active_ago = presence_last_active_ago(presence, presence_now_ms());
         // Appservices that receive ephemeral data are sent the new profile the same way (R08).
-        queue_appservice_presence(runtime, presence);
-    }
-    if (presence_sent && runtime.sync_notifier != nullptr)
-    {
-        runtime.sync_notifier->publish(visible_stream_position(runtime.database), mutable_store.next_sync_stream_id);
+        presence_sent = record_presence(runtime, presence);
+        if (presence_sent && runtime.sync_notifier != nullptr)
+        {
+            runtime.sync_notifier->publish(visible_stream_position(runtime.database),
+                                           mutable_store.next_sync_stream_id);
+        }
     }
     // The profile is already stored, so the change has happened whatever follows: the request
     // succeeds (ADR-0182). A room or presence update that failed is left for the next profile

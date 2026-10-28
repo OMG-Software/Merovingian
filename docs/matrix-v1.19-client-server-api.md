@@ -178,6 +178,8 @@ session cascade are outside that regression's scope.
 | `GET` | `/_matrix/client/v3/presence/{userId}/status` | `getPresence` | access token | - | 200, 403, 404 |
 | `PUT` | `/_matrix/client/v3/presence/{userId}/status` | `setPresence` | access token | required application/json | 200, 429 |
 
+`GET` answers the caller's own presence, or another user's when they share a joined room (otherwise 403 `M_FORBIDDEN`, also for a user who does not exist); a local user with no presence is `offline`, a remote one is 404. `GET /sync` takes `set_presence` (`online` when omitted, `unavailable`, `offline`; another value is 400 `M_INVALID_PARAM`) and carries `presence.events` for users sharing a joined room. `presence.enabled=false` makes `GET` 404, `PUT` a 200 that stores nothing, and `/sync` presence-free. See `docs/user-manual.md` "Presence".
+
 ## Push notifications
 
 | Method | Path | Operation ID | Auth | Request body | Responses |

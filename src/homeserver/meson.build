@@ -17,6 +17,7 @@ homeserver_sources = files(
   'media_upload_notifier.cpp',
   'url_preview_service.cpp',
   'periodic_job.cpp',
+  'presence_service.cpp',
   'push_badge_count.cpp',
   'push_retry.cpp',
   'push_room_facts.cpp',
