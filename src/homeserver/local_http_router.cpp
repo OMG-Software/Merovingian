@@ -1978,6 +1978,9 @@ namespace
                 {
                     return {federation::EduDispositionStatus::accepted, {}};
                 }
+                // The sink runs without runtime.mutex: presence rows, the appservice
+                // queue and the visible stream position are all read and written under it.
+                auto const guard = std::unique_lock<RuntimeMutex>{rt->mutex};
                 for (auto const& entry : *push)
                 {
                     auto const* presence = std::get_if<canonicaljson::Object>(&entry.storage());
@@ -2073,6 +2076,8 @@ namespace
                 }
                 if (rt->sync_notifier != nullptr)
                 {
+                    // Read under runtime.mutex, which the enqueue above took and released.
+                    auto const guard = std::unique_lock<RuntimeMutex>{rt->mutex};
                     rt->sync_notifier->publish(visible_stream_position(rt->database),
                                                rt->database.persistent_store.next_sync_stream_id);
                 }
@@ -2119,6 +2124,9 @@ namespace
                     return {federation::EduDispositionStatus::rejected_invalid,
                             envelope.edu_type + " user_id must belong to the sending origin"};
                 }
+                // The sink runs without runtime.mutex: room membership, the device-list
+                // changes and the visible stream position are all read and written under it.
+                auto const guard = std::unique_lock<RuntimeMutex>{rt->mutex};
                 if (!user_id->empty())
                 {
                     // Audit FED-7. Only a local user who shares a joined room

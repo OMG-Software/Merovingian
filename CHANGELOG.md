@@ -201,6 +201,12 @@ Cloud analysis from SonarSource's automatic analysis into this repository's CI.
   commit paths now hold a `PublishedStreamOrdering`, whose end, applied or not, publishes the visible
   position (ADR-0247). Test: the failed-commit WHEN in `test_sync_stream_position.cpp`
   (`[sync-position]`), and the repeated-final-entry scenario in `test_send_join_snapshot_store.cpp`.
+- **FIXED (review of #541):** the federation EDU sink runs without `runtime.mutex`, and its presence
+  and device-list cases wrote presence rows and device-list changes, read room membership and read
+  the visible stream position with no lock, racing request threads that touch the same store state
+  under it; the to-device case read the position after its enqueue had released the lock. Each now
+  takes `runtime.mutex` for that work, as the typing and receipt cases do. Test: the
+  presence/device-list concurrency scenario in `test_federation_runtime_callbacks.cpp`.
 - **FIXED (review of #541):** an initial `/sync` whose timeline starts at a federated join
   left the user's membership out of `state`. The join's state group holds only the state after it,
   and when the state before cannot be computed the join was dropped from that state without the

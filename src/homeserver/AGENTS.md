@@ -355,7 +355,9 @@ entries, advances the room's typing stream position and sends `typing: false` fo
 runs on the "typing-expiry" `PeriodicJob` in `main.cpp`. A new path that adds a typing entry must
 set `expires_at`, or it never expires, and call `wake_typing_expiry` so an earlier deadline than the
 job's current sleep is not missed. Every read and write of `typing_users` holds `runtime.mutex`:
-the federation EDU sink runs without it and takes it itself in the typing case.
+the federation EDU sink runs without it and takes it itself in the typing case. Every other EDU case
+that reads or writes store state (receipts, presence, device lists) or reads the visible stream
+position takes it the same way; `enqueue_direct_to_device_messages` takes it itself.
 
 ## Appservice delivery (R01, ADR-0163)
 
