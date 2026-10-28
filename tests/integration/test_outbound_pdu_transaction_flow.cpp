@@ -13,11 +13,17 @@
 
 #include "../support/json_test_support.hpp"
 #include "../support/master_key.hpp"
+#include "../support/membership_fixture_support.hpp"
 #include "../support/registration_token.hpp"
+#include "merovingian/canonicaljson/parser.hpp"
+#include "merovingian/canonicaljson/serializer.hpp"
 #include "merovingian/canonicaljson/value.hpp"
 #include "merovingian/config/config.hpp"
 #include "merovingian/federation/dispatch_worker.hpp"
+#include "merovingian/federation/inbound_ingestion.hpp"
+#include "merovingian/federation/membership_endpoints.hpp"
 #include "merovingian/homeserver/client_server.hpp"
+#include "merovingian/homeserver/local_http_router.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -275,6 +281,252 @@ SCENARIO("A membership event composed here reaches the room's other servers and 
             {
                 auto const sent = queued_memberships_for(runtime, remote_server, bob);
                 REQUIRE(std::ranges::find(sent, "ban") != sent.end());
+            }
+        }
+    }
+}
+
+namespace
+{
+
+constexpr auto joiner_server = std::string_view{"b.example.org"};
+constexpr auto bystander_server = std::string_view{"c.example.org"};
+
+// Every PDU queued in a transaction for `server`, as canonical JSON.
+[[nodiscard]] auto queued_pdus_for(merovingian::homeserver::ClientServerRuntime& runtime, std::string_view server)
+    -> std::vector<std::string>
+{
+    auto queued = std::vector<std::string>{};
+    auto const lock = std::lock_guard{runtime.homeserver.mutex};
+    for (auto const& transaction : runtime.homeserver.database.persistent_store.federation_transactions)
+    {
+        if (transaction.server_name != server)
+        {
+            continue;
+        }
+        auto const parsed = merovingian::canonicaljson::parse_lossless(transaction.body);
+        auto const* root = std::get_if<merovingian::canonicaljson::Object>(&parsed.value.storage());
+        auto const* pdus = root == nullptr ? nullptr : object_member_as_array(*root, "pdus");
+        if (pdus == nullptr)
+        {
+            continue;
+        }
+        for (auto const& pdu : *pdus)
+        {
+            auto const serialized = merovingian::canonicaljson::serialize_canonical(pdu);
+            REQUIRE(serialized.error == merovingian::canonicaljson::CanonicalJsonError::none);
+            queued.push_back(serialized.output);
+        }
+    }
+    return queued;
+}
+
+[[nodiscard]] auto canonical_form(std::string const& json) -> std::string
+{
+    auto const parsed = merovingian::canonicaljson::parse_lossless(json);
+    REQUIRE(parsed.error == merovingian::canonicaljson::ParseError::none);
+    auto const serialized = merovingian::canonicaljson::serialize_canonical(parsed.value);
+    REQUIRE(serialized.error == merovingian::canonicaljson::CanonicalJsonError::none);
+    return serialized.output;
+}
+
+// A membership PDU as a conformant peer would file it: it names the room's forward
+// extremities and the auth events the spec's selection rules call for.
+[[nodiscard]] auto membership_envelope(merovingian::homeserver::ClientServerRuntime& runtime,
+                                       std::string const& room_id, std::string const& user_id,
+                                       std::string_view membership, std::string const& event_id, std::uint64_t depth)
+    -> merovingian::federation::InboundPduEnvelope
+{
+    auto const lock = std::lock_guard{runtime.homeserver.mutex};
+    auto const quoted_list = [](std::vector<std::string> const& ids) {
+        auto out = std::string{"["};
+        for (auto const& id : ids)
+        {
+            out += (out.size() == 1U ? "" : ",") + std::string{"\""} + id + "\"";
+        }
+        return out + "]";
+    };
+    auto const& store = runtime.homeserver.database.persistent_store;
+    auto envelope = merovingian::federation::InboundPduEnvelope{};
+    envelope.event_id = event_id;
+    envelope.room_id = room_id;
+    envelope.sender = user_id;
+    envelope.event_type = "m.room.member";
+    envelope.state_key = user_id;
+    envelope.depth = depth;
+    envelope.prev_event_ids = merovingian::tests::fixture_prev_event_ids(store, room_id);
+    // A room is created at version 12, where the create event is implied by the room ID and
+    // must not be named in auth_events.
+    envelope.auth_event_ids = merovingian::tests::fixture_auth_event_ids(store, room_id, user_id, true);
+    if (membership == "leave")
+    {
+        // Spec, "Auth events selection": the join rules are selected only for a join, invite or knock.
+        for (auto const& entry : store.state)
+        {
+            if (entry.room_id == room_id && entry.event_type == "m.room.join_rules")
+            {
+                std::erase(envelope.auth_event_ids, entry.event_id);
+            }
+        }
+    }
+    envelope.json = "{\"auth_events\":" + quoted_list(envelope.auth_event_ids) + ",\"content\":{\"membership\":\"" +
+                    std::string{membership} + "\"},\"depth\":" + std::to_string(depth) +
+                    ",\"origin_server_ts\":1,\"prev_events\":" + quoted_list(envelope.prev_event_ids) +
+                    ",\"room_id\":\"" + room_id + "\",\"sender\":\"" + user_id + "\",\"state_key\":\"" + user_id +
+                    "\",\"type\":\"m.room.member\"}";
+    return envelope;
+}
+
+[[nodiscard]] auto accept_membership(merovingian::homeserver::ClientServerRuntime& runtime,
+                                     merovingian::federation::FederationEndpoint endpoint,
+                                     merovingian::federation::InboundPduEnvelope const& envelope)
+    -> merovingian::federation::MembershipAcceptResult
+{
+    REQUIRE(runtime.homeserver.federation.membership_acceptor);
+    return runtime.homeserver.federation.membership_acceptor(endpoint, envelope.room_id, envelope.event_id, envelope);
+}
+
+struct FanoutRoom final
+{
+    std::string room_id{};
+    std::string alice_token{};
+    std::string bob{};
+    std::string carol{};
+};
+
+// alice's room on this server in which carol, of the bystander server C, is already joined.
+[[nodiscard]] auto make_fanout_room(merovingian::homeserver::ClientServerRuntime& runtime, std::string_view preset)
+    -> FanoutRoom
+{
+    auto room = FanoutRoom{};
+    install_unstarted_dispatch_worker(runtime);
+    merovingian::homeserver::wire_federation_callbacks(runtime.homeserver);
+    room.alice_token = register_user(runtime, "alice");
+    auto const created = call(runtime, "POST", "/_matrix/client/v3/createRoom", room.alice_token,
+                              std::string{R"({"preset":")"} + std::string{preset} + R"("})");
+    REQUIRE(created.response.status == 200U);
+    room.room_id = std::string{*string_member(parse_object(created.response.body), "room_id")};
+    room.bob = "@bob:" + std::string{joiner_server};
+    room.carol = "@carol:" + std::string{bystander_server};
+    auto const lock = std::lock_guard{runtime.homeserver.mutex};
+    auto const found = std::ranges::find_if(runtime.homeserver.database.rooms, [&room](auto const& candidate) {
+        return candidate.room_id == room.room_id;
+    });
+    REQUIRE(found != runtime.homeserver.database.rooms.end());
+    found->members.emplace_back(room.carol);
+    return room;
+}
+
+} // namespace
+
+// Spec: Server-Server API v1.19, "Joining Rooms": "The resident server must also send the event
+// to other servers participating in the room." "Leaving Rooms (Rejecting Invites)": "The
+// resident server will then send the event to other servers in the room." The Knocking section
+// states no such sentence, but a knock is a room event like the others (Server-Server API,
+// "Transactions"), so the servers in the room must be told of it too. The requesting server
+// already has the event, so it is not sent it back.
+SCENARIO("A membership event accepted for a requesting server is sent on to the room's other servers",
+         "[integration][federation][outbound][membership-acceptor-fanout]")
+{
+    using merovingian::federation::FederationEndpoint;
+
+    GIVEN("alice's public room on this server, in which carol of server C is joined")
+    {
+        REQUIRE(sodium_init() >= 0);
+        auto started = merovingian::homeserver::start_client_server(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        auto const room = make_fanout_room(runtime, "public_chat");
+
+        WHEN("server B's send_join for bob is accepted")
+        {
+            auto const joined = accept_membership(runtime, FederationEndpoint::send_join,
+                                                  membership_envelope(runtime, room.room_id, room.bob, "join",
+                                                                      "$bob_join:" + std::string{joiner_server}, 10U));
+            REQUIRE(joined.accepted);
+
+            THEN("server C is sent the stored copy of the join, and server B is sent nothing")
+            {
+                auto const sent = queued_pdus_for(runtime, bystander_server);
+                REQUIRE_FALSE(joined.signed_event_json.empty());
+                REQUIRE(std::ranges::find(sent, canonical_form(joined.signed_event_json)) != sent.end());
+                auto const memberships = queued_memberships_for(runtime, bystander_server, room.bob);
+                REQUIRE(std::ranges::find(memberships, "join") != memberships.end());
+                REQUIRE(queued_pdus_for(runtime, joiner_server).empty());
+            }
+        }
+
+        WHEN("server B's send_leave for bob, who had joined, is accepted")
+        {
+            REQUIRE(accept_membership(runtime, FederationEndpoint::send_join,
+                                      membership_envelope(runtime, room.room_id, room.bob, "join",
+                                                          "$bob_join:" + std::string{joiner_server}, 10U))
+                        .accepted);
+            auto const left = accept_membership(runtime, FederationEndpoint::send_leave,
+                                                membership_envelope(runtime, room.room_id, room.bob, "leave",
+                                                                    "$bob_leave:" + std::string{joiner_server}, 11U));
+            REQUIRE(left.accepted);
+
+            THEN("server C is sent the stored copy of the leave, and server B is sent nothing")
+            {
+                auto const sent = queued_pdus_for(runtime, bystander_server);
+                REQUIRE(std::ranges::find(sent, canonical_form(left.signed_event_json)) != sent.end());
+                auto const memberships = queued_memberships_for(runtime, bystander_server, room.bob);
+                REQUIRE(std::ranges::find(memberships, "leave") != memberships.end());
+                REQUIRE(queued_pdus_for(runtime, joiner_server).empty());
+            }
+        }
+    }
+
+    GIVEN("alice's room on this server that allows knocking, in which carol of server C is joined")
+    {
+        REQUIRE(sodium_init() >= 0);
+        auto started = merovingian::homeserver::start_client_server(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        auto const room = make_fanout_room(runtime, "public_chat");
+        REQUIRE(call(runtime, "PUT", "/_matrix/client/v3/rooms/" + room.room_id + "/state/m.room.join_rules/",
+                     room.alice_token, R"({"join_rule":"knock"})")
+                    .response.status == 200U);
+
+        WHEN("server B's send_knock for bob is accepted")
+        {
+            auto const knocked =
+                accept_membership(runtime, FederationEndpoint::send_knock,
+                                  membership_envelope(runtime, room.room_id, room.bob, "knock",
+                                                      "$bob_knock:" + std::string{joiner_server}, 10U));
+            REQUIRE(knocked.accepted);
+
+            THEN("server C is sent the stored copy of the knock, and server B is sent nothing")
+            {
+                auto const sent = queued_pdus_for(runtime, bystander_server);
+                REQUIRE(std::ranges::find(sent, canonical_form(knocked.signed_event_json)) != sent.end());
+                auto const memberships = queued_memberships_for(runtime, bystander_server, room.bob);
+                REQUIRE(std::ranges::find(memberships, "knock") != memberships.end());
+                REQUIRE(queued_pdus_for(runtime, joiner_server).empty());
+            }
+        }
+    }
+
+    GIVEN("alice's invite-only room on this server, in which carol of server C is joined")
+    {
+        REQUIRE(sodium_init() >= 0);
+        auto started = merovingian::homeserver::start_client_server(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        auto const room = make_fanout_room(runtime, "private_chat");
+
+        WHEN("server B's send_join for bob, who was never invited, is refused")
+        {
+            auto const refused = accept_membership(runtime, FederationEndpoint::send_join,
+                                                   membership_envelope(runtime, room.room_id, room.bob, "join",
+                                                                       "$bob_join:" + std::string{joiner_server}, 10U));
+            REQUIRE_FALSE(refused.accepted);
+
+            THEN("no server is sent the event")
+            {
+                REQUIRE(queued_pdus_for(runtime, bystander_server).empty());
+                REQUIRE(queued_pdus_for(runtime, joiner_server).empty());
             }
         }
     }
