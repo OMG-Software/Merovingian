@@ -382,3 +382,59 @@ SCENARIO("the federation hierarchy answers a restricted room only to a server wi
         }
     }
 }
+
+// Spec: Matrix Server-Server API v1.19, GET /_matrix/federation/v1/hierarchy/{roomId}
+// URL: ../../docs/matrix-v1.19-spec/server-server-api.md#get_matrixfederationv1hierarchyroomid
+//
+// `inaccessible_children`: "The list of room IDs the requesting server doesn't have a viable way to
+// peek/join." A server with a user already joined to a room is in it, whatever its join rule.
+SCENARIO("the federation hierarchy shows a room to a server that already has a user joined to it",
+         "[homeserver][space-hierarchy][federation][resident-origin]")
+{
+    GIVEN("a public space with an invite-only child that a user of remote.example.org has joined")
+    {
+        auto runtime = merovingian::homeserver::HomeserverRuntime{};
+        auto& store = runtime.database.persistent_store;
+        add_room(store, "!space:example.org", "@alice:example.org", R"({"type":"m.space","room_version":"10"})",
+                 R"({"join_rule":"public"})");
+        add_room(store, "!private:example.org", "@alice:example.org", R"({"room_version":"10"})",
+                 R"({"join_rule":"invite"})");
+        add_member(store, "!private:example.org", "@carol:remote.example.org");
+        add_child_link(store, "!space:example.org", "!private:example.org", false);
+
+        WHEN("that server asks for the space")
+        {
+            auto const body = merovingian::homeserver::build_federation_space_hierarchy_response(
+                runtime, "!space:example.org", false, "remote.example.org");
+            REQUIRE_FALSE(body.empty());
+            auto const response = merovingian::tests::parse_object(body);
+            auto const* children = merovingian::tests::object_member_as_array(response, "children");
+            auto const* inaccessible = merovingian::tests::object_member_as_array(response, "inaccessible_children");
+
+            THEN("the child it is in is returned, not listed as inaccessible")
+            {
+                REQUIRE(children != nullptr);
+                REQUIRE(children->size() == 1U);
+                auto const* child = std::get_if<canonicaljson::Object>(&children->at(0).storage());
+                REQUIRE(child != nullptr);
+                REQUIRE(*merovingian::tests::string_member(*child, "room_id") == "!private:example.org");
+                REQUIRE(inaccessible != nullptr);
+                REQUIRE(inaccessible->empty());
+            }
+        }
+
+        WHEN("that server and a server with no user in it each ask for the child itself")
+        {
+            auto const for_resident = merovingian::homeserver::build_federation_space_hierarchy_response(
+                runtime, "!private:example.org", false, "remote.example.org");
+            auto const for_stranger = merovingian::homeserver::build_federation_space_hierarchy_response(
+                runtime, "!private:example.org", false, "stranger.example.org");
+
+            THEN("only the server already in the room is answered")
+            {
+                REQUIRE_FALSE(for_resident.empty());
+                REQUIRE(for_stranger.empty());
+            }
+        }
+    }
+}

@@ -2080,6 +2080,14 @@ auto change_local_user_password(HomeserverRuntime& runtime, std::string_view acc
     {
         return make_operation_result(false, {}, "password changed concurrently", 403U);
     }
+    // The pushers of the devices this change revokes go first, before the password or any token is
+    // written: a failure here then commits no credential change and the client can retry with its old
+    // password. A failure after some deletions only ends notifications early for devices that were
+    // about to lose them.
+    if (logout_devices && !delete_pushers_of_other_devices(runtime, user_id, session->device_id))
+    {
+        return make_operation_result(false, {}, "pusher removal persistence failed", 500U);
+    }
     if (!database::update_user_password(runtime.database.persistent_store, user_id, *new_hash))
     {
         return make_operation_result(false, {}, "password update failed", 500U);
@@ -2117,10 +2125,6 @@ auto change_local_user_password(HomeserverRuntime& runtime, std::string_view acc
             {
                 candidate.revoked = true;
             }
-        }
-        if (!delete_pushers_of_other_devices(runtime, user_id, session->device_id))
-        {
-            return make_operation_result(false, {}, "pusher removal persistence failed", 500U);
         }
     }
     append_local_audit(runtime.database, observability::AuditCategory::auth, "auth.password_changed", user_id,

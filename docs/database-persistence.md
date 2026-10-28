@@ -1114,7 +1114,8 @@ Two independent mechanisms close this, together:
    persisted by main under the same seven-day cap (`cache_remote_server_keys`),
    so the worker trusts it no longer than main does; it is the trust the worker
    already places in the rows it loaded at start-up. Main's mirror is
-   authoritative and never re-reads (ADR draft: worker key read-through).
+   authoritative and never re-reads
+   ([ADR-0263](adr/0263-a-federation-worker-reads-public-keys-main-cached-before-fetching.md)).
 
    Every table `PersistentStore` can hold that is **not** in the allowlist is
    read by no worker-local code path — verified table by table during review

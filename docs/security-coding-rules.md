@@ -545,6 +545,18 @@ quickly finding everything a given `AGENTS.md` file contributed.
   sender the room authorised (ADR-0071, `docs/threat-model.md` #450).
   Source: `src/homeserver/AGENTS.md`.
 
+- **A federation worker re-reads only public signing keys, and only on a miss.** The one
+  table a worker reads after start-up is `server_signing_keys`, through
+  `federation::KeyMirrorRefresh::on_miss`, for the server whose signature it is verifying.
+  `database::refresh_remote_signing_keys` selects `server_name, key_id, public_key,
+  valid_until_ts` and never `secret_key`, and is enabled only for the `federation_worker`
+  load profile (`LocalDatabase::remote_signing_keys_read_through`). Do not widen that query,
+  read other tables on demand, or give main's resolver the same flag.
+  Why: only main writes those rows, after verifying the key and capping it at seven days, so
+  the worker trusts nothing it did not already trust at start-up; a wider read would hand the
+  most exposed process data it has no need for (ADR-0263).
+  Source: `src/federation_worker/AGENTS.md`.
+
 - **Every room-scoped federation read checks that the authenticated origin is in the room.**
   `GET /state`, `/state_ids`, `/event`, `/backfill` and `POST /get_missing_events` take the
   X-Matrix-verified `origin` (never a value from the request) and answer `403 M_FORBIDDEN`

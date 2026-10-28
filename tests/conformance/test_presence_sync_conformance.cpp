@@ -298,8 +298,10 @@ SCENARIO("GET /presence/{userId}/status is limited to users who share a room", "
         {
             auto const missing = status_of(runtime, alice, "nobody");
 
-            THEN("the answer is the same 403 as for a user she may not see, which reveals who exists")
+            THEN("the answer is the same 403 as for a user she may not see, which reveals nothing about who exists")
             {
+                // Spec: 403 is "You are not allowed to see this user's presence status"; answering it for
+                // an unknown user too is this server's choice (ADR-0261), so existence is not disclosed.
                 REQUIRE(missing.status == 403U);
             }
         }

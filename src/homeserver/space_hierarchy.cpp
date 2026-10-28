@@ -474,6 +474,12 @@ namespace
     [[nodiscard]] auto can_view_room_federation(database::PersistentStore const& store, std::string_view room_id,
                                                 std::string_view origin) -> bool
     {
+        // A server with a user already joined to the room is in it, so it can peek it whatever the
+        // join rule says; listing such a room as inaccessible would hide it from that server's members.
+        if (federation::origin_has_joined_user_in_room(store, room_id, origin))
+        {
+            return true;
+        }
         auto const rule = join_rule(store, room_id);
         if (rule.has_value())
         {

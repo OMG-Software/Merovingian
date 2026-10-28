@@ -36,9 +36,10 @@ Complement has not yet been rerun against this version.
   current `device_display_name`, not the name at key upload. A user who joins over federation is
   listed in their own `device_lists.changed` (ADR-0265).
 - **FIXED:** `GET /_matrix/federation/v1/hierarchy/{roomId}` is judged for the authenticated
-  requesting server: a restricted room is served only while a user of that server is joined to one
-  of its allowed rooms, and children it may not peek or join are listed in the required
-  `inaccessible_children` (ADR-0260).
+  requesting server: a room that server already has a user joined to is always served, a
+  restricted room is served only while a user of that server is joined to one of its allowed
+  rooms, and children it may not peek or join are listed in the required `inaccessible_children`
+  (ADR-0260).
 - **CHANGED:** a federated join resolves its destination once per discovery-cache lifetime instead
   of once per call (`make_join` and `send_join` shared one `.well-known`, SRV and DNS cascade); a
   remembered discovery failure is never served to a join (ADR-0262).
@@ -93,7 +94,9 @@ Complement has not yet been rerun against this version.
 - **CHANGED:** `POST /user_directory/search` searches only users visible to the requester (a shared
   room, or a `public` or `world_readable` room); it matched every local profile (ADR-0264).
 - **FIXED:** a password change with `logout_devices` left the pushers of the devices it revoked;
-  they are now deleted (`pushers.device_id` added to the v1 schema).
+  they are now deleted (`pushers.device_id` added to the v1 schema). They are deleted before the
+  password or any token is written, so a failure to delete one answers 500 with the old password
+  still valid and the change can be retried.
 - **FIXED:** the space hierarchy (`GET /_matrix/client/v1/rooms/{roomId}/hierarchy`): `suggested_only`
   now also narrows each space's `children_state`; a restricted room appears for a user joined to one
   of its allowed rooms; child rooms held only by other servers are fetched with the federation
