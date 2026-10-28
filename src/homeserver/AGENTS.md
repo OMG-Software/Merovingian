@@ -188,6 +188,17 @@ frame whose user ID is malformed or local. The decision reads state under `runti
 the room version through `declared_room_version`, and is bounded by
 `max_restricted_join_conditions` (32).
 
+## The resident sends accepted membership events on
+
+As the resident, the `membership_acceptor` stores a `send_join`, `send_leave` or `send_knock` and then
+calls `federate_accepted_membership_event` (`room_service.cpp`) with the stored copy, so every other server
+with a joined member learns of it (spec, "Joining Rooms" and "Leaving Rooms"). The requesting server is
+excluded, and so is this one. It runs only for an accepted event, never a rejected or soft-failed one, with
+`runtime.mutex` held, and it only enqueues. It must stay in main: a federation worker has no dispatch
+worker and no signing key. A new path that stores a membership event received from another server as the
+resident calls it too; it shares `queue_event_to_room_servers` with `federate_local_event`, so do not build
+another transaction by hand.
+
 ## Federation worker relays are untrusted input
 
 A frame from the federation worker is input from the process most exposed to

@@ -1248,22 +1248,27 @@ namespace
     // the room's other servers. Every path that composes and stores an event must call
     // it; a membership event that did not (a join, leave, kick, ban or local knock)
     // never reached another server.
-    auto federate_local_event(HomeserverRuntime& runtime, std::string_view room_id, LocalRoom const& room,
-                              ComposedEvent const& composed, std::string_view target_user_id = {}) -> void
+    //
+    // `excluded_server` (empty for none) is never sent the event: a resident that accepted
+    // a send_join, send_leave or send_knock does not send it back to the server that made
+    // the request, which already holds it.
+    auto queue_event_to_room_servers(HomeserverRuntime& runtime, std::string_view room_id,
+                                     std::vector<std::string> const& members, std::string_view event_id,
+                                     std::string const& event_json, std::string_view target_user_id,
+                                     std::string_view excluded_server) -> void
     {
-        wire_federation_callbacks(runtime);
         if (runtime.dispatch_worker != nullptr)
         {
             auto const& server_name = runtime.config.server().server_name;
             auto remote_servers = std::vector<std::string>{};
-            for (auto const& member : room.members)
+            for (auto const& member : members)
             {
                 auto const member_server = std::string{auth::user_id_server_name(member)};
                 if (member_server.empty())
                 {
                     continue;
                 }
-                if (member_server != server_name &&
+                if (member_server != server_name && member_server != excluded_server &&
                     std::ranges::find(remote_servers, member_server) == remote_servers.end())
                 {
                     remote_servers.emplace_back(member_server);
@@ -1273,7 +1278,7 @@ namespace
             // not yet) among the room's members once the event applies. An invite reaches
             // the invitee's server through /invite instead.
             if (auto const target_server = std::string{auth::user_id_server_name(target_user_id)};
-                !target_server.empty() && target_server != server_name &&
+                !target_server.empty() && target_server != server_name && target_server != excluded_server &&
                 std::ranges::find(remote_servers, target_server) == remote_servers.end())
             {
                 remote_servers.push_back(target_server);
@@ -1282,13 +1287,13 @@ namespace
             // `origin_server_ts`; a hand-built body without them was refused by strict receivers.
             auto const tx_body_result = remote_servers.empty()
                                             ? std::optional<std::string>{}
-                                            : federation::build_pdu_transaction_body(server_name, composed.json);
+                                            : federation::build_pdu_transaction_body(server_name, event_json);
             if (!remote_servers.empty() && !tx_body_result.has_value())
             {
                 log_diagnostic("room.event.dispatch_refused",
                                {
                                    {"room_id",  std::string{room_id},                  false},
-                                   {"event_id", composed.event_id,                     false},
+                                   {"event_id", std::string{event_id},                 false},
                                    {"reason",   "transaction body could not be built", false}
                 },
                                observability::LogEventSeverity::error);
@@ -1324,7 +1329,7 @@ namespace
                     log_diagnostic("room.event.dispatch_refused",
                                    {
                                        {"room_id",      std::string{room_id},           false},
-                                       {"event_id",     composed.event_id,              false},
+                                       {"event_id",     std::string{event_id},          false},
                                        {"refused",      std::to_string(refused.size()), false},
                                        {"destinations", names,                          false}
                     },
@@ -1333,11 +1338,19 @@ namespace
                 log_diagnostic("room.event.dispatched",
                                {
                                    {"room_id",      std::string{room_id},                                   false},
-                                   {"event_id",     composed.event_id,                                      false},
+                                   {"event_id",     std::string{event_id},                                  false},
                                    {"destinations", std::to_string(remote_servers.size() - refused.size()), false}
                 });
             }
         }
+    }
+
+    auto federate_local_event(HomeserverRuntime& runtime, std::string_view room_id, LocalRoom const& room,
+                              ComposedEvent const& composed, std::string_view target_user_id = {}) -> void
+    {
+        wire_federation_callbacks(runtime);
+        queue_event_to_room_servers(runtime, room_id, room.members, composed.event_id, composed.json, target_user_id,
+                                    {});
     }
 
     // Forward declaration: defined further down this file, after
@@ -2402,6 +2415,19 @@ namespace
     }
 
 } // namespace
+
+auto federate_accepted_membership_event(HomeserverRuntime& runtime, std::string_view room_id, std::string_view event_id,
+                                        std::string const& event_json, std::string_view requesting_server) -> void
+{
+    // The room's joined members are those of the in-memory roster, which the caller has
+    // already brought up to date for this event. A room with no roster entry has none.
+    auto const room = find_room(runtime.database, room_id);
+    if (room == nullptr)
+    {
+        return;
+    }
+    queue_event_to_room_servers(runtime, room_id, room->members, event_id, event_json, {}, requesting_server);
+}
 
 // Perform a single synchronous outbound federation call. Returns the raw
 // response body on success (HTTP 2xx), or an error description on failure.

@@ -2726,6 +2726,18 @@ namespace
                             " room_id=" + std::string{room_id} + " reason=" + outcome_reason);
                 return {false, 403U, std::string{"event auth denied: "} + outcome_reason, {}, {}};
             }
+            // Spec, "Joining Rooms": "The resident server must also send the event to other
+            // servers participating in the room"; "Leaving Rooms (Rejecting Invites)": "The
+            // resident server will then send the event to other servers in the room". Only the
+            // stored copy goes (it may carry our co-signature), and not back to the server that
+            // asked, which already has it. A soft-failed event never applied to the room's
+            // state, so no server is told of it. Runs with rt->mutex held, like the rest of this
+            // callback, on both of its call paths; it enqueues only, with no network I/O.
+            if (outcome == MembershipReceiptOutcome::accepted)
+            {
+                federate_accepted_membership_event(*rt, room_id, accepted_event_id, stored_json,
+                                                   server_name_from_user_id(envelope.sender));
+            }
 
             auto auth_chain = std::vector<std::string>{};
             auto state_events = std::vector<std::string>{};
