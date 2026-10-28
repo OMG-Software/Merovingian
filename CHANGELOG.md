@@ -195,6 +195,14 @@ Cloud analysis from SonarSource's automatic analysis into this repository's CI.
   state before the earliest such event. A leave above the token was reported now and again by the
   next sync; it now waits for that sync. Tests: the empty-timeline and leave WHENs in
   `test_sync_stream_position.cpp` (`[sync-position]`).
+- **FIXED (review of #541):** an initial `/sync` whose timeline starts at a federated join
+  left the user's membership out of `state`. The join's state group holds only the state after it,
+  and when the state before cannot be computed the join was dropped from that state without the
+  value it replaced; it is now taken from the join's `auth_events`, which name the user's previous
+  membership (Server-Server API "Auth events selection"), and the same applies to the at-position
+  state fallback. `GET /rooms/{roomId}/messages` ignored a filter's `rooms` and `not_rooms`; a room
+  they exclude now contributes no events. Tests: `[join-sync-state]` in `test_join_room_flow.cpp`
+  and the room-predicate case in `test_client_server.cpp`.
 - **FIXED:** `POST /login` did not log `@user:server` in when named `@USER:server`, `USER` or
   `User`. A user ID is looked up exactly, then with its localpart's ASCII letters downcased
   (ADR-0245), so historical upper-case localparts still log in as themselves. Regression:

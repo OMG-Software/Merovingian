@@ -2039,6 +2039,26 @@ SCENARIO("Client-server typing and messages routes dispatch through the room blo
                 REQUIRE(messages.response.body.find("M_BAD_JSON") != std::string::npos);
             }
         }
+
+        WHEN("the user requests messages with a filter whose rooms or not_rooms excludes the room")
+        {
+            // A RoomEventFilter's `rooms` lists the rooms to include and `not_rooms` the rooms to
+            // exclude; the room's events pass only if the room does (review of #541).
+            auto const filter = GENERATE_COPY(std::string{"%7B%22not_rooms%22%3A%5B%22"} + id + "%22%5D%7D",
+                                              std::string{"%7B%22rooms%22%3A%5B%22%21other%3Aexample.org%22%5D%7D"});
+            auto const messages = merovingian::homeserver::handle_client_server_request(
+                runtime, {"GET", "/_matrix/client/v3/rooms/" + id + "/messages?dir=b&filter=" + filter, token, {}});
+
+            THEN("the page holds none of the room's events")
+            {
+                CAPTURE(filter, messages.response.body);
+                REQUIRE(messages.response.status == 200U);
+                auto const body = merovingian::tests::parse_object(messages.response.body);
+                auto const* chunk = merovingian::tests::object_member_as_array(body, "chunk");
+                REQUIRE(chunk != nullptr);
+                REQUIRE(chunk->empty());
+            }
+        }
     }
 }
 

@@ -4456,6 +4456,71 @@ namespace
     // resolved (an event whose prev_events this server never held, such as the join that
     // brought it into the room), the first event's own after-state stands in, without the
     // entry the event itself set.
+    // The state event `event` replaced, for a state event whose state-before cannot be
+    // computed: the event of its own (type, state_key) among its auth_events. For a
+    // member event that is the target's previous membership (Server-Server API v1.19,
+    // "Auth events selection": "The current m.room.member event for the target's
+    // state_key, if any"); a federated join's state group holds only the state after
+    // it, so this is where the invite or knock it replaced is found.
+    [[nodiscard]] auto replaced_state_event_id(database::PersistentStore const& store,
+                                               database::PersistentEvent const& event) -> std::optional<std::string>
+    {
+        struct StateKey final
+        {
+            std::string type{};
+            std::string state_key{};
+            std::vector<std::string> auth_events{};
+        };
+        auto const key_of = [](std::string const& json) -> std::optional<StateKey> {
+            auto const parsed = canonicaljson::parse_lossless(json);
+            auto const* object = std::get_if<canonicaljson::Object>(&parsed.value.storage());
+            if (parsed.error != canonicaljson::ParseError::none || object == nullptr)
+            {
+                return std::nullopt;
+            }
+            auto const* type = string_member(*object, "type");
+            auto const* state_key = string_member(*object, "state_key");
+            if (type == nullptr || state_key == nullptr)
+            {
+                return std::nullopt;
+            }
+            auto key = StateKey{*type, *state_key, {}};
+            if (auto const* auth = object_member(*object, "auth_events"); auth != nullptr)
+            {
+                if (auto const* ids = std::get_if<canonicaljson::Array>(&auth->storage()); ids != nullptr)
+                {
+                    for (auto const& id : *ids)
+                    {
+                        if (auto const* text = std::get_if<std::string>(&id.storage()); text != nullptr)
+                        {
+                            key.auth_events.push_back(*text);
+                        }
+                    }
+                }
+            }
+            return key;
+        };
+        auto const key = key_of(event.json);
+        if (!key.has_value())
+        {
+            return std::nullopt;
+        }
+        for (auto const& auth_id : key->auth_events)
+        {
+            auto const auth_event = store.events.find_in_room(event.room_id, auth_id);
+            if (auth_event == store.events.end())
+            {
+                continue;
+            }
+            if (auto const auth_key = key_of(auth_event->json);
+                auth_key.has_value() && auth_key->type == key->type && auth_key->state_key == key->state_key)
+            {
+                return auth_id;
+            }
+        }
+        return std::nullopt;
+    }
+
     [[nodiscard]] auto build_state_events_at_timeline_start(database::PersistentStore const& store,
                                                             sync::EventTypeFilter const& filter,
                                                             std::string_view room_id,
@@ -4482,12 +4547,24 @@ namespace
         {
             return std::nullopt;
         }
+        auto first_event_in_state = false;
         for (auto const& entry : *after)
         {
             if (entry.event_id != first_event.event_id)
             {
                 ids.push_back(entry.event_id);
             }
+            else
+            {
+                first_event_in_state = true;
+            }
+        }
+        // The after-state names the first event for its key; the state before it
+        // holds the value it replaced, if any.
+        if (auto replaced = first_event_in_state ? replaced_state_event_id(store, first_event) : std::nullopt;
+            replaced.has_value())
+        {
+            ids.push_back(std::move(*replaced));
         }
         return build_state_events_array_for_ids(store, filter, ids);
     }
@@ -4503,6 +4580,7 @@ namespace
     {
         auto earliest_above = store.events.end();
         auto ids = std::vector<std::string>{};
+        auto above = std::vector<std::reference_wrapper<database::PersistentEvent const>>{};
         for (auto const& entry : store.state)
         {
             if (entry.room_id != room_id)
@@ -4516,6 +4594,7 @@ namespace
                 {
                     earliest_above = event;
                 }
+                above.emplace_back(*event);
                 continue;
             }
             ids.push_back(entry.event_id);
@@ -4535,6 +4614,19 @@ namespace
                     before_ids.push_back(entry.event_id);
                 }
                 return build_state_events_array_for_ids(store, filter, before_ids);
+            }
+        }
+        // Each key held above `position` keeps the value it held before, where its
+        // auth_events name one at or below `position`.
+        for (auto const& event : above)
+        {
+            if (auto const replaced = replaced_state_event_id(store, event.get()); replaced.has_value())
+            {
+                if (auto const prior = store.events.find(*replaced);
+                    prior != store.events.end() && prior->stream_ordering <= position)
+                {
+                    ids.push_back(*replaced);
+                }
             }
         }
         return build_state_events_array_for_ids(store, filter, ids);
@@ -8326,9 +8418,11 @@ namespace
         }();
         // The request's RoomEventFilter selects the returned events (`filter`: "A JSON
         // RoomEventFilter to filter returned events with") and drives lazy-loaded members.
-        auto const event_filter = sync::parse_room_event_filter_argument(messages_query_value(target, "filter"))
-                                      .value_or(sync::RoomFilter{})
-                                      .timeline;
+        auto const room_filter =
+            sync::parse_room_event_filter_argument(messages_query_value(target, "filter")).value_or(sync::RoomFilter{});
+        auto const& event_filter = room_filter.timeline;
+        // Its `rooms` and `not_rooms` select rooms: a room they exclude contributes no events.
+        auto const room_selected = sync::room_passes_filter(room_filter, room_id);
         auto limit = std::min<std::size_t>(10U, static_cast<std::size_t>(rt.limits.max_messages_page_size));
         if (auto const parsed = parse_u64(messages_query_value(target, "limit")); parsed.has_value())
         {
@@ -8344,7 +8438,7 @@ namespace
         auto entries = std::vector<database::PersistentEvent const*>{};
         for (auto const& event : store.events)
         {
-            if (event.room_id != room_id)
+            if (!room_selected || event.room_id != room_id)
             {
                 continue;
             }
