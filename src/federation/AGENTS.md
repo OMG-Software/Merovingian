@@ -207,8 +207,10 @@ Federation is the highest-risk surface: **all input comes from untrusted remote 
    its own `matrix_error`. The `pdus` object lists every PDU: `{}` for one that was handled (including
    one retained for retry), `{"error": ...}` otherwise. A bad `user_id` on `query/profile` is 400
    `M_INVALID_PARAM`, never a 404. `GET /event_auth/{roomId}/{eventId}` returns the closure of the
-   event's `auth_events` (not the event), bounded at `max_event_auth_chain_events`, behind the same
-   origin-in-room gate as the other reads (rule 7). `query/directory` has no room ID, so a worker
+   event's `auth_events` (not the event), behind the same origin-in-room gate as the other reads
+   (rule 7). A chain longer than `max_event_auth_chain_events` is refused with 502 `M_TOO_LARGE`,
+   never answered with part of it (ADR-0284). The media download answers content too large to serve
+   with 502 `M_TOO_LARGE`; only the thumbnail has 413. `query/directory` has no room ID, so a worker
    relays it to main (`directory_query_ingest`).
 
 ## Key files

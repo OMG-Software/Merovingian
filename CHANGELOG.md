@@ -108,6 +108,12 @@ Fixes for the failures Complement run 10 found against the signed 0.12.62 releas
 - **`/_matrix/client/v3/rooms/{roomId}/state_ids` and `.../v3/.../threads` answered 405.** Neither is
   a v3 client endpoint (`/threads` is v1, `/state_ids` is federation only), so both are 404
   `M_UNRECOGNIZED`.
+- **`/event_auth` answered a chain longer than 10000 events with part of it, as a 200.** The spec's
+  answer is the complete auth chain, so a receiver could not tell the chain was cut and failed on
+  the missing events later. Such a chain is now refused with 502 `M_TOO_LARGE`; the bound stays
+  (ADR-0284).
+- **A federation media download too large to serve answered 413.** The spec gives the download 502
+  `M_TOO_LARGE`; 413 is the thumbnail endpoint's, for local content, and stays there.
 - **Tests:** conformance scenarios now cover the server ACL on `/event_auth` (a denied server gets
   403 `M_FORBIDDEN`), `/event_auth` with no provider, and every federation media refusal's errcode;
   a unit scenario covers a retry whose first answer was too large to keep.

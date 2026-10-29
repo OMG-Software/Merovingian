@@ -10,6 +10,7 @@
 #include "merovingian/events/event_id.hpp"
 #include "merovingian/events/event_signer.hpp"
 #include "merovingian/federation/inbound_request.hpp"
+#include "merovingian/federation/room_read_result.hpp"
 #include "merovingian/federation/runtime_federation.hpp"
 #include "merovingian/homeserver/media_service.hpp"
 #include "merovingian/media/repository.hpp"
@@ -4738,6 +4739,36 @@ SCENARIO("Completed transactions' answers are kept within a byte budget",
             THEN("there is no answer")
             {
                 REQUIRE_FALSE(missing.has_value());
+            }
+        }
+    }
+}
+
+// The worker -> main relay names a room read's status on the wire. Every status
+// must survive the round trip, and a name this build does not know must never
+// read as a served answer.
+SCENARIO("Room read statuses round-trip through their wire names", "[federation][ipc][room-read]")
+{
+    GIVEN("every room read status")
+    {
+        using merovingian::federation::RoomReadStatus;
+        auto const statuses = std::array{RoomReadStatus::ok, RoomReadStatus::forbidden, RoomReadStatus::not_found,
+                                         RoomReadStatus::malformed, RoomReadStatus::too_large};
+
+        WHEN("each is written as its name and read back, and an unknown name is read")
+        {
+            auto round_tripped = std::vector<RoomReadStatus>{};
+            for (auto const status : statuses)
+            {
+                round_tripped.push_back(merovingian::federation::room_read_status_from_name(
+                    merovingian::federation::room_read_status_name(status)));
+            }
+            auto const unknown = merovingian::federation::room_read_status_from_name("served");
+
+            THEN("each comes back as itself and the unknown name is not found")
+            {
+                REQUIRE(std::ranges::equal(round_tripped, statuses));
+                REQUIRE(unknown == RoomReadStatus::not_found);
             }
         }
     }

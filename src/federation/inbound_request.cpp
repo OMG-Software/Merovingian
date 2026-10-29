@@ -1715,6 +1715,10 @@ namespace
             return {403U, homeserver::matrix_error("M_FORBIDDEN", "The requesting server is not in the room")};
         case RoomReadStatus::malformed:
             return {400U, homeserver::matrix_error("M_BAD_JSON", std::string{malformed_message})};
+        case RoomReadStatus::too_large:
+            // ADR-0284: as the spec's media download answers content "too large for the server
+            // to serve".
+            return {502U, homeserver::matrix_error("M_TOO_LARGE", "The answer is too large for this server to serve")};
         case RoomReadStatus::not_found:
             break;
         }
@@ -1876,7 +1880,11 @@ namespace
     }
 
     // The standard error response for a refused media download or thumbnail.
-    [[nodiscard]] auto media_failure_response(media::LocalMediaDownloadResult const& result) -> FederationResponse
+    // `too_large_status` is the endpoint's own status for content too large:
+    // the spec gives the download 502 ("too large for the server to serve") and
+    // the thumbnail 413 ("The local content is too large ... to thumbnail").
+    [[nodiscard]] auto media_failure_response(media::LocalMediaDownloadResult const& result,
+                                              std::uint16_t too_large_status) -> FederationResponse
     {
         // A media policy refusal (media_policy_decision).
         if (result.status == 403U)
@@ -1899,7 +1907,7 @@ namespace
         }
         if (result.status == 413U)
         {
-            return {413U, homeserver::matrix_error("M_TOO_LARGE", result.reason)};
+            return {too_large_status, homeserver::matrix_error("M_TOO_LARGE", result.reason)};
         }
         if (result.status == 429U)
         {
@@ -1929,7 +1937,7 @@ namespace
         auto const result = runtime.media_download_provider(media_id);
         if (!result.ok)
         {
-            return media_failure_response(result);
+            return media_failure_response(result, 502U);
         }
         auto envelope =
             media::build_federation_media_download_body(result.content_type, result.bytes, result.upload_name);
@@ -2001,7 +2009,7 @@ namespace
         auto const result = runtime.media_thumbnail_provider(query);
         if (!result.ok)
         {
-            return media_failure_response(result);
+            return media_failure_response(result, 413U);
         }
         auto envelope =
             media::build_federation_media_download_body(result.content_type, result.bytes, result.upload_name);

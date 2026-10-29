@@ -266,6 +266,7 @@
 * [0281 - Federation routes that name no room are served by main, not a worker snapshot](0281-federation-routes-without-a-room-are-served-by-main.md)
 * [0282 - Redact, never drop, room events a requesting server could not see](0282-redact-never-drop-events-a-requesting-server-could-not-see.md)
 * [0283 - A retried /send transaction is given its first answer, kept within a byte budget](0283-a-retried-send-transaction-is-given-its-first-answer.md)
+* [0284 - An auth chain longer than the bound is refused, never truncated](0284-an-auth-chain-longer-than-the-bound-is-refused.md)
 
 ## Proposed Records
 

@@ -81,8 +81,9 @@ inline constexpr auto default_missing_events_limit = std::size_t{10U};
 [[nodiscard]] auto build_state_response(database::PersistentStore const& store, std::string_view room_id,
                                         std::string_view at_event_id, std::string_view origin) -> RoomReadResult;
 
-// The most PDUs one `GET /event_auth/{roomId}/{eventId}` answer carries. A longer chain is cut
-// here, nearest events first, so one request cannot read an unbounded part of the store.
+// The most PDUs one `GET /event_auth/{roomId}/{eventId}` answer carries, so one request cannot
+// read an unbounded part of the store. A longer chain is refused (`RoomReadStatus::too_large`),
+// never cut: the spec's answer is "the complete auth chain" (ADR-0284).
 inline constexpr auto max_event_auth_chain_events = std::size_t{10000U};
 
 // Builds the response for `GET /_matrix/federation/v1/event_auth/{roomId}/{eventId}` (SS API

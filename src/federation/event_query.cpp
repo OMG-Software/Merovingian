@@ -942,18 +942,25 @@ auto build_event_auth_response(database::PersistentStore const& store, std::stri
     // state events, part of the room's authorisation, and the receiver needs them whole to authorise
     // the event. The origin_may_read_room gate above still applies.
     // The chain is the closure of the event's auth events, not the event itself.
-    // The walk is bounded: a chain longer than the bound is cut at the bound
-    // (breadth first, so the events nearest the requested one come first) rather
-    // than letting one request read an unbounded part of the store.
-    auto chain = canonicaljson::Array{};
-    auto truncated = false;
-    for (auto const& auth_id : collect_auth_chain(store, event->auth_event_ids, max_event_auth_chain_events))
+    // The walk is bounded so one request cannot read an unbounded part of the
+    // store. The spec promises "the complete auth chain", so a chain longer than
+    // the bound is refused, never answered with part of it (ADR-0284). The walk
+    // collects one past the bound, which is how a longer chain is told apart.
+    auto const auth_ids = collect_auth_chain(store, event->auth_event_ids, max_event_auth_chain_events);
+    if (auth_ids.size() > max_event_auth_chain_events)
     {
-        if (chain.size() >= max_event_auth_chain_events)
-        {
-            truncated = true;
-            break;
-        }
+        log_diagnostic("event_auth_query.too_large",
+                       {
+                           {"room_id",  std::string{room_id},                        false},
+                           {"event_id", std::string{event_id},                       false},
+                           {"bound",    std::to_string(max_event_auth_chain_events), false}
+        },
+                       observability::LogEventSeverity::warning);
+        return RoomReadResult{RoomReadStatus::too_large, {}};
+    }
+    auto chain = canonicaljson::Array{};
+    for (auto const& auth_id : auth_ids)
+    {
         auto const* auth_event = find_event(store, auth_id);
         if (auth_event == nullptr || auth_event->room_id != room_id || auth_event->json.empty())
         {
@@ -969,11 +976,9 @@ auto build_event_auth_response(database::PersistentStore const& store, std::stri
     response.push_back(canonicaljson::make_member("auth_chain", canonicaljson::Value{std::move(chain)}));
     log_diagnostic("event_auth_query.accepted",
                    {
-                       {"room_id",    std::string{room_id},         false},
-                       {"auth_chain", std::to_string(chain_count),  false},
-                       {"truncated",  truncated ? "true" : "false", false}
-    },
-                   truncated ? observability::LogEventSeverity::warning : observability::LogEventSeverity::debug);
+                       {"room_id",    std::string{room_id},        false},
+                       {"auth_chain", std::to_string(chain_count), false}
+    });
     auto body = serialize(std::move(response));
     return body.empty() ? not_found_result() : RoomReadResult{RoomReadStatus::ok, std::move(body)};
 }

@@ -517,6 +517,63 @@ SCENARIO("event_auth returns the complete auth chain of the event as full PDUs",
     }
 }
 
+// Spec: Matrix Server-Server API v1.19, GET /_matrix/federation/v1/event_auth/{roomId}/{eventId}
+// URL:  ../../docs/matrix-v1.19-spec/server-server-api.md#get_matrixfederationv1event_authroomideventid
+//
+// "Retrieves the complete auth chain for a given event." This server bounds the walk at
+// max_event_auth_chain_events (ADR-0284). A chain within the bound is answered whole; a longer one
+// is refused as too large rather than answered with part of it, since a part is not the complete
+// chain the 200 promises.
+SCENARIO("event_auth answers a chain at the bound whole and refuses a longer one",
+         "[federation][conformance][event-graph][event_auth][fed-endpoints]")
+{
+    GIVEN("a room whose events form one auth chain of the bound's length above the create event")
+    {
+        using merovingian::federation::max_event_auth_chain_events;
+        auto const room = std::string{"!long:example.org"};
+        auto store = merovingian::database::PersistentStore{};
+        store.events.push_back(make_state_event("$create", room, "m.room.create", "", 1U, {}, {}));
+        store.events.push_back(
+            make_state_event("$member", room, "m.room.member", "@creator:example.org", 2U, {"$create"}, {"$create"}));
+        store.state.push_back({room, "m.room.create", "", "$create"});
+        store.state.push_back({room, "m.room.member", "@creator:example.org", "$member"});
+        auto previous = std::string{"$create"};
+        for (auto i = std::size_t{1U}; i <= max_event_auth_chain_events; ++i)
+        {
+            auto id = "$a" + std::to_string(i);
+            store.events.push_back(make_event(id, room, "m.room.message", {previous}));
+            previous = std::move(id);
+        }
+        // $at's chain: $a1..$a(bound-1) and $create, exactly the bound. $over's: one more.
+        store.events.push_back(
+            make_event("$at", room, "m.room.message", {"$a" + std::to_string(max_event_auth_chain_events - 1U)}));
+        store.events.push_back(
+            make_event("$over", room, "m.room.message", {"$a" + std::to_string(max_event_auth_chain_events)}));
+
+        WHEN("the chain of each is requested by a server in the room")
+        {
+            auto const at = merovingian::federation::build_event_auth_response(store, room, "$at", requesting_server);
+            auto const over =
+                merovingian::federation::build_event_auth_response(store, room, "$over", requesting_server);
+
+            THEN("the chain at the bound is answered whole and the longer one is refused with no partial chain")
+            {
+                REQUIRE(at.status == merovingian::federation::RoomReadStatus::ok);
+                auto const parsed = merovingian::canonicaljson::parse_lossless(at.body);
+                REQUIRE(parsed.error == merovingian::canonicaljson::ParseError::none);
+                auto const* object = std::get_if<merovingian::canonicaljson::Object>(&parsed.value.storage());
+                REQUIRE(object != nullptr);
+                auto const* chain = std::get_if<merovingian::canonicaljson::Array>(&(*object)[0].value->storage());
+                REQUIRE(chain != nullptr);
+                // Spec: "the complete auth chain".
+                REQUIRE(chain->size() == max_event_auth_chain_events);
+                REQUIRE(over.status == merovingian::federation::RoomReadStatus::too_large);
+                REQUIRE(over.body.empty());
+            }
+        }
+    }
+}
+
 // --- get_missing_events walk --------------------------------------------------
 // Spec: Matrix Server-Server API v1.19, POST /_matrix/federation/v1/get_missing_events/{roomId}
 // URL:  ../../docs/matrix-v1.19-spec/server-server-api.md#post_matrixfederationv1get_missing_eventsroomid

@@ -380,12 +380,14 @@ SCENARIO("GET /media/download/{mediaId} serves local media as multipart/mixed",
             auto const busy = download("busy");
             auto const failed = download("unexpected");
 
-            THEN("each keeps its status and carries the errcode the spec gives it")
+            THEN("each answers the status and errcode the spec gives it")
             {
-                // Spec (CS API, content repository): 504 M_NOT_YET_UPLOADED for reserved media.
+                // Spec: 504 "The content is not yet available", with M_NOT_YET_UPLOADED.
                 REQUIRE(pending.status == 504U);
                 REQUIRE(pending.body.find("M_NOT_YET_UPLOADED") != std::string::npos);
-                REQUIRE(huge.status == 413U);
+                // Spec: 502 "The content is too large for the server to serve", with M_TOO_LARGE.
+                // The download endpoint has no 413; that is the thumbnail endpoint's.
+                REQUIRE(huge.status == 502U);
                 REQUIRE(huge.body.find("M_TOO_LARGE") != std::string::npos);
                 REQUIRE(busy.status == 429U);
                 REQUIRE(busy.body.find("M_LIMIT_EXCEEDED") != std::string::npos);
