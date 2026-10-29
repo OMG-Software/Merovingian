@@ -3336,7 +3336,7 @@ auto verify_inbound_federation_signature(FederationRuntimeState& runtime, Signed
         {
             return {.accepted = false,
                     .identity = VerifiedFederationIdentity{},
-                    .error = standard_error_body(std::move(*rejection))};
+                    .error = standard_error_body(*rejection)};
         }
     }
     return {
