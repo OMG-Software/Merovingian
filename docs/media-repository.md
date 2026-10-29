@@ -18,6 +18,18 @@ current in-process runtime path.
   `Content-Type` header containing `|` is rejected with `400 M_BAD_REQUEST`
   rather than spliced into the internal `declared_mime|sniffed_mime|
   scanner_clean|bytes` pipe format, where it could shift field boundaries.
+- A declared type that only spells the sniffed type differently is not a mismatch
+  (owner decision 2026-10-29). `media::media_types_are_equivalent(declared, sniffed)`
+  compares type and subtype case-insensitively (RFC 2045 section 5.1, RFC 6838 section 4.2)
+  and reads a declared top-level type of `img` as `image`, a common misspelling, so a PNG
+  uploaded as `img/png` or `IMAGE/PNG` is stored available instead of quarantined. Nothing
+  else matches: a parameter, whitespace, another subtype (`img/svg+xml`) or another top-level
+  type is a different type and is quarantined as before. The allow-list is still applied to
+  the sniffed type, never to the declared string. Only an equivalent declaration is kept: the
+  file is then served with the `Content-Type` the uploader declared (the spec's "content type
+  of the file that was previously uploaded"), still with the safe headers below, and the
+  inline-safe list and the thumbnail check read a spelling variant of a listed type as that
+  type. Any other declaration is replaced by the sniffed type, as before.
 - The `text/plain` sniffing heuristic (issue #445) does not classify content
   that opens with `<` (after leading whitespace) as `text/plain`, even if
   every byte is otherwise printable ASCII — an ASCII-only HTML/JS polyglot
@@ -391,6 +403,14 @@ unsafe name dropped) and stored with the remote copy. Inside the process the sto
 from the local router to the client API in `LocalHttpResponse::media_filename`, a field rather than
 a header, so nothing that writes a local-router response to the wire can leak it (ADR-0211).
 
+Over federation the name travels in the media part of the `multipart/mixed` response.
+`GET /_matrix/federation/v1/media/download/{mediaId}` writes the stored name into that part's
+`Content-Disposition` through `media_content_disposition` (`inline; filename="a.png"`, or
+`filename*=utf-8''...` for a non-ASCII name; none when the upload had none), taking it from
+`LocalMediaDownloadResult::upload_name`. The server fetching remote media reads it back with
+`parse_federation_media_multipart` (or from the redirect target's `Content-Disposition`), keeps
+it on the cached copy and serves it.
+
 ## Asynchronous uploads
 
 `POST /_matrix/media/v1/create` reserves an `mxc://` URI and returns it with `unused_expires_at`
@@ -408,6 +428,10 @@ in the same transaction. It answers `200 {}`; `409 M_CANNOT_OVERWRITE_MEDIA` whe
 has content; `404 M_NOT_FOUND` for an ID never created, expired, or on another server;
 `403 M_FORBIDDEN` when another user created it, when the file type is not permitted, or when a quota
 is exhausted; `413 M_TOO_LARGE` when it is too large. `POST /upload` uses the same 403/413 mapping.
+The state of the media ID decides before the body does: a `PUT` with an empty body to an ID that
+already has content is a `409`, not a framing error (the local router's pipe splitter used to
+refuse an empty last field with `400 upload body must be declared_mime|...`). An empty body to an
+empty reservation reaches the policy and is refused as `empty media upload` (`400 M_BAD_REQUEST`).
 
 A download of a reserved ID whose content has not arrived waits for it, at most
 `min(timeout_ms, security.media.pending_upload_max_wait_ms)` (20 s by default and at most 60 s),

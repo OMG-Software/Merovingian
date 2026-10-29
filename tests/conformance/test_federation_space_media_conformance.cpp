@@ -235,6 +235,14 @@ SCENARIO("GET /media/download/{mediaId} serves local media as multipart/mixed",
             {
                 return {true, 200U, "image/png", "PNGDATA", {}};
             }
+            if (queried_media_id == "named")
+            {
+                return {true, 200U, "image/png", "PNGDATA", {}, "photo.png"};
+            }
+            if (queried_media_id == "named-unicode")
+            {
+                return {true, 200U, "image/png", "PNGDATA", {}, "\xF0\x9F\x90\x94"};
+            }
             if (queried_media_id == "missing")
             {
                 return {false, 404U, {}, {}, "media not found"};
@@ -264,6 +272,41 @@ SCENARIO("GET /media/download/{mediaId} serves local media as multipart/mixed",
                 REQUIRE(parsed.ok);
                 REQUIRE_FALSE(parsed.is_redirect);
                 REQUIRE(parsed.bytes == "PNGDATA");
+            }
+        }
+
+        WHEN("a signed GET /media/download/{mediaId} requests a file that was uploaded with a filename")
+        {
+            auto const named = merovingian::federation::handle_inbound_federation_request(
+                runtime, signed_get_request(origin, key_id, key_seed, "/_matrix/federation/v1/media/download/named"));
+            auto const unicode = merovingian::federation::handle_inbound_federation_request(
+                runtime,
+                signed_get_request(origin, key_id, key_seed, "/_matrix/federation/v1/media/download/named-unicode"));
+            auto const unnamed = merovingian::federation::handle_inbound_federation_request(
+                runtime, signed_get_request(origin, key_id, key_seed, "/_matrix/federation/v1/media/download/abc123"));
+
+            THEN("the media part's Content-Disposition carries the filename, encoded per RFC 6266")
+            {
+                // Spec (Client-Server API, GET /_matrix/client/v1/media/download): "If the upload was made with a
+                // filename, this header MUST contain the same filename"; the federation endpoint's media part
+                // carries "Content-Disposition headers as appropriate" so the requesting server can serve it.
+                REQUIRE(named.status == 200U);
+                REQUIRE(named.body.find("Content-Disposition: inline; filename=\"photo.png\"\r\n") !=
+                        std::string::npos);
+                REQUIRE(unicode.status == 200U);
+                REQUIRE(unicode.body.find("Content-Disposition: inline; filename*=utf-8''%F0%9F%90%94\r\n") !=
+                        std::string::npos);
+                auto const parsed_unicode =
+                    merovingian::homeserver::parse_federation_media_multipart(unicode.content_type, unicode.body);
+                REQUIRE(parsed_unicode.ok);
+                REQUIRE(parsed_unicode.filename == "\xF0\x9F\x90\x94");
+            }
+
+            THEN("a file uploaded without a filename carries none")
+            {
+                // Spec: "Otherwise, filename is excluded from the header."
+                REQUIRE(unnamed.status == 200U);
+                REQUIRE(unnamed.body.find("filename") == std::string::npos);
             }
         }
 

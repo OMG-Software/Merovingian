@@ -210,6 +210,9 @@ struct LocalMediaDownloadResult final
     std::string content_type{};
     std::string bytes{};
     std::string reason{};
+    // The `filename` the upload was made with; empty when there was none. Sent in the
+    // media part's Content-Disposition so the requesting server can serve it (R17).
+    std::string upload_name{};
 };
 
 struct LocalMediaAdminResult final
@@ -393,8 +396,12 @@ struct FederationMediaDownloadBody final
 };
 
 // Builds a Matrix v1.19 federation media download response body. Returns an
-// empty result if the multipart envelope could not be assembled.
-[[nodiscard]] auto build_federation_media_download_body(std::string_view media_content_type, std::string_view bytes)
+// empty result if the multipart envelope could not be assembled. `upload_name` is the
+// filename the upload was made with: when it is valid it goes into the media part's
+// Content-Disposition (encoded per RFC 6266 by media_content_disposition), otherwise
+// the header carries none.
+[[nodiscard]] auto build_federation_media_download_body(std::string_view media_content_type, std::string_view bytes,
+                                                        std::string_view upload_name = {})
     -> FederationMediaDownloadBody;
 
 } // namespace merovingian::media

@@ -52,7 +52,19 @@ namespace
 
     [[nodiscard]] auto canonical_content_type(LocalMediaUploadRequest const& request) -> std::string
     {
-        return request.sniffed_mime_type.empty() ? request.declared_mime_type : request.sniffed_mime_type;
+        if (request.sniffed_mime_type.empty())
+        {
+            return request.declared_mime_type;
+        }
+        // Owner decision 2026-10-29: a declared type that only spells the sniffed one differently
+        // ("img/png" for image/png) is what the uploader asked to get back. Only such a type is ever
+        // kept; any other declaration is replaced by the sniffed type, which the policy judged.
+        if (request.declared_mime_type != request.sniffed_mime_type &&
+            media_types_are_equivalent(request.declared_mime_type, request.sniffed_mime_type))
+        {
+            return request.declared_mime_type;
+        }
+        return request.sniffed_mime_type;
     }
 
     [[nodiscard]] auto find_live_blob(LocalMediaRepository& repository, std::string_view hash_algorithm,
@@ -331,7 +343,10 @@ namespace
 
     [[nodiscard]] auto content_type_is_thumbnailable(std::string_view content_type) noexcept -> bool
     {
-        return content_type == "image/png" || content_type == "image/jpeg" || content_type == "image/gif";
+        // A spelling variant of a type ("img/png", media_types_are_equivalent) is that type.
+        return media_types_are_equivalent(content_type, "image/png") ||
+               media_types_are_equivalent(content_type, "image/jpeg") ||
+               media_types_are_equivalent(content_type, "image/gif");
     }
 
     auto record_thumbnail(LocalMediaRepository& repository, LocalMediaRecord const& record) -> void
@@ -1048,8 +1063,8 @@ auto local_media_still_servable(LocalMediaRepository& repository, std::string_vi
     return id.has_value() ? "mrv_" + *id : "mrv_boundary_fallback";
 }
 
-auto build_federation_media_download_body(std::string_view media_content_type, std::string_view bytes)
-    -> FederationMediaDownloadBody
+auto build_federation_media_download_body(std::string_view media_content_type, std::string_view bytes,
+                                          std::string_view upload_name) -> FederationMediaDownloadBody
 {
     auto const canonical_type =
         media_content_type.empty() ? std::string_view{"application/octet-stream"} : media_content_type;
@@ -1070,8 +1085,9 @@ auto build_federation_media_download_body(std::string_view media_content_type, s
     // executable or a scripted document inline -- bypassing the allow-list
     // entirely for anything served over federation. Unknown and
     // non-inline-safe types fail closed to `attachment`.
-    body += content_type_is_inline_safe(canonical_type) ? "Content-Disposition: inline\r\n\r\n"
-                                                        : "Content-Disposition: attachment\r\n\r\n";
+    // R17: the header is written only by media_content_disposition, which picks inline or
+    // attachment from the same allow-list and leaves out a filename no header could carry.
+    body += "Content-Disposition: " + media_content_disposition(canonical_type, upload_name) + "\r\n\r\n";
     body += std::string{bytes} + "\r\n";
     body += "--" + boundary + "--\r\n";
     return {std::move(body), "multipart/mixed; boundary=" + boundary};

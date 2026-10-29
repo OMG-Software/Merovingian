@@ -49,6 +49,13 @@ The 4th field is split on the 3rd `|` — binary bodies containing `|` are safe.
 - `max_upload_size` — from `security.media.max_upload_size` in config (default `50MiB`; 100 MiB is
   only the fallback used when the configured value fails to parse)
 
+- Declared vs sniffed: the two match when `media_types_are_equivalent()` says so (case-insensitive,
+  and a declared `img/` is `image/`). The allow-list always judges the sniffed type, and a record
+  keeps a declared spelling only when it is equivalent to the sniffed type
+  (`canonical_content_type` in `repository.cpp`). Every place that decides by the stored type
+  (`content_type_is_inline_safe`, `content_type_is_thumbnailable`, the thumbnail worker's source
+  type) must go through `media_types_are_equivalent`, never compare to a literal.
+
 Note: `application/octet-stream` is in the default allow-list because encrypted-room
 attachments are uploaded as opaque ciphertext and must not be quarantined. Operators
 can override the list with `security.media.allowed_mime_types` if they need a stricter

@@ -29,6 +29,16 @@ namespace merovingian::media
 // Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#serving-inline-content
 [[nodiscard]] auto content_type_is_inline_safe(std::string_view content_type) noexcept -> bool;
 
+// Whether `declared` is the same media type as `sniffed`, spelled differently.
+// Media types compare case-insensitively (RFC 2045 section 5.1, RFC 6838 section
+// 4.2), and a declared top-level type of `img` is read as `image`, a common
+// misspelling. Nothing else matches: a parameter, surrounding whitespace, another
+// subtype or another top-level type is a different type. `sniffed` is the type
+// `sniff_mime_type` found in the bytes, so a match says the declared string names
+// what the bytes are. The upload policy treats a match as no mismatch, and the
+// file is then served under the declared spelling (owner decision 2026-10-29).
+[[nodiscard]] auto media_types_are_equivalent(std::string_view declared, std::string_view sniffed) noexcept -> bool;
+
 // The longest file name, in bytes, that a Content-Disposition header names.
 inline constexpr std::size_t max_media_filename_bytes = 255U;
 
