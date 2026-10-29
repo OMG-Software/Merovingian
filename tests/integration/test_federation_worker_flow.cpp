@@ -2736,6 +2736,14 @@ SCENARIO("handle_event_query_ingest_request reads an event from main's own store
              R"({"type":"m.room.member","state_key":"@member:member.example.org","content":{"membership":"join"}})"}));
         REQUIRE(merovingian::database::store_state(runtime.database.persistent_store,
                                                    {room_id, "m.room.member", member_id, "$member_join"}));
+        // A federation read sends an event in full only when the state recorded for it (ADR-0064) shows the
+        // server may see it: record a state group, without a history_visibility event (so `shared`).
+        {
+            auto const group = merovingian::database::create_or_reuse_state_group(
+                runtime.database.persistent_store, room_id, "sg:event-query-relay", std::nullopt, {});
+            REQUIRE(group.has_value());
+            REQUIRE(merovingian::database::set_event_state_group(runtime.database.persistent_store, event_id, *group));
+        }
 
         auto const relay = [&](std::string const& origin) {
             auto const request_json = std::string{R"({"type":"event_query_ingest","event_id":)"} +
@@ -2818,6 +2826,17 @@ SCENARIO("The wired federation providers refuse a server outside the room and se
                     std::vector<std::string>{"$join"}}));
         REQUIRE(merovingian::database::store_state(store, {room_id, "m.room.create", "", "$create"}));
         REQUIRE(merovingian::database::store_state(store, {room_id, "m.room.member", member_id, "$join"}));
+        // A federation read sends an event in full only when the state recorded for it (ADR-0064) shows the
+        // server may see it: record a state group, without a history_visibility event (so `shared`).
+        {
+            auto const group =
+                merovingian::database::create_or_reuse_state_group(store, room_id, "sg:fed2-shared", std::nullopt, {});
+            REQUIRE(group.has_value());
+            for (auto const* event_id : {"$create", "$join", "$msg"})
+            {
+                REQUIRE(merovingian::database::set_event_state_group(store, event_id, *group));
+            }
+        }
 
         auto const stranger = std::string{"stranger.example.net"};
         auto const member = std::string{"member.example.org"};
