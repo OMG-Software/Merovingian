@@ -16,6 +16,20 @@ Fixes for the failures Complement run 10 found against the signed 0.12.62 releas
   copying extra `/join` body keys into the event, a default display name, and the alias gate of
   ADR-0127 with its untouched canonical alias on delete.
 
+### Complement image
+
+- **The Complement image now loads the application services Complement registers.** Complement
+  copies each test's registration into `/complement/appservice/`, and the image ignored them, so
+  `TestJoinFederatedRoomFromApplicationServiceBridgeUser` and `TestJumpToDateEndpoint` failed while
+  building their blueprint. `install-appservices.sh` copies them beside the master key, out of the
+  directories the federation worker's Landlock grants (their tokens are secrets), refusing links,
+  odd names and files over 64 KiB before writing anything, and the entrypoint adds
+  `appservice.registration_files`.
+- The Complement config raises `server.http.sync_max_per_user` and `sync_max_per_device` to their
+  maxima: parallel subtests long-poll as one user and device and met 429 "too many concurrent sync
+  waits". `TestUrlPreview` is skip-listed: previews never fetch private addresses (ADR-0213), and
+  Complement serves its page from one.
+
 ### Fixed
 
 - **Invites from Synapse-family servers into rooms this server does not hold were refused.** Main

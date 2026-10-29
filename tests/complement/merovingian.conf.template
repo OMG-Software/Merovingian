@@ -84,6 +84,16 @@ client_rate_limits.per_user./_matrix/media/v1/create=1000000000/1s
 # Argon2id hashes answered some of them 429 (ADR-0246). Each takes 64 MiB, so 32
 # bounds a homeserver container at 2 GiB of hashing.
 security.password_hashing.max_concurrent=32
+# Parallel subtests long-poll /sync as one user from one device at once; the
+# shipped caps of four per user and two per device answered some of them 429
+# "too many concurrent sync waits" (TestFederationRoomsInvite, Complement run
+# 10). These are the largest values the server accepts.
+server.http.sync_max_per_user=64
+server.http.sync_max_per_device=16
+# appservice.registration_files is not set here: Complement copies a test's
+# application service registrations into /complement/appservice/, and the
+# entrypoint installs them beside the master key and adds the key
+# (install-appservices.sh).
 security.federation.per_origin_transaction_rate=1000000000/1s
 security.federation.per_origin_pdu_rate=1000000000/1s
 security.federation.per_origin_edu_rate=1000000000/1s

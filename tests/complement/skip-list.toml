@@ -447,3 +447,16 @@ mode = "expect-fail"
 category = "non-spec"
 spec = "docs/matrix-v1.19-spec/client-server-api.md#get_matrixclientv3sync"
 reason = "Expects the late m.room.name event S2 in state; this server returns S2 as the timeline's event and state up to the start of the timeline, as the spec defines state, so the client still learns it."
+
+# URL previews: every preview fetch is refused if it resolves to a private address, and
+# security.federation.allow_private_ip_ranges never applies to previews (ADR-0213). Complement
+# serves its page from host.docker.internal, a private address, so the preview is refused.
+
+[[entry]]
+test = "TestUrlPreview"
+package = "tests/csapi"
+mode = "expect-fail"
+category = "non-spec"
+spec = "docs/matrix-v1.19-spec/client-server-api.md#get_matrixclientv1mediapreview_url"
+reason = "Previews a page on host.docker.internal, a private address; this server never fetches a client-named URL on a private network (ADR-0213), and the spec does not require it to."
+
