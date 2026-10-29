@@ -92,7 +92,7 @@ class ReleaseWorkflowTests(unittest.TestCase):
         # THEN the workflow generates checksums and uploads a GitHub prerelease.
         self.assertIn("sha256sum", workflow)
         self.assertIn("sha256 -q", workflow)
-        self.assertIn("softprops/action-gh-release@v2", workflow)
+        self.assertIn("softprops/action-gh-release@", workflow)
         self.assertIn("prerelease: true", workflow)
 
     def test_alpha_release_attaches_slsa_provenance_attestation(self) -> None:

@@ -1,5 +1,5 @@
 Name:           merovingian
-Version:        0.12.60
+Version:        0.12.61
 Release:        1%{?dist}
 Summary:        Secure Matrix Protocol homeserver
 
@@ -112,6 +112,10 @@ fi
 %{_sysconfdir}/merovingian/merovingian.conf.example
 
 %changelog
+* Thu Oct 29 2026 James Chapman <claude@ping.me.uk> - 0.12.61-1
+- Join-state key resolution no longer hangs when a lookup throws; third-party CI actions
+  are pinned to full commit SHAs.
+
 * Wed Oct 28 2026 James Chapman <claude@ping.me.uk> - 0.12.60-1
 - Fixes from the ninth Complement run: membership events accepted for another server are
   forwarded to the room, presence, and sync, backfill and device-list fixes.

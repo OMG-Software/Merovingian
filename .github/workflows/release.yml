@@ -22,7 +22,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Cache compiler output with ccache
-        uses: hendrikmuhs/ccache-action@v1.2
+        uses: hendrikmuhs/ccache-action@5ebbd400eff9e74630f759d94ddd7b6c26299639 # v1.2.20
         with:
           key: ccache-linux-release-${{ github.run_id }}
           restore-keys: ccache-linux-release-
@@ -131,7 +131,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Build hardened FreeBSD package
-        uses: vmactions/freebsd-vm@v1
+        uses: vmactions/freebsd-vm@c46abacb49f09938ca4e1702d15d836285d694cc # v1.5.9
         with:
           usesh: true
           run: |
@@ -340,7 +340,7 @@ jobs:
         run: python scripts/generate-license-summary.py release-assets/merovingian.licenses.json
 
       - name: Publish GitHub alpha release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
         with:
           body_path: release-notes.md
           fail_on_unmatched_files: true

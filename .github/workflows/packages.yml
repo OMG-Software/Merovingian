@@ -35,7 +35,7 @@ jobs:
             libturbojpeg0-dev \
             perl bison flex m4
       - name: Cache compiler output with ccache
-        uses: hendrikmuhs/ccache-action@v1.2
+        uses: hendrikmuhs/ccache-action@5ebbd400eff9e74630f759d94ddd7b6c26299639 # v1.2.20
         with:
           key: ccache-deb-${{ github.run_id }}
           restore-keys: ccache-deb-
@@ -104,7 +104,7 @@ jobs:
             pkgconf \
             zlib-static
       - name: Cache compiler output with ccache
-        uses: hendrikmuhs/ccache-action@v1.2
+        uses: hendrikmuhs/ccache-action@5ebbd400eff9e74630f759d94ddd7b6c26299639 # v1.2.20
         with:
           key: ccache-alpine-${{ github.run_id }}
           restore-keys: ccache-alpine-
@@ -147,7 +147,7 @@ jobs:
             rpm-build systemd-rpm-macros
       - uses: actions/checkout@v4
       - name: Cache compiler output with ccache
-        uses: hendrikmuhs/ccache-action@v1.2
+        uses: hendrikmuhs/ccache-action@5ebbd400eff9e74630f759d94ddd7b6c26299639 # v1.2.20
         with:
           key: ccache-rpm-${{ github.run_id }}
           restore-keys: ccache-rpm-
@@ -200,7 +200,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Build FreeBSD .pkg
-        uses: vmactions/freebsd-vm@v1
+        uses: vmactions/freebsd-vm@c46abacb49f09938ca4e1702d15d836285d694cc # v1.5.9
         with:
           usesh: true
           prepare: |
@@ -226,7 +226,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Build OpenBSD package
-        uses: vmactions/openbsd-vm@v1
+        uses: vmactions/openbsd-vm@f1ca8bc8ecc5b6ef7218e5b914836e067e1546d3 # v1.4.9
         with:
           usesh: true
           prepare: |
@@ -257,7 +257,7 @@ jobs:
       - uses: actions/checkout@v4
       - name: Build NetBSD package
         id: build
-        uses: vmactions/netbsd-vm@v1
+        uses: vmactions/netbsd-vm@c8a0d7ddb84619a7a8cc4e652efa7950b3fd9f92 # v1.5.2
         with:
           usesh: true
           prepare: |
@@ -311,7 +311,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Build NetBSD package
-        uses: vmactions/netbsd-vm@v1
+        uses: vmactions/netbsd-vm@c8a0d7ddb84619a7a8cc4e652efa7950b3fd9f92 # v1.5.2
         with:
           usesh: true
           prepare: |
@@ -387,7 +387,7 @@ jobs:
             perl
       - uses: actions/checkout@v4
       - name: Cache compiler output with ccache
-        uses: hendrikmuhs/ccache-action@v1.2
+        uses: hendrikmuhs/ccache-action@5ebbd400eff9e74630f759d94ddd7b6c26299639 # v1.2.20
         with:
           key: ccache-debian-pkg-${{ github.run_id }}
           restore-keys: ccache-debian-pkg-
@@ -573,7 +573,7 @@ jobs:
           done
       - uses: actions/checkout@v4
       - name: Cache compiler output with ccache
-        uses: hendrikmuhs/ccache-action@v1.2
+        uses: hendrikmuhs/ccache-action@5ebbd400eff9e74630f759d94ddd7b6c26299639 # v1.2.20
         with:
           key: ccache-rhel-rpm-${{ github.run_id }}
           restore-keys: ccache-rhel-rpm-

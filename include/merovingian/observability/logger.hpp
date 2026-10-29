@@ -766,33 +766,6 @@ private:
     std::thread m_file_writer{};
 };
 
-class FunctionTrace final
-{
-public:
-    explicit FunctionTrace(std::string function_name)
-        : m_function_name{std::move(function_name)}
-    {
-        auto stream = std::ostringstream{};
-        stream << ">>> Entering: " << m_function_name;
-        SingleLog::instance().trace("FunctionTrace", stream.str());
-    }
-
-    FunctionTrace(FunctionTrace const&) = delete;
-    auto operator=(FunctionTrace const&) -> FunctionTrace& = delete;
-    FunctionTrace(FunctionTrace&&) = delete;
-    auto operator=(FunctionTrace&&) -> FunctionTrace& = delete;
-
-    ~FunctionTrace()
-    {
-        auto stream = std::ostringstream{};
-        stream << "<<< Exiting: " << m_function_name;
-        SingleLog::instance().trace("FunctionTrace", stream.str());
-    }
-
-private:
-    std::string m_function_name{};
-};
-
 // +-------------------------------------------------------------------------+
 // |  log_diagnostic (0.5.0)                                                    |
 // |                                                                         |
@@ -949,12 +922,6 @@ inline auto log_diagnostic_audit(std::string_view logger, std::string_view event
 }
 
 } // namespace merovingian::observability
-
-#define LOG_FUNCTION_TRACE                                                                                             \
-    auto merovingian_function_trace_guard = ::merovingian::observability::FunctionTrace                                \
-    {                                                                                                                  \
-        __func__                                                                                                       \
-    }
 
 #define LOG_DEBUG(message) ::merovingian::observability::SingleLog::instance().debug(__func__, message)
 

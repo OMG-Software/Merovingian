@@ -1,3 +1,38 @@
+## 0.12.61
+
+Fixes for the SonarQube Cloud findings rated Blocker or High that held up when checked against
+the code (triaged 2026-10-29: 161 open, 30 confirmed, 4 minor, 127 false positives).
+
+### Federation
+
+- **FIXED:** joining a room over federation could hang. The `send_join` state's key lookups ran in
+  parallel with a capped number of slots, and each task gave its slot back with a `release()` call
+  on its last line. `resolve_join_state_key` can throw, which skipped that line; once
+  `key_resolution_max_in_flight` lookups had thrown, the next one waited forever for a slot and the
+  join request never returned. The slot is now held by an RAII permit and returned however the task
+  ends (ADR-0267).
+
+### Internal
+
+- `core::PortableSemaphore`, `core::SemaphorePermit` and `core::run_bounded_parallel` replace the
+  semaphore copies in `inbound_request.cpp` and `room_service.cpp`. The sender-key prepass and the
+  `send_join` key resolution both run through `run_bounded_parallel`, which joins every task and
+  then rethrows the first failure; the make_join race holds its slot in a `SemaphorePermit`
+  (ADR-0267).
+- Removed `observability::FunctionTrace` and its `LOG_FUNCTION_TRACE` macro. Nothing used them, and
+  the destructor could throw.
+
+### CI
+
+- Every third-party GitHub Action is pinned to a full commit SHA with its release in a comment:
+  `anchore/sbom-action`, `anchore/scan-action`, `codecov/codecov-action`,
+  `crazy-max/ghaction-import-gpg`, `hendrikmuhs/ccache-action`, `softprops/action-gh-release` and the
+  `vmactions` BSD VMs (27 uses). A moved tag can no longer run new code in jobs that hold the release
+  signing key or tokens. `workflow-action-pinning-tooling` enforces the rule, and finds `uses`
+  however it is written in YAML (quoted key or value, flow mapping, a value on the next line or in a
+  block scalar), and ignores `uses:` text inside a `run: |` script (ADR-0266). The pin does not
+  cover what an action downloads at run time, such as the codecov CLI.
+
 ## 0.12.60
 
 Fixes from the triage of the ninth Complement run (0.12.59 at 90974603: 415 pass, 255 fail, 93

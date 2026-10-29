@@ -67,6 +67,12 @@ shell = find_program('sh')
   )
 
   test(
+    'workflow-action-pinning-tooling',
+    python,
+    args: [meson.project_source_root() / 'tests' / 'tooling' / 'test_workflow_action_pinning.py'],
+  )
+
+  test(
     'line-endings-tooling',
     python,
     args: [meson.project_source_root() / 'tests' / 'tooling' / 'test_line_endings.py'],
@@ -331,6 +337,7 @@ shell = find_program('sh')
       'unit/test_runtime_media.cpp',
       'unit/test_runtime_orphan_futures.cpp',
       'unit/test_secret_buffer.cpp',
+      'unit/test_bounded_parallel.cpp',
       'unit/test_shutdown_signal.cpp',
       'unit/test_state_resolution.cpp',
       'unit/test_state_resolution_auth_diff.cpp',

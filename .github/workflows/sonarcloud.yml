@@ -149,6 +149,6 @@ jobs:
 
       - name: SonarQube Cloud scan
         # v8.3.0. Pinned to a commit because the action receives SONAR_TOKEN.
-        uses: SonarSource/sonarqube-scan-action@d209202bc7d53ff1cc128f7f907dac145c9d6ae9
+        uses: SonarSource/sonarqube-scan-action@d209202bc7d53ff1cc128f7f907dac145c9d6ae9 # v8.3.0
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}

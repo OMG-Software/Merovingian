@@ -41,6 +41,16 @@ Rules:
   Use `std::thread` and join it from RAII: `homeserver::PeriodicJob` for a background job,
   `homeserver::StopFlag` for a stop request a job polls, and `tests/support/joining_threads.hpp`
   in tests (ADR-0167).
+- Never release a semaphore slot by hand. Cap parallel work with `core::run_bounded_parallel`
+  (`core/bounded_parallel.hpp`), or, when the tasks must outlive the call, take a
+  `core::SemaphorePermit` straight after `acquire()`. A `release()` at the end of a task body is
+  skipped when the task throws, and once every slot has leaked that way the next `acquire()`
+  waits forever (ADR-0267). Use `core::PortableSemaphore`, not `std::counting_semaphore`, which
+  NetBSD's libc++ lacks.
+- Use a third-party GitHub Action only pinned to a full commit SHA with its release in a trailing
+  comment (`owner/repo@<sha> # vX.Y.Z`). A tag can be moved to other code; `actions/*`,
+  `github/*` and local `./` workflows are exempt. `workflow-action-pinning-tooling` enforces it
+  (ADR-0266).
 
 
 ## Tests

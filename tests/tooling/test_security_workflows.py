@@ -165,8 +165,8 @@ class SecurityWorkflowTests(unittest.TestCase):
         # WHEN dependency changes or scheduled triage runs occur.
         # THEN the workflow reviews PR dependency diffs and uploads SBOM-backed SARIF results.
         self.assertIn("actions/dependency-review-action@v5", workflow)
-        self.assertIn("anchore/sbom-action@v0", workflow)
-        self.assertIn("anchore/scan-action@v7", workflow)
+        self.assertIn("anchore/sbom-action@", workflow)
+        self.assertIn("anchore/scan-action@", workflow)
         self.assertIn("github/codeql-action/upload-sarif@v4", workflow)
         self.assertIn("output-format: sarif", workflow)
 
