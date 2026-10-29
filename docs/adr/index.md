@@ -252,6 +252,9 @@
 * [0267 - Bounded parallel work holds each slot in an RAII permit](0267-bounded-parallel-work-holds-each-slot-in-an-raii-permit.md)
 * [0268 - Runtime state structs keep their implicit, possibly throwing, moves](0268-runtime-state-structs-keep-their-implicit-throwing-moves.md)
 * [0269 - The room version resolver does not guess for unknown rooms](0269-the-room-version-resolver-does-not-guess-for-unknown-rooms.md)
+* [0270 - Spelling variants of the sniffed MIME type match](0270-spelling-variants-of-the-sniffed-mime-type-match.md)
+* [0271 - Room summaries answer unauthenticated callers uniformly, for local rooms only](0271-room-summaries-answer-unauthenticated-callers-uniformly.md)
+* [0272 - Canonical alias validation checks the aliases an event adds, and only local ones fully](0272-canonical-alias-validation-checks-added-local-aliases.md)
 
 ## Proposed Records
 

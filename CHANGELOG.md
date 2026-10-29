@@ -46,6 +46,30 @@ Fixes for the failures Complement run 10 found against the signed 0.12.62 releas
   the cause is not yet known. A SQLite write that fails now logs `transaction.failed` (stage,
   statement name, SQLite's code and message, never the bound values), and the join logs which
   count fell short and each state entry it dropped, so the next run names the cause.
+- **`POST /rooms/{roomId}/kick` kicked users who were not in the room.** It answers 403 `M_FORBIDDEN`
+  unless the target is joined, invited or knocking ("The kickee is not currently in the room").
+- **`GET /rooms/{roomId}/event/{eventId}` answered 403 to a user without access.** It answers
+  404 `M_NOT_FOUND`, as for a missing event, so it no longer reveals that the event exists.
+- **`m.room.canonical_alias` content was not validated.** Aliases the event adds are checked: 400
+  `M_INVALID_PARAM` for bad syntax, 400 `M_BAD_ALIAS` for a local alias that does not point to the
+  room. Remote aliases are checked for syntax only (ADR-0272).
+- **`createRoom`:** `topic` also writes the `text/plain` representation in `m.topic`, and a
+  `room_version` that is not a JSON string is refused with 400 `M_BAD_JSON`.
+- **Key backup uploads replaced better keys.** An upload for a session the backup holds keeps the
+  better key: verified over unverified, then lower `first_message_index`, then lower
+  `forwarded_count`.
+- **ADDED:** `GET /_matrix/client/v1/room_summary/{roomIdOrAlias}` for rooms this server holds.
+  Without a token it summarises only public, knock and world-readable rooms and answers every
+  other room, existing or not, with the same 401 (ADR-0271). `via` is not used yet.
+- **An empty-body upload to a filled media ID answered 400.** The local router refused an empty
+  body before the media service could answer 409 `M_CANNOT_OVERWRITE_MEDIA` (ADR-0270).
+- **A PNG declared `img/png` was quarantined.** A declared type that only spells the sniffed type
+  differently (letter case, `img/` for `image/`) is no longer a mismatch; it is stored and served
+  under the declared spelling. Every other mismatch is still quarantined, and the allow-list still
+  judges the sniffed type (ADR-0270, owner decision 2026-10-29).
+- **Federated media downloads lost their filename.** `GET /_matrix/federation/v1/media/download`
+  now names the upload's file in the media part's `Content-Disposition` (RFC 6266 for non-ASCII
+  names), so the fetching server serves it.
 - **The legacy media endpoints served remote media fetched during the freeze.**
   `GET /_matrix/media/v3/download` and `/thumbnail` fetched remote media on demand and served it,
   although the spec counts media the server "had to re-download" as new media, which SHOULD only
