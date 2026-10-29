@@ -908,12 +908,13 @@ namespace
             fields[index] = remaining.substr(0U, separator);
             remaining = remaining.substr(separator + 1U);
         }
-        for (auto const field : fields)
+        // The first three fields are the wrapper's own and are always present. The last is the
+        // client's body, and a body may be empty: such an upload has to reach the media service so
+        // that the media ID's state (409 for a media ID that already has content) and the policy's
+        // own refusal of an empty file ("empty media upload") answer, not this framing check.
+        if (fields[0].empty() || fields[1].empty() || fields[2].empty())
         {
-            if (field.empty())
-            {
-                return std::nullopt;
-            }
+            return std::nullopt;
         }
         return fields;
     }

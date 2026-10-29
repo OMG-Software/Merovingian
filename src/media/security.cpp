@@ -27,6 +27,8 @@ auto content_type_is_inline_safe(std::string_view content_type) noexcept -> bool
         media_type.remove_suffix(1U);
     }
 
+    // A spelling variant of a listed type is that type (media_types_are_equivalent),
+    // so a file stored under the declared "img/png" is still shown inline.
     static constexpr auto inline_safe = std::array{
         std::string_view{"text/css"},
         std::string_view{"text/plain"},
@@ -55,7 +57,47 @@ auto content_type_is_inline_safe(std::string_view content_type) noexcept -> bool
         std::string_view{"audio/flac"},
         std::string_view{"audio/x-flac"},
     };
-    return std::ranges::find(inline_safe, media_type) != inline_safe.end();
+    return std::ranges::any_of(inline_safe, [media_type](std::string_view listed) noexcept {
+        return media_types_are_equivalent(media_type, listed);
+    });
+}
+
+namespace
+{
+
+    [[nodiscard]] auto equals_ignoring_ascii_case(std::string_view left, std::string_view right) noexcept -> bool
+    {
+        constexpr auto lower = [](char c) noexcept -> char {
+            return c >= 'A' && c <= 'Z' ? static_cast<char>(c - 'A' + 'a') : c;
+        };
+        return left.size() == right.size() && std::ranges::equal(left, right, [lower](char a, char b) noexcept {
+                   return lower(a) == lower(b);
+               });
+    }
+
+} // namespace
+
+auto media_types_are_equivalent(std::string_view declared, std::string_view sniffed) noexcept -> bool
+{
+    auto const declared_slash = declared.find('/');
+    auto const sniffed_slash = sniffed.find('/');
+    if (declared_slash == std::string_view::npos || sniffed_slash == std::string_view::npos)
+    {
+        return false;
+    }
+    auto const declared_top = declared.substr(0U, declared_slash);
+    auto const declared_subtype = declared.substr(declared_slash + 1U);
+    auto const sniffed_top = sniffed.substr(0U, sniffed_slash);
+    auto const sniffed_subtype = sniffed.substr(sniffed_slash + 1U);
+    if (declared_top.empty() || declared_subtype.empty() || sniffed_top.empty() || sniffed_subtype.empty())
+    {
+        return false;
+    }
+    // `img` is read as `image` and as nothing else.
+    auto const top_matches =
+        equals_ignoring_ascii_case(declared_top, sniffed_top) ||
+        (equals_ignoring_ascii_case(declared_top, "img") && equals_ignoring_ascii_case(sniffed_top, "image"));
+    return top_matches && equals_ignoring_ascii_case(declared_subtype, sniffed_subtype);
 }
 
 auto media_filename_is_valid(std::string_view filename) noexcept -> bool
@@ -319,7 +361,11 @@ auto evaluate_media_upload(MediaUploadPolicy const& policy, MediaUploadRequest c
         });
         return {MediaDisposition::quarantine, "content sniffing result required"};
     }
-    if (!request.sniffed_mime_type.empty() && request.declared_mime_type != request.sniffed_mime_type)
+    // A declared type that merely spells the sniffed one differently (letter case,
+    // img for image) is no mismatch (owner decision 2026-10-29); the allow-list
+    // below still judges the sniffed type, never the declared string.
+    if (!request.sniffed_mime_type.empty() && request.declared_mime_type != request.sniffed_mime_type &&
+        !media_types_are_equivalent(request.declared_mime_type, request.sniffed_mime_type))
     {
         log_diagnostic("upload.quarantined", {
                                                  {"declared_mime_type", request.declared_mime_type,                  false},

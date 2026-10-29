@@ -154,6 +154,22 @@ namespace
         return value;
     }
 
+    // A file may be stored under a spelling variant of its real type ("img/png",
+    // media_types_are_equivalent); the thumbnail worker takes the canonical spelling
+    // only, so a variant of a type it decodes is handed over as that type. Any other
+    // string is passed through and refused by the worker as before.
+    [[nodiscard]] auto thumbnail_source_content_type(std::string_view content_type) -> std::string
+    {
+        for (auto const listed : {std::string_view{"image/png"}, std::string_view{"image/jpeg"}})
+        {
+            if (media::media_types_are_equivalent(content_type, listed))
+            {
+                return std::string{listed};
+            }
+        }
+        return std::string{content_type};
+    }
+
     [[nodiscard]] auto extract_multipart_boundary(std::string_view content_type) -> std::string
     {
         // RFC 2046 §5.1.1: parameter names are case-insensitive and the value
@@ -1407,7 +1423,7 @@ namespace
 
         auto request = media::ThumbnailRequest{};
         request.source_bytes = bytes;
-        request.source_content_type = std::string{content_type};
+        request.source_content_type = thumbnail_source_content_type(content_type);
         request.width = width;
         request.height = height;
         request.method = method;
@@ -1888,7 +1904,13 @@ namespace
     {
         return {false, 404U, {}, {}, "media not found"};
     }
-    return {true, 200U, target.content_type, std::move(*bytes), {}};
+    auto const* record = media::find_local_media_record(runtime.media_repository, media_id);
+    return {true,
+            200U,
+            target.content_type,
+            std::move(*bytes),
+            {},
+            record == nullptr ? std::string{} : record->upload_name};
 }
 
 [[nodiscard]] auto download_local_media_thumbnail(HomeserverRuntime& runtime, std::string_view server_name,

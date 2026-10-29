@@ -1791,7 +1791,8 @@ namespace
             }
             return {result.status, homeserver::matrix_error("M_UNKNOWN", result.reason)};
         }
-        auto envelope = media::build_federation_media_download_body(result.content_type, result.bytes);
+        auto envelope =
+            media::build_federation_media_download_body(result.content_type, result.bytes, result.upload_name);
         if (envelope.body.empty())
         {
             return {500U, "failed to build media response"};
