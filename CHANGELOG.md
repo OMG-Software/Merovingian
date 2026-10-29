@@ -96,6 +96,18 @@ Fixes for the failures Complement run 10 found against the signed 0.12.62 releas
   (multipart/mixed, local media only).
 - **Federation errors were plain text, and `/send` listed only failures.** Every federation error is now
   a standard `{errcode, error}` object, and `/send` answers every PDU, `{}` when handled (ADR-0280).
+  A PDU the ingestion sink failed on internally now gets an `error` entry too.
+- **A retried `/send` transaction reported every PDU as handled.** A retry is not processed again,
+  and was answered `{}` for each PDU, even one that failed the first time. Main's completed-transaction
+  ring now keeps each first answer (from the worker too) and replays it, within a 16 MiB byte budget
+  as well as the entry cap (ADR-0283).
+- **An `invite_room_state` check that failed on this server's side was blamed on the sender.** A 500
+  or 503 from the check answered `M_INVALID_PARAM`; only a 400 does now, the others `M_UNKNOWN`.
+- **A federation media download or thumbnail the media policy refused answered `M_UNKNOWN`.** The 403
+  now carries `M_FORBIDDEN`.
+- **`/_matrix/client/v3/rooms/{roomId}/state_ids` and `.../v3/.../threads` answered 405.** Neither is
+  a v3 client endpoint (`/threads` is v1, `/state_ids` is federation only), so both are 404
+  `M_UNRECOGNIZED`.
 - **Remote aliases created after the federation worker started were not found.** `query/directory` is
   relayed to main instead of read from the worker's start-up snapshot (ADR-0281).
 - **Profiles of users on other servers were 404.** `GET /profile/{userId}[/{keyName}]` asks the user's

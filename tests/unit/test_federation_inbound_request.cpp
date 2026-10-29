@@ -4568,3 +4568,134 @@ SCENARIO("A /send response reports a retained PDU as handled and a dropped one a
         }
     }
 }
+
+// Spec: server-server-api.md, "Transactions": the 200 response maps each PDU of
+// the transaction to its processing result. A retried transaction ID is not
+// processed again (ADR-0160), so its answer must be the one the first attempt
+// gave: a PDU that failed then must not be reported as handled now.
+SCENARIO("A retried /send transaction is answered with the first attempt's per-PDU results",
+         "[federation][inbound][transaction][duplicate]")
+{
+    GIVEN("a transaction whose one PDU this server could not place")
+    {
+        auto runtime = merovingian::federation::make_federation_runtime_state(runtime_config());
+        auto const origin = std::string{"sender.example.org"};
+        auto const key_id = std::string{"ed25519:auto"};
+        auto const token = std::string{"sender-server-key"};
+        merovingian::federation::upsert_remote(runtime, remote_for(origin, key_id, token));
+        auto const request =
+            signed_request(origin, key_id, token, transaction_body(origin, signed_json_pdu(origin, key_id, token)));
+        auto sink_calls = 0U;
+        runtime.pdu_sink =
+            [&sink_calls](
+                merovingian::federation::InboundPduEnvelope const&) -> merovingian::federation::PduIngestionResult {
+            ++sink_calls;
+            return {merovingian::federation::PduIngestionStatus::missing_prev_state, "prev_event not yet known"};
+        };
+
+        WHEN("the sender retries the transaction under the same ID")
+        {
+            auto const first = merovingian::federation::handle_inbound_federation_request(runtime, request);
+            auto const retry = merovingian::federation::handle_inbound_federation_request(runtime, request);
+
+            THEN("the PDU is processed once and the retry reports the same error for it")
+            {
+                REQUIRE(first.status == 200U);
+                REQUIRE(first.body.find("\"error\"") != std::string::npos);
+                REQUIRE(retry.status == 200U);
+                REQUIRE(retry.body == first.body);
+                REQUIRE(sink_calls == 1U);
+            }
+        }
+    }
+}
+
+// Spec: server-server-api.md, "Transactions": only a PDU whose entry has no
+// `error` "can be considered successfully handled". A PDU the sink failed on
+// internally was not handled, so the sender must be told.
+SCENARIO("A PDU the sink fails on internally is answered with an error entry",
+         "[federation][inbound][transaction][pdu]")
+{
+    GIVEN("a transaction carrying one validly signed PDU and a sink that fails internally")
+    {
+        auto runtime = merovingian::federation::make_federation_runtime_state(runtime_config());
+        auto const origin = std::string{"sender.example.org"};
+        auto const key_id = std::string{"ed25519:auto"};
+        auto const token = std::string{"sender-server-key"};
+        merovingian::federation::upsert_remote(runtime, remote_for(origin, key_id, token));
+        auto const request =
+            signed_request(origin, key_id, token, transaction_body(origin, signed_json_pdu(origin, key_id, token)));
+        auto event_id = std::string{};
+        runtime.pdu_sink =
+            [&event_id](
+                merovingian::federation::InboundPduEnvelope const& env) -> merovingian::federation::PduIngestionResult {
+            event_id = env.event_id;
+            return {merovingian::federation::PduIngestionStatus::internal_error, "store unavailable"};
+        };
+
+        WHEN("the transaction is handled")
+        {
+            auto const response = merovingian::federation::handle_inbound_federation_request(runtime, request);
+
+            THEN("the transaction is answered 200 and the PDU's entry carries an error")
+            {
+                REQUIRE(response.status == 200U);
+                REQUIRE_FALSE(event_id.empty());
+                REQUIRE(response.body.find("\"" + event_id + "\":{\"error\":") != std::string::npos);
+            }
+        }
+    }
+}
+
+// The kept answers are bounded in bytes as well as in entries (ADR-0283): a
+// flood of large answers evicts the oldest entries instead of growing memory.
+SCENARIO("Completed transactions' answers are kept within a byte budget",
+         "[federation][inbound][transaction][security]")
+{
+    GIVEN("a runtime whose completed-transaction answers may total 64 bytes")
+    {
+        auto runtime = merovingian::federation::make_federation_runtime_state(runtime_config());
+        runtime.config.accepted_transaction_cache_bytes = 64U;
+        auto const answer = std::string(40U, 'a');
+
+        WHEN("two transactions with 40-byte answers complete")
+        {
+            merovingian::federation::record_completed_federation_transaction(runtime,
+                                                                             {"a.example", "txn-1", 1U, 0U, answer});
+            merovingian::federation::record_completed_federation_transaction(runtime,
+                                                                             {"a.example", "txn-2", 1U, 0U, answer});
+
+            THEN("the oldest is evicted and the newest is answered from its kept body")
+            {
+                REQUIRE_FALSE(merovingian::federation::federation_transaction_completed(runtime, "a.example", "txn-1"));
+                REQUIRE(merovingian::federation::completed_federation_transaction_answer(runtime, "a.example",
+                                                                                         "txn-2") == answer);
+                REQUIRE(runtime.accepted_transaction_bytes == answer.size());
+            }
+        }
+
+        WHEN("a transaction's answer alone is larger than the budget")
+        {
+            merovingian::federation::record_completed_federation_transaction(
+                runtime, {"a.example", "txn-big", 1U, 0U, std::string(100U, 'b')});
+
+            THEN("the transaction is still recorded as completed but its answer is not kept")
+            {
+                REQUIRE(merovingian::federation::completed_federation_transaction_answer(runtime, "a.example",
+                                                                                         "txn-big") == std::string{});
+                REQUIRE(runtime.accepted_transaction_bytes == 0U);
+            }
+        }
+
+        WHEN("an unknown transaction is looked up")
+        {
+            auto const missing =
+                merovingian::federation::completed_federation_transaction_answer(runtime, "a.example", "txn-none");
+
+            THEN("there is no answer")
+            {
+                REQUIRE_FALSE(missing.has_value());
+            }
+        }
+    }
+}

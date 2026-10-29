@@ -112,6 +112,9 @@ struct FederationAcceptedTransaction final
     std::string transaction_id{};
     std::size_t pdu_count{0U};
     std::size_t edu_count{0U};
+    // The 200 body the transaction was first answered with, replayed to a
+    // retry of it. Empty when it did not fit the ring's byte budget (ADR-0283).
+    std::string response_body{};
 };
 
 struct FederationRemoteRuntime final
@@ -310,6 +313,9 @@ struct FederationRuntimeState final
     // entry is always at the front — a plain FIFO pop_front() eviction (O(1)
     // on a deque) is enough to keep this bounded.
     std::deque<FederationAcceptedTransaction> accepted_transactions{};
+    // Total bytes of the response_body values kept in accepted_transactions,
+    // bounded by config.accepted_transaction_cache_bytes (ADR-0283).
+    std::size_t accepted_transaction_bytes{0U};
     std::vector<FederationRateLimitBucket> rate_limit_buckets{};
     // Bounded audit ring (#423): capped at kMaxAuditEvents
     // (inbound_request.cpp) with FIFO eviction, mirroring
@@ -679,8 +685,14 @@ struct InboundSignatureVerification final
 [[nodiscard]] auto federation_send_transaction_id(std::string_view target) -> std::string;
 [[nodiscard]] auto federation_transaction_completed(FederationRuntimeState const& runtime, std::string_view origin,
                                                     std::string_view transaction_id) -> bool;
-// Appends to the bounded ring, evicting the oldest entry at the configured
-// cap. Records nothing if the transaction is already there.
+// The answer a completed transaction was first given: nullopt when the
+// transaction is not in the ring, empty when its answer was not kept.
+[[nodiscard]] auto completed_federation_transaction_answer(FederationRuntimeState const& runtime,
+                                                           std::string_view origin, std::string_view transaction_id)
+    -> std::optional<std::string>;
+// Appends to the bounded ring, evicting the oldest entries at the configured
+// entry cap and answer byte budget. Records nothing if the transaction is
+// already there.
 auto record_completed_federation_transaction(FederationRuntimeState& runtime, FederationAcceptedTransaction transaction)
     -> void;
 

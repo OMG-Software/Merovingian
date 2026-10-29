@@ -251,6 +251,10 @@ SCENARIO("GET /media/download/{mediaId} serves local media as multipart/mixed",
             {
                 return {false, 451U, {}, {}, "media quarantined"};
             }
+            if (queried_media_id == "denied")
+            {
+                return {false, 403U, {}, {}, "media policy denied"};
+            }
             return {false, 500U, {}, {}, "unknown media"};
         };
 
@@ -335,6 +339,20 @@ SCENARIO("GET /media/download/{mediaId} serves local media as multipart/mixed",
                 // Spec: quarantined media returns 451 (unavailable for legal reasons).
                 REQUIRE(response.status == 451U);
                 REQUIRE(response.body.find("M_NOT_FOUND") != std::string::npos);
+            }
+        }
+
+        WHEN("a signed GET /media/download/{mediaId} requests a file the media policy denies")
+        {
+            auto const target = std::string{"/_matrix/federation/v1/media/download/denied"};
+            auto const response = merovingian::federation::handle_inbound_federation_request(
+                runtime, signed_get_request(origin, key_id, key_seed, target));
+
+            THEN("the response is 403 M_FORBIDDEN")
+            {
+                // Spec: "M_FORBIDDEN: Forbidden access, e.g. joining a room without permission".
+                REQUIRE(response.status == 403U);
+                REQUIRE(response.body.find("M_FORBIDDEN") != std::string::npos);
             }
         }
 

@@ -611,8 +611,9 @@ quickly finding everything a given `AGENTS.md` file contributed.
 
 - **Main's `accepted_transactions` ring is the record of completed `/send` transactions,
   whichever process ran them.** A path that runs an inbound transaction outside main's handler
-  records its completions there (`record_completed_federation_transaction`) and sends a
-  transaction already there to main.
+  records its completions there (`record_completed_federation_transaction`), with the 200 body
+  it answered, and sends a transaction already there to main. A duplicate is given the kept
+  body; the kept bodies are bounded in bytes as well as entries (ADR-0283).
   Why: each process kept its own ring, so a retry that reached main after the worker completed
   it (a room whose reload failed) was processed again and its EDUs delivered twice (OpenBSD CI,
   ADR-0160).

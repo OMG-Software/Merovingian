@@ -616,6 +616,21 @@ SCENARIO("A known path used with an unsupported method answers 405 M_UNRECOGNIZE
                 REQUIRE(errcode_of(authenticated) == "M_UNRECOGNIZED");
             }
         }
+        WHEN("a client asks for room paths only another API version or the federation API has")
+        {
+            auto const state_ids =
+                send(started.runtime, "GET", "/_matrix/client/v3/rooms/!r:example.org/state_ids", token);
+            auto const threads = send(started.runtime, "GET", "/_matrix/client/v3/rooms/!r:example.org/threads", token);
+            THEN("each answers 404 M_UNRECOGNIZED")
+            {
+                // Spec MUST: 404 "if the endpoint is not implemented". `/threads` is a v1 endpoint
+                // and `/state_ids` exists only in the Server-Server API.
+                REQUIRE(state_ids.status == 404U);
+                REQUIRE(errcode_of(state_ids) == "M_UNRECOGNIZED");
+                REQUIRE(threads.status == 404U);
+                REQUIRE(errcode_of(threads) == "M_UNRECOGNIZED");
+            }
+        }
         WHEN("the supported methods are used on those same paths")
         {
             auto const flows = send(started.runtime, "GET", "/_matrix/client/v3/login");

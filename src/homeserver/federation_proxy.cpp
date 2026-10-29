@@ -205,8 +205,11 @@ auto FederationProxy::handle(LocalHttpRequest const& request) -> LocalHttpRespon
     auto response = pool_->handle(verified_request, room_id);
     if (!send_transaction_id.empty() && response.status == 200U)
     {
-        // Only the worker knows the PDU and EDU counts, which nothing reads.
-        federation::record_completed_federation_transaction(runtime_.federation, {origin, send_transaction_id, 0U, 0U});
+        // Only the worker knows the PDU and EDU counts, which nothing reads. Its
+        // answer is kept, so a retry that reaches main is given the same one
+        // (ADR-0283).
+        federation::record_completed_federation_transaction(runtime_.federation,
+                                                            {origin, send_transaction_id, 0U, 0U, response.body});
     }
     return response;
 }

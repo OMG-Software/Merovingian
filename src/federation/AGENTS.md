@@ -148,7 +148,11 @@ Federation is the highest-risk surface: **all input comes from untrusted remote 
    main, so a retry can reach the process that did not run the original. `FederationProxy`
    records each transaction the worker answers with 200 in main's ring and sends any
    transaction already there to main, which answers it as a duplicate. A new path that runs
-   an inbound transaction outside main's handler does the same (ADR-0160).
+   an inbound transaction outside main's handler does the same (ADR-0160). Each entry keeps the
+   200 body the transaction was first answered with, and a duplicate is given that body, so a
+   PDU that failed is not reported as handled on a retry. Record a completion only once its
+   whole answer is built, and pass the body. The kept bodies are bounded by
+   `accepted_transaction_cache_bytes` as well as the entry cap (ADR-0283).
 
 11. **A PDU that cannot yet be placed is retained, not dropped (R03, ADR-0165).** When
    `ingest_pdu_event` cannot resolve a `prev_event`, `auth_event` or state before an

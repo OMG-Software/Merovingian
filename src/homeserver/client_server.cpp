@@ -3110,9 +3110,24 @@ namespace
                         return variable_room_action("typing", 1U, "/typing/{userId}");
                     }
                     static constexpr auto room_actions = std::to_array<std::string_view>({
-                        "aliases", "joined_members", "members", "state_ids", "messages", "context", "initialSync",
-                        "threads", "read_markers",   "forget",  "invite",    "kick",     "ban",     "leave",
-                        "join",    "upgrade",        "report",  "receipt",   "typing",   "unban",
+                        "aliases",
+                        "joined_members",
+                        "members",
+                        "messages",
+                        "context",
+                        "initialSync",
+                        "read_markers",
+                        "forget",
+                        "invite",
+                        "kick",
+                        "ban",
+                        "leave",
+                        "join",
+                        "upgrade",
+                        "report",
+                        "receipt",
+                        "typing",
+                        "unban",
                     });
                     if (std::ranges::find(room_actions, action) == room_actions.end() ||
                         action_end != std::string_view::npos)
