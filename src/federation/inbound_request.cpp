@@ -3538,8 +3538,9 @@ namespace
                 completed_federation_transaction_answer(runtime, request.origin, transaction.transaction_id);
             first_answer.has_value())
         {
-            remote.trust.consecutive_failures = 0U;
-            persist_remote_trust(runtime, remote);
+            // The peer's trust is left as the first attempt left it: the retry verifies
+            // nothing, so it is no evidence either way, and resetting the failure count
+            // here let a peer clear its backoff by resending the transaction that earned it.
             audit_federation(runtime, "federation.duplicate", request.origin, request.target,
                              "transaction already accepted");
             // The transaction is not processed again, so the retry gets the first answer, errors

@@ -114,12 +114,17 @@ Fixes for the failures Complement run 10 found against the signed 0.12.62 releas
   (ADR-0284).
 - **A federation media download too large to serve answered 413.** The spec gives the download 502
   `M_TOO_LARGE`; 413 is the thumbnail endpoint's, for local content, and stays there.
+- **A peer could clear its own trust backoff by resending a transaction.** A retry of a completed
+  `/send` transaction reset the origin's failure count, though it verifies nothing; a peer whose
+  transaction carried PDUs that failed verification could resend it to clear the backoff they had
+  earned. A duplicate now leaves the peer's trust as the first attempt left it.
 - **CI: the SonarCloud job timed out in the conformance suite.** Under gcov instrumentation the
   suite took 555 s of its 600 s limit, and crossed it in the SonarCloud job. `scripts/build-linux.sh`
   now gives `--coverage` builds a timeout multiplier of 2 by default; other builds keep the limits.
 - **Tests:** conformance scenarios now cover the server ACL on `/event_auth` (a denied server gets
   403 `M_FORBIDDEN`), `/event_auth` with no provider, and every federation media refusal's errcode;
-  a unit scenario covers a retry whose first answer was too large to keep.
+  a unit scenario covers a retry whose first answer was too large to keep. The ADR-0284 auth-chain
+  bound is a server limit, not a spec rule, so its boundary cases are unit tests, not conformance.
 - **Remote aliases created after the federation worker started were not found.** `query/directory` is
   relayed to main instead of read from the worker's start-up snapshot (ADR-0281).
 - **Profiles of users on other servers were 404.** `GET /profile/{userId}[/{keyName}]` asks the user's

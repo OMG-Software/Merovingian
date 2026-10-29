@@ -2204,25 +2204,6 @@ SCENARIO("GET /event_auth/{roomId}/{eventId} is routed to the event_auth provide
             }
         }
 
-        WHEN("the provider finds the chain longer than this server will serve")
-        {
-            runtime.event_auth_query_provider = [](std::string_view, std::string_view, std::string_view) {
-                return merovingian::federation::RoomReadResult{merovingian::federation::RoomReadStatus::too_large, {}};
-            };
-            auto const target = std::string{"/_matrix/federation/v1/event_auth/%21conformance%3Alocal.example.org/"
-                                            "%24event%3Aremote.example.org"};
-            auto const response = merovingian::federation::handle_inbound_federation_request(
-                runtime, signed_get_request(origin, key_id, key_seed, target));
-
-            THEN("the answer is 502 M_TOO_LARGE, not a 200 with part of the chain")
-            {
-                // ADR-0284, after the spec's media download: 502 "too large for the server to serve".
-                REQUIRE(response.status == 502U);
-                REQUIRE(response.body.find("M_TOO_LARGE") != std::string::npos);
-                REQUIRE(response.body.find("auth_chain") == std::string::npos);
-            }
-        }
-
         WHEN("the path lacks the event ID")
         {
             auto const target = std::string{"/_matrix/federation/v1/event_auth/%21conformance%3Alocal.example.org"};
