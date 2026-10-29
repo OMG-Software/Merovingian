@@ -273,6 +273,29 @@ a join is (ADR-0242, ADR-0243), with the body's `reason` on the knock event. A r
 resident's `knock_room_state` is kept, without entries whose signature does not check out, and shown as
 `knock_state`. A room alias is not resolved by `/knock` yet: it answers 404.
 
+Implementation note (Complement run 10): `POST /rooms/{roomId}/kick` answers `403 M_FORBIDDEN` when the target is not currently in
+the room (spec, kick 403: "The kickee is not currently in the room."). "In the room" is a membership of `join`, `invite`
+or `knock`, the states a `leave` event can end; a user who left, was banned or never had a membership is refused (a
+ban is lifted with `/unban`).
+
+Implementation note (Complement run 10):
+
+- `GET /rooms/{roomId}/event/{eventId}` answers `404 M_NOT_FOUND` to a user with no read access to the room, the same
+  answer as for an event that does not exist (the endpoint's only error is 404). `/context` still answers 403.
+- `PUT /rooms/{roomId}/state/m.room.canonical_alias` validates the aliases the new content adds (those not already in the
+  room's current event): `400 M_INVALID_PARAM` for invalid syntax or a wrong field type, `400 M_BAD_ALIAS` for an alias on
+  this server that is not in the directory or points at another room. An alias on another server is checked for syntax
+  only (the SHOULD would need a federation call); aliases already listed or being removed are not validated. The check
+  runs only for a sender who may send the event, so anyone else gets the 403. `createRoom` `initial_state` is not
+  validated this way.
+- `createRoom` `topic` writes `m.room.topic` with both `topic` and `m.topic` = `{"m.text":[{"body":..,"mimetype":"text/plain"}]}`,
+  after `initial_state`, so it overwrites a topic given there. A `room_version` that is not a JSON string is
+  `400 M_BAD_JSON`.
+- Key backup uploads (`PUT /room_keys/keys[/{roomId}[/{sessionId}]]`) keep the better key for a session the backup
+  already holds: a verified key beats an unverified one, then the lower `first_message_index`, then the lower
+  `forwarded_count`. Keys equal on all three are not ordered by the spec; the one just uploaded replaces. The response
+  is 200 either way.
+
 ## Room participation
 
 | Method | Path | Operation ID | Auth | Request body | Responses |
@@ -369,6 +392,15 @@ walk, one outbound-budget slot and one deadline per request, `429 M_LIMIT_EXCEED
 the requesting user may see it according to what that server reported; local state, where the server has it, is always used
 instead of the remote answer. With `suggested_only=true` the walk and every space's `children_state` carry the suggested links only.
 
+`getRoomSummary` (Complement run 10) answers for a room, or a local alias, this server holds state for. `via` is accepted and
+ignored: a room this server has no state of is `404`, as is an alias on another server (asking a peer for a summary is not
+implemented). An authenticated caller is shown a room they are joined to, invited to or have knocked on, or that is `public`,
+`knock` / `knock_restricted`, `world_readable`, or `restricted` with the caller joined to an allowed room; any other room is
+`404 M_NOT_FOUND`. `membership` is the caller's own membership when they have one, and is absent without a token. A request
+without a token (the spec's MAY) is served for `public`, `knock`, `knock_restricted` and `world_readable` rooms only, and
+every other room, existing or not, gets the same `401 M_MISSING_TOKEN`. The body is the hierarchy's room chunk without
+`children_state`.
+
 ## Third-party Lookup
 
 | Method | Path | Operation ID | Auth | Request body | Responses |
@@ -391,7 +423,7 @@ instead of the remote answer. With `suggested_only=true` the walk and every spac
 | Method | Path | Operation ID | Auth | Request body | Responses |
 | --- | --- | --- | --- | --- | --- |
 | `POST` | `/_matrix/client/v1/appservice/{appserviceId}/ping` | `pingAppservice` | appservice token | required application/json | 200, 400, 403, 502, 504 |
-| `GET` | `/_matrix/client/v1/room_summary/{roomIdOrAlias}` | `getRoomSummary` | signed request | - | 200, 404 |
+| `GET` | `/_matrix/client/v1/room_summary/{roomIdOrAlias}` | `getRoomSummary` | access token, optional | - | 200, 401, 404 |
 | `POST` | `/_matrix/client/v3/refresh` | `refresh` | none | required application/json | 200, 401, 429 |
 
 ## User data
