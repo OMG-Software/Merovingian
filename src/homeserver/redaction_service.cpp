@@ -235,9 +235,21 @@ auto check_local_redaction(database::PersistentStore const& store, std::string_v
     }
     auto const target_id = events::redaction_target(*redaction, *policy);
     auto const* target_event = target_id.has_value() ? find_event(store, *target_id) : nullptr;
-    if (target_event == nullptr || target_event->room_id != room_id)
+    if (target_event != nullptr && target_event->room_id != room_id)
     {
         return LocalRedactionCheck::target_unknown;
+    }
+    if (target_event == nullptr)
+    {
+        // Spec (PUT /redact): the only response is 200. An event this server has not received (it
+        // may be held by the servers the redaction will reach, or arrive later) cannot be judged
+        // here, and whose event it is cannot be checked, so only a sender who may redact anyone's
+        // event is let through; the target's own sender, its domain and the rest of the rules are
+        // judged when it arrives (reconcile_redaction).
+        return target_id.has_value() && !target_id->empty() &&
+                       events::sender_meets_redact_level(*redaction, context_of(store, *redaction, room_id), *policy)
+                   ? LocalRedactionCheck::permitted
+                   : LocalRedactionCheck::forbidden;
     }
     auto const target = parse_event(target_event->json);
     auto const sender = string_of(*redaction, "sender");

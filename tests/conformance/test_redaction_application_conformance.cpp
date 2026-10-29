@@ -506,14 +506,30 @@ SCENARIO("Redacting another user's event needs the redact power level",
             }
         }
 
-        WHEN("alice redacts an event id the room does not contain")
+        // Spec: PUT /redact defines one success response, 200, and no 404: "200: An ID for the
+        // redaction event". A server that does not hold the target cannot tell whose event it is, so
+        // it accepts the redaction only from a sender who holds the room's `redact` level (the power
+        // to redact anyone's event) and the redaction then reaches the servers that hold the event.
+        WHEN("alice, who holds the redact level, redacts an event id this server does not hold")
         {
             auto const reply = redact(rt, alice, room_id, "$doesNotExist", "alice-x");
 
-            THEN("it is refused with 404 M_NOT_FOUND")
+            THEN("it is accepted with 200 and an event ID for the redaction")
             {
-                REQUIRE(reply.status == 404U);
-                REQUIRE(*string_member(parse_object(reply.body), "errcode") == "M_NOT_FOUND");
+                // Spec: the only response is 200 carrying the redaction's event ID.
+                REQUIRE(reply.status == 200U);
+                REQUIRE(!event_id_of(reply).empty());
+            }
+        }
+
+        WHEN("bob, who lacks the redact level, redacts an event id this server does not hold")
+        {
+            auto const reply = redact(rt, bob, room_id, "$doesNotExist", "bob-x");
+
+            THEN("it is refused with 403 M_FORBIDDEN: it cannot be shown to be bob's own event")
+            {
+                REQUIRE(reply.status == 403U);
+                REQUIRE(*string_member(parse_object(reply.body), "errcode") == "M_FORBIDDEN");
             }
         }
     }
@@ -1030,9 +1046,9 @@ SCENARIO("PUT /redact with a body that is not a JSON object is refused and redac
 
         WHEN("she redacts it with a JSON array as the body")
         {
-            auto const reply = call(rt, "PUT",
-                                    "/_matrix/client/v3/rooms/" + room_id + "/redact/" + message + "/bad-body", alice,
-                                    R"(["spam"])");
+            auto const reply =
+                call(rt, "PUT", "/_matrix/client/v3/rooms/" + room_id + "/redact/" + message + "/bad-body", alice,
+                     R"(["spam"])");
 
             THEN("the server answers 400 M_BAD_JSON and the message keeps its content")
             {
