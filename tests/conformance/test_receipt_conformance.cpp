@@ -291,13 +291,16 @@ SCENARIO("POST /rooms/{roomId}/receipt/{receiptType}/{eventId} rejects a malform
                 started.runtime,
                 {"POST", "/_matrix/client/v3/rooms/" + room_id + "/receipt/m.read/$x:example.org", token, "not-json"});
 
-            THEN("the server responds with 400 M_BAD_JSON")
+            THEN("the server responds with 400 M_NOT_JSON")
             {
                 REQUIRE(receipt.response.status == 400U);
                 auto const body = parse_object(receipt.response.body);
                 auto const* errcode = string_member(body, "errcode");
                 REQUIRE(errcode != nullptr);
-                REQUIRE(*errcode == "M_BAD_JSON");
+                // Spec (CS API "Standard error response", v1.19): "`M_NOT_JSON`: Request did not
+                // contain valid JSON." The body is text that is not JSON; M_BAD_JSON is for valid
+                // JSON "malformed in some way". (Was M_BAD_JSON before Complement run 10.)
+                REQUIRE(*errcode == "M_NOT_JSON");
             }
         }
     }

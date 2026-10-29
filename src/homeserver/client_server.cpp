@@ -1285,6 +1285,40 @@ namespace
         return stored_room_version(store, room_id).value_or("10");
     }
 
+    // True when `body` is not JSON at all: the text is malformed or is not valid UTF-8 (the
+    // errors a JSON reader gives for the grammar). Spec: "M_NOT_JSON: Request did not contain
+    // valid JSON." Text that is JSON but that this server refuses for its content or size (an
+    // integer outside the canonical range, a duplicate key, nesting or member counts past the
+    // bounds) is not "not JSON": that stays the endpoint's M_BAD_JSON.
+    [[nodiscard]] auto body_is_not_json(std::string_view body) -> bool
+    {
+        if (body.find_first_not_of(" \t\r\n") == std::string_view::npos)
+        {
+            return false;
+        }
+        // The general parser: a fraction or an exponent is JSON (the canonical parser refuses it
+        // for signed data, which is the endpoint's concern, not a reason to say "not JSON").
+        switch (canonicaljson::parse_json(body).error)
+        {
+        case canonicaljson::ParseError::trailing_data:
+        case canonicaljson::ParseError::unexpected_end:
+        case canonicaljson::ParseError::unexpected_token:
+        case canonicaljson::ParseError::invalid_literal:
+        case canonicaljson::ParseError::invalid_string:
+        case canonicaljson::ParseError::invalid_escape:
+        case canonicaljson::ParseError::invalid_unicode_escape:
+        case canonicaljson::ParseError::invalid_number:
+            return true;
+        case canonicaljson::ParseError::none:
+        case canonicaljson::ParseError::integer_out_of_range:
+        case canonicaljson::ParseError::duplicate_object_key:
+        case canonicaljson::ParseError::nesting_too_deep:
+        case canonicaljson::ParseError::too_many_object_members:
+            return false;
+        }
+        return false;
+    }
+
     [[nodiscard]] auto parsed_json_object(std::string_view body) -> std::optional<canonicaljson::Object>
     {
         auto parsed = canonicaljson::parse_lossless(body);
@@ -3878,6 +3912,37 @@ namespace
         -> std::optional<std::string>
     {
         auto parsed = canonicaljson::parse_lossless(event_json);
+    // User-Interactive Authentication API: "If the homeserver decides that an attempt on a stage
+    // was unsuccessful, but the client may make a second attempt, it returns the same HTTP status
+    // 401 response as above, with the addition of the standard `errcode` and `error` fields".
+    // `challenge` is the serialised 401 body (flows, params, session) the endpoint would have
+    // sent had no attempt been made; the result is that object plus the two fields. A challenge
+    // that does not parse as an object is returned unchanged, so a refusal never becomes empty.
+    [[nodiscard]] auto uia_failure_body(std::string_view challenge, std::string_view errcode, std::string_view error)
+        -> std::string
+    {
+        auto parsed = canonicaljson::parse_lossless(challenge);
+        auto* object = parsed.error == canonicaljson::ParseError::none
+                           ? std::get_if<canonicaljson::Object>(&parsed.value.storage())
+                           : nullptr;
+        if (object == nullptr)
+        {
+            return std::string{challenge};
+        }
+        auto members = *object;
+        members.push_back(canonicaljson::make_member("errcode", canonicaljson::Value{std::string{errcode}}));
+        members.push_back(canonicaljson::make_member("error", canonicaljson::Value{std::string{error}}));
+        auto const result = canonicaljson::serialize_canonical(canonicaljson::Value{std::move(members)});
+        return result.output;
+    }
+
+    // The failure of a password stage: the account password was wrong (M_FORBIDDEN, as for a
+    // failed login).
+    [[nodiscard]] auto uia_password_failure_body(std::string_view challenge) -> std::string
+    {
+        return uia_failure_body(challenge, "M_FORBIDDEN", "Invalid password");
+    }
+
         if (parsed.error != canonicaljson::ParseError::none)
         {
             return std::nullopt;
@@ -9760,7 +9825,8 @@ namespace
     {
         if (refused.status == 401U)
         {
-            return dispatch_err(req, rt, 401U, "M_UNKNOWN_TOKEN", refused.body);
+            return dispatch_err(req, rt, 401U, req.access_token.empty() ? "M_MISSING_TOKEN" : "M_UNKNOWN_TOKEN",
+                                refused.body);
         }
         auto const status = refused.status == 415U || refused.status == 507U ? std::uint16_t{403U} : refused.status;
         // A failure on this server's side (5xx) is M_UNKNOWN, never a client error code.
@@ -10401,7 +10467,7 @@ namespace
                     apply_cors_headers(req, response, rt.cors);
                     return response;
                 }
-                return resp(401U, json_serialize(cs_uia));
+                return resp(401U, uia_password_failure_body(json_serialize(cs_uia)));
             }
             if (!store_key_api_payload(rt, route.endpoint, user, device_id, req, {}))
             {
@@ -11386,6 +11452,18 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             // ADR-0079: reachable without authentication and blocks this thread
             // on a peer we do not control, so it runs under the in-flight budget.
             auto const proxy_slot = admit_client_proxy(rt, req);
+    // Spec M_NOT_JSON: "Request did not contain valid JSON." A body that is not JSON (including
+    // invalid UTF-8 in a string) is refused here, for every endpoint at once, so no handler
+    // answers it with the M_BAD_JSON that is for JSON malformed in some other way. Media
+    // content is bytes, not JSON, and a GET carries no body the endpoints read. After the rate
+    // limit, so the parse is metered like any other work a request causes.
+    if (auto const path_only = std::string_view{req.target}.substr(0U, std::string_view{req.target}.find('?'));
+        !req.body.empty() && req.method != "GET" && req.method != "HEAD" && !is_media_upload &&
+        !starts_with(path_only, "/_matrix/media/") && !starts_with(path_only, "/_matrix/client/v1/media/") &&
+        body_is_not_json(req.body))
+    {
+        return dispatch_err(req, rt, 400U, "M_NOT_JSON", "the request body is not valid JSON");
+    }
             if (!proxy_slot.has_value())
             {
                 return client_proxy_refused(req, rt);
@@ -11929,10 +12007,14 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                 return dispatch_resp(req, rt, 401U, uia_challenge);
             }
             // A supplied session must be one this server issued for this
-            // endpoint. Omitting it is still allowed (single-shot flow);
-            // echoing a stale, guessed, or cross-endpoint id is not.
+            // endpoint; echoing a stale, guessed, or cross-endpoint id is not
+            // allowed. The m.login.dummy stage has no credential of its own, so
+            // it completes only within a session this server issued: without
+            // one, nothing was ever challenged. The registration-token stage
+            // carries its credential in the same auth block and keeps its
+            // one-request form (ADR-0057).
             if (auto const* supplied_session = string_member(*auth, "session");
-                supplied_session != nullptr && !uia_session_is_valid(rt, "register", *supplied_session))
+                supplied_session == nullptr ? !require_token : !uia_session_is_valid(rt, "register", *supplied_session))
             {
                 return dispatch_resp(req, rt, 401U, uia_challenge);
             }
@@ -12019,6 +12101,31 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                              json_serialize(json_obj({
                                  json_member("access_token", json_str(session.value)),
                                  json_member("user_id", json_str(full_user_id)),
+        // Spec (POST /register, 400): "Homeservers MUST perform the relevant checks and return
+        // these codes before performing User-Interactive Authentication" -- M_INVALID_USERNAME,
+        // M_USER_IN_USE and M_EXCLUSIVE. The same checks run again after authentication below
+        // (the name may be taken meanwhile, and a generated localpart is checked there too). An
+        // omitted username is generated later, so there is nothing to check yet.
+        if (auto const* desired_localpart = string_member(*registration_object, "username");
+            desired_localpart != nullptr)
+        {
+            if (!auth::localpart_is_valid_new(*desired_localpart))
+            {
+                return dispatch_err(req, rt, 400U, "M_INVALID_USERNAME", "desired username is not valid");
+            }
+            auto const& local_server_name = rt.homeserver.config.server().server_name;
+            auto const desired_user_id = matrix_user_id(local_server_name, *desired_localpart);
+            if (auth::localpart_is_reserved(*desired_localpart) || user_exists(rt, desired_user_id) ||
+                rt.homeserver.appservices.is_sender_user_id(desired_user_id, local_server_name))
+            {
+                return dispatch_err(req, rt, 400U, "M_USER_IN_USE", "desired username is already taken");
+            }
+            if (rt.homeserver.appservices.user_namespace_exclusively_owned_by_other(desired_user_id, {}))
+            {
+                return dispatch_err(req, rt, 400U, "M_EXCLUSIVE",
+                                    "this username is reserved for a registered appservice");
+            }
+        }
                                  json_member("device_id", json_str(reg_device_id)),
                              })));
     }
@@ -12317,7 +12424,7 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
         });
         return r.status == 200U
                    ? dispatch_resp(req, rt, 200U, "{}")
-                   : dispatch_err(req, rt, r.status, r.status == 401U ? "M_UNKNOWN_TOKEN" : "M_UNKNOWN", r.body);
+                   : dispatch_err(req, rt, r.status, r.status == 401U ? unauthenticated_errcode : "M_UNKNOWN", r.body);
     }
 
     // MSC2965 OIDC discovery: Cinny and Element probe auth_metadata and
@@ -12425,13 +12532,23 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
         if (field.empty())
         {
             return dispatch_resp(req, rt, 200U,
+        // The device the token belongs to, read before logout revokes the token: logout also deletes
+        // the device (spec POST /logout), and the runtime's device list is this layer's to update.
+        auto const logged_out_session = authenticated_session(rt.homeserver, req.access_token);
                                  json_serialize(json_obj({
+        if (r.status == 200U && logged_out_session.has_value())
+        {
+            erase_runtime_device(rt, logged_out_session->user_id, logged_out_session->device_id);
+            record_shared_room_device_change(rt, logged_out_session->user_id);
+        }
                                      json_member("displayname", json_str(displayname)),
                                      json_member("avatar_url", json_str(avatar_url)),
                                  })));
         }
         // getProfileField returns only the requested key; an unset or unknown
         // field is reported as 404 M_NOT_FOUND per the Matrix spec.
+        // Spec: a missing token is M_MISSING_TOKEN, an unrecognised one M_UNKNOWN_TOKEN.
+        auto const unauthenticated_errcode = req.access_token.empty() ? "M_MISSING_TOKEN" : "M_UNKNOWN_TOKEN";
         if (field == "displayname" && !displayname.empty())
         {
             return dispatch_resp(req, rt, 200U,
@@ -13216,6 +13333,14 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             is_creator || has_room_power || authenticated_admin_user(rt.homeserver, req.access_token).has_value();
         if (!permitted)
         {
+        if (r.ok)
+        {
+            // Spec (POST /logout/all): "All devices for the user are also deleted."
+            std::erase_if(rt.devices, [&user](ClientDevice const& device) {
+                return device.user_id == *user;
+            });
+            record_shared_room_device_change(rt, *user);
+        }
             return dispatch_err(req, rt, 403U, "M_FORBIDDEN", "You do not have permission to delete this alias");
         }
         if (!database::delete_room_alias(rt.homeserver.database.persistent_store, room_alias))
@@ -13377,7 +13502,11 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
         auto const* current_password = string_member(*auth, "password");
         if (current_password == nullptr || current_password->empty())
         {
-            return dispatch_resp(req, rt, 401U, json_serialize(uia_challenge));
+            // No password at all is no attempt; a wrong one is a failed attempt.
+            return dispatch_resp(req, rt, 401U,
+                                 password_verified.has_value()
+                                     ? uia_password_failure_body(json_serialize(uia_challenge))
+                                     : json_serialize(uia_challenge));
         }
         auto const password_verified = verify_local_user_password(rt.homeserver, req.access_token, *current_password);
         if (!password_verified.ok)
@@ -13389,7 +13518,7 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                 return dispatch_err(req, rt, 429U, "M_LIMIT_EXCEEDED",
                                     "Too many password attempts. Please try again later.", retry_after);
             }
-            return dispatch_resp(req, rt, 401U, json_serialize(uia_challenge));
+            return dispatch_resp(req, rt, 401U, uia_password_failure_body(json_serialize(uia_challenge)));
         }
         auto const result = deactivate_local_user(rt.homeserver, req.access_token);
         if (!result.ok)
@@ -13482,7 +13611,7 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                 return dispatch_err(req, rt, 429U, "M_LIMIT_EXCEEDED",
                                     "Too many password attempts. Please try again later.", retry_after);
             }
-            return dispatch_resp(req, rt, 401U, json_serialize(uia_challenge));
+            return dispatch_resp(req, rt, 401U, uia_password_failure_body(json_serialize(uia_challenge)));
         }
         // AUTH-5: the 3PID is added only once the identity server that issued the
         // session confirms its owner validated it.
@@ -14880,7 +15009,7 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
         auto const* current_password = string_member(*auth, "password");
         if (current_password == nullptr || current_password->empty())
         {
-            return dispatch_resp(req, rt, 401U, uia_challenge);
+            return dispatch_resp(req, rt, 401U, uia_password_failure_body(uia_challenge));
         }
         auto const password_verified = verify_local_user_password(rt.homeserver, req.access_token, *current_password);
         if (!password_verified.ok)
@@ -14892,7 +15021,7 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                 return dispatch_err(req, rt, 429U, "M_LIMIT_EXCEEDED",
                                     "Too many password attempts. Please try again later.", retry_after);
             }
-            return dispatch_resp(req, rt, 401U, uia_challenge);
+            return dispatch_resp(req, rt, 401U, uia_password_failure_body(uia_challenge));
         }
         auto deleted_any = false;
         for (auto const& device_id : devices)

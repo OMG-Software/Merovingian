@@ -41,12 +41,18 @@ using namespace merovingian::tests;
 [[nodiscard]] auto register_dummy(merovingian::homeserver::ClientServerRuntime& runtime, std::string const& username,
                                   std::string const& password) -> merovingian::homeserver::DispatchResult
 {
+    // The dummy stage completes only within a session the server issued, so ask for one first.
+    auto const challenge = merovingian::homeserver::handle_client_server_request(
+        runtime, {"POST", "/_matrix/client/v3/register", {}, "{}"});
+    auto const challenge_body = merovingian::tests::parse_object(challenge.response.body);
+    auto const* session = merovingian::tests::string_member(challenge_body, "session");
+    REQUIRE(session != nullptr);
     return merovingian::homeserver::handle_client_server_request(
-        runtime,
-        {"POST",
-         "/_matrix/client/v3/register",
-         {},
-         R"({"username":")" + username + R"(","password":")" + password + R"(","auth":{"type":"m.login.dummy"}})"});
+        runtime, {"POST",
+                  "/_matrix/client/v3/register",
+                  {},
+                  R"({"username":")" + username + R"(","password":")" + password +
+                      R"(","auth":{"type":"m.login.dummy","session":")" + *session + R"("}})"});
 }
 
 } // namespace

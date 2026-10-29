@@ -142,10 +142,17 @@ SCENARIO("Open registration completes with m.login.dummy", "[conformance][client
         // Precondition: the server starts with acknowledged open registration.
         REQUIRE(started.started);
 
-        WHEN("a registration completes the dummy stage without a session")
+        WHEN("a registration completes the dummy stage within the session its challenge issued")
         {
+            // Spec: the auth dict "must also contain a `session` key with the value of the
+            // session key given by the homeserver", and a stage completes only within it.
+            auto const challenge = parse_object(register_with(started.runtime, "{}").response.body);
+            auto const* issued = string_member(challenge, "session");
+            REQUIRE(issued != nullptr);
             auto const response = register_with(
-                started.runtime, R"({"username":"carol","password":"CorrectHorse7!","auth":{"type":"m.login.dummy"}})");
+                started.runtime,
+                R"({"username":"carol","password":"CorrectHorse7!","auth":{"type":"m.login.dummy","session":")" +
+                    *issued + R"("}})");
 
             THEN("the account is created and logged in")
             {
@@ -166,14 +173,14 @@ SCENARIO("Open registration completes with m.login.dummy", "[conformance][client
             }
         }
 
-        WHEN("a registration completes the dummy stage with the session its challenge issued, if any")
+        WHEN("a registration completes the dummy stage under a session from a separate challenge")
         {
-            // A session is optional ("if one is provided"). When the challenge issues
-            // one, the client passes it back; without one this case is the one above.
+            // Each challenge mints a fresh session; one this server issued is good for any
+            // attempt that presents it until it expires.
             auto const challenge = parse_object(register_with(started.runtime, "{}").response.body);
             auto const* session = string_member(challenge, "session");
-            auto const auth = session == nullptr ? std::string{R"({"type":"m.login.dummy"})"}
-                                                 : R"({"type":"m.login.dummy","session":")" + *session + R"("})";
+            REQUIRE(session != nullptr);
+            auto const auth = R"({"type":"m.login.dummy","session":")" + *session + R"("})";
             auto const response = register_with(
                 started.runtime, R"({"username":"dave","password":"CorrectHorse7!","auth":)" + auth + "}");
 
