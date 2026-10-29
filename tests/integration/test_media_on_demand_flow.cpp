@@ -481,7 +481,7 @@ SCENARIO("A durable media deny rule also blocks genuinely signed federation down
                             CHECK(is_string);
                             if (is_string)
                             {
-                                CHECK(std::get<std::string>(errcode->value->storage()) == "M_UNKNOWN");
+                                CHECK(std::get<std::string>(errcode->value->storage()) == "M_FORBIDDEN");
                             }
                         }
                     }
