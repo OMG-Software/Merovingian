@@ -59,6 +59,18 @@ inline constexpr auto default_missing_events_limit = std::size_t{10U};
 [[nodiscard]] auto build_state_response(database::PersistentStore const& store, std::string_view room_id,
                                         std::string_view at_event_id, std::string_view origin) -> RoomReadResult;
 
+// The most PDUs one `GET /event_auth/{roomId}/{eventId}` answer carries. A longer chain is cut
+// here, nearest events first, so one request cannot read an unbounded part of the store.
+inline constexpr auto max_event_auth_chain_events = std::size_t{10000U};
+
+// Builds the response for `GET /_matrix/federation/v1/event_auth/{roomId}/{eventId}` (SS API
+// "Retrieving events": "Retrieves the complete auth chain for a given event"): `{auth_chain: [PDU]}`,
+// the full PDUs of every event reachable through `auth_events`, transitively, without the event
+// itself. `origin` must pass `origin_may_read_room` (checked first, so a stranger learns nothing
+// about the event). An `event_id` that is empty, unknown or not in `room_id` is `not_found`.
+[[nodiscard]] auto build_event_auth_response(database::PersistentStore const& store, std::string_view room_id,
+                                             std::string_view event_id, std::string_view origin) -> RoomReadResult;
+
 // As `build_state_response`, for `GET /state_ids/{roomId}`: the state event IDs
 // in `pdu_ids` and the auth-event closure in `auth_chain_ids`.
 [[nodiscard]] auto build_state_ids_response(database::PersistentStore const& store, std::string_view room_id,

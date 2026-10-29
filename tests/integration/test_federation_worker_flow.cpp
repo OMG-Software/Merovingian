@@ -2631,6 +2631,62 @@ SCENARIO("handle_profile_query_ingest_request reads a profile from main's own st
     }
 }
 
+SCENARIO("handle_directory_query_ingest_request reads a room alias from main's own store",
+         "[integration][federation-worker][query-relay][fed-endpoints]")
+{
+    // GET /_matrix/federation/v1/query/directory is not room-scoped, so the worker's room_sync
+    // notifications never refresh its alias table: an alias created through main's client API after
+    // the worker started was a 404 for every remote server. The worker relays the lookup to main.
+    GIVEN("a runtime with the default federation callbacks wired and a Unicode alias on main's own store")
+    {
+        REQUIRE(sodium_init() >= 0);
+
+        auto const tmp_dir = unique_temp_dir("merovingian-fed-worker-directory-query");
+        auto config = make_federation_worker_config(tmp_dir);
+        config.database().sqlite_path = (tmp_dir / "directory-query-test.sqlite3").string();
+
+        auto started = start_runtime(config);
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        merovingian::homeserver::wire_federation_callbacks(runtime);
+        REQUIRE(runtime.federation.directory_query_provider);
+
+        auto const alias = std::string{"#老虎Â£я🤨👉ඞ:"} + config.server().server_name;
+        auto const room_id = std::string{"!aliased:"} + config.server().server_name;
+        runtime.database.persistent_store.room_aliases.push_back(
+            {alias, room_id, std::string{"@creator:"} + config.server().server_name});
+
+        WHEN("a directory_query_ingest request shaped like a real worker's is handled")
+        {
+            auto const request_json =
+                std::string{R"({"type":"directory_query_ingest","room_alias":)"} + ipc_escape_json_string(alias) + "}";
+
+            auto const response_json =
+                merovingian::homeserver::handle_directory_query_ingest_request(runtime, request_json);
+
+            THEN("the answer names the room and carries the alias bytes exactly as stored")
+            {
+                INFO("response: " << response_json);
+                REQUIRE(response_json.find(R"("found":true)") != std::string::npos);
+                REQUIRE(response_json.find(room_id) != std::string::npos);
+            }
+        }
+
+        WHEN("the alias is not one main holds")
+        {
+            auto const request_json = std::string{R"({"type":"directory_query_ingest","room_alias":)"} +
+                                      ipc_escape_json_string("#absent:" + config.server().server_name) + "}";
+            auto const response_json =
+                merovingian::homeserver::handle_directory_query_ingest_request(runtime, request_json);
+
+            THEN("the answer is not found")
+            {
+                REQUIRE(response_json.find(R"("found":false)") != std::string::npos);
+            }
+        }
+    }
+}
+
 SCENARIO("handle_event_query_ingest_request reads an event from main's own store regardless of shard ownership",
          "[integration][federation-worker][query-relay]")
 {

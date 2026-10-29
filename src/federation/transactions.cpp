@@ -102,12 +102,16 @@ auto federation_endpoint_name(FederationEndpoint endpoint) noexcept -> char cons
         return "query_state";
     case FederationEndpoint::query_state_ids:
         return "query_state_ids";
+    case FederationEndpoint::event_auth:
+        return "event_auth";
     case FederationEndpoint::get_missing_events:
         return "get_missing_events";
     case FederationEndpoint::space_hierarchy:
         return "space_hierarchy";
     case FederationEndpoint::media_download:
         return "media_download";
+    case FederationEndpoint::media_thumbnail:
+        return "media_thumbnail";
     }
 
     return "unknown";
@@ -126,6 +130,9 @@ auto federation_endpoint_requires_main_relay(FederationEndpoint endpoint) noexce
     case FederationEndpoint::send_knock:
     case FederationEndpoint::invite:
     case FederationEndpoint::query_profile:
+    // query_directory carries no room ID, so no room_sync refreshes a worker's alias table; main
+    // answers from its own store.
+    case FederationEndpoint::query_directory:
     case FederationEndpoint::query_keys:
     case FederationEndpoint::claim_keys:
     case FederationEndpoint::query_user_devices:
@@ -135,12 +142,13 @@ auto federation_endpoint_requires_main_relay(FederationEndpoint endpoint) noexce
     case FederationEndpoint::make_knock:
     case FederationEndpoint::backfill:
     case FederationEndpoint::edu:
-    case FederationEndpoint::query_directory:
     case FederationEndpoint::query_state:
     case FederationEndpoint::query_state_ids:
+    case FederationEndpoint::event_auth:
     case FederationEndpoint::get_missing_events:
     case FederationEndpoint::space_hierarchy:
     case FederationEndpoint::media_download:
+    case FederationEndpoint::media_thumbnail:
         return false;
     }
     return false;
@@ -170,9 +178,11 @@ auto federation_routes() -> std::vector<FederationRoute>
         route("GET", "/_matrix/federation/v1/event/{eventId}", FederationEndpoint::query_event),
         route("GET", "/_matrix/federation/v1/state/{roomId}", FederationEndpoint::query_state),
         route("GET", "/_matrix/federation/v1/state_ids/{roomId}", FederationEndpoint::query_state_ids),
+        route("GET", "/_matrix/federation/v1/event_auth/{roomId}/{eventId}", FederationEndpoint::event_auth),
         route("POST", "/_matrix/federation/v1/get_missing_events/{roomId}", FederationEndpoint::get_missing_events),
         route("GET", "/_matrix/federation/v1/hierarchy/{roomId}", FederationEndpoint::space_hierarchy),
         route("GET", "/_matrix/federation/v1/media/download/{mediaId}", FederationEndpoint::media_download),
+        route("GET", "/_matrix/federation/v1/media/thumbnail/{mediaId}", FederationEndpoint::media_thumbnail),
     };
 }
 
@@ -282,6 +292,11 @@ auto match_federation_route(std::string_view method, std::string_view target) ->
         {
             return {true, candidate, {}};
         }
+        if (candidate.endpoint == FederationEndpoint::event_auth &&
+            dynamic_suffix_has_segments(target_path, "/_matrix/federation/v1/event_auth/", 2U))
+        {
+            return {true, candidate, {}};
+        }
         if (candidate.endpoint == FederationEndpoint::get_missing_events &&
             dynamic_suffix_has_segments(target_path, "/_matrix/federation/v1/get_missing_events/", 1U))
         {
@@ -294,6 +309,11 @@ auto match_federation_route(std::string_view method, std::string_view target) ->
         }
         if (candidate.endpoint == FederationEndpoint::media_download &&
             dynamic_suffix_has_segments(target_path, "/_matrix/federation/v1/media/download/", 1U))
+        {
+            return {true, candidate, {}};
+        }
+        if (candidate.endpoint == FederationEndpoint::media_thumbnail &&
+            dynamic_suffix_has_segments(target_path, "/_matrix/federation/v1/media/thumbnail/", 1U))
         {
             return {true, candidate, {}};
         }

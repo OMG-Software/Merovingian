@@ -71,6 +71,12 @@ struct RemoteMediaRequestContext final
 // Never call it with the mutex held by another frame of this thread.
 [[nodiscard]] auto download_local_media_for_federation(HomeserverRuntime& runtime, std::string_view media_id)
     -> media::LocalMediaDownloadResult;
+// GET /_matrix/federation/v1/media/thumbnail/{mediaId}: a thumbnail of local media, through the same
+// path as the client thumbnail (cache, decode worker, per-requester cap). Takes the runtime mutex like
+// the download above; a reserved ID with no content is 504 at once, and no remote media is fetched.
+[[nodiscard]] auto download_local_media_thumbnail_for_federation(HomeserverRuntime& runtime,
+                                                                 federation::FederationThumbnailQuery const& query)
+    -> media::LocalMediaDownloadResult;
 [[nodiscard]] auto admin_quarantine_local_media(HomeserverRuntime& runtime, std::string_view access_token,
                                                 std::string_view media_id, std::string_view reason) -> OperationResult;
 [[nodiscard]] auto admin_release_local_media(HomeserverRuntime& runtime, std::string_view access_token,

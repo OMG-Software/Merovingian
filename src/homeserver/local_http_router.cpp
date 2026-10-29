@@ -13,8 +13,10 @@
 #include "merovingian/crypto/signing_service.hpp"
 #include "merovingian/database/persistent_store.hpp"
 #include "merovingian/events/authorization.hpp"
+#include "merovingian/events/event.hpp"
 #include "merovingian/events/event_id.hpp"
 #include "merovingian/events/event_signer.hpp"
+#include "merovingian/events/limits.hpp"
 #include "merovingian/events/redaction.hpp"
 #include "merovingian/federation/edu_idempotence.hpp"
 #include "merovingian/federation/event_query.hpp"
@@ -3037,6 +3039,11 @@ namespace
             return federation::build_state_ids_response(rt->database.persistent_store, room_id, event_id, origin);
         };
 
+        runtime.federation.event_auth_query_provider = [rt](std::string_view room_id, std::string_view event_id,
+                                                            std::string_view origin) -> federation::RoomReadResult {
+            return federation::build_event_auth_response(rt->database.persistent_store, room_id, event_id, origin);
+        };
+
         runtime.federation.missing_events_query_provider = [rt](std::string_view room_id, std::string_view body,
                                                                 std::string_view origin) -> federation::RoomReadResult {
             return federation::build_get_missing_events_response(rt->database.persistent_store, room_id, body, origin,
@@ -3055,6 +3062,10 @@ namespace
         runtime.federation.media_download_provider =
             [rt](std::string_view media_id) -> media::LocalMediaDownloadResult {
             return download_local_media_for_federation(*rt, media_id);
+        };
+        runtime.federation.media_thumbnail_provider =
+            [rt](federation::FederationThumbnailQuery const& query) -> media::LocalMediaDownloadResult {
+            return download_local_media_thumbnail_for_federation(*rt, query);
         };
 
         // Resolve the room version from the stored m.room.create state event so
@@ -4595,6 +4606,21 @@ namespace
     // server, verify each returned event, and store the verified events as
     // outliers with state groups so a later ingestion attempt can resolve state.
     // Preserve transient local key denial separately from an unresolved gap.
+    // True when `json` is a PDU this server may even consider: within the 65 536 byte event limit,
+    // canonical JSON (no floats, integers in range) and with a valid envelope (identifier and type
+    // lengths, a `state_key` of at most 255 bytes). Spec: Client-Server "Size limits" and the
+    // Appendices' Canonical JSON.
+    [[nodiscard]] auto returned_pdu_is_well_formed(std::string_view json) -> bool
+    {
+        if (json.size() > events::max_event_size_bytes)
+        {
+            return false;
+        }
+        auto const parsed = canonicaljson::parse_lossless(json);
+        return parsed.error == canonicaljson::ParseError::none &&
+               events::parse_event_envelope(parsed.value).error.empty();
+    }
+
     [[nodiscard]] auto backfill_missing_pdu_references(HomeserverRuntime& runtime, std::string_view room_id,
                                                        federation::InboundPduEnvelope const& envelope,
                                                        rooms::RoomVersionPolicy const& policy) -> BackfillResult
@@ -4617,6 +4643,7 @@ namespace
         auto const timeout = std::chrono::seconds{runtime.federation.config.backfill_timeout_seconds};
         auto budget = BackfillBudget{0U, limits.max_total_outbound_calls, std::chrono::steady_clock::now() + timeout};
         auto stored_any = false;
+        auto returned_invalid_event = false;
         auto held = HeldPdus{};
         auto const max_held =
             static_cast<std::size_t>(limits.max_missing_events) + static_cast<std::size_t>(limits.max_outbound_calls);
@@ -4661,6 +4688,15 @@ namespace
                     {
                         break;
                     }
+                    // Spec: an event that breaks the PDU format or size limits is rejected
+                    // "as usual", and is neither stored nor held. The origin was asked for the
+                    // events the gap is made of, so one that is unusable is its answer, and
+                    // nothing is fetched to work around it.
+                    if (!returned_pdu_is_well_formed(json))
+                    {
+                        returned_invalid_event = true;
+                        continue;
+                    }
                     if (verify_and_store_backfilled_event(runtime, room_id, envelope.origin, json, policy, budget))
                     {
                         stored_any = true;
@@ -4674,6 +4710,16 @@ namespace
         }
 
         std::tie(missing_auth, missing_prev) = collect();
+
+        // The origin's /get_missing_events answer held an event that is not a valid PDU. Asking
+        // it again by other routes (/event, /state_ids) for the same history would only turn one
+        // refusal into many requests, so the PDU stays unplaced (deferred by the caller).
+        if (returned_invalid_event)
+        {
+            LOG_WARNING("Backfill: /get_missing_events returned an invalid event for room_id=" + std::string{room_id} +
+                        " event_id=" + envelope.event_id + "; not fetching the history another way");
+            return {stored_any, budget.key_resolution_locally_denied};
+        }
 
         // Fetch what is still missing with GET /event/{eventId}. A PDU already
         // held from /get_missing_events is not fetched again, nor is an event
@@ -5851,7 +5897,7 @@ auto wire_federation_callbacks(HomeserverRuntime& runtime) -> void
         auto guard = std::unique_lock<RuntimeMutex>{runtime.mutex};
         if (!runtime.started)
         {
-            return response(503U, "runtime not started");
+            return response(503U, matrix_error("M_UNKNOWN", "runtime not started"));
         }
         wire_federation_callbacks_impl(runtime);
         if (request.method == "GET" && request.target.substr(0U, request.target.find('?')) == "/_matrix/key/v2/server")
@@ -5871,7 +5917,7 @@ auto wire_federation_callbacks(HomeserverRuntime& runtime) -> void
         }
         if (!starts_with(request.target, "/_matrix/federation/"))
         {
-            return response(404U, "route not found");
+            return response(404U, matrix_error("M_UNRECOGNIZED", "route not found"));
         }
 
         if (request.sig_verified)
@@ -5930,7 +5976,7 @@ auto wire_federation_callbacks(HomeserverRuntime& runtime) -> void
             // 502 rather than 401: Synapse propagates 401 from federation
             // responses to the client, triggering an automatic logout. Returning
             // 502 signals a server-side failure instead.
-            return response(502U, "malformed federation authorization");
+            return response(502U, matrix_error("M_UNKNOWN", "malformed federation authorization"));
         }
 
         auto const local_rule = find_policy_rule(runtime, "federation", signed_request_opt->origin);
@@ -5954,7 +6000,7 @@ auto wire_federation_callbacks(HomeserverRuntime& runtime) -> void
     {
         auto const body =
             decision.reason.public_summary.empty() ? decision.reason.code : decision.reason.public_summary;
-        return response(403U, body);
+        return response(403U, matrix_error("M_FORBIDDEN", body));
     }
 
     // The federation core protects its own bookkeeping, and production

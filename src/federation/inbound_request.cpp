@@ -1032,6 +1032,55 @@ namespace
         return serialize_response_object(std::move(response));
     }
 
+    // The errcode a plain-text refusal of `status` carries once it is wrapped in
+    // the standard error object. A handler that knows a more precise code builds
+    // its own `matrix_error`; this is only the status-derived default.
+    [[nodiscard]] auto errcode_for_status(std::uint16_t status) noexcept -> std::string_view
+    {
+        switch (status)
+        {
+        case 400U:
+            return "M_INVALID_PARAM";
+        case 401U:
+            return "M_UNAUTHORIZED";
+        case 403U:
+            return "M_FORBIDDEN";
+        case 404U:
+            return "M_NOT_FOUND";
+        case 413U:
+            return "M_TOO_LARGE";
+        case 429U:
+            return "M_LIMIT_EXCEEDED";
+        case 501U:
+            return "M_UNRECOGNIZED";
+        default:
+            return "M_UNKNOWN";
+        }
+    }
+
+    // Spec (SS API, "API standards"): "Any errors which occur at the Matrix API
+    // level MUST return a 'standard error response'", a JSON object with `errcode`
+    // and `error`. A refusal carrying a bare reason string becomes that object;
+    // a body that is already a JSON object (including a handler's own
+    // `matrix_error`, or an error carrying extra keys such as `room_version`) and
+    // every non-error response is left as it is.
+    [[nodiscard]] auto standard_error_body(FederationResponse response) -> FederationResponse
+    {
+        if (response.status < 400U || (!response.body.empty() && response.body.front() == '{'))
+        {
+            return response;
+        }
+        auto const reason = response.body.empty() ? std::string{"request refused"} : std::move(response.body);
+        response.body = homeserver::matrix_error(errcode_for_status(response.status), reason);
+        response.content_type.clear();
+        return response;
+    }
+
+    [[nodiscard]] auto refusal_response(std::uint16_t status, std::string_view reason) -> FederationResponse
+    {
+        return {status, homeserver::matrix_error(errcode_for_status(status), reason)};
+    }
+
     [[nodiscard]] auto handle_make_membership(FederationRuntimeState& runtime, SignedFederationRequest const& request,
                                               FederationRoute const& route) -> FederationResponse
     {
@@ -1092,7 +1141,8 @@ namespace
         }
         if (!populated.reason.empty())
         {
-            return {populated.error_status == 0U ? std::uint16_t{400U} : populated.error_status, populated.reason};
+            return refusal_response(populated.error_status == 0U ? std::uint16_t{400U} : populated.error_status,
+                                    populated.reason);
         }
         auto body = build_make_template_response(populated);
         if (body.empty())
@@ -1208,7 +1258,8 @@ namespace
             runtime.membership_acceptor(route.endpoint, params->room_id, params->subject, *envelope);
         if (!acceptance.accepted)
         {
-            return {acceptance.status == 0U ? std::uint16_t{400U} : acceptance.status, acceptance.reason};
+            return refusal_response(acceptance.status == 0U ? std::uint16_t{400U} : acceptance.status,
+                                    acceptance.reason);
         }
         // Matrix v2 send_join/send_leave/send_knock responses are a JSON object
         // with `auth_chain` and `state` arrays of signed PDUs. v1 send_join
@@ -1519,7 +1570,14 @@ namespace
         auto const user_id = query_param_value(request.target, "user_id");
         if (user_id.empty())
         {
-            return {400U, "query/profile requires a user_id parameter"};
+            return {400U, homeserver::matrix_error("M_MISSING_PARAM", "query/profile requires a user_id parameter")};
+        }
+        // Spec: `user_id` is a user ID, so it must meet the identifier grammar
+        // (Appendices, "User Identifiers" and "Server Name": a port is 1 to 5
+        // digits). A malformed ID is a bad request, not a user that does not exist.
+        if (!auth::user_id_is_valid_federated(user_id))
+        {
+            return {400U, homeserver::matrix_error("M_INVALID_PARAM", "user_id is not a valid user ID")};
         }
         // Spec v1.19 (query/profile, `field`): "Defined values are `displayname`,
         // `avatar_url` and `m.tz`. In addition to these servers MAY allow users to
@@ -1708,6 +1766,52 @@ namespace
                                   "Room state not found", "state_ids request is malformed");
     }
 
+    // The room and event IDs of `GET /event_auth/{roomId}/{eventId}`, each percent-decoded. nullopt
+    // unless the path has exactly those two non-empty segments.
+    struct EventAuthPath final
+    {
+        std::string room_id{};
+        std::string event_id{};
+    };
+
+    [[nodiscard]] auto parse_event_auth_path(std::string_view target) -> std::optional<EventAuthPath>
+    {
+        auto constexpr prefix = std::string_view{"/_matrix/federation/v1/event_auth/"};
+        auto const path = target.substr(0U, target.find('?'));
+        if (path.size() <= prefix.size() || path.substr(0U, prefix.size()) != prefix)
+        {
+            return std::nullopt;
+        }
+        auto const rest = path.substr(prefix.size());
+        auto const slash = rest.find('/');
+        if (slash == std::string_view::npos || slash == 0U || slash + 1U >= rest.size() ||
+            rest.find('/', slash + 1U) != std::string_view::npos)
+        {
+            return std::nullopt;
+        }
+        return EventAuthPath{core::percent_decode(rest.substr(0U, slash)),
+                             core::percent_decode(rest.substr(slash + 1U))};
+    }
+
+    // Spec: GET /_matrix/federation/v1/event_auth/{roomId}/{eventId}
+    // ../../docs/matrix-v1.19-spec/server-server-api.md#get_matrixfederationv1event_authroomideventid
+    [[nodiscard]] auto handle_event_auth(FederationRuntimeState& runtime, SignedFederationRequest const& request)
+        -> FederationResponse
+    {
+        if (!runtime.event_auth_query_provider)
+        {
+            return {501U, "event_auth not implemented"};
+        }
+        auto const path = parse_event_auth_path(request.target);
+        if (!path.has_value())
+        {
+            return {400U, "event_auth path is malformed"};
+        }
+        // FED-2: the provider decides from the authenticated origin whether it may read the room.
+        return room_read_response(runtime.event_auth_query_provider(path->room_id, path->event_id, request.origin),
+                                  "Event not found", "event_auth request is malformed");
+    }
+
     [[nodiscard]] auto handle_get_missing_events(FederationRuntimeState& runtime,
                                                  SignedFederationRequest const& request) -> FederationResponse
     {
@@ -1754,6 +1858,34 @@ namespace
         return {200U, std::move(body)};
     }
 
+    // The standard error response for a refused media download or thumbnail.
+    [[nodiscard]] auto media_failure_response(media::LocalMediaDownloadResult const& result) -> FederationResponse
+    {
+        if (result.status == 404U)
+        {
+            return {404U, homeserver::matrix_error("M_NOT_FOUND", result.reason)};
+        }
+        if (result.status == 451U)
+        {
+            return {451U, homeserver::matrix_error("M_NOT_FOUND", result.reason)};
+        }
+        // ADR-0212: a reserved media ID whose content has not been
+        // uploaded. Spec: 504 with errcode M_NOT_YET_UPLOADED.
+        if (result.status == 504U)
+        {
+            return {504U, homeserver::matrix_error("M_NOT_YET_UPLOADED", result.reason)};
+        }
+        if (result.status == 413U)
+        {
+            return {413U, homeserver::matrix_error("M_TOO_LARGE", result.reason)};
+        }
+        if (result.status == 429U)
+        {
+            return {429U, homeserver::matrix_error("M_LIMIT_EXCEEDED", result.reason)};
+        }
+        return {result.status, homeserver::matrix_error("M_UNKNOWN", result.reason)};
+    }
+
     // Spec: Matrix Server-Server API v1.19 — GET /_matrix/federation/v1/media/download/{mediaId}
     // URL: ../../docs/matrix-v1.19-spec/server-server-api.md#get_matrixfederationv1mediadownloadmediaid
     //
@@ -1775,21 +1907,78 @@ namespace
         auto const result = runtime.media_download_provider(media_id);
         if (!result.ok)
         {
-            if (result.status == 404U)
+            return media_failure_response(result);
+        }
+        auto envelope = media::build_federation_media_download_body(result.content_type, result.bytes);
+        if (envelope.body.empty())
+        {
+            return {500U, "failed to build media response"};
+        }
+        auto response = FederationResponse{200U, std::move(envelope.body)};
+        response.content_type = std::move(envelope.content_type);
+        return response;
+    }
+
+    // A thumbnail dimension: one to five decimal digits, not zero. Anything else (empty, signed,
+    // fractional, huge) is a request "the server cannot thumbnail" (400).
+    [[nodiscard]] auto parse_thumbnail_dimension(std::string_view text) -> std::optional<std::uint32_t>
+    {
+        auto constexpr max_digits = std::size_t{5U};
+        if (text.empty() || text.size() > max_digits)
+        {
+            return std::nullopt;
+        }
+        auto value = std::uint32_t{0U};
+        for (auto const ch : text)
+        {
+            if (ch < '0' || ch > '9')
             {
-                return {404U, homeserver::matrix_error("M_NOT_FOUND", result.reason)};
+                return std::nullopt;
             }
-            if (result.status == 451U)
-            {
-                return {451U, homeserver::matrix_error("M_NOT_FOUND", result.reason)};
-            }
-            // ADR-0212: a reserved media ID whose content has not been
-            // uploaded. Spec: 504 with errcode M_NOT_YET_UPLOADED.
-            if (result.status == 504U)
-            {
-                return {504U, homeserver::matrix_error("M_NOT_YET_UPLOADED", result.reason)};
-            }
-            return {result.status, homeserver::matrix_error("M_UNKNOWN", result.reason)};
+            value = value * 10U + static_cast<std::uint32_t>(ch - '0');
+        }
+        return value == 0U ? std::nullopt : std::optional<std::uint32_t>{value};
+    }
+
+    // Spec: GET /_matrix/federation/v1/media/thumbnail/{mediaId}
+    // ../../docs/matrix-v1.19-spec/server-server-api.md#get_matrixfederationv1mediathumbnailmediaid
+    //
+    // A thumbnail of local media for an authenticated remote homeserver, answered like a download:
+    // multipart/mixed with an empty JSON part and the thumbnail bytes.
+    [[nodiscard]] auto handle_media_thumbnail(FederationRuntimeState& runtime, SignedFederationRequest const& request)
+        -> FederationResponse
+    {
+        if (!runtime.media_thumbnail_provider)
+        {
+            return {501U, "media thumbnail not implemented"};
+        }
+        auto query = FederationThumbnailQuery{};
+        query.media_id = extract_path_segment(request.target, "/_matrix/federation/v1/media/thumbnail/");
+        if (query.media_id.empty())
+        {
+            return {400U, homeserver::matrix_error("M_INVALID_PARAM", "mediaId is required")};
+        }
+        auto const width = parse_thumbnail_dimension(query_param_value(request.target, "width"));
+        auto const height = parse_thumbnail_dimension(query_param_value(request.target, "height"));
+        if (!width.has_value() || !height.has_value())
+        {
+            return {400U, homeserver::matrix_error("M_INVALID_PARAM", "width and height must be positive integers")};
+        }
+        query.width = *width;
+        query.height = *height;
+        if (auto const method = query_param_value(request.target, "method"); method == "crop")
+        {
+            query.method = media::ThumbnailMethod::crop;
+        }
+        else if (!method.empty() && method != "scale")
+        {
+            return {400U, homeserver::matrix_error("M_INVALID_PARAM", "method must be crop or scale")};
+        }
+        query.origin = request.origin;
+        auto const result = runtime.media_thumbnail_provider(query);
+        if (!result.ok)
+        {
+            return media_failure_response(result);
         }
         auto envelope = media::build_federation_media_download_body(result.content_type, result.bytes);
         if (envelope.body.empty())
@@ -1837,12 +2026,16 @@ namespace
             return handle_query_state(runtime, request);
         case FederationEndpoint::query_state_ids:
             return handle_query_state_ids(runtime, request);
+        case FederationEndpoint::event_auth:
+            return handle_event_auth(runtime, request);
         case FederationEndpoint::get_missing_events:
             return handle_get_missing_events(runtime, request);
         case FederationEndpoint::space_hierarchy:
             return handle_space_hierarchy(runtime, request);
         case FederationEndpoint::media_download:
             return handle_media_download(runtime, request);
+        case FederationEndpoint::media_thumbnail:
+            return handle_media_thumbnail(runtime, request);
         case FederationEndpoint::edu:
             // Plain send_edu requests have always been a 200 stub; ingestion
             // happens through the transaction path which carries EDUs.
@@ -3022,6 +3215,10 @@ namespace
             return extract_path_segment(target, "/_matrix/federation/v1/state/");
         case FederationEndpoint::query_state_ids:
             return extract_path_segment(target, "/_matrix/federation/v1/state_ids/");
+        case FederationEndpoint::event_auth: {
+            auto const path = parse_event_auth_path(target);
+            return path.has_value() ? std::optional<std::string>{path->room_id} : std::nullopt;
+        }
         case FederationEndpoint::get_missing_events:
             return extract_path_segment(target, "/_matrix/federation/v1/get_missing_events/");
         case FederationEndpoint::space_hierarchy:
@@ -3100,7 +3297,9 @@ auto verify_inbound_federation_signature(FederationRuntimeState& runtime, Signed
     auto resolution = resolve_inbound_remote(runtime, request);
     if (!resolution.accepted)
     {
-        return {.accepted = false, .identity = VerifiedFederationIdentity{}, .error = std::move(resolution.error)};
+        return {.accepted = false,
+                .identity = VerifiedFederationIdentity{},
+                .error = standard_error_body(std::move(resolution.error))};
     }
     // Security (audit M-05): this verifier is exported and ALWAYS performs the
     // Ed25519 check. It deliberately ignores request.signature_verified — that
@@ -3114,7 +3313,9 @@ auto verify_inbound_federation_signature(FederationRuntimeState& runtime, Signed
         auto const rejection = check_inbound_request_signature(runtime, request, resolution.remote);
         if (rejection.has_value())
         {
-            return {.accepted = false, .identity = VerifiedFederationIdentity{}, .error = std::move(*rejection)};
+            return {.accepted = false,
+                    .identity = VerifiedFederationIdentity{},
+                    .error = standard_error_body(std::move(*rejection))};
         }
     }
     return {
@@ -3124,8 +3325,10 @@ auto verify_inbound_federation_signature(FederationRuntimeState& runtime, Signed
     };
 }
 
-auto handle_inbound_federation_request(FederationRuntimeState& runtime, SignedFederationRequest const& request)
-    -> FederationResponse
+// File-local: the public handle_inbound_federation_request wraps this and gives
+// every refusal the standard JSON error body.
+static auto handle_inbound_federation_request_unchecked(FederationRuntimeState& runtime,
+                                                        SignedFederationRequest const& request) -> FederationResponse
 {
     log_diagnostic("request.received", {
                                            {"method",     request.method,                                       false},
@@ -3242,7 +3445,7 @@ auto handle_inbound_federation_request(FederationRuntimeState& runtime, SignedFe
                                                    {"reason",         reason,         false}
         });
         audit_federation(runtime, "federation.rejected", request.origin, request.target, reason);
-        return {403U, reason};
+        return refusal_response(403U, reason);
     }
     auto transaction = FederationTransaction{};
     transaction.origin = parsed_body.origin;
@@ -3313,6 +3516,8 @@ auto handle_inbound_federation_request(FederationRuntimeState& runtime, SignedFe
     // remote server (e.g. Synapse) to back off the entire destination for a
     // backoff period, blocking all subsequent federation.
     auto pdu_errors = canonicaljson::Object{};
+    // Every PDU of the transaction, to give each one an entry in the response (below).
+    auto processed_pdu_ids = std::vector<std::string>{};
     // Security (audit H-04): counts the PDUs in this transaction that failed a
     // trust check (signature, sender-key resolution, event authorization, or
     // content hash). `remote` is a local copy of the peer's trust record, so
@@ -3384,6 +3589,10 @@ auto handle_inbound_federation_request(FederationRuntimeState& runtime, SignedFe
         // in pdu.room_version and forwarded to authorize_federation_pdu so that
         // event-ID computation and signature verification both use the right rules.
         auto const pdu = parse_federation_pdu(encoded_pdu, runtime.room_version_resolver);
+        if (!pdu.event_id.empty())
+        {
+            processed_pdu_ids.push_back(pdu.event_id);
+        }
         // For relayed PDUs (sender domain != transport origin), the transport peer's
         // signing key cannot verify the sender's PDU signature. Resolve the sender
         // domain's key separately so authorize_federation_pdu can perform real
@@ -3480,6 +3689,9 @@ auto handle_inbound_federation_request(FederationRuntimeState& runtime, SignedFe
         {
             audit_federation(runtime, "federation.pdu_envelope_unparseable", request.origin, request.target,
                              "ingestion-skip");
+            pdu_errors.push_back(canonicaljson::make_member(
+                pdu.event_id, canonicaljson::Value{canonicaljson::Object{canonicaljson::make_member(
+                                  "error", canonicaljson::Value{std::string{"event could not be parsed"}})}}));
             continue;
         }
         envelope->origin = request.origin;
@@ -3652,15 +3864,31 @@ auto handle_inbound_federation_request(FederationRuntimeState& runtime, SignedFe
     });
     audit_federation(runtime, "federation.accepted", request.origin, request.target,
                      federation_route_audit_event(route_match.route, request.origin));
-    if (!runtime.pdu_sink && !runtime.edu_sink && transaction.edus.empty())
+    // Spec (SS API "Transactions", response): `pdus` is "Required: The PDUs from the original
+    // transaction", keyed by event ID, and an entry with no `error` is "successfully handled"
+    // (`"$successful_event:example.org": {}`). Every PDU without an error above gets that entry,
+    // including one retained for retry (R03), which has been handled.
+    for (auto const& event_id : processed_pdu_ids)
     {
-        return {200U, serialize_response_object(canonicaljson::Object{
-                          canonicaljson::make_member("pdus", canonicaljson::Value{std::move(pdu_errors)}),
-                      })};
+        auto const present = std::ranges::any_of(pdu_errors, [&event_id](auto const& member) {
+            return member.key == event_id;
+        });
+        if (!present)
+        {
+            pdu_errors.push_back(canonicaljson::make_member(event_id, canonicaljson::Value{canonicaljson::Object{}}));
+        }
     }
     return {200U, serialize_response_object(canonicaljson::Object{
                       canonicaljson::make_member("pdus", canonicaljson::Value{std::move(pdu_errors)}),
                   })};
+}
+
+auto handle_inbound_federation_request(FederationRuntimeState& runtime, SignedFederationRequest const& request)
+    -> FederationResponse
+{
+    // Every refusal leaves here as a standard error object, whichever handler
+    // built it (SS API "API standards"); see standard_error_body.
+    return standard_error_body(handle_inbound_federation_request_unchecked(runtime, request));
 }
 
 auto federation_runtime_summary(FederationRuntimeState const& runtime) -> std::string

@@ -202,7 +202,8 @@ auto federation_request_should_bypass_worker(LocalHttpRequest const& request) ->
     // Media download needs the local media repository, which lives only in the
     // main process. The worker has no access to local blobs, so keep this route
     // on main even when the federation worker pool is active.
-    if (request.method == "GET" && request.target.find("/_matrix/federation/v1/media/download/") == 0U)
+    if (request.method == "GET" && (request.target.find("/_matrix/federation/v1/media/download/") == 0U ||
+                                    request.target.find("/_matrix/federation/v1/media/thumbnail/") == 0U))
     {
         return true;
     }

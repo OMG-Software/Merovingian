@@ -527,6 +527,34 @@ namespace
         return result;
     }
 
+    // Serialize a room alias for the directory_query_ingest IPC call to main.
+    auto serialize_directory_query_ingest(std::string_view room_alias) -> std::string
+    {
+        auto result = std::string{R"({"type":"directory_query_ingest","room_alias":)"};
+        result.reserve(64U + room_alias.size());
+        result += ipc::ipc_json_str(room_alias);
+        result += '}';
+        return result;
+    }
+
+    // Deserialize a `directory_query_ingest_result` JSON frame from main.
+    auto deserialize_directory_query_ingest_result(std::string_view json) -> federation::FederationDirectory
+    {
+        auto result = federation::FederationDirectory{};
+        auto const parsed = canonicaljson::parse_lossless(json);
+        auto const* obj = parsed.error == canonicaljson::ParseError::none
+                              ? std::get_if<canonicaljson::Object>(&parsed.value.storage())
+                              : nullptr;
+        if (obj == nullptr)
+        {
+            return result;
+        }
+        result.found = field_bool(*obj, "found");
+        result.room_id = field_string(*obj, "room_id");
+        result.servers = field_string_array(*obj, "servers");
+        return result;
+    }
+
     // Serialize an event_id and the X-Matrix-verified origin of the requesting
     // server for the event_query_ingest IPC call to main. Main, not the worker,
     // resolves the event's room and decides whether that origin may read it
@@ -878,6 +906,19 @@ auto WorkerEventLoop::run() -> void
             return {};
         }
         return deserialize_profile_query_ingest_result(*reply);
+    };
+
+    // GET /query/directory carries no room ID either, so a room alias created through main after
+    // this worker started is not in its snapshot and a remote server asking for it got a 404.
+    runtime.federation.directory_query_provider =
+        [channel_ptr](std::string_view room_alias) -> federation::FederationDirectory {
+        auto const json_body = serialize_directory_query_ingest(room_alias);
+        auto const reply = channel_ptr->send_request(json_body, std::chrono::seconds{60});
+        if (!reply.has_value())
+        {
+            return {};
+        }
+        return deserialize_directory_query_ingest_result(*reply);
     };
 
     // Override event_query_provider the same way as the three providers

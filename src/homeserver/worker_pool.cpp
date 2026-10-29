@@ -594,6 +594,18 @@ namespace
         return body;
     }
 
+    auto serialize_directory_query_ingest_result(federation::FederationDirectory const& directory) -> std::string
+    {
+        auto body = std::string{R"({"type":"directory_query_ingest_result","found":)"};
+        body += directory.found ? "true" : "false";
+        body += R"(,"room_id":)";
+        body += json_str(directory.room_id);
+        body += R"(,"servers":)";
+        body += json_str_array_literal(directory.servers);
+        body += '}';
+        return body;
+    }
+
     auto serialize_event_query_ingest_result(federation::RoomReadResult const& result) -> std::string
     {
         auto body = std::string{R"({"type":"event_query_ingest_result","status":)"};
@@ -1028,6 +1040,23 @@ auto handle_profile_query_ingest_request(HomeserverRuntime& runtime, std::string
     return serialize_profile_query_ingest_result(profile);
 }
 
+auto handle_directory_query_ingest_request(HomeserverRuntime& runtime, std::string_view request_json) -> std::string
+{
+    // GET /_matrix/federation/v1/query/directory is not room-scoped, so the worker's per-room
+    // `room_sync` reloads never refresh its alias table: an alias created through main after the
+    // worker started would be a 404 for every remote server. The alias is read from main's own store.
+    auto const room_alias = json_get_str(request_json, "room_alias");
+    auto directory = federation::FederationDirectory{};
+    {
+        auto guard = std::unique_lock{runtime.mutex};
+        if (runtime.federation.directory_query_provider && !room_alias.empty())
+        {
+            directory = runtime.federation.directory_query_provider(room_alias);
+        }
+    }
+    return serialize_directory_query_ingest_result(directory);
+}
+
 auto handle_membership_template_ingest_request(HomeserverRuntime& runtime, std::string_view request_json) -> std::string
 {
     // The frame comes from the worker (ADR-0071: untrusted input). A template
@@ -1325,6 +1354,16 @@ WorkerPool::WorkerPool(config::FederationWorkerConfig const& cfg, HomeserverRunt
                     if (!submit_limited(handler_pool_, ch, [this, ch, id, json = std::move(json)]() mutable {
                             auto const guard = InFlightGuard{*ch};
                             ch->send_response(id, handle_profile_query_ingest_request(runtime_, json));
+                        }))
+                    {
+                        ch->send_response(id, overload_response_for(type));
+                    }
+                }
+                else if (type == "directory_query_ingest")
+                {
+                    if (!submit_limited(handler_pool_, ch, [this, ch, id, json = std::move(json)]() mutable {
+                            auto const guard = InFlightGuard{*ch};
+                            ch->send_response(id, handle_directory_query_ingest_request(runtime_, json));
                         }))
                     {
                         ch->send_response(id, overload_response_for(type));

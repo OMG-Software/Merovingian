@@ -4391,7 +4391,7 @@ SCENARIO("Transactions whose PDUs are all rejected keep incrementing the "
                 REQUIRE(after_third == 3U);
                 // Backoff / circuit breaker fires at three consecutive failures.
                 REQUIRE(fourth.status == 429U);
-                REQUIRE(fourth.body == "remote backoff required");
+                REQUIRE(fourth.body.find("remote backoff required") != std::string::npos);
             }
         }
 

@@ -425,7 +425,8 @@ SCENARIO("Federation auth failures do not surface as client-style 401s", "[homes
                 // client-server request, which Element interprets as an invalid
                 // access token and turns into an automatic logout.
                 REQUIRE(response.status == 502U);
-                REQUIRE(response.body == "malformed federation authorization");
+                REQUIRE(response.body.find("malformed federation authorization") != std::string::npos);
+                REQUIRE(response.body.find("\"errcode\"") != std::string::npos);
             }
         }
     }
@@ -451,7 +452,8 @@ SCENARIO("Pipe-delimited federation fixture auth is rejected on the production f
             THEN("the request is rejected instead of being accepted as real X-Matrix auth")
             {
                 REQUIRE(response.status == 502U);
-                REQUIRE(response.body == "malformed federation authorization");
+                REQUIRE(response.body.find("malformed federation authorization") != std::string::npos);
+                REQUIRE(response.body.find("\"errcode\"") != std::string::npos);
             }
         }
     }
