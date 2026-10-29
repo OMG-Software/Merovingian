@@ -108,6 +108,9 @@ Fixes for the failures Complement run 10 found against the signed 0.12.62 releas
 - **`/_matrix/client/v3/rooms/{roomId}/state_ids` and `.../v3/.../threads` answered 405.** Neither is
   a v3 client endpoint (`/threads` is v1, `/state_ids` is federation only), so both are 404
   `M_UNRECOGNIZED`.
+- **Tests:** conformance scenarios now cover the server ACL on `/event_auth` (a denied server gets
+  403 `M_FORBIDDEN`), `/event_auth` with no provider, and every federation media refusal's errcode;
+  a unit scenario covers a retry whose first answer was too large to keep.
 - **Remote aliases created after the federation worker started were not found.** `query/directory` is
   relayed to main instead of read from the worker's start-up snapshot (ADR-0281).
 - **Profiles of users on other servers were 404.** `GET /profile/{userId}[/{keyName}]` asks the user's

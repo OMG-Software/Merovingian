@@ -255,6 +255,18 @@ SCENARIO("GET /media/download/{mediaId} serves local media as multipart/mixed",
             {
                 return {false, 403U, {}, {}, "media policy denied"};
             }
+            if (queried_media_id == "pending")
+            {
+                return {false, 504U, {}, {}, "media not yet uploaded"};
+            }
+            if (queried_media_id == "huge")
+            {
+                return {false, 413U, {}, {}, "media too large"};
+            }
+            if (queried_media_id == "busy")
+            {
+                return {false, 429U, {}, {}, "media fetch busy"};
+            }
             return {false, 500U, {}, {}, "unknown media"};
         };
 
@@ -353,6 +365,32 @@ SCENARIO("GET /media/download/{mediaId} serves local media as multipart/mixed",
                 // Spec: "M_FORBIDDEN: Forbidden access, e.g. joining a room without permission".
                 REQUIRE(response.status == 403U);
                 REQUIRE(response.body.find("M_FORBIDDEN") != std::string::npos);
+            }
+        }
+
+        WHEN("a signed GET /media/download/{mediaId} is refused for another reason")
+        {
+            auto const download = [&](std::string const& media_id) {
+                return merovingian::federation::handle_inbound_federation_request(
+                    runtime,
+                    signed_get_request(origin, key_id, key_seed, "/_matrix/federation/v1/media/download/" + media_id));
+            };
+            auto const pending = download("pending");
+            auto const huge = download("huge");
+            auto const busy = download("busy");
+            auto const failed = download("unexpected");
+
+            THEN("each keeps its status and carries the errcode the spec gives it")
+            {
+                // Spec (CS API, content repository): 504 M_NOT_YET_UPLOADED for reserved media.
+                REQUIRE(pending.status == 504U);
+                REQUIRE(pending.body.find("M_NOT_YET_UPLOADED") != std::string::npos);
+                REQUIRE(huge.status == 413U);
+                REQUIRE(huge.body.find("M_TOO_LARGE") != std::string::npos);
+                REQUIRE(busy.status == 429U);
+                REQUIRE(busy.body.find("M_LIMIT_EXCEEDED") != std::string::npos);
+                REQUIRE(failed.status == 500U);
+                REQUIRE(failed.body.find("M_UNKNOWN") != std::string::npos);
             }
         }
 

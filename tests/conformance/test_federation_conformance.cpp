@@ -2200,6 +2200,45 @@ SCENARIO("GET /event_auth/{roomId}/{eventId} is routed to the event_auth provide
                 REQUIRE(asked->empty());
             }
         }
+
+        // Spec, "Server Access Control Lists": `/_matrix/federation/v1/event_auth` is among the
+        // endpoints that MUST be protected; a denied server is answered 403 M_FORBIDDEN.
+        WHEN("the room's server ACL denies the requesting server")
+        {
+            auto acl_room = std::make_shared<std::string>();
+            runtime.room_server_acl_provider = [acl_room](std::string_view acl_room_id, std::string_view) {
+                *acl_room = std::string{acl_room_id};
+                return false;
+            };
+            auto const target = std::string{"/_matrix/federation/v1/event_auth/%21conformance%3Alocal.example.org/"
+                                            "%24event%3Aremote.example.org"};
+            auto const response = merovingian::federation::handle_inbound_federation_request(
+                runtime, signed_get_request(origin, key_id, key_seed, target));
+
+            THEN("the request is refused 403 M_FORBIDDEN for the named room and the provider is not asked")
+            {
+                // Spec MUST: ACL-protected endpoints refuse a denied server.
+                REQUIRE(response.status == 403U);
+                REQUIRE(response.body.find("M_FORBIDDEN") != std::string::npos);
+                REQUIRE(*acl_room == room_id);
+                REQUIRE(asked->empty());
+            }
+        }
+
+        WHEN("no event_auth provider is wired")
+        {
+            runtime.event_auth_query_provider = {};
+            auto const target = std::string{"/_matrix/federation/v1/event_auth/%21conformance%3Alocal.example.org/"
+                                            "%24event%3Aremote.example.org"};
+            auto const response = merovingian::federation::handle_inbound_federation_request(
+                runtime, signed_get_request(origin, key_id, key_seed, target));
+
+            THEN("the route answers 501 as a standard error object")
+            {
+                REQUIRE(response.status == 501U);
+                REQUIRE(is_standard_error_object(response.body));
+            }
+        }
     }
 }
 

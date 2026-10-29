@@ -4610,6 +4610,49 @@ SCENARIO("A retried /send transaction is answered with the first attempt's per-P
     }
 }
 
+// ADR-0283: an answer larger than the whole byte budget is not kept, but the
+// transaction is still recorded, so a retry is not processed again and each of
+// its PDUs is answered as handled.
+SCENARIO("A retried /send transaction whose first answer was not kept is still not processed again",
+         "[federation][inbound][transaction][duplicate]")
+{
+    GIVEN("a runtime whose answer budget is smaller than any answer")
+    {
+        auto runtime = merovingian::federation::make_federation_runtime_state(runtime_config());
+        runtime.config.accepted_transaction_cache_bytes = 1U;
+        auto const origin = std::string{"sender.example.org"};
+        auto const key_id = std::string{"ed25519:auto"};
+        auto const token = std::string{"sender-server-key"};
+        merovingian::federation::upsert_remote(runtime, remote_for(origin, key_id, token));
+        auto const request =
+            signed_request(origin, key_id, token, transaction_body(origin, signed_json_pdu(origin, key_id, token)));
+        auto sink_calls = 0U;
+        auto event_id = std::string{};
+        runtime.pdu_sink =
+            [&sink_calls, &event_id](
+                merovingian::federation::InboundPduEnvelope const& env) -> merovingian::federation::PduIngestionResult {
+            ++sink_calls;
+            event_id = env.event_id;
+            return {merovingian::federation::PduIngestionStatus::accepted, {}};
+        };
+
+        WHEN("the sender retries the transaction under the same ID")
+        {
+            auto const first = merovingian::federation::handle_inbound_federation_request(runtime, request);
+            auto const retry = merovingian::federation::handle_inbound_federation_request(runtime, request);
+
+            THEN("the PDU is processed once and the retry answers it as handled")
+            {
+                REQUIRE(first.status == 200U);
+                REQUIRE(retry.status == 200U);
+                REQUIRE(sink_calls == 1U);
+                REQUIRE(runtime.accepted_transaction_bytes == 0U);
+                REQUIRE(retry.body == "{\"pdus\":{\"" + event_id + "\":{}}}");
+            }
+        }
+    }
+}
+
 // Spec: server-server-api.md, "Transactions": only a PDU whose entry has no
 // `error` "can be considered successfully handled". A PDU the sink failed on
 // internally was not handled, so the sender must be told.
