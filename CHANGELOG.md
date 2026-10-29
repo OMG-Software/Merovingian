@@ -46,6 +46,11 @@ Fixes for the failures Complement run 10 found against the signed 0.12.62 releas
   the cause is not yet known. A SQLite write that fails now logs `transaction.failed` (stage,
   statement name, SQLite's code and message, never the bound values), and the join logs which
   count fell short and each state entry it dropped, so the next run names the cause.
+- **Appservice registrations written by real bridges were refused.** Any unknown key refused the
+  whole file (ADR-0035), and mautrix-style registrations, Complement's among them, carry
+  `de.sorunome.msc2409.push_ephemeral`, `org.matrix.msc3202` and `push_ephemeral`. Reverse-DNS
+  namespaced keys and `push_ephemeral` are now ignored and logged at warning; any other unknown
+  key, a typo of a real one included, still refuses the file (ADR-0273, owner decision 2026-10-29).
 - **`POST /rooms/{roomId}/kick` kicked users who were not in the room.** It answers 403 `M_FORBIDDEN`
   unless the target is joined, invited or knocking ("The kickee is not currently in the room").
 - **`GET /rooms/{roomId}/event/{eventId}` answered 403 to a user without access.** It answers

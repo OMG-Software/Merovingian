@@ -1147,3 +1147,95 @@ SCENARIO("a namespace compiles its pattern once, when it is built", "[appservice
         }
     }
 }
+
+// Complement run 10 (H1): Complement copies each test's application service
+// registration into the container as this exact YAML (internal/docker/builder.go,
+// generateASRegistrationYaml), and the image now configures it. A registration
+// the parser refused would leave Complement's appservice tests unable to start.
+SCENARIO("A registration in the form Complement writes is loaded", "[appservice][registration][complement]")
+{
+    GIVEN("a registration file written exactly as Complement writes one")
+    {
+        auto const path = std::filesystem::temp_directory_path() / "merovingian-test-complement-appservice.yaml";
+        {
+            auto out = std::ofstream{path, std::ios::binary};
+            out << "id: my_as_id\n"
+                   "hs_token: hs_token_value\n"
+                   "as_token: as_token_value\n"
+                   "url: 'http://host.docker.internal:9000'\n"
+                   "sender_localpart: the-bridge-user\n"
+                   "rate_limited: false\n"
+                   "de.sorunome.msc2409.push_ephemeral: false\n"
+                   "push_ephemeral: false\n"
+                   "org.matrix.msc3202: false\n"
+                   "namespaces:\n"
+                   "  users:\n"
+                   "    - exclusive: false\n"
+                   "      regex: .*\n"
+                   "  rooms: []\n"
+                   "  aliases: []\n";
+        }
+
+        WHEN("it is loaded")
+        {
+            auto const loaded = load_registrations({path.string()}, "hs1");
+            std::filesystem::remove(path);
+
+            THEN("it is accepted with its tokens, sender, URL and user namespace")
+            {
+                for (auto const& finding : loaded.findings)
+                {
+                    UNSCOPED_INFO("finding: " << finding.message);
+                }
+                REQUIRE(loaded.findings.empty());
+                REQUIRE(loaded.registry.size() == 1U);
+                auto const* found = loaded.registry.find_by_as_token("as_token_value");
+                REQUIRE(found != nullptr);
+                CHECK(found->id == "my_as_id");
+                CHECK(found->sender_localpart == "the-bridge-user");
+                CHECK(found->url == std::optional<std::string>{"http://host.docker.internal:9000"});
+                REQUIRE(found->namespaces.users.size() == 1U);
+                CHECK(found->namespaces.users.front().compiled() != nullptr);
+            }
+        }
+    }
+}
+
+// ADR-0273 (narrows ADR-0035): only vendor-namespaced keys and MSC2409's unstable
+// push_ephemeral are ignored. Any other unknown key, a typo of a real one included,
+// still refuses the file.
+SCENARIO("A registration with an unknown plain key is still refused", "[appservice][registration][complement]")
+{
+    GIVEN("an otherwise valid registration with a mistyped top-level key")
+    {
+        auto const path = std::filesystem::temp_directory_path() / "merovingian-test-unknown-key-appservice.yaml";
+        {
+            auto out = std::ofstream{path, std::ios::binary};
+            out << "id: typo_bridge\n"
+                   "hs_token: hs_token_value\n"
+                   "as_token: as_token_value\n"
+                   "as_tokn: another_value\n"
+                   "url: null\n"
+                   "sender_localpart: the-bridge-user\n"
+                   "namespaces:\n"
+                   "  users: []\n"
+                   "  rooms: []\n"
+                   "  aliases: []\n";
+        }
+
+        WHEN("it is loaded")
+        {
+            auto const loaded = load_registrations({path.string()}, "hs1");
+            std::filesystem::remove(path);
+
+            THEN("it is refused with a finding naming the key")
+            {
+                REQUIRE(loaded.registry.size() == 0U);
+                REQUIRE_FALSE(loaded.findings.empty());
+                CHECK(std::ranges::any_of(loaded.findings, [](auto const& finding) {
+                    return finding.message.find("as_tokn") != std::string::npos;
+                }));
+            }
+        }
+    }
+}

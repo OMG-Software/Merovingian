@@ -255,6 +255,7 @@
 * [0270 - Spelling variants of the sniffed MIME type match](0270-spelling-variants-of-the-sniffed-mime-type-match.md)
 * [0271 - Room summaries answer unauthenticated callers uniformly, for local rooms only](0271-room-summaries-answer-unauthenticated-callers-uniformly.md)
 * [0272 - Canonical alias validation checks the aliases an event adds, and only local ones fully](0272-canonical-alias-validation-checks-added-local-aliases.md)
+* [0273 - Appservice registrations ignore namespaced extension keys](0273-appservice-registrations-ignore-namespaced-extension-keys.md)
 
 ## Proposed Records
 
@@ -294,3 +295,4 @@
 * [0069 - Spec-conformant /state_ids fallback via /event_auth](0069-spec-conformant-state-ids-fallback-via-event-auth.md) — Refined by ADR-0255: events a `/state_ids` snapshot names are fetched with `GET /event`; `/event_auth` is a last resort
 * [0238 - The key resolver uses the key it fetched, not a cache read-back](0238-the-key-resolver-uses-the-key-it-fetched-not-a-cache-read-back.md) — Refined by ADR-0263: a worker re-reads public key rows main cached before fetching
 * [0204 - Keep a user's push rules as their m.push_rules account data, applied over the current defaults](0204-keep-a-users-push-rules-as-their-m-push-rules-account-data.md) — Refined by ADR-0264: an initial `/sync` carries the effective ruleset even for a user who never changed a rule
+* [0035 - Parse appservice registrations as a bounded YAML subset](0035-parse-appservice-registrations-as-a-bounded-yaml-subset.md) — Refined by ADR-0273: reverse-DNS namespaced keys and `push_ephemeral` are ignored with a warning; other unknown keys are still parse failures

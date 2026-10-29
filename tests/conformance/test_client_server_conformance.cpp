@@ -2458,6 +2458,68 @@ SCENARIO("POST /keys/device_signing/upload emits device_lists.changed in /sync",
     }
 }
 
+// --- A fresh login's device keys → device_lists.changed and /keys/changes ----
+// Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#get_matrixclientv3sync
+//       ../../docs/matrix-v1.19-spec/client-server-api.md#get_matrixclientv3keyschanges
+//
+// device_lists.changed lists "users who have updated their device identity or
+// cross-signing keys"; /keys/changes returns the users who "updated their device
+// identity keys" between two sync tokens. A user who signs in on another device
+// and uploads its keys is such a user, for everyone sharing a room with them.
+// Complement's TestKeyChangesLocal checks the same, but through the r0 login path
+// v1.19 does not define; this keeps the behaviour covered here.
+SCENARIO("A fresh login's uploaded device keys reach a room peer's device_lists.changed and /keys/changes",
+         "[conformance][client-server][e2ee][device-list][sync][keys]")
+{
+    GIVEN("alice and bob share a room, and alice has synced")
+    {
+        auto started = merovingian::homeserver::start_client_server(conformance_config());
+        REQUIRE(started.started);
+        auto& rt = started.runtime;
+        auto const alice = logged_in_token(rt);
+        auto const bob = register_and_login(rt, "bob");
+        auto const room_id = create_public_room(rt, alice);
+        REQUIRE(merovingian::homeserver::handle_client_server_request(
+                    rt, {"POST", "/_matrix/client/v3/join/" + room_id, bob, "{}"})
+                    .response.status == 200U);
+        auto const initial_sync =
+            merovingian::homeserver::handle_client_server_request(rt, {"GET", "/_matrix/client/v3/sync", alice, {}});
+        REQUIRE(initial_sync.response.status == 200U);
+        auto const since = sync_next_batch(initial_sync.response.body);
+
+        WHEN("bob signs in on another device and uploads its device keys")
+        {
+            auto const bob_new_device = login_existing_user(rt, "bob", "BOB_NEW");
+            upload_device_keys(rt, bob_new_device, "@bob:example.org", "BOB_NEW", "curve-value", "ed-value");
+            auto const follow_sync = merovingian::homeserver::handle_client_server_request(
+                rt, {"GET", "/_matrix/client/v3/sync?since=" + since, alice, {}});
+            REQUIRE(follow_sync.response.status == 200U);
+            auto const next = sync_next_batch(follow_sync.response.body);
+            auto const changes = merovingian::homeserver::handle_client_server_request(
+                rt, {"GET", "/_matrix/client/v3/keys/changes?from=" + since + "&to=" + next, alice, {}});
+
+            THEN("alice sees bob in device_lists.changed and in /keys/changes")
+            {
+                auto const lists_bob = [](merovingian::canonicaljson::Array const* users) {
+                    return users != nullptr && std::ranges::any_of(*users, [](auto const& value) {
+                               auto const* user = std::get_if<std::string>(&value.storage());
+                               return user != nullptr && *user == "@bob:example.org";
+                           });
+                };
+                auto const sync_body = parse_object(follow_sync.response.body);
+                auto const* device_lists = object_member_as_object(sync_body, "device_lists");
+                // Spec MUST: a user who updated their device identity keys is listed in device_lists.changed.
+                REQUIRE(device_lists != nullptr);
+                REQUIRE(lists_bob(object_member_as_array(*device_lists, "changed")));
+                REQUIRE(changes.response.status == 200U);
+                auto const changes_body = parse_object(changes.response.body);
+                // Spec MUST: /keys/changes lists the users whose device identity keys changed between the tokens.
+                REQUIRE(lists_bob(object_member_as_array(changes_body, "changed")));
+            }
+        }
+    }
+}
+
 // --- POST /keys/signatures/upload → device_lists.changed in /sync ------------
 // Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#get_matrixclientv3sync
 //

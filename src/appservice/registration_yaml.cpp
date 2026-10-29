@@ -2,7 +2,9 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include "merovingian/appservice/registration.hpp"
+#include "merovingian/observability/logger.hpp"
 
+#include <algorithm>
 #include <array>
 #include <cstring>
 #include <optional>
@@ -255,6 +257,27 @@ namespace
         return core::SecretBuffer{bytes};
     }
 
+    // ADR-0273 (narrows ADR-0035): the unknown keys a registration may carry without
+    // being refused. A namespaced key is reverse-DNS, lower case, with at least one
+    // dot ("de.sorunome.msc2409.push_ephemeral", "org.matrix.msc3202"), the
+    // spec's convention for keys outside the specification. `push_ephemeral` is
+    // MSC2409's unstable name for `receive_ephemeral`. Any other unknown key, a typo
+    // of a real one included, is still a finding.
+    [[nodiscard]] auto is_ignorable_extension_key(std::string_view key) noexcept -> bool
+    {
+        if (key == "push_ephemeral")
+        {
+            return true;
+        }
+        if (key.find('.') == std::string_view::npos || key.front() == '.' || key.back() == '.')
+        {
+            return false;
+        }
+        return std::ranges::all_of(key, [](char c) noexcept {
+            return (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '.' || c == '_' || c == '-';
+        });
+    }
+
     class RegistrationParser final
     {
     public:
@@ -331,6 +354,18 @@ namespace
                         continue;
                     }
                     parse_namespaces(registration, line.indent);
+                }
+                else if (is_ignorable_extension_key(key))
+                {
+                    // ADR-0273: a vendor-namespaced key, or MSC2409's unstable name for
+                    // receive_ephemeral, is not this server's to interpret. Real bridges and
+                    // Complement write them, so they are skipped, and said so.
+                    observability::log_diagnostic("appservice", "registration.key_ignored",
+                                                  {
+                                                      {"key", std::string{key}, false}
+                    },
+                                                  observability::LogEventSeverity::warning);
+                    skip_children(line.indent);
                 }
                 else
                 {
