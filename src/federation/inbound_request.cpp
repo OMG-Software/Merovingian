@@ -3501,8 +3501,22 @@ static auto handle_inbound_federation_request_unchecked(FederationRuntimeState& 
         persist_remote_trust(runtime, remote);
         audit_federation(runtime, "federation.duplicate", request.origin, request.target,
                          "transaction already accepted");
+        // The transaction was handled once already, so each of its PDUs is answered as handled (an
+        // empty result), as the first answer did for every PDU without an error.
+        auto handled = canonicaljson::Object{};
+        for (auto const& encoded_pdu : transaction.pdus)
+        {
+            auto const event_id = parse_federation_pdu(encoded_pdu, runtime.room_version_resolver).event_id;
+            auto const listed = std::ranges::any_of(handled, [&event_id](auto const& member) {
+                return member.key == event_id;
+            });
+            if (!event_id.empty() && !listed)
+            {
+                handled.push_back(canonicaljson::make_member(event_id, canonicaljson::Value{canonicaljson::Object{}}));
+            }
+        }
         return {200U, serialize_response_object(canonicaljson::Object{
-                          canonicaljson::make_member("pdus", canonicaljson::Value{canonicaljson::Object{}}),
+                          canonicaljson::make_member("pdus", canonicaljson::Value{std::move(handled)}),
                       })};
     }
     auto pdus_appended = std::size_t{0U};

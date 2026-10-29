@@ -1196,9 +1196,11 @@ SCENARIO("main key-admission overload survives real worker socket HTTP and uncha
                     REQUIRE(pdus != accepted_object->end());
                     auto const* pdu_results = std::get_if<canonicaljson::Object>(&pdus->value->storage());
                     REQUIRE(pdu_results != nullptr);
-                    // The production response lists only PDU errors. Prove
-                    // acceptance below with the real in-memory and durable event.
-                    CHECK(pdu_results->empty());
+                    // The production response has an entry for the PDU, an empty
+                    // result (no error). Prove acceptance below with the real
+                    // in-memory and durable event.
+                    CHECK(pdu_results->size() == 1U);
+                    CHECK(accepted.body.find("error") == std::string::npos);
                     CHECK(runtime.federation_proxy->healthy());
                     CHECK(raw_calls.load() == 1U);
                     CHECK(edu_deliveries.load() == 1U);

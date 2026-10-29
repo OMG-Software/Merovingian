@@ -776,10 +776,12 @@ SCENARIO("Homeserver routes signed inbound federation transactions through runti
                 // Spec MUST: a successfully authenticated transaction MUST return HTTP 200.
                 // Do NOT remove/change - returning 4xx causes the remote to back off and federation stalls.
                 REQUIRE(response.status == 200U);
-                // Spec MUST: the response body MUST contain a "pdus" object mapping event IDs to errors.
-                // An empty object means all PDUs were accepted. Do NOT remove/change - a missing or
-                // malformed "pdus" key causes the sending server to treat the transaction as failed.
-                REQUIRE(response.body == R"({"pdus":{}})");
+                // Spec MUST: the response body MUST contain a "pdus" object mapping each PDU's event ID to
+                // its result ("Required: The PDUs from the original transaction"); the spec's example
+                // gives a handled PDU as `"$successful_event:example.org": {}`. Do NOT remove/change - a
+                // missing or malformed "pdus" key causes the sending server to treat the transaction as failed.
+                REQUIRE(response.body.starts_with(R"({"pdus":{"$)"));
+                REQUIRE(response.body.find("error") == std::string::npos);
                 // Spec MUST: accepted transactions MUST be recorded for idempotency (Sec. 7.1 Idempotency).
                 // Do NOT remove/change - losing transaction state causes duplicate event processing.
                 REQUIRE(runtime.federation.accepted_transactions.size() == 1U);

@@ -513,9 +513,11 @@ SCENARIO("Inbound federation transaction accepts signed public trusted remotes",
             THEN("the transaction is accepted once and retries are idempotent")
             {
                 REQUIRE(response.status == 200U);
-                REQUIRE(response.body == "{\"pdus\":{}}");
+                // Spec: each PDU of the transaction has an entry, empty when it was handled.
+                REQUIRE(response.body.starts_with("{\"pdus\":{\"$"));
+                REQUIRE(response.body.find("error") == std::string::npos);
                 REQUIRE(duplicate.status == 200U);
-                REQUIRE(duplicate.body == "{\"pdus\":{}}");
+                REQUIRE(duplicate.body == response.body);
                 REQUIRE(runtime.accepted_transactions.size() == 1U);
                 REQUIRE(runtime.accepted_transactions.front().transaction_id == "txn123");
                 REQUIRE(runtime.remotes.front().trust.consecutive_failures == 0U);
@@ -600,7 +602,8 @@ SCENARIO("Inbound federation seeds discovery state for remotes resolved on deman
             THEN("the resolved discovery and signing state allow the transaction")
             {
                 REQUIRE(response.status == 200U);
-                REQUIRE(response.body == "{\"pdus\":{}}");
+                REQUIRE(response.body.starts_with("{\"pdus\":{\"$"));
+                REQUIRE(response.body.find("error") == std::string::npos);
                 REQUIRE(runtime.remotes.size() == 1U);
                 REQUIRE(runtime.remotes.front().discovery.resolved_addresses ==
                         std::vector<std::string>{"203.0.113.10"});
@@ -693,7 +696,7 @@ SCENARIO("Inbound federation rejects malformed send targets and unsigned PDUs", 
             THEN("extra path segments fail closed with 404")
             {
                 REQUIRE(bad_route.status == 404U);
-                REQUIRE(bad_route.body == "federation route not found");
+                REQUIRE(bad_route.body.find("federation route not found") != std::string::npos);
             }
 
             THEN("a PDU with missing required fields returns 200 with a per-PDU error — not 400 for the transaction")
@@ -750,13 +753,13 @@ SCENARIO("Inbound federation fails closed for unknown private denied and quarant
             THEN("all failing controls reject the request")
             {
                 REQUIRE(unknown_response.status == 403U);
-                REQUIRE(unknown_response.body == "remote is unknown");
+                REQUIRE(unknown_response.body.find("remote is unknown") != std::string::npos);
                 REQUIRE(private_response.status == 403U);
-                REQUIRE(private_response.body == "remote address is private or loopback");
+                REQUIRE(private_response.body.find("remote address is private or loopback") != std::string::npos);
                 REQUIRE(denied_response.status == 403U);
-                REQUIRE(denied_response.body == "remote server is denied");
+                REQUIRE(denied_response.body.find("remote server is denied") != std::string::npos);
                 REQUIRE(quarantined_response.status == 403U);
-                REQUIRE(quarantined_response.body == "remote server is quarantined");
+                REQUIRE(quarantined_response.body.find("remote server is quarantined") != std::string::npos);
             }
         }
     }
@@ -922,7 +925,7 @@ SCENARIO("Origin-level backoff decays after a quiet period", "[federation][inbou
             THEN("the peer is still backed off")
             {
                 REQUIRE(response.status == 429U);
-                REQUIRE(response.body == "remote backoff required");
+                REQUIRE(response.body.find("remote backoff required") != std::string::npos);
             }
         }
 
@@ -1861,7 +1864,8 @@ SCENARIO("A signature_verified request is handled without re-checking the raw si
             THEN("the request is accepted (the raw signature is not re-verified)")
             {
                 REQUIRE(response.status == 200U);
-                REQUIRE(response.body == "{\"pdus\":{}}");
+                REQUIRE(response.body.starts_with("{\"pdus\":{\"$"));
+                REQUIRE(response.body.find("error") == std::string::npos);
             }
         }
 
@@ -4413,7 +4417,8 @@ SCENARIO("Transactions whose PDUs are all rejected keep incrementing the "
             {
                 REQUIRE(before_success == 2U);
                 REQUIRE(accepted.status == 200U);
-                REQUIRE(accepted.body == "{\"pdus\":{}}");
+                REQUIRE(accepted.body.starts_with("{\"pdus\":{\"$"));
+                REQUIRE(accepted.body.find("error") == std::string::npos);
                 REQUIRE(persisted_failures() == 0U);
             }
         }
