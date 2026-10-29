@@ -449,6 +449,7 @@ shell = find_program('sh')
       'conformance/test_federation_conformance.cpp',
       'conformance/test_federation_media_conformance.cpp',
       'conformance/test_federation_membership_receipt_conformance.cpp',
+      'conformance/test_federation_invite_room_state_conformance.cpp',
       'conformance/test_federation_space_media_conformance.cpp',
       'conformance/test_federation_transaction_conformance.cpp',
       'conformance/test_admin_safety_policy_rules_conformance.cpp',

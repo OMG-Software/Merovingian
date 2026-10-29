@@ -12,6 +12,7 @@
 #include "merovingian/events/event_signer.hpp"
 #include "merovingian/federation/inbound_ingestion.hpp"
 #include "merovingian/federation/inbound_request.hpp"
+#include "merovingian/federation/invite_room_state.hpp"
 #include "merovingian/federation/membership_endpoints.hpp"
 #include "merovingian/federation/transactions.hpp"
 #include "merovingian/homeserver/request_lock.hpp"
@@ -932,6 +933,22 @@ auto handle_invite_ingest_request(HomeserverRuntime& runtime, std::string_view r
         log_relay_refused("invite_ingest", request.event_id, refusal);
         result.status = signature.locally_denied ? 503U : 403U;
         result.reason = refusal;
+        return serialize_invite_ingest_result(result);
+    }
+    // The stripped state travels in the same frame, so a compromised worker cannot hand main an
+    // invite_room_state the worker did not check: the same validation (a create event, every
+    // entry a signed PDU of this room) runs here with main's own key resolution.
+    auto const state_decision = federation::validate_invite_room_state(
+        request.room_id, room_version, request.invite_room_state_json, std::nullopt,
+        [&runtime](std::string_view server_name, std::string_view key_id) {
+            auto const unlocked = RuntimeLockRelease{};
+            return federation::resolve_verification_key(runtime.federation, {}, server_name, key_id);
+        });
+    if (!state_decision.accepted)
+    {
+        log_relay_refused("invite_ingest", request.event_id, state_decision.reason);
+        result.status = state_decision.status == 503U ? 503U : 400U;
+        result.reason = state_decision.reason;
         return serialize_invite_ingest_result(result);
     }
     {

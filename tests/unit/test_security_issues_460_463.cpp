@@ -161,7 +161,7 @@ struct SignedJoinPdu final
 // Build a v2 invite body wrapping a signed invite event.
 [[nodiscard]] auto make_v2_invite_body(std::string const& signed_event_json) -> std::string
 {
-    return std::string{"{\"room_version\":\"12\",\"event\":"} + signed_event_json + ",\"invite_room_state\":[]}";
+    return std::string{"{\"room_version\":\"10\",\"event\":"} + signed_event_json + ",\"invite_room_state\":[]}";
 }
 
 } // namespace
@@ -420,7 +420,7 @@ SCENARIO("invite with invalid PDU signature is rejected", "[security][federation
         // request reaches the signature check this scenario is about.
         auto const invite_event_id = merovingian::federation::test::reference_hash_event_id(forged_event, "12");
         auto const forged_invite_body =
-            std::string{"{\"room_version\":\"12\",\"event\":"} + forged_event + ",\"invite_room_state\":[]}";
+            std::string{"{\"room_version\":\"10\",\"event\":"} + forged_event + ",\"invite_room_state\":[]}";
 
         auto const target = "/_matrix/federation/v2/invite/" + room_id + "/" + invite_event_id;
 

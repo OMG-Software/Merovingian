@@ -13,6 +13,7 @@
 #include "merovingian/events/authorization.hpp"
 #include "merovingian/events/event_id.hpp"
 #include "merovingian/events/event_signer.hpp"
+#include "merovingian/federation/invite_room_state.hpp"
 #include "merovingian/federation/membership_endpoints.hpp"
 #include "merovingian/federation/server_acl.hpp"
 #include "merovingian/homeserver/client_server.hpp"
@@ -1354,15 +1355,14 @@ namespace
             // PUT /invite (v1 and v2): "servers SHOULD return `M_INVALID_PARAM`
             // if: The invite event fails a signature check". A local
             // key-resolution overload is not a verdict: 503, retryable.
-            auto const pdu_decision = authorize_federation_pdu_sender(
-                pdu, remote.signing_key,
-                [&runtime, &request](std::string_view server_name,
-                                     std::string_view key_id) -> VerificationKeyResolution {
-                    auto resolved = resolve_admitted_sender_key(runtime, request.remote_addr, server_name, key_id);
-                    auto const denied = !resolved.key.has_value() &&
-                                        resolved.failure == KeyResolutionFailureKind::local_resource_denial;
-                    return {std::move(resolved.key), denied};
-                });
+            auto const resolve_invite_key = [&runtime, &request](std::string_view server_name,
+                                                                 std::string_view key_id) -> VerificationKeyResolution {
+                auto resolved = resolve_admitted_sender_key(runtime, request.remote_addr, server_name, key_id);
+                auto const denied =
+                    !resolved.key.has_value() && resolved.failure == KeyResolutionFailureKind::local_resource_denial;
+                return {std::move(resolved.key), denied};
+            };
+            auto const pdu_decision = authorize_federation_pdu_sender(pdu, remote.signing_key, resolve_invite_key);
             if (!pdu_decision.accepted)
             {
                 audit_federation(runtime, "federation.invite_rejected", request.origin, request.target,
@@ -1372,6 +1372,25 @@ namespace
                     return {503U, homeserver::matrix_error("M_UNKNOWN", pdu_decision.reason)};
                 }
                 return {400U, homeserver::matrix_error("M_INVALID_PARAM", pdu_decision.reason)};
+            }
+
+            // Spec v1.19 PUT /v2/invite: servers SHOULD apply the `invite_room_state` validation
+            // to room versions 12 and up (it is MAY for 1 through 11, which
+            // validate_invite_room_state leaves alone). Every entry's signature goes through
+            // the same admitted key lookup as the invite's own, within a bounded entry count.
+            auto const state_decision =
+                validate_invite_room_state(invite_request->room_id, room_ver, invite_request->invite_room_state_json,
+                                           remote.signing_key, resolve_invite_key);
+            if (!state_decision.accepted)
+            {
+                audit_federation(runtime, "federation.invite_rejected", request.origin, request.target,
+                                 state_decision.reason);
+                if (state_decision.status == 503U)
+                {
+                    return {503U, homeserver::matrix_error("M_UNKNOWN", state_decision.reason)};
+                }
+                return {state_decision.status == 400U ? std::uint16_t{400U} : state_decision.status,
+                        homeserver::matrix_error("M_INVALID_PARAM", state_decision.reason)};
             }
 
             // Audit R06: the content hash is NOT checked here. Spec "Checks

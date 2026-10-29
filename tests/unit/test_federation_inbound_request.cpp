@@ -644,7 +644,7 @@ SCENARIO("Inbound federation handles non-transaction endpoints with PDU validati
         // A v1 invite implies room version 1 or 2 unless the room's version is
         // known locally; v1 and v2 are not supported (ADR-0076).
         runtime.room_version_resolver = [](std::string_view) {
-            return std::string{"12"};
+            return std::string{"10"};
         };
         auto request = signed_request(origin, key_id, token, invite_event_json);
         // The {eventId} must be the event's own reference-hash ID (audit FED-5).
@@ -2143,7 +2143,7 @@ SCENARIO("Direct invite sender lookup keeps local denial distinct from failed re
                             .accepted = true, .status = 200U, .signed_event_json = invite.invite_event_json};
                     };
                     auto request =
-                        signed_request(relay, key_id, seed, "{\"room_version\":\"12\",\"event\":" + event_json + "}");
+                        signed_request(relay, key_id, seed, "{\"room_version\":\"10\",\"event\":" + event_json + "}");
                     request.remote_addr = "198.51.100.7";
                     request.target = "/_matrix/federation/v2/invite/!room:example.org/" + pdu.event_id;
                     request.signature = merovingian::federation::make_federation_signature(
