@@ -76,6 +76,21 @@ Fixes for the failures Complement run 10 found against the signed 0.12.62 releas
   applied for a pending invite this server holds no room state for (ADR-0278).
 - **An unban of a local user was dropped,** so the user could never be invited back. Membership PDUs
   about a local user with any membership row now reach the receipt checks (ADR-0279).
+- **ADDED:** `GET /_matrix/federation/v1/event_auth/{roomId}/{eventId}` (the event's auth chain,
+  bounded, behind the origin-in-room gate) and `GET /_matrix/federation/v1/media/thumbnail/{mediaId}`
+  (multipart/mixed, local media only).
+- **Federation errors were plain text, and `/send` listed only failures.** Every federation error is now
+  a standard `{errcode, error}` object, and `/send` answers every PDU, `{}` when handled (ADR-0280).
+- **Remote aliases created after the federation worker started were not found.** `query/directory` is
+  relayed to main instead of read from the worker's start-up snapshot (ADR-0281).
+- **Profiles of users on other servers were 404.** `GET /profile/{userId}[/{keyName}]` asks the user's
+  own server, under an ADR-0079 slot and deadline. Inbound, a malformed `user_id` on `query/profile`
+  answers 400 `M_INVALID_PARAM`.
+- **Redacting an event this server does not hold answered 404.** The spec's `/redact` has only a 200; it
+  is now accepted from a sender with the room's `redact` level and refused 403 otherwise.
+- **Backfill fetched history around an invalid event.** An event returned by `/get_missing_events` that
+  is oversized, not canonical JSON, or has a `state_key` over 255 bytes is dropped, and the recovery stops
+  without asking for the history another way.
 - **`POST /rooms/{roomId}/kick` kicked users who were not in the room.** It answers 403 `M_FORBIDDEN`
   unless the target is joined, invited or knocking ("The kickee is not currently in the room").
 - **`GET /rooms/{roomId}/event/{eventId}` answered 403 to a user without access.** It answers

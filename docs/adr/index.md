@@ -262,6 +262,8 @@
 * [0277 - invite_room_state is validated for room versions 12 and up only](0277-invite-room-state-is-validated-for-room-versions-12-and-up.md)
 * [0278 - Only the inviting server withdraws an invite this server holds no room state for](0278-only-the-inviting-server-withdraws-an-invite-without-room-state.md)
 * [0279 - A ban does not end this server's interest in PDUs about its banned user](0279-a-ban-does-not-end-interest-in-pdus-about-the-banned-user.md)
+* [0280 - Every federation error is a standard JSON error, and /send answers every PDU](0280-federation-errors-and-send-results-are-spec-shaped.md)
+* [0281 - Federation routes that name no room are served by main, not a worker snapshot](0281-federation-routes-without-a-room-are-served-by-main.md)
 
 ## Proposed Records
 

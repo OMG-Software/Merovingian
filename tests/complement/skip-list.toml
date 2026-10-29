@@ -485,3 +485,47 @@ category = "spec"
 spec = "docs/matrix-v1.19-spec/server-server-api.md#put_matrixfederationv2inviteroomideventid"
 reason = "This server refuses the invite with 400 M_INVALID_PARAM, the errcode the spec says servers SHOULD return for a missing m.room.create; the test expects M_MISSING_PARAM."
 
+# get_missing_events: the walk follows the spec, but the room the test creates with preset public_chat
+# holds m.room.guest_access: forbidden, which the spec's preset table requires and the test's expected
+# sequence omits.
+
+[[entry]]
+test = "TestInboundCanReturnMissingEvents/Inbound_federation_can_return_missing_events_for_invited_visibility"
+package = "tests"
+mode = "expect-fail"
+category = "spec"
+spec = "docs/matrix-v1.19-spec/client-server-api.md#post_matrixclientv3createroom"
+reason = "The test expects the event sequence of a public_chat room without m.room.guest_access; the spec's preset table gives public_chat guest_access forbidden, so this server's room holds that event and the sequence differs."
+
+[[entry]]
+test = "TestInboundCanReturnMissingEvents/Inbound_federation_can_return_missing_events_for_joined_visibility"
+package = "tests"
+mode = "expect-fail"
+category = "spec"
+spec = "docs/matrix-v1.19-spec/client-server-api.md#post_matrixclientv3createroom"
+reason = "The test expects the event sequence of a public_chat room without m.room.guest_access; the spec's preset table gives public_chat guest_access forbidden, so this server's room holds that event and the sequence differs."
+
+[[entry]]
+test = "TestInboundCanReturnMissingEvents/Inbound_federation_can_return_missing_events_for_shared_visibility"
+package = "tests"
+mode = "expect-fail"
+category = "spec"
+spec = "docs/matrix-v1.19-spec/client-server-api.md#post_matrixclientv3createroom"
+reason = "The test expects the event sequence of a public_chat room without m.room.guest_access; the spec's preset table gives public_chat guest_access forbidden, so this server's room holds that event and the sequence differs."
+
+[[entry]]
+test = "TestInboundCanReturnMissingEvents/Inbound_federation_can_return_missing_events_for_world_readable_visibility"
+package = "tests"
+mode = "expect-fail"
+category = "spec"
+spec = "docs/matrix-v1.19-spec/client-server-api.md#post_matrixclientv3createroom"
+reason = "The test expects the event sequence of a public_chat room without m.room.guest_access; the spec's preset table gives public_chat guest_access forbidden, so this server's room holds that event and the sequence differs."
+
+[[entry]]
+test = "TestOutboundFederationEventSizeGetMissingEvents"
+package = "tests"
+mode = "expect-fail"
+category = "spec"
+spec = "docs/matrix-v1.19-spec/client-server-api.md#size-limits"
+reason = "Expects an event whose state_key is 280 bytes (70 codepoints) to be accepted; the spec says state_key MUST NOT exceed 255 bytes, so this server drops it."
+
