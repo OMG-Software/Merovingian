@@ -1081,9 +1081,11 @@ SCENARIO("World-readable history is readable without joining, and only while it 
             THEN("mallory, now that the room is no longer world-readable, is refused")
             {
                 REQUIRE(messages(rt, mallory, room_id).status == 403U);
+                // Spec (GET /event): "404 The event was not found or you do not have permission to
+                // read this event." The endpoint defines no 403.
                 REQUIRE(
                     call(rt, "GET", "/_matrix/client/v3/rooms/" + room_id + "/event/" + open_message, mallory).status ==
-                    403U);
+                    404U);
             }
         }
     }

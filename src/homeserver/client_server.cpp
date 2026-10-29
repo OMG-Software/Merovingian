@@ -3180,6 +3180,16 @@ namespace
             auto const normalized = replace_two_tail_segments(room_keys_keys_prefix, rest, "{roomId}", "{sessionId}");
             return normalized.empty() ? std::string{unmatched} : normalized;
         }
+        // GET /_matrix/client/v1/room_summary/{roomIdOrAlias} (v1.15).
+        auto constexpr room_summary_prefix = std::string_view{"/_matrix/client/v1/room_summary/"};
+        if (starts_with(out, room_summary_prefix))
+        {
+            if (has_one_segment(std::string_view{out}.substr(room_summary_prefix.size())))
+            {
+                return std::string{room_summary_prefix} + "{roomIdOrAlias}";
+            }
+            return std::string{unmatched};
+        }
         // Nheko's unstable room-summary probes (im.nheko.summary).
         auto constexpr nheko_summary_prefix = std::string_view{"/_matrix/client/unstable/im.nheko.summary/"};
         if (starts_with(out, nheko_summary_prefix))
@@ -8255,6 +8265,23 @@ namespace
                                     core::percent_decode_path_component(event_id)};
     }
 
+    // GET /_matrix/client/v1/room_summary/{roomIdOrAlias}: the (percent-decoded) room ID or alias, or
+    // nothing when the path is some other endpoint.
+    [[nodiscard]] auto room_summary_target(std::string_view request_path) -> std::optional<std::string>
+    {
+        auto constexpr prefix = std::string_view{"/_matrix/client/v1/room_summary/"};
+        if (!starts_with(request_path, prefix) || request_path.size() == prefix.size())
+        {
+            return std::nullopt;
+        }
+        auto const encoded = request_path.substr(prefix.size());
+        if (encoded.find('/') != std::string_view::npos)
+        {
+            return std::nullopt;
+        }
+        return core::percent_decode_path_component(encoded);
+    }
+
     // GET /_matrix/client/v1/rooms/{roomId}/threads — returns the (percent-decoded)
     // room id, or nullopt when the target is some other v1 room endpoint.
     [[nodiscard]] auto room_threads_room_id(std::string_view target) -> std::optional<std::string>
@@ -8432,6 +8459,80 @@ namespace
         return {};
     }
 
+    // Spec (Server-side key backups): "When a client uploads a key for a session that the server
+    // already has a key for, the server will choose to either keep the existing key or replace it
+    // ... if the keys have different values for `is_verified`, then it will keep the key that has
+    // `is_verified` set to `true`; if they have the same values for `is_verified`, then it will
+    // keep the key with a lower `first_message_index`; and finally, if `is_verified` and
+    // `first_message_index` are equal, then it will keep the key with a lower `forwarded_count`."
+    //
+    // True when `offered` should replace `held`. Keys equal on all three fields are not ordered by
+    // the spec; the offered one replaces, so a re-upload of the same metadata still refreshes the
+    // stored ciphertext. A missing or mistyped field counts as the worst value (unverified, the
+    // highest index and count), so a key without metadata never displaces one that has it.
+    [[nodiscard]] auto key_backup_offer_replaces(std::string_view held_json, std::string_view offered_json) -> bool
+    {
+        struct Metadata final
+        {
+            bool is_verified{false};
+            std::int64_t first_message_index{std::numeric_limits<std::int64_t>::max()};
+            std::int64_t forwarded_count{std::numeric_limits<std::int64_t>::max()};
+        };
+        auto const read = [](std::string_view json) -> Metadata {
+            auto metadata = Metadata{};
+            auto const object = parsed_json_object(json);
+            if (!object.has_value())
+            {
+                return metadata;
+            }
+            if (auto const* verified = boolean_member(*object, "is_verified"); verified != nullptr)
+            {
+                metadata.is_verified = *verified;
+            }
+            auto const integer = [&object](std::string_view key, std::int64_t& out) {
+                if (auto const* value = object_member(*object, key); value != nullptr)
+                {
+                    if (auto const* number = std::get_if<std::int64_t>(&value->storage()); number != nullptr)
+                    {
+                        out = *number;
+                    }
+                }
+            };
+            integer("first_message_index", metadata.first_message_index);
+            integer("forwarded_count", metadata.forwarded_count);
+            return metadata;
+        };
+        auto const held = read(held_json);
+        auto const offered = read(offered_json);
+        if (held.is_verified != offered.is_verified)
+        {
+            return offered.is_verified;
+        }
+        if (held.first_message_index != offered.first_message_index)
+        {
+            return offered.first_message_index < held.first_message_index;
+        }
+        return offered.forwarded_count <= held.forwarded_count;
+    }
+
+    // Stores `session` unless the key the backup already holds for that session wins under
+    // key_backup_offer_replaces. True when the request is done (stored, or deliberately kept the
+    // held key); false only when the store refused to write.
+    [[nodiscard]] auto store_key_backup_session_by_rules(database::PersistentStore& store,
+                                                         database::PersistentKeyBackupSession session) -> bool
+    {
+        auto const held =
+            std::ranges::find_if(store.key_backup_sessions, [&session](database::PersistentKeyBackupSession const& s) {
+                return s.user_id == session.user_id && s.version == session.version && s.room_id == session.room_id &&
+                       s.session_id == session.session_id;
+            });
+        if (held != store.key_backup_sessions.end() && !key_backup_offer_replaces(held->json, session.json))
+        {
+            return true;
+        }
+        return database::store_key_backup_session(store, std::move(session));
+    }
+
     [[nodiscard]] auto room_key_backup_path_parts(std::string_view target) -> std::optional<RoomKeyBackupPathParts>
     {
         auto constexpr prefix = std::string_view{"/_matrix/client/v3/room_keys/keys/"};
@@ -8506,6 +8607,128 @@ namespace
         auto const* event = std::get_if<canonicaljson::Object>(&parsed.value.storage());
         auto const* content = event == nullptr ? nullptr : object_member_as_object(*event, "content");
         return content == nullptr ? std::nullopt : std::optional<canonicaljson::Object>{*content};
+    }
+
+    struct CanonicalAliasRefusal final
+    {
+        std::string_view errcode{};
+        std::string message{};
+    };
+
+    // Spec (PUT /rooms/{roomId}/state/{eventType}/{stateKey}): "If the event type being sent is
+    // `m.room.canonical_alias` servers SHOULD ensure that any new aliases being listed in the event
+    // are valid per their grammar/syntax and that they point to the room ID where the state event
+    // is to be sent to. Servers do not validate aliases which are being removed or are already
+    // present in the state event." 400 `M_INVALID_PARAM` for syntax, `M_BAD_ALIAS` for an alias that
+    // does not point to the room.
+    //
+    // Only this server's directory can say where an alias points, so an alias on another server is
+    // checked for syntax and accepted: asking its server would be a client-triggered outbound call
+    // (ADR-0079) and the spec only says SHOULD; clients are told not to trust the list either
+    // ("Clients SHOULD NOT treat the aliases as accurate").
+    //
+    // A body that is not a JSON object is left for the state handler's own 400.
+    [[nodiscard]] auto canonical_alias_refusal(database::PersistentStore const& store, std::string_view room_id,
+                                               std::string_view local_server_name, std::string_view body)
+        -> std::optional<CanonicalAliasRefusal>
+    {
+        auto const content = parsed_json_object(body);
+        if (!content.has_value())
+        {
+            return std::nullopt;
+        }
+        // Collects the aliases of a canonical-alias content: `alias` (absent, null or empty means
+        // none) and each entry of `alt_aliases`. False when a field has the wrong type.
+        auto const collect = [](canonicaljson::Object const& object, std::vector<std::string>& out) -> bool {
+            if (auto const* alias = object_member(object, "alias"); alias != nullptr)
+            {
+                if (auto const* text = std::get_if<std::string>(&alias->storage()); text != nullptr)
+                {
+                    if (!text->empty())
+                    {
+                        out.push_back(*text);
+                    }
+                }
+                else if (!std::holds_alternative<std::nullptr_t>(alias->storage()))
+                {
+                    return false;
+                }
+            }
+            if (auto const* alt = object_member(object, "alt_aliases"); alt != nullptr)
+            {
+                if (auto const* array = std::get_if<canonicaljson::Array>(&alt->storage()); array != nullptr)
+                {
+                    for (auto const& entry : *array)
+                    {
+                        auto const* text = std::get_if<std::string>(&entry.storage());
+                        if (text == nullptr)
+                        {
+                            return false;
+                        }
+                        out.push_back(*text);
+                    }
+                }
+                else if (!std::holds_alternative<std::nullptr_t>(alt->storage()))
+                {
+                    return false;
+                }
+            }
+            return true;
+        };
+
+        auto listed = std::vector<std::string>{};
+        if (!collect(*content, listed))
+        {
+            return CanonicalAliasRefusal{"M_INVALID_PARAM", "alias and alt_aliases must be room aliases"};
+        }
+
+        // The aliases the room's current event already lists are not validated again.
+        auto present = std::vector<std::string>{};
+        auto const current = std::ranges::find_if(store.state, [room_id](database::PersistentStateEvent const& state) {
+            return state.room_id == room_id && state.event_type == "m.room.canonical_alias" && state.state_key.empty();
+        });
+        if (current != store.state.end())
+        {
+            if (auto const json = event_json_for_id(store, current->event_id); json.has_value())
+            {
+                auto const parsed = canonicaljson::parse_lossless(*json);
+                auto const* event = std::get_if<canonicaljson::Object>(&parsed.value.storage());
+                auto const* old_content = event == nullptr ? nullptr : object_member_as_object(*event, "content");
+                if (old_content != nullptr)
+                {
+                    std::ignore = collect(*old_content, present);
+                }
+            }
+        }
+        auto const is_new = [&present](std::string const& alias) {
+            return std::ranges::find(present, alias) == present.end();
+        };
+
+        for (auto const& alias : listed)
+        {
+            if (is_new(alias) && !auth::room_alias_is_valid(alias))
+            {
+                return CanonicalAliasRefusal{"M_INVALID_PARAM", "'" + alias + "' is not a valid room alias"};
+            }
+        }
+        for (auto const& alias : listed)
+        {
+            if (!is_new(alias))
+            {
+                continue;
+            }
+            // room_alias_is_valid ended the localpart at the first ':', which the domain follows.
+            if (std::string_view{alias}.substr(alias.find(':') + 1U) != local_server_name)
+            {
+                continue;
+            }
+            auto const mapping = database::find_room_alias(store, alias);
+            if (!mapping.has_value() || mapping->room_id != room_id)
+            {
+                return CanonicalAliasRefusal{"M_BAD_ALIAS", "The alias '" + alias + "' does not point to this room."};
+            }
+        }
+        return std::nullopt;
     }
 
     // The replacement room's creation options for POST /rooms/{roomId}/upgrade (spec, "Server
@@ -10086,7 +10309,7 @@ namespace
             {
                 return false;
             }
-            return database::store_key_backup_session(
+            return store_key_backup_session_by_rules(
                 store, {std::string{user}, std::string{version}, path->room_id, *path->session_id, req.body});
         }
         case auth::KeyApiEndpoint::put_room_key_backup_room: {
@@ -10114,8 +10337,8 @@ namespace
                     stored = false;
                     continue;
                 }
-                if (!database::store_key_backup_session(store, {std::string{user}, std::string{version}, path->room_id,
-                                                                session.key, serialized.output}))
+                if (!store_key_backup_session_by_rules(store, {std::string{user}, std::string{version}, path->room_id,
+                                                               session.key, serialized.output}))
                 {
                     stored = false;
                 }
@@ -10161,7 +10384,7 @@ namespace
                     {
                         continue;
                     }
-                    std::ignore = database::store_key_backup_session(
+                    std::ignore = store_key_backup_session_by_rules(
                         store, {std::string{user}, std::string{version}, room.key, session.key, session_json.output});
                 }
             }
@@ -12667,6 +12890,20 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
         return dispatch_err(req, rt, 404U, "M_UNRECOGNIZED", "route not found");
     }
 
+    // GET /_matrix/client/v1/room_summary/{roomIdOrAlias}. Spec: "Servers MAY allow unauthenticated
+    // access to this API if ... The room has a join rule of `public`, `knock` or `knock_restricted`
+    // ... The room has a `world_readable` history visibility." A request that carries a token goes
+    // through the gate below like any other; one without a token is answered here, and a room
+    // outside those conditions gets the 401 the gate would give.
+    if (req.method == "GET" && req.access_token.empty())
+    {
+        if (auto const target = room_summary_target(request_path); target.has_value())
+        {
+            auto const result = handle_client_room_summary(rt.homeserver, {}, *target);
+            return dispatch_resp(req, rt, result.status, result.body);
+        }
+    }
+
     auto const user = auth(rt, req.access_token);
     if (!user.has_value())
     {
@@ -14977,6 +15214,12 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             return "private_chat";
         }();
         auto const invitees = string_array_member(body, "invite");
+        // Spec (createRoom): `room_version` is a `string`. A number, boolean, null, array or object
+        // is a malformed body, not an unsupported version.
+        if (object_member(body, "room_version") != nullptr && string_member(body, "room_version") == nullptr)
+        {
+            return dispatch_err(req, rt, 400U, "M_BAD_JSON", "room_version must be a string");
+        }
         auto const* room_version_value = string_member(body, "room_version");
         auto const room_version =
             room_version_value != nullptr && !room_version_value->empty() ? *room_version_value : std::string{"12"};
@@ -15536,6 +15779,19 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                     });
                     return dispatch_err(req, rt, 400U, "M_BAD_JSON", "state content must be a JSON object");
                 }
+                // Only for a sender who may send it: anyone else gets the 403 the send path gives.
+                if (path->event_type == "m.room.canonical_alias" && path->state_key.empty() &&
+                    may_send_state_event(rt.homeserver.database.persistent_store, path->room_id, *user,
+                                         "m.room.canonical_alias"))
+                {
+                    if (auto const refusal =
+                            canonical_alias_refusal(rt.homeserver.database.persistent_store, path->room_id,
+                                                    rt.homeserver.config.server().server_name, req.body);
+                        refusal.has_value())
+                    {
+                        return dispatch_err(req, rt, 400U, std::string{refusal->errcode}, refusal->message);
+                    }
+                }
                 log_diagnostic("room.state_event.dispatch", {
                                                                 {"actor",      *user,            false},
                                                                 {"room_id",    path->room_id,    false},
@@ -15612,7 +15868,9 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                 auto const& store = rt.homeserver.database.persistent_store;
                 if (!may_read_room_events(store, path->room_id, *user))
                 {
-                    return dispatch_err(req, rt, 403U, "M_FORBIDDEN", "not a member of this room");
+                    // The endpoint's only error is 404, and answering the same as for an event that
+                    // does not exist keeps a non-member from learning that the event does.
+                    return dispatch_err(req, rt, 404U, "M_NOT_FOUND", "event not found");
                 }
                 auto const event = store.events.find_in_room(path->room_id, path->event_id);
                 // ADR-0064 phase B2: a rejected or soft-failed event is
@@ -17683,6 +17941,17 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             }
         }
         return dispatch_err(req, rt, 404U, "M_NOT_FOUND", "room summary not found");
+    }
+
+    // GET /_matrix/client/v1/room_summary/{roomIdOrAlias}: the authenticated caller (a request
+    // without a token was answered before the auth gate).
+    if (req.method == "GET")
+    {
+        if (auto const target = room_summary_target(request_path); target.has_value())
+        {
+            auto const result = handle_client_room_summary(rt.homeserver, *user, *target);
+            return dispatch_resp(req, rt, result.status, result.body);
+        }
     }
 
     // GET /_matrix/client/v1/rooms/{roomId}/hierarchy

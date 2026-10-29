@@ -43,6 +43,21 @@ struct SpaceHierarchyResult final
 [[nodiscard]] auto handle_client_space_hierarchy(HomeserverRuntime& runtime, std::string_view user_id,
                                                  SpaceHierarchyRequest const& request) -> SpaceHierarchyResult;
 
+// Client-Server API: GET /_matrix/client/v1/room_summary/{roomIdOrAlias}
+// Spec: Matrix v1.19 Client-Server API, "Room Summaries" (added in v1.15).
+//
+// `user_id` is empty for an unauthenticated caller. Answers only for a room this server holds
+// state for: `via` (asking another server for a room it has no state of) is not implemented, so
+// such a room is 404. The caller holds `runtime.mutex`; nothing here blocks on the network.
+//
+// An unauthenticated caller sees a room whose join rule is `public`, `knock` or `knock_restricted`
+// or whose history visibility is `world_readable`; any other room, and a room that does not exist,
+// is refused alike with 401 `M_MISSING_TOKEN`. An authenticated caller sees what the hierarchy
+// would show them, plus a room they have knocked on; any other room, and a room that does not
+// exist, is 404 `M_NOT_FOUND`.
+[[nodiscard]] auto handle_client_room_summary(HomeserverRuntime const& runtime, std::string_view user_id,
+                                              std::string_view room_id_or_alias) -> SpaceHierarchyResult;
+
 // Server-Server API: GET /_matrix/federation/v1/hierarchy/{roomId}
 // Returns the canonical-JSON response body for the requesting server `origin`,
 // or an empty string when the room is unknown or `origin` could not peek or
