@@ -3062,8 +3062,14 @@ namespace
         // verifying inbound PDU signatures.  Rooms created before v11 include
         // "origin" in the signing payload; using the wrong (later) version strips
         // it and produces a false signature failure for every inbound event.
+        // A room this server holds no create event for is answered with an
+        // empty string, never a guess: every caller has its own fallback for an
+        // unknown room (a relayed invite takes the version the invite declares, a
+        // v1 invite the spec's "1 or 2"). A "10" here once made main verify
+        // invites into rooms it did not hold under v10 redaction, which keeps the
+        // `origin` key v11 and later strip (Complement run 10, F1).
         runtime.federation.room_version_resolver = [rt](std::string_view room_id) -> std::string {
-            return room_version_from_store(rt->database.persistent_store, room_id);
+            return stored_room_version(rt->database.persistent_store, room_id).value_or(std::string{});
         };
 
         // Provide room server ACL enforcement for inbound federation.  The lambda

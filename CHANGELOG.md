@@ -4,8 +4,12 @@ Fixes for the failures Complement run 10 found against the signed 0.12.62 releas
 
 ### Complement
 
-- `skip-list.toml` gains 20 entries checked against the pinned spec. Five push-rule tests expect
-  `dont_notify` back, which the spec says homeservers MUST strip (`spec`). Four tests call
+- `skip-list.toml` gains 27 entries checked against the pinned spec. Five push-rule tests expect
+  `dont_notify` back, which the spec says homeservers MUST strip (`spec`). Six search tests search
+  rooms this server created, which are always encrypted, and the spec says server-side search does
+  not include encrypted rooms (`spec`). One filtered `/sync` test wants a late state event in
+  `state`, where this server returns it as the timeline's event with the state before it, as the
+  spec defines `state` (`non-spec`; Complement skips Dendrite for the same answer). Four tests call
   `/_matrix/client/r0` paths v1.19 does not define (`non-spec`). One creates a v2 room (`room-version`).
   Ten assert Synapse behaviour the spec leaves to the server, and the owner kept this server's
   behaviour for them (`non-spec`): downcasing a requested username, deduplicating identical state,
@@ -14,6 +18,15 @@ Fixes for the failures Complement run 10 found against the signed 0.12.62 releas
 
 ### Fixed
 
+- **Invites from Synapse-family servers into rooms this server does not hold were refused.** Main
+  re-verifies an invite the federation worker relays, and took room version 10 for any room it held
+  no create event for. v10 redaction keeps the top-level `origin` key that v11 and later strip, and
+  gomatrixserverlib-built events (Synapse, Dendrite, Complement) set it, so every such invite into a
+  v11 or v12 room failed with "signature by a known key does not verify". Invites between two
+  Merovingian servers carried no `origin` and passed. The room version resolver now answers "unknown"
+  for such a room, so the relay uses the version the invite declares, the worker's v1 invite path
+  reaches the spec's "1 or 2" rule, and `/send` parses PDUs for unknown rooms as v12, as its
+  comment said (ADR-0269). Complement: `TestIsDirectFlagFederation`.
 - **The legacy media endpoints served remote media fetched during the freeze.**
   `GET /_matrix/media/v3/download` and `/thumbnail` fetched remote media on demand and served it,
   although the spec counts media the server "had to re-download" as new media, which SHOULD only

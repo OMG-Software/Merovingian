@@ -251,6 +251,7 @@
 * [0266 - Pin third-party GitHub Actions to a full commit SHA](0266-pin-third-party-github-actions-to-a-full-commit-sha.md)
 * [0267 - Bounded parallel work holds each slot in an RAII permit](0267-bounded-parallel-work-holds-each-slot-in-an-raii-permit.md)
 * [0268 - Runtime state structs keep their implicit, possibly throwing, moves](0268-runtime-state-structs-keep-their-implicit-throwing-moves.md)
+* [0269 - The room version resolver does not guess for unknown rooms](0269-the-room-version-resolver-does-not-guess-for-unknown-rooms.md)
 
 ## Proposed Records
 

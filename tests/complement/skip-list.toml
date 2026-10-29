@@ -383,3 +383,67 @@ mode = "expect-fail"
 category = "non-spec"
 spec = "docs/matrix-v1.19-spec/client-server-api.md#delete_matrixclientv3directoryroomroomalias"
 reason = "Waits for the canonical alias event to drop the deleted alias; the spec says servers may choose to update it, and this server leaves it unchanged."
+
+# Search: every room this server creates is end-to-end encrypted (security.encryption.default_for_new_rooms,
+# which the server refuses to start with turned off), and the spec says server-side search "will not
+# include rooms that are end to end encrypted". TestSearch's rooms are created here, so nothing matches.
+
+[[entry]]
+test = "TestSearch/parallel/Can_back-paginate_search_results"
+package = "tests/csapi"
+mode = "expect-fail"
+category = "spec"
+spec = "docs/matrix-v1.19-spec/client-server-api.md#server-side-search"
+reason = "Searches a room created on this server, which is encrypted by default; the spec says search will not include end-to-end encrypted rooms, so the search finds nothing."
+
+[[entry]]
+test = "TestSearch/parallel/Can_get_context_around_search_results"
+package = "tests/csapi"
+mode = "expect-fail"
+category = "spec"
+spec = "docs/matrix-v1.19-spec/client-server-api.md#server-side-search"
+reason = "Searches a room created on this server, which is encrypted by default; the spec says search will not include end-to-end encrypted rooms, so the search finds nothing."
+
+[[entry]]
+test = "TestSearch/parallel/Can_search_for_an_event_by_body"
+package = "tests/csapi"
+mode = "expect-fail"
+category = "spec"
+spec = "docs/matrix-v1.19-spec/client-server-api.md#server-side-search"
+reason = "Searches a room created on this server, which is encrypted by default; the spec says search will not include end-to-end encrypted rooms, so the search finds nothing."
+
+[[entry]]
+test = "TestSearch/parallel/Search_results_with_rank_ordering_do_not_include_redacted_events"
+package = "tests/csapi"
+mode = "expect-fail"
+category = "spec"
+spec = "docs/matrix-v1.19-spec/client-server-api.md#server-side-search"
+reason = "Searches a room created on this server, which is encrypted by default; the spec says search will not include end-to-end encrypted rooms, so the search finds nothing."
+
+[[entry]]
+test = "TestSearch/parallel/Search_results_with_recent_ordering_do_not_include_redacted_events"
+package = "tests/csapi"
+mode = "expect-fail"
+category = "spec"
+spec = "docs/matrix-v1.19-spec/client-server-api.md#server-side-search"
+reason = "Searches a room created on this server, which is encrypted by default; the spec says search will not include end-to-end encrypted rooms, so the search finds nothing."
+
+[[entry]]
+test = "TestSearch/parallel/Search_works_across_an_upgraded_room_and_its_predecessor"
+package = "tests/csapi"
+mode = "expect-fail"
+category = "spec"
+spec = "docs/matrix-v1.19-spec/client-server-api.md#server-side-search"
+reason = "Searches a room created on this server, which is encrypted by default; the spec says search will not include end-to-end encrypted rooms, so the search finds nothing."
+
+# A late state event in a filtered /sync: S2 reaches this server after E4, so in stream order it is the
+# last event the timeline filter keeps, and this server returns it as the timeline (limited) with the
+# state before it. Complement skips Dendrite for the same reason ("S2 is put in the timeline, not state").
+
+[[entry]]
+test = "TestSyncOmitsStateChangeOnFilteredEvents"
+package = "tests"
+mode = "expect-fail"
+category = "non-spec"
+spec = "docs/matrix-v1.19-spec/client-server-api.md#get_matrixclientv3sync"
+reason = "Expects the late m.room.name event S2 in state; this server returns S2 as the timeline's event and state up to the start of the timeline, as the spec defines state, so the client still learns it."

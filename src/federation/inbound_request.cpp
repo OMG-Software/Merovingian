@@ -2677,8 +2677,10 @@ auto parse_federation_pdu(std::string_view encoded, RoomVersionResolver const& v
             return {};
         }
         // Resolve room version from the room's m.room.create state when the
-        // resolver is available; fall back to "12" for unknown rooms.
-        auto const room_ver = version_resolver ? version_resolver(envelope.event.room_id) : std::string{"12"};
+        // resolver is available; fall back to "12" for unknown rooms, which the
+        // resolver answers with an empty string (as parse_inbound_pdu_envelope does).
+        auto const resolved = version_resolver ? version_resolver(envelope.event.room_id) : std::string{};
+        auto const room_ver = resolved.empty() ? std::string{"12"} : resolved;
         auto const* room_version = rooms::find_room_version_policy(room_ver);
         if (room_version == nullptr)
         {
