@@ -14,19 +14,33 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[2]
 WORKFLOWS = REPO_ROOT / ".github" / "workflows"
 
-USES = re.compile(r"^\s*(?:-\s+)?uses:\s*(?P<target>\S+)(?P<rest>.*)$")
+# A `uses` key in block or flow style, bare or quoted, with a bare or quoted value. The key
+# must start a mapping entry (line start, `- `, `{` or `,`), so `causes:` does not match.
+# PyYAML is not available to the tooling tests; a line this cannot place fails the pinning
+# checks rather than passing them, because the target then carries the stray characters.
+USES = re.compile(
+    r"""(?:^|[\s{,])(?:-\s+)?(?P<kq>["']?)uses(?P=kq)\s*:\s*"""
+    r"""(?P<vq>["']?)(?P<target>[^\s"',{}#]+)(?P=vq)(?P<rest>.*)$"""
+)
 PINNED = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_./-]+@[0-9a-f]{40}$")
 VERSION_COMMENT = re.compile(r"^\s+#\s*v\d+\.\d+\.\d+\s*$")
 TAG_ALLOWED_OWNERS = ("actions", "github")
+
+
+def uses_in_line(line: str) -> tuple[str, str] | None:
+    match = USES.search(line)
+    return None if match is None else (match["target"], match["rest"])
 
 
 def workflow_uses() -> list[tuple[str, int, str, str]]:
     found = []
     for workflow in sorted(WORKFLOWS.glob("*.y*ml")):
         for number, line in enumerate(workflow.read_text(encoding="utf-8").splitlines(), start=1):
-            match = USES.match(line)
+            if line.lstrip().startswith("#"):
+                continue
+            match = uses_in_line(line)
             if match:
-                found.append((workflow.name, number, match["target"], match["rest"]))
+                found.append((workflow.name, number, match[0], match[1]))
     return found
 
 
@@ -34,6 +48,37 @@ def is_third_party(target: str) -> bool:
     if target.startswith("./"):
         return False
     return target.split("/", 1)[0] not in TAG_ALLOWED_OWNERS
+
+
+class UsesMatcherTest(unittest.TestCase):
+    """The pinning tests are only as strong as the matcher: a `uses:` it cannot see is never
+    checked. Every YAML spelling of the key and value must be found."""
+
+    def test_given_each_spelling_of_uses_when_matched_then_the_action_is_found(self) -> None:
+        spellings = {
+            "      - uses: vendor/action@v1": "vendor/action@v1",
+            "        uses: vendor/action@v1": "vendor/action@v1",
+            '      - "uses": vendor/action@v1': "vendor/action@v1",
+            "      - 'uses': vendor/action@v1": "vendor/action@v1",
+            '      - uses: "vendor/action@v1"': "vendor/action@v1",
+            "      - uses: 'vendor/action@v1'": "vendor/action@v1",
+            "      - {uses: vendor/action@v1}": "vendor/action@v1",
+            '      - { name: x, "uses": vendor/action@v1 }': "vendor/action@v1",
+        }
+        for line, expected in spellings.items():
+            with self.subTest(line=line):
+                found = uses_in_line(line)
+                self.assertIsNotNone(found)
+                self.assertEqual(expected, found[0])
+
+    def test_given_a_quoted_pin_with_its_comment_when_matched_then_the_comment_is_recognised(self) -> None:
+        found = uses_in_line(f'      - uses: "vendor/action@{"a" * 40}" # v1.2.3')
+        self.assertIsNotNone(found)
+        self.assertTrue(PINNED.match(found[0]))
+        self.assertTrue(VERSION_COMMENT.match(found[1]))
+
+    def test_given_a_key_that_only_ends_in_uses_when_matched_then_nothing_is_found(self) -> None:
+        self.assertIsNone(uses_in_line("        causes: vendor/action@v1"))
 
 
 class WorkflowActionPinningTest(unittest.TestCase):

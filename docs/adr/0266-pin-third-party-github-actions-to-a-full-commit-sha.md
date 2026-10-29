@@ -36,8 +36,16 @@ workflow at once.
 
 ### Positive Consequences
 
-* A compromised or retagged third-party action cannot run new code in CI until a reviewed commit
-  changes the pin.
+* A compromised or retagged third-party action repository cannot change the action code CI runs
+  until a reviewed commit changes the pin.
+
+### Limits
+
+* The pin covers the action's own repository, not what the action downloads when it runs.
+  `codecov/codecov-action` fetches its CLI at run time (its `version` input defaults to `latest`,
+  and `coverage.yml` sets `skip_validation: true`), `hendrikmuhs/ccache-action` downloads ccache,
+  and the `vmactions` actions download VM images. Pinning those downloads is a separate decision,
+  per action.
 
 ### Negative Consequences
 
