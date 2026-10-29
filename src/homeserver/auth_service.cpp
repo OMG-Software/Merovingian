@@ -1849,6 +1849,18 @@ auto logout_local_user(HomeserverRuntime& runtime, std::string_view access_token
             session.revoked = true;
         }
     }
+    // Spec (POST /logout): "The device associated with the access token is also deleted." The
+    // tokens are already revoked, so a failure here leaves a listed device nobody can use; it is
+    // retried by nothing, so it is logged rather than turned into a failed logout.
+    if (!database::delete_device(runtime.database.persistent_store, user_id, device_id))
+    {
+        log_diagnostic("logout.device_not_deleted",
+                       {
+                           {"user_id",   user_id,   false},
+                           {"device_id", device_id, false}
+        },
+                       observability::LogEventSeverity::warning);
+    }
     append_local_audit(runtime.database, observability::AuditCategory::auth, "auth.logout", user_id, device_id,
                        "revoked");
     log_diagnostic("logout.accepted",
@@ -1878,6 +1890,28 @@ auto logout_all_local_user(HomeserverRuntime& runtime, std::string_view access_t
         if (candidate.user_id == session->user_id)
         {
             candidate.revoked = true;
+        }
+    }
+    // Spec (POST /logout/all): "All devices for the user are also deleted." Taken as a copy: the
+    // store erases from its own list as each device goes.
+    auto devices_to_delete = std::vector<std::string>{};
+    for (auto const& device : runtime.database.persistent_store.devices)
+    {
+        if (device.user_id == session->user_id)
+        {
+            devices_to_delete.push_back(device.device_id);
+        }
+    }
+    for (auto const& device_id : devices_to_delete)
+    {
+        if (!database::delete_device(runtime.database.persistent_store, session->user_id, device_id))
+        {
+            log_diagnostic("logout_all.device_not_deleted",
+                           {
+                               {"user_id",   session->user_id, false},
+                               {"device_id", device_id,        false}
+            },
+                           observability::LogEventSeverity::warning);
         }
     }
     append_local_audit(runtime.database, observability::AuditCategory::auth, "auth.logout_all", session->user_id,

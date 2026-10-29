@@ -5844,6 +5844,12 @@ auto wire_federation_callbacks(HomeserverRuntime& runtime) -> void
         refused.errcode = "M_INVALID_PARAM";
         return refused;
     }
+    // 405 M_UNRECOGNIZED for a known path used with a method it does not serve, before the
+    // runtime lock or any signature check (the same answer the federation proxy gives).
+    if (auto const allow = federation_unsupported_method_allow(request.method, request.target); allow.has_value())
+    {
+        return federation_method_not_allowed_response(*allow);
+    }
     auto signed_request_opt = std::optional<federation::SignedFederationRequest>{};
     auto held_for_review = false;
     auto blocked_by_local_policy = false;

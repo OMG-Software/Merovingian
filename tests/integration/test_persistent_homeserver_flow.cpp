@@ -875,7 +875,10 @@ SCENARIO("Persistent homeserver store records the client-server flow",
                 REQUIRE(runtime.homeserver.database.persistent_store.users.size() == 1U);
                 // Spec §5.5.1: /register creates one device (alice_DEVICE) when
                 // inhibit_login is absent. /login creates a second device (DEVICE1).
-                REQUIRE(runtime.homeserver.database.persistent_store.devices.size() == 2U);
+                // Spec (POST /logout, v1.19): "The device associated with the access token is
+                // also deleted." So the /logout of the /login device leaves the registration's.
+                REQUIRE(runtime.homeserver.database.persistent_store.devices.size() == 1U);
+                REQUIRE(runtime.homeserver.database.persistent_store.devices.front().device_id != "DEVICE1");
                 // Two access tokens: one from the implicit registration session and
                 // one from the explicit /login. /logout revokes the login token only.
                 auto const& all_tokens = runtime.homeserver.database.persistent_store.access_tokens;

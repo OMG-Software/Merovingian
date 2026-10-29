@@ -1285,6 +1285,40 @@ namespace
         return stored_room_version(store, room_id).value_or("10");
     }
 
+    // True when `body` is not JSON at all: the text is malformed or is not valid UTF-8 (the
+    // errors a JSON reader gives for the grammar). Spec: "M_NOT_JSON: Request did not contain
+    // valid JSON." Text that is JSON but that this server refuses for its content or size (an
+    // integer outside the canonical range, a duplicate key, nesting or member counts past the
+    // bounds) is not "not JSON": that stays the endpoint's M_BAD_JSON.
+    [[nodiscard]] auto body_is_not_json(std::string_view body) -> bool
+    {
+        if (body.find_first_not_of(" \t\r\n") == std::string_view::npos)
+        {
+            return false;
+        }
+        // The general parser: a fraction or an exponent is JSON (the canonical parser refuses it
+        // for signed data, which is the endpoint's concern, not a reason to say "not JSON").
+        switch (canonicaljson::parse_json(body).error)
+        {
+        case canonicaljson::ParseError::trailing_data:
+        case canonicaljson::ParseError::unexpected_end:
+        case canonicaljson::ParseError::unexpected_token:
+        case canonicaljson::ParseError::invalid_literal:
+        case canonicaljson::ParseError::invalid_string:
+        case canonicaljson::ParseError::invalid_escape:
+        case canonicaljson::ParseError::invalid_unicode_escape:
+        case canonicaljson::ParseError::invalid_number:
+            return true;
+        case canonicaljson::ParseError::none:
+        case canonicaljson::ParseError::integer_out_of_range:
+        case canonicaljson::ParseError::duplicate_object_key:
+        case canonicaljson::ParseError::nesting_too_deep:
+        case canonicaljson::ParseError::too_many_object_members:
+            return false;
+        }
+        return false;
+    }
+
     [[nodiscard]] auto parsed_json_object(std::string_view body) -> std::optional<canonicaljson::Object>
     {
         auto parsed = canonicaljson::parse_lossless(body);
@@ -3603,6 +3637,123 @@ namespace
         return normalized_target(target) != "/_matrix/client/{unmatched}";
     }
 
+    // The HTTP methods this server serves on a fixed (identifier-free) client-server path, as an
+    // `Allow` value, or empty for a path with no row. Spec (M_UNRECOGNIZED): "a 405 HTTP status code
+    // if the endpoint is implemented, but the incorrect HTTP method is used". This is the answer
+    // given before authentication, so an unauthenticated probe learns it too. A path with an
+    // identifier in it is judged after authentication, when no handler took the request (the end of
+    // handle_client_server_request_impl). A row must list EVERY method the path serves: a missing one
+    // would refuse a request that works today.
+    [[nodiscard]] auto client_static_route_allow(std::string_view path) -> std::string_view
+    {
+        struct StaticRouteMethods final
+        {
+            std::string_view path;
+            std::string_view allow;
+        };
+        static constexpr auto routes = std::to_array<StaticRouteMethods>({
+            {"/_matrix/client/v3/admin/safety/reports",                         "GET, POST"       },
+            {"/_matrix/client/v3/admin/safety/policy_rules",                    "GET, POST, PUT"  },
+            {"/_matrix/client/v3/pushrules/",                                   "GET"             },
+            {"/_matrix/client/v3/pushrules/global/",                            "GET"             },
+            {"/_matrix/client/v3/sync",                                         "GET"             },
+            {"/_matrix/client/v4/sync",                                         "GET, POST"       },
+            {"/_matrix/client/unstable/org.matrix.msc4186/sync",                "GET, POST"       },
+            {"/_matrix/client/unstable/org.matrix.simplified_msc3575/sync",     "GET, POST"       },
+            {"/_matrix/client/v3/publicRooms",                                  "GET, POST"       },
+            {"/_matrix/client/v3/register/available",                           "GET"             },
+            {"/_matrix/client/v1/register/m.login.registration_token/validity", "GET"             },
+            {"/_matrix/client/v3/register/email/requestToken",                  "POST"            },
+            {"/_matrix/client/v3/register/msisdn/requestToken",                 "POST"            },
+            {"/_matrix/client/v3/register",                                     "POST"            },
+            {"/_matrix/client/v3/login",                                        "GET, POST"       },
+            {"/_matrix/client/v3/login/sso/redirect",                           "GET"             },
+            {"/_matrix/client/v3/refresh",                                      "POST"            },
+            {"/_matrix/client/v3/logout",                                       "POST"            },
+            {"/_matrix/client/v3/logout/all",                                   "POST"            },
+            {"/_matrix/client/v1/auth_metadata",                                "GET"             },
+            {"/_matrix/client/v3/account/3pid/email/requestToken",              "POST"            },
+            {"/_matrix/client/v3/account/3pid/msisdn/requestToken",             "POST"            },
+            {"/_matrix/client/v3/account/whoami",                               "GET"             },
+            {"/_matrix/client/v3/account/password",                             "POST"            },
+            {"/_matrix/client/v3/account/deactivate",                           "POST"            },
+            {"/_matrix/client/v3/account/3pid",                                 "GET, POST"       },
+            {"/_matrix/client/v3/account/3pid/add",                             "POST"            },
+            {"/_matrix/client/v3/account/3pid/bind",                            "POST"            },
+            {"/_matrix/client/v3/account/3pid/unbind",                          "POST"            },
+            {"/_matrix/client/v3/account/3pid/delete",                          "POST"            },
+            {"/_matrix/client/v3/pushers",                                      "GET"             },
+            {"/_matrix/client/v3/pushers/set",                                  "POST"            },
+            {"/_matrix/client/v3/notifications",                                "GET"             },
+            {"/_matrix/client/v3/capabilities",                                 "GET"             },
+            {"/_matrix/client/v3/keys/changes",                                 "GET"             },
+            {"/_matrix/client/v3/keys/claim",                                   "POST"            },
+            {"/_matrix/client/v3/keys/device_signing/upload",                   "POST"            },
+            {"/_matrix/client/v3/keys/query",                                   "POST"            },
+            {"/_matrix/client/v3/keys/signatures/upload",                       "POST"            },
+            {"/_matrix/client/v3/keys/upload",                                  "POST"            },
+            {"/_matrix/client/v3/thirdparty/protocols",                         "GET"             },
+            {"/_matrix/client/v3/thirdparty/location",                          "GET"             },
+            {"/_matrix/client/v3/thirdparty/user",                              "GET"             },
+            {"/_matrix/media/v3/config",                                        "GET"             },
+            {"/_matrix/media/v3/upload",                                        "POST"            },
+            {"/_matrix/media/v1/create",                                        "POST"            },
+            {"/_matrix/media/v3/preview_url",                                   "GET"             },
+            {"/_matrix/client/v1/media/config",                                 "GET"             },
+            {"/_matrix/client/v1/media/upload",                                 "POST"            },
+            {"/_matrix/client/v1/media/preview_url",                            "GET"             },
+            {"/_matrix/client/v3/voip/turnServer",                              "GET"             },
+            {"/_matrix/client/v3/room_keys/version",                            "GET, POST"       },
+            {"/_matrix/client/v3/room_keys/keys",                               "DELETE, GET, PUT"},
+            {"/_matrix/client/v3/devices",                                      "GET"             },
+            {"/_matrix/client/v3/delete_devices",                               "POST"            },
+            {"/_matrix/client/v3/createRoom",                                   "POST"            },
+            {"/_matrix/client/v3/joined_rooms",                                 "GET"             },
+            {"/_matrix/client/v1/mutual_rooms",                                 "GET"             },
+            {"/_matrix/client/v3/user_directory/search",                        "POST"            },
+            {"/_matrix/client/v3/search",                                       "POST"            },
+        });
+        auto const row = std::ranges::find(routes, path, &StaticRouteMethods::path);
+        return row == routes.end() ? std::string_view{} : row->allow;
+    }
+
+    [[nodiscard]] auto allow_lists_method(std::string_view allow, std::string_view method) -> bool
+    {
+        // HEAD is answered as GET.
+        auto const wanted = method == "HEAD" ? std::string_view{"GET"} : method;
+        while (!allow.empty())
+        {
+            auto const comma = allow.find(',');
+            auto const entry = allow.substr(0U, comma);
+            if (entry == wanted)
+            {
+                return true;
+            }
+            if (comma == std::string_view::npos)
+            {
+                break;
+            }
+            allow.remove_prefix(comma + 1U);
+            while (!allow.empty() && allow.front() == ' ')
+            {
+                allow.remove_prefix(1U);
+            }
+        }
+        return false;
+    }
+
+    // 405 M_UNRECOGNIZED, with the `Allow` header when the methods are known (RFC 9110 15.5.6).
+    [[nodiscard]] auto dispatch_method_not_allowed(LocalHttpRequest const& req, ClientServerRuntime const& rt,
+                                                   std::string_view allow = {}) -> DispatchResult
+    {
+        auto result = dispatch_err(req, rt, 405U, "M_UNRECOGNIZED", "the endpoint does not support this HTTP method");
+        if (!allow.empty())
+        {
+            result.response.headers.emplace_back("Allow", std::string{allow});
+        }
+        return result;
+    }
+
     [[nodiscard]] auto allow(ClientServerRuntime& rt, LocalHttpRequest const& req) -> http::RateLimitDecision
     {
         // Matrix v1.19 CS API "Third-party Lookups" (client-server-api.md):
@@ -3769,6 +3920,37 @@ namespace
             json_member("device_id", json_str(device.device_id)),
             json_member("display_name", json_str(device.display_name)),
         }));
+    }
+
+    // User-Interactive Authentication API: "If the homeserver decides that an attempt on a stage
+    // was unsuccessful, but the client may make a second attempt, it returns the same HTTP status
+    // 401 response as above, with the addition of the standard `errcode` and `error` fields".
+    // `challenge` is the serialised 401 body (flows, params, session) the endpoint would have
+    // sent had no attempt been made; the result is that object plus the two fields. A challenge
+    // that does not parse as an object is returned unchanged, so a refusal never becomes empty.
+    [[nodiscard]] auto uia_failure_body(std::string_view challenge, std::string_view errcode, std::string_view error)
+        -> std::string
+    {
+        auto parsed = canonicaljson::parse_lossless(challenge);
+        auto* object = parsed.error == canonicaljson::ParseError::none
+                           ? std::get_if<canonicaljson::Object>(&parsed.value.storage())
+                           : nullptr;
+        if (object == nullptr)
+        {
+            return std::string{challenge};
+        }
+        auto members = *object;
+        members.push_back(canonicaljson::make_member("errcode", canonicaljson::Value{std::string{errcode}}));
+        members.push_back(canonicaljson::make_member("error", canonicaljson::Value{std::string{error}}));
+        auto const result = canonicaljson::serialize_canonical(canonicaljson::Value{std::move(members)});
+        return result.output;
+    }
+
+    // The failure of a password stage: the account password was wrong (M_FORBIDDEN, as for a
+    // failed login).
+    [[nodiscard]] auto uia_password_failure_body(std::string_view challenge) -> std::string
+    {
+        return uia_failure_body(challenge, "M_FORBIDDEN", "Invalid password");
     }
 
     [[nodiscard]] auto device_delete_uia_challenge(std::string_view session_id) -> std::string
@@ -9983,7 +10165,8 @@ namespace
     {
         if (refused.status == 401U)
         {
-            return dispatch_err(req, rt, 401U, "M_UNKNOWN_TOKEN", refused.body);
+            return dispatch_err(req, rt, 401U, req.access_token.empty() ? "M_MISSING_TOKEN" : "M_UNKNOWN_TOKEN",
+                                refused.body);
         }
         auto const status = refused.status == 415U || refused.status == 507U ? std::uint16_t{403U} : refused.status;
         // A failure on this server's side (5xx) is M_UNKNOWN, never a client error code.
@@ -10624,7 +10807,7 @@ namespace
                     apply_cors_headers(req, response, rt.cors);
                     return response;
                 }
-                return resp(401U, json_serialize(cs_uia));
+                return resp(401U, uia_password_failure_body(json_serialize(cs_uia)));
             }
             if (!store_key_api_payload(rt, route.endpoint, user, device_id, req, {}))
             {
@@ -11492,6 +11675,19 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
         return dispatch_err(req, rt, 429U, "M_LIMIT_EXCEEDED", "rate limit exceeded",
                             rate_limit_decision.retry_after_ms);
     }
+    // Spec M_NOT_JSON: "Request did not contain valid JSON." A body that is not JSON (including
+    // invalid UTF-8 in a string) is refused here, for every endpoint at once, so no handler
+    // answers it with the M_BAD_JSON that is for JSON malformed in some other way. Only the
+    // Client-Server API is judged: media content is bytes, the operator surface
+    // (/_merovingian/admin) takes plain text, and a GET carries no body. After the rate
+    // limit, so the parse is metered like any other work a request causes.
+    if (auto const path_only = std::string_view{req.target}.substr(0U, std::string_view{req.target}.find('?'));
+        !req.body.empty() && req.method != "GET" && req.method != "HEAD" && !is_media_upload &&
+        starts_with(path_only, "/_matrix/client/") && !starts_with(path_only, "/_matrix/client/v1/media/") &&
+        body_is_not_json(req.body))
+    {
+        return dispatch_err(req, rt, 400U, "M_NOT_JSON", "the request body is not valid JSON");
+    }
     auto call_local = [&](LocalHttpRequest const& inner) {
         auto response = [&] {
             auto const released = merovingian::homeserver::RuntimeLockRelease{guard};
@@ -12125,6 +12321,31 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                                      json_member("device_id", json_str(reg_device_id)),
                                  })));
         }
+        // Spec (POST /register, 400): "Homeservers MUST perform the relevant checks and return
+        // these codes before performing User-Interactive Authentication" -- M_INVALID_USERNAME,
+        // M_USER_IN_USE and M_EXCLUSIVE. The same checks run again after authentication below
+        // (the name may be taken meanwhile, and a generated localpart is checked there too). An
+        // omitted username is generated later, so there is nothing to check yet.
+        if (auto const* desired_localpart = string_member(*registration_object, "username");
+            desired_localpart != nullptr)
+        {
+            if (!auth::localpart_is_valid_new(*desired_localpart))
+            {
+                return dispatch_err(req, rt, 400U, "M_INVALID_USERNAME", "desired username is not valid");
+            }
+            auto const& local_server_name = rt.homeserver.config.server().server_name;
+            auto const desired_user_id = matrix_user_id(local_server_name, *desired_localpart);
+            if (auth::localpart_is_reserved(*desired_localpart) || user_exists(rt, desired_user_id) ||
+                rt.homeserver.appservices.is_sender_user_id(desired_user_id, local_server_name))
+            {
+                return dispatch_err(req, rt, 400U, "M_USER_IN_USE", "desired username is already taken");
+            }
+            if (rt.homeserver.appservices.user_namespace_exclusively_owned_by_other(desired_user_id, {}))
+            {
+                return dispatch_err(req, rt, 400U, "M_EXCLUSIVE",
+                                    "this username is reserved for a registered appservice");
+            }
+        }
         // Registration always uses User-Interactive Authentication. Spec: a UIA
         // request "never succeeds without auth. Homeservers may allow requests
         // that don't require auth by offering a stage with only the
@@ -12152,10 +12373,14 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                 return dispatch_resp(req, rt, 401U, uia_challenge);
             }
             // A supplied session must be one this server issued for this
-            // endpoint. Omitting it is still allowed (single-shot flow);
-            // echoing a stale, guessed, or cross-endpoint id is not.
+            // endpoint; echoing a stale, guessed, or cross-endpoint id is not
+            // allowed. The m.login.dummy stage has no credential of its own, so
+            // it completes only within a session this server issued: without
+            // one, nothing was ever challenged. The registration-token stage
+            // carries its credential in the same auth block and keeps its
+            // one-request form (ADR-0057).
             if (auto const* supplied_session = string_member(*auth, "session");
-                supplied_session != nullptr && !uia_session_is_valid(rt, "register", *supplied_session))
+                supplied_session == nullptr ? !require_token : !uia_session_is_valid(rt, "register", *supplied_session))
             {
                 return dispatch_resp(req, rt, 401U, uia_challenge);
             }
@@ -12531,16 +12756,26 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
     }
     if (req.method == "POST" && req.target == "/_matrix/client/v3/logout")
     {
+        // The device the token belongs to, read before logout revokes the token: logout also deletes
+        // the device (spec POST /logout), and the runtime's device list is this layer's to update.
+        auto const logged_out_session = authenticated_session(rt.homeserver, req.access_token);
         auto const r = call_local(req);
+        if (r.status == 200U && logged_out_session.has_value())
+        {
+            erase_runtime_device(rt, logged_out_session->user_id, logged_out_session->device_id);
+            record_shared_room_device_change(rt, logged_out_session->user_id);
+        }
         // actor is not yet resolved here (pre-auth gate); log token presence only
         log_diagnostic(r.status == 200U ? "account.logout.accepted" : "account.logout.rejected",
                        {
                            {"has_token", req.access_token.empty() ? "false" : "true", false},
                            {"status",    std::to_string(r.status),                    false}
         });
+        // Spec: a missing token is M_MISSING_TOKEN, an unrecognised one M_UNKNOWN_TOKEN.
+        auto const unauthenticated_errcode = req.access_token.empty() ? "M_MISSING_TOKEN" : "M_UNKNOWN_TOKEN";
         return r.status == 200U
                    ? dispatch_resp(req, rt, 200U, "{}")
-                   : dispatch_err(req, rt, r.status, r.status == 401U ? "M_UNKNOWN_TOKEN" : "M_UNKNOWN", r.body);
+                   : dispatch_err(req, rt, r.status, r.status == 401U ? unauthenticated_errcode : "M_UNKNOWN", r.body);
     }
 
     // MSC2965 OIDC discovery: Cinny and Element probe auth_metadata and
@@ -12879,6 +13114,13 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
     // it before authenticating: a client probing an endpoint this server does not
     // serve (Element X asking for GET /_matrix/client/r0/login) must learn that,
     // not be told to find an access token it cannot have yet (ADR-0230).
+    // A fixed path used with a method it does not serve is 405 M_UNRECOGNIZED, also before
+    // authentication ("implemented, but the incorrect HTTP method is used").
+    if (auto const allow = client_static_route_allow(request_path);
+        !allow.empty() && !allow_lists_method(allow, req.method))
+    {
+        return dispatch_method_not_allowed(req, rt, allow);
+    }
     if (!client_route_is_known(req.target))
     {
         log_diagnostic("request.route_not_found",
@@ -13329,6 +13571,14 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
     if (req.method == "POST" && target_path(req.target) == "/_matrix/client/v3/logout/all")
     {
         auto const r = logout_all_local_user(rt.homeserver, req.access_token);
+        if (r.ok)
+        {
+            // Spec (POST /logout/all): "All devices for the user are also deleted."
+            std::erase_if(rt.devices, [&user](ClientDevice const& device) {
+                return device.user_id == *user;
+            });
+            record_shared_room_device_change(rt, *user);
+        }
         log_diagnostic(r.ok ? "account.logout_all.accepted" : "account.logout_all.rejected",
                        {
                            {"actor",  *user,                    false},
@@ -13554,7 +13804,7 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                 return dispatch_err(req, rt, 429U, "M_LIMIT_EXCEEDED",
                                     "Too many password attempts. Please try again later.", retry_after);
             }
-            return dispatch_resp(req, rt, 401U, json_serialize(uia_challenge));
+            return dispatch_resp(req, rt, 401U, uia_password_failure_body(json_serialize(uia_challenge)));
         }
         // Spec §5.5: logout_devices defaults to true — the server MUST revoke the
         // access tokens of the user's other devices when the password changes. The
@@ -13626,7 +13876,7 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                 return dispatch_err(req, rt, 429U, "M_LIMIT_EXCEEDED",
                                     "Too many password attempts. Please try again later.", retry_after);
             }
-            return dispatch_resp(req, rt, 401U, json_serialize(uia_challenge));
+            return dispatch_resp(req, rt, 401U, uia_password_failure_body(json_serialize(uia_challenge)));
         }
         auto const result = deactivate_local_user(rt.homeserver, req.access_token);
         if (!result.ok)
@@ -13719,7 +13969,11 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                 return dispatch_err(req, rt, 429U, "M_LIMIT_EXCEEDED",
                                     "Too many password attempts. Please try again later.", retry_after);
             }
-            return dispatch_resp(req, rt, 401U, json_serialize(uia_challenge));
+            // No password at all is no attempt; a wrong one is a failed attempt.
+            return dispatch_resp(req, rt, 401U,
+                                 password_verified.has_value()
+                                     ? uia_password_failure_body(json_serialize(uia_challenge))
+                                     : json_serialize(uia_challenge));
         }
         // AUTH-5: the 3PID is added only once the identity server that issued the
         // session confirms its owner validated it.
@@ -15070,7 +15324,7 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                 return dispatch_err(req, rt, 429U, "M_LIMIT_EXCEEDED",
                                     "Too many password attempts. Please try again later.", retry_after);
             }
-            return dispatch_resp(req, rt, 401U, uia_challenge);
+            return dispatch_resp(req, rt, 401U, uia_password_failure_body(uia_challenge));
         }
         auto const device_id = request_path.substr(dev_prefix.size());
         auto const result = delete_local_device(rt.homeserver, *user, device_id);
@@ -15129,7 +15383,7 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                 return dispatch_err(req, rt, 429U, "M_LIMIT_EXCEEDED",
                                     "Too many password attempts. Please try again later.", retry_after);
             }
-            return dispatch_resp(req, rt, 401U, uia_challenge);
+            return dispatch_resp(req, rt, 401U, uia_password_failure_body(uia_challenge));
         }
         auto deleted_any = false;
         for (auto const& device_id : devices)
@@ -18017,13 +18271,15 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                                          starts_with(request_path, "/_matrix/client/v1/admin/lock/"));
     }
 
+    // No handler took the request. The path is one this server serves (an unknown path was
+    // answered 404 before authentication), so no handler serves it with this method: 405.
     log_diagnostic("request.route_not_found", {
                                                   {"method", req.method,                                       false},
                                                   {"target", observability::sanitized_http_target(req.target), false},
                                                   {"actor",  *user,                                            false},
-                                                  {"status", "404",                                            false}
+                                                  {"status", "405",                                            false}
     });
-    return dispatch_err(req, rt, 404U, "M_UNRECOGNIZED", "route not found");
+    return dispatch_method_not_allowed(req, rt);
 }
 
 // Matrix spec §web-browser-clients (v1.19):

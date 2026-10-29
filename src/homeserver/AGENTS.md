@@ -69,7 +69,9 @@ is `declared_mime|sniffed_mime|scanner_clean|bytes` — the pipe-delimited wrapp
    a variable component (an ID, type or key) needs a template and a row in the HTTP-3
    scenario "gives every implemented dynamic client route its own coalesced bucket"
    in `tests/unit/test_security_audit_http_3.cpp` (ADR-0092); a fixed path needs an
-   entry in `static_routes`. A path the matcher cannot place is answered
+   entry in `static_routes` and a row in `client_static_route_allow` listing EVERY
+   method it serves (a method missing there is answered `405 M_UNRECOGNIZED`
+   before authentication). A path the matcher cannot place is answered
    `404 M_UNRECOGNIZED` before authentication (`client_route_is_known`, ADR-0230), so
    a route missing there is unreachable for every caller
 

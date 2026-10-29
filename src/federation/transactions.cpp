@@ -7,6 +7,7 @@
 #include "merovingian/observability/logger.hpp"
 #include "merovingian/observability/observability.hpp"
 
+#include <algorithm>
 #include <string>
 #include <utility>
 #include <vector>
@@ -300,6 +301,23 @@ auto match_federation_route(std::string_view method, std::string_view target) ->
     }
 
     return {false, {}, "federation route not found"};
+}
+
+auto federation_methods_for_path(std::string_view target) -> std::vector<std::string>
+{
+    auto methods = std::vector<std::string>{};
+    for (auto const& candidate : federation_routes())
+    {
+        if (std::ranges::find(methods, candidate.method) != methods.end())
+        {
+            continue;
+        }
+        if (match_federation_route(candidate.method, target).matched)
+        {
+            methods.push_back(candidate.method);
+        }
+    }
+    return methods;
 }
 
 auto validate_federation_transaction(FederationTransaction const& transaction, std::size_t max_transaction_bytes,

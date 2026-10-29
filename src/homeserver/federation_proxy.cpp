@@ -51,6 +51,12 @@ auto FederationProxy::handle(LocalHttpRequest const& request) -> LocalHttpRespon
         refused.errcode = "M_INVALID_PARAM";
         return refused;
     }
+    // A known path used with a method it does not serve is 405 M_UNRECOGNIZED, answered before
+    // any signature is demanded: the request names no endpoint this server implements.
+    if (auto const allow = federation_unsupported_method_allow(request.method, request.target); allow.has_value())
+    {
+        return federation_method_not_allowed_response(*allow);
+    }
     // GET /_matrix/key/v2/server is always served locally. Match the path
     // exactly so unrelated targets that merely contain this substring still go
     // through the worker and federation authorization path.
