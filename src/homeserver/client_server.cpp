@@ -12450,13 +12450,11 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             }
             // A supplied session must be one this server issued for this
             // endpoint; echoing a stale, guessed, or cross-endpoint id is not
-            // allowed. The m.login.dummy stage has no credential of its own, so
-            // it completes only within a session this server issued: without
-            // one, nothing was ever challenged. The registration-token stage
-            // carries its credential in the same auth block and keeps its
-            // one-request form (ADR-0057).
+            // allowed. Omitting it is the single-shot flow, which the spec
+            // allows: the client "must pass back" a session only "if one is
+            // provided" (ADR-0276). Complement's own blueprints register this way.
             if (auto const* supplied_session = string_member(*auth, "session");
-                supplied_session == nullptr ? !require_token : !uia_session_is_valid(rt, "register", *supplied_session))
+                supplied_session != nullptr && !uia_session_is_valid(rt, "register", *supplied_session))
             {
                 return dispatch_resp(req, rt, 401U, uia_challenge);
             }

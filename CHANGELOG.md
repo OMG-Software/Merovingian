@@ -57,8 +57,8 @@ Fixes for the failures Complement run 10 found against the signed 0.12.62 releas
 - **Logout left the device behind.** `POST /logout` and `/logout/all` delete the device or devices,
   as the spec says, and a logout with no token answers `M_MISSING_TOKEN`.
 - **`POST /register`:** the username is checked (`M_INVALID_USERNAME`, `M_USER_IN_USE`,
-  `M_EXCLUSIVE`) before UIA, as the spec requires, and `m.login.dummy` completes only within a
-  session this server issued (ADR-0276).
+  `M_EXCLUSIVE`) before UIA, as the spec requires. A single-shot `m.login.dummy` stage still
+  completes without a session; a supplied session must be one this server issued (ADR-0276).
 - **A client body that is not JSON answered `M_BAD_JSON`.** It answers 400 `M_NOT_JSON`, decided
   once for every client endpoint (ADR-0275).
 - **A known path with the wrong method answered 404.** It answers 405 `M_UNRECOGNIZED` with an

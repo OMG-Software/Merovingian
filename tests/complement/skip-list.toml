@@ -529,3 +529,29 @@ category = "spec"
 spec = "docs/matrix-v1.19-spec/client-server-api.md#size-limits"
 reason = "Expects an event whose state_key is 280 bytes (70 codepoints) to be accepted; the spec says state_key MUST NOT exceed 255 bytes, so this server drops it."
 
+# Complement run 11.
+
+[[entry]]
+test = "TestRegistration/parallel/Registration_without_a_session_fails"
+package = "tests/csapi"
+mode = "expect-fail"
+category = "non-spec"
+spec = "docs/matrix-v1.19-spec/client-server-api.md#user-interactive-authentication-api"
+reason = "Expects a dummy stage sent without a session to be refused; the spec makes the session something the client passes back only if one is provided, and Complement's own blueprints register in one request without one (ADR-0276)."
+
+[[entry]]
+test = "TestIsDirectFlagFederation"
+package = "tests"
+mode = "expect-fail"
+category = "spec"
+spec = "docs/matrix-v1.19-spec/server-server-api.md#put_matrixfederationv2inviteroomideventid"
+reason = "Sends a v12 invite with an empty invite_room_state; the spec says servers SHOULD refuse one without the room's m.room.create for room versions 12 and up, and this server does (400 M_INVALID_PARAM, ADR-0277)."
+
+[[entry]]
+test = "TestUnknownEndpoints/Server-server_endpoints"
+package = "tests"
+mode = "expect-fail"
+category = "non-spec"
+spec = "docs/matrix-v1.19-spec/client-server-api.md#common-error-codes"
+reason = "Calls /_matrix/federation/v1/version on the client listener, which does not serve the federation API; an endpoint not implemented on a listener is 404 M_UNRECOGNIZED. The federation listener answers 405 for it (ADR-0274)."
+

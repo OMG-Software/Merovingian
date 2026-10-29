@@ -337,9 +337,11 @@ SCENARIO("A request that needs a token and carries none answers M_MISSING_TOKEN"
 // Endpoint / Section: User-Interactive Authentication API; POST /register
 // URL: ../../docs/matrix-v1.19-spec/client-server-api.md#user-interactive-authentication-api
 //
-// "The `session` ... with the value of the session key given by the homeserver." A stage can
-// complete only within a session the server issued.
-SCENARIO("Registration completes a stage only within a session the server issued",
+// The session is "a session identifier that the client must pass back to the home server, if one
+// is provided, in subsequent attempts to authenticate in the same API call" (ADR-0276). A
+// single-shot request was provided none and completes; a session the server never issued is
+// refused.
+SCENARIO("Registration completes a single-shot dummy stage and refuses a session the server never issued",
          "[conformance][client-server][register][uia]")
 {
     GIVEN("a server with acknowledged open registration")
@@ -347,19 +349,28 @@ SCENARIO("Registration completes a stage only within a session the server issued
         auto started = merovingian::homeserver::start_client_server(make_config(true));
         REQUIRE(started.started);
 
-        WHEN("m.login.dummy is submitted with no session")
+        WHEN("m.login.dummy is submitted in one request, with no session")
         {
             auto const response =
                 send(started.runtime, "POST", "/_matrix/client/v3/register", {},
                      R"({"username":"carol","password":"CorrectHorse7!","auth":{"type":"m.login.dummy"}})");
+            THEN("the account is created")
+            {
+                // Spec: the client passes a session back only "if one is provided"; none was.
+                REQUIRE(response.status == 200U);
+            }
+        }
+        WHEN("m.login.dummy is submitted with a session this server never issued")
+        {
+            auto const response = send(
+                started.runtime, "POST", "/_matrix/client/v3/register", {},
+                R"({"username":"carol","password":"CorrectHorse7!","auth":{"type":"m.login.dummy","session":"never-issued"}})");
             THEN("registration does not complete and the 401 challenge is returned")
             {
-                // Spec MUST: a UIA request "never succeeds without auth"; without a session
-                // the server issued, no stage was completed.
+                // Spec MUST: the session passed back is "the value of the session key given by the homeserver".
                 REQUIRE(response.status == 401U);
                 auto const body = parse_object(response.body);
                 REQUIRE(object_member_as_array(body, "flows") != nullptr);
-                REQUIRE(string_member(body, "session") != nullptr);
             }
         }
         WHEN("m.login.dummy is submitted with the session its challenge issued")
