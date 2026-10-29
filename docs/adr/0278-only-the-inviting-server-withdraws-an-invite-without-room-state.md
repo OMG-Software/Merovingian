@@ -1,6 +1,7 @@
 # Only the inviting server withdraws an invite this server holds no room state for
 
 * Status: accepted
+* Deciders: James Chapman
 * Date: 2026-10-29
 
 Technical Story: Complement run 10 (`TestFederationRoomsInvite`)
@@ -28,4 +29,5 @@ non-member. Rejecting the invite composed a leave locally (403), because a v12 r
 * A reject goes to the inviting server through `make_leave`/`send_leave` (spec: "the resident server may
   be the server which sent the invite"). When that server answers 403 or 404 (it no longer has the room),
   the invite is ended as a local `leave` row and nothing is sent. Any other failure is 502 and the invite
-  stays. The local ending is this project's choice; the spec gives no other route.
+  stays. The local ending is this project's choice, confirmed by the owner on 2026-10-29; the
+  spec gives no other route.
