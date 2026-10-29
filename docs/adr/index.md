@@ -259,6 +259,9 @@
 * [0274 - Method-not-allowed is decided by a static table before authentication, and by fall-through after it](0274-method-not-allowed-is-decided-by-a-static-table-and-by-fall-through.md)
 * [0275 - M_NOT_JSON is decided once in the dispatcher](0275-m-not-json-is-decided-once-in-the-dispatcher.md)
 * [0276 - m.login.dummy registration needs a session this server issued](0276-dummy-registration-needs-a-server-issued-session.md)
+* [0277 - invite_room_state is validated for room versions 12 and up only](0277-invite-room-state-is-validated-for-room-versions-12-and-up.md)
+* [0278 - Only the inviting server withdraws an invite this server holds no room state for](0278-only-the-inviting-server-withdraws-an-invite-without-room-state.md)
+* [0279 - A ban does not end this server's interest in PDUs about its banned user](0279-a-ban-does-not-end-interest-in-pdus-about-the-banned-user.md)
 
 ## Proposed Records
 

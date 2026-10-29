@@ -63,6 +63,19 @@ Fixes for the failures Complement run 10 found against the signed 0.12.62 releas
   once for every client endpoint (ADR-0275).
 - **A known path with the wrong method answered 404.** It answers 405 `M_UNRECOGNIZED` with an
   `Allow` header on the client, media, key-server and federation surfaces (ADR-0274).
+- **Invites and knocks carried no room state.** Outbound `/v2/invite` sends `invite_room_state` and
+  `send_knock` answers `knock_room_state` as the room's stored signed PDUs, create first (spec v1.16).
+  An inbound v12+ invite whose state lacks the create event, or holds a stripped, unsigned or
+  foreign-room entry, is refused 400 `M_INVALID_PARAM`; versions 1 to 11 are unchanged (ADR-0277).
+- **Rejecting an invite from another server answered 403.** The reject goes through
+  `make_leave`/`send_leave` to the inviting server, and ends locally when that server no longer has the
+  room (ADR-0278).
+- **Joining after a remote invite answered 404 "no resident server".** With no server named, the join
+  tries the inviting server.
+- **An invite withdrawn by the inviting server never reached the invitee.** The inviter's leave is
+  applied for a pending invite this server holds no room state for (ADR-0278).
+- **An unban of a local user was dropped,** so the user could never be invited back. Membership PDUs
+  about a local user with any membership row now reach the receipt checks (ADR-0279).
 - **`POST /rooms/{roomId}/kick` kicked users who were not in the room.** It answers 403 `M_FORBIDDEN`
   unless the target is joined, invited or knocking ("The kickee is not currently in the room").
 - **`GET /rooms/{roomId}/event/{eventId}` answered 403 to a user without access.** It answers

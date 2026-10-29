@@ -474,3 +474,14 @@ spec = "docs/matrix-v1.19-spec/client-server-api.md#post_matrixclientv3login"
 reason = "Logs in through POST /_matrix/client/r0/login, which v1.19 defines only under /v3, so it stops before its device-list check; this server's own conformance test covers that check through /v3/login."
 signed_off_by = "James Chapman, 2026-10-29"
 
+# MSC4311 / spec v1.16: an invite whose invite_room_state lacks m.room.create is refused with 400. The
+# spec says servers SHOULD answer M_INVALID_PARAM; Complement expects M_MISSING_PARAM.
+
+[[entry]]
+test = "TestMSC4311RejectInvalidStrippedStateFederation/parallel/`m.room.create`_event_missing_from_`invite_room_state`"
+package = "tests"
+mode = "expect-fail"
+category = "spec"
+spec = "docs/matrix-v1.19-spec/server-server-api.md#put_matrixfederationv2inviteroomideventid"
+reason = "This server refuses the invite with 400 M_INVALID_PARAM, the errcode the spec says servers SHOULD return for a missing m.room.create; the test expects M_MISSING_PARAM."
+
