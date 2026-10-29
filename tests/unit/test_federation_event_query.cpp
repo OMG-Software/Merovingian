@@ -5,6 +5,7 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <cstddef>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -19,6 +20,30 @@ using merovingian::federation::RoomReadStatus;
 constexpr auto member_origin = std::string_view{"remote.example.org"};
 constexpr auto stranger_origin = std::string_view{"stranger.example.org"};
 constexpr auto room_id_under_test = std::string_view{"!room:remote.example.org"};
+
+// Records ONE state group, with no history_visibility in it (so `shared`), for every event stored in the
+// room under test. A federation read only sends an event in full when the state recorded for it shows
+// the requesting server may see it (ADR-0064 state groups); these fixtures write events straight into
+// the store, so they record that state here. Visibility tests below set the CURRENT state only, and
+// their events keep this group.
+auto record_shared_state_group(merovingian::database::PersistentStore& store) -> void
+{
+    constexpr auto group_name = std::string_view{"sg:fixture-shared"};
+    if (!merovingian::database::find_state_group(store, group_name).has_value())
+    {
+        REQUIRE(
+            merovingian::database::create_or_reuse_state_group(store, room_id_under_test, group_name, std::nullopt, {})
+                .has_value());
+    }
+    for (auto const& event : store.events)
+    {
+        if (event.room_id == room_id_under_test &&
+            !merovingian::database::find_event_state_group(store, event.event_id).has_value())
+        {
+            REQUIRE(merovingian::database::set_event_state_group(store, event.event_id, std::string{group_name}));
+        }
+    }
+}
 
 [[nodiscard]] auto store_with_room_events() -> merovingian::database::PersistentStore
 {
@@ -64,6 +89,7 @@ constexpr auto room_id_under_test = std::string_view{"!room:remote.example.org"}
                             {}});
     store.state.push_back({room_id, "m.room.create", "", "$create:remote.example.org"});
     store.state.push_back({room_id, "m.room.member", sender, "$member:remote.example.org"});
+    record_shared_state_group(store);
     return store;
 }
 
@@ -122,6 +148,7 @@ auto set_history_visibility(merovingian::database::PersistentStore& store, std::
                                 {},
                                 {}});
     }
+    record_shared_state_group(store);
     return store;
 }
 
@@ -924,8 +951,8 @@ SCENARIO("Federation backfill returns requested events and predecessors", "[fede
 
         WHEN("backfill starts from the latest message event")
         {
-            auto const pdus = merovingian::federation::build_backfill_pdus(store, "!room:remote.example.org",
-                                                                           {"$message:remote.example.org"}, 10U);
+            auto const pdus = merovingian::federation::build_backfill_pdus(
+                store, "!room:remote.example.org", {"$message:remote.example.org"}, 10U, member_origin);
 
             THEN("the requested event and preceding events are returned in graph walk order")
             {
@@ -938,8 +965,8 @@ SCENARIO("Federation backfill returns requested events and predecessors", "[fede
 
         WHEN("the backfill limit is lower than the available predecessor chain")
         {
-            auto const pdus = merovingian::federation::build_backfill_pdus(store, "!room:remote.example.org",
-                                                                           {"$message:remote.example.org"}, 2U);
+            auto const pdus = merovingian::federation::build_backfill_pdus(
+                store, "!room:remote.example.org", {"$message:remote.example.org"}, 2U, member_origin);
 
             THEN("the response is capped without crossing into other rooms")
             {

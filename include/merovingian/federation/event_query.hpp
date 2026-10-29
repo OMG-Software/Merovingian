@@ -38,6 +38,28 @@ inline constexpr auto default_missing_events_limit = std::size_t{10U};
 [[nodiscard]] auto origin_has_joined_user_in_room(database::PersistentStore const& store, std::string_view room_id,
                                                   std::string_view origin) -> bool;
 
+// True when at least one user of the server `origin` could see `event_id`, judged on the room's
+// state AT the event (the state group recorded for it, ADR-0064), never the current state. The rule
+// follows the client-server "Room History Visibility" settings, applied to the requesting server:
+//   world_readable, shared  visible;
+//   invited                 visible when a user of `origin` is invited or joined in that state;
+//   joined                  visible when a user of `origin` is joined in that state.
+// A room with no `m.room.history_visibility` in that state is `shared`. The state is the one
+// immediately AFTER the event, so the event's own state change counts: an `m.room.history_visibility`
+// event is judged under the setting it carries, and the join or invite of one of `origin`'s own users
+// is visible to `origin`. It fails closed: an unknown event, one with no recorded state group, or a
+// broken group chain is not visible.
+//
+// Used by the READS THAT RETURN HISTORY (`/event`, `/backfill`, `/get_missing_events`), which send an
+// invisible event redacted. NOT used by `/state`, `/state_ids` and `/event_auth`: state events are
+// part of the room's authorisation and a joining or catching-up server needs them whole to compute
+// state and authorise events (owner decision 2026-10-29). Redaction keeps the keys the auth rules
+// read, but state is the room's authorisation record, so it is sent whole; see the ADR for the
+// rejected alternative of filtering it too.
+// This function builds its lookup indexes per call; the builders below share one per request.
+[[nodiscard]] auto event_visible_to_server(database::PersistentStore const& store, std::string_view event_id,
+                                           std::string_view origin) -> bool;
+
 // Builds the response for an inbound federation
 // `GET /_matrix/federation/v1/event/{eventId}` request. The event's own room is
 // resolved from the store and `origin` must pass `origin_may_read_room` and the
@@ -95,10 +117,11 @@ inline constexpr auto max_event_auth_chain_events = std::size_t{10000U};
 // Builds the PDU list for `GET /_matrix/federation/v1/backfill/{roomId}` by
 // starting at each requested event ID and walking `prev_events` until `limit`
 // PDUs have been collected. Missing events and events outside `room_id` are
-// skipped.
+// skipped. An event none of `origin`'s users could see (`event_visible_to_server`)
+// is returned redacted, never dropped, so the walk and the receiver's graph stay whole.
 [[nodiscard]] auto build_backfill_pdus(database::PersistentStore const& store, std::string_view room_id,
-                                       std::vector<std::string> const& event_ids, std::size_t limit)
-    -> std::vector<std::string>;
+                                       std::vector<std::string> const& event_ids, std::size_t limit,
+                                       std::string_view origin) -> std::vector<std::string>;
 
 // Serves `GET /_matrix/federation/v1/backfill/{roomId}`: 403 M_FORBIDDEN unless
 // `request.origin` passes `origin_may_read_room`, otherwise the PDUs from

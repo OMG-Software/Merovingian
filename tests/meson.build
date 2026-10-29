@@ -448,6 +448,7 @@ shell = find_program('sh')
       'conformance/test_event_unsigned_conformance.cpp',
       'conformance/test_events.cpp',
       'conformance/test_federation_conformance.cpp',
+      'conformance/test_federation_history_visibility_conformance.cpp',
       'conformance/test_federation_media_conformance.cpp',
       'conformance/test_federation_membership_receipt_conformance.cpp',
       'conformance/test_federation_invite_room_state_conformance.cpp',

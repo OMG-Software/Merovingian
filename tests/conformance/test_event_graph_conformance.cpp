@@ -25,6 +25,7 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <variant>
@@ -117,6 +118,24 @@ namespace
     return event;
 }
 
+// Records one state group, with no m.room.history_visibility (so `shared`), for every event stored in
+// `room`. /event, /backfill and /get_missing_events send an event in full only when the state recorded
+// for it shows the requesting server may see it (ADR-0064 state groups); these fixtures write events
+// straight into the store, so they record that state here.
+auto record_shared_state_group(merovingian::database::PersistentStore& store, std::string const& room) -> void
+{
+    auto const group =
+        merovingian::database::create_or_reuse_state_group(store, room, "sg:shared:" + room, std::nullopt, {});
+    REQUIRE(group.has_value());
+    for (auto const& event : store.events)
+    {
+        if (event.room_id == room)
+        {
+            REQUIRE(merovingian::database::set_event_state_group(store, event.event_id, *group));
+        }
+    }
+}
+
 // The requesting server. It is example.org because the rooms below have a joined
 // user, @creator:example.org, on that server: the FED-2 in-room check passes.
 constexpr auto requesting_server = std::string_view{"example.org"};
@@ -201,10 +220,12 @@ SCENARIO("backfill PDU collection includes requested events and predecessors",
         store.events.push_back(make_event("$create", room, "m.room.create", {}));
         store.events.push_back(make_event("$join", room, "m.room.member", {"$create"}, {"$create"}));
         store.events.push_back(make_event("$message", room, "m.room.message", {"$join"}, {"$join"}));
+        record_shared_state_group(store, room);
 
         WHEN("backfill starts at the message event")
         {
-            auto const pdus = merovingian::federation::build_backfill_pdus(store, room, {"$message"}, 10U);
+            auto const pdus =
+                merovingian::federation::build_backfill_pdus(store, room, {"$message"}, 10U, requesting_server);
 
             THEN("the returned PDUs include the requested event and its predecessors")
             {
@@ -525,6 +546,7 @@ SCENARIO("get_missing_events walks prev_events from latest_events, excluding ear
             event.depth = static_cast<std::uint64_t>(i) + 10U;
             store.events.push_back(std::move(event));
         }
+        record_shared_state_group(store, room);
 
         auto const events_in = [](merovingian::federation::RoomReadResult const& result) {
             REQUIRE(result.status == merovingian::federation::RoomReadStatus::ok);
