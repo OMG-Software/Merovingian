@@ -208,6 +208,14 @@ struct OutboundCallResult final
     std::uint16_t remote_status{0U};
 };
 
+// perform_bounded_outbound_call, keeping the remote's HTTP status for a caller whose answer depends on
+// it (a remote profile lookup relays the remote's 404 as its own). Same slot and deadline rules apply.
+[[nodiscard]] auto perform_bounded_outbound_call_with_status(HomeserverRuntime& runtime, std::string_view room_id,
+                                                             federation::OutboundTransaction const& transaction,
+                                                             std::string_view key_id, core::SecretBuffer secret_key,
+                                                             std::string_view diagnostic_event,
+                                                             std::uint32_t deadline_seconds) -> OutboundCallResult;
+
 // The shared implementation of perform_sync_outbound_call (bounded == nullopt)
 // and perform_bounded_outbound_call. Call it directly only when the remote's
 // status decides the answer, as a membership call refused with 403 does.
