@@ -5,6 +5,7 @@
 !render-config.sh
 !prepare-state.sh
 !mint-tls.sh
+!install-appservices.sh
 !server-name.sh
 !merovingian.conf.template
 !nginx.conf

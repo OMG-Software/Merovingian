@@ -736,6 +736,22 @@ class DockerfileTests(unittest.TestCase):
         self.text = DOCKERFILE.read_text(encoding="utf-8")
         self.instructions = re.sub(r"\\\r?\n", " ", self.text)
 
+    def test_every_file_the_dockerfile_copies_reaches_the_build(self) -> None:
+        # GIVEN the files the Dockerfile's COPY instructions name, and the
+        # .dockerignore that lets only listed files into the build context.
+        copied = set()
+        for line in self.instructions.splitlines():
+            parts = line.split()
+            if parts and parts[0] == "COPY":
+                copied.update(part for part in parts[1:-1] if not part.startswith("--"))
+        allowed = {line[1:].strip() for line in (COMPLEMENT_DIR / ".dockerignore").read_text(encoding="utf-8").splitlines()
+                   if line.startswith("!")}
+        # WHEN they are compared.
+        missing = sorted(copied - allowed)
+        # THEN nothing the image needs is left out of the context (a new script
+        # once was, and the image failed to build on Complement's first run).
+        self.assertEqual(missing, [])
+
     def test_builds_on_the_same_pinned_base_as_the_shipped_image(self) -> None:
         # GIVEN the shipped image's runtime base and the Complement image's base.
         shipped = re.findall(r"(?m)^FROM\s+(\S+)", ROOT_DOCKERFILE.read_text(encoding="utf-8"))[-1]
