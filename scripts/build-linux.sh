@@ -246,9 +246,16 @@ export MEROVINGIAN_TEST_DISABLE_HARDENING=1
 # Meson does not read MESON_TEST_TIMEOUT_MULTIPLIER from the environment.
 # Translate the env var used by the sanitizers workflow into the matching
 # command-line flag so long-running integration tests get the extra time.
+# A coverage build defaults to 2: gcov instrumentation slows every test, and
+# the conformance suite took 555 s of its 600 s limit there. The limits stay
+# as they are for other builds, where they are what catches a hang.
+timeout_multiplier="${MESON_TEST_TIMEOUT_MULTIPLIER:-}"
+if [ -z "$timeout_multiplier" ] && [ "$coverage" = true ]; then
+    timeout_multiplier=2
+fi
 meson_test_timeout_args=""
-if [ -n "${MESON_TEST_TIMEOUT_MULTIPLIER:-}" ]; then
-    meson_test_timeout_args="--timeout-multiplier ${MESON_TEST_TIMEOUT_MULTIPLIER}"
+if [ -n "$timeout_multiplier" ]; then
+    meson_test_timeout_args="--timeout-multiplier ${timeout_multiplier}"
 fi
 
 # shellcheck disable=SC2086

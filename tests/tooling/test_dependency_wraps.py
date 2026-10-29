@@ -218,6 +218,19 @@ class DependencyWrapTests(unittest.TestCase):
         self.assertIn('MESON_TEST_TIMEOUT_MULTIPLIER:-2', wrapper)
         self.assertIn("--timeout-multiplier", wrapper)
 
+    def test_linux_wrapper_gives_coverage_builds_test_headroom(self) -> None:
+        # GIVEN the Linux build wrapper, whose --coverage builds (the coverage and SonarCloud
+        # jobs) are gcov-instrumented: the conformance suite took 555 s of its 600 s limit
+        # there, and timed out in the SonarCloud job on PR #545.
+        wrapper = LINUX_BUILD_WRAPPER.read_text(encoding="utf-8")
+
+        # WHEN a coverage build sets no timeout multiplier of its own
+        # THEN meson test gets a multiplier of 2, and an explicit one still wins.
+        self.assertIn('timeout_multiplier="${MESON_TEST_TIMEOUT_MULTIPLIER:-}"', wrapper)
+        self.assertIn('[ -z "$timeout_multiplier" ] && [ "$coverage" = true ]', wrapper)
+        self.assertIn("timeout_multiplier=2", wrapper)
+        self.assertIn('--timeout-multiplier ${timeout_multiplier}', wrapper)
+
     def test_windows_wsl_launch_chain_targets_the_dedicated_wsl_wrapper(self) -> None:
         # GIVEN the Windows entrypoints for WSL builds.
         self.assertTrue(WSL_BUILD_CMD.is_file(), "build-wsl.cmd is missing")

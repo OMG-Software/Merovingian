@@ -114,6 +114,9 @@ Fixes for the failures Complement run 10 found against the signed 0.12.62 releas
   (ADR-0284).
 - **A federation media download too large to serve answered 413.** The spec gives the download 502
   `M_TOO_LARGE`; 413 is the thumbnail endpoint's, for local content, and stays there.
+- **CI: the SonarCloud job timed out in the conformance suite.** Under gcov instrumentation the
+  suite took 555 s of its 600 s limit, and crossed it in the SonarCloud job. `scripts/build-linux.sh`
+  now gives `--coverage` builds a timeout multiplier of 2 by default; other builds keep the limits.
 - **Tests:** conformance scenarios now cover the server ACL on `/event_auth` (a denied server gets
   403 `M_FORBIDDEN`), `/event_auth` with no provider, and every federation media refusal's errcode;
   a unit scenario covers a retry whose first answer was too large to keep.
