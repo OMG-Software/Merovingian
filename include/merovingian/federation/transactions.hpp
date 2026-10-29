@@ -89,6 +89,10 @@ struct FederationEdu final
 [[nodiscard]] auto federation_endpoint_requires_main_relay(FederationEndpoint endpoint) noexcept -> bool;
 [[nodiscard]] auto federation_routes() -> std::vector<FederationRoute>;
 [[nodiscard]] auto match_federation_route(std::string_view method, std::string_view target) -> FederationRouteMatch;
+// The HTTP methods the inbound federation routes serve on `target`'s path (query string ignored),
+// each once, in the table's order. Empty when no route has that path. Lets a caller tell a path
+// that is not served (404) from one used with a method it does not serve (405).
+[[nodiscard]] auto federation_methods_for_path(std::string_view target) -> std::vector<std::string>;
 [[nodiscard]] auto validate_federation_transaction(
     FederationTransaction const& transaction, std::size_t max_transaction_bytes,
     std::uint32_t max_transaction_pdus = max_federation_transaction_pdus,

@@ -841,6 +841,8 @@ namespace
             return "Forbidden";
         case 404U:
             return "Not Found";
+        case 405U:
+            return "Method Not Allowed";
         case 408U:
             return "Request Timeout";
         case 413U:

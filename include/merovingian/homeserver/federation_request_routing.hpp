@@ -4,7 +4,9 @@
 
 #include "merovingian/homeserver/local_http_router.hpp"
 
+#include <optional>
 #include <string>
+#include <string_view>
 
 namespace merovingian::homeserver
 {
@@ -52,5 +54,16 @@ namespace merovingian::homeserver
 // `/_matrix/federation/v1/version` (optionally followed by a query string).
 // Matrix v1.19 marks this endpoint as unauthenticated.
 [[nodiscard]] auto is_federation_version_endpoint(std::string_view target) noexcept -> bool;
+
+// The `Allow` value for a request that uses a method the path does not serve: the path is one this
+// server's federation surface (or `/_matrix/key/v2/server`, the version and the OpenID userinfo
+// endpoint) serves, but not with `method`. nullopt when the method is served there, or when the path
+// is not served at all. Spec (CS API "Standard error response"): `M_UNRECOGNIZED` is "a 405 HTTP
+// status code if the endpoint is implemented, but the incorrect HTTP method is used".
+[[nodiscard]] auto federation_unsupported_method_allow(std::string_view method, std::string_view target)
+    -> std::optional<std::string>;
+
+// The 405 `M_UNRECOGNIZED` response for such a request, with its `Allow` header.
+[[nodiscard]] auto federation_method_not_allowed_response(std::string_view allow) -> LocalHttpResponse;
 
 } // namespace merovingian::homeserver

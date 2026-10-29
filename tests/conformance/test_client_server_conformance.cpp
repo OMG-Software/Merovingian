@@ -15106,10 +15106,13 @@ SCENARIO("POST /rooms/{roomId}/redact/{eventId}/{txnId} conformance")
                 started.runtime,
                 {"POST", "/_matrix/client/v3/rooms/" + room_id + "/redact/$event_id/1", token, R"({"reason":"test"})"});
 
-            THEN("the server returns 404 M_UNRECOGNIZED")
+            THEN("the server returns 405 M_UNRECOGNIZED")
             {
-                // IMPLEMENTATION GAP: redact not routed
-                REQUIRE(response.response.status == 404);
+                // Spec (CS API "Standard error response", M_UNRECOGNIZED, v1.19): "a 405 HTTP
+                // status code if the endpoint is implemented, but the incorrect HTTP method is
+                // used". Redaction is `PUT /rooms/{roomId}/redact/{eventId}/{txnId}`; it is
+                // served (test_redaction_application_conformance.cpp), POST is not.
+                REQUIRE(response.response.status == 405);
                 auto const body = parse_object(response.response.body);
                 auto const* err = string_member(body, "errcode");
                 REQUIRE(err != nullptr);
