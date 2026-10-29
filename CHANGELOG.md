@@ -18,6 +18,7 @@ Fixes for the failures Complement run 10 found against the signed 0.12.62 releas
 
 ### Complement image
 
+- `TestKeyChangesLocal` is skip-listed with the maintainer's sign-off: it logs in through `/_matrix/client/r0/login`, which v1.19 does not define, and stops before its device-list check. A conformance scenario now checks the same through `/v3/login`: a fresh login's uploaded device keys reach a room peer's `device_lists.changed` and `/keys/changes`.
 - **The Complement image now loads the application services Complement registers.** Complement
   copies each test's registration into `/complement/appservice/`, and the image ignored them, so
   `TestJoinFederatedRoomFromApplicationServiceBridgeUser` and `TestJumpToDateEndpoint` failed while
