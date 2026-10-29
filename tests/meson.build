@@ -557,6 +557,7 @@ shell = find_program('sh')
       'integration/test_http_server_listener_flow.cpp',
       'integration/test_http_worker_fairness_flow.cpp',
       'integration/test_join_room_flow.cpp',
+      'integration/test_invite_federation_flow.cpp',
       'integration/test_identity_service_flow.cpp',
       'integration/test_media_repository_security.cpp',
       'integration/test_media_on_demand_flow.cpp',

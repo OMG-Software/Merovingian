@@ -185,6 +185,31 @@ anything. A new path that changes a user's own membership over federation takes 
 new entry point that changes it checks `membership_exchange_refusal` first, or a concurrent request
 is overwritten when the exchange commits.
 
+## Remote invites: reject, accept, rescind (Complement run 10)
+
+An invite from another server leaves this server with a `memberships` row (`invite`) and a `PersistentInvite`
+record, and no room state (an invite for a room whose state is held is judged against it). Three things act
+on that record, each by the inviter's server, which the spec calls a resident server ("Leaving Rooms
+(Rejecting Invites)", "Joining Rooms"):
+
+- `leave_room` rejects it with `make_leave` / `send_leave` to `invite_sender_server` (a version 12 room ID
+  names no server). If that server answers `make_leave` with 403 or 404 (it left the room), no leave can be
+  authored; the invite is ended as a local `leave` row and nothing is sent. Any other failure is a 502 and
+  the invite stays.
+- `join_room` with no `via` uses `invite_sender_server` as the candidate, with the room ID's domain behind it.
+- `rescind_invite_from_inviter` (`local_http_router.cpp`) turns a `leave` PDU for the invitee, sent by a user
+  of the inviter's own server, into a `leave` for rooms whose state is not held. Nobody else can withdraw an
+  invite this way.
+
+A ban leaves a local user with no membership that makes this server interested in the room, yet the unban is
+a PDU about that user: `concerns_local_member_with_row` admits an `m.room.member` PDU about a local user who
+has any row for the room, to the ordinary receipt checks. Do not narrow it back to joined users, or the ban
+stays for ever and the invite an unban makes valid is refused.
+
+`stripped_state_pdus` (`room_service.cpp`) is the one place that builds `invite_room_state` and
+`knock_room_state`: the stored signed PDUs of the stripped-state types, without `unsigned`. The client's
+`invite_state` / `knock_state` are stripped from whatever the record holds (`build_invite_state_events_array`).
+
 ## Restricted joins as the resident (R04, ADR-0184, ADR-0185)
 
 `decide_restricted_join` (`restricted_join.cpp`) is the only place that decides whether a

@@ -1321,6 +1321,27 @@ namespace
         });
     }
 
+    // True when `envelope` is an m.room.member event about a user of this server who has a membership row
+    // for the room, in any state. A ban leaves the user with no membership that makes this server interested
+    // in the room (room_has_current_local_interest), but the unban that follows is a PDU about that user,
+    // and Server-Server API "Transactions" sends it to the target's server for that reason. Without it the
+    // ban stayed on record for ever and a later invite, which an unban makes valid, was refused. It still
+    // passes the receipt checks like any other PDU; this only admits it to them.
+    [[nodiscard]] auto concerns_local_member_with_row(HomeserverRuntime const& runtime,
+                                                      federation::InboundPduEnvelope const& envelope) -> bool
+    {
+        auto const target = envelope.state_key.value_or(std::string{});
+        if (envelope.event_type != "m.room.member" || target.empty() ||
+            server_name_from_user_id(target) != runtime.config.server().server_name)
+        {
+            return false;
+        }
+        return std::ranges::any_of(runtime.database.persistent_store.memberships,
+                                   [&](database::PersistentMembership const& membership) {
+                                       return membership.room_id == envelope.room_id && membership.user_id == target;
+                                   });
+    }
+
     // Outcome of a direct_to_device enqueue attempt. `targeted` counts every
     // per-device entry that was well-formed enough to attempt a store;
     // `stored` counts how many of those actually persisted. The two can
@@ -2760,13 +2781,20 @@ namespace
             // accepted and stored — redacted after a hash mismatch (R06) and
             // carrying this server's signature when it authorised a
             // restricted join (R04) — never the raw request body.
+            // Spec v1.19 PUT /send_knock: `knock_room_state` MUST contain the room's m.room.create, and
+            // "all events listed MUST additionally be formatted according to the room version
+            // specification": the stored signed PDUs of the stripped-state types, not stripped events.
+            auto knock_room_state = endpoint == federation::FederationEndpoint::send_knock
+                                        ? stripped_state_pdus(store, room_id)
+                                        : std::vector<std::string>{};
             return {true,
                     200U,
                     {},
                     std::move(auth_chain),
                     std::move(state_events),
                     room_version_from_store(store, room_id),
-                    stored_json};
+                    stored_json,
+                    std::move(knock_room_state)};
         };
 
         runtime.federation.invite_handler =
@@ -4757,6 +4785,86 @@ namespace
 
 } // namespace
 
+namespace
+{
+
+    // The leave a server sends for a user it invited who has not joined, when this server holds no
+    // state for the room. nullopt when `envelope` is not that, so the ordinary receipt checks run.
+    //
+    // It is that only when the event is a leave sent by a user other than its target, the target is a
+    // user of this server whose membership is invite, the invite was sent by a user of the sender's own
+    // server, and the room's state is not held here (a room whose state is held is judged against it).
+    // The sender's signature was verified by the caller. The leave is kept as an outlier, like the
+    // invite it replaces: it never enters the room's timeline, because this server is not in the room.
+    [[nodiscard]] auto rescind_invite_from_inviter(HomeserverRuntime& runtime,
+                                                   federation::InboundPduEnvelope const& envelope,
+                                                   std::string const& stored_json)
+        -> std::optional<federation::PduIngestionResult>
+    {
+        auto const target = envelope.state_key.value_or(std::string{});
+        if (envelope.event_type != "m.room.member" || target.empty() || envelope.sender == target)
+        {
+            return std::nullopt;
+        }
+        auto const parsed = canonicaljson::parse_lossless(stored_json);
+        auto const* event = std::get_if<canonicaljson::Object>(&parsed.value.storage());
+        auto const* membership = event == nullptr ? nullptr : content_membership(*event);
+        if (membership == nullptr || *membership != "leave")
+        {
+            return std::nullopt;
+        }
+        auto guard = std::unique_lock<RuntimeMutex>{runtime.mutex};
+        auto& store = runtime.database.persistent_store;
+        if (server_name_from_user_id(target) != runtime.config.server().server_name ||
+            !std::holds_alternative<std::nullptr_t>(create_event_json_for_room(store, envelope.room_id).storage()))
+        {
+            return std::nullopt;
+        }
+        auto const row = std::ranges::find_if(store.memberships, [&](database::PersistentMembership const& current) {
+            return current.room_id == envelope.room_id && current.user_id == target;
+        });
+        if (row == store.memberships.end() || row->membership != "invite")
+        {
+            return std::nullopt;
+        }
+        auto const invite = database::find_invite(store, envelope.room_id, target);
+        if (!invite.has_value() ||
+            server_name_from_user_id(invite->sender_user_id) != server_name_from_user_id(envelope.sender) ||
+            (!envelope.origin.empty() && envelope.origin != server_name_from_user_id(envelope.sender)))
+        {
+            return std::nullopt;
+        }
+
+        auto const stream_ordering = allocate_stream_ordering(runtime.database);
+        auto leave = database::PersistentEvent{};
+        leave.event_id = envelope.event_id;
+        leave.room_id = envelope.room_id;
+        leave.sender_user_id = envelope.sender;
+        leave.json = stored_json;
+        leave.depth = envelope.depth;
+        leave.stream_ordering = stream_ordering;
+        leave.prev_event_ids = envelope.prev_event_ids;
+        leave.auth_event_ids = envelope.auth_event_ids;
+        leave.status = "outlier";
+        auto state = std::optional<database::PersistentStateEvent>{
+            database::PersistentStateEvent{envelope.room_id, "m.room.member", target, envelope.event_id}
+        };
+        auto projection = database::MembershipProjection{target, "leave", stream_ordering, std::nullopt};
+        if (!database::store_event_with_state(store, std::move(leave), std::move(state), std::move(projection)))
+        {
+            return federation::PduIngestionResult{federation::PduIngestionStatus::internal_error,
+                                                  "invite rescission persistence failed"};
+        }
+        auto const sync_stream_id = database::allocate_sync_stream_id(store);
+        if (runtime.sync_notifier != nullptr)
+        {
+            runtime.sync_notifier->publish(visible_stream_position(runtime.database), sync_stream_id);
+        }
+        return federation::PduIngestionResult{federation::PduIngestionStatus::accepted, {}};
+    }
+
+} // namespace
+
 // The body of ingest_pdu_event; the public function below adds what must happen
 // after this one has released its locks. File-local, but deliberately `static`
 // rather than inside the anonymous namespace above: that would re-indent the
@@ -4816,6 +4924,16 @@ namespace
         stored_json = serialized.output;
     }
 
+    // Spec "Leaving Rooms (Rejecting Invites)" and "Transactions": the server that sent an invite
+    // withdraws it with a leave for the invitee, sent to the invitee's server. This server holds nothing
+    // of such a room but the invite, so the leave cannot be judged against the room's state and
+    // would otherwise wait for history it can never fetch (a server that is not in the room may not
+    // read it). The invite's sender's own server is the one party that can withdraw its invite.
+    if (auto const rescinded = rescind_invite_from_inviter(runtime, envelope, stored_json); rescinded.has_value())
+    {
+        return *rescinded;
+    }
+
     // Reserve the sync-surface ID up front under the global mutex. Allocating
     // it writes to the backend, so it must not happen while a room stripe is
     // also held — that would pin the stripe for the whole database write and
@@ -4830,7 +4948,7 @@ namespace
         // room. The explicit /send_join state bootstrap and verified, requested
         // backfill writers are separate paths, not exceptions derived from PDU
         // content, room IDs, event types or claimed membership.
-        if (!room_has_current_local_interest(runtime, room_id))
+        if (!room_has_current_local_interest(runtime, room_id) && !concerns_local_member_with_row(runtime, envelope))
         {
             auto const pending = runtime.pending_federated_joins.find(room_id);
             if (pending == runtime.pending_federated_joins.end())
