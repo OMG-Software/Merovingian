@@ -30,7 +30,7 @@ Chosen option: keep the body in `FederationAcceptedTransaction::response_body`, 
 whole answer is built, and replay it to a retry unchanged. `FederationProxy` records the worker's 200
 body the same way, so a retry that reaches main gets the worker's answer.
 
-The ring is bounded in kept bytes as well as entries: `FederationRuntimeConfig::accepted_transaction_cache_bytes`
+The ring is bounded in kept bytes as well as entries: `RuntimeFederationConfig::accepted_transaction_cache_bytes`
 (16 MiB), with the total in `FederationRuntimeState::accepted_transaction_bytes`. Recording evicts the
 oldest entries until both bounds hold. An answer larger than the whole budget is not kept, but the
 transaction is still recorded, so a retry of it is not processed again and is answered `{}` per PDU,
