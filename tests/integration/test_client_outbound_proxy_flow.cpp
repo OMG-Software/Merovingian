@@ -137,8 +137,8 @@ public:
     {
     }
 
-    [[nodiscard]] auto fetch_well_known(std::string_view,
-                                        std::uint32_t) -> merovingian::federation::WellKnownServerResult override
+    [[nodiscard]] auto fetch_well_known(std::string_view, std::uint32_t)
+        -> merovingian::federation::WellKnownServerResult override
     {
         m_calls->fetch_add(1);
         return {};
@@ -150,8 +150,8 @@ public:
         return {};
     }
 
-    [[nodiscard]] auto lookup_addresses(std::string_view,
-                                        std::uint16_t) -> merovingian::federation::ResolvedAddressSet override
+    [[nodiscard]] auto lookup_addresses(std::string_view, std::uint16_t)
+        -> merovingian::federation::ResolvedAddressSet override
     {
         m_calls->fetch_add(1);
         return {false, {}, "not found"};
@@ -188,8 +188,8 @@ struct Answer final
 };
 
 [[nodiscard]] auto send(ClientServerRuntime& runtime, std::string method, std::string target,
-                        std::string const& client_address, std::string const& token = {},
-                        std::string body = {}) -> Answer
+                        std::string const& client_address, std::string const& token = {}, std::string body = {})
+    -> Answer
 {
     auto request = merovingian::homeserver::LocalHttpRequest{};
     request.method = std::move(method);
@@ -420,7 +420,10 @@ SCENARIO("Remote media fetches run under the in-flight budget and the media dead
         runtime.homeserver.client_outbound_proxy_policy.media_deadline_seconds = 1U;
         auto const peer = SilentPeer{};
         point_at(runtime, peer);
-        auto const target = "/_matrix/media/v3/download/" + std::string{silent_server} + "/abc";
+        auto const token = register_and_login(runtime);
+        // The authenticated route: the deprecated /_matrix/media/v3 routes never
+        // fetch remote media during the freeze (ADR-0068).
+        auto const target = "/_matrix/client/v1/media/download/" + std::string{silent_server} + "/abc";
 
         WHEN("one client's fetch is in flight and the same client asks again")
         {
@@ -430,14 +433,14 @@ SCENARIO("Remote media fetches run under the in-flight budget and the media dead
             {
                 auto threads = JoiningThreads{};
                 threads.emplace_back([&]() {
-                    first = send(runtime, "GET", target, "198.51.100.1");
+                    first = send(runtime, "GET", target, "198.51.100.1", token);
                 });
                 in_flight = wait_until(
                     [&]() {
                         return runtime.homeserver.client_outbound_budget->active("198.51.100.1") == 1U;
                     },
                     2000ms);
-                second = send(runtime, "GET", target, "198.51.100.1");
+                second = send(runtime, "GET", target, "198.51.100.1", token);
             }
 
             THEN("the second is refused with 429 M_LIMIT_EXCEEDED and the first ends in a bad gateway")
@@ -458,7 +461,7 @@ SCENARIO("Remote media fetches run under the in-flight budget and the media dead
         WHEN("a fetch is made against the peer that never answers")
         {
             auto const start = std::chrono::steady_clock::now();
-            auto const answer = send(runtime, "GET", target, "198.51.100.1");
+            auto const answer = send(runtime, "GET", target, "198.51.100.1", token);
             auto const elapsed = std::chrono::steady_clock::now() - start;
 
             THEN("the media deadline ends it well before the general federation timeout")
@@ -656,8 +659,9 @@ SCENARIO("Every unauthenticated proxy route shares one budget, and authenticated
                 post_rooms = send(runtime, "POST", silent_rooms_target, "192.0.2.22", token, R"({"limit":5})");
                 alias = send(runtime, "GET", silent_alias_target, "192.0.2.23");
                 authenticated_alias = send(runtime, "GET", silent_alias_target, "192.0.2.24", token);
-                media = send(runtime, "GET", "/_matrix/media/v3/download/" + std::string{silent_server} + "/abc",
-                             "192.0.2.25");
+                // Authenticated: the deprecated media routes never fetch remote media (ADR-0068).
+                media = send(runtime, "GET", "/_matrix/client/v1/media/download/" + std::string{silent_server} + "/abc",
+                             "192.0.2.25", token);
             }
 
             THEN("each is refused with 429 M_LIMIT_EXCEEDED before any outbound call")

@@ -4273,6 +4273,13 @@ namespace
         if (!entry.prepared.has_value() && runtime.database.persistent_store.events.find_in_room(room_id, event_id) ==
                                                runtime.database.persistent_store.events.end())
         {
+            log_diagnostic("room.join.state_entry_dropped",
+                           {
+                               {"room_id",  std::string{room_id},                                 false},
+                               {"event_id", event_id,                                             false},
+                               {"reason",   "not preparable and not already stored in this room", false}
+            },
+                           observability::LogEventSeverity::warning);
             continue;
         }
         kept_event_ids.insert(event_id);
@@ -5281,11 +5288,25 @@ namespace
         // Never open/drain admission on an incomplete or failed initial state
         // commit. The verified snapshot must contain create and every verified
         // state entry must have been persisted by the bootstrap writer.
-        if (send_join_state.recorded_state_events != verified_state.size() ||
-            !std::ranges::any_of(send_join_state.state_entries, [](auto const& entry) {
-                return entry.event_type == "m.room.create" && entry.state_key.empty();
-            }))
+        auto const recorded_create = std::ranges::any_of(send_join_state.state_entries, [](auto const& entry) {
+            return entry.event_type == "m.room.create" && entry.state_key.empty();
+        });
+        if (send_join_state.recorded_state_events != verified_state.size() || !recorded_create)
         {
+            // Complement run 10 (F14) saw this 500 under load with nothing logged.
+            // A failed commit records nothing (and sqlite_store logs why); a short
+            // count with a commit is an entry the writer could not keep.
+            log_diagnostic("room.join.rejected",
+                           {
+                               {"actor",           *user_id,                                              false},
+                               {"room_id",         std::string{room_id},                                  false},
+                               {"status",          "500",                                                 false},
+                               {"reason",          "initial join state persistence failed",               false},
+                               {"verified_state",  std::to_string(verified_state.size()),                 false},
+                               {"recorded_state",  std::to_string(send_join_state.recorded_state_events), false},
+                               {"recorded_create", recorded_create ? "true" : "false",                    false}
+            },
+                           observability::LogEventSeverity::warning);
             return make_operation_result(false, {}, "initial join state persistence failed", 500U);
         }
         for (auto const& m : send_join_state.joined_members)

@@ -27,6 +27,11 @@ Fixes for the failures Complement run 10 found against the signed 0.12.62 releas
   for such a room, so the relay uses the version the invite declares, the worker's v1 invite path
   reaches the spec's "1 or 2" rule, and `/send` parses PDUs for unknown rooms as v12, as its
   comment said (ADR-0269). Complement: `TestIsDirectFlagFederation`.
+- **A federated join's 500 "initial join state persistence failed" logged nothing.** Complement
+  run 10 hit it once in `TestKnocking` under the full suite's load; six isolated reruns passed, so
+  the cause is not yet known. A SQLite write that fails now logs `transaction.failed` (stage,
+  statement name, SQLite's code and message, never the bound values), and the join logs which
+  count fell short and each state entry it dropped, so the next run names the cause.
 - **The legacy media endpoints served remote media fetched during the freeze.**
   `GET /_matrix/media/v3/download` and `/thumbnail` fetched remote media on demand and served it,
   although the spec counts media the server "had to re-download" as new media, which SHOULD only

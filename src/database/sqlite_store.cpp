@@ -1381,22 +1381,47 @@ namespace
         return bind_statement_parameters(*statement->get(), prepared) && sqlite3_step(statement->get()) == SQLITE_DONE;
     }
 
+    // Names what failed: the stage, the statement and SQLite's own code and
+    // message ("UNIQUE constraint failed: rooms.room_id", "database is locked").
+    // Never the bound values, which can be token or password hashes (rule 2 of
+    // src/database/AGENTS.md); SQLite's messages name columns, not values.
+    auto log_transaction_failure(sqlite3& connection, std::string_view stage, std::string_view statement_name) -> void
+    {
+        log_diagnostic("transaction.failed",
+                       {
+                           {"stage",        std::string{stage},                                    false},
+                           {"statement",    std::string{statement_name},                           false},
+                           {"sqlite_code",  std::to_string(sqlite3_extended_errcode(&connection)), false},
+                           {"sqlite_error", std::string{sqlite3_errmsg(&connection)},              false}
+        },
+                       observability::LogEventSeverity::warning);
+    }
+
     [[nodiscard]] auto execute_transaction(sqlite3& connection, std::vector<PreparedStatement> const& statements)
         -> bool
     {
         auto transaction = SqliteTransaction{connection};
         if (!transaction.active())
         {
+            log_transaction_failure(connection, "begin",
+                                    statements.empty() ? std::string_view{} : statements.front().name);
             return false;
         }
         for (auto const& statement : statements)
         {
             if (!execute_prepared(connection, statement))
             {
+                log_transaction_failure(connection, "statement", statement.name);
                 return false;
             }
         }
-        return transaction.commit();
+        if (!transaction.commit())
+        {
+            log_transaction_failure(connection, "commit",
+                                    statements.empty() ? std::string_view{} : statements.back().name);
+            return false;
+        }
+        return true;
     }
 
 } // namespace

@@ -505,8 +505,10 @@ SCENARIO("Remote media download falls back to 502 when server discovery fails", 
         {
             // remote.example.org resolves to a blocked/non-Matrix IP; live server
             // discovery via the system network will fail and return !discovery_allowed.
+            // The authenticated route: the deprecated /_matrix/media/v3 routes never
+            // fetch remote media during the freeze (ADR-0068).
             auto const remote = merovingian::homeserver::handle_local_http_request(
-                runtime, {"GET", "/_matrix/media/v3/download/remote.example.org/media123", {}, {}});
+                runtime, {"GET", "/_matrix/client/v1/media/download/remote.example.org/media123", {}, {}});
 
             THEN("the request fails closed with 502 and is audited")
             {

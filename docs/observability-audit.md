@@ -28,6 +28,16 @@ thumbnailing is enabled) and `Federation worker library …` from the federation
 carry library names, versions and loader paths only. The thumbnail worker's report reaches the
 server with every byte outside printable ASCII replaced by `?`, so it cannot add a log line.
 
+A SQLite write that fails logs `transaction.failed` under the `sqlite_store` logger at warning
+severity (0.12.63). `stage` is `begin` (the write lock could not be taken, e.g. `database is
+locked` after the 5 s busy timeout), `statement` or `commit`. `statement` names the prepared
+statement, and `sqlite_code` / `sqlite_error` are SQLite's extended code and message. SQLite's
+messages name tables and columns ("UNIQUE constraint failed: rooms.room_id"), never values, and
+the bound parameters are never logged. A federated join refused with 500 because its `send_join`
+state was not stored whole logs `room.join.rejected` with `verified_state`, `recorded_state` and
+`recorded_create`, and each state entry the writer could neither store nor find already stored
+logs `room.join.state_entry_dropped` with its `event_id` (both under `rooms`, at warning).
+
 Push overload emits `push.delivery.dropped` at warning severity. Its `scope` is
 `global` or `recipient` for capacity drops, and `allocation` or `admission` for
 resource/launch failures. `in_flight`, `cap` and `deliveries` are numeric counts;
