@@ -250,6 +250,7 @@
 * [0265 - Membership changes reach the room roster through one function](0265-membership-changes-reach-the-room-roster-through-one-function.md)
 * [0266 - Pin third-party GitHub Actions to a full commit SHA](0266-pin-third-party-github-actions-to-a-full-commit-sha.md)
 * [0267 - Bounded parallel work holds each slot in an RAII permit](0267-bounded-parallel-work-holds-each-slot-in-an-raii-permit.md)
+* [0268 - Runtime state structs keep their implicit, possibly throwing, moves](0268-runtime-state-structs-keep-their-implicit-throwing-moves.md)
 
 ## Proposed Records
 

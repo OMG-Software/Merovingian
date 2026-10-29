@@ -260,7 +260,7 @@ namespace
             {
                 return std::nullopt;
             }
-            *host = host->substr(1U, host->size() - 2U);
+            host = host->substr(1U, host->size() - 2U);
             auto address = in6_addr{};
             if (::inet_pton(AF_INET6, host->c_str(), &address) != 1)
             {

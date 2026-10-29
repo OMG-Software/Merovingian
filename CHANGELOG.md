@@ -1,3 +1,18 @@
+## 0.12.62
+
+The four minor SonarQube Cloud findings left over from the 0.12.61 triage.
+
+### Internal
+
+- `parse_outbound_url` assigns the unbracketed IPv6 host to its `std::optional` directly instead of
+  through a dereference (`cpp:S6427`). Behaviour is unchanged; a scenario now pins it: a bracketed
+  IPv6 host comes back bare with `ipv6_literal` set and the canonical URL keeping the brackets, an
+  IPv4 host is left alone, and bracketed hosts that are not IPv6 addresses are refused.
+- The three `cpp:S5018` findings (no `noexcept` move constructor on `AppserviceEphemeralQueue`,
+  `LocalDatabase` and `FederationRuntimeState`) are false positives for this code: libstdc++'s
+  `std::deque` move constructor can throw, and none of these structs is held where that costs
+  anything. Recorded in ADR-0268, with a pointer on each struct.
+
 ## 0.12.61
 
 Fixes for the SonarQube Cloud findings rated Blocker or High that held up when checked against

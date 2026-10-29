@@ -273,6 +273,7 @@ struct KeyResolutionFailure final
     std::chrono::steady_clock::time_point expires_at{};
 };
 
+// Its implicit move can throw under libstdc++ (std::deque member); nothing relocates it (ADR-0268).
 struct FederationRuntimeState final
 {
     RuntimeFederationConfig config{};
