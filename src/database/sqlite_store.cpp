@@ -1658,6 +1658,13 @@ namespace detail
             auto connection = open_sqlite_connection(store.sqlite_path);
             if (!connection.has_value() || !execute_sql(**connection, "PRAGMA foreign_keys = ON"))
             {
+                // A writer that cannot be opened (descriptor exhaustion, a file it may not open)
+                // fails the write before any transaction runs, so say so here too.
+                log_diagnostic("transaction.failed",
+                               {
+                                   {"stage", connection.has_value() ? "open_pragma" : "open", false}
+                },
+                               observability::LogEventSeverity::warning);
                 return std::nullopt;
             }
             return connection;

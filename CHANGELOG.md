@@ -52,6 +52,14 @@ Fixes for the failures Complement run 10 found against the signed 0.12.62 releas
   `de.sorunome.msc2409.push_ephemeral`, `org.matrix.msc3202` and `push_ephemeral`. Reverse-DNS
   namespaced keys and `push_ephemeral` are now ignored and logged at warning; any other unknown
   key, a typo of a real one included, still refuses the file (ADR-0273, owner decision 2026-10-29).
+- **Logout left a device's other tokens and its keys behind.** Logging out deletes the device, and
+  deleting a device invalidates every access token it has, so a second login under the same device ID is
+  revoked too. Deleting a device (logout, `/logout/all`, `DELETE /devices`) now also removes its
+  identity, one-time and fallback keys in the same transaction, so `/keys/query` stops publishing it.
+- An unknown federation route answers 404 `M_UNRECOGNIZED` (it was `M_NOT_FOUND`). `HEAD` is no longer
+  read as `GET` by the 405 table (no handler serves it), and the v3 room routes no longer list
+  `hierarchy` and `timestamp_to_event`, which v1.19 defines only under v1 (an unimplemented endpoint is
+  404, not 405). A SQLite writer that cannot be opened logs `transaction.failed` with stage `open`.
 - **A failed user-interactive authentication stage gave no error.** The 401 now carries
   `errcode: M_FORBIDDEN` and `error` beside the challenge, on every UIA endpoint.
 - **Logout left the device behind.** `POST /logout` and `/logout/all` delete the device or devices,

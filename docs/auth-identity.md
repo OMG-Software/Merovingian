@@ -813,12 +813,13 @@ The boundary establishes these guarantees:
 - UIAA challenges carry a random per-attempt session id, scoped to the endpoint
   that issued it, held in memory and TTL-pruned. A client-supplied
   `auth.session` is honoured only if this server issued it for that endpoint.
-  Omitting it is still served for the stages whose credential travels in the
-  same `auth` block (the account password, a registration token), which the
-  spec permits completing in one request. `m.login.dummy` has no credential, so
-  open registration completes it only within a session this server issued: an
-  `m.login.dummy` with no `session` is answered with the 401 challenge. See
-  [ADR-0057](adr/0057-uiaa-sessions-are-in-memory-and-single-stage.md).
+  Omitting it is the single-shot flow, which the spec permits: the client
+  passes a session back only "if one is provided". An `m.login.dummy` request
+  with no `session` therefore completes open registration in one request, as
+  Complement's own blueprints do; a `session` this server did not issue is
+  answered with the 401 challenge. See
+  [ADR-0057](adr/0057-uiaa-sessions-are-in-memory-and-single-stage.md) and
+  [ADR-0276](adr/0276-dummy-registration-needs-a-server-issued-session.md).
 - A UIA stage that fails (a wrong account password on `POST /account/password`,
   `POST /account/deactivate`, `POST /account/3pid/add`, `DELETE /devices/{deviceId}`,
   `POST /delete_devices` and `POST /keys/device_signing/upload`) answers `401`

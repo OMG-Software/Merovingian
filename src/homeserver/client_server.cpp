@@ -3110,14 +3110,9 @@ namespace
                         return variable_room_action("typing", 1U, "/typing/{userId}");
                     }
                     static constexpr auto room_actions = std::to_array<std::string_view>({
-                        "aliases",     "joined_members", "members",
-                        "state_ids",   "messages",       "context",
-                        "initialSync", "threads",        "read_markers",
-                        "forget",      "invite",         "kick",
-                        "ban",         "leave",          "join",
-                        "upgrade",     "report",         "receipt",
-                        "typing",      "hierarchy",      "timestamp_to_event",
-                        "unban",
+                        "aliases", "joined_members", "members", "state_ids", "messages", "context", "initialSync",
+                        "threads", "read_markers",   "forget",  "invite",    "kick",     "ban",     "leave",
+                        "join",    "upgrade",        "report",  "receipt",   "typing",   "unban",
                     });
                     if (std::ranges::find(room_actions, action) == room_actions.end() ||
                         action_end != std::string_view::npos)
@@ -3719,8 +3714,9 @@ namespace
 
     [[nodiscard]] auto allow_lists_method(std::string_view allow, std::string_view method) -> bool
     {
-        // HEAD is answered as GET.
-        auto const wanted = method == "HEAD" ? std::string_view{"GET"} : method;
+        // No client handler serves HEAD, so it is not read as GET: a HEAD on a fixed path is
+        // answered 405 with the Allow header here, never passed on to fall through without one.
+        auto const wanted = method;
         while (!allow.empty())
         {
             auto const comma = allow.find(',');

@@ -29,8 +29,9 @@ carry library names, versions and loader paths only. The thumbnail worker's repo
 server with every byte outside printable ASCII replaced by `?`, so it cannot add a log line.
 
 A SQLite write that fails logs `transaction.failed` under the `sqlite_store` logger at warning
-severity (0.12.63). `stage` is `begin` (the write lock could not be taken, e.g. `database is
-locked` after the 5 s busy timeout), `statement` or `commit`. `statement` names the prepared
+severity (0.12.63). `stage` is `open` or `open_pragma` (no writer connection could be opened, e.g.
+descriptor exhaustion; no SQLite message is available then), `begin` (the write lock could not be
+taken, e.g. `database is locked` after the 5 s busy timeout), `statement` or `commit`. `statement` names the prepared
 statement, and `sqlite_code` / `sqlite_error` are SQLite's extended code and message. SQLite's
 messages name tables and columns ("UNIQUE constraint failed: rooms.room_id"), never values, and
 the bound parameters are never logged. A federated join refused with 500 because its `send_join`

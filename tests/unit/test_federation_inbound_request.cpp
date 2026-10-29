@@ -697,6 +697,8 @@ SCENARIO("Inbound federation rejects malformed send targets and unsigned PDUs", 
             {
                 REQUIRE(bad_route.status == 404U);
                 REQUIRE(bad_route.body.find("federation route not found") != std::string::npos);
+                // An endpoint this server does not implement is M_UNRECOGNIZED, not M_NOT_FOUND.
+                REQUIRE(bad_route.body.find("\"errcode\":\"M_UNRECOGNIZED\"") != std::string::npos);
             }
 
             THEN("a PDU with missing required fields returns 200 with a per-PDU error — not 400 for the transaction")

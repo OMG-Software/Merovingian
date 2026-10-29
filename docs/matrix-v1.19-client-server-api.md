@@ -402,8 +402,8 @@ the requesting user may see it according to what that server reported; local sta
 instead of the remote answer. With `suggested_only=true` the walk and every space's `children_state` carry the suggested links only.
 
 `getRoomSummary` (Complement run 10) answers for a room, or a local alias, this server holds state for. `via` is accepted and
-ignored: a room this server has no state of is `404`, as is an alias on another server (asking a peer for a summary is not
-implemented). An authenticated caller is shown a room they are joined to, invited to or have knocked on, or that is `public`,
+ignored: a room this server has no state of, or an alias on another server, is `404` to an authenticated caller and `401
+M_MISSING_TOKEN` to one without a token, as every room it may not see is (asking a peer for a summary is not implemented). An authenticated caller is shown a room they are joined to, invited to or have knocked on, or that is `public`,
 `knock` / `knock_restricted`, `world_readable`, or `restricted` with the caller joined to an allowed room; any other room is
 `404 M_NOT_FOUND`. `membership` is the caller's own membership when they have one, and is absent without a token. A request
 without a token (the spec's MAY) is served for `public`, `knock`, `knock_restricted` and `world_readable` rooms only, and
@@ -432,7 +432,7 @@ every other room, existing or not, gets the same `401 M_MISSING_TOKEN`. The body
 | Method | Path | Operation ID | Auth | Request body | Responses |
 | --- | --- | --- | --- | --- | --- |
 | `POST` | `/_matrix/client/v1/appservice/{appserviceId}/ping` | `pingAppservice` | appservice token | required application/json | 200, 400, 403, 502, 504 |
-| `GET` | `/_matrix/client/v1/room_summary/{roomIdOrAlias}` | `getRoomSummary` | access token, optional | - | 200, 401, 404 |
+| `GET` | `/_matrix/client/v1/room_summary/{roomIdOrAlias}` | `getRoomSummary` | signed request | - | 200, 404 |
 | `POST` | `/_matrix/client/v3/refresh` | `refresh` | none | required application/json | 200, 401, 429 |
 
 ## User data
@@ -492,7 +492,7 @@ In each case below the spec leaves the choice to the server; the owner decided t
 - **`POST /account/password` deletes pushers of revoked devices.** With `logout_devices` true (the default), the pushers set (`POST /pushers/set`) with the access token of a device whose tokens the change revokes are deleted. The requesting device's pushers, and pushers with no recorded device, stay. A pusher records its device in `pushers.device_id`.
 - **A failed UIA stage carries `errcode` and `error`.** A wrong account password on `POST /account/password`, `/account/deactivate`, `/account/3pid/add`, `/keys/device_signing/upload`, `DELETE /devices/{deviceId}` and `POST /delete_devices` is `401` with the `flows`, `params` and `session` of the challenge plus `errcode: M_FORBIDDEN` and `error`; a request making no attempt gets the bare challenge. `DELETE /devices/{deviceId}` does not compare the user a password `identifier` names with the token's user: the password checked is the token owner's (the spec states no status for a mismatch).
 - **`POST /logout` and `POST /logout/all` delete the device(s).** `GET /devices` no longer lists the logged-out device (all of the user's devices after `/logout/all`). A request with no token is `401 M_MISSING_TOKEN`.
-- **`POST /register`.** `username` is checked (`400 M_INVALID_USERNAME`, `M_USER_IN_USE`, `M_EXCLUSIVE`) before UIA starts, as the spec requires; `m.login.dummy` completes only within a session the server issued (without `session`, `401` with the challenge).
+- **`POST /register`.** `username` is checked (`400 M_INVALID_USERNAME`, `M_USER_IN_USE`, `M_EXCLUSIVE`) before UIA starts, as the spec requires; a single-shot `m.login.dummy` request with no `session` completes, and a `session` the server did not issue is answered `401` with the challenge (ADR-0276).
 - **`M_NOT_JSON` and `405 M_UNRECOGNIZED`.** A request body that is not valid JSON (including invalid UTF-8) is `400 M_NOT_JSON` on every client endpoint. A served path used with a method it does not serve is `405 M_UNRECOGNIZED` (with `Allow` for fixed paths) on the client, media, key and federation surfaces; an unserved path stays `404 M_UNRECOGNIZED`. See [http-transport.md](http-transport.md).
 
 ## Remote profiles and redactions of unknown events (Complement run 10)

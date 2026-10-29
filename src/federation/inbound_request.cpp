@@ -2952,8 +2952,11 @@ namespace
                                {"status", "404",                                                false},
                                {"reason", route_match.reason,                                   false}
             });
+            // Spec (M_UNRECOGNIZED): an endpoint this server does not implement is 404
+            // M_UNRECOGNIZED, as the client API answers; standard_error_body's status default
+            // (M_NOT_FOUND) is for a resource that does not exist.
             return {
-                .accepted = false, .error = {404U, route_match.reason}
+                .accepted = false, .error = {404U, homeserver::matrix_error("M_UNRECOGNIZED", route_match.reason)}
             };
         }
         // #323 / ADR-0110: when the main process has already verified the X-Matrix
@@ -3334,9 +3337,8 @@ auto verify_inbound_federation_signature(FederationRuntimeState& runtime, Signed
         auto const rejection = check_inbound_request_signature(runtime, request, resolution.remote);
         if (rejection.has_value())
         {
-            return {.accepted = false,
-                    .identity = VerifiedFederationIdentity{},
-                    .error = standard_error_body(*rejection)};
+            return {
+                .accepted = false, .identity = VerifiedFederationIdentity{}, .error = standard_error_body(*rejection)};
         }
     }
     return {

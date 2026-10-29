@@ -260,6 +260,36 @@ SCENARIO("Logging out deletes the device", "[conformance][client-server][auth][l
                 REQUIRE(send(started.runtime, "GET", "/_matrix/client/v3/devices", second_token).status == 401U);
             }
         }
+        WHEN("the second device holds another access token, and one of them logs out")
+        {
+            auto const other_token_for_device = login_again(started.runtime, "alice", "DEVICE2");
+            REQUIRE(send(started.runtime, "POST", "/_matrix/client/v3/logout", second_token).status == 200U);
+
+            THEN("no token of the deleted device still authenticates")
+            {
+                // Spec MUST: deleting a device "invalidates any access token associated with it"
+                // (DELETE /devices/{deviceId}); logout deletes the device.
+                REQUIRE(send(started.runtime, "GET", "/_matrix/client/v3/devices", other_token_for_device).status ==
+                        401U);
+            }
+        }
+        WHEN("the second device has published its device keys and logs out")
+        {
+            auto const keys =
+                R"({"device_keys":{"user_id":"@alice:example.org","device_id":"DEVICE2","algorithms":["m.olm.v1.curve25519-aes-sha2","m.megolm.v1.aes-sha2"],"keys":{"curve25519:DEVICE2":"curve-value","ed25519:DEVICE2":"ed-value"}}})";
+            REQUIRE(send(started.runtime, "POST", "/_matrix/client/v3/keys/upload", second_token, keys).status == 200U);
+            REQUIRE(send(started.runtime, "POST", "/_matrix/client/v3/logout", second_token).status == 200U);
+            auto const query = send(started.runtime, "POST", "/_matrix/client/v3/keys/query", first_token,
+                                    R"({"device_keys":{"@alice:example.org":[]}})");
+
+            THEN("its keys are no longer published")
+            {
+                // Spec MUST: /keys/query returns "the current devices and identity keys" of the user; a
+                // deleted device is not one, so others stop encrypting to it.
+                REQUIRE(query.status == 200U);
+                REQUIRE(query.body.find("DEVICE2") == std::string::npos);
+            }
+        }
         WHEN("the user logs out of every device")
         {
             REQUIRE(send(started.runtime, "POST", "/_matrix/client/v3/logout/all", first_token).status == 200U);

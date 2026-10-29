@@ -1842,9 +1842,18 @@ auto logout_local_user(HomeserverRuntime& runtime, std::string_view access_token
     {
         return make_operation_result(false, {}, "token revocation persistence failed", 500U);
     }
+    // The device is deleted next, and deleting a device "invalidates any access token associated
+    // with it" (DELETE /devices/{deviceId}): another login under the same device ID holds a token of
+    // its own, which must not outlive the device.
+    std::ignore = database::revoke_access_tokens_for_device(runtime.database.persistent_store, user_id, device_id);
+    if (!device_tokens_are_revoked(runtime.database.persistent_store, user_id, device_id))
+    {
+        return make_operation_result(false, {}, "token revocation persistence failed", 500U);
+    }
     for (auto& session : runtime.database.sessions)
     {
-        if (matches_any_token_hash(session.access_token_hash, token_hashes))
+        if (matches_any_token_hash(session.access_token_hash, token_hashes) ||
+            (session.user_id == user_id && session.device_id == device_id))
         {
             session.revoked = true;
         }
