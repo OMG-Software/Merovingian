@@ -10,8 +10,10 @@ The four minor SonarQube Cloud findings left over from the 0.12.61 triage.
   IPv4 host is left alone, and bracketed hosts that are not IPv6 addresses are refused.
 - The three `cpp:S5018` findings (no `noexcept` move constructor on `AppserviceEphemeralQueue`,
   `LocalDatabase` and `FederationRuntimeState`) are false positives for this code: libstdc++'s
-  `std::deque` move constructor can throw, and none of these structs is held where that costs
-  anything. Recorded in ADR-0268, with a pointer on each struct.
+  `std::deque` move constructor can throw, none of these structs is a container element, and the
+  one `noexcept` path that moves them (`HomeserverRuntime`'s move operations, at start-up) already
+  allocates and already ends the process on memory exhaustion. Recorded in ADR-0268, with a pointer
+  on each struct.
 
 ## 0.12.61
 

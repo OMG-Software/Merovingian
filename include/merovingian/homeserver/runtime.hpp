@@ -156,7 +156,7 @@ struct AppserviceEphemeralItem final
     std::string json{}; // one serialized client-format event, `room_id` included when room-scoped
 };
 
-// Its implicit move can throw under libstdc++ (std::deque member); nothing relocates it (ADR-0268).
+// Its implicit move can throw under libstdc++ (std::deque member); see ADR-0268 before changing that.
 struct AppserviceEphemeralQueue final
 {
     std::deque<AppserviceEphemeralItem> items{};
@@ -187,7 +187,7 @@ struct LocalRoom final
     bool directory_public{false};
 };
 
-// Its implicit move can throw under libstdc++ (std::deque member); nothing relocates it (ADR-0268).
+// Its implicit move can throw under libstdc++ (std::deque member); see ADR-0268 before changing that.
 struct LocalDatabase final
 {
     bool opened{false};
