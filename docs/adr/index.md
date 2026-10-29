@@ -264,6 +264,7 @@
 * [0279 - A ban does not end this server's interest in PDUs about its banned user](0279-a-ban-does-not-end-interest-in-pdus-about-the-banned-user.md)
 * [0280 - Every federation error is a standard JSON error, and /send answers every PDU](0280-federation-errors-and-send-results-are-spec-shaped.md)
 * [0281 - Federation routes that name no room are served by main, not a worker snapshot](0281-federation-routes-without-a-room-are-served-by-main.md)
+* [0282 - Redact, never drop, room events a requesting server could not see](0282-redact-never-drop-events-a-requesting-server-could-not-see.md)
 
 ## Proposed Records
 

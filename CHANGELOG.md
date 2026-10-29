@@ -76,6 +76,13 @@ Fixes for the failures Complement run 10 found against the signed 0.12.62 releas
   applied for a pending invite this server holds no room state for (ADR-0278).
 - **An unban of a local user was dropped,** so the user could never be invited back. Membership PDUs
   about a local user with any membership row now reach the receipt checks (ADR-0279).
+- **SECURITY: federation reads sent room history a server could not see.** `/event`, `/backfill` and
+  `/get_missing_events` now send an event in full only when a user of the requesting server could see it,
+  judged by the room's history visibility and memberships in the state recorded for that event:
+  `world_readable` and `shared` always, `invited` when one of its users was invited or joined, `joined`
+  when one was joined. Any other event is sent as the room version's redaction, its signatures, hashes and
+  graph links kept, so the receiver's graph stays whole. `/state`, `/state_ids` and `/event_auth` are
+  unchanged: state is the room's authorisation record (ADR-0282, owner decision 2026-10-29).
 - **ADDED:** `GET /_matrix/federation/v1/event_auth/{roomId}/{eventId}` (the event's auth chain,
   bounded, behind the origin-in-room gate) and `GET /_matrix/federation/v1/media/thumbnail/{mediaId}`
   (multipart/mixed, local media only).
