@@ -204,7 +204,8 @@ SCENARIO("backfill PDU collection includes requested events and predecessors",
 
         WHEN("backfill starts at the message event")
         {
-            auto const pdus = merovingian::federation::build_backfill_pdus(store, room, {"$message"}, 10U);
+            auto const pdus =
+                merovingian::federation::build_backfill_pdus(store, room, {"$message"}, 10U, requesting_server);
 
             THEN("the returned PDUs include the requested event and its predecessors")
             {
