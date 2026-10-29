@@ -15582,9 +15582,10 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             merovingian::homeserver::wire_federation_callbacks(rt.homeserver);
             if (rt.homeserver.dispatch_worker != nullptr)
             {
-                auto transaction =
-                    federation::make_outbound_invite(invitee_server, rt.homeserver.config.server().server_name, room_id,
-                                                     invite_state->event_id, room_version, *invite_json, {});
+                auto transaction = federation::make_outbound_invite(
+                    invitee_server, rt.homeserver.config.server().server_name, room_id, invite_state->event_id,
+                    room_version, *invite_json,
+                    merovingian::homeserver::stripped_state_pdus(rt.homeserver.database.persistent_store, room_id));
                 transaction.transaction_id = federation::make_federation_transaction_id();
                 std::ignore = rt.homeserver.dispatch_worker->enqueue(std::move(transaction));
             }
@@ -16941,7 +16942,8 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                         {
                             auto transaction = federation::make_outbound_invite(
                                 invitee_server, rt.homeserver.config.server().server_name, room_id,
-                                invite_state->event_id, room_version, *invite_json, {});
+                                invite_state->event_id, room_version, *invite_json,
+                                merovingian::homeserver::stripped_state_pdus(store, room_id));
                             transaction.transaction_id = federation::make_federation_transaction_id();
                             std::ignore = rt.homeserver.dispatch_worker->enqueue(std::move(transaction));
                         }

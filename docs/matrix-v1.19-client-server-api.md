@@ -296,6 +296,15 @@ Implementation note (Complement run 10):
   `forwarded_count`. Keys equal on all three are not ordered by the spec; the one just uploaded replaces. The response
   is 200 either way.
 
+Implementation note (run 10, 0.12.63): `invite_room_state` (an invite sent to another server) and
+`knock_room_state` (a `send_knock` answer from this server) hold the room's stored signed PDUs of the
+stripped-state types, create event first, as spec v1.16 requires; the client's `invite_state` and
+`knock_state` are still stripped events. An inbound room version 12+ invite whose `invite_room_state` has no
+create event, an unsigned or stripped entry, or an entry of another room is refused with 400
+`M_INVALID_PARAM`; versions 1 to 11 are accepted as sent. `POST /rooms/{roomId}/leave` on an invite from
+another server is a `make_leave` / `send_leave` to the inviter's server (the invite is ended locally when that
+server no longer has the room), and `POST /join/{roomId}` with no server named tries the inviter's server.
+
 ## Room participation
 
 | Method | Path | Operation ID | Auth | Request body | Responses |

@@ -216,8 +216,8 @@ struct SignedInvite final
 };
 
 [[nodiscard]] auto make_signed_invite(std::string const& room_id, std::string const& sender,
-                                      std::string const& state_key, std::string const& room_version = "12")
-    -> SignedInvite
+                                      std::string const& state_key, std::string const& room_version = "10",
+                                      std::string const& invite_room_state = "[]") -> SignedInvite
 {
     auto const unsigned_json = std::string{"{\"type\":\"m.room.member\",\"room_id\":\""} + room_id +
                                "\",\"sender\":\"" + sender + "\",\"state_key\":\"" + state_key +
@@ -230,7 +230,8 @@ struct SignedInvite final
     auto const* policy = merovingian::rooms::find_room_version_policy(room_version);
     REQUIRE(policy != nullptr);
     auto const id = merovingian::events::make_reference_hash_event_id(parsed.value, *policy);
-    return {"{\"room_version\":\"" + room_version + "\",\"event\":" + signed_event + ",\"invite_room_state\":[]}",
+    return {"{\"room_version\":\"" + room_version + "\",\"event\":" + signed_event +
+                ",\"invite_room_state\":" + invite_room_state + "}",
             id.event_id};
 }
 
@@ -2854,9 +2855,22 @@ struct HostedRoomFixture final
         REQUIRE(join_response.status == 200U);
     }
 
+    // A version 12 invite carries the room's signed create event and other stripped state as full PDUs
+    // (spec v1.16, PUT /v2/invite); the room is hosted here, so they are this room's stored events.
+    [[nodiscard]] auto signed_invite_from(std::string const& sender) const -> SignedInvite
+    {
+        auto state = std::string{"["};
+        for (auto const& entry :
+             merovingian::homeserver::stripped_state_pdus(started.runtime.database.persistent_store, room_id))
+        {
+            state += (state.size() == 1U ? "" : ",") + entry;
+        }
+        return make_signed_invite(room_id, sender, victim_id, "12", state + "]");
+    }
+
     [[nodiscard]] auto invite_victim() -> merovingian::federation::FederationResponse
     {
-        auto const invite = make_signed_invite(room_id, carol_id, victim_id);
+        auto const invite = signed_invite_from(carol_id);
         return merovingian::federation::handle_inbound_federation_request(
             started.runtime.federation,
             signed_put("/_matrix/federation/v2/invite/" + room_id + "/" + invite.event_id, invite.body));
@@ -2934,7 +2948,7 @@ SCENARIO("A remote invite for a room hosted here is authorised against the room'
         auto fixture = HostedRoomFixture{};
         auto const state_before = fixture.state_snapshot();
         auto const stranger = std::string{"@stranger:"} + remote_origin;
-        auto const invite = make_signed_invite(fixture.room_id, stranger, fixture.victim_id);
+        auto const invite = fixture.signed_invite_from(stranger);
 
         WHEN("the remote server sends an invite signed by that non-member")
         {

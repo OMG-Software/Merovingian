@@ -275,7 +275,7 @@ struct SignedMemberPdu final
 // Build a properly signed v2 invite body wrapping a signed m.room.member
 // invite event from the remote server.
 [[nodiscard]] auto make_signed_v2_invite_body(std::string const& room_id_arg, std::string const& sender,
-                                              std::string const& state_key, std::string_view room_ver = "12")
+                                              std::string const& state_key, std::string_view room_ver = "10")
     -> std::string
 {
     auto const unsigned_json = std::string{"{\"type\":\"m.room.member\",\"room_id\":\""} + room_id_arg +
@@ -290,7 +290,7 @@ struct SignedMemberPdu final
 
 // The event ID of the event carried in a v2 invite body. The {eventId} in the
 // invite URL must equal it (audit FED-5): "$" + the reference hash of the event.
-[[nodiscard]] auto v2_invite_body_event_id(std::string const& body, std::string_view room_ver = "12") -> std::string
+[[nodiscard]] auto v2_invite_body_event_id(std::string const& body, std::string_view room_ver = "10") -> std::string
 {
     auto const parsed = merovingian::canonicaljson::parse_lossless(body);
     auto const* root = std::get_if<merovingian::canonicaljson::Object>(&parsed.value.storage());
@@ -744,7 +744,7 @@ SCENARIO("invite v2 into a room of an unsupported version is refused as incompat
             // one this server does not support.
             auto body = make_signed_v2_invite_body(std::string{room_id}, "@remote:remote.example.org",
                                                    "@local:local.example.org");
-            auto const declared = std::string{R"({"room_version":"12")"};
+            auto const declared = std::string{R"({"room_version":"10")"};
             REQUIRE(body.starts_with(declared));
             body.replace(0U, declared.size(), std::string{R"({"room_version":")"} + version + "\"");
 
@@ -793,7 +793,7 @@ SCENARIO("invite v1 processes inbound invite and returns signed event", "[federa
         auto runtime = merovingian::federation::make_federation_runtime_state(runtime_config());
         merovingian::federation::upsert_remote(runtime, remote_for(origin, key_id, key_seed));
         runtime.room_version_resolver = [](std::string_view) {
-            return std::string{"12"};
+            return std::string{"10"};
         };
 
         auto invite_invoked = std::make_shared<bool>(false);

@@ -164,6 +164,19 @@ Federation is the highest-risk surface: **all input comes from untrusted remote 
    `ip_address_in_allowed_private_range`, which re-checks each range with
    `config::private_ip_range_is_allowable` so loopback and link-local can never open.
 
+14. **An invite's `invite_room_state` is validated for room versions 12 and up, and left alone below.**
+   Spec v1.19 (`PUT /v2/invite`): the list "MUST contain the `m.room.create` event" and every entry is a
+   full PDU of the room version, not a stripped event. `validate_invite_room_state`
+   (`invite_room_state.cpp`) refuses with 400 `M_INVALID_PARAM` a missing create event, an entry that is
+   not a version-formatted PDU, an entry in another room (a v12 create event has no `room_id`; its room is
+   `!` plus its reference hash), an entry whose signature does not verify, or more than
+   `max_invite_room_state_entries` (16) entries. Every entry's signature goes through the same admitted
+   key lookup as the invite's own (rule 3); a lookup refused for local load is a 503, not a verdict.
+   `handle_invite` calls it, and so does main's `invite_ingest` relay, because the stripped state travels in
+   the relayed frame. Room versions 1 through 11 stay accepted as they arrive (spec: validation is a MAY
+   there, and servers still migrating send stripped entries). Our own outbound invites and `send_knock`
+   answers fill the list from `homeserver::stripped_state_pdus`.
+
 ## Key files
 
 | File | Responsibility |
@@ -173,6 +186,7 @@ Federation is the highest-risk surface: **all input comes from untrusted remote 
 | `outbound_transaction.cpp` | Batches local events and delivers them to remote servers |
 | `server_discovery.cpp` | Resolves `server_name` → host:port per SS API §Resolving Server Names |
 | `remote_key_cache.cpp` | Caches remote server signing keys with validity TTL |
+| `invite_room_state.cpp` | `validate_invite_room_state`: the `invite_room_state` checks of an inbound v12+ invite (rule 14) |
 | `membership_endpoints.cpp` | /make_join, /send_join, /make_leave, /send_leave (a refused template carries `error_status`, e.g. 403 `M_FORBIDDEN` for a restricted room) |
 | `key_query.cpp` | E2EE key responses served over federation, key EDU contents, filtering remote key-query responses |
 | `key_signatures.cpp` | The one place uploaded key signatures are merged into published keys (visibility per ADR-0060) |
