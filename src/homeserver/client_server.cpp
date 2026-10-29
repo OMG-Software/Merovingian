@@ -11454,12 +11454,13 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
     }
     // Spec M_NOT_JSON: "Request did not contain valid JSON." A body that is not JSON (including
     // invalid UTF-8 in a string) is refused here, for every endpoint at once, so no handler
-    // answers it with the M_BAD_JSON that is for JSON malformed in some other way. Media
-    // content is bytes, not JSON, and a GET carries no body the endpoints read. After the rate
+    // answers it with the M_BAD_JSON that is for JSON malformed in some other way. Only the
+    // Client-Server API is judged: media content is bytes, the operator surface
+    // (/_merovingian/admin) takes plain text, and a GET carries no body. After the rate
     // limit, so the parse is metered like any other work a request causes.
     if (auto const path_only = std::string_view{req.target}.substr(0U, std::string_view{req.target}.find('?'));
         !req.body.empty() && req.method != "GET" && req.method != "HEAD" && !is_media_upload &&
-        !starts_with(path_only, "/_matrix/media/") && !starts_with(path_only, "/_matrix/client/v1/media/") &&
+        starts_with(path_only, "/_matrix/client/") && !starts_with(path_only, "/_matrix/client/v1/media/") &&
         body_is_not_json(req.body))
     {
         return dispatch_err(req, rt, 400U, "M_NOT_JSON", "the request body is not valid JSON");

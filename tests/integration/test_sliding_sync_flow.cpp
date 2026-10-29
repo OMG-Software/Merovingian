@@ -1427,13 +1427,15 @@ SCENARIO("simplified_msc3575 sync rejects a malformed JSON body with 400", "[hom
                 rt, {"POST", "/_matrix/client/unstable/org.matrix.simplified_msc3575/sync", token, "not-valid-json{{{"},
                 /*can_wait=*/false);
 
-            THEN("the response is 400 M_BAD_JSON")
+            THEN("the response is 400 M_NOT_JSON")
             {
                 REQUIRE(result.response.status == 400U);
                 auto const obj = parse_object(result.response.body);
                 auto const* errcode = string_member(obj, "errcode");
                 REQUIRE(errcode != nullptr);
-                REQUIRE(*errcode == "M_BAD_JSON");
+                // Spec (CS API "Standard error response", v1.19): "`M_NOT_JSON`: Request did not
+                // contain valid JSON." The body is text that is not JSON.
+                REQUIRE(*errcode == "M_NOT_JSON");
             }
         }
     }

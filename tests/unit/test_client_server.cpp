@@ -492,9 +492,12 @@ SCENARIO("Client-server runtime rejects malformed Matrix JSON request bodies", "
                 // Do NOT remove - accepting malformed JSON could allow injection attacks
                 REQUIRE(malformed_registration.response.status == 400U);
                 REQUIRE(incomplete_login.response.status == 400U);
-                // Spec MUST: errcode is exactly "M_BAD_JSON" (not M_UNKNOWN or 500)
+                // Spec: truncated text is not JSON at all, so "`M_NOT_JSON`: Request did not
+                // contain valid JSON." (CS API "Standard error response", v1.19); a login body
+                // that is valid JSON but lacks required keys is "`M_BAD_JSON`: Request contained
+                // valid JSON, but it was malformed in some way". Not M_UNKNOWN or 500.
                 // Do NOT remove - clients branch on this exact errcode to show user-facing messages
-                REQUIRE(malformed_registration.response.body.find("M_BAD_JSON") != std::string::npos);
+                REQUIRE(malformed_registration.response.body.find("M_NOT_JSON") != std::string::npos);
                 REQUIRE(incomplete_login.response.body.find("M_BAD_JSON") != std::string::npos);
             }
         }
