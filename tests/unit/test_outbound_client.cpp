@@ -489,3 +489,59 @@ SCENARIO("Outbound requests refuse header names and values that are not valid HT
         }
     }
 }
+
+SCENARIO("Parsing an outbound URL with an IPv6 literal strips the brackets from the host only", "[http][outbound][url]")
+{
+    GIVEN("an HTTPS URL whose host is a bracketed IPv6 literal")
+    {
+        auto const url = std::string{"https://[2001:db8::1]:8448/_matrix/key/v2/server?minimum_valid_until_ts=1"};
+
+        WHEN("it is parsed")
+        {
+            auto const parsed = merovingian::http::parse_outbound_url(url);
+
+            THEN("the host is the bare address and the canonical URL keeps the brackets")
+            {
+                REQUIRE(parsed.has_value());
+                REQUIRE(parsed->ipv6_literal);
+                REQUIRE(parsed->host == "2001:db8::1");
+                REQUIRE(parsed->port == 8448U);
+                REQUIRE(parsed->path == "/_matrix/key/v2/server");
+                REQUIRE(parsed->url.find("[2001:db8::1]") != std::string::npos);
+            }
+        }
+    }
+
+    GIVEN("an HTTPS URL whose host is an IPv4 address")
+    {
+        WHEN("it is parsed")
+        {
+            auto const parsed = merovingian::http::parse_outbound_url("https://203.0.113.5:8448/");
+
+            THEN("the host is unchanged and is not marked as an IPv6 literal")
+            {
+                REQUIRE(parsed.has_value());
+                REQUIRE_FALSE(parsed->ipv6_literal);
+                REQUIRE(parsed->host == "203.0.113.5");
+            }
+        }
+    }
+
+    GIVEN("bracketed hosts that are not valid IPv6 addresses")
+    {
+        auto const urls =
+            std::vector<std::string>{"https://[2001:db8::zz]:8448/", "https://[203.0.113.5]:8448/", "https://[]:8448/"};
+
+        WHEN("each is parsed")
+        {
+            THEN("every one is refused")
+            {
+                for (auto const& candidate : urls)
+                {
+                    INFO(candidate);
+                    REQUIRE_FALSE(merovingian::http::parse_outbound_url(candidate).has_value());
+                }
+            }
+        }
+    }
+}
