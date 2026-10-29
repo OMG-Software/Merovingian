@@ -433,6 +433,29 @@ namespace
         return make_operation_result(false, {}, "media not found", 404U);
     }
 
+    // The freeze (ADR-0068) on the deprecated /_matrix/media/v3 routes, for
+    // remote media. The spec counts media the server "had to re-download"
+    // during the freeze as media from after the freeze, which "SHOULD only be accessible via the
+    // new, authenticated, endpoints". So these routes serve a remote copy only
+    // when it was cached before the freeze, and never fetch one: the fetch
+    // would itself make it post-freeze media.
+    [[nodiscard]] auto legacy_remote_media_refusal(HomeserverRuntime& runtime, std::string_view origin_server,
+                                                   std::string_view media_id) -> std::optional<OperationResult>
+    {
+        auto const* cached = media::find_cached_remote_media(runtime.media_repository, origin_server, media_id,
+                                                             media::remote_media_cache_now_ms());
+        if (cached != nullptr && cached->legacy_endpoint_visible)
+        {
+            return std::nullopt;
+        }
+        log_diagnostic("remote_fetch.legacy_frozen", {
+                                                         {"origin_server", std::string{origin_server},           false},
+                                                         {"media_id",      std::string{media_id},                false},
+                                                         {"cached",        cached != nullptr ? "true" : "false", false}
+        });
+        return make_operation_result(false, {}, "media not found", 404U);
+    }
+
     // The fetch's shared deadline (ADR-0079) ran out. 502, like every other
     // failure to obtain the remote bytes.
     [[nodiscard]] auto remote_media_deadline_exceeded(HomeserverRuntime& runtime, std::string_view origin_server,
@@ -1769,6 +1792,13 @@ namespace
         {
             return std::move(*refusal);
         }
+        if (legacy_endpoint)
+        {
+            if (auto frozen = legacy_remote_media_refusal(runtime, server_name, media_id); frozen.has_value())
+            {
+                return std::move(*frozen);
+            }
+        }
     }
     auto const policy = media_policy_decision(runtime, media_id);
     if (!policy.allowed)
@@ -1872,6 +1902,13 @@ namespace
         if (auto refusal = remote_media_refusal(runtime, server_name, media_id, remote); refusal.has_value())
         {
             return std::move(*refusal);
+        }
+        if (legacy_endpoint)
+        {
+            if (auto frozen = legacy_remote_media_refusal(runtime, server_name, media_id); frozen.has_value())
+            {
+                return std::move(*frozen);
+            }
         }
     }
     auto const policy = media_policy_decision(runtime, media_id);

@@ -324,6 +324,105 @@ SCENARIO("GET /media/v3/download/{serverName}/{mediaId}/{fileName} names pre-fre
 }
 
 // Spec: Matrix Client-Server API v1.19
+// Endpoint / Section: Content repository (the freeze of the deprecated media endpoints)
+// URL: ../../docs/matrix-v1.19-spec/client-server-api.md#content-repository
+//
+// Summary: media uploaded after the freeze "SHOULD only be accessible via the
+// new, authenticated, endpoints", and remote media the server "had to
+// re-download" during the freeze counts as media from after the freeze (ADR-0068). So
+// the deprecated routes serve a remote copy only when it was cached before the
+// freeze, and never fetch one: the fetch would itself make it post-freeze media.
+SCENARIO("The deprecated media routes serve only remote media cached before the freeze, and never fetch",
+         "[conformance][client-server][media][freeze]")
+{
+    GIVEN("a server that fetches remote media, holding a copy of remote.example.org's media cached during the freeze")
+    {
+        auto config = content_config();
+        config.security().media.remote_fetch_enabled = true;
+        config.security().media.remote_fetch_media_policy = "allow";
+        auto started = merovingian::homeserver::start_client_server(std::move(config));
+        // Fixture: the server starts.
+        REQUIRE(started.started);
+        auto const token = login(started.runtime, "carol");
+        auto const local_id = upload(started.runtime, token, "/_matrix/client/v1/media/upload");
+        auto& repository = started.runtime.homeserver.media_repository;
+        auto const record = std::ranges::find_if(repository.records, [&local_id](auto const& current) {
+            return current.media_id == local_id;
+        });
+        // Fixture: the stored copy exists, so it can stand for a cached remote file.
+        REQUIRE(record != repository.records.end());
+        record->from_remote_fetch = true;
+        auto const now = merovingian::media::remote_media_cache_now_ms();
+        repository.remote_media_cache.push_back(
+            {"remote.example.org", "cachedRemote", local_id, now + 3'600'000U, now});
+
+        WHEN("the cached remote media is downloaded or thumbnailed by the deprecated routes")
+        {
+            auto const download =
+                get(started.runtime, {}, "/_matrix/media/v3/download/remote.example.org/cachedRemote");
+            auto const thumbnail = get(started.runtime, {},
+                                       "/_matrix/media/v3/thumbnail/remote.example.org/cachedRemote"
+                                       "?width=32&height=32&method=scale");
+
+            THEN("neither serves it")
+            {
+                // Spec SHOULD: media re-downloaded during the freeze is new, so only the authenticated endpoints serve
+                // it.
+                REQUIRE(download.response.status == 404U);
+                REQUIRE(errcode_of(download) == "M_NOT_FOUND");
+                REQUIRE(thumbnail.response.status == 404U);
+                REQUIRE(errcode_of(thumbnail) == "M_NOT_FOUND");
+            }
+        }
+
+        WHEN("remote media this server does not hold is asked for by the deprecated download route")
+        {
+            auto const response = get(started.runtime, {}, "/_matrix/media/v3/download/remote.example.org/notCached");
+
+            THEN("it is refused at once, without fetching it")
+            {
+                // Spec SHOULD: a fetch now would make it post-freeze media, which the deprecated endpoints do not
+                // serve.
+                REQUIRE(response.response.status == 404U);
+                REQUIRE(errcode_of(response) == "M_NOT_FOUND");
+                REQUIRE(repository.remote_media_cache.size() == 1U);
+            }
+        }
+
+        WHEN("the cached remote media is downloaded by the authenticated route")
+        {
+            auto const response =
+                get(started.runtime, token, "/_matrix/client/v1/media/download/remote.example.org/cachedRemote");
+
+            THEN("it is served")
+            {
+                // Spec SHOULD: post-freeze media stays accessible via the authenticated endpoints.
+                REQUIRE(response.response.status == 200U);
+                REQUIRE(response.response.body == png_bytes);
+            }
+        }
+
+        AND_GIVEN("the copy was cached before the freeze")
+        {
+            record->legacy_endpoint_visible = true;
+
+            WHEN("it is downloaded by the deprecated route")
+            {
+                auto const response =
+                    get(started.runtime, {}, "/_matrix/media/v3/download/remote.example.org/cachedRemote");
+
+                THEN("it is served there, like local media uploaded before the freeze")
+                {
+                    // Spec SHOULD: media from before the freeze remains accessible via the deprecated endpoints.
+                    REQUIRE(response.response.status == 200U);
+                    REQUIRE(response.response.body == png_bytes);
+                }
+            }
+        }
+    }
+}
+
+// Spec: Matrix Client-Server API v1.19
 // Endpoint / Section: GET /_matrix/client/v1/media/download/{serverName}/{mediaId}, 200 response headers
 // URL: ../../docs/matrix-v1.19-spec/client-server-api.md#get_matrixclientv1mediadownloadservernamemediaid
 //

@@ -1,3 +1,27 @@
+## 0.12.63
+
+Fixes for the failures Complement run 10 found against the signed 0.12.62 release package.
+
+### Complement
+
+- `skip-list.toml` gains 20 entries checked against the pinned spec. Five push-rule tests expect
+  `dont_notify` back, which the spec says homeservers MUST strip (`spec`). Four tests call
+  `/_matrix/client/r0` paths v1.19 does not define (`non-spec`). One creates a v2 room (`room-version`).
+  Ten assert Synapse behaviour the spec leaves to the server, and the owner kept this server's
+  behaviour for them (`non-spec`): downcasing a requested username, deduplicating identical state,
+  copying extra `/join` body keys into the event, a default display name, and the alias gate of
+  ADR-0127 with its untouched canonical alias on delete.
+
+### Fixed
+
+- **The legacy media endpoints served remote media fetched during the freeze.**
+  `GET /_matrix/media/v3/download` and `/thumbnail` fetched remote media on demand and served it,
+  although the spec counts media the server "had to re-download" as new media, which SHOULD only
+  be served by the authenticated endpoints (ADR-0068 froze only local uploads). The legacy routes
+  now serve a remote copy only when it was cached before the freeze, and never fetch. Complement's
+  `TestRemotePngThumbnail/test_/_matrix/media/v3_endpoint` had started to pass for this reason once
+  0.12.60 turned remote fetching on in the Complement config; its expect-fail entry stays.
+
 ## 0.12.62
 
 The four minor SonarQube Cloud findings left over from the 0.12.61 triage.

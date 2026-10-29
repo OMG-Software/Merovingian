@@ -226,6 +226,15 @@ flag on every restart; a record without an explicit flag defaults to private.
 See
 [ADR-0068](adr/0068-random-media-ids-and-legacy-endpoint-freeze.md).
 
+Remote media is frozen the same way. The spec counts media the server "had to
+re-download" during the freeze as new media, so a remote copy fetched now is
+stored with `legacy_endpoint_visible = false` like an upload. The legacy routes
+serve a remote file only when its cached copy predates the freeze, and they
+never fetch one: an uncached remote file is 404 `M_NOT_FOUND` there at once,
+before any discovery or outbound call (`legacy_remote_media_refusal`,
+logged as `remote_fetch.legacy_frozen`). The authenticated routes fetch and
+serve it as before.
+
 ## Encrypted media is never scannable
 
 **AV scanning cannot inspect the content of media in encrypted rooms, under
