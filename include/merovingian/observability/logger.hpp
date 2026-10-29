@@ -923,12 +923,6 @@ inline auto log_diagnostic_audit(std::string_view logger, std::string_view event
 
 } // namespace merovingian::observability
 
-#define LOG_FUNCTION_TRACE                                                                                             \
-    auto merovingian_function_trace_guard = ::merovingian::observability::FunctionTrace                                \
-    {                                                                                                                  \
-        __func__                                                                                                       \
-    }
-
 #define LOG_DEBUG(message) ::merovingian::observability::SingleLog::instance().debug(__func__, message)
 
 #define LOG_INFO(message) ::merovingian::observability::SingleLog::instance().info(__func__, message)

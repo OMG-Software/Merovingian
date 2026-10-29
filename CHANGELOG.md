@@ -19,7 +19,8 @@ the code (triaged 2026-10-29: 161 open, 30 confirmed, 4 minor, 127 false positiv
   `send_join` key resolution both run through `run_bounded_parallel`, which joins every task and
   then rethrows the first failure; the make_join race holds its slot in a `SemaphorePermit`
   (ADR-0267).
-- Removed `observability::FunctionTrace`. Nothing used it, and its destructor could throw.
+- Removed `observability::FunctionTrace` and its `LOG_FUNCTION_TRACE` macro. Nothing used them, and
+  the destructor could throw.
 
 ### CI
 
@@ -28,7 +29,8 @@ the code (triaged 2026-10-29: 161 open, 30 confirmed, 4 minor, 127 false positiv
   `crazy-max/ghaction-import-gpg`, `hendrikmuhs/ccache-action`, `softprops/action-gh-release` and the
   `vmactions` BSD VMs (27 uses). A moved tag can no longer run new code in jobs that hold the release
   signing key or tokens. `workflow-action-pinning-tooling` enforces the rule, and finds `uses`
-  however it is written in YAML (quoted key or value, flow mapping) (ADR-0266). The pin does not
+  however it is written in YAML (quoted key or value, flow mapping, a value on the next line or in a
+  block scalar) (ADR-0266). The pin does not
   cover what an action downloads at run time, such as the codecov CLI.
 
 ## 0.12.60
