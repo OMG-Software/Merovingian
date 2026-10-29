@@ -37,6 +37,7 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <algorithm>
 #include <array>
 #include <memory>
 #include <optional>
@@ -408,6 +409,59 @@ SCENARIO("Federation send transaction routes PDUs to the installed pdu_sink", "[
             {
                 // Spec: no PDUs → no sink invocations.
                 REQUIRE(*pdu_count == 0U);
+            }
+        }
+    }
+}
+
+// Spec: Matrix Server-Server API v1.19
+// Endpoint: PUT /_matrix/federation/v1/send/{txnId}
+// URL: ../../docs/matrix-v1.19-spec/server-server-api.md#put_matrixfederationv1sendtxnid
+//
+// "pdus: Required: The PDUs from the original transaction. The string key represents the ID of the
+// PDU (event) that was processed." and a PDU Processing Result with no `error` "can be considered
+// successfully handled", as in the spec's example `"$successful_event:example.org": {}`. So a PDU
+// that was accepted still has an entry, and the sender can tell it from one it never heard about.
+SCENARIO("Federation send transaction answers every PDU, an accepted one with an empty result",
+         "[federation][transaction][conformance][fed-endpoints]")
+{
+    GIVEN("a federation runtime whose pdu_sink accepts every PDU")
+    {
+        auto runtime = merovingian::federation::make_federation_runtime_state(runtime_config());
+        merovingian::federation::upsert_remote(runtime, remote_for_origin());
+        runtime.pdu_sink = []([[maybe_unused]] merovingian::federation::InboundPduEnvelope const& envelope)
+            -> merovingian::federation::PduIngestionResult {
+            return {merovingian::federation::PduIngestionStatus::accepted, {}, {}};
+        };
+
+        WHEN("a transaction with one PDU is sent")
+        {
+            auto const body = std::string{"{\"origin\":\"remote.example.org\","
+                                          "\"origin_server_ts\":1000,"
+                                          "\"pdus\":["} +
+                              minimal_pdu() + "]}";
+            auto const response = merovingian::federation::handle_inbound_federation_request(
+                runtime, signed_send_request("txn_every_pdu", body));
+
+            THEN("pdus holds one entry, an empty object (no error)")
+            {
+                REQUIRE(response.status == 200U);
+                auto const parsed = merovingian::canonicaljson::parse_lossless(response.body);
+                REQUIRE(parsed.error == merovingian::canonicaljson::ParseError::none);
+                auto const* root = std::get_if<merovingian::canonicaljson::Object>(&parsed.value.storage());
+                REQUIRE(root != nullptr);
+                auto const pdus = std::ranges::find_if(*root, [](auto const& member) {
+                    return member.key == "pdus";
+                });
+                REQUIRE(pdus != root->end());
+                auto const* results = std::get_if<merovingian::canonicaljson::Object>(&pdus->value->storage());
+                REQUIRE(results != nullptr);
+                // Spec: one entry per PDU of the transaction.
+                REQUIRE(results->size() == 1U);
+                auto const* result = std::get_if<merovingian::canonicaljson::Object>(&(*results)[0].value->storage());
+                REQUIRE(result != nullptr);
+                // Spec: "If no error is present, the PDU can be considered successfully handled."
+                REQUIRE(result->empty());
             }
         }
     }

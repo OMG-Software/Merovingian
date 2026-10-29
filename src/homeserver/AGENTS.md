@@ -120,7 +120,7 @@ blocking network calls".
 
 ## Client requests that call another server
 
-`publicRooms?server=` (GET and POST), a remote room-alias lookup, remote media download or
+`publicRooms?server=` (GET and POST), a remote room-alias lookup, a remote user's profile (`remote_profile_response`: relays only `displayname`/`avatar_url`), remote media download or
 thumbnail, and the `/thirdparty/*` lookups that call an appservice (ADR-0181) make this server
 call a peer it does not control, and the spec lets clients make them
 without authentication. `RuntimeLockRelease` frees the mutex, not the thread, so each holds one of
@@ -272,6 +272,9 @@ only endpoints the spec requires and the origin may be asked for:
 - `GET /event/{eventId}` for each named event the store lacks, and for every event a `/state_ids` snapshot names.
   `GET /event_auth` is the last resort for one event whose own auth events are not stored, never the first step: a
   peer need not serve it.
+- An event the origin returns from `/get_missing_events` that is over 65536 bytes, not canonical JSON or has a
+  `state_key` over 255 bytes (`returned_pdu_is_well_formed`) is dropped, and the recovery ends there: the same
+  history is not then fetched through `/event`, `/state_ids` or `/event_auth`.
 - A fetched PDU that cannot be placed yet goes into `HeldPdus` for that one recovery (bounded, in memory only, verified
   from scratch when placed). The state is asked at `state_snapshot_targets`, the nearest `prev_event` no held PDU can
   supply, never at a prev_event that was already fetched; held PDUs are placed oldest first afterwards.
@@ -382,7 +385,9 @@ local user's event) before storing it, and `compose_signed_event` puts `redacts`
 `install_redaction_reconciler` makes the persistent store call `reconcile_redactions_for_event` after every event it
 stores, so a new ingest path needs no extra call. It overwrites the target's JSON with the redacted form; do not add a
 copy of the original content anywhere. A suspended user may redact only their own events (the handler enforces it, the
-suspension gate lets the route through).
+suspension gate lets the route through). A target this server does not hold is not a 404 (the spec has none): the
+redaction is stored when the sender holds the room's `redact` level and is judged when the target arrives; below
+that level it is 403. A target held in another room is `target_unknown` (404).
 
 ## Errcodes the status cannot name (CSAZ-9)
 

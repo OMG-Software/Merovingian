@@ -15219,13 +15219,16 @@ SCENARIO("PUT /rooms/{roomId}/redact/{eventId}/{txnId} conformance")
                 started.runtime,
                 {"PUT", "/_matrix/client/v3/rooms/" + room_id + "/redact/$event_id/1", token, R"({"reason":"test"})"});
 
-            THEN("the server returns 404 M_NOT_FOUND")
+            THEN("the server returns 200 with an event_id: the room creator holds the redact level")
             {
-                REQUIRE(response.response.status == 404);
+                // Spec: PUT /redact defines only `200` ("An ID for the redaction event"), no 404. The
+                // event may be held by other servers, so a sender who may redact anyone's event is
+                // let through; this replaces an assertion of 404 M_NOT_FOUND, which the spec does not
+                // list. A sender below the redact level gets 403 (test_redaction_application_conformance.cpp).
+                REQUIRE(response.response.status == 200);
                 auto const body = parse_object(response.response.body);
-                auto const* err = string_member(body, "errcode");
-                REQUIRE(err != nullptr);
-                REQUIRE(*err == "M_NOT_FOUND");
+                auto const* event_id = string_member(body, "event_id");
+                REQUIRE(event_id != nullptr);
             }
         }
     }

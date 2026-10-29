@@ -14,6 +14,7 @@
 #include <chrono>
 #include <cstdint>
 #include <deque>
+#include <limits>
 #include <map>
 #include <optional>
 #include <string>
@@ -227,7 +228,9 @@ namespace
     // stored event are skipped rather than emitted, so callers never surface a
     // dangling ID for which no PDU body exists.
     [[nodiscard]] auto collect_auth_chain(database::PersistentStore const& store,
-                                          std::vector<std::string> const& seed_ids) -> std::vector<std::string>
+                                          std::vector<std::string> const& seed_ids,
+                                          std::size_t limit = std::numeric_limits<std::size_t>::max())
+        -> std::vector<std::string>
     {
         auto ordered = std::vector<std::string>{};
         auto seen = std::unordered_set<std::string>{};
@@ -239,7 +242,7 @@ namespace
                 queue.push_back(id);
             }
         }
-        while (!queue.empty())
+        while (!queue.empty() && ordered.size() <= limit)
         {
             auto const id = std::move(queue.front());
             queue.pop_front();
@@ -558,6 +561,60 @@ auto build_state_response(database::PersistentStore const& store, std::string_vi
                                                {"pdus",       std::to_string(pdu_count),        false},
                                                {"auth_chain", std::to_string(auth_chain_count), false}
     });
+    auto body = serialize(std::move(response));
+    return body.empty() ? not_found_result() : RoomReadResult{RoomReadStatus::ok, std::move(body)};
+}
+
+auto build_event_auth_response(database::PersistentStore const& store, std::string_view room_id,
+                               std::string_view event_id, std::string_view origin) -> RoomReadResult
+{
+    if (!origin_may_read_room(store, room_id, origin))
+    {
+        log_diagnostic("event_auth_query.forbidden",
+                       {
+                           {"room_id", std::string{room_id}, false},
+                           {"origin",  std::string{origin},  false}
+        });
+        return forbidden_result();
+    }
+    auto const* event = event_id.empty() ? nullptr : find_event(store, event_id);
+    if (event == nullptr || event->room_id != room_id)
+    {
+        return not_found_result();
+    }
+    // The chain is the closure of the event's auth events, not the event itself.
+    // The walk is bounded: a chain longer than the bound is cut at the bound
+    // (breadth first, so the events nearest the requested one come first) rather
+    // than letting one request read an unbounded part of the store.
+    auto chain = canonicaljson::Array{};
+    auto truncated = false;
+    for (auto const& auth_id : collect_auth_chain(store, event->auth_event_ids, max_event_auth_chain_events))
+    {
+        if (chain.size() >= max_event_auth_chain_events)
+        {
+            truncated = true;
+            break;
+        }
+        auto const* auth_event = find_event(store, auth_id);
+        if (auth_event == nullptr || auth_event->room_id != room_id || auth_event->json.empty())
+        {
+            continue;
+        }
+        if (auto value = parsed_value(auth_event->json); value.has_value())
+        {
+            chain.push_back(std::move(*value));
+        }
+    }
+    auto const chain_count = chain.size();
+    auto response = canonicaljson::Object{};
+    response.push_back(canonicaljson::make_member("auth_chain", canonicaljson::Value{std::move(chain)}));
+    log_diagnostic("event_auth_query.accepted",
+                   {
+                       {"room_id",    std::string{room_id},         false},
+                       {"auth_chain", std::to_string(chain_count),  false},
+                       {"truncated",  truncated ? "true" : "false", false}
+    },
+                   truncated ? observability::LogEventSeverity::warning : observability::LogEventSeverity::debug);
     auto body = serialize(std::move(response));
     return body.empty() ? not_found_result() : RoomReadResult{RoomReadStatus::ok, std::move(body)};
 }

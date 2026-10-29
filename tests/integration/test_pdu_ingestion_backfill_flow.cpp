@@ -2910,6 +2910,105 @@ SCENARIO("ingest_pdu_event does not authorise a PDU against the auth_events of a
     }
 }
 
+// Spec: Matrix Server-Server API v1.19
+// Endpoint / Section: POST /_matrix/federation/v1/get_missing_events/{roomId}; Client-Server API
+// "Size limits"; Appendices "Canonical JSON"
+// URL: ../../docs/matrix-v1.19-spec/server-server-api.md#post_matrixfederationv1get_missing_eventsroomid
+//
+// An event returned by /get_missing_events is a PDU like any other: "The event ... MUST NOT be
+// larger than 65536 bytes", a `state_key` "MUST NOT exceed 255 bytes", and the JSON must be canonical
+// (no floats). One that is not is rejected, and the origin's answer is not worked around: the same
+// history is not fetched again through /event and /state_ids.
+SCENARIO("Backfill rejects an invalid event from /get_missing_events and fetches nothing else",
+         "[pdu_ingestion][backfill][fed-endpoints]")
+{
+    GIVEN("a room with a genesis state group and a sending server that answers /get_missing_events with one bad event")
+    {
+        auto const path = unique_sqlite_path();
+        std::filesystem::remove(path);
+        auto started = merovingian::homeserver::start_runtime(config_with_sqlite(path));
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        merovingian::homeserver::wire_federation_callbacks(runtime);
+        auto const room_id = std::string{"!backfill-bad-returned:local.example.org"};
+        seed_room_with_genesis_state_group(runtime, room_id);
+        runtime.federation.remote_key_resolver = both_servers_key_resolver();
+
+        auto certificate = merovingian::tests::tls_mock::write_test_tls_certificate("localhost");
+        auto tls = merovingian::homeserver::make_tls_server_context(certificate.certificate_file,
+                                                                    certificate.private_key_file);
+        REQUIRE(tls.ok());
+        auto tls_context = std::move(*tls.context);
+        auto acceptor = merovingian::net::TcpAcceptor{};
+        REQUIRE(acceptor.bind("127.0.0.1", 0U).ok);
+        runtime.test_forced_outbound_resolution[remote_server] =
+            merovingian::homeserver::TestOnlyForcedOutboundResolution{
+                "localhost", acceptor.bound_port(), {"127.0.0.1"}, certificate.certificate_pem};
+
+        auto const bad_event_json = [&](std::string const& state_key, std::string const& content) {
+            return std::string{R"({"type":"my.room.breaker","state_key":")"} + state_key + R"(","sender":"@bad:)" +
+                   std::string{remote_server} + R"(","room_id":")" + room_id +
+                   R"(","origin_server_ts":1,"depth":4,"prev_events":[],"auth_events":[],"content":)" + content +
+                   R"(,"hashes":{"sha256":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"},"signatures":{}})";
+        };
+        auto const ingest_returning = [&](std::string const& event_json) {
+            auto const pdu = make_remote_message_pdu(
+                room_id, {room_id + ":member"}, {room_id + ":create", room_id + ":pl", room_id + ":member:bob"}, 5, 90);
+            // The PDU's prev_event is one the peer does not have either, so the gap stays open.
+            auto gap_pdu = pdu;
+            gap_pdu.prev_event_ids = {"$never-stored-anywhere"};
+            auto const response = tests::tls_mock::json_http_response("200 OK", R"({"events":[)" + event_json + "]}");
+            auto request_lines = std::vector<std::string>{};
+            auto result =
+                ingest_with_bounded_backfill_peer(runtime, gap_pdu, acceptor, tls_context, response, request_lines);
+            return std::make_pair(std::move(result), std::move(request_lines));
+        };
+        auto const fetched_another_way = [](std::vector<std::string> const& lines) {
+            return std::ranges::any_of(lines, [](std::string const& line) {
+                return line.starts_with("GET /_matrix/federation/v1/event/") ||
+                       line.starts_with("GET /_matrix/federation/v1/state_ids/") ||
+                       line.starts_with("GET /_matrix/federation/v1/event_auth/");
+            });
+        };
+
+        WHEN("the returned event has a 280-byte state_key")
+        {
+            auto const [result, lines] = ingest_returning(bad_event_json(std::string(280U, 'k'), "{}"));
+
+            THEN("the event is not used and no /event, /state_ids or /event_auth request is made")
+            {
+                REQUIRE(result.status != PduIngestionStatus::accepted);
+                REQUIRE_FALSE(fetched_another_way(lines));
+            }
+        }
+
+        WHEN("the returned event carries a floating-point number in its content")
+        {
+            auto const [result, lines] = ingest_returning(bad_event_json("k", R"({"bad_val":1.1})"));
+
+            THEN("the event is not used and no /event, /state_ids or /event_auth request is made")
+            {
+                REQUIRE(result.status != PduIngestionStatus::accepted);
+                REQUIRE_FALSE(fetched_another_way(lines));
+            }
+        }
+
+        WHEN("the returned event is larger than 65536 bytes")
+        {
+            auto const [result, lines] =
+                ingest_returning(bad_event_json("k", R"({"body":")" + std::string(70000U, 'x') + R"("})"));
+
+            THEN("the event is not used and no /event, /state_ids or /event_auth request is made")
+            {
+                REQUIRE(result.status != PduIngestionStatus::accepted);
+                REQUIRE_FALSE(fetched_another_way(lines));
+            }
+        }
+
+        std::filesystem::remove(path);
+    }
+}
+
 // Spec: Matrix v1.19 rooms/v10.md, auth rule 4.2.1 (v8 the same; v12 rule
 // 5.2.1): "If content has a join_authorised_via_users_server key: If the
 // event is not validly signed by the homeserver of the user ID denoted by the

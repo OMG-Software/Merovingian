@@ -16,6 +16,9 @@
 
 #include <algorithm>
 #include <string>
+#include <thread>
+#include <tuple>
+#include <utility>
 #include <vector>
 
 namespace
@@ -978,6 +981,97 @@ SCENARIO("GET /profile/{userId} for an unknown user returns 404", "[homeserver][
                 rt, {"GET", "/_matrix/client/v3/profile/%40missing%3Aexample.org", {}, {}});
 
             THEN("the server returns 404 M_NOT_FOUND")
+            {
+                REQUIRE(response.response.status == 404U);
+                REQUIRE(response.response.body.find("M_NOT_FOUND") != std::string::npos);
+            }
+        }
+    }
+}
+
+// Spec: Matrix Client-Server API v1.19, GET /profile/{userId} and GET /profile/{userId}/{keyName};
+// Server-Server API v1.19, GET /_matrix/federation/v1/query/profile.
+// URL: ../../docs/matrix-v1.19-spec/server-server-api.md#get_matrixfederationv1queryprofile
+//
+// A user of another server has no profile here: "Performs a query to get profile information ... for
+// a given user. Homeservers MUST only query profiles for users that belong to the target server". So
+// this server asks the user's server and answers with what it says, and its 404 ("The user does not
+// exist, does not have a profile or the queried field does not exist") is a 404 here.
+SCENARIO("GET /profile/{userId} for a user of another server asks that server over federation",
+         "[homeserver][client-server][profile][fed-endpoints]")
+{
+    GIVEN("a server and a remote server that answers query/profile for @bob but not for @nobody")
+    {
+        auto const config = registration_enabled_config();
+        auto started = merovingian::homeserver::start_client_server(config);
+        REQUIRE(started.started);
+        auto& rt = started.runtime;
+
+        auto certificate = merovingian::tests::tls_mock::write_test_tls_certificate("localhost");
+        auto tls = merovingian::homeserver::make_tls_server_context(certificate.certificate_file,
+                                                                    certificate.private_key_file);
+        REQUIRE(tls.ok());
+        auto tls_context = std::move(*tls.context);
+        auto acceptor = merovingian::net::TcpAcceptor{};
+        REQUIRE(acceptor.bind("127.0.0.1", 0U).ok);
+        rt.homeserver.test_forced_outbound_resolution["remote.example.net"] =
+            merovingian::homeserver::TestOnlyForcedOutboundResolution{
+                "localhost", acceptor.bound_port(), {"127.0.0.1"}, certificate.certificate_pem};
+
+        auto const ok_profile = merovingian::tests::tls_mock::json_http_response(
+            "200 OK", R"({"displayname":"Bob","avatar_url":"mxc://remote.example.net/a","evil":"ignored"})");
+        auto const not_found = merovingian::tests::tls_mock::json_http_response(
+            "404 Not Found", R"({"errcode":"M_NOT_FOUND","error":"no such user"})");
+        auto const responses = std::vector<std::pair<std::string, std::string>>{
+            {"user_id=%40bob%3Aremote.example.net&field=displayname", ok_profile},
+            {"user_id=%40bob%3Aremote.example.net",                   ok_profile},
+            {"user_id=%40nobody%3Aremote.example.net",                not_found },
+        };
+        auto captured = std::vector<std::string>{};
+        auto server_thread = std::thread{[&]() {
+            merovingian::tests::tls_mock::run_path_dispatch_tls_server(acceptor, tls_context, responses, &captured);
+        }};
+        auto const join_server = merovingian::tests::tls_mock::ScopedThreadJoin{server_thread};
+        std::ignore = join_server;
+
+        WHEN("a client reads the whole profile of @bob:remote.example.net")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                rt, {"GET", "/_matrix/client/v3/profile/%40bob%3Aremote.example.net", {}, {}});
+
+            THEN("the answer is 200 with displayname and avatar_url only, from one federation request")
+            {
+                REQUIRE(response.response.status == 200U);
+                REQUIRE(response.response.body.find("\"displayname\":\"Bob\"") != std::string::npos);
+                REQUIRE(response.response.body.find("mxc://remote.example.net/a") != std::string::npos);
+                // Rule 6: a remote answer is relayed only in its spec fields.
+                REQUIRE(response.response.body.find("evil") == std::string::npos);
+                REQUIRE(captured.size() == 1U);
+                REQUIRE(captured[0].find("GET /_matrix/federation/v1/query/profile?user_id=") == 0U);
+            }
+        }
+
+        WHEN("a client reads only the displayname")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                rt, {"GET", "/_matrix/client/v3/profile/%40bob%3Aremote.example.net/displayname", {}, {}});
+
+            THEN("the answer is 200 with just that field and the federation request named it")
+            {
+                REQUIRE(response.response.status == 200U);
+                REQUIRE(response.response.body.find("\"displayname\":\"Bob\"") != std::string::npos);
+                REQUIRE(response.response.body.find("avatar_url") == std::string::npos);
+                REQUIRE(captured.size() == 1U);
+                REQUIRE(captured[0].find("&field=displayname") != std::string::npos);
+            }
+        }
+
+        WHEN("the remote server says the user does not exist")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                rt, {"GET", "/_matrix/client/v3/profile/%40nobody%3Aremote.example.net/displayname", {}, {}});
+
+            THEN("the client gets 404 M_NOT_FOUND")
             {
                 REQUIRE(response.response.status == 404U);
                 REQUIRE(response.response.body.find("M_NOT_FOUND") != std::string::npos);

@@ -188,6 +188,25 @@ SCENARIO("Federation /send room_id extraction uses the real JSON parser", "[fede
     }
 }
 
+SCENARIO("Federation media thumbnail bypasses the worker pool because the worker has no local media repository",
+         "[federation][routing][worker-bypass][media][fed-endpoints]")
+{
+    GIVEN("a GET /_matrix/federation/v1/media/thumbnail/{mediaId} request")
+    {
+        auto request = make_request("/_matrix/federation/v1/media/thumbnail/abc123?width=64&height=64");
+        request.method = "GET";
+
+        WHEN("the worker bypass decision is made")
+        {
+            THEN("the request is handled in main, not forwarded to a worker shard")
+            {
+                REQUIRE(federation_worker_room_id_from_request(request).empty());
+                REQUIRE(federation_request_should_bypass_worker(request));
+            }
+        }
+    }
+}
+
 SCENARIO("Federation media download bypasses the worker pool because the worker has no local media repository",
          "[federation][routing][worker-bypass][media]")
 {

@@ -177,6 +177,18 @@ Federation is the highest-risk surface: **all input comes from untrusted remote 
    there, and servers still migrating send stripped entries). Our own outbound invites and `send_knock`
    answers fill the list from `homeserver::stripped_state_pdus`.
 
+15. **Every federation error is a standard `{errcode, error}` JSON object, and every PDU of a `/send`
+   has an entry in the answer (SS API "API standards", "Transactions").** A handler may return
+   `{status, "reason"}`; `handle_inbound_federation_request` wraps it with `standard_error_body`
+   (errcode from the status: 400 `M_INVALID_PARAM`, 403 `M_FORBIDDEN`, 404 `M_NOT_FOUND`, ...), and
+   leaves a body that already starts with `{` alone, so a handler with a more exact errcode builds
+   its own `matrix_error`. The `pdus` object lists every PDU: `{}` for one that was handled (including
+   one retained for retry), `{"error": ...}` otherwise. A bad `user_id` on `query/profile` is 400
+   `M_INVALID_PARAM`, never a 404. `GET /event_auth/{roomId}/{eventId}` returns the closure of the
+   event's `auth_events` (not the event), bounded at `max_event_auth_chain_events`, behind the same
+   origin-in-room gate as the other reads (rule 7). `query/directory` has no room ID, so a worker
+   relays it to main (`directory_query_ingest`).
+
 ## Key files
 
 | File | Responsibility |

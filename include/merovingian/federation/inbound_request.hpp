@@ -11,6 +11,7 @@
 #include "merovingian/federation/security.hpp"
 #include "merovingian/federation/transactions.hpp"
 #include "merovingian/media/repository.hpp"
+#include "merovingian/media/thumbnailer.hpp"
 #include "merovingian/observability/observability.hpp"
 #include "merovingian/rooms/room_version_policy.hpp"
 
@@ -210,6 +211,10 @@ using StateQueryProvider =
     std::function<RoomReadResult(std::string_view room_id, std::string_view event_id, std::string_view origin)>;
 using StateIdsQueryProvider =
     std::function<RoomReadResult(std::string_view room_id, std::string_view event_id, std::string_view origin)>;
+// `GET /event_auth/{roomId}/{eventId}`: the room, the event whose auth chain is asked for, and the
+// authenticated origin.
+using EventAuthQueryProvider =
+    std::function<RoomReadResult(std::string_view room_id, std::string_view event_id, std::string_view origin)>;
 using MissingEventsQueryProvider =
     std::function<RoomReadResult(std::string_view room_id, std::string_view request_body, std::string_view origin)>;
 
@@ -226,6 +231,23 @@ using SpaceHierarchyProvider =
 // result to the appropriate Matrix error response (404 M_NOT_FOUND for missing media, 451 for
 // quarantined media, etc.). Optional: when unset the route responds 501 Not Implemented.
 using MediaDownloadProvider = std::function<media::LocalMediaDownloadResult(std::string_view media_id)>;
+
+// What an inbound `GET /_matrix/federation/v1/media/thumbnail/{mediaId}` asks for. The handler has
+// validated the dimensions (positive integers) and the method; `origin` is the X-Matrix-authenticated
+// requesting server, which the provider counts the decode against.
+struct FederationThumbnailQuery final
+{
+    std::string media_id{};
+    std::uint32_t width{0U};
+    std::uint32_t height{0U};
+    media::ThumbnailMethod method{media::ThumbnailMethod::scale};
+    std::string origin{};
+};
+
+// Serves a thumbnail of local media for an inbound federation thumbnail request. The handler maps a
+// failed result as for `MediaDownloadProvider` (404, 451, 504 M_NOT_YET_UPLOADED, ...). Optional:
+// when unset the route responds 501 Not Implemented.
+using MediaThumbnailProvider = std::function<media::LocalMediaDownloadResult(FederationThumbnailQuery const& query)>;
 
 // Resolves the room version for a given room ID by consulting the local
 // persistent state (typically the m.room.create event's content.room_version
@@ -352,6 +374,7 @@ struct FederationRuntimeState final
     EventQueryProvider event_query_provider{};
     StateQueryProvider state_query_provider{};
     StateIdsQueryProvider state_ids_query_provider{};
+    EventAuthQueryProvider event_auth_query_provider{};
     MissingEventsQueryProvider missing_events_query_provider{};
     // Optional resolver for inbound space hierarchy. When unset the handler
     // responds 501 Not Implemented.
@@ -359,6 +382,8 @@ struct FederationRuntimeState final
     // Optional provider for inbound federation media downloads. When unset the
     // handler responds 501 Not Implemented.
     MediaDownloadProvider media_download_provider{};
+    // Optional provider for inbound federation thumbnails; as above, 501 when unset.
+    MediaThumbnailProvider media_thumbnail_provider{};
     // Optional resolver for room version. When set, parse_federation_pdu
     // calls it with the room_id from the PDU JSON and uses the returned
     // version string for event-ID computation and signature verification.

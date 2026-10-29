@@ -1913,6 +1913,38 @@ namespace
             record == nullptr ? std::string{} : record->upload_name};
 }
 
+[[nodiscard]] auto download_local_media_thumbnail_for_federation(HomeserverRuntime& runtime,
+                                                                 federation::FederationThumbnailQuery const& query)
+    -> media::LocalMediaDownloadResult
+{
+    // As download_local_media_for_federation: the repository's lookups need the runtime mutex, and
+    // the thumbnail path releases it itself for the decode (RuntimeLockRelease finds this guard).
+    auto guard = std::unique_lock<RuntimeMutex>{runtime.mutex};
+    auto const scope = RequestLockScope{guard};
+    // Local media only: a remote server is never asked to fetch more media for another server. A
+    // reserved ID whose content is missing is answered 504 M_NOT_YET_UPLOADED at once (timeout 0),
+    // never waited for: inbound federation has no media fetch pool to wait on (ADR-0212).
+    auto context = RemoteMediaRequestContext{};
+    context.allow_remote = false;
+    context.timeout_ms = 0U;
+    // The decode cap (MED-4) counts the requesting server like a user, so one peer cannot hold
+    // the decoder pool.
+    context.requester = "federation:" + query.origin;
+    context.client_key = context.requester;
+    auto const result = download_local_media_thumbnail(runtime, runtime.config.server().server_name, query.media_id,
+                                                       query.width, query.height, query.method, false, context);
+    if (!result.ok)
+    {
+        return {false, result.status, {}, {}, result.reason};
+    }
+    auto const separator = result.value.find('|');
+    if (separator == std::string::npos)
+    {
+        return {false, 500U, {}, {}, "thumbnail response malformed"};
+    }
+    return {true, 200U, result.value.substr(0U, separator), result.value.substr(separator + 1U), {}};
+}
+
 [[nodiscard]] auto download_local_media_thumbnail(HomeserverRuntime& runtime, std::string_view server_name,
                                                   std::string_view media_id, std::uint32_t width, std::uint32_t height,
                                                   media::ThumbnailMethod method, bool legacy_endpoint,

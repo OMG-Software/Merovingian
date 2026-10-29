@@ -10208,6 +10208,82 @@ namespace
                             rt.homeserver.client_outbound_proxy_policy.retry_after_ms);
     }
 
+    // GET /_matrix/client/v3/profile/{userId}[/{keyName}] for a user of another server. Asks that server's
+    // GET /_matrix/federation/v1/query/profile and relays only what the client API defines, a string
+    // `displayname` and `avatar_url`: a remote answer is untrusted, so nothing else is copied (rule 6 of
+    // src/federation/AGENTS.md). It is a client request that calls another server, so it holds an ADR-0079
+    // slot, runs under the directory deadline and releases the runtime lock for the call (src/homeserver/
+    // AGENTS.md, "Client requests that call another server"). The remote's 404 is this server's 404.
+    [[nodiscard]] auto remote_profile_response(ClientServerRuntime& rt, LocalHttpRequest const& req,
+                                               std::unique_lock<RuntimeMutex>& guard, std::string const& target_user,
+                                               std::string_view field) -> DispatchResult
+    {
+        auto const proxy_slot = admit_client_proxy(rt, req);
+        if (!proxy_slot.has_value())
+        {
+            return client_proxy_refused(req, rt);
+        }
+        if (!field.empty() && field != "displayname" && field != "avatar_url")
+        {
+            return dispatch_err(req, rt, 404U, "M_NOT_FOUND", "profile field not found");
+        }
+        auto const proxy_deadline = effective_client_outbound_deadline(
+            rt.homeserver, rt.homeserver.client_outbound_proxy_policy.directory_deadline_seconds);
+        wire_federation_callbacks(rt.homeserver);
+        auto const signing_key = ensure_runtime_server_signing_key(rt.homeserver);
+        auto const key_id = signing_key.has_value() ? signing_key->key_id : std::string{};
+        auto secret = core::SecretBuffer{rt.homeserver.database.signing_secret_key.bytes()};
+        auto const& our_server = rt.homeserver.config.server().server_name;
+        auto target = std::string{"/_matrix/federation/v1/query/profile?user_id="} +
+                      core::percent_encode_path_component(target_user);
+        if (!field.empty())
+        {
+            target += "&field=" + std::string{field};
+        }
+        auto const tx = federation::make_outbound_transaction(std::string{server_name_from_user_id(target_user)}, "GET",
+                                                              target, our_server, {});
+        auto const result = [&] {
+            // Re-acquire before returning: dispatch_resp/dispatch_err read reloadable runtime state.
+            auto const released = merovingian::homeserver::RuntimeLockRelease{guard};
+            return perform_bounded_outbound_call_with_status(rt.homeserver, {}, tx, key_id, std::move(secret),
+                                                             "profile.proxy", proxy_deadline);
+        }();
+        if (result.remote_status == 404U)
+        {
+            return dispatch_err(req, rt, 404U, "M_NOT_FOUND", "profile not found");
+        }
+        if (result.remote_status == 403U)
+        {
+            return dispatch_err(req, rt, 403U, "M_FORBIDDEN", "the user's server does not share the profile");
+        }
+        if (!result.ok)
+        {
+            return dispatch_err(req, rt, 502U, "M_UNKNOWN", "Failed to fetch the profile from the remote server");
+        }
+        auto const parsed = parsed_json_object(result.body);
+        if (!parsed.has_value())
+        {
+            return dispatch_err(req, rt, 502U, "M_UNKNOWN", "The remote server returned an unusable profile");
+        }
+        auto object = canonicaljson::Object{};
+        for (auto const* key : {"displayname", "avatar_url"})
+        {
+            if (!field.empty() && field != key)
+            {
+                continue;
+            }
+            if (auto const* value = string_member(*parsed, key); value != nullptr)
+            {
+                object.push_back(json_member(key, json_str(*value)));
+            }
+        }
+        if (!field.empty() && object.empty())
+        {
+            return dispatch_err(req, rt, 404U, "M_NOT_FOUND", "profile field not found");
+        }
+        return dispatch_resp(req, rt, 200U, json_serialize(json_obj(std::move(object))));
+    }
+
     // The local media router returns successful download/thumbnail results as
     // "content_type|bytes" so that both pieces survive the internal request
     // boundary. This converts that pipe-delimited payload into the raw HTTP
@@ -12827,6 +12903,15 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
         auto const encoded_target = slash == std::string_view::npos ? path_remainder : path_remainder.substr(0U, slash);
         auto const field = slash == std::string_view::npos ? std::string_view{} : path_remainder.substr(slash + 1U);
         auto const target_user = core::percent_decode_path_component(encoded_target);
+        // Spec (CS API, Profiles): a profile is read from "the server the user is on"; for a user of
+        // another server this one asks that server over federation (SS API GET /query/profile,
+        // which is for "users that belong to the target server") and relays what it says.
+        if (auto const profile_server = server_name_from_user_id(target_user);
+            !profile_server.empty() && profile_server != rt.homeserver.config.server().server_name &&
+            auth::user_id_is_valid_federated(target_user))
+        {
+            return remote_profile_response(rt, req, guard, target_user, field);
+        }
         auto const& store = rt.homeserver.database.persistent_store;
         auto user_exists = std::ranges::any_of(store.users, [&target_user](database::PersistentUser const& u) {
             return u.user_id == target_user;

@@ -2486,18 +2486,28 @@ auto apply_membership_to_roster(HomeserverRuntime& runtime, std::string_view roo
     return {result.ok, std::move(result.body)};
 }
 
+[[nodiscard]] auto perform_bounded_outbound_call_with_status(HomeserverRuntime& runtime, std::string_view room_id,
+                                                             federation::OutboundTransaction const& transaction,
+                                                             std::string_view key_id, core::SecretBuffer secret_key,
+                                                             std::string_view diagnostic_event,
+                                                             std::uint32_t deadline_seconds) -> OutboundCallResult
+{
+    auto const bounded = std::optional<BoundedOutboundLimits>{
+        BoundedOutboundLimits{OutboundDeadline{deadline_seconds},
+                              std::chrono::seconds{runtime.client_outbound_proxy_policy.worker_margin_seconds}}
+    };
+    return perform_outbound_call(runtime, room_id, transaction, key_id, std::move(secret_key), diagnostic_event,
+                                 deadline_seconds, 0U, bounded);
+}
+
 [[nodiscard]] auto perform_bounded_outbound_call(HomeserverRuntime& runtime, std::string_view room_id,
                                                  federation::OutboundTransaction const& transaction,
                                                  std::string_view key_id, core::SecretBuffer secret_key,
                                                  std::string_view diagnostic_event, std::uint32_t deadline_seconds)
     -> std::pair<bool, std::string>
 {
-    auto const bounded = std::optional<BoundedOutboundLimits>{
-        BoundedOutboundLimits{OutboundDeadline{deadline_seconds},
-                              std::chrono::seconds{runtime.client_outbound_proxy_policy.worker_margin_seconds}}
-    };
-    auto result = perform_outbound_call(runtime, room_id, transaction, key_id, std::move(secret_key), diagnostic_event,
-                                        deadline_seconds, 0U, bounded);
+    auto result = perform_bounded_outbound_call_with_status(runtime, room_id, transaction, key_id,
+                                                            std::move(secret_key), diagnostic_event, deadline_seconds);
     return {result.ok, std::move(result.body)};
 }
 

@@ -399,6 +399,103 @@ SCENARIO("event-graph reads refuse a server that is not in the room",
     }
 }
 
+// --- event_auth ----------------------------------------------------------------
+// Spec: Matrix Server-Server API v1.19, GET /_matrix/federation/v1/event_auth/{roomId}/{eventId}
+// URL:  ../../docs/matrix-v1.19-spec/server-server-api.md#get_matrixfederationv1event_authroomideventid
+//
+// "Retrieves the complete auth chain for a given event." The 200 response's `auth_chain` is "The
+// PDUs forming the auth chain of the given event": every event reachable through `auth_events`,
+// transitively, as full PDUs. Like every room-scoped read the answer is for a server that has a
+// joined user in the room; an event that is not in the room is not found.
+SCENARIO("event_auth returns the complete auth chain of the event as full PDUs",
+         "[federation][conformance][event-graph][event_auth][fed-endpoints]")
+{
+    GIVEN("a room whose message is authorised by member, power_levels and create, each with their own auth events")
+    {
+        auto const room = std::string{"!auth:example.org"};
+        auto const other_room = std::string{"!elsewhere:example.org"};
+        auto store = merovingian::database::PersistentStore{};
+        store.events.push_back(make_state_event("$create", room, "m.room.create", "", 1U, {}, {}));
+        store.events.push_back(make_state_event("$pl", room, "m.room.power_levels", "", 2U, {"$create"}, {"$create"}));
+        store.events.push_back(make_state_event("$member", room, "m.room.member", "@creator:example.org", 3U,
+                                                {"$create", "$pl"}, {"$pl"}));
+        store.events.push_back(
+            make_state_event("$jr", room, "m.room.join_rules", "", 4U, {"$create", "$pl", "$member"}, {"$member"}));
+        store.events.push_back(make_event("$message", room, "m.room.message", {"$create", "$pl", "$member"}, {"$jr"}));
+        store.events.push_back(make_event("$stranger", other_room, "m.room.message", {}, {}));
+        store.state.push_back({room, "m.room.create", "", "$create"});
+        store.state.push_back({room, "m.room.member", "@creator:example.org", "$member"});
+
+        WHEN("the auth chain of the message is requested by a server in the room")
+        {
+            auto const body =
+                ok_body(merovingian::federation::build_event_auth_response(store, room, "$message", requesting_server));
+            auto const parsed = merovingian::canonicaljson::parse_lossless(body);
+            REQUIRE(parsed.error == merovingian::canonicaljson::ParseError::none);
+            auto const* object = std::get_if<merovingian::canonicaljson::Object>(&parsed.value.storage());
+            REQUIRE(object != nullptr);
+
+            THEN("auth_chain holds the create, power_levels and member PDUs, each once, and not the event itself")
+            {
+                // Spec: `auth_chain` is "Required"; the key is the only member of the answer.
+                REQUIRE(object->size() == 1U);
+                REQUIRE((*object)[0].key == "auth_chain");
+                auto const* chain = std::get_if<merovingian::canonicaljson::Array>(&(*object)[0].value->storage());
+                REQUIRE(chain != nullptr);
+                // Spec: "the complete auth chain": all three, transitively, each as a full PDU object.
+                REQUIRE(chain->size() == 3U);
+                for (auto const& pdu : *chain)
+                {
+                    REQUIRE(std::get_if<merovingian::canonicaljson::Object>(&pdu.storage()) != nullptr);
+                }
+                REQUIRE(body.find("m.room.create") != std::string::npos);
+                REQUIRE(body.find("m.room.power_levels") != std::string::npos);
+                REQUIRE(body.find("m.room.member") != std::string::npos);
+                REQUIRE(body.find("m.room.message") == std::string::npos);
+            }
+        }
+
+        WHEN("the chain of an event whose auth event is itself a deep chain is requested")
+        {
+            auto const body =
+                ok_body(merovingian::federation::build_event_auth_response(store, room, "$jr", requesting_server));
+
+            THEN("the transitive closure is returned, not just the direct auth events")
+            {
+                // The PDUs are objects, so look for them through their type markers.
+                REQUIRE(body.find("m.room.create") != std::string::npos);
+                REQUIRE(body.find("m.room.power_levels") != std::string::npos);
+                REQUIRE(body.find("m.room.member") != std::string::npos);
+            }
+        }
+
+        WHEN("a server with no joined user in the room asks")
+        {
+            auto const result =
+                merovingian::federation::build_event_auth_response(store, room, "$message", "stranger.example.net");
+
+            THEN("it is refused, as for every room-scoped read")
+            {
+                REQUIRE(result.status == merovingian::federation::RoomReadStatus::forbidden);
+            }
+        }
+
+        WHEN("the event is unknown, or belongs to another room")
+        {
+            auto const unknown =
+                merovingian::federation::build_event_auth_response(store, room, "$nothing", requesting_server);
+            auto const elsewhere =
+                merovingian::federation::build_event_auth_response(store, room, "$stranger", requesting_server);
+
+            THEN("both are not found: the room's chain is never answered for a foreign event")
+            {
+                REQUIRE(unknown.status == merovingian::federation::RoomReadStatus::not_found);
+                REQUIRE(elsewhere.status == merovingian::federation::RoomReadStatus::not_found);
+            }
+        }
+    }
+}
+
 // --- get_missing_events walk --------------------------------------------------
 // Spec: Matrix Server-Server API v1.19, POST /_matrix/federation/v1/get_missing_events/{roomId}
 // URL:  ../../docs/matrix-v1.19-spec/server-server-api.md#post_matrixfederationv1get_missing_eventsroomid
@@ -473,6 +570,24 @@ SCENARIO("get_missing_events walks prev_events from latest_events, excluding ear
                 REQUIRE(result.body.find("\"$e26\"") != std::string::npos);
                 REQUIRE(result.body.find("\"$e25\"") == std::string::npos);
                 REQUIRE(result.body.find("\"$e24\"") == std::string::npos);
+            }
+        }
+
+        WHEN("the request lists e25 as an earliest event and asks for the three events after it")
+        {
+            auto const result = merovingian::federation::build_get_missing_events_response(
+                store, room, R"({"latest_events":["$e29"],"earliest_events":["$e25"],"limit":10})", "example.org");
+
+            THEN("they come back oldest first, so a receiver can store each parent before its child")
+            {
+                // Spec: a breadth-first walk of `prev_events`; the receiver stores events in order,
+                // so the answer lists e26, e27, e28 (parents before children).
+                auto const e26 = result.body.find("\"$e26\"");
+                auto const e27 = result.body.find("\"$e27\"");
+                auto const e28 = result.body.find("\"$e28\"");
+                REQUIRE(e26 != std::string::npos);
+                REQUIRE(e26 < e27);
+                REQUIRE(e27 < e28);
             }
         }
 

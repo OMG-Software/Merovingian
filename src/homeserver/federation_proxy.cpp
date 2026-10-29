@@ -139,7 +139,7 @@ auto FederationProxy::handle(LocalHttpRequest const& request) -> LocalHttpRespon
         // 502 rather than 401: Synapse propagates 401 from federation responses
         // to the client, triggering an automatic logout. 502 signals a
         // server-side failure instead.
-        return {502U, "malformed federation authorization"};
+        return {502U, matrix_error("M_UNKNOWN", "malformed federation authorization")};
     }
     auto const verification = federation::verify_inbound_federation_signature(runtime_.federation, *signed_request_opt);
     if (!verification.accepted)
