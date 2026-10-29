@@ -248,6 +248,8 @@
 * [0263 - A federation worker reads public keys main cached before fetching](0263-a-federation-worker-reads-public-keys-main-cached-before-fetching.md)
 * [0264 - Follow Complement on client-server points the spec leaves open](0264-follow-complement-on-client-server-points-the-spec-leaves-open.md)
 * [0265 - Membership changes reach the room roster through one function](0265-membership-changes-reach-the-room-roster-through-one-function.md)
+* [0266 - Pin third-party GitHub Actions to a full commit SHA](0266-pin-third-party-github-actions-to-a-full-commit-sha.md)
+* [0267 - Bounded parallel work holds each slot in an RAII permit](0267-bounded-parallel-work-holds-each-slot-in-an-raii-permit.md)
 
 ## Proposed Records
 

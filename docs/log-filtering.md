@@ -122,6 +122,5 @@ there is no error. Restart the server to apply.
 
 Legacy `LOG_*`/`LOGF_*` macros use the calling function name as their logger
 name (for example, `handle` for the WorkerPool reply diagnostic). They obey
-that name's explicit setting, or `log_modules.*` when none exists. Function
-traces use `FunctionTrace`. Structured diagnostics use the named modules
-in the table above.
+that name's explicit setting, or `log_modules.*` when none exists.
+Structured diagnostics use the named modules in the table above.

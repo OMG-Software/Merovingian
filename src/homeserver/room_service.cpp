@@ -7,6 +7,8 @@
 #include "merovingian/canonicaljson/parser.hpp"
 #include "merovingian/canonicaljson/serializer.hpp"
 #include "merovingian/canonicaljson/value.hpp"
+#include "merovingian/core/bounded_parallel.hpp"
+#include "merovingian/core/portable_semaphore.hpp"
 #include "merovingian/core/query_params.hpp"
 #include "merovingian/core/secret_buffer.hpp"
 #include "merovingian/crypto/ed25519.hpp"
@@ -139,40 +141,6 @@ namespace
             object.push_back(canonicaljson::make_member(std::move(key), std::move(value)));
         }
     }
-
-    // Portable counting semaphore — std::counting_semaphore is not available on
-    // all supported platforms (e.g. NetBSD libc++).
-    class PortableSemaphore
-    {
-    public:
-        explicit PortableSemaphore(int count) noexcept
-            : count_{count}
-        {
-        }
-
-        auto acquire() -> void
-        {
-            auto lk = std::unique_lock{mtx_};
-            cv_.wait(lk, [this] {
-                return count_ > 0;
-            });
-            --count_;
-        }
-
-        auto release() noexcept -> void
-        {
-            {
-                auto const lk = std::lock_guard{mtx_};
-                ++count_;
-            }
-            cv_.notify_one();
-        }
-
-    private:
-        std::mutex mtx_{};
-        std::condition_variable cv_{};
-        int count_;
-    };
 
     [[nodiscard]] auto json_object_member(canonicaljson::Object const& object, std::string_view key) noexcept
         -> canonicaljson::Value const*
@@ -4446,28 +4414,17 @@ auto filter_verified_send_join_events(HomeserverRuntime& runtime, canonicaljson:
                                                         ? std::chrono::seconds{federation_config.join_timeout_seconds}
                                                         : fallback_join_timeout);
             auto resolved = std::vector<std::optional<federation::FederationKeyRecord>>(distinct_pairs.size());
-            auto sem = PortableSemaphore{static_cast<int>(parallelism)};
-            auto tasks = std::vector<std::future<void>>{};
-            tasks.reserve(distinct_pairs.size());
             auto& federation_state = runtime.federation;
-            for (auto i = std::size_t{0U}; i < distinct_pairs.size(); ++i)
-            {
-                // Block until a concurrency slot is free, then launch the task.
-                sem.acquire();
-                auto const pair = distinct_pairs[i];
-                tasks.push_back(
-                    std::async(std::launch::async, [&resolved, &sem, &federation_state, deadline, pair, i]() {
-                        resolved[i] =
-                            federation::resolve_join_state_key(federation_state, pair.first, pair.second, deadline);
-                        sem.release();
-                    }));
-            }
-            // Join every task before reading `resolved` (disjoint slots, but the
-            // vector must not be read while tasks are still writing).
-            for (auto& task : tasks)
-            {
-                task.get();
-            }
+            // Every task writes only its own slot of `resolved`, and the call
+            // returns only once all of them have finished. A lookup that throws
+            // gives its slot back (the slot used to be released by hand, so
+            // `parallelism` throws left the next acquire waiting forever).
+            core::run_bounded_parallel(
+                distinct_pairs.size(), static_cast<std::size_t>(parallelism), [&](std::size_t const i) {
+                    auto const& pair = distinct_pairs[i];
+                    resolved[i] =
+                        federation::resolve_join_state_key(federation_state, pair.first, pair.second, deadline);
+                });
             for (auto i = std::size_t{0U}; i < distinct_pairs.size(); ++i)
             {
                 sender_key_map[distinct_pairs[i]] = std::move(resolved[i]);
@@ -4711,7 +4668,7 @@ namespace
         auto race_state = std::make_shared<MakeJoinRaceState>();
         race_state->remaining = static_cast<int>(candidates.size());
         // Semaphore caps the number of concurrent in-flight make_join HTTP calls.
-        auto race_sem = std::make_shared<PortableSemaphore>(static_cast<int>(parallelism));
+        auto race_sem = std::make_shared<core::PortableSemaphore>(static_cast<std::size_t>(parallelism));
         // Owned copies so tasks moved into orphan_futures_ are self-contained
         // and do not dangle on stack variables in join_room.
         auto room_id_copy = std::string{room_id};
@@ -4737,14 +4694,7 @@ namespace
                                                 sv_copy, per_call_timeout, cand = candidate]() mutable {
                     // Acquire a concurrency slot before making the HTTP call.
                     race_sem->acquire();
-                    struct SemRelease
-                    {
-                        PortableSemaphore& s;
-                        ~SemRelease() noexcept
-                        {
-                            s.release();
-                        }
-                    } sem_guard{*race_sem};
+                    auto const slot = core::SemaphorePermit{*race_sem};
                     // Bail early if another task already won.
                     {
                         auto lk = std::unique_lock{race_state->mtx};

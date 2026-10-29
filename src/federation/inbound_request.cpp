@@ -7,6 +7,7 @@
 #include "merovingian/canonicaljson/parser.hpp"
 #include "merovingian/canonicaljson/serializer.hpp"
 #include "merovingian/canonicaljson/value.hpp"
+#include "merovingian/core/bounded_parallel.hpp"
 #include "merovingian/core/query_params.hpp"
 #include "merovingian/crypto/ed25519.hpp"
 #include "merovingian/events/authorization.hpp"
@@ -25,7 +26,6 @@
 #include <cctype>
 #include <chrono>
 #include <cstdint>
-#include <future>
 #include <limits>
 #include <map>
 #include <mutex>
@@ -78,71 +78,6 @@ namespace
     {
         observability::log_diagnostic("federation", event, fields, severity);
     }
-
-    // Portable counting semaphore — std::counting_semaphore is not available on
-    // all supported platforms (e.g. NetBSD libc++).
-    class PortableSemaphore
-    {
-    public:
-        explicit PortableSemaphore(int count) noexcept
-            : count_{count}
-        {
-        }
-
-        auto acquire() -> void
-        {
-            auto lk = std::unique_lock{mtx_};
-            cv_.wait(lk, [this] {
-                return count_ > 0;
-            });
-            --count_;
-        }
-
-        auto release() noexcept -> void
-        {
-            {
-                auto const lk = std::lock_guard{mtx_};
-                ++count_;
-            }
-            cv_.notify_one();
-        }
-
-    private:
-        std::mutex mtx_{};
-        std::condition_variable cv_{};
-        int count_;
-    };
-
-    // Adopts an acquired scheduling permit. Moving ownership into a task and
-    // then onto its invocation stack releases on launch failure or resolver throw,
-    // independently of how long the future retains its callable.
-    class SenderResolutionPermit final
-    {
-    public:
-        explicit SenderResolutionPermit(PortableSemaphore& semaphore) noexcept
-            : semaphore_(semaphore)
-        {
-        }
-        SenderResolutionPermit(SenderResolutionPermit const&) = delete;
-        auto operator=(SenderResolutionPermit const&) -> SenderResolutionPermit& = delete;
-        SenderResolutionPermit(SenderResolutionPermit&& other) noexcept
-            : semaphore_(other.semaphore_)
-            , owns_(std::exchange(other.owns_, false))
-        {
-        }
-        auto operator=(SenderResolutionPermit&&) -> SenderResolutionPermit& = delete;
-        ~SenderResolutionPermit() noexcept
-        {
-            if (owns_)
-            {
-                semaphore_.release();
-            }
-        }
-
-    private:
-        PortableSemaphore& semaphore_;
-        bool owns_{true};
-    };
 
     // Builds the Matrix canonical-JSON object signed for an X-Matrix request:
     // {content?, destination, method, origin, uri}. `content` is the request
@@ -3426,33 +3361,14 @@ auto handle_inbound_federation_request(FederationRuntimeState& runtime, SignedFe
         {
             auto const parallelism = sender_key_prepass_parallelism(runtime.config);
             auto resolved = std::vector<SenderKeyResolution>(distinct_pairs.size());
-            auto sem = PortableSemaphore{static_cast<int>(parallelism)};
-            auto tasks = std::vector<std::future<void>>{};
-            tasks.reserve(distinct_pairs.size());
-            auto const resolver = [&runtime, source = std::string{request.remote_addr}](std::string_view server,
-                                                                                        std::string_view id) {
-                return resolve_admitted_sender_key(runtime, source, server, id);
-            };
-            for (auto i = std::size_t{0U}; i < distinct_pairs.size(); ++i)
-            {
-                // Block until a concurrency slot is free, then launch the task.
-                // The task releases its slot on completion so the next acquire
-                // can proceed even if this thread is still inside std::async.
-                sem.acquire();
-                auto permit = SenderResolutionPermit{sem};
-                auto const pair = distinct_pairs[i];
-                tasks.push_back(std::async(std::launch::async,
-                                           [&resolved, resolver, pair, i, permit = std::move(permit)]() mutable {
-                                               auto const active_permit = std::move(permit);
-                                               resolved[i] = resolver(pair.first, pair.second);
-                                           }));
-            }
-            // Join every task before reading `resolved` (disjoint slots, but
-            // the vector must not be read while tasks are still writing).
-            for (auto& task : tasks)
-            {
-                task.get();
-            }
+            auto const source = std::string{request.remote_addr};
+            // Every task writes only its own slot of `resolved`, and the call
+            // returns only once all of them have finished.
+            core::run_bounded_parallel(
+                distinct_pairs.size(), static_cast<std::size_t>(parallelism), [&](std::size_t const i) {
+                    auto const& pair = distinct_pairs[i];
+                    resolved[i] = resolve_admitted_sender_key(runtime, source, pair.first, pair.second);
+                });
             for (auto i = std::size_t{0U}; i < distinct_pairs.size(); ++i)
             {
                 sender_key_map[distinct_pairs[i]] = std::move(resolved[i]);
