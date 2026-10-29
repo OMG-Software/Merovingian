@@ -101,6 +101,24 @@ Federation is the highest-risk surface: **all input comes from untrusted remote 
    back to current state — and `get_missing_events` is a bounded walk (limit at most 20), not
    a room scan. The server ACL check in `inbound_request.cpp` stays in front of all of this.
 
+   **The gate is not the whole rule: what comes back is filtered per event by server-level history
+   visibility.** The S2S spec says nothing about it, so the project applies the client-server "Room
+   History Visibility" settings to the requesting server (owner decision 2026-10-29). `/event`,
+   `/backfill` and `/get_missing_events` send an event in full only when `ServerEventFilter` (in
+   `event_query.cpp`; `event_visible_to_server()` for one event) finds it visible to `origin`, judged on the
+   room's state AT the event (its ADR-0064 state group, never current state): `world_readable` or
+   `shared` (also the default when the state has no `m.room.history_visibility`) is visible; `invited`
+   needs a user of `origin` invited or joined in that state; `joined` needs one joined. Any other event is
+   sent REDACTED (`events::redact_event` with the room's version policy): its signatures, hashes,
+   `prev_events`, `auth_events` and event ID are untouched, and it is never dropped, which would leave a hole
+   in the receiver's graph. Fail closed: an event with no state group or a broken chain is redacted; if it
+   cannot be redacted either (room version unknown) it is left out, never sent in full. One filter serves
+   one request, so the group index is built once and a membership scan runs once per distinct group.
+   `/state`, `/state_ids` and `/event_auth` are deliberately NOT filtered: state events are part of the
+   room's authorisation, and a joining or catching-up server needs the whole of them to compute state and
+   authorise events. Do not add a filter there without an ADR. A new read that returns room events goes
+   through the filter.
+
 8. **An inbound EDU's identity claims are the sending server's, so bind them to it.** A
    `m.direct_to_device` `sender` must be a user of the sending origin, and only local, active
    users may be targeted; `message_id` (1 to 32 codepoints) is de-duplicated per

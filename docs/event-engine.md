@@ -840,11 +840,12 @@ entirely by `current_state`/`recompute_current_state` and is untouched by
 this filter, so a soft-failed state event resolution admits is still
 delivered there. Federation-facing reads
 (`src/federation/event_query.cpp`: `/event/<id>`, `/backfill`,
-`/get_missing_events`) are deliberately unfiltered, matching the spec:
+`/get_missing_events`) are deliberately not filtered by event status, matching the spec:
 `/event/<id>` may return a soft-failed event, and `/backfill`/
 `/get_missing_events` only return one when the request itself references
 it — which those endpoints' existing depth/reference-driven scans already
-satisfy without a status check.
+satisfy without a status check. They are filtered by server-level history
+visibility instead (see "Federation reads and history visibility" below).
 
 **Transactions.** A transaction containing a mix of accepted, rejected, and
 soft-failed PDUs still returns 200 with per-PDU accounting (spec: "If an
@@ -1020,6 +1021,25 @@ Both endpoints, like `/event`, `/backfill` and `/get_missing_events`, answer
 `prev_events` breadth-first from `latest_events`, never returning or crossing
 `earliest_events` or the latest events themselves, skipping events below `min_depth`,
 and returns at most 20 events (default 10), oldest first.
+
+**Federation reads and history visibility.** The S2S API defines no history visibility
+between servers, so `/event`, `/backfill` and `/get_missing_events` apply the
+client-server "Room History Visibility" settings to the requesting server (owner decision
+2026-10-29). For each returned event, `ServerEventFilter`
+(`src/federation/event_query.cpp`) reads the room's state at that event from the event's
+state group (ADR-0064), never the current state, and the event is sent in full when the
+`m.room.history_visibility` in that state is `world_readable` or `shared` (the default when
+absent), or `invited` and a user of the origin is invited or joined, or `joined` and a user of
+the origin is joined. Otherwise it is the room version's redaction of the stored event
+(`events::redact_event`): content stripped, `signatures`, `hashes`, `prev_events`,
+`auth_events`, `depth`, `sender` and the event ID kept, so the receiver can verify the
+signature and place the event in its graph; nothing is dropped. The state is the state
+after the event, so an `m.room.history_visibility` event is judged under the setting it
+carries and the join or invite of a user of the origin is visible to that origin. An event
+with no state group (an outlier) or a broken group chain is redacted. `/state`,
+`/state_ids` and `/event_auth` are not filtered: state events are part of the room's
+authorisation and a joining or catching-up server needs them whole to compute state and
+authorise events. The `origin_may_read_room` gate still runs first.
 
 The client-server `GET /rooms/{roomId}/context/{eventId}` endpoint reuses this
 same backward DAG walk (`federation::resolve_state_event_ids_at()`, 0.11.11)

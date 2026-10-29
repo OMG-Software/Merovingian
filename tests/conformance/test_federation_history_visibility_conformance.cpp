@@ -344,7 +344,12 @@ SCENARIO("A server whose only user joined after an event reads it redacted under
             {
                 REQUIRE_FALSE(shows_content(served.at("$m_before")));
                 REQUIRE_FALSE(shows_content(served.at("$m_invited")));
-                REQUIRE_FALSE(shows_content(served.at("$alice_join")));
+            }
+
+            THEN("events sent before the room was restricted fall under the default, shared, and are in full")
+            {
+                // The state at $alice_join has no m.room.history_visibility: shared.
+                REQUIRE(shows_content(served.at("$alice_join")));
             }
 
             THEN("an invite is not enough under joined visibility")
@@ -397,7 +402,11 @@ SCENARIO("A server whose user was invited reads invited-visibility events, but n
             THEN("events from before the invite are redacted")
             {
                 REQUIRE_FALSE(shows_content(served.at("$m_before")));
-                REQUIRE_FALSE(shows_content(served.at("$alice_join")));
+            }
+
+            THEN("events sent before the room was restricted fall under the default, shared, and are in full")
+            {
+                REQUIRE(shows_content(served.at("$alice_join")));
             }
 
             THEN("events from the invite on are served in full")

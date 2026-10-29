@@ -31,9 +31,9 @@ auto record_shared_state_group(merovingian::database::PersistentStore& store) ->
     constexpr auto group_name = std::string_view{"sg:fixture-shared"};
     if (!merovingian::database::find_state_group(store, group_name).has_value())
     {
-        REQUIRE(merovingian::database::create_or_reuse_state_group(store, room_id_under_test, group_name,
-                                                                   std::nullopt, {})
-                    .has_value());
+        REQUIRE(
+            merovingian::database::create_or_reuse_state_group(store, room_id_under_test, group_name, std::nullopt, {})
+                .has_value());
     }
     for (auto const& event : store.events)
     {

@@ -540,9 +540,10 @@ namespace
             {
                 return std::nullopt;
             }
-            log_diagnostic("event_query.redacted_for_server", {
-                                                                  {"event_id", event.event_id,       false},
-                                                                  {"origin",   std::string{origin_}, false}
+            log_diagnostic("event_query.redacted_for_server",
+                           {
+                               {"event_id", event.event_id,       false},
+                               {"origin",   std::string{origin_}, false}
             });
             return std::move(redaction.event);
         }
@@ -815,7 +816,10 @@ auto build_event_response(database::PersistentStore const& store, std::string_vi
         });
         return forbidden_result();
     }
-    auto event_value = parsed_value(event->json);
+    // A visible event goes out as stored; one none of the origin's users could see goes out
+    // redacted (server-level history visibility, see ServerEventFilter).
+    auto filter = ServerEventFilter{store, origin};
+    auto event_value = filter.value_for(*event);
     if (!event_value.has_value())
     {
         log_diagnostic("event_query.parse_failed", {
@@ -855,6 +859,10 @@ auto build_state_response(database::PersistentStore const& store, std::string_vi
     {
         return not_found_result();
     }
+    // Deliberately NOT filtered by server-level history visibility (unlike /event, /backfill and
+    // /get_missing_events): state events are part of the room's authorisation, and a joining or
+    // catching-up server computes state and authorises events from them, so they are sent whole.
+    // The origin_may_read_room gate above still applies. Filtering state would need an ADR.
     auto pdus = canonicaljson::Array{};
     // Seed IDs for the auth chain: every auth event named by a returned state
     // event. The transitive closure is computed once after the state is gathered.
@@ -930,6 +938,9 @@ auto build_event_auth_response(database::PersistentStore const& store, std::stri
     {
         return not_found_result();
     }
+    // Like /state, the auth chain is NOT filtered by server-level history visibility: auth events are
+    // state events, part of the room's authorisation, and the receiver needs them whole to authorise
+    // the event. The origin_may_read_room gate above still applies.
     // The chain is the closure of the event's auth events, not the event itself.
     // The walk is bounded: a chain longer than the bound is cut at the bound
     // (breadth first, so the events nearest the requested one come first) rather
@@ -984,6 +995,7 @@ auto build_state_ids_response(database::PersistentStore const& store, std::strin
     {
         return not_found_result();
     }
+    // IDs only, and unfiltered for the same reason as /state: state is the room's authorisation record.
     auto pdu_ids = canonicaljson::Array{};
     auto auth_seed_ids = std::vector<std::string>{};
     for (auto const& state_event_id : reconstruct_state_at_event(store, room_id, at_event_id))
@@ -1038,21 +1050,26 @@ auto resolve_state_event_ids_at(database::PersistentStore const& store, std::str
 auto event_visible_to_server(database::PersistentStore const& store, std::string_view event_id, std::string_view origin)
     -> bool
 {
-    std::ignore = store;
-    std::ignore = event_id;
-    std::ignore = origin;
-    return true;
+    auto const* event = find_event(store, event_id);
+    if (event == nullptr)
+    {
+        return false;
+    }
+    auto filter = ServerEventFilter{store, origin};
+    return filter.can_see(*event);
 }
 
 auto build_backfill_pdus(database::PersistentStore const& store, std::string_view room_id,
                          std::vector<std::string> const& event_ids, std::size_t limit, std::string_view origin)
     -> std::vector<std::string>
 {
-    std::ignore = origin;
     if (limit == 0U)
     {
         return {};
     }
+    // Server-level history visibility: an event none of the origin's users could see is sent
+    // redacted, not dropped, and the walk continues through its prev_events either way.
+    auto filter = ServerEventFilter{store, origin};
     auto pdus = std::vector<std::string>{};
     auto seen = std::unordered_set<std::string>{};
     auto queue = std::deque<std::string>{};
@@ -1072,7 +1089,10 @@ auto build_backfill_pdus(database::PersistentStore const& store, std::string_vie
         {
             continue;
         }
-        pdus.push_back(event->json);
+        if (auto pdu = filter.json_for(*event); pdu.has_value())
+        {
+            pdus.push_back(std::move(*pdu));
+        }
         for (auto const& prev_event_id : event->prev_event_ids)
         {
             if (seen.insert(prev_event_id).second)
@@ -1190,10 +1210,13 @@ auto build_get_missing_events_response(database::PersistentStore const& store, s
         }
     }
     // The walk runs newest to oldest; hand the requester the oldest first.
+    // Server-level history visibility: an event none of the origin's users could see comes back
+    // redacted, not dropped (the walk above is unchanged, so the graph stays whole).
+    auto filter = ServerEventFilter{store, origin};
     auto events = canonicaljson::Array{};
     for (auto it = collected.rbegin(); it != collected.rend(); ++it)
     {
-        auto value = parsed_value((*it)->json);
+        auto value = filter.value_for(**it);
         if (value.has_value())
         {
             events.push_back(std::move(*value));

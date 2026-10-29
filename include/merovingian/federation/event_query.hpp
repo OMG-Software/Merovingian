@@ -53,8 +53,9 @@ inline constexpr auto default_missing_events_limit = std::size_t{10U};
 // Used by the READS THAT RETURN HISTORY (`/event`, `/backfill`, `/get_missing_events`), which send an
 // invisible event redacted. NOT used by `/state`, `/state_ids` and `/event_auth`: state events are
 // part of the room's authorisation and a joining or catching-up server needs them whole to compute
-// state and authorise events. Redaction keeps the keys the auth rules read, but the redacted forms
-// would not match what other servers hold for the signed content, so those answers stay in full.
+// state and authorise events (owner decision 2026-10-29). Redaction keeps the keys the auth rules
+// read, but state is the room's authorisation record, so it is sent whole; see the ADR for the
+// rejected alternative of filtering it too.
 // This function builds its lookup indexes per call; the builders below share one per request.
 [[nodiscard]] auto event_visible_to_server(database::PersistentStore const& store, std::string_view event_id,
                                            std::string_view origin) -> bool;

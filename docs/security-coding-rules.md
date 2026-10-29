@@ -573,6 +573,10 @@ quickly finding everything a given `AGENTS.md` file contributed.
   Why: until 0.12.15 the only gate was the server ACL, so any federating server that knew a
   room ID could dump the state, member list and full history of a private room
   (`docs/threat-model.md`, "Federation reads not limited to servers in the room").
+  The gate is then followed by a per-event filter: `/event`, `/backfill` and
+  `/get_missing_events` redact (never drop) an event none of the origin's users could see
+  under the history visibility in the state AT that event (`ServerEventFilter`); `/state`,
+  `/state_ids` and `/event_auth` stay whole because state is part of the room's authorisation.
   Source: `src/federation/AGENTS.md`.
 
 - **Never relay a remote server's answer about users to a client unfiltered. Keep only
