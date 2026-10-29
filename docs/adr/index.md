@@ -256,6 +256,9 @@
 * [0271 - Room summaries answer unauthenticated callers uniformly, for local rooms only](0271-room-summaries-answer-unauthenticated-callers-uniformly.md)
 * [0272 - Canonical alias validation checks the aliases an event adds, and only local ones fully](0272-canonical-alias-validation-checks-added-local-aliases.md)
 * [0273 - Appservice registrations ignore namespaced extension keys](0273-appservice-registrations-ignore-namespaced-extension-keys.md)
+* [0274 - Method-not-allowed is decided by a static table before authentication, and by fall-through after it](0274-method-not-allowed-is-decided-by-a-static-table-and-by-fall-through.md)
+* [0275 - M_NOT_JSON is decided once in the dispatcher](0275-m-not-json-is-decided-once-in-the-dispatcher.md)
+* [0276 - m.login.dummy registration needs a session this server issued](0276-dummy-registration-needs-a-server-issued-session.md)
 
 ## Proposed Records
 
