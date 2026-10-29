@@ -3883,7 +3883,18 @@ auto ensure_crypto_provider_holds_key(HomeserverRuntime& runtime, std::string_vi
     if (!options.topic.empty())
     {
         auto topic_content = canonicaljson::Object{};
+        // Spec (m.room.topic, v1.15): `topic` is the plain text topic and "SHOULD duplicate the
+        // content of the `text/plain` representation in `m.topic`"; createRoom's `topic` is sent
+        // "with a `text/plain` mimetype". So write both: {"m.text":[{"body":..,"mimetype":"text/plain"}]}.
         topic_content.push_back(canonicaljson::make_member("topic", canonicaljson::Value{options.topic}));
+        auto plain_text = canonicaljson::Object{};
+        plain_text.push_back(canonicaljson::make_member("body", canonicaljson::Value{options.topic}));
+        plain_text.push_back(canonicaljson::make_member("mimetype", canonicaljson::Value{std::string{"text/plain"}}));
+        auto representations = canonicaljson::Array{};
+        representations.emplace_back(canonicaljson::Value{std::move(plain_text)});
+        auto topic_block = canonicaljson::Object{};
+        topic_block.push_back(canonicaljson::make_member("m.text", canonicaljson::Value{std::move(representations)}));
+        topic_content.push_back(canonicaljson::make_member("m.topic", canonicaljson::Value{std::move(topic_block)}));
         if (!emit_state("m.room.topic", std::move(topic_content)))
         {
             return initial_state_failure();
@@ -6433,6 +6444,21 @@ namespace
     if (!room_has_member(*room, *user_id))
     {
         return make_operation_result(false, {}, "user is not joined", 403U);
+    }
+
+    // Spec (POST /kick, 403): "The kickee is not currently in the room." A user is in the room
+    // while their membership is join, invite or knock, the three states a leave event can end
+    // (room version auth rules, `m.room.member` with membership `leave`). A user who left, was
+    // banned (unban is the way out) or never had a membership is not in the room.
+    auto const target_membership = std::ranges::find_if(
+        runtime.database.persistent_store.memberships, [&](database::PersistentMembership const& current) {
+            return current.room_id == room_id && current.user_id == target_user_id;
+        });
+    if (target_membership == runtime.database.persistent_store.memberships.end() ||
+        (target_membership->membership != "join" && target_membership->membership != "invite" &&
+         target_membership->membership != "knock"))
+    {
+        return make_operation_result(false, {}, "the user is not currently in the room", 403U);
     }
 
     auto const result = persist_membership_transition(runtime, room_id, *user_id, target_user_id, "leave", reason);
