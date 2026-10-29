@@ -30,7 +30,7 @@ the code (triaged 2026-10-29: 161 open, 30 confirmed, 4 minor, 127 false positiv
   `vmactions` BSD VMs (27 uses). A moved tag can no longer run new code in jobs that hold the release
   signing key or tokens. `workflow-action-pinning-tooling` enforces the rule, and finds `uses`
   however it is written in YAML (quoted key or value, flow mapping, a value on the next line or in a
-  block scalar) (ADR-0266). The pin does not
+  block scalar), and ignores `uses:` text inside a `run: |` script (ADR-0266). The pin does not
   cover what an action downloads at run time, such as the codecov CLI.
 
 ## 0.12.60

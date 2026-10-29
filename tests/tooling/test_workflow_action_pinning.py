@@ -22,6 +22,8 @@ WORKFLOWS = REPO_ROOT / ".github" / "workflows"
 USES_KEY = re.compile(r"""(?:^|[\s{,])(?:-\s+)?(?P<kq>["']?)uses(?P=kq)\s*:(?P<after>.*)$""")
 VALUE = re.compile(r"""^\s*(?P<vq>["']?)(?P<target>[^\s"',{}#|>]+)(?P=vq)(?P<rest>.*)$""")
 NO_INLINE_VALUE = re.compile(r"^\s*(?:[|>][-+0-9]*)?\s*(?:#.*)?$")
+BLOCK_SCALAR_HEADER = re.compile(r":\s+[|>][-+0-9]*\s*(?:#.*)?$")
+KEY_PREFIX = re.compile(r"^\s*(?:-\s+)*")
 RELEASE_COMMENT = re.compile(r"\s#\s*v\d+\.\d+\.\d+\s*$")
 PINNED = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_./-]+@[0-9a-f]{40}$")
 TAG_ALLOWED_OWNERS = ("actions", "github")
@@ -32,12 +34,33 @@ def is_comment_or_blank(line: str) -> bool:
     return not stripped or stripped.startswith("#")
 
 
+def indentation(line: str) -> int:
+    return len(line) - len(line.lstrip(" "))
+
+
+def key_column(line: str) -> int:
+    # The column a mapping key starts in, after any `- ` sequence markers.
+    return len(KEY_PREFIX.match(line).group(0))
+
+
 def uses_entries(lines: list[str]) -> list[tuple[int, str, str]]:
-    """(1-based line number of the value, action reference, text after it) for each `uses`."""
+    """(1-based line number of the value, action reference, text after it) for each `uses`.
+
+    The content of a block scalar (`run: |`, `run: >-`, ...) is text, not mapping entries, so a
+    `uses:` inside a script is not an action. YAML ends a block scalar at the first non-blank line
+    indented no deeper than its key; only lines deeper than that are skipped, so a following step
+    or sibling key is always read."""
     found = []
+    block_key_column = None
     for index, line in enumerate(lines):
+        if block_key_column is not None:
+            if not line.strip() or indentation(line) > block_key_column:
+                continue
+            block_key_column = None
         if is_comment_or_blank(line):
             continue
+        if BLOCK_SCALAR_HEADER.search(line):
+            block_key_column = key_column(line)
         key = USES_KEY.search(line)
         if key is None:
             continue
@@ -120,6 +143,37 @@ class UsesMatcherTest(unittest.TestCase):
                 found = uses_entries(lines)
                 self.assertEqual(1, len(found))
                 self.assertEqual("vendor/action@v1", found[0][1])
+
+    def test_given_uses_text_inside_a_block_scalar_when_matched_then_it_is_not_an_action(self) -> None:
+        for header in ("run: |", "run: >-", "run: |+ # script"):
+            with self.subTest(header=header):
+                lines = [
+                    f"      - {header}",
+                    "          echo 'uses: vendor/script-text@v1'",
+                    "",
+                    "          uses: vendor/indented-text@v1",
+                ]
+                self.assertEqual([], uses_entries(lines))
+
+    def test_given_an_action_after_a_block_scalar_when_matched_then_it_is_still_found(self) -> None:
+        # The block ends at the first line indented no deeper than its key, so the
+        # skipping can never swallow a real step or a sibling key.
+        lines = [
+            "      - name: build",
+            "        run: |",
+            "          uses: vendor/script-text@v1",
+            "        uses: vendor/sibling@v1",
+            "      - run: >",
+            "          more text",
+            "      - uses: vendor/next-step@v1",
+        ]
+        self.assertEqual(
+            ["vendor/sibling@v1", "vendor/next-step@v1"], [target for _, target, _ in uses_entries(lines)]
+        )
+
+    def test_given_uses_as_a_block_scalar_when_matched_then_its_value_is_read_once(self) -> None:
+        lines = ["      - uses: >-", "          vendor/action@v1", "      - uses: vendor/other@v1"]
+        self.assertEqual(["vendor/action@v1", "vendor/other@v1"], [target for _, target, _ in uses_entries(lines)])
 
     def test_given_a_pin_with_its_comment_when_matched_then_the_comment_is_recognised(self) -> None:
         sha = "a" * 40
