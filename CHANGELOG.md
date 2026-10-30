@@ -50,6 +50,9 @@ Fixes for the failures Complement run 12 found against main at 0.12.63.
   the leave.
 - A join made through another resident (ADR-0287) succeeds only if the stored join is the user's current
   member event, whether the sink accepted it now or already held it.
+- Sliding sync withholds a subscribed invite until the room's state holds it, as `/sync` does (ADR-0301).
+  Both build one index of the room state per request instead of scanning the store's state twice per
+  invite under `runtime.mutex`.
 - This server neither serves nor consults notary key servers; `/_matrix/key/v2/query` is an unknown
   endpoint (ADR-0297).
 

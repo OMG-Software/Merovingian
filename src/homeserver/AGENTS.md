@@ -225,7 +225,8 @@ on that record, each by the inviter's server, which the spec calls a resident se
   room (ADR-0301); after a federated leave the state is stale. `room_state_is_current` (`room_residency.hpp`) is the
   one test; the invite handler, `rescind_invite_from_inviter` and `leave_room`'s rejection of a remote invite
   (which keeps the leave as an outlier when the state is not current) use it and must agree. For a room this server is in, it stores no event (the
-  transaction's copy places it) and `/sync` hides the invite until the state has it (`invite_awaits_room_state`).
+  transaction's copy places it) and `/sync` and sliding sync hide the invite until the state has it
+  (`InviteRoomStateIndex`, built once per request: never scan the store's state per invite).
   Do not store the event in the handler, or make the invite visible before the state has it.
 - The leave that rejects an invite is stored as an outlier (ADR-0294), or `/sync` has no leave event to report.
 - `rescind_invite_from_inviter` (`local_http_router.cpp`) turns a `leave` PDU for the invitee, sent by a user

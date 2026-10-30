@@ -1139,21 +1139,45 @@ namespace
                          json_member("state_key", json_str(*state_key)), json_member("content", *content)});
     }
 
-    // True when this server holds the state of `room_id` and that state does not yet have the invite
-    // `invite_event_id` for `user_id`: the invite endpoint recorded it, but the transaction that places it
-    // in the room has not arrived.
-    [[nodiscard]] auto invite_awaits_room_state(database::PersistentStore const& store, std::string_view room_id,
-                                                std::string_view user_id, std::string_view invite_event_id) -> bool
+    // ADR-0301, for one request of `user_id`: the rooms whose state this server holds (a create row) and the
+    // user's member state event in each, gathered in one pass over the store's state. Every invite then costs
+    // two lookups, not two scans of the state: a user's invites are chosen by other servers, so work per
+    // invite under runtime.mutex must not grow with the size of the store.
+    class InviteRoomStateIndex final
     {
-        if (!stored_room_version(store, room_id).has_value())
+    public:
+        InviteRoomStateIndex(database::PersistentStore const& store, std::string_view user_id)
         {
-            return false;
+            for (auto const& state : store.state)
+            {
+                if (state.event_type == "m.room.create" && state.state_key.empty())
+                {
+                    held_rooms_.insert(state.room_id);
+                }
+                else if (state.event_type == "m.room.member" && state.state_key == user_id)
+                {
+                    member_event_by_room_.insert_or_assign(state.room_id, state.event_id);
+                }
+            }
         }
-        auto const entry = std::ranges::find_if(store.state, [&](database::PersistentStateEvent const& state) {
-            return state.room_id == room_id && state.event_type == "m.room.member" && state.state_key == user_id;
-        });
-        return entry == store.state.end() || entry->event_id != invite_event_id;
-    }
+
+        // True when this server holds the state of `room_id` and that state does not yet have the invite
+        // `invite_event_id` for the user: the invite endpoint recorded it, but the transaction that places
+        // it in the room has not arrived. /sync and sliding sync withhold such an invite.
+        [[nodiscard]] auto awaits_room_state(std::string_view room_id, std::string_view invite_event_id) const -> bool
+        {
+            if (!held_rooms_.contains(room_id))
+            {
+                return false;
+            }
+            auto const member = member_event_by_room_.find(room_id);
+            return member == member_event_by_room_.end() || member->second != invite_event_id;
+        }
+
+    private:
+        std::set<std::string, std::less<>> held_rooms_{};
+        std::map<std::string, std::string, std::less<>> member_event_by_room_{};
+    };
 
     [[nodiscard]] auto build_invite_state_events_array(database::PersistentStore const& store, std::string_view room_id,
                                                        std::string_view user_id) -> canonicaljson::Array
@@ -5728,6 +5752,8 @@ namespace
         auto leave_members = canonicaljson::Object{};
         auto knock_members = canonicaljson::Object{};
         auto invite_count = std::size_t{0U};
+        // Built on the first invite: most syncs have none.
+        auto invite_room_state = std::optional<InviteRoomStateIndex>{};
         auto leave_count = std::size_t{0U};
         auto knock_count = std::size_t{0U};
         for (auto const& membership : store.memberships)
@@ -5757,8 +5783,12 @@ namespace
                 // A room this server holds the state of: the invite is shown once that state has it
                 // (ADR-0301). The invite endpoint can answer before the transaction that places the
                 // event, and a client that saw the invite then could not join or reject it.
+                if (!invite_room_state.has_value())
+                {
+                    invite_room_state.emplace(store, user);
+                }
                 if (invite_record.has_value() &&
-                    invite_awaits_room_state(store, membership.room_id, user, invite_record->event_id))
+                    invite_room_state->awaits_room_state(membership.room_id, invite_record->event_id))
                 {
                     continue;
                 }
@@ -6649,13 +6679,22 @@ namespace
         // reported once per connection, without disturbing the `initial` bookkeeping of the
         // room itself should the invite later be accepted. An invite from an ignored user is
         // withheld entirely ("Servers must not send room invites from ignored users to clients").
+        // An invite this server holds the room state of is withheld until that state has it, as /sync does
+        // (ADR-0301).
         auto invites_reported = std::vector<std::string>{};
+        auto const invite_room_state = invited_subscription_ids.empty()
+                                           ? std::optional<InviteRoomStateIndex>{}
+                                           : std::optional<InviteRoomStateIndex>{std::in_place, store, user};
         for (auto const& room_id : invited_subscription_ids)
         {
             auto const invite_record = database::find_invite(store, room_id, user);
             if (invite_record.has_value() &&
                 trust_safety::is_delivery_suppressed(ignored_senders, invite_record->sender_user_id,
                                                      /*is_state_event=*/true, /*is_new_room_invite=*/true))
+            {
+                continue;
+            }
+            if (invite_record.has_value() && invite_room_state->awaits_room_state(room_id, invite_record->event_id))
             {
                 continue;
             }

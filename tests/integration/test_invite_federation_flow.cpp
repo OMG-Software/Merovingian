@@ -667,6 +667,18 @@ namespace
     return invite != nullptr && object_member_as_object(*invite, room_id) != nullptr;
 }
 
+// Whether a sliding sync (MSC4186) that subscribes to `room_id` reports the room.
+[[nodiscard]] auto sliding_sync_reports_room(merovingian::homeserver::ClientServerRuntime& runtime,
+                                             std::string const& token, std::string const& room_id) -> bool
+{
+    auto const synced = call(runtime, "POST", "/_matrix/client/unstable/org.matrix.simplified_msc3575/sync", token,
+                             R"({"room_subscriptions":{")" + room_id + R"(":{"timeline_limit":1}}})");
+    REQUIRE(synced.response.status == 200);
+    auto const body = parse_object(synced.response.body);
+    auto const* rooms = object_member_as_object(body, "rooms");
+    return rooms != nullptr && object_member_as_object(*rooms, room_id) != nullptr;
+}
+
 } // namespace
 
 // Spec: Matrix Server-Server API v1.19, "Inviting to a room": the invite is accepted unless the invitee is
@@ -1745,6 +1757,7 @@ SCENARIO("An invite received before its PDU is shown to a user of a server alrea
                 CAPTURE(invited.reason);
                 REQUIRE(invited.accepted);
                 REQUIRE_FALSE(sync_invites_room(runtime, dave, room.room_id));
+                REQUIRE_FALSE(sliding_sync_reports_room(runtime, dave, room.room_id));
                 REQUIRE(call(runtime, "POST", "/_matrix/client/v3/join/" + room.room_id, dave, "{}").response.status ==
                         403U);
             }
@@ -1764,6 +1777,21 @@ SCENARIO("An invite received before its PDU is shown to a user of a server alrea
                 REQUIRE(placed.status == merovingian::federation::PduIngestionStatus::accepted);
                 REQUIRE(joined.response.status == 200U);
                 REQUIRE(membership_row(runtime, room.room_id, dave_id) == "join");
+            }
+        }
+
+        WHEN("the invite endpoint answers and the transaction then places the invite")
+        {
+            auto const invited = runtime.homeserver.federation.invite_handler(request);
+            auto const placed = runtime.homeserver.federation.pdu_sink(
+                member_envelope(runtime, room.room_id, room.bob, dave_id, "invite", request.event_id, 20U));
+
+            THEN("both /sync and a sliding sync subscribed to the room show dave the invite")
+            {
+                CAPTURE(invited.reason, placed.reason);
+                REQUIRE(placed.status == merovingian::federation::PduIngestionStatus::accepted);
+                REQUIRE(sync_invites_room(runtime, dave, room.room_id));
+                REQUIRE(sliding_sync_reports_room(runtime, dave, room.room_id));
             }
         }
     }

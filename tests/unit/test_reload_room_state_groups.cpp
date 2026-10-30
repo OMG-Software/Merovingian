@@ -160,10 +160,13 @@ SCENARIO("reload_room brings the room's state groups, their entries and the even
         auto fixture = WorkerAndMain{};
         fixture.main_writes_join_and_message();
 
-        THEN("the worker store knows nothing of the new group or the new events' mappings yet")
+        WHEN("the worker store is inspected before any reload")
         {
-            REQUIRE_FALSE(db::find_state_group(fixture.worker(), "sg:join").has_value());
-            REQUIRE_FALSE(db::find_event_state_group(fixture.worker(), "$message").has_value());
+            THEN("the worker store knows nothing of the new group or the new events' mappings yet")
+            {
+                REQUIRE_FALSE(db::find_state_group(fixture.worker(), "sg:join").has_value());
+                REQUIRE_FALSE(db::find_event_state_group(fixture.worker(), "$message").has_value());
+            }
         }
 
         WHEN("reload_room is called on the worker store for that room")
