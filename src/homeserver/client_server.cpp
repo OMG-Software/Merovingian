@@ -1276,15 +1276,6 @@ namespace
         return std::get_if<canonicaljson::Object>(&value->storage());
     }
 
-    // The room's version, from its m.room.create through the one accessor
-    // (stored_room_version). A room with no stored create (unknown here) falls
-    // back to "10"; a create without room_version is room version 1.
-    [[nodiscard]] auto room_version_from_store(database::PersistentStore const& store, std::string_view room_id)
-        -> std::string
-    {
-        return stored_room_version(store, room_id).value_or("10");
-    }
-
     // True when `body` is not JSON at all: the text is malformed or is not valid UTF-8 (the
     // errors a JSON reader gives for the grammar). Spec: "M_NOT_JSON: Request did not contain
     // valid JSON." Text that is JSON but that this server refuses for its content or size (an
@@ -15673,15 +15664,25 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             {
                 continue;
             }
-            merovingian::homeserver::wire_federation_callbacks(rt.homeserver);
-            if (rt.homeserver.dispatch_worker != nullptr)
+            // Server-Server API, "Inviting to a room": the invitee's server is asked to sign the invite
+            // before createRoom answers, so the client can use the invite at once (Complement
+            // TestFederationRoomsInvite). Only a server that gives no usable answer is left to the queue.
+            auto const invite_event_id = invite_state->event_id;
+            auto const delivery = merovingian::homeserver::deliver_remote_invite(
+                rt.homeserver, guard, room_id, invitee_server, invite_event_id, *invite_json);
+            if (delivery.outcome == merovingian::homeserver::RemoteInviteOutcome::unreachable)
             {
-                auto transaction = federation::make_outbound_invite(
-                    invitee_server, rt.homeserver.config.server().server_name, room_id, invite_state->event_id,
-                    room_version, *invite_json,
-                    merovingian::homeserver::stripped_state_pdus(rt.homeserver.database.persistent_store, room_id));
-                transaction.transaction_id = federation::make_federation_transaction_id();
-                std::ignore = rt.homeserver.dispatch_worker->enqueue(std::move(transaction));
+                merovingian::homeserver::queue_remote_invite(rt.homeserver, room_id, invitee_server, invite_event_id,
+                                                             *invite_json);
+            }
+            else if (delivery.outcome == merovingian::homeserver::RemoteInviteOutcome::refused)
+            {
+                log_diagnostic("room.create.invite_refused", {
+                                                                 {"actor",   *user,           false},
+                                                                 {"room_id", room_id,         false},
+                                                                 {"invitee", invitee,         false},
+                                                                 {"reason",  delivery.reason, false}
+                });
             }
         }
         log_diagnostic("room.create.accepted", {
@@ -17014,35 +17015,7 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                 {
                     return dispatch_err(req, rt, result.status, error_code_for(result), result.reason);
                 }
-                // For remote invitees dispatch the federation invite so the remote server
-                // learns about the event and can deliver it to the invitee's client.
-                auto const invitee_server = server_name_from_user_id(body->user_id);
-                if (!invitee_server.empty() && invitee_server != rt.homeserver.config.server().server_name)
-                {
-                    auto const& store = rt.homeserver.database.persistent_store;
-                    auto const invite_state =
-                        std::ranges::find_if(store.state, [&room_id, &body](database::PersistentStateEvent const& s) {
-                            return s.room_id == room_id && s.event_type == "m.room.member" &&
-                                   s.state_key == body->user_id;
-                        });
-                    auto const invite_json = invite_state != store.state.end()
-                                                 ? event_json_for_id(store, invite_state->event_id)
-                                                 : std::nullopt;
-                    if (invite_json.has_value())
-                    {
-                        auto const room_version = room_version_from_store(store, room_id);
-                        merovingian::homeserver::wire_federation_callbacks(rt.homeserver);
-                        if (rt.homeserver.dispatch_worker != nullptr)
-                        {
-                            auto transaction = federation::make_outbound_invite(
-                                invitee_server, rt.homeserver.config.server().server_name, room_id,
-                                invite_state->event_id, room_version, *invite_json,
-                                merovingian::homeserver::stripped_state_pdus(store, room_id));
-                            transaction.transaction_id = federation::make_federation_transaction_id();
-                            std::ignore = rt.homeserver.dispatch_worker->enqueue(std::move(transaction));
-                        }
-                    }
-                }
+                // A remote invitee's server has already been offered the invite, inside invite_user.
             }
             else
             {

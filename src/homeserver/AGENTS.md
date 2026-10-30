@@ -199,6 +199,11 @@ on that record, each by the inviter's server, which the spec calls a resident se
   authored; the invite is ended as a local `leave` row and nothing is sent. Any other failure is a 502 and
   the invite stays.
 - `join_room` with no `via` uses `invite_sender_server` as the candidate, with the room ID's domain behind it.
+- An invite this server sends to another server's user (`invite_user`, createRoom's `invite` list) is offered
+  to that server first (`deliver_remote_invite`, ADR-0293) and stored and sent to the room's other servers only
+  after it accepted. Only an unreachable server falls back to `queue_remote_invite`. Never go back to queueing
+  first: the invitee's client acts on what a third server shows it.
+- The leave that rejects an invite is stored as an outlier (ADR-0294), or `/sync` has no leave event to report.
 - `rescind_invite_from_inviter` (`local_http_router.cpp`) turns a `leave` PDU for the invitee, sent by a user
   of the inviter's own server, into a `leave` for rooms whose state is not held. Nobody else can withdraw an
   invite this way.

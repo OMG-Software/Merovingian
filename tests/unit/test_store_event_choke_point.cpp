@@ -73,7 +73,10 @@ namespace
         // itself, like every local event, goes through
         // homeserver::store_event_with_bookkeeping (ADR-0228). The send_join
         // snapshot moved to the prepare list below (one transaction).
-        {"src/homeserver/room_service.cpp",      1U},
+        // leave_room's rejection of a remote invite (outlier: the signed leave
+        // that ends an invite to a room whose state this server does not hold,
+        // like the invite it replaces, so the user's sync can report it).
+        {"src/homeserver/room_service.cpp",      2U},
         // membership_acceptor (inbound send_join/send_leave/send_knock
         // acceptance — has its own compute_state_before/record_event_state/
         // recompute_current_state sequence, the same trust boundary as

@@ -1364,28 +1364,45 @@ namespace
                                                ComposedEvent const& composed, std::string_view sender,
                                                std::string_view extra_recipient) -> void;
 
-    [[nodiscard]] auto persist_membership_transition(HomeserverRuntime& runtime, std::string_view room_id,
+    // A membership event composed and signed but not yet stored: the event, or why there is none.
+    struct ComposedMembership final
+    {
+        std::optional<ComposedEvent> event{};
+        OperationResult failure{};
+    };
+
+    [[nodiscard]] auto compose_membership_transition(HomeserverRuntime& runtime, std::string_view room_id,
                                                      std::string_view sender_user_id, std::string_view target_user_id,
-                                                     std::string_view membership, std::string_view reason = {})
-        -> OperationResult
+                                                     std::string_view membership, std::string_view reason)
+        -> ComposedMembership
     {
         auto const event_json = serialize_membership_event_json(target_user_id, membership, reason);
         if (!event_json.has_value())
         {
-            return make_operation_result(false, {}, "membership event serialization failed", 500U);
+            return {std::nullopt, make_operation_result(false, {}, "membership event serialization failed", 500U)};
         }
 
-        auto const composition = compose_signed_event(runtime, room_id, sender_user_id, *event_json);
+        auto composition = compose_signed_event(runtime, room_id, sender_user_id, *event_json);
         if (composition.failure == ComposeFailure::too_large)
         {
-            return event_too_large_result();
+            return {std::nullopt, event_too_large_result()};
         }
-        auto const& composed = composition.event;
-        if (!composed.has_value())
+        if (!composition.event.has_value())
         {
-            return make_operation_result(false, {}, "membership event rejected", 403U);
+            return {std::nullopt, make_operation_result(false, {}, "membership event rejected", 403U)};
         }
-        if (!persist_composed_event(runtime, room_id, sender_user_id, *composed))
+        return {std::move(composition.event), {}};
+    }
+
+    // Stores a composed membership event and tells the room's servers, the room's clients and the push
+    // gateways about it. Split from the composing so that an invite to a user of another server can be
+    // offered to that user's server in between (Server-Server API, "Inviting to a room").
+    [[nodiscard]] auto store_composed_membership(HomeserverRuntime& runtime, std::string_view room_id,
+                                                 std::string_view sender_user_id, std::string_view target_user_id,
+                                                 std::string_view membership, ComposedEvent const& composed_event)
+        -> OperationResult
+    {
+        if (!persist_composed_event(runtime, room_id, sender_user_id, composed_event))
         {
             return make_operation_result(false, {}, "membership event persistence failed", 500U);
         }
@@ -1394,10 +1411,10 @@ namespace
         auto* room = find_room(runtime.database, room_id);
         if (room != nullptr)
         {
-            room->events.push_back(composed->json);
+            room->events.push_back(composed_event.json);
             // An invite reaches the invitee's server through /invite; every other
             // membership change also reaches its target's server.
-            federate_local_event(runtime, room_id, *room, *composed,
+            federate_local_event(runtime, room_id, *room, composed_event,
                                  membership == "invite" ? std::string_view{} : target_user_id);
         }
 
@@ -1416,9 +1433,23 @@ namespace
         // knock) is filtered as the sender regardless.
         if (room != nullptr)
         {
-            dispatch_membership_push_notification(runtime, *room, *composed, sender_user_id, target_user_id);
+            dispatch_membership_push_notification(runtime, *room, composed_event, sender_user_id, target_user_id);
         }
         return make_operation_result(true, std::string{room_id});
+    }
+
+    [[nodiscard]] auto persist_membership_transition(HomeserverRuntime& runtime, std::string_view room_id,
+                                                     std::string_view sender_user_id, std::string_view target_user_id,
+                                                     std::string_view membership, std::string_view reason = {})
+        -> OperationResult
+    {
+        auto const composed =
+            compose_membership_transition(runtime, room_id, sender_user_id, target_user_id, membership, reason);
+        if (!composed.event.has_value())
+        {
+            return composed.failure;
+        }
+        return store_composed_membership(runtime, room_id, sender_user_id, target_user_id, membership, *composed.event);
     }
 
     // Per the Matrix spec v1.19 Sec. 4.4 auth_events, only specific event types
@@ -6284,6 +6315,11 @@ namespace
         // in step 5 needs the lock), so it must outlive that scope.
         auto send_ok = false;
         auto send_body = std::string{};
+        // The signed leave this server authored to reject an invite to a room it holds no state of. Kept
+        // as an outlier, like the invite it ends, so the user's next /sync reports the leave event itself
+        // under rooms.leave (Client-Server API, GET /sync: `timeline` is "the timeline of messages and
+        // state changes in the room up to the point when the user left").
+        auto leave_outlier = std::optional<database::PersistentEvent>{};
         // An invite whose inviting server no longer has the room, or will not take the leave (403,
         // 404), cannot be rejected through a resident: no leave event can be authored without a
         // template from one. The spec defines no other route, so the invite is dropped here, as a
@@ -6438,6 +6474,36 @@ namespace
                     return make_operation_result(false, {}, "event_id computation failed", 500U);
                 }
 
+                if (rejecting_invite && !stored_room_version(runtime.database.persistent_store, room_id).has_value())
+                {
+                    auto const ids_of = [&event_object](std::string_view key) {
+                        auto ids = std::vector<std::string>{};
+                        auto const* member = object_member(event_object, key);
+                        auto const* array =
+                            member == nullptr ? nullptr : std::get_if<canonicaljson::Array>(&member->storage());
+                        for (auto const& entry : array == nullptr ? canonicaljson::Array{} : *array)
+                        {
+                            if (auto const* id = std::get_if<std::string>(&entry.storage()); id != nullptr)
+                            {
+                                ids.push_back(*id);
+                            }
+                        }
+                        return ids;
+                    };
+                    auto outlier = database::PersistentEvent{};
+                    outlier.event_id = event_id_result.event_id;
+                    outlier.room_id = std::string{room_id};
+                    outlier.sender_user_id = *user_id;
+                    outlier.json = signed_event.event_json;
+                    auto const* depth = integer_member(event_object, "depth");
+                    outlier.depth =
+                        depth == nullptr || *depth < 0 ? std::uint64_t{0U} : static_cast<std::uint64_t>(*depth);
+                    outlier.prev_event_ids = ids_of("prev_events");
+                    outlier.auth_event_ids = ids_of("auth_events");
+                    outlier.status = "outlier";
+                    leave_outlier = std::move(outlier);
+                }
+
                 // Step 4: send_leave — deliver the signed leave event to the remote server.
                 auto send_leave_tx = federation::make_outbound_send_membership(
                     federation::FederationEndpoint::send_leave, remote_server, our_server, room_id,
@@ -6470,8 +6536,20 @@ namespace
         // Step 5: update local membership, device lists and in-memory state. DB-4:
         // the row and the end of any invite commit together.
         auto const membership_stream = allocate_stream_ordering(runtime.database);
-        if (!database::store_membership_projection(runtime.database.persistent_store, room_id,
-                                                   {*user_id, "leave", membership_stream, std::nullopt}))
+        auto const leave_stored = [&] {
+            auto projection = database::MembershipProjection{*user_id, "leave", membership_stream, std::nullopt};
+            if (!leave_outlier.has_value())
+            {
+                return database::store_membership_projection(runtime.database.persistent_store, room_id, projection);
+            }
+            leave_outlier->stream_ordering = membership_stream;
+            auto const leave_event_id = leave_outlier->event_id;
+            return database::store_event_with_state(
+                runtime.database.persistent_store, std::move(*leave_outlier),
+                database::PersistentStateEvent{std::string{room_id}, "m.room.member", *user_id, leave_event_id},
+                std::move(projection));
+        }();
+        if (!leave_stored)
         {
             log_diagnostic("room.leave.rejected", {
                                                       {"actor",   *user_id,                        false},
@@ -6534,6 +6612,73 @@ namespace
     return make_operation_result(true, std::string{room_id});
 }
 
+[[nodiscard]] auto deliver_remote_invite(HomeserverRuntime& runtime, std::unique_lock<RuntimeMutex>& guard,
+                                         std::string_view room_id, std::string_view invitee_server,
+                                         std::string_view event_id, std::string_view event_json) -> RemoteInviteResult
+{
+    wire_federation_callbacks(runtime);
+    auto const signing_key = find_active_server_signing_key(runtime);
+    if (!signing_key.has_value())
+    {
+        return {RemoteInviteOutcome::unreachable, 502U, "server signing key not available"};
+    }
+    auto const& store = runtime.database.persistent_store;
+    auto const transaction = federation::make_outbound_invite(
+        invitee_server, runtime.config.server().server_name, room_id, event_id,
+        stored_room_version(store, room_id).value_or("10"), event_json, stripped_state_pdus(store, room_id));
+    auto const key_id = signing_key->key_id;
+    auto secret_key = core::SecretBuffer{runtime.database.signing_secret_key.bytes()};
+
+    // The exchange runs with runtime.mutex released: it is a federation round trip to a peer this server
+    // does not control, and every other request would wait behind it. Everything read from the runtime
+    // was copied above.
+    auto const call = [&] {
+        auto const released = RuntimeLockRelease{guard};
+        return perform_outbound_call(runtime, room_id, transaction, key_id, std::move(secret_key),
+                                     "room.invite.remote_failed", runtime.federation.config.remote_timeout_seconds, 0U,
+                                     std::nullopt);
+    }();
+
+    if (call.ok)
+    {
+        // Server-Server API, PUT /invite: the response is `{"event": <the signed invite event>}`.
+        auto const parsed = canonicaljson::parse_lossless(call.body);
+        auto const* root = std::get_if<canonicaljson::Object>(&parsed.value.storage());
+        if (parsed.error != canonicaljson::ParseError::none || root == nullptr ||
+            object_member_as_object(*root, "event") == nullptr)
+        {
+            return {RemoteInviteOutcome::refused, 502U, "the invited user's server sent a malformed invite response"};
+        }
+        return {RemoteInviteOutcome::delivered, 200U, {}};
+    }
+    // An answer that says no is final: the same invite would be refused again. A server that gave no
+    // answer, or only an overloaded or failing one, is asked again later by the outbound queue.
+    auto const status = call.remote_status;
+    auto const final_refusal = status >= 400U && status < 500U && status != 408U && status != 429U;
+    if (final_refusal)
+    {
+        return {RemoteInviteOutcome::refused, status == 403U ? std::uint16_t{403U} : std::uint16_t{502U},
+                "the invited user's server refused the invite"};
+    }
+    return {RemoteInviteOutcome::unreachable, 502U, call.body};
+}
+
+auto queue_remote_invite(HomeserverRuntime& runtime, std::string_view room_id, std::string_view invitee_server,
+                         std::string_view event_id, std::string_view event_json) -> void
+{
+    wire_federation_callbacks(runtime);
+    if (runtime.dispatch_worker == nullptr)
+    {
+        return;
+    }
+    auto const& store = runtime.database.persistent_store;
+    auto transaction = federation::make_outbound_invite(invitee_server, runtime.config.server().server_name, room_id,
+                                                        event_id, stored_room_version(store, room_id).value_or("10"),
+                                                        event_json, stripped_state_pdus(store, room_id));
+    transaction.transaction_id = federation::make_federation_transaction_id();
+    std::ignore = runtime.dispatch_worker->enqueue(std::move(transaction));
+}
+
 [[nodiscard]] auto invite_user(HomeserverRuntime& runtime, std::string_view access_token, std::string_view room_id,
                                std::string_view target_user_id, std::string_view reason) -> OperationResult
 {
@@ -6553,10 +6698,57 @@ namespace
         return make_operation_result(false, {}, "user is not joined", 403U);
     }
 
-    auto const result = persist_membership_transition(runtime, room_id, *user_id, target_user_id, "invite", reason);
-    if (!result.ok)
+    auto const invitee_server = std::string{auth::user_id_server_name(target_user_id)};
+    if (invitee_server.empty() || invitee_server == runtime.config.server().server_name)
     {
-        return result;
+        auto const result = persist_membership_transition(runtime, room_id, *user_id, target_user_id, "invite", reason);
+        if (!result.ok)
+        {
+            return result;
+        }
+        append_local_audit(runtime.database, observability::AuditCategory::admin, "room.invited", *user_id,
+                           target_user_id, std::string{room_id});
+        notify_room_changed(runtime, room_id);
+        return make_operation_result(true, std::string{room_id});
+    }
+
+    // Server-Server API, "Inviting to a room": "when a user invites another user on a different homeserver,
+    // a request to that homeserver to have the event signed and verified must be made", and "Once the event
+    // has been signed by both the inviting homeserver and the invited homeserver, it can be sent to all of
+    // the servers in the room". So the invite is composed, offered to the invitee's server, and only then
+    // stored and sent on to the room's other servers. A client that is told the invite succeeded can rely
+    // on the invitee's server holding it (Complement TestFederationRejectInvite).
+    auto const composed = compose_membership_transition(runtime, room_id, *user_id, target_user_id, "invite", reason);
+    if (!composed.event.has_value())
+    {
+        return composed.failure;
+    }
+    auto const& invite_event = *composed.event;
+    auto const delivery =
+        deliver_remote_invite(runtime, guard, room_id, invitee_server, invite_event.event_id, invite_event.json);
+    if (delivery.outcome == RemoteInviteOutcome::refused)
+    {
+        return make_operation_result(false, {}, delivery.reason, delivery.status);
+    }
+
+    // runtime.mutex was down for the exchange: the room, or the inviter's place in it, may have changed.
+    room = find_room(runtime.database, room_id);
+    if (room == nullptr)
+    {
+        return make_operation_result(false, {}, "room not found", 404U);
+    }
+    if (!room_has_member(*room, *user_id))
+    {
+        return make_operation_result(false, {}, "user is not joined", 403U);
+    }
+    auto const stored = store_composed_membership(runtime, room_id, *user_id, target_user_id, "invite", invite_event);
+    if (!stored.ok)
+    {
+        return stored;
+    }
+    if (delivery.outcome == RemoteInviteOutcome::unreachable)
+    {
+        queue_remote_invite(runtime, room_id, invitee_server, invite_event.event_id, invite_event.json);
     }
     append_local_audit(runtime.database, observability::AuditCategory::admin, "room.invited", *user_id, target_user_id,
                        std::string{room_id});
