@@ -142,10 +142,12 @@ production-gated.
 - `GET /_matrix/client/v1/auth_metadata` (MSC2965 OIDC discovery) returns RFC 8414 / Matrix v1.19 authorisation server metadata when `server.oidc.*` is configured; returns `404 M_UNRECOGNIZED` when OIDC is not configured. No OAuth 2.0 authorization-code / token / revocation flow is implemented yet.
 - **Application Service API identity (Matrix v1.19, `merovingian::appservice`).** Registration
   files (`appservice.registration_files`, parsed as JSON) build an in-memory
-  `AppserviceRegistry` at startup; `as_token`/`hs_token` are held in a mlocked
+  `AppserviceRegistry` at startup in the main process only (the federation worker
+  loads none, ADR-0296); `as_token`/`hs_token` are held in a mlocked
   `core::SecretBuffer` and only ever compared via
   `crypto::constant_time_equal_variable_length`. A client-server request
-  bearing a registered `as_token` authenticates as the appservice's own
+  bearing a registered `as_token` (as `Authorization: Bearer` or the `access_token`
+  query parameter, ADR-0295) authenticates as the appservice's own
   `sender_localpart` user by default, or as the user named by `?user_id=`
   when that user falls within one of the appservice's `users` namespaces
   (`403` otherwise); `?device_id=` must name a device already known to

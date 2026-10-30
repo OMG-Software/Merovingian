@@ -703,6 +703,10 @@ auto WorkerEventLoop::run() -> void
         // FED-10, ADR-0153: each shard resolves keys within its share of the
         // configured budgets, so all shards together stay within them.
         .key_resolution_shards = config_.federation_worker().shards,
+        // ADR-0296: registrations hold the as_token and hs_token, kept outside
+        // this process's Landlock grants, and everything that uses the registry
+        // runs in main. Loading them here only logged a rejection per start.
+        .load_appservices = false,
     });
     if (!started.started)
     {

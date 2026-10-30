@@ -1175,6 +1175,8 @@ auto start_runtime(RuntimeStartOptions opts) -> RuntimeStartResult
     // (duplicate id/as_token, which the spec says the homeserver MUST
     // enforce) drops every registration, since routing would otherwise be
     // ambiguous.
+    // The federation worker loads none (ADR-0296): see RuntimeStartOptions::load_appservices.
+    if (opts.load_appservices)
     {
         auto loaded =
             appservice::load_registrations(config.appservice().registration_files, config.server().server_name);

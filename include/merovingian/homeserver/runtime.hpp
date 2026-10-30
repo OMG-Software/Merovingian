@@ -677,6 +677,12 @@ struct RuntimeStartOptions final
     // one of. A worker passes federation.worker.shards so its key-resolution
     // budgets are its share of the configured ones; main leaves it at 1.
     std::uint32_t key_resolution_shards{1U};
+    // False for the federation worker (ADR-0296): the runtime reads no
+    // `appservice.registration_files`, holds no as_token or hs_token, and
+    // creates no appservice sender user. Registrations are secrets kept outside
+    // the worker's filesystem grants, and everything that consults the registry
+    // runs in the main process.
+    bool load_appservices{true};
 };
 
 struct RuntimeStartResult final
