@@ -39,6 +39,7 @@
 #include <algorithm>
 #include <array>
 #include <charconv>
+#include <chrono>
 #include <cstdint>
 #include <filesystem>
 #include <functional>
@@ -406,8 +407,8 @@ SCENARIO("A local user who meets a condition joins through another resident when
                 serve_resident(acceptor, *tls_context.context, 2U, responder, captured);
             }};
             auto const joiner = tls::ScopedThreadJoin{server};
-            auto const result = merovingian::homeserver::join_room(runtime, carol_login.value, std::string{restricted_room},
-                                                                   {std::string{resident_server}});
+            auto const result = merovingian::homeserver::join_room(
+                runtime, carol_login.value, std::string{restricted_room}, {std::string{resident_server}});
             server.join();
 
             THEN("the join succeeds, after a make_join and a send_join to the resident")
@@ -438,10 +439,72 @@ SCENARIO("A local user who meets a condition joins through another resident when
             }
         }
 
+        WHEN("an event giving the local admin the power to invite is being applied when the join arrives")
+        {
+            // ADR-0288: ingestion applies a received event under the room's stripe mutex. Hold it as
+            // that event's ingestion does, and let the join run into it.
+            auto const stripe = std::hash<std::string>{}(std::string{restricted_room}) %
+                                merovingian::homeserver::room_mutex_stripe_count;
+            auto in_flight = std::unique_lock{runtime.room_stripe_mutexes[stripe]};
+            auto result = merovingian::homeserver::OperationResult{};
+            auto joiner = std::thread{[&] {
+                result = merovingian::homeserver::join_room(runtime, carol_login.value, std::string{restricted_room},
+                                                            {std::string{resident_server}});
+            }};
+            auto const waiting = [&] {
+                for (auto attempt = 0; attempt < 500; ++attempt)
+                {
+                    {
+                        auto const lock = std::lock_guard{runtime.mutex};
+                        if (runtime.membership_exchanges.contains({std::string{restricted_room}, carol_reg.value}))
+                        {
+                            return true;
+                        }
+                    }
+                    std::this_thread::sleep_for(std::chrono::milliseconds{10});
+                }
+                return false;
+            }();
+            // The event is applied: the admin may now invite.
+            {
+                auto const lock = std::lock_guard{runtime.mutex};
+                auto& store = runtime.database.persistent_store;
+                auto const row = store.events.find(room.pl_id);
+                REQUIRE(row != store.events.end());
+                store.events.modify(row, [](merovingian::database::PersistentEvent& event) {
+                    auto const at = event.json.find(R"("@admin:local.example.org":0)");
+                    REQUIRE(at != std::string::npos);
+                    event.json.replace(at + std::string_view{R"("@admin:local.example.org":)"}.size(), 1U, "100");
+                });
+            }
+            in_flight.unlock();
+            joiner.join();
+
+            THEN("the join is decided after it: a local user authorises it and no other server is asked")
+            {
+                CAPTURE(result.reason);
+                REQUIRE(waiting);
+                REQUIRE(result.ok);
+                REQUIRE(joined(carol_reg.value));
+                REQUIRE(tls::accept_loopback(acceptor, 0) < 0);
+                auto const lock = std::lock_guard{runtime.mutex};
+                auto const& store = runtime.database.persistent_store;
+                auto const state = std::ranges::find_if(store.state, [&](auto const& row) {
+                    return row.room_id == restricted_room && row.event_type == "m.room.member" &&
+                           row.state_key == carol_reg.value;
+                });
+                REQUIRE(state != store.state.end());
+                auto const event = store.events.find(state->event_id);
+                REQUIRE(event != store.events.end());
+                REQUIRE(event->json.find(R"("join_authorised_via_users_server":"@admin:local.example.org")") !=
+                        std::string::npos);
+            }
+        }
+
         WHEN("a user who meets no condition joins")
         {
-            auto const result = merovingian::homeserver::join_room(runtime, dave_login.value, std::string{restricted_room},
-                                                                   {std::string{resident_server}});
+            auto const result = merovingian::homeserver::join_room(
+                runtime, dave_login.value, std::string{restricted_room}, {std::string{resident_server}});
 
             THEN("the join is refused with 403, no other server was asked, and the user is not joined")
             {
@@ -464,8 +527,8 @@ SCENARIO("A local user who meets a condition joins through another resident when
                 serve_resident(acceptor, *tls_context.context, 1U, responder, captured);
             }};
             auto const joiner = tls::ScopedThreadJoin{server};
-            auto const result = merovingian::homeserver::join_room(runtime, carol_login.value, std::string{restricted_room},
-                                                                   {std::string{resident_server}});
+            auto const result = merovingian::homeserver::join_room(
+                runtime, carol_login.value, std::string{restricted_room}, {std::string{resident_server}});
             server.join();
 
             THEN("the client gets the refusal and the user is not joined")
@@ -490,14 +553,15 @@ SCENARIO("A local user who meets a condition joins through another resident when
                 {
                     return send_join_response(request_body(request));
                 }
-                return send_join_response(co_sign(request_body(request), resident_server, resident_key_id, other_key_seed));
+                return send_join_response(
+                    co_sign(request_body(request), resident_server, resident_key_id, other_key_seed));
             };
             auto server = std::thread{[&] {
                 serve_resident(acceptor, *tls_context.context, 2U, responder, captured);
             }};
             auto const joiner = tls::ScopedThreadJoin{server};
-            auto const result = merovingian::homeserver::join_room(runtime, carol_login.value, std::string{restricted_room},
-                                                                   {std::string{resident_server}});
+            auto const result = merovingian::homeserver::join_room(
+                runtime, carol_login.value, std::string{restricted_room}, {std::string{resident_server}});
             server.join();
 
             THEN("the join is not accepted, nothing is stored for it, and the user is not joined")
@@ -520,19 +584,20 @@ SCENARIO("A local user who meets a condition joins through another resident when
                 {
                     return make_join_response(carol_reg.value, room);
                 }
-                // Same sender and room, but another display name: another event.
+                // The same join with another depth: depth is kept by redaction, so this is another
+                // event with another event ID (rooms/v10.md "Event IDs"), whoever signs it.
                 auto altered = request_body(request);
-                auto const at = altered.find(R"("membership":"join")");
+                auto const at = altered.find(R"("depth":6)");
                 REQUIRE(at != std::string::npos);
-                altered.insert(at, R"("displayname":"Not Carol",)");
+                altered.replace(at, std::string_view{R"("depth":6)"}.size(), R"("depth":7)");
                 return send_join_response(co_sign(altered, resident_server, resident_key_id, resident_key_seed));
             };
             auto server = std::thread{[&] {
                 serve_resident(acceptor, *tls_context.context, 2U, responder, captured);
             }};
             auto const joiner = tls::ScopedThreadJoin{server};
-            auto const result = merovingian::homeserver::join_room(runtime, carol_login.value, std::string{restricted_room},
-                                                                   {std::string{resident_server}});
+            auto const result = merovingian::homeserver::join_room(
+                runtime, carol_login.value, std::string{restricted_room}, {std::string{resident_server}});
             server.join();
 
             THEN("the join is not accepted and the user is not joined")

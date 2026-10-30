@@ -791,8 +791,8 @@ SCENARIO("A resident that cannot authorise a local join picks other resident ser
     GIVEN("a client that names two servers and a room with three more servers holding joined members")
     {
         auto const via = std::vector<std::string>{"via1.example.org", "local.example.org", "via2.example.org"};
-        auto const residents = std::vector<std::string>{"via2.example.org", "res1.example.org", "res2.example.org",
-                                                        "res3.example.org"};
+        auto const residents =
+            std::vector<std::string>{"via2.example.org", "res1.example.org", "res2.example.org", "res3.example.org"};
 
         WHEN("the candidates are chosen with room for them all")
         {

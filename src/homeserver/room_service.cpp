@@ -4656,7 +4656,72 @@ namespace
         // other members' m.room.member events included (ADR-0241).
         canonicaljson::Array verified_state{};
         canonicaljson::Array verified_auth_chain{};
+        // Only for a join through another resident of a room this server is already in
+        // (ADR-0287): the resident's `event`, the join with its co-signature, once checked.
+        std::string resident_signed_event_json{};
     };
+
+    // How `perform_federated_join` uses the send_join answer.
+    enum class FederatedJoinPurpose : std::uint8_t
+    {
+        // This server holds nothing of the room: the answer's `state` and `auth_chain`
+        // become the room's state.
+        enter_room,
+        // This server is resident and holds the room's state (ADR-0287): only the
+        // resident's co-signed copy of the join is wanted, and state is never taken from
+        // the answer.
+        join_through_resident,
+    };
+
+    // ADR-0287: checks the `event` of a send_join answer for a restricted join through
+    // another resident, and returns it serialized, or the reason it was refused. It must be
+    // the join this server signed (same reference-hash event ID, so the resident changed
+    // nothing the hash covers), name an authorising user who is not a user of this server,
+    // and carry valid signatures: this server's own and the authorising server's
+    // (rooms/v10.md 4.2.1, ADR-0171). A join authorised by a server whose signature was not
+    // checked is never accepted.
+    struct ResidentSignedJoin final
+    {
+        std::string json{};
+        std::string refusal{};
+    };
+
+    [[nodiscard]] auto verify_resident_signed_join(HomeserverRuntime& runtime, canonicaljson::Object const& answer,
+                                                   rooms::RoomVersionPolicy const& policy, std::string_view our_server,
+                                                   std::string_view expected_event_id) -> ResidentSignedJoin
+    {
+        auto const* event_value = object_member(answer, "event");
+        if (event_value == nullptr || !std::holds_alternative<canonicaljson::Object>(event_value->storage()))
+        {
+            return {{}, "send_join answer carries no signed join event"};
+        }
+        auto const& event = std::get<canonicaljson::Object>(event_value->storage());
+        auto const id = events::make_reference_hash_event_id(*event_value, policy);
+        if (!id.error.empty() || id.event_id != expected_event_id)
+        {
+            return {{}, "the resident changed the join event"};
+        }
+        auto const* content = object_member_as_object(event, "content");
+        auto const* authoriser =
+            content == nullptr ? nullptr : string_member(*content, "join_authorised_via_users_server");
+        if (authoriser == nullptr || sender_domain_from_user_id(*authoriser) == our_server ||
+            sender_domain_from_user_id(*authoriser).empty())
+        {
+            return {{}, "the join names no authorising user of another server"};
+        }
+        auto const verified =
+            filter_verified_send_join_events(runtime, canonicaljson::Array{*event_value}, policy, our_server);
+        if (verified.size() != 1U)
+        {
+            return {{}, "the join's signatures did not verify"};
+        }
+        auto serialized = canonicaljson::serialize_canonical(verified.front());
+        if (serialized.error != canonicaljson::CanonicalJsonError::none)
+        {
+            return {{}, "the signed join event could not be serialized"};
+        }
+        return {std::move(serialized.output), {}};
+    }
 
     [[nodiscard]] auto federated_join_failure(std::string reason, std::uint16_t status) -> FederatedJoinOutcome
     {
@@ -4723,14 +4788,12 @@ namespace
         bool active_{false};
     };
 
-    [[nodiscard]] auto perform_federated_join(HomeserverRuntime& runtime, std::string_view room_id,
-                                              std::string const& user_id, std::string const& our_server,
-                                              std::vector<std::string> candidates,
-                                              std::vector<std::string> const& supported_versions,
-                                              std::optional<database::PersistentServerSigningKey> const& signing_key,
-                                              std::string_view key_id, core::SecretBuffer secret_key,
-                                              std::optional<database::PersistentProfile> const& profile)
-        -> FederatedJoinOutcome
+    [[nodiscard]] auto perform_federated_join(
+        HomeserverRuntime& runtime, std::string_view room_id, std::string const& user_id, std::string const& our_server,
+        std::vector<std::string> candidates, std::vector<std::string> const& supported_versions,
+        std::optional<database::PersistentServerSigningKey> const& signing_key, std::string_view key_id,
+        core::SecretBuffer secret_key, std::optional<database::PersistentProfile> const& profile,
+        FederatedJoinPurpose purpose = FederatedJoinPurpose::enter_room) -> FederatedJoinOutcome
     {
         // Parallel make_join race: fire up to join_parallelism concurrent make_join
         // calls and return on the first successful response. Still-running losers are
@@ -5070,6 +5133,32 @@ namespace
             });
             return federated_join_failure("malformed send_join response", 502U);
         }
+        if (purpose == FederatedJoinPurpose::join_through_resident)
+        {
+            auto resident_join =
+                verify_resident_signed_join(runtime, *send_obj, *policy, our_server, event_id_result.event_id);
+            if (!resident_join.refusal.empty())
+            {
+                log_diagnostic("room.join.rejected",
+                               {
+                                   {"actor",         user_id,               false},
+                                   {"room_id",       std::string{room_id},  false},
+                                   {"status",        "502",                 false},
+                                   {"remote_server", remote_server,         false},
+                                   {"reason",        resident_join.refusal, false}
+                },
+                               observability::LogEventSeverity::warning);
+                return federated_join_failure(resident_join.refusal, 502U);
+            }
+            auto outcome = FederatedJoinOutcome{};
+            outcome.policy = *policy;
+            outcome.remote_server = std::move(remote_server);
+            outcome.signed_event = std::move(signed_event);
+            outcome.signed_event_value = signed_value.value;
+            outcome.event_id_result = event_id_result;
+            outcome.resident_signed_event_json = std::move(resident_join.json);
+            return outcome;
+        }
         // ADR-0241: the whole state array — other members' m.room.member events
         // included — is verified here and persisted by join_room before the join
         // returns. The join event's after-state group is built from it, and the
@@ -5147,6 +5236,122 @@ namespace
         outcome.verified_state = std::move(verified_state);
         outcome.verified_auth_chain = std::move(verified_auth_chain);
         return outcome;
+    }
+
+    // The room versions a join advertises to a resident: every one this server implements
+    // (rooms::room_version_policy.cpp is the single source of truth, pinned by
+    // tests/conformance/test_room_version_table_conformance.cpp).
+    [[nodiscard]] auto implemented_room_versions() -> std::vector<std::string>
+    {
+        auto versions = std::vector<std::string>{};
+        for (auto const& policy : rooms::known_room_versions())
+        {
+            versions.emplace_back(policy.id);
+        }
+        return versions;
+    }
+
+    // ADR-0288: waits for the events of `room_id` that another thread is applying now, so
+    // that a decision made next sees them. Ingestion applies a received event under the
+    // room's stripe mutex and then `runtime.mutex`; this releases `runtime.mutex`, takes
+    // and drops the stripe, and restores `runtime.mutex`, which is the order ingestion takes
+    // them in. Anything read from runtime state before the call must be read again after it.
+    auto wait_for_in_flight_room_events(HomeserverRuntime& runtime, std::unique_lock<RuntimeMutex>& guard,
+                                        std::string_view room_id) -> void
+    {
+        auto const stripe = std::hash<std::string>{}(std::string{room_id}) % room_mutex_stripe_count;
+        auto const released = RuntimeLockRelease{guard};
+        auto const barrier = std::lock_guard{runtime.room_stripe_mutexes[stripe]};
+        std::ignore = barrier;
+    }
+
+    // ADR-0287. This server is resident in `room_id` and the restricted-join decision found
+    // that `user_id` meets an allow condition but no user of this server can authorise the
+    // join (server-server-api.md "Restricted rooms": M_UNABLE_TO_GRANT_JOIN, "the joining
+    // server should try a different server"). Joins `user_id` through one of `candidates`
+    // with make_join and send_join, and stores the resident's co-signed join as a received
+    // event: the room's state is already here, so none of the answer's state is taken (see
+    // `FederatedJoinPurpose`). The caller holds the MembershipExchangeClaim for the pair and
+    // `runtime.mutex` through `guard`; the network exchange and the signature checks run with
+    // it released.
+    [[nodiscard]] auto join_through_other_resident(HomeserverRuntime& runtime, std::unique_lock<RuntimeMutex>& guard,
+                                                   std::string_view room_id, std::string const& user_id,
+                                                   std::vector<std::string> candidates) -> OperationResult
+    {
+        auto const our_server = runtime.config.server().server_name;
+        // The room's own version is the only one offered, so a template for any other is
+        // not a template for this room.
+        auto const room_version = stored_room_version(runtime.database.persistent_store, room_id);
+        if (!room_version.has_value())
+        {
+            return make_operation_result(false, {}, "the room's version is unknown", 500U);
+        }
+        wire_federation_callbacks(runtime);
+        if (!runtime.federation.pdu_sink)
+        {
+            return make_operation_result(false, {}, "federation is not available", 503U);
+        }
+        auto const signing_key = find_active_server_signing_key(runtime);
+        auto const key_id = signing_key.has_value() ? signing_key->key_id : std::string{};
+        auto secret_key = core::SecretBuffer{runtime.database.signing_secret_key.bytes()};
+        auto const joining_profile = database::find_profile(runtime.database.persistent_store, user_id);
+        auto joined = [&] {
+            auto const released = RuntimeLockRelease{guard};
+            return perform_federated_join(runtime, room_id, user_id, our_server, std::move(candidates),
+                                          std::vector<std::string>{*room_version}, signing_key, key_id,
+                                          std::move(secret_key), joining_profile,
+                                          FederatedJoinPurpose::join_through_resident);
+        }();
+        if (joined.failure.has_value())
+        {
+            return *joined.failure;
+        }
+        if (joined.policy.id != *room_version)
+        {
+            return make_operation_result(false, {}, "the resident's template is for another room version", 502U);
+        }
+        auto envelope = federation::parse_inbound_pdu_envelope(joined.resident_signed_event_json, joined.policy.id);
+        if (!envelope.has_value() || envelope->room_id != room_id || envelope->sender != user_id ||
+            envelope->event_type != "m.room.member" || envelope->state_key != std::optional<std::string>{user_id})
+        {
+            return make_operation_result(false, {}, "the resident's signed join is not this user's join", 502U);
+        }
+        envelope->origin = joined.remote_server;
+        // The sink takes the room stripe and then runtime.mutex itself: drop every level
+        // this thread holds, as the pending-PDU drain after an ordinary join does.
+        auto const ingested = [&] {
+            auto const released = RuntimeLockRelease{guard};
+            return runtime.federation.pdu_sink(*envelope);
+        }();
+        if (ingested.status != federation::PduIngestionStatus::accepted)
+        {
+            auto const refused = ingested.status == federation::PduIngestionStatus::rejected_auth ||
+                                 ingested.status == federation::PduIngestionStatus::soft_failed ||
+                                 ingested.status == federation::PduIngestionStatus::rejected_invalid;
+            log_diagnostic("room.join.rejected",
+                           {
+                               {"actor",         user_id,                 false},
+                               {"room_id",       std::string{room_id},    false},
+                               {"status",        refused ? "403" : "502", false},
+                               {"remote_server", joined.remote_server,    false},
+                               {"reason",        ingested.reason,         false}
+            },
+                           observability::LogEventSeverity::warning);
+            return make_operation_result(false, {}, "the resident's join was not applied: " + ingested.reason,
+                                         refused ? 403U : 502U);
+        }
+        append_local_audit(runtime.database, observability::AuditCategory::admin, "room.joined_via_other_resident",
+                           user_id, room_id, "joined through " + joined.remote_server);
+        log_diagnostic("room.join.accepted_via_other_resident",
+                       {
+                           {"actor",         user_id,                         false},
+                           {"room_id",       std::string{room_id},            false},
+                           {"remote_server", joined.remote_server,            false},
+                           {"event_id",      joined.event_id_result.event_id, false}
+        },
+                       observability::LogEventSeverity::info);
+        notify_room_changed(runtime, room_id);
+        return make_operation_result(true, std::string{room_id});
     }
 
 } // namespace
@@ -5333,14 +5538,7 @@ namespace
         // even though the rest of the join pipeline (validate_make_join_event,
         // sign_event_for_server, make_reference_hash_event_id) already handles
         // whatever version the response reports via find_room_version_policy.
-        auto const supported_versions = [] {
-            auto versions = std::vector<std::string>{};
-            for (auto const& policy : rooms::known_room_versions())
-            {
-                versions.emplace_back(policy.id);
-            }
-            return versions;
-        }();
+        auto const supported_versions = implemented_room_versions();
         // Best-effort: load the key_id from the persistent store. If no usable key
         // record exists, perform_sync_outbound_call fails with "server signing key not
         // initialized", which join_room surfaces as 502 — the correct status for an
@@ -5780,8 +5978,48 @@ namespace
         auto authorising_user = std::string{};
         if (third_party_signed == nullptr)
         {
-            auto const decision = decide_restricted_join(runtime.database.persistent_store, room_id, *user_id,
-                                                         runtime.config.server().server_name);
+            auto decision = decide_restricted_join(runtime.database.persistent_store, room_id, *user_id,
+                                                   runtime.config.server().server_name);
+            if (decision.verdict == RestrictedJoinVerdict::unable_to_grant)
+            {
+                // ADR-0287, ADR-0288: the user meets a condition but no user of this server can
+                // authorise the join. An event for the room that is being applied now may give a
+                // local user the power, so wait for it and decide again; if it still cannot be
+                // authorised here, join through another resident (server-server-api.md
+                // "Restricted rooms": "the joining server should try a different server").
+                auto const exchange = MembershipExchangeClaim{runtime, room_id, *user_id};
+                wait_for_in_flight_room_events(runtime, guard, room_id);
+                room = find_room(runtime.database, room_id);
+                if (room == nullptr || room_has_member(*room, *user_id))
+                {
+                    auto changed =
+                        make_operation_result(false, {}, "the room changed while the join was decided", 429U);
+                    changed.retry_after_ms = membership_exchange_retry_after_ms;
+                    return changed;
+                }
+                decision = decide_restricted_join(runtime.database.persistent_store, room_id, *user_id,
+                                                  runtime.config.server().server_name);
+                if (decision.verdict == RestrictedJoinVerdict::unable_to_grant)
+                {
+                    auto const our_server = runtime.config.server().server_name;
+                    auto candidates = restricted_join_fallback_candidates(
+                        join_candidate_servers(joining_via, room_id, our_server),
+                        last_known_resident_servers(runtime, room_id), our_server,
+                        std::min<std::size_t>(
+                            max_restricted_join_fallback_candidates,
+                            std::max(std::uint32_t{1U}, runtime.federation.config.join_max_candidates)));
+                    if (!candidates.empty())
+                    {
+                        auto joined_elsewhere =
+                            join_through_other_resident(runtime, guard, room_id, *user_id, std::move(candidates));
+                        if (joined_elsewhere.ok)
+                        {
+                            return joined_elsewhere;
+                        }
+                        // The client is told the refusal that sent it elsewhere (below).
+                    }
+                }
+            }
             if (decision.verdict == RestrictedJoinVerdict::authorised)
             {
                 authorising_user = decision.authorising_user;
