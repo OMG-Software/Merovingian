@@ -228,8 +228,8 @@ Implemented now:
   join waits for the room's in-flight events, decides again, and then goes
   through another resident: make_join and send_join to the servers the client
   named, then other servers with joined members (at most 4), and the resident's
-  co-signed `event` (same reference-hash ID as the join this server signed, both
-  signatures verified) is stored as a received event; the answer's state is not
+  co-signature (same reference-hash ID as the join this server signed, both
+  signatures verified) is merged into this server's own join, which is stored as a received event (ADR-0302); the answer's state is not
   used. If every candidate fails, the client gets the 403
 - a content-hash mismatch on a direct membership endpoint redacts, it does not
   reject (0.12.36, R06): `handle_send_membership` and `handle_invite` refuse

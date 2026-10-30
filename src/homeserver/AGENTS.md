@@ -211,6 +211,11 @@ on that record, each by the inviter's server, which the spec calls a resident se
   to that server first (`deliver_remote_invite`, ADR-0293) and stored and sent to the room's other servers only
   after it accepted. Only an unreachable server falls back to `queue_remote_invite`. Never go back to queueing
   first: the invitee's client acts on what a third server shows it.
+- The invitee's answer is not trusted (ADR-0302): `check_invite_answer` requires the event sent (same
+  reference-hash ID) validly signed by the invitee's server, and returns this server's own event with only those
+  verified signatures merged in (`with_server_signatures`). That co-signed event is what `invite_user` stores and
+  sends on; createRoom replaces its already stored invite with it (`store_cosigned_invite`). An answer that fails
+  is `refused` (502), never `delivered`, and never queued. The key lookup runs with `runtime.mutex` released.
 - The invite handler judges an invite against held room state only while a user of this server is joined to the
   room (ADR-0301); after a federated leave the state is stale. For a room this server is in, it stores no event (the
   transaction's copy places it) and `/sync` hides the invite until the state has it (`invite_awaits_room_state`).
@@ -266,12 +271,18 @@ other servers with joined members; never this server), offering only the room's 
   server has not found entitled. `decide_restricted_join` stays the only place that decides.
 - The room's state is already here. Never feed the answer's `state` / `auth_chain` to
   `ingest_send_join_state`: that path seeds a room the server holds nothing of and would replace
-  state it holds. The answer's `event` is stored as a received PDU through `federation.pdu_sink`
+  state it holds. The join is stored as a received PDU through `federation.pdu_sink`
   (`origin` = the resident), so the auth rules judge it against this server's own state.
-- The `event` is taken only if `verify_resident_signed_join` accepts it: the reference-hash event ID
-  is that of the join this server signed, it names an authorising user of another server, and
-  `filter_verified_send_join_events` verifies this server's signature and the authorising server's
-  (ADR-0171). Never store a join authorised by a server whose signature was not checked.
+- What is stored is this server's own signed join with only the resident's authorising-server signatures
+  merged in (`with_server_signatures`, ADR-0302), never the resident's copy: the event ID and the signatures
+  are over the redacted form, so a resident can change a display name and keep both.
+  `verify_resident_signed_join` requires the resident's `event` to have the reference-hash ID of the join this
+  server signed and to name an authorising user of another server, then
+  `filter_verified_send_join_events` verifies the combined event: this server's signature and the authorising
+  server's (ADR-0171). Never store a join authorised by a server whose signature was not checked.
+- A sink answer of `already_stored` (the co-signed join reached this server first, in a transaction) is a
+  success only if `join_event_made_member` holds: that event is accepted, is the user's current member state,
+  and the membership is `join`. Any other stored copy leaves the join failed.
 - If no candidate succeeds the client gets the original 403, not an upstream error.
 
 ## The resident sends accepted membership events on

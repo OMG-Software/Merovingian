@@ -4704,13 +4704,52 @@ namespace
         join_through_resident,
     };
 
+    // `base`, a signed event, with the signature that `source` carries for `server_name` under each of
+    // `key_ids` added to its `signatures`. Nothing else of `base` changes: the result keeps `base`'s
+    // content, hashes and every signature it already had (Server-Server API, PUT /v2/invite: "All other
+    // fields of the events should remain untouched"). nullopt when a named key has no signature in
+    // `source` or the result cannot be built.
+    [[nodiscard]] auto with_server_signatures(canonicaljson::Value const& base,
+                                              std::vector<events::EventSignature> const& source,
+                                              std::string_view server_name, std::vector<std::string> const& key_ids)
+        -> std::optional<canonicaljson::Value>
+    {
+        auto merged = base;
+        for (auto const& key_id : key_ids)
+        {
+            auto const found = std::ranges::find_if(source, [&](events::EventSignature const& candidate) {
+                return candidate.server_name == server_name && candidate.key_id == key_id;
+            });
+            if (found == source.end())
+            {
+                return std::nullopt;
+            }
+            auto const attached = events::attach_event_signature(
+                merged, events::SigningKeyId{std::string{server_name}, key_id}, found->signature);
+            if (attached.error != canonicaljson::CanonicalJsonError::none)
+            {
+                return std::nullopt;
+            }
+            auto parsed = canonicaljson::parse_lossless(attached.output);
+            if (parsed.error != canonicaljson::ParseError::none)
+            {
+                return std::nullopt;
+            }
+            merged = std::move(parsed.value);
+        }
+        return merged;
+    }
+
     // ADR-0287: checks the `event` of a send_join answer for a restricted join through
-    // another resident, and returns it serialized, or the reason it was refused. It must be
-    // the join this server signed (same reference-hash event ID, so the resident changed
-    // nothing the hash covers), name an authorising user who is not a user of this server,
-    // and carry valid signatures: this server's own and the authorising server's
-    // (rooms/v10.md 4.2.1, ADR-0171). A join authorised by a server whose signature was not
-    // checked is never accepted.
+    // another resident, and returns this server's own join with the resident's co-signature
+    // merged in, serialized, or the reason it was refused. The answer's event must be the join
+    // this server signed (same reference-hash event ID) and name an authorising user who is
+    // not a user of this server. Only its authorising-server signatures are taken, and they are
+    // added to `own_signed_event`: the reference hash and the signatures are over the redacted
+    // form, so a resident can change a field redaction drops (a display name) and keep both,
+    // and the event stored is never the resident's copy. The combined event must verify: this
+    // server's own signature and the authorising server's (rooms/v10.md 4.2.1, ADR-0171). A join
+    // authorised by a server whose signature was not checked is never accepted.
     struct ResidentSignedJoin final
     {
         std::string json{};
@@ -4719,7 +4758,8 @@ namespace
 
     [[nodiscard]] auto verify_resident_signed_join(HomeserverRuntime& runtime, canonicaljson::Object const& answer,
                                                    rooms::RoomVersionPolicy const& policy, std::string_view our_server,
-                                                   std::string_view expected_event_id) -> ResidentSignedJoin
+                                                   std::string_view expected_event_id,
+                                                   canonicaljson::Value const& own_signed_event) -> ResidentSignedJoin
     {
         auto const* event_value = object_member(answer, "event");
         if (event_value == nullptr || !std::holds_alternative<canonicaljson::Object>(event_value->storage()))
@@ -4732,7 +4772,11 @@ namespace
         {
             return {{}, "the resident changed the join event"};
         }
-        auto const* content = object_member_as_object(event, "content");
+        // The reference hash covers the authorising user, so the resident's copy and this server's own
+        // name the same one; read it from the copy that is kept.
+        auto const* own_event = std::get_if<canonicaljson::Object>(&own_signed_event.storage());
+        auto const* content = own_event == nullptr ? object_member_as_object(event, "content")
+                                                   : object_member_as_object(*own_event, "content");
         auto const* authoriser =
             content == nullptr ? nullptr : string_member(*content, "join_authorised_via_users_server");
         if (authoriser == nullptr || sender_domain_from_user_id(*authoriser) == our_server ||
@@ -4740,8 +4784,26 @@ namespace
         {
             return {{}, "the join names no authorising user of another server"};
         }
+        auto const authorising_server = std::string{sender_domain_from_user_id(*authoriser)};
+        auto const resident_copy = events::parse_event_envelope(*event_value);
+        if (!resident_copy.error.empty())
+        {
+            return {{}, "the resident's join event could not be read"};
+        }
+        auto const authorising_key_ids =
+            federation::signature_key_ids_for_server(resident_copy.event.signatures, authorising_server);
+        if (authorising_key_ids.empty())
+        {
+            return {{}, "the join carries no signature of its authorising server"};
+        }
+        auto const combined = with_server_signatures(own_signed_event, resident_copy.event.signatures,
+                                                     authorising_server, authorising_key_ids);
+        if (!combined.has_value())
+        {
+            return {{}, "the authorising server's signatures could not be added to the join"};
+        }
         auto const verified =
-            filter_verified_send_join_events(runtime, canonicaljson::Array{*event_value}, policy, our_server);
+            filter_verified_send_join_events(runtime, canonicaljson::Array{*combined}, policy, our_server);
         if (verified.size() != 1U)
         {
             return {{}, "the join's signatures did not verify"};
@@ -5166,8 +5228,8 @@ namespace
         }
         if (purpose == FederatedJoinPurpose::join_through_resident)
         {
-            auto resident_join =
-                verify_resident_signed_join(runtime, *send_obj, *policy, our_server, event_id_result.event_id);
+            auto resident_join = verify_resident_signed_join(runtime, *send_obj, *policy, our_server,
+                                                             event_id_result.event_id, signed_value.value);
             if (!resident_join.refusal.empty())
             {
                 log_diagnostic("room.join.rejected",
@@ -5296,6 +5358,30 @@ namespace
         std::ignore = barrier;
     }
 
+    // True when `event_id` is stored in `room_id` as an accepted join of `user_id` and is the event
+    // that gives `user_id` their joined membership there now. Call with `runtime.mutex` held.
+    [[nodiscard]] auto join_event_made_member(HomeserverRuntime const& runtime, std::string_view room_id,
+                                              std::string_view user_id, std::string_view event_id) -> bool
+    {
+        auto const& store = runtime.database.persistent_store;
+        auto const stored = store.events.find(event_id);
+        if (stored == store.events.end() || stored->room_id != room_id || stored->sender_user_id != user_id ||
+            stored->status != "accepted")
+        {
+            return false;
+        }
+        auto const state = std::ranges::find_if(store.state, [&](database::PersistentStateEvent const& row) {
+            return row.room_id == room_id && row.event_type == "m.room.member" && row.state_key == user_id;
+        });
+        if (state == store.state.end() || state->event_id != event_id)
+        {
+            return false;
+        }
+        return std::ranges::any_of(store.memberships, [&](database::PersistentMembership const& membership) {
+            return membership.room_id == room_id && membership.user_id == user_id && membership.membership == "join";
+        });
+    }
+
     // ADR-0287. This server is resident in `room_id` and the restricted-join decision found
     // that `user_id` meets an allow condition but no user of this server can authorise the
     // join (server-server-api.md "Restricted rooms": M_UNABLE_TO_GRANT_JOIN, "the joining
@@ -5354,7 +5440,14 @@ namespace
             auto const released = RuntimeLockRelease{guard};
             return runtime.federation.pdu_sink(*envelope);
         }();
-        if (ingested.status != federation::PduIngestionStatus::accepted)
+        // The same join may have reached this server first, in a transaction from the resident sent
+        // while the send_join was being answered (server-server-api.md "Joining Rooms"): the event ID
+        // is the same whatever the signatures, so the sink answers `already_stored`. That is the join
+        // done only if that event is the one that made the user a member; a copy stored any other way
+        // (an outlier, soft-failed, rejected) did not, and the join has not happened.
+        auto const arrived_first = ingested.status == federation::PduIngestionStatus::already_stored &&
+                                   join_event_made_member(runtime, room_id, user_id, joined.event_id_result.event_id);
+        if (ingested.status != federation::PduIngestionStatus::accepted && !arrived_first)
         {
             auto const refused = ingested.status == federation::PduIngestionStatus::rejected_auth ||
                                  ingested.status == federation::PduIngestionStatus::soft_failed ||
@@ -6612,6 +6705,112 @@ namespace
     return make_operation_result(true, std::string{room_id});
 }
 
+namespace
+{
+
+    // What the answer of an invited user's server to `PUT /v2/invite` amounts to once checked (ADR-0293).
+    // `refusal` is empty when the answer was good.
+    struct CheckedInviteAnswer final
+    {
+        std::string cosigned_event_json{};
+        std::vector<events::EventSignature> cosigned_signatures{};
+        std::string refusal{};
+    };
+
+    // Server-Server API, PUT /v2/invite: the 200 response is "The event with the invited server's
+    // signature added. All other fields of the events should remain untouched." So the answer must be
+    // the event this server sent (same reference-hash event ID, so nothing the hash covers changed) and
+    // carry a valid signature by the invited user's server (appendices.md "Checking for a Signature";
+    // an unknown or expired key is skipped, a known one that does not verify refuses, and one must
+    // verify). What is returned is this server's own event with only those verified signatures added to
+    // it, never the invited server's copy. The key lookup is a network round trip: call with
+    // `runtime.mutex` RELEASED, with every argument owned by the caller.
+    [[nodiscard]] auto check_invite_answer(HomeserverRuntime& runtime, std::string_view room_version,
+                                           std::string_view invitee_server, std::string_view event_id,
+                                           std::string_view own_event_json, std::string_view answer_body)
+        -> CheckedInviteAnswer
+    {
+        auto const refused = [](std::string reason) {
+            return CheckedInviteAnswer{{}, {}, std::move(reason)};
+        };
+        auto const* policy = rooms::find_room_version_policy(room_version);
+        if (policy == nullptr)
+        {
+            return refused("the room's version is not known");
+        }
+        auto const answer = canonicaljson::parse_lossless(answer_body);
+        auto const* root = std::get_if<canonicaljson::Object>(&answer.value.storage());
+        auto const* answered = answer.error != canonicaljson::ParseError::none || root == nullptr
+                                   ? nullptr
+                                   : object_member(*root, "event");
+        if (answered == nullptr || !std::holds_alternative<canonicaljson::Object>(answered->storage()))
+        {
+            return refused("the invited user's server sent a malformed invite response");
+        }
+        auto const id = events::make_reference_hash_event_id(*answered, *policy);
+        if (!id.error.empty() || id.event_id != event_id)
+        {
+            return refused("the invited user's server returned a different event from the invite");
+        }
+        auto const returned = events::parse_event_envelope(*answered);
+        if (!returned.error.empty() || runtime.crypto_provider == nullptr)
+        {
+            return refused("the invited user's server returned an event that could not be checked");
+        }
+        auto const own_event = canonicaljson::parse_lossless(own_event_json);
+        if (own_event.error != canonicaljson::ParseError::none)
+        {
+            return refused("the invite could not be read back");
+        }
+        // Only keys that resolved can have been verified; those are the signatures merged.
+        auto resolved_key_ids = std::vector<std::string>{};
+        auto const deadline =
+            std::chrono::steady_clock::now() + std::chrono::seconds{runtime.federation.config.remote_timeout_seconds};
+        auto const decision = federation::verify_server_signatures_on_event(
+            *answered, *policy, invitee_server, returned.event.signatures,
+            [&](std::string_view server_name, std::string_view key_id) {
+                if (server_name != invitee_server)
+                {
+                    return federation::VerificationKeyResolution{};
+                }
+                auto key = federation::resolve_join_state_key(runtime.federation, server_name, key_id, deadline);
+                if (key.has_value())
+                {
+                    resolved_key_ids.emplace_back(key_id);
+                }
+                return federation::VerificationKeyResolution{std::move(key), false};
+            },
+            *runtime.crypto_provider, deadline);
+        if (!decision.accepted || resolved_key_ids.empty())
+        {
+            return refused("the invited user's server did not validly sign the invite: " + decision.reason);
+        }
+        auto const combined =
+            with_server_signatures(own_event.value, returned.event.signatures, invitee_server, resolved_key_ids);
+        if (!combined.has_value())
+        {
+            return refused("the invited user's signatures could not be added to the invite");
+        }
+        auto serialized = canonicaljson::serialize_canonical(*combined);
+        if (serialized.error != canonicaljson::CanonicalJsonError::none ||
+            serialized.output.size() > events::max_event_size_bytes)
+        {
+            return refused("the invite with the invited user's signatures is not a valid event");
+        }
+        auto result = CheckedInviteAnswer{std::move(serialized.output), {}, {}};
+        for (auto const& signature : returned.event.signatures)
+        {
+            if (signature.server_name == invitee_server &&
+                std::ranges::find(resolved_key_ids, signature.key_id) != resolved_key_ids.end())
+            {
+                result.cosigned_signatures.push_back(signature);
+            }
+        }
+        return result;
+    }
+
+} // namespace
+
 [[nodiscard]] auto deliver_remote_invite(HomeserverRuntime& runtime, std::unique_lock<RuntimeMutex>& guard,
                                          std::string_view room_id, std::string_view invitee_server,
                                          std::string_view event_id, std::string_view event_json) -> RemoteInviteResult
@@ -6623,9 +6822,10 @@ namespace
         return {RemoteInviteOutcome::unreachable, 502U, "server signing key not available"};
     }
     auto const& store = runtime.database.persistent_store;
-    auto const transaction = federation::make_outbound_invite(
-        invitee_server, runtime.config.server().server_name, room_id, event_id,
-        stored_room_version(store, room_id).value_or("10"), event_json, stripped_state_pdus(store, room_id));
+    auto const room_version = stored_room_version(store, room_id).value_or("10");
+    auto const transaction =
+        federation::make_outbound_invite(invitee_server, runtime.config.server().server_name, room_id, event_id,
+                                         room_version, event_json, stripped_state_pdus(store, room_id));
     auto const key_id = signing_key->key_id;
     auto secret_key = core::SecretBuffer{runtime.database.signing_secret_key.bytes()};
 
@@ -6641,15 +6841,26 @@ namespace
 
     if (call.ok)
     {
-        // Server-Server API, PUT /invite: the response is `{"event": <the signed invite event>}`.
-        auto const parsed = canonicaljson::parse_lossless(call.body);
-        auto const* root = std::get_if<canonicaljson::Object>(&parsed.value.storage());
-        if (parsed.error != canonicaljson::ParseError::none || root == nullptr ||
-            object_member_as_object(*root, "event") == nullptr)
+        // Server-Server API, PUT /invite: the response is `{"event": <the signed invite event>}`. It is
+        // checked, and the invited server's signature merged into this server's own event, with the
+        // mutex released: resolving that server's signing key can be a round trip to it. A response
+        // that does not check out is a refusal, not a delivery (ADR-0293).
+        auto const checked = [&] {
+            auto const released = RuntimeLockRelease{guard};
+            return check_invite_answer(runtime, room_version, invitee_server, event_id, event_json, call.body);
+        }();
+        if (!checked.refusal.empty())
         {
-            return {RemoteInviteOutcome::refused, 502U, "the invited user's server sent a malformed invite response"};
+            log_diagnostic("room.invite.remote_answer_refused",
+                           {
+                               {"room_id",        std::string{room_id},        false},
+                               {"invitee_server", std::string{invitee_server}, false},
+                               {"reason",         checked.refusal,             false}
+            },
+                           observability::LogEventSeverity::warning);
+            return {RemoteInviteOutcome::refused, 502U, checked.refusal};
         }
-        return {RemoteInviteOutcome::delivered, 200U, {}};
+        return {RemoteInviteOutcome::delivered, 200U, {}, checked.cosigned_event_json, checked.cosigned_signatures};
     }
     // An answer that says no is final: the same invite would be refused again. A server that gave no
     // answer, or only an overloaded or failing one, is asked again later by the outbound queue.
@@ -6661,6 +6872,28 @@ namespace
                 "the invited user's server refused the invite"};
     }
     return {RemoteInviteOutcome::unreachable, 502U, call.body};
+}
+
+[[nodiscard]] auto store_cosigned_invite(HomeserverRuntime& runtime, std::string_view room_id,
+                                         std::string_view event_id, std::string_view cosigned_event_json) -> bool
+{
+    auto& store = runtime.database.persistent_store;
+    auto const stored = store.events.find(event_id);
+    if (stored == store.events.end() || stored->room_id != room_id)
+    {
+        return false;
+    }
+    auto const previous_json = stored->json;
+    if (!database::replace_event_json(store, event_id, std::string{cosigned_event_json}))
+    {
+        return false;
+    }
+    // The in-memory room keeps its own copy of what it was sent.
+    if (auto* room = find_room(runtime.database, room_id); room != nullptr)
+    {
+        std::ranges::replace(room->events, previous_json, std::string{cosigned_event_json});
+    }
+    return true;
 }
 
 auto queue_remote_invite(HomeserverRuntime& runtime, std::string_view room_id, std::string_view invitee_server,
@@ -6718,17 +6951,24 @@ auto queue_remote_invite(HomeserverRuntime& runtime, std::string_view room_id, s
     // the servers in the room". So the invite is composed, offered to the invitee's server, and only then
     // stored and sent on to the room's other servers. A client that is told the invite succeeded can rely
     // on the invitee's server holding it (Complement TestFederationRejectInvite).
-    auto const composed = compose_membership_transition(runtime, room_id, *user_id, target_user_id, "invite", reason);
+    auto composed = compose_membership_transition(runtime, room_id, *user_id, target_user_id, "invite", reason);
     if (!composed.event.has_value())
     {
         return composed.failure;
     }
-    auto const& invite_event = *composed.event;
+    auto& invite_event = *composed.event;
     auto const delivery =
         deliver_remote_invite(runtime, guard, room_id, invitee_server, invite_event.event_id, invite_event.json);
     if (delivery.outcome == RemoteInviteOutcome::refused)
     {
         return make_operation_result(false, {}, delivery.reason, delivery.status);
+    }
+    if (delivery.outcome == RemoteInviteOutcome::delivered)
+    {
+        // Signed by both servers now: this is the event that is stored and sent to the room's servers.
+        invite_event.json = delivery.cosigned_event_json;
+        invite_event.signatures.insert(invite_event.signatures.end(), delivery.cosigned_signatures.begin(),
+                                       delivery.cosigned_signatures.end());
     }
 
     // runtime.mutex was down for the exchange: the room, or the inviter's place in it, may have changed.

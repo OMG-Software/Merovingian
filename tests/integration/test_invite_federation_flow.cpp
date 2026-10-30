@@ -18,19 +18,27 @@
 #include "merovingian/canonicaljson/serializer.hpp"
 #include "merovingian/canonicaljson/value.hpp"
 #include "merovingian/config/config.hpp"
+#include "merovingian/core/socket_handle.hpp"
 #include "merovingian/database/persistent_store.hpp"
+#include "merovingian/events/event_signer.hpp"
 #include "merovingian/federation/dispatch_worker.hpp"
 #include "merovingian/federation/inbound_ingestion.hpp"
+#include "merovingian/federation/inbound_request.hpp"
 #include "merovingian/federation/membership_endpoints.hpp"
 #include "merovingian/homeserver/client_server.hpp"
 #include "merovingian/homeserver/local_http_router.hpp"
 #include "merovingian/homeserver/tls.hpp"
 #include "merovingian/net/tcp_acceptor.hpp"
+#include "merovingian/rooms/room_version_policy.hpp"
 
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/generators/catch_generators.hpp>
 
 #include <algorithm>
+#include <array>
+#include <charconv>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -993,23 +1001,92 @@ SCENARIO("After a remote user joins through send_join, a local user's invite and
 namespace
 {
 
-// The invited user's server, as a loopback TLS peer. `answer` is the whole HTTP response it gives to
-// PUT /v2/invite.
+constexpr auto invitee_key_id = std::string_view{"ed25519:invitee"};
+constexpr auto invitee_key_seed = std::string_view{"invite-flow-invitee-seed"};
+constexpr auto impostor_key_seed = std::string_view{"invite-flow-impostor-seed"};
+
+// Reads one HTTP request (headers and the Content-Length body) from a TLS connection.
+[[nodiscard]] auto read_whole_request(merovingian::homeserver::TlsConnection& connection) -> std::string
+{
+    auto buffer = std::array<char, 8192>{};
+    auto request = std::string{};
+    auto expected = std::size_t{0U};
+    while (true)
+    {
+        auto const header_end = request.find("\r\n\r\n");
+        if (header_end != std::string::npos)
+        {
+            if (expected == 0U)
+            {
+                auto length = std::size_t{0U};
+                auto const marker = request.find("Content-Length:");
+                if (marker != std::string::npos)
+                {
+                    auto begin = marker + std::string_view{"Content-Length:"}.size();
+                    while (begin < request.size() && request[begin] == ' ')
+                    {
+                        ++begin;
+                    }
+                    std::ignore = std::from_chars(request.data() + begin, request.data() + request.size(), length);
+                }
+                expected = header_end + 4U + length;
+            }
+            if (request.size() >= expected)
+            {
+                return request;
+            }
+        }
+        auto const bytes = connection.read(buffer.data(), buffer.size());
+        if (bytes <= 0)
+        {
+            return request;
+        }
+        request.append(buffer.data(), static_cast<std::size_t>(bytes));
+    }
+}
+
+// The invited user's server, as a loopback TLS peer. `respond` maps the raw PUT /v2/invite request it
+// receives to the whole HTTP response it gives. Its signing key is the one the runtime resolves for it.
 struct InviteeServer final
 {
     InvitingServer peer;
     std::vector<std::string> captured{};
     std::thread thread{};
 
-    InviteeServer(merovingian::homeserver::ClientServerRuntime& runtime, std::string answer)
+    InviteeServer(merovingian::homeserver::ClientServerRuntime& runtime,
+                  std::function<std::string(std::string const&)> respond)
         : peer{runtime}
     {
-        thread = std::thread{[this, answer = std::move(answer)]() {
-            merovingian::tests::tls_mock::run_path_dispatch_tls_server(peer.acceptor, *peer.tls.context,
-                                                                       {
-                                                                           {"/v2/invite/", answer}
-            },
-                                                                       &captured);
+        runtime.homeserver.federation.remote_key_resolver =
+            [](std::string_view server_name,
+               std::string_view key_id) -> std::optional<merovingian::federation::FederationRemoteRuntime> {
+            if (server_name != inviting_server || key_id != invitee_key_id)
+            {
+                return std::nullopt;
+            }
+            auto remote = merovingian::federation::FederationRemoteRuntime{};
+            remote.server_name = std::string{inviting_server};
+            remote.signing_key = {std::string{inviting_server}, std::string{invitee_key_id}, 4'102'444'800'000U,
+                                  merovingian::federation::test::keypair_from_seed(invitee_key_seed).public_key};
+            remote.discovery.server_name = std::string{inviting_server};
+            remote.trust.reputation_score = 100U;
+            return remote;
+        };
+        thread = std::thread{[this, respond = std::move(respond)]() {
+            auto const client_fd = merovingian::tests::tls_mock::accept_loopback(peer.acceptor, 10000);
+            if (client_fd < 0)
+            {
+                return;
+            }
+            auto const owned = merovingian::core::SocketHandle{client_fd};
+            auto accepted = merovingian::homeserver::accept_tls_connection(*peer.tls.context, client_fd, 5000);
+            if (!accepted.connection.has_value())
+            {
+                return;
+            }
+            auto request = read_whole_request(*accepted.connection);
+            captured.push_back(request);
+            std::ignore = accepted.connection->write(respond(request));
         }};
     }
     ~InviteeServer()
@@ -1025,10 +1102,119 @@ struct InviteeServer final
     auto operator=(InviteeServer&&) -> InviteeServer& = delete;
 };
 
-[[nodiscard]] auto accepting_answer() -> std::string
+// How the invited user's server answers an invite it is sent.
+enum class InviteeAnswer : std::uint8_t
 {
-    return merovingian::tests::tls_mock::json_http_response("200 OK", R"({"event":{}})");
+    // The event it was sent, with its own signature added (the v2 invite response).
+    cosigned,
+    // The event it was sent, signed with a key that is not the invitee server's key.
+    signed_with_another_key,
+    // The event it was sent, with no signature added.
+    unsigned_echo,
+    // An empty object where the event should be.
+    empty_event,
+    // A validly signed event, but not the one it was sent (another depth, so another event ID).
+    another_event,
+};
+
+[[nodiscard]] auto request_body_of(std::string const& request) -> std::string
+{
+    auto const separator = request.find("\r\n\r\n");
+    return separator == std::string::npos ? std::string{} : request.substr(separator + 4U);
 }
+
+// `event_value` with a signature by the invitee's server made with `seed_text`'s key.
+[[nodiscard]] auto sign_as_invitee(merovingian::canonicaljson::Value const& event_value, std::string_view room_version,
+                                   std::string_view seed_text) -> std::string
+{
+    auto const* policy = merovingian::rooms::find_room_version_policy(room_version);
+    REQUIRE(policy != nullptr);
+    auto const payload = merovingian::events::make_event_signing_payload(event_value, *policy);
+    REQUIRE(payload.error == merovingian::canonicaljson::CanonicalJsonError::none);
+    auto const keypair = merovingian::federation::test::keypair_from_seed(seed_text);
+    auto signature = std::array<unsigned char, crypto_sign_BYTES>{};
+    crypto_sign_detached(signature.data(), nullptr, reinterpret_cast<unsigned char const*>(payload.output.data()),
+                         payload.output.size(), reinterpret_cast<unsigned char const*>(keypair.secret_key.data()));
+    auto const encoded = merovingian::events::matrix_base64_from_bytes(
+        {reinterpret_cast<char const*>(signature.data()), signature.size()});
+    auto const attached = merovingian::events::attach_event_signature(
+        event_value, {std::string{inviting_server}, std::string{invitee_key_id}}, encoded);
+    REQUIRE(attached.error == merovingian::canonicaljson::CanonicalJsonError::none);
+    return attached.output;
+}
+
+// The HTTP response of an invited user's server to `request`, a PUT /v2/invite.
+[[nodiscard]] auto invitee_response(InviteeAnswer answer, std::string const& request) -> std::string
+{
+    if (answer == InviteeAnswer::empty_event)
+    {
+        return merovingian::tests::tls_mock::json_http_response("200 OK", R"({"event":{}})");
+    }
+    auto const body = merovingian::canonicaljson::parse_lossless(request_body_of(request));
+    auto const* root = std::get_if<merovingian::canonicaljson::Object>(&body.value.storage());
+    REQUIRE(root != nullptr);
+    auto const* event = object_member(*root, "event");
+    auto const* room_version = string_member(*root, "room_version");
+    REQUIRE(event != nullptr);
+    REQUIRE(room_version != nullptr);
+    auto event_text = std::string{};
+    switch (answer)
+    {
+    case InviteeAnswer::cosigned:
+        event_text = sign_as_invitee(*event, *room_version, invitee_key_seed);
+        break;
+    case InviteeAnswer::signed_with_another_key:
+        event_text = sign_as_invitee(*event, *room_version, impostor_key_seed);
+        break;
+    case InviteeAnswer::unsigned_echo: {
+        auto const serialized = merovingian::canonicaljson::serialize_canonical(*event);
+        REQUIRE(serialized.error == merovingian::canonicaljson::CanonicalJsonError::none);
+        event_text = serialized.output;
+        break;
+    }
+    case InviteeAnswer::another_event: {
+        auto serialized = merovingian::canonicaljson::serialize_canonical(*event);
+        REQUIRE(serialized.error == merovingian::canonicaljson::CanonicalJsonError::none);
+        auto const at = serialized.output.find(R"("depth":)");
+        REQUIRE(at != std::string::npos);
+        // Depth is kept by redaction, so another depth is another event ID (rooms/v10.md "Event IDs").
+        serialized.output.insert(at + std::string_view{R"("depth":)"}.size(), "9");
+        auto const altered = merovingian::canonicaljson::parse_lossless(serialized.output);
+        REQUIRE(altered.error == merovingian::canonicaljson::ParseError::none);
+        event_text = sign_as_invitee(altered.value, *room_version, invitee_key_seed);
+        break;
+    }
+    case InviteeAnswer::empty_event:
+        break;
+    }
+    return merovingian::tests::tls_mock::json_http_response("200 OK", R"({"event":)" + event_text + "}");
+}
+
+[[nodiscard]] auto invitee_answering(InviteeAnswer answer) -> std::function<std::string(std::string const&)>
+{
+    return [answer](std::string const& request) {
+        return invitee_response(answer, request);
+    };
+}
+
+// The JSON stored for the m.room.member event whose state key is `user_id` in `room_id`.
+[[nodiscard]] auto stored_member_json(merovingian::homeserver::ClientServerRuntime& runtime, std::string const& room_id,
+                                      std::string const& user_id) -> std::string
+{
+    auto const lock = std::lock_guard{runtime.homeserver.mutex};
+    auto const& store = runtime.homeserver.database.persistent_store;
+    auto const state = std::ranges::find_if(store.state, [&](auto const& row) {
+        return row.room_id == room_id && row.event_type == "m.room.member" && row.state_key == user_id;
+    });
+    if (state == store.state.end())
+    {
+        return {};
+    }
+    auto const event = store.events.find(state->event_id);
+    return event == store.events.end() ? std::string{} : event->json;
+}
+
+constexpr auto invitee_signature_marker = std::string_view{R"("inviter.example.org":{"ed25519:invitee":")"};
 
 } // namespace
 
@@ -1058,7 +1244,7 @@ SCENARIO("An invite to a user of another server is offered to that server before
 
         WHEN("alice invites bob and bob's server accepts the invite")
         {
-            auto invitee = InviteeServer{runtime, accepting_answer()};
+            auto invitee = InviteeServer{runtime, invitee_answering(InviteeAnswer::cosigned)};
             auto const invited = call(runtime, "POST", invite_target, alice, invite_body);
             invitee.thread.join();
 
@@ -1074,12 +1260,45 @@ SCENARIO("An invite to a user of another server is offered to that server before
                 // Nothing is left for the queue to retry: the server has been told.
                 REQUIRE(queued_bodies(runtime, inviting_server, "/v2/invite/").empty());
             }
+
+            THEN("the stored invite and the copy sent to delia's server carry both servers' signatures")
+            {
+                auto const stored = stored_member_json(runtime, room_id, bob);
+                CAPTURE(stored);
+                REQUIRE(stored.find(invitee_signature_marker) != std::string::npos);
+                REQUIRE(stored.find(R"("signatures":{"example.org":{"ed25519:)") != std::string::npos);
+                auto const sent_to_delia = queued_bodies(runtime, remote_server, "/send/");
+                REQUIRE_FALSE(sent_to_delia.empty());
+                REQUIRE(std::ranges::any_of(sent_to_delia, [](std::string const& body) {
+                    return body.find(invitee_signature_marker) != std::string::npos;
+                }));
+            }
+        }
+
+        WHEN("alice invites bob and bob's server answers with an event that fails validation")
+        {
+            auto const answer = GENERATE(InviteeAnswer::empty_event, InviteeAnswer::another_event,
+                                         InviteeAnswer::signed_with_another_key, InviteeAnswer::unsigned_echo);
+            auto invitee = InviteeServer{runtime, invitee_answering(answer)};
+            auto const invited = call(runtime, "POST", invite_target, alice, invite_body);
+            invitee.thread.join();
+
+            THEN("alice is refused with 502, no invite is stored, and nobody is told of it")
+            {
+                CAPTURE(static_cast<int>(answer), invited.response.body);
+                REQUIRE(invited.response.status == 502U);
+                REQUIRE(membership_row(runtime, room_id, bob).empty());
+                REQUIRE(queued_memberships_for(runtime, remote_server, bob).empty());
+                REQUIRE(queued_bodies(runtime, inviting_server, "/v2/invite/").empty());
+            }
         }
 
         WHEN("alice invites bob and bob's server refuses the invite")
         {
-            auto invitee = InviteeServer{runtime, merovingian::tests::tls_mock::json_http_response(
-                                                      "403 Forbidden", R"({"errcode":"M_FORBIDDEN","error":"No"})")};
+            auto invitee = InviteeServer{runtime, [](std::string const&) {
+                                             return merovingian::tests::tls_mock::json_http_response(
+                                                 "403 Forbidden", R"({"errcode":"M_FORBIDDEN","error":"No"})");
+                                         }};
             auto const invited = call(runtime, "POST", invite_target, alice, invite_body);
             invitee.thread.join();
 
@@ -1112,8 +1331,8 @@ SCENARIO("A createRoom invite to a user of another server reaches that server be
 
         WHEN("alice creates a room with bob in its invite list")
         {
-            auto invitee = InviteeServer{runtime, accepting_answer()};
-            std::ignore =
+            auto invitee = InviteeServer{runtime, invitee_answering(InviteeAnswer::cosigned)};
+            auto const room_id =
                 create_room(runtime, alice, std::string{R"({"preset":"private_chat","invite":[")"} + bob + R"("]})");
             invitee.thread.join();
 
@@ -1121,6 +1340,31 @@ SCENARIO("A createRoom invite to a user of another server reaches that server be
             {
                 REQUIRE(invitee.captured.size() == 1U);
                 REQUIRE(invitee.captured[0].find("/_matrix/federation/v2/invite/") != std::string::npos);
+                REQUIRE(queued_bodies(runtime, inviting_server, "/v2/invite/").empty());
+            }
+
+            THEN("the stored invite carries bob's server's signature as well as this server's")
+            {
+                auto const stored = stored_member_json(runtime, room_id, bob);
+                CAPTURE(stored);
+                REQUIRE(stored.find(invitee_signature_marker) != std::string::npos);
+                REQUIRE(stored.find(R"("signatures":{"example.org":{"ed25519:)") != std::string::npos);
+            }
+        }
+
+        WHEN("alice creates a room with bob in its invite list and bob's server answers with an unsigned event")
+        {
+            auto invitee = InviteeServer{runtime, invitee_answering(InviteeAnswer::unsigned_echo)};
+            auto const room_id =
+                create_room(runtime, alice, std::string{R"({"preset":"private_chat","invite":[")"} + bob + R"("]})");
+            invitee.thread.join();
+
+            THEN("the invite is not given bob's server's signature, and is not left for the queue to deliver")
+            {
+                auto const stored = stored_member_json(runtime, room_id, bob);
+                CAPTURE(stored);
+                REQUIRE_FALSE(stored.empty());
+                REQUIRE(stored.find(invitee_signature_marker) == std::string::npos);
                 REQUIRE(queued_bodies(runtime, inviting_server, "/v2/invite/").empty());
             }
         }

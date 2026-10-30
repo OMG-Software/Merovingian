@@ -14,6 +14,7 @@
 #include "merovingian/events/authorization.hpp"
 #include "merovingian/events/event_id.hpp"
 #include "merovingian/events/event_signer.hpp"
+#include "merovingian/federation/inbound_ingestion.hpp"
 #include "merovingian/federation/inbound_request.hpp"
 #include "merovingian/homeserver/auth_service.hpp"
 #include "merovingian/homeserver/local_http_router.hpp"
@@ -601,6 +602,137 @@ SCENARIO("A local user who meets a condition joins through another resident when
             server.join();
 
             THEN("the join is not accepted and the user is not joined")
+            {
+                CAPTURE(result.reason);
+                REQUIRE_FALSE(result.ok);
+                REQUIRE_FALSE(joined(carol_reg.value));
+            }
+        }
+
+        WHEN("the resident changes a field of the join that its signature does not cover")
+        {
+            // The join's display name is not kept by redaction, so the resident's signature and the
+            // reference-hash event ID are the same whatever it says (rooms/v10.md 4.2.1, "Event IDs").
+            {
+                auto const lock = std::lock_guard{runtime.mutex};
+                REQUIRE(merovingian::database::store_profile(runtime.database.persistent_store,
+                                                             {carol_reg.value, "Carol", {}}));
+            }
+            auto captured = std::vector<std::string>{};
+            auto const responder = [&](std::string const& request) {
+                if (request.find("/make_join/") != std::string::npos)
+                {
+                    return make_join_response(carol_reg.value, room);
+                }
+                auto altered = request_body(request);
+                auto const at = altered.find(R"("displayname":"Carol")");
+                REQUIRE(at != std::string::npos);
+                altered.replace(at, std::string_view{R"("displayname":"Carol")"}.size(), R"("displayname":"Mallory")");
+                return send_join_response(co_sign(altered, resident_server, resident_key_id, resident_key_seed));
+            };
+            auto server = std::thread{[&] {
+                serve_resident(acceptor, *tls_context.context, 2U, responder, captured);
+            }};
+            auto const joiner = tls::ScopedThreadJoin{server};
+            auto const result = merovingian::homeserver::join_room(
+                runtime, carol_login.value, std::string{restricted_room}, {std::string{resident_server}});
+            server.join();
+
+            THEN("the join stored is this server's own, with the resident's co-signature added to it")
+            {
+                CAPTURE(result.reason);
+                REQUIRE(result.ok);
+                REQUIRE(joined(carol_reg.value));
+                auto const lock = std::lock_guard{runtime.mutex};
+                auto const& store = runtime.database.persistent_store;
+                auto const state = std::ranges::find_if(store.state, [&](auto const& row) {
+                    return row.room_id == restricted_room && row.event_type == "m.room.member" &&
+                           row.state_key == carol_reg.value;
+                });
+                REQUIRE(state != store.state.end());
+                auto const event = store.events.find(state->event_id);
+                REQUIRE(event != store.events.end());
+                CAPTURE(event->json);
+                REQUIRE(event->json.find(R"("displayname":"Carol")") != std::string::npos);
+                REQUIRE(event->json.find("Mallory") == std::string::npos);
+                REQUIRE(event->json.find(R"("resident.example.org":{"ed25519:auto")") != std::string::npos);
+                REQUIRE(event->json.find(R"("local.example.org":{")") != std::string::npos);
+                REQUIRE(event->status == "accepted");
+            }
+        }
+
+        WHEN("the co-signed join reached this server by another path before the resident answered the send_join")
+        {
+            auto captured = std::vector<std::string>{};
+            auto const responder = [&](std::string const& request) {
+                if (request.find("/make_join/") != std::string::npos)
+                {
+                    return make_join_response(carol_reg.value, room);
+                }
+                auto const cosigned =
+                    co_sign(request_body(request), resident_server, resident_key_id, resident_key_seed);
+                // The resident also sends the join to this server in a transaction (PUT /send).
+                auto arrived = merovingian::federation::parse_inbound_pdu_envelope(cosigned, "10");
+                REQUIRE(arrived.has_value());
+                arrived->origin = std::string{resident_server};
+                auto const earlier = runtime.federation.pdu_sink(*arrived);
+                REQUIRE(earlier.status == merovingian::federation::PduIngestionStatus::accepted);
+                return send_join_response(cosigned);
+            };
+            auto server = std::thread{[&] {
+                serve_resident(acceptor, *tls_context.context, 2U, responder, captured);
+            }};
+            auto const joiner = tls::ScopedThreadJoin{server};
+            auto const result = merovingian::homeserver::join_room(
+                runtime, carol_login.value, std::string{restricted_room}, {std::string{resident_server}});
+            server.join();
+
+            THEN("the join succeeds: the user is joined by the copy that arrived first")
+            {
+                CAPTURE(result.reason);
+                REQUIRE(result.ok);
+                REQUIRE(joined(carol_reg.value));
+            }
+        }
+
+        WHEN("the join's event ID is already stored but it did not make the user a member")
+        {
+            auto captured = std::vector<std::string>{};
+            auto const responder = [&](std::string const& request) {
+                if (request.find("/make_join/") != std::string::npos)
+                {
+                    return make_join_response(carol_reg.value, room);
+                }
+                // An earlier copy of the join was stored as an outlier: it has an event row, and no
+                // state, so it produced no membership.
+                auto const submitted = cj::parse_lossless(request_body(request));
+                auto const* policy = merovingian::rooms::find_room_version_policy("10");
+                REQUIRE(policy != nullptr);
+                auto const id = merovingian::events::make_reference_hash_event_id(submitted.value, *policy);
+                REQUIRE(id.error.empty());
+                {
+                    auto const lock = std::lock_guard{runtime.mutex};
+                    auto row = merovingian::database::PersistentEvent{};
+                    row.event_id = id.event_id;
+                    row.room_id = std::string{restricted_room};
+                    row.sender_user_id = carol_reg.value;
+                    row.json = request_body(request);
+                    row.depth = 6U;
+                    row.status = "outlier";
+                    runtime.database.persistent_store.events.push_back(std::move(row));
+                }
+                return send_join_response(
+                    co_sign(request_body(request), resident_server, resident_key_id, resident_key_seed));
+            };
+            auto server = std::thread{[&] {
+                serve_resident(acceptor, *tls_context.context, 2U, responder, captured);
+            }};
+            auto const joiner = tls::ScopedThreadJoin{server};
+            auto const result = merovingian::homeserver::join_room(
+                runtime, carol_login.value, std::string{restricted_room}, {std::string{resident_server}});
+            server.join();
+
+            THEN("the join is not reported as done and the user is not joined")
             {
                 CAPTURE(result.reason);
                 REQUIRE_FALSE(result.ok);
