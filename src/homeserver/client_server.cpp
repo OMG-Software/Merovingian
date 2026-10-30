@@ -1138,6 +1138,22 @@ namespace
                          json_member("state_key", json_str(*state_key)), json_member("content", *content)});
     }
 
+    // True when this server holds the state of `room_id` and that state does not yet have the invite
+    // `invite_event_id` for `user_id`: the invite endpoint recorded it, but the transaction that places it
+    // in the room has not arrived.
+    [[nodiscard]] auto invite_awaits_room_state(database::PersistentStore const& store, std::string_view room_id,
+                                                std::string_view user_id, std::string_view invite_event_id) -> bool
+    {
+        if (!stored_room_version(store, room_id).has_value())
+        {
+            return false;
+        }
+        auto const entry = std::ranges::find_if(store.state, [&](database::PersistentStateEvent const& state) {
+            return state.room_id == room_id && state.event_type == "m.room.member" && state.state_key == user_id;
+        });
+        return entry == store.state.end() || entry->event_id != invite_event_id;
+    }
+
     [[nodiscard]] auto build_invite_state_events_array(database::PersistentStore const& store, std::string_view room_id,
                                                        std::string_view user_id) -> canonicaljson::Array
     {
@@ -5735,6 +5751,14 @@ namespace
                 if (invite_record.has_value() &&
                     trust_safety::is_delivery_suppressed(ignored_senders, invite_record->sender_user_id,
                                                          /*is_state_event=*/true, /*is_new_room_invite=*/true))
+                {
+                    continue;
+                }
+                // A room this server holds the state of: the invite is shown once that state has it
+                // (ADR-0301). The invite endpoint can answer before the transaction that places the
+                // event, and a client that saw the invite then could not join or reject it.
+                if (invite_record.has_value() &&
+                    invite_awaits_room_state(store, membership.room_id, user, invite_record->event_id))
                 {
                     continue;
                 }

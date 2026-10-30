@@ -40,6 +40,11 @@ public:
         -> canonicaljson::Value;
 
 private:
+    // `unsigned.prev_content` for a state event: the content of the state event it replaced, when the
+    // viewer may see that event.
+    [[nodiscard]] auto previous_content_of(database::PersistentEvent const& event,
+                                           canonicaljson::Object const& client_event)
+        -> std::optional<canonicaljson::Value>;
     // The transaction ID `event` was sent with, when this user's device sent it.
     [[nodiscard]] auto transaction_id_of(database::PersistentEvent const& event) const -> std::optional<std::string>;
 

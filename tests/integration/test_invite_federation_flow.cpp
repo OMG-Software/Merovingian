@@ -1195,3 +1195,194 @@ SCENARIO("A rejected remote invite appears under rooms.leave of the next increme
         }
     }
 }
+
+namespace
+{
+
+// A room created by alice of this server, in which bob of another server (power level 100) and carol of
+// this server have joined: this server holds the room's state and has local members in it.
+struct SharedRoom final
+{
+    std::string alice{};
+    std::string carol{};
+    std::string room_id{};
+    std::string bob{};
+    std::string carol_id{};
+};
+
+[[nodiscard]] auto shared_room(merovingian::homeserver::ClientServerRuntime& runtime,
+                               std::string_view preset = "public_chat") -> SharedRoom
+{
+    auto room = SharedRoom{};
+    room.alice = register_user(runtime, "alice");
+    room.carol = register_user(runtime, "carol");
+    room.carol_id = "@carol:" + std::string{runtime.homeserver.config.server().server_name};
+    room.bob = std::string{"@bob:"} + std::string{remote_server};
+    room.room_id =
+        create_room(runtime, room.alice,
+                    std::string{R"({"preset":")"} + std::string{preset} + R"(","invite":[")" + room.carol_id +
+                        R"("],"power_level_content_override":{"users":{")" + room.bob + R"(":100}}})");
+    REQUIRE(call(runtime, "POST", "/_matrix/client/v3/join/" + room.room_id, room.carol, "{}").response.status == 200U);
+    if (preset != "public_chat")
+    {
+        // An invite-only room: bob must be invited before he can join. His server is not reachable here, so
+        // the invite is queued, and it is stored all the same.
+        REQUIRE(call(runtime, "POST", "/_matrix/client/v3/rooms/" + room.room_id + "/invite", room.alice,
+                     std::string{R"({"user_id":")"} + room.bob + R"("})")
+                    .response.status == 200U);
+    }
+    auto const bob_joined = runtime.homeserver.federation.membership_acceptor(
+        merovingian::federation::FederationEndpoint::send_join, room.room_id, "$bob_join:remote.example.org",
+        member_envelope(runtime, room.room_id, room.bob, room.bob, "join", "$bob_join:" + std::string{remote_server},
+                        10U));
+    CAPTURE(bob_joined.reason);
+    REQUIRE(bob_joined.accepted);
+    return room;
+}
+
+[[nodiscard]] auto invite_request_from(merovingian::homeserver::ClientServerRuntime& runtime, SharedRoom const& room,
+                                       std::string const& target, std::uint64_t depth)
+    -> merovingian::federation::InviteRequest
+{
+    auto invite = merovingian::federation::InviteRequest{};
+    invite.room_id = room.room_id;
+    invite.event_id = "$invite_" + std::to_string(depth) + ":" + std::string{remote_server};
+    invite.room_version = "12";
+    invite.origin = std::string{remote_server};
+    invite.invite_event_json =
+        member_envelope(runtime, room.room_id, room.bob, target, "invite", invite.event_id, depth).json;
+    return invite;
+}
+
+} // namespace
+
+// Spec: Matrix Server-Server API v1.19, "Inviting to a room" and "Leaving Rooms": a user who left a room
+// can be invited to it again. A federated leave keeps only a membership row on this server, so the room
+// state it still holds says the user is joined; that state is not current once no user of this server is
+// joined to the room (the same rule as for restricted joins). Complement TestRestrictedRoomsRemoteJoin,
+// "Join should succeed when invited".
+SCENARIO("A user who left a room through a federated leave can be invited to it again",
+         "[integration][federation][invite][reinvite-after-leave]")
+{
+    GIVEN("a room whose state this server holds, in which carol's leave is only a membership row and no user of "
+          "this server is joined")
+    {
+        REQUIRE(sodium_init() >= 0);
+        auto started = merovingian::homeserver::start_client_server(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        merovingian::homeserver::wire_federation_callbacks(runtime.homeserver);
+        auto const room = shared_room(runtime);
+        REQUIRE(call(runtime, "POST", "/_matrix/client/v3/rooms/" + room.room_id + "/leave", room.alice, "{}")
+                    .response.status == 200U);
+        {
+            auto const lock = std::lock_guard{runtime.homeserver.mutex};
+            REQUIRE(merovingian::database::store_membership_projection(
+                runtime.homeserver.database.persistent_store, room.room_id,
+                {room.carol_id, "leave", merovingian::homeserver::allocate_stream_ordering(runtime.homeserver.database),
+                 std::nullopt}));
+        }
+
+        WHEN("bob invites carol again")
+        {
+            auto const invited =
+                runtime.homeserver.federation.invite_handler(invite_request_from(runtime, room, room.carol_id, 20U));
+
+            THEN("the invite is accepted and carol holds it")
+            {
+                CAPTURE(invited.reason);
+                REQUIRE(invited.accepted);
+                REQUIRE(membership_row(runtime, room.room_id, room.carol_id) == "invite");
+            }
+        }
+    }
+}
+
+// Spec: Matrix Server-Server API v1.19, "Inviting to a room": "if the remote homeserver is already in the
+// room, it will receive the invite event twice; once through this endpoint, and again through a federation
+// transaction". The invite is offered first (ADR-0293). For a room this server is in, the transaction is what
+// places the event, so the invite endpoint must neither show the invitee an invite the room's state lacks nor
+// make the transaction's copy a duplicate. Complement TestFederationRoomsInvite, "Remote invited user can join
+// the room when homeserver is already participating in the room".
+SCENARIO("An invite received before its PDU is shown to a user of a server already in the room once the PDU places it",
+         "[integration][federation][invite][invite-before-pdu]")
+{
+    GIVEN("an invite-only room this server is in, and dave, another user of this server")
+    {
+        REQUIRE(sodium_init() >= 0);
+        auto started = merovingian::homeserver::start_client_server(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        merovingian::homeserver::wire_federation_callbacks(runtime.homeserver);
+        auto const room = shared_room(runtime, "private_chat");
+        auto const dave = register_user(runtime, "dave");
+        auto const dave_id = "@dave:" + std::string{runtime.homeserver.config.server().server_name};
+        auto const request = invite_request_from(runtime, room, dave_id, 20U);
+
+        WHEN("the invite for dave arrives through the invite endpoint")
+        {
+            auto const invited = runtime.homeserver.federation.invite_handler(request);
+
+            THEN("it is signed, but dave is told nothing until the room's state has it")
+            {
+                CAPTURE(invited.reason);
+                REQUIRE(invited.accepted);
+                REQUIRE_FALSE(sync_invites_room(runtime, dave, room.room_id));
+                REQUIRE(call(runtime, "POST", "/_matrix/client/v3/join/" + room.room_id, dave, "{}").response.status ==
+                        403U);
+            }
+        }
+
+        WHEN("the invite endpoint answers and then the same invite arrives in a transaction")
+        {
+            auto const invited = runtime.homeserver.federation.invite_handler(request);
+            auto const placed = runtime.homeserver.federation.pdu_sink(
+                member_envelope(runtime, room.room_id, room.bob, dave_id, "invite", request.event_id, 20U));
+            auto const joined = call(runtime, "POST", "/_matrix/client/v3/join/" + room.room_id, dave, "{}");
+
+            THEN("the transaction places the invite, dave sees it, and he can join")
+            {
+                CAPTURE(invited.reason, placed.reason, joined.response.body);
+                REQUIRE(invited.accepted);
+                REQUIRE(placed.status == merovingian::federation::PduIngestionStatus::accepted);
+                REQUIRE(joined.response.status == 200U);
+                REQUIRE(membership_row(runtime, room.room_id, dave_id) == "join");
+            }
+        }
+    }
+}
+
+// Spec: Matrix Client-Server API v1.19, ClientEvent `unsigned.prev_content`: "The `content` of the previous
+// state event that was replaced by this event. This field is generated by the local homeserver, and is only
+// returned if the event is a state event, and the client has permission to see the previous event."
+// Complement TestFederationRoomsInvite, "Invited user has 'is_direct' flag in prev_content after joining".
+SCENARIO("A join that replaces an invite carries the invite's content as unsigned.prev_content",
+         "[integration][invite][prev-content]")
+{
+    GIVEN("alice's direct-message room, to which she invited carol of this server")
+    {
+        REQUIRE(sodium_init() >= 0);
+        auto started = merovingian::homeserver::start_client_server(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        auto const alice = register_user(runtime, "alice");
+        auto const carol = register_user(runtime, "carol");
+        auto const carol_id = "@carol:" + std::string{runtime.homeserver.config.server().server_name};
+        auto const room_id =
+            create_room(runtime, alice,
+                        std::string{R"({"preset":"private_chat","is_direct":true,"invite":[")"} + carol_id + R"("]})");
+
+        WHEN("carol joins and alice syncs")
+        {
+            REQUIRE(call(runtime, "POST", "/_matrix/client/v3/join/" + room_id, carol, "{}").response.status == 200U);
+            auto const synced = call(runtime, "GET", "/_matrix/client/v3/sync", alice);
+            REQUIRE(synced.response.status == 200U);
+
+            THEN("carol's join event names the content of the invite it replaced")
+            {
+                REQUIRE(synced.response.body.find(R"("prev_content":{"is_direct":true,"membership":"invite"})") !=
+                        std::string::npos);
+            }
+        }
+    }
+}
