@@ -281,6 +281,7 @@
 * [0298 - Sending a message does not end the sender's typing](0298-sending-a-message-does-not-end-the-senders-typing.md)
 * [0299 - timestamp_to_event: inclusive boundary, a fixed tie order, the read gate, and when other servers are asked](0299-timestamp-to-event-ordering-access-and-asking-other-servers.md)
 * [0300 - The event table keeps a per-room index by origin_server_ts](0300-the-event-table-keeps-a-room-and-time-index.md)
+* [0301 - Held room state is current only while a user of this server is joined](0301-held-room-state-is-current-only-while-a-local-user-is-joined.md)
 
 ## Proposed Records
 
