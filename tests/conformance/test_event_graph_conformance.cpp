@@ -670,10 +670,10 @@ struct VersionedRoom final
         }
         return ids;
     };
-    store.events.push_back(make_state_event("$member", room, "m.room.member", "@creator:example.org", 2U,
-                                            with_create({}), {create_id}));
-    store.events.push_back(make_state_event("$pl", room, "m.room.power_levels", "", 3U, with_create({"$member"}),
-                                            {"$member"}));
+    store.events.push_back(
+        make_state_event("$member", room, "m.room.member", "@creator:example.org", 2U, with_create({}), {create_id}));
+    store.events.push_back(
+        make_state_event("$pl", room, "m.room.power_levels", "", 3U, with_create({"$member"}), {"$member"}));
     store.events.push_back(make_event("$message", room, "m.room.message", with_create({"$pl", "$member"}), {"$pl"}));
     store.state.push_back({room, "m.room.create", "", create_id});
     store.state.push_back({room, "m.room.member", "@creator:example.org", "$member"});
@@ -747,8 +747,8 @@ SCENARIO("event_auth includes the create event of a room whose ID implies it, on
 
         WHEN("the auth chain of the create event itself is requested")
         {
-            auto const body = ok_body(
-                merovingian::federation::build_event_auth_response(store, fixture.room, fixture.create_id, requesting_server));
+            auto const body = ok_body(merovingian::federation::build_event_auth_response(
+                store, fixture.room, fixture.create_id, requesting_server));
 
             THEN("it is empty: an event is not in its own auth chain")
             {
@@ -758,7 +758,8 @@ SCENARIO("event_auth includes the create event of a room whose ID implies it, on
 
         WHEN("an event that (wrongly) lists the create event is asked for")
         {
-            store.events.push_back(make_event("$odd", fixture.room, "m.room.message", {fixture.create_id, "$pl"}, {"$pl"}));
+            store.events.push_back(
+                make_event("$odd", fixture.room, "m.room.message", {fixture.create_id, "$pl"}, {"$pl"}));
             auto const body = ok_body(
                 merovingian::federation::build_event_auth_response(store, fixture.room, "$odd", requesting_server));
 

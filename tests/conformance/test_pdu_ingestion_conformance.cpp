@@ -601,8 +601,7 @@ SCENARIO("send_join in a room version 12 room answers an auth_chain holding the 
         REQUIRE(started.runtime.federation.membership_acceptor != nullptr);
 
         auto const room_id = std::string{"!implied12hash"};
-        auto const genesis =
-            seed_room_genesis(started.runtime, room_id, "@admin:local.example.org", "$implied12hash");
+        auto const genesis = seed_room_genesis(started.runtime, room_id, "@admin:local.example.org", "$implied12hash");
 
         auto join_rules_content = merovingian::canonicaljson::Object{};
         join_rules_content.push_back(merovingian::canonicaljson::make_member(
