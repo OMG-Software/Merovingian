@@ -279,6 +279,8 @@
 * [0296 - The federation worker loads no application service registrations](0296-the-federation-worker-loads-no-application-service-registrations.md)
 * [0297 - This server neither serves nor consults notary key servers](0297-this-server-neither-serves-nor-consults-notary-key-servers.md)
 * [0298 - Sending a message does not end the sender's typing](0298-sending-a-message-does-not-end-the-senders-typing.md)
+* [0299 - timestamp_to_event: inclusive boundary, a fixed tie order, the read gate, and when other servers are asked](0299-timestamp-to-event-ordering-access-and-asking-other-servers.md)
+* [0300 - The event table keeps a per-room index by origin_server_ts](0300-the-event-table-keeps-a-room-and-time-index.md)
 
 ## Proposed Records
 
