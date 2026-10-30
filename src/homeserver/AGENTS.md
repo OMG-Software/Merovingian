@@ -221,6 +221,8 @@ on that record, each by the inviter's server, which the spec calls a resident se
   before it stores, and answers 503 with nothing stored when the queue refuses (ADR-0307); never report an invite
   sent that was neither delivered nor queued. createRoom offers all of its remote invites under one
   `OutboundDeadline` and tries to queue those left when it runs out; never give each offer its own full timeout.
+  `deliver_remote_invite` turns its timeout into one absolute deadline that the exchange and `check_invite_answer`'s
+  key lookups share: never start a fresh timeout for checking the answer.
   Every offer holds an ADR-0079 slot (`admit_client_outbound_proxy_waiting`: one per `POST /invite`, one for all
   of a createRoom's), waited for within that deadline; with none the invite is queued if the queue takes it. A
   refused queue fails `POST /invite` (503, nothing stored), while createRoom keeps the room and logs

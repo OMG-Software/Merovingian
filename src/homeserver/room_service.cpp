@@ -6735,10 +6735,12 @@ namespace
     // verify). What is returned is this server's own event with only those verified signatures added to
     // it, never the invited server's copy. The key lookup is a network round trip: call with
     // `runtime.mutex` RELEASED, with every argument owned by the caller.
+    // `deadline` is the offer's own (ADR-0307): resolving the invitee server's keys draws from what the
+    // exchange left of it, never from a fresh timeout.
     [[nodiscard]] auto check_invite_answer(HomeserverRuntime& runtime, std::string_view room_version,
                                            std::string_view invitee_server, std::string_view event_id,
-                                           std::string_view own_event_json, std::string_view answer_body)
-        -> CheckedInviteAnswer
+                                           std::string_view own_event_json, std::string_view answer_body,
+                                           std::chrono::steady_clock::time_point deadline) -> CheckedInviteAnswer
     {
         auto const refused = [](std::string reason) {
             return CheckedInviteAnswer{{}, {}, std::move(reason)};
@@ -6774,8 +6776,6 @@ namespace
         }
         // Only keys that resolved can have been verified; those are the signatures merged.
         auto resolved_key_ids = std::vector<std::string>{};
-        auto const deadline =
-            std::chrono::steady_clock::now() + std::chrono::seconds{runtime.federation.config.remote_timeout_seconds};
         auto const decision = federation::verify_server_signatures_on_event(
             *answered, *policy, invitee_server, returned.event.signatures,
             [&](std::string_view server_name, std::string_view key_id) {
@@ -6826,6 +6826,13 @@ namespace
                                          std::string_view event_id, std::string_view event_json,
                                          std::uint32_t timeout_seconds) -> RemoteInviteResult
 {
+    // One deadline for the whole offer: the exchange and the checks of the answer (its key lookups) draw from
+    // it, so a caller offering several invites under one deadline is not held past it (ADR-0307). 0 means the
+    // offer budget (remote_invite_offer_seconds, lowered to remote_timeout when configured).
+    auto const offer_seconds = timeout_seconds > 0U
+                                   ? timeout_seconds
+                                   : effective_client_outbound_deadline(runtime, remote_invite_offer_seconds);
+    auto const offer_deadline = std::chrono::steady_clock::now() + std::chrono::seconds{offer_seconds};
     wire_federation_callbacks(runtime);
     auto const signing_key = find_active_server_signing_key(runtime);
     if (!signing_key.has_value())
@@ -6846,7 +6853,7 @@ namespace
     auto const call = [&] {
         auto const released = RuntimeLockRelease{guard};
         return perform_outbound_call(runtime, room_id, transaction, key_id, std::move(secret_key),
-                                     "room.invite.remote_failed", timeout_seconds, 0U, std::nullopt);
+                                     "room.invite.remote_failed", offer_seconds, 0U, std::nullopt);
     }();
 
     if (call.ok)
@@ -6857,7 +6864,8 @@ namespace
         // that does not check out is a refusal, not a delivery (ADR-0293).
         auto const checked = [&] {
             auto const released = RuntimeLockRelease{guard};
-            return check_invite_answer(runtime, room_version, invitee_server, event_id, event_json, call.body);
+            return check_invite_answer(runtime, room_version, invitee_server, event_id, event_json, call.body,
+                                       offer_deadline);
         }();
         if (!checked.refusal.empty())
         {

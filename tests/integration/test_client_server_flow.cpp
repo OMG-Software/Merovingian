@@ -1758,6 +1758,8 @@ SCENARIO("GET /timestamp_to_event asks a server of the room only when its own hi
             }};
             auto const response = timestamp_to_event_get(rt, room, "ts=999999&dir=f");
             releaser.join();
+            // Joined before any THEN reads `captured`: the socket exchange orders nothing TSan can see.
+            server_thread.join();
 
             THEN("it waits, then asks the remote server instead of being refused")
             {
@@ -1780,6 +1782,8 @@ SCENARIO("GET /timestamp_to_event asks a server of the room only when its own hi
             }};
             auto const join_server = merovingian::tests::tls_mock::ScopedThreadJoin{server_thread};
             auto const response = timestamp_to_event_get(rt, room, "ts=999999&dir=f");
+            // Joined before any THEN reads `captured`: the socket exchange orders nothing TSan can see.
+            server_thread.join();
 
             THEN("one server is asked, with the timestamp and direction, and the client gets 404 M_NOT_FOUND")
             {
@@ -1804,6 +1808,8 @@ SCENARIO("GET /timestamp_to_event asks a server of the room only when its own hi
             }};
             auto const join_server = merovingian::tests::tls_mock::ScopedThreadJoin{server_thread};
             auto const response = timestamp_to_event_get(rt, room, "ts=999999&dir=f");
+            // Joined before any THEN reads `captured`: the socket exchange orders nothing TSan can see.
+            server_thread.join();
 
             THEN("the answer is not used and the event is not even fetched")
             {
@@ -1829,6 +1835,8 @@ SCENARIO("GET /timestamp_to_event asks a server of the room only when its own hi
             }};
             auto const join_server = merovingian::tests::tls_mock::ScopedThreadJoin{server_thread};
             auto const response = timestamp_to_event_get(rt, room, "ts=7000&dir=f");
+            // Joined before any THEN reads `captured`: the socket exchange orders nothing TSan can see.
+            server_thread.join();
 
             THEN("the event is asked for by ID, and failing to get it the client is given the local answer")
             {
@@ -1858,6 +1866,8 @@ SCENARIO("GET /timestamp_to_event asks a server of the room only when its own hi
             }};
             auto const join_server = merovingian::tests::tls_mock::ScopedThreadJoin{server_thread};
             auto const response = timestamp_to_event_get(rt, room, "ts=7000&dir=b");
+            // Joined before any THEN reads `captured`: the socket exchange orders nothing TSan can see.
+            server_thread.join();
 
             THEN("another server is asked, and with nothing closer the local event is the answer")
             {
@@ -1910,6 +1920,8 @@ SCENARIO("GET /timestamp_to_event asks a server of the room only when its own hi
                         return event_id != "$hidden:remote.example.net";
                     });
             }();
+            // Joined before any THEN reads `captured`: the socket exchange orders nothing TSan can see.
+            server_thread.join();
 
             THEN("the second server is asked and its event is the one acquired")
             {
@@ -1932,6 +1944,8 @@ SCENARIO("GET /timestamp_to_event asks a server of the room only when its own hi
             }};
             auto const join_server = merovingian::tests::tls_mock::ScopedThreadJoin{server_thread};
             auto const response = timestamp_to_event_get(rt, room, "ts=7000&dir=f");
+            // Joined before any THEN reads `captured`: the socket exchange orders nothing TSan can see.
+            server_thread.join();
 
             THEN("it is ignored: the local event is closer, and nothing is fetched")
             {
