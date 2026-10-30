@@ -140,6 +140,8 @@ struct WorkerAndMain final
         message.prev_event_ids = {"$bob_join"};
         REQUIRE(db::store_event(main_store, std::move(message)));
         REQUIRE(db::set_event_state_group(main_store, "$message", "sg:join"));
+        // The room's current state names Bob's join, which is how a server is found to be in the room.
+        REQUIRE(db::store_state(main_store, {std::string{room_id}, "m.room.member", std::string{bob}, "$bob_join"}));
     }
 
     [[nodiscard]] auto worker() -> db::PersistentStore&
