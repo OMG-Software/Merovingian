@@ -1027,7 +1027,7 @@ namespace
             auto const amp = query.find('&');
             auto const pair = query.substr(0U, amp);
             auto const equals = pair.find('=');
-            if (equals != std::string_view::npos && pair.substr(0U, equals) == "access_token")
+            if (equals != std::string_view::npos && core::percent_decode(pair.substr(0U, equals)) == "access_token")
             {
                 return core::percent_decode(pair.substr(equals + 1U));
             }
@@ -1058,7 +1058,7 @@ namespace
             auto const amp = query.find('&');
             auto const pair = query.substr(0U, amp);
             auto const name = pair.substr(0U, pair.find('='));
-            if (!pair.empty() && name != "access_token")
+            if (!pair.empty() && core::percent_decode(name) != "access_token")
             {
                 if (!kept.empty())
                 {

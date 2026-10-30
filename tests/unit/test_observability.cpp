@@ -245,6 +245,32 @@ SCENARIO("Low-severity logging flushes after one second or one hundred messages"
     }
 }
 
+SCENARIO("A logged request target redacts a sensitive query parameter whose name is percent-encoded",
+         "[observability][logging][security]")
+{
+    GIVEN("targets carrying the access token under an encoded parameter name")
+    {
+        WHEN("each is sanitised for logging")
+        {
+            auto const lower = merovingian::observability::sanitized_http_target(
+                "/_matrix/client/v3/account/whoami?access%5ftoken=secret-token&foo=bar");
+            auto const upper = merovingian::observability::sanitized_http_target(
+                "/_matrix/client/v3/account/whoami?%61ccess%5Ftoken=secret-token");
+            auto const malformed = merovingian::observability::sanitized_http_target(
+                "/_matrix/client/v3/account/whoami?access%5Gtoken=visible&x=%");
+
+            THEN("the token value is redacted, other parameters are kept, and a malformed escape is left alone")
+            {
+                REQUIRE(lower.find("secret-token") == std::string::npos);
+                REQUIRE(lower.find("<redacted>") != std::string::npos);
+                REQUIRE(lower.find("foo=bar") != std::string::npos);
+                REQUIRE(upper.find("secret-token") == std::string::npos);
+                REQUIRE(malformed.find("access%5Gtoken=visible") != std::string::npos);
+            }
+        }
+    }
+}
+
 SCENARIO("Diagnostic log summaries preserve join context while redacting unsafe fields",
          "[observability][logging][diagnostics]")
 {

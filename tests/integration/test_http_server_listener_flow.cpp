@@ -1030,6 +1030,20 @@ SCENARIO("merovingian-server accepts an access token in the query string as well
             }
         }
 
+        WHEN("the parameter name itself is percent-encoded")
+        {
+            // `access%5Ftoken` decodes to `access_token`: the same parameter, so it is read, and
+            // removed from the target with the plain spelling.
+            auto const response = serve(whoami + "?access%5Ftoken=" + login.value, "");
+
+            THEN("the request is authenticated as that session's user")
+            {
+                INFO(response.substr(0U, 300U));
+                REQUIRE(response.starts_with("HTTP/1.1 200"));
+                REQUIRE(response.find(user_member) != std::string::npos);
+            }
+        }
+
         WHEN("the query token is unknown to the server")
         {
             auto const response = serve(whoami + "?access_token=not-a-real-token", "");
