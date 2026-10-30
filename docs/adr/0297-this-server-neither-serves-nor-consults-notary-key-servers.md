@@ -46,7 +46,9 @@ exposure on this server's key.
 
 ### Positive Consequences
 
-* No client of the federation listener can make this server fetch from a host it names.
+* No request can make this server fetch keys from a host the request names through a notary endpoint.
+  Inbound request verification still fetches the claimed origin's own keys when they are not cached
+  (admission-limited, src/federation/AGENTS.md rule 3); that path is unchanged by this decision.
 * This server's signing key signs only its own keys and its own events.
 
 ### Negative Consequences

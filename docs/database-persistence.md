@@ -1302,7 +1302,7 @@ the whole load (ADR-0161).
 
 `PersistentStore::events` is a `database::EventTable` (`include/merovingian/database/event_table.hpp`),
 not a `std::vector`. It owns the in-memory rows of the `events` table and keeps three indexes over them
-(the third since 0.12.65), all holding positions in its row vector so they survive reallocation (ADR-0215):
+(the third since 0.12.64), all holding positions in its row vector so they survive reallocation (ADR-0215):
 
 - **by event ID.** `events.find(id)` and `events.contains(id)` are hash lookups, and
   `events.find_in_room(room_id, id)` adds the room check. `events.with_id(id)` is a range of zero or

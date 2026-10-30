@@ -564,7 +564,7 @@ package = "tests/csapi"
 mode = "expect-fail"
 category = "non-spec"
 spec = "docs/matrix-v1.19-spec/client-server-api.md#get_matrixclientv3sync"
-reason = "Expects an incremental sync to return a newly joined room's history from before `since`; v1.19 bounds the timeline by `since` (`full_state`: \"The timeline will still be limited by the `since` parameter\") and this server returns the events after it with a prev_batch for /messages."
+reason = "Requires `limited` true unless exactly six events are returned; this server returns the events after `since` (v1.19 `full_state`: \"The timeline will still be limited by the `since` parameter\") with `limited` false, since none after `since` were cut by the filter limit (`limited`: \"True if the number of events returned was limited by the `limit` on the filter\")."
 
 [[entry]]
 test = "TestDeviceListsUpdateOverFederation/good_connectivity"

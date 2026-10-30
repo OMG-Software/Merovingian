@@ -309,7 +309,7 @@ server no longer has the room), and `POST /join/{roomId}` with no server named t
 
 | Method | Path | Operation ID | Auth | Request body | Responses |
 | --- | --- | --- | --- | --- | --- |
-| `GET` | `/_matrix/client/v1/rooms/{roomId}/timestamp_to_event` | `getEventByTimestamp` | access token | - | 200, 400, 403, 404, 429 |
+| `GET` | `/_matrix/client/v1/rooms/{roomId}/timestamp_to_event` | `getEventByTimestamp` | access token | - | 200, 404, 429 |
 | `GET` | `/_matrix/client/v3/events` | `getEvents` | access token | - | 200, 400 |
 | `GET` | `/_matrix/client/v3/events` | `peekEvents` | access token | - | 200, 400 |
 | `GET` | `/_matrix/client/v3/events/{eventId}` | `getOneEvent` | access token | - | 200, 404 |
@@ -330,21 +330,6 @@ server no longer has the room), and `POST /join/{roomId}` with no server named t
 | `GET` | `/_matrix/client/v3/sync` | `sync` | access token | - | 200 |
 | `POST` | `/_matrix/client/v3/user/{userId}/filter` | `defineFilter` | access token | required application/json | 200 |
 | `GET` | `/_matrix/client/v3/user/{userId}/filter/{filterId}` | `getFilter` | access token | - | 200, 404 |
-
-
-`GET /rooms/{roomId}/timestamp_to_event?ts=&dir=` (ADR-0299, ADR-0300) returns `{event_id, origin_server_ts}` of the event
-nearest `ts` in the direction `dir` (`f` or `b`). Both parameters are required (400 `M_MISSING_PARAM` / `M_INVALID_PARAM`).
-The boundary is inclusive and events sharing a timestamp are ordered by (`origin_server_ts`, `depth`, `stream_ordering`),
-so `f` finds the first and `b` the last. A user who cannot read the room gets 403 `M_FORBIDDEN` like `/messages`; events
-`sync::HistoryVisibility` withholds are stepped over, up to 1000 candidates, then 404. The lookup is one seek of the
-per-room time index of `EventTable`. When the local answer is absent, or has a `prev_event` this server does not hold,
-up to three servers of the room (longest in the room first, by the stream ordering of their earliest current join) are
-asked over `GET /_matrix/federation/v1/timestamp_to_event/{roomId}`, one at a time, under one client-outbound slot and the
-10 s directory deadline. A remote answer counts only if it is on the requested side and strictly closer; the event is then
-fetched with `GET /event/{eventId}` and stored through the verified backfill path, and returned only if that succeeded and
-the user may see it. No slot: 429 when there is no local answer, the local answer otherwise. Rate limiting follows the
-route tier; the federation endpoint is not rate limited (spec) and judges the requesting server like the other room
-reads (403 for a server with no joined user, events its users could not see stepped over).
 
 ## Room upgrades
 
@@ -523,3 +508,23 @@ The client-server runtime applies `server.client_api` policy to sync room/timeli
 ## Conformance audit wave 4 (0.12.38)
 
 Room account data (`GET`/`PUT /user/{userId}/rooms/{roomId}/account_data/{type}`) is routed. Both account-data `PUT`s require a JSON object body (`400 M_NOT_JSON` / `M_BAD_JSON`) and refuse the server-managed `m.fully_read` and `m.push_rules` with `405 M_BAD_JSON`. A room `PUT` needs a membership row in the room and stops new types at `server.client_api.max_room_account_data_per_room` (ADR-0197). `POST /register` without `username` gets a generated localpart (ADR-0198). `PUT /rooms/{roomId}/typing/{userId}` requires a boolean `typing`, and typing expires after its `timeout`, at most 120 s (ADR-0199). `POST /search` covers rooms the user has left, up to the point they left.
+
+## Event lookup by timestamp (0.12.64)
+
+`GET /rooms/{roomId}/timestamp_to_event?ts=&dir=` (ADR-0299, ADR-0300) returns `{event_id, origin_server_ts}` of the event
+nearest `ts` in the direction `dir` (`f` or `b`). Both parameters are required (400 `M_MISSING_PARAM` / `M_INVALID_PARAM`).
+The boundary is inclusive and events sharing a timestamp are ordered by (`origin_server_ts`, `depth`, `stream_ordering`),
+so `f` finds the first and `b` the last. A user who cannot read the room gets 403 `M_FORBIDDEN` like `/messages`; events
+`sync::HistoryVisibility` withholds are stepped over, up to 1000 candidates, then 404. The lookup is one seek of the
+per-room time index of `EventTable`. When the local answer is absent, or has a `prev_event` this server does not hold,
+up to three servers of the room (longest in the room first, by the stream ordering of their earliest current join) are
+asked over `GET /_matrix/federation/v1/timestamp_to_event/{roomId}`, one at a time, under one client-outbound slot and the
+10 s directory deadline. A remote answer counts only if it is on the requested side and strictly closer; the event is then
+fetched with `GET /event/{eventId}` and stored through the verified backfill path, and returned only if that succeeded and
+the user may see it. No slot: 429 when there is no local answer, the local answer otherwise. Rate limiting follows the
+route tier; the federation endpoint is not rate limited (spec) and judges the requesting server like the other room
+reads (403 for a server with no joined user, events its users could not see stepped over).
+
+The 400 and 403 answers are not in the operation's response list above, which is generated from the spec: 400 follows the
+common error codes for a missing or malformed required parameter, and 403 is the owner's choice for a user who may not read
+the room (ADR-0299).
