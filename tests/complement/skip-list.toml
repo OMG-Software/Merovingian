@@ -290,6 +290,22 @@ category = "non-spec"
 spec = "docs/matrix-v1.19-spec/client-server-api.md#get_matrixclientv3roomsroomidjoined_members"
 reason = "Calls GET /_matrix/client/r0/rooms/{roomId}/joined_members; v1.19 defines the endpoint only under /v3."
 
+[[entry]]
+test = "TestJumpToDateEndpoint/parallel/federation/can_paginate_backwards_after_getting_remote_event_from_timestamp_to_event_endpoint_(start)"
+package = "tests"
+mode = "expect-fail"
+category = "non-spec"
+spec = "docs/matrix-v1.19-spec/client-server-api.md#get_matrixclientv3roomsroomidcontexteventid"
+reason = "Calls GET /_matrix/client/r0/rooms/{roomId}/context/{eventId} and r0 /messages; v1.19 defines both only under /v3. The remote timestamp lookup the test needs first passes (ADR-0308)."
+
+[[entry]]
+test = "TestJumpToDateEndpoint/parallel/federation/can_paginate_backwards_after_getting_remote_event_from_timestamp_to_event_endpoint_(end)"
+package = "tests"
+mode = "expect-fail"
+category = "non-spec"
+spec = "docs/matrix-v1.19-spec/client-server-api.md#get_matrixclientv3roomsroomidcontexteventid"
+reason = "Calls GET /_matrix/client/r0/rooms/{roomId}/context/{eventId} and r0 /messages; v1.19 defines both only under /v3. The remote timestamp lookup the test needs first passes (ADR-0308)."
+
 # Behaviour the spec leaves to the server, where this server's choice differs from Synapse's.
 
 [[entry]]

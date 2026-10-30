@@ -132,6 +132,9 @@ Fixes for the failures Complement run 12 found against main at 0.12.63.
   `device_lists.changed` equality depends on EDU timing (three subtests); a failed UIA stage is 401
   and the notary endpoint is unknown (both signed off); createRoom's default invite level stays 50;
   the A8 recovery after an empty `/get_missing_events` stays.
+- The two `TestJumpToDateEndpoint` "can paginate backwards" federation subtests are expected to fail as
+  non-spec: once the remote timestamp lookup they start with passes, they page through
+  `/_matrix/client/r0/.../context` and `/messages`, which v1.19 defines only under `/v3`.
 
 ## 0.12.63
 
