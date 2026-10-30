@@ -555,3 +555,55 @@ category = "non-spec"
 spec = "docs/matrix-v1.19-spec/client-server-api.md#common-error-codes"
 reason = "Calls /_matrix/federation/v1/version on the client listener, which does not serve the federation API; an endpoint not implemented on a listener is 404 M_UNRECOGNIZED. The federation listener answers 405 for it (ADR-0274)."
 
+
+# Complement run 12 (0.12.64): owner decisions of 2026-10-30.
+
+[[entry]]
+test = "TestSync/parallel/Newly_joined_room_has_correct_timeline_in_incremental_sync"
+package = "tests/csapi"
+mode = "expect-fail"
+category = "non-spec"
+spec = "docs/matrix-v1.19-spec/client-server-api.md#get_matrixclientv3sync"
+reason = "Expects an incremental sync to return a newly joined room's history from before `since`; v1.19 bounds the timeline by `since` (`full_state`: \"The timeline will still be limited by the `since` parameter\") and this server returns the events after it with a prev_batch for /messages."
+
+[[entry]]
+test = "TestDeviceListsUpdateOverFederation/good_connectivity"
+package = "tests"
+mode = "expect-fail"
+category = "non-spec"
+spec = "docs/matrix-v1.19-spec/client-server-api.md#get_matrixclientv3sync"
+reason = "Requires device_lists.changed to equal exactly [alice]; the remote user's join-time m.device_list_update EDU (which the spec makes the remote server send) lands milliseconds later and is reported too, which the `changed` definition allows."
+
+[[entry]]
+test = "TestDeviceListsUpdateOverFederation/interrupted_connectivity"
+package = "tests"
+mode = "expect-fail"
+category = "non-spec"
+spec = "docs/matrix-v1.19-spec/client-server-api.md#get_matrixclientv3sync"
+reason = "Same strict device_lists.changed equality as good_connectivity, broken by the same spec-mandated join-time EDU arriving just after the share-start change."
+
+[[entry]]
+test = "TestDeviceListsUpdateOverFederation/stopped_server"
+package = "tests"
+mode = "expect-fail"
+category = "non-spec"
+spec = "docs/matrix-v1.19-spec/client-server-api.md#get_matrixclientv3sync"
+reason = "Same strict device_lists.changed equality as good_connectivity, broken by the same spec-mandated join-time EDU arriving just after the share-start change."
+
+[[entry]]
+test = "TestDeviceManagement/DELETE_/device/{deviceId}_requires_UI_auth_user_to_match_device_owner"
+package = "tests/csapi"
+mode = "expect-fail"
+category = "non-spec"
+spec = "docs/matrix-v1.19-spec/client-server-api.md#user-interactive-authentication-api"
+reason = "Expects 403 when the UIA credentials belong to another user; v1.19 answers an unsuccessful stage with 401 plus errcode/error (its example is 401 M_FORBIDDEN \"Invalid password\") and DELETE /devices lists only 200 and 401. The device is not deleted either way."
+signed_off_by = "James Chapman, 2026-10-30"
+
+[[entry]]
+test = "TestUnknownEndpoints/Key_endpoints"
+package = "tests"
+mode = "expect-fail"
+category = "spec"
+spec = "docs/matrix-v1.19-spec/server-server-api.md#unsupported-endpoints"
+reason = "Sends PUT /_matrix/key/v2/query, the optional notary endpoint this server does not implement (ADR-0297); an unknown endpoint is 404 M_UNRECOGNIZED, and 405 is only for a known endpoint."
+signed_off_by = "James Chapman, 2026-10-30"
