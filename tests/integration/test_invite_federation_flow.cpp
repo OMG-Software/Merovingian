@@ -989,3 +989,209 @@ SCENARIO("After a remote user joins through send_join, a local user's invite and
         }
     }
 }
+
+namespace
+{
+
+// The invited user's server, as a loopback TLS peer. `answer` is the whole HTTP response it gives to
+// PUT /v2/invite.
+struct InviteeServer final
+{
+    InvitingServer peer;
+    std::vector<std::string> captured{};
+    std::thread thread{};
+
+    InviteeServer(merovingian::homeserver::ClientServerRuntime& runtime, std::string answer)
+        : peer{runtime}
+    {
+        thread = std::thread{[this, answer = std::move(answer)]() {
+            merovingian::tests::tls_mock::run_path_dispatch_tls_server(peer.acceptor, *peer.tls.context,
+                                                                       {
+                                                                           {"/v2/invite/", answer}
+            },
+                                                                       &captured);
+        }};
+    }
+    ~InviteeServer()
+    {
+        if (thread.joinable())
+        {
+            thread.join();
+        }
+    }
+    InviteeServer(InviteeServer const&) = delete;
+    auto operator=(InviteeServer const&) -> InviteeServer& = delete;
+    InviteeServer(InviteeServer&&) = delete;
+    auto operator=(InviteeServer&&) -> InviteeServer& = delete;
+};
+
+[[nodiscard]] auto accepting_answer() -> std::string
+{
+    return merovingian::tests::tls_mock::json_http_response("200 OK", R"({"event":{}})");
+}
+
+} // namespace
+
+// Spec: Matrix Server-Server API v1.19, "Inviting to a room": "when a user invites another user on a
+// different homeserver, a request to that homeserver to have the event signed and verified must be made",
+// and "Once the event has been signed by both the inviting homeserver and the invited homeserver, it can
+// be sent to all of the servers in the room". Complement TestFederationRejectInvite: the room's other
+// server must not see an invite its invitee's server has not yet got.
+SCENARIO("An invite to a user of another server is offered to that server before the room's servers or the client "
+         "hear of it",
+         "[integration][federation][invite][remote-invite-handshake]")
+{
+    GIVEN("alice's room on this server, which delia of a third server has joined, and bob of another server")
+    {
+        REQUIRE(sodium_init() >= 0);
+        auto started = merovingian::homeserver::start_client_server(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        install_unstarted_dispatch_worker(runtime);
+        auto const alice = register_user(runtime, "alice");
+        auto const room_id = create_room(runtime, alice, R"({"preset":"private_chat"})");
+        auto const delia = std::string{"@delia:"} + std::string{remote_server};
+        add_roster_member(runtime, room_id, delia);
+        auto const bob = std::string{"@bob:"} + std::string{inviting_server};
+        auto const invite_target = "/_matrix/client/v3/rooms/" + room_id + "/invite";
+        auto const invite_body = std::string{R"({"user_id":")"} + bob + R"("})";
+
+        WHEN("alice invites bob and bob's server accepts the invite")
+        {
+            auto invitee = InviteeServer{runtime, accepting_answer()};
+            auto const invited = call(runtime, "POST", invite_target, alice, invite_body);
+            invitee.thread.join();
+
+            THEN("bob's server was asked before alice was answered, and delia's server hears of the invite")
+            {
+                CAPTURE(invited.response.body);
+                REQUIRE(invited.response.status == 200U);
+                REQUIRE(invitee.captured.size() == 1U);
+                REQUIRE(invitee.captured[0].find("/_matrix/federation/v2/invite/") != std::string::npos);
+                REQUIRE(membership_row(runtime, room_id, bob) == "invite");
+                auto const sent = queued_memberships_for(runtime, remote_server, bob);
+                REQUIRE(std::ranges::find(sent, "invite") != sent.end());
+                // Nothing is left for the queue to retry: the server has been told.
+                REQUIRE(queued_bodies(runtime, inviting_server, "/v2/invite/").empty());
+            }
+        }
+
+        WHEN("alice invites bob and bob's server refuses the invite")
+        {
+            auto invitee = InviteeServer{runtime, merovingian::tests::tls_mock::json_http_response(
+                                                      "403 Forbidden", R"({"errcode":"M_FORBIDDEN","error":"No"})")};
+            auto const invited = call(runtime, "POST", invite_target, alice, invite_body);
+            invitee.thread.join();
+
+            THEN("alice is refused, no invite is stored, and delia's server is told nothing")
+            {
+                CAPTURE(invited.response.body);
+                REQUIRE(invited.response.status == 403U);
+                REQUIRE(membership_row(runtime, room_id, bob).empty());
+                REQUIRE(queued_memberships_for(runtime, remote_server, bob).empty());
+            }
+        }
+    }
+}
+
+// Spec: Matrix Server-Server API v1.19, "Inviting to a room", for the invites of a createRoom request.
+// Complement TestFederationRoomsInvite, "Invited user has 'is_direct' flag in prev_content after joining":
+// the invitee joins as soon as createRoom has answered, with no server named.
+SCENARIO("A createRoom invite to a user of another server reaches that server before createRoom answers",
+         "[integration][federation][invite][remote-invite-handshake][create-room-invite]")
+{
+    GIVEN("alice and bob, a user of another server whose server accepts invites")
+    {
+        REQUIRE(sodium_init() >= 0);
+        auto started = merovingian::homeserver::start_client_server(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        install_unstarted_dispatch_worker(runtime);
+        auto const alice = register_user(runtime, "alice");
+        auto const bob = std::string{"@bob:"} + std::string{inviting_server};
+
+        WHEN("alice creates a room with bob in its invite list")
+        {
+            auto invitee = InviteeServer{runtime, accepting_answer()};
+            std::ignore =
+                create_room(runtime, alice, std::string{R"({"preset":"private_chat","invite":[")"} + bob + R"("]})");
+            invitee.thread.join();
+
+            THEN("bob's server had been asked by the time createRoom answered, and nothing is queued for it")
+            {
+                REQUIRE(invitee.captured.size() == 1U);
+                REQUIRE(invitee.captured[0].find("/_matrix/federation/v2/invite/") != std::string::npos);
+                REQUIRE(queued_bodies(runtime, inviting_server, "/v2/invite/").empty());
+            }
+        }
+    }
+}
+
+// Spec: Matrix Client-Server API v1.19, GET /sync: `rooms.leave` is "the rooms that the user has left or
+// been banned from", and an incremental sync reports a leave that happened after `since`. Rejecting an
+// invite is such a leave. Complement TestFederationRoomsInvite, "Invited user can reject invite over
+// federation for empty room".
+SCENARIO("A rejected remote invite appears under rooms.leave of the next incremental sync",
+         "[integration][federation][invite][reject-invite][reject-invite-sync]")
+{
+    GIVEN("alice, who holds an invite from a user of another server, and a sync that showed it")
+    {
+        REQUIRE(sodium_init() >= 0);
+        auto started = merovingian::homeserver::start_client_server(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        auto const alice = invited_user(runtime);
+        auto inviter = InvitingServer{runtime};
+        auto const first = call(runtime, "GET", "/_matrix/client/v3/sync", alice.token);
+        REQUIRE(first.response.status == 200U);
+        auto const since = std::string{*string_member(parse_object(first.response.body), "next_batch")};
+
+        WHEN("alice rejects the invite and the inviting server accepts the leave")
+        {
+            auto server = std::thread{[&]() {
+                merovingian::tests::tls_mock::run_path_dispatch_tls_server(
+                    inviter.acceptor, *inviter.tls.context,
+                    {
+                        {"/make_leave/",
+                         merovingian::tests::tls_mock::json_http_response("200 OK",                 make_leave_template(alice))},
+                        {"/send_leave/", merovingian::tests::tls_mock::json_http_response("200 OK", "{}")                      }
+                });
+            }};
+            auto const left =
+                call(runtime, "POST", "/_matrix/client/v3/rooms/" + std::string{bare_room_id_encoded} + "/leave",
+                     alice.token, "{}");
+            server.join();
+            REQUIRE(left.response.status == 200U);
+            auto const next = call(runtime, "GET", "/_matrix/client/v3/sync?since=" + since, alice.token);
+
+            THEN("the next sync lists the room under rooms.leave")
+            {
+                REQUIRE(next.response.status == 200U);
+                auto const body = parse_object(next.response.body);
+                auto const* rooms = object_member_as_object(body, "rooms");
+                auto const* leave = rooms == nullptr ? nullptr : object_member_as_object(*rooms, "leave");
+                REQUIRE(leave != nullptr);
+                auto const* left_room = object_member_as_object(*leave, alice.room_id);
+                REQUIRE(left_room != nullptr);
+                // The client learns it left from a member event for itself with membership "leave", in
+                // the timeline or the state; the invite that preceded it does not say so.
+                auto reports_leave = false;
+                for (auto const section : {"state", "timeline"})
+                {
+                    auto const* part = object_member_as_object(*left_room, section);
+                    auto const* events = part == nullptr ? nullptr : object_member_as_array(*part, "events");
+                    for (auto const& entry : events == nullptr ? merovingian::canonicaljson::Array{} : *events)
+                    {
+                        auto const* event = std::get_if<merovingian::canonicaljson::Object>(&entry.storage());
+                        auto const* state_key = event == nullptr ? nullptr : string_member(*event, "state_key");
+                        auto const* content = event == nullptr ? nullptr : object_member_as_object(*event, "content");
+                        auto const* membership = content == nullptr ? nullptr : string_member(*content, "membership");
+                        reports_leave = reports_leave || (state_key != nullptr && *state_key == alice.user_id &&
+                                                          membership != nullptr && *membership == "leave");
+                    }
+                }
+                REQUIRE(reports_leave);
+            }
+        }
+    }
+}

@@ -66,8 +66,45 @@ struct ValidatedMakeLeaveResponse final
                              canonicaljson::Object const* third_party_signed = nullptr) -> OperationResult;
 [[nodiscard]] auto leave_room(HomeserverRuntime& runtime, std::string_view access_token, std::string_view room_id)
     -> OperationResult;
+// Invites `target_user_id`. For a user of another server the invite is first offered to that user's server
+// (Server-Server API, "Inviting to a room": "a request to that homeserver to have the event signed and
+// verified must be made") and only stored, and sent to the room's other servers, once that server has
+// accepted it. A server that cannot be reached is asked again later by the outbound queue; one that
+// refuses the invite fails the request.
 [[nodiscard]] auto invite_user(HomeserverRuntime& runtime, std::string_view access_token, std::string_view room_id,
                                std::string_view target_user_id, std::string_view reason = {}) -> OperationResult;
+
+// How the server of an invited user answered `PUT /_matrix/federation/v2/invite`.
+enum class RemoteInviteOutcome : std::uint8_t
+{
+    // It signed and returned the event.
+    delivered,
+    // It said no (a 4xx other than 408 and 429, or a 2xx that is not an invite response). `status` and
+    // `reason` are what to tell the client.
+    refused,
+    // It gave no usable answer; the invite should be queued for another attempt.
+    unreachable,
+};
+
+struct RemoteInviteResult final
+{
+    RemoteInviteOutcome outcome{RemoteInviteOutcome::unreachable};
+    std::uint16_t status{502U};
+    std::string reason{};
+};
+
+// Sends the invite event to the invited user's server and waits for its answer. Called with
+// `runtime.mutex` held through `guard`: it is released for the exchange and held again on return, so
+// nothing read from the runtime before the call may be used after it without being found again. The
+// event is not stored by this call.
+[[nodiscard]] auto deliver_remote_invite(HomeserverRuntime& runtime, std::unique_lock<RuntimeMutex>& guard,
+                                         std::string_view room_id, std::string_view invitee_server,
+                                         std::string_view event_id, std::string_view event_json) -> RemoteInviteResult;
+
+// Queues the invite for the outbound dispatch worker, which retries it. For an invite whose server could
+// not be reached by `deliver_remote_invite`. Call with `runtime.mutex` held.
+auto queue_remote_invite(HomeserverRuntime& runtime, std::string_view room_id, std::string_view invitee_server,
+                         std::string_view event_id, std::string_view event_json) -> void;
 // Creates a local-only third-party identifier invite. Generates a random token
 // and an Ed25519 keypair, then composes and persists an
 // `m.room.third_party_invite` state event whose `state_key` is the token and
