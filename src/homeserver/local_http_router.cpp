@@ -6047,7 +6047,7 @@ auto wire_federation_callbacks(HomeserverRuntime& runtime) -> void
                            {"room_id",    room_id,                             false},
                            {"body_bytes", std::to_string(request.body.size()), false}
         });
-        auto result = send_event(runtime, request.access_token, room_id, request.body);
+        auto result = send_event(runtime, request.access_token, room_id, request.body, request.origin_server_ts);
         log_diagnostic(result.ok ? "room.event.accepted" : "room.event.rejected",
                        {
                            {"room_id", room_id,                                                    false},
@@ -6079,7 +6079,8 @@ auto wire_federation_callbacks(HomeserverRuntime& runtime) -> void
                 });
                 return response(400U, "state content must be a JSON object");
             }
-            auto result = send_event(runtime, request.access_token, path->room_id, *event_body);
+            auto result =
+                send_event(runtime, request.access_token, path->room_id, *event_body, request.origin_server_ts);
             log_diagnostic(result.ok ? "room.state_put.accepted" : "room.state_put.rejected",
                            {
                                {"room_id",    path->room_id,                                              false},

@@ -431,6 +431,7 @@ shell = find_program('sh')
       'conformance/test_appservice_directory_conformance.cpp',
       'conformance/test_appservice_ping_conformance.cpp',
       'conformance/test_appservice_thirdparty_conformance.cpp',
+      'conformance/test_appservice_timestamp_conformance.cpp',
       'conformance/test_canonicaljson_parser.cpp',
       'conformance/test_canonicaljson_serializer.cpp',
       'conformance/test_client_server_conformance.cpp',

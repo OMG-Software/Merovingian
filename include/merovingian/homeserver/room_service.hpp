@@ -374,8 +374,11 @@ struct SendJoinStateIngestResult final
 // Refreshes the cached /_matrix/key/v2/server response. On success the result value
 // carries the new active key_id.
 [[nodiscard]] auto rotate_server_signing_key(HomeserverRuntime& runtime) -> OperationResult;
+// `origin_server_ts`, when given, is stamped on the event instead of the event clock's reading
+// (Application Service API, "Timestamp massaging"). The caller has validated it; ordering is unchanged.
 [[nodiscard]] auto send_event(HomeserverRuntime& runtime, std::string_view access_token, std::string_view room_id,
-                              std::string_view event_json) -> OperationResult;
+                              std::string_view event_json, std::optional<std::int64_t> origin_server_ts = std::nullopt)
+    -> OperationResult;
 // Spec (Client-Server API, "Events on Change of Profile Information"): when a user changes their
 // display name or avatar URL, "an m.room.member event (with a join membership) is sent to every
 // room the user is a member of, to update the displayname and avatar_url". Sends that event,

@@ -8260,7 +8260,8 @@ namespace
 
 // NOLINTBEGIN(bugprone-easily-swappable-parameters)
 [[nodiscard]] auto send_event(HomeserverRuntime& runtime, std::string_view access_token, std::string_view room_id,
-                              std::string_view event_json) -> OperationResult
+                              std::string_view event_json, std::optional<std::int64_t> origin_server_ts)
+    -> OperationResult
 {
     log_diagnostic("room.event.started", {
                                              {"room_id",          std::string{room_id},                    false},
@@ -8321,7 +8322,7 @@ namespace
         return make_operation_result(false, {}, "m.room.redaction content must name the event in redacts", 400U);
     }
 
-    auto const composition = compose_signed_event(runtime, room_id, *user_id, event_json);
+    auto const composition = compose_signed_event(runtime, room_id, *user_id, event_json, origin_server_ts);
     if (composition.failure == ComposeFailure::invalid_state_key)
     {
         return invalid_state_key_result();
