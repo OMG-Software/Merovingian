@@ -3,6 +3,8 @@
 
 #include "merovingian/sync/viewer_event_unsigned.hpp"
 
+#include "merovingian/canonicaljson/parser.hpp"
+
 #include <algorithm>
 #include <optional>
 #include <string_view>
@@ -16,6 +18,18 @@ namespace
 {
 
     constexpr auto unsigned_key = std::string_view{"unsigned"};
+
+    [[nodiscard]] auto string_field(canonicaljson::Object const& object, std::string_view key) -> std::string const*
+    {
+        for (auto const& member : object)
+        {
+            if (member.key == key)
+            {
+                return std::get_if<std::string>(&member.value->storage());
+            }
+        }
+        return nullptr;
+    }
 
 } // namespace
 
@@ -42,6 +56,43 @@ auto ViewerEventUnsigned::transaction_id_of(database::PersistentEvent const& eve
     return record->txn_id;
 }
 
+auto ViewerEventUnsigned::previous_content_of(database::PersistentEvent const& event,
+                                              canonicaljson::Object const& client_event)
+    -> std::optional<canonicaljson::Value>
+{
+    auto const* event_type = string_field(client_event, "type");
+    auto const* state_key = string_field(client_event, "state_key");
+    if (event_type == nullptr || state_key == nullptr)
+    {
+        return std::nullopt;
+    }
+    auto const* transition =
+        database::find_state_transition(store_, event.room_id, *event_type, *state_key, event.event_id);
+    if (transition == nullptr || transition->previous_event_id.empty())
+    {
+        return std::nullopt;
+    }
+    auto const previous = store_.events.find(transition->previous_event_id);
+    if (previous == store_.events.end() || !visibility_.can_see(*previous))
+    {
+        return std::nullopt;
+    }
+    auto const parsed = canonicaljson::parse_lossless(previous->json);
+    auto const* previous_object = std::get_if<canonicaljson::Object>(&parsed.value.storage());
+    if (parsed.error != canonicaljson::ParseError::none || previous_object == nullptr)
+    {
+        return std::nullopt;
+    }
+    for (auto const& member : *previous_object)
+    {
+        if (member.key == "content" && std::holds_alternative<canonicaljson::Object>(member.value->storage()))
+        {
+            return *member.value;
+        }
+    }
+    return std::nullopt;
+}
+
 auto ViewerEventUnsigned::apply(database::PersistentEvent const& event, canonicaljson::Value client_event)
     -> canonicaljson::Value
 {
@@ -58,6 +109,13 @@ auto ViewerEventUnsigned::apply(database::PersistentEvent const& event, canonica
     if (auto membership = visibility_.membership_at(event); membership.has_value())
     {
         added.push_back(canonicaljson::make_member("membership", canonicaljson::Value{std::move(*membership)}));
+    }
+    // Client-Server API, ClientEvent `unsigned.prev_content`: "The `content` of the previous state event
+    // that was replaced by this event ... only returned if the event is a state event, and the client has
+    // permission to see the previous event."
+    if (auto previous = previous_content_of(event, *object); previous.has_value())
+    {
+        added.push_back(canonicaljson::make_member("prev_content", std::move(*previous)));
     }
     if (added.empty())
     {

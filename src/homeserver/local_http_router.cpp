@@ -2879,8 +2879,20 @@ namespace
             // Audit FED-5: a room whose current state we hold (we have its
             // create event) is authorised against that state before we sign
             // anything. This is what refuses an invite for a banned target.
-            auto const room_known_locally = !std::holds_alternative<std::nullptr_t>(
-                create_event_json_for_room(rt->database.persistent_store, invite.room_id).storage());
+            //
+            // State kept after this server's last user left is not current: a federated leave
+            // records only a membership row, so the held state still says the user is joined and
+            // would refuse the user's own re-invite ("cannot invite already-joined user"). The room
+            // counts as held only while a user of this server is joined to it, as for restricted
+            // joins; a banned target is still refused by the membership row check below (ADR-0301).
+            auto const room_known_locally =
+                !std::holds_alternative<std::nullptr_t>(
+                    create_event_json_for_room(rt->database.persistent_store, invite.room_id).storage()) &&
+                std::ranges::any_of(rt->database.persistent_store.memberships,
+                                    [&](database::PersistentMembership const& m) {
+                                        return m.room_id == invite.room_id && m.membership == "join" &&
+                                               server_name_from_user_id(m.user_id) == rt->config.server().server_name;
+                                    });
             if (room_known_locally)
             {
                 auto const auth = authorize_invite_against_local_room(*rt, invite.room_id, invite.room_version,
@@ -2932,14 +2944,13 @@ namespace
                 database::PersistentInvite{invite.room_id, *target_user, *sender, invite.event_id, *signed_event,
                                            invite.invite_room_state_json, stream_ordering}
             };
-            // For a room whose state we hold, stop here (audit FED-5). Spec: "if
-            // the remote homeserver is already in the room, it will receive the
-            // invite event twice; once through this endpoint, and again through
-            // a federation transaction". The transaction path does the full
-            // PDU checks and is what updates room state, and storing the event
-            // here would make that later copy fail to persist (the store refuses
-            // an event ID it already holds; ADR-0085). The membership row and invite metadata
-            // are all the invitee needs in order to see the invite.
+            // For a room whose state we hold, stop here (audit FED-5). Spec: "if the remote
+            // homeserver is already in the room, it will receive the invite event twice; once
+            // through this endpoint, and again through a federation transaction". The transaction
+            // path does the full PDU checks and is what places the event and updates room state, and
+            // storing the event here would make that later copy a duplicate that is never placed
+            // (ADR-0085, ADR-0285). The membership row and invite metadata are all this endpoint
+            // records; /sync shows the invite once the room's state has it (ADR-0301).
             if (room_known_locally)
             {
                 if (!database::store_membership_projection(rt->database.persistent_store, invite.room_id,

@@ -203,6 +203,10 @@ on that record, each by the inviter's server, which the spec calls a resident se
   to that server first (`deliver_remote_invite`, ADR-0293) and stored and sent to the room's other servers only
   after it accepted. Only an unreachable server falls back to `queue_remote_invite`. Never go back to queueing
   first: the invitee's client acts on what a third server shows it.
+- The invite handler judges an invite against held room state only while a user of this server is joined to the
+  room (ADR-0301); after a federated leave the state is stale. For a room this server is in, it stores no event (the
+  transaction's copy places it) and `/sync` hides the invite until the state has it (`invite_awaits_room_state`).
+  Do not store the event in the handler, or make the invite visible before the state has it.
 - The leave that rejects an invite is stored as an outlier (ADR-0294), or `/sync` has no leave event to report.
 - `rescind_invite_from_inviter` (`local_http_router.cpp`) turns a `leave` PDU for the invitee, sent by a user
   of the inviter's own server, into a `leave` for rooms whose state is not held. Nobody else can withdraw an
