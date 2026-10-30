@@ -1,6 +1,6 @@
 # A hole in the event graph makes a /sync timeline limited
 
-* Status: accepted
+* Status: accepted (the definition of "held" is refined by [ADR-0290](0290-a-backfilled-outlier-with-a-state-group-is-held.md))
 * Deciders: James Chapman
 * Date: 2026-10-30
 

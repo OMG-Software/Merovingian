@@ -444,10 +444,15 @@ SCENARIO("Which stored predecessors count as held", "[sync][dag-gap]")
             }
         }
 
-        WHEN("the third message's predecessor is an outlier")
+        // A send_join state or auth-chain event is stored as an outlier and given no state group
+        // (ADR-0064): it was never placed in the graph by walking prev_events.
+        WHEN("the third message's predecessor is an outlier that was never placed")
         {
             auto const m2 = f.row_with_body("m2").event_id;
             REQUIRE(merovingian::database::set_event_status(store, m2, "outlier"));
+            std::erase_if(store.event_state_groups, [&](auto const& mapping) {
+                return mapping.event_id == m2;
+            });
             f.set_prev("m3", {m2});
             auto const view = view_of(f.sync(), f.room_id);
 
@@ -456,6 +461,23 @@ SCENARIO("Which stored predecessors count as held", "[sync][dag-gap]")
                 REQUIRE(view.bodies.back() == "m3");
                 REQUIRE_FALSE(holds(view.bodies, "m1"));
                 REQUIRE(view.limited);
+            }
+        }
+
+        // /get_missing_events and /backfill store what they fetch as outliers too, but with the state
+        // group computed from the event's own prev_events: it is in the graph (Complement
+        // TestGetMissingEventsGapFilling).
+        WHEN("the third message's predecessor was fetched by get_missing_events: an outlier with a state group")
+        {
+            auto const m2 = f.row_with_body("m2").event_id;
+            REQUIRE(merovingian::database::set_event_status(store, m2, "outlier"));
+            f.set_prev("m3", {m2});
+            auto const view = view_of(f.sync(), f.room_id);
+
+            THEN("the filled events and the event that named them all appear, and the timeline is not limited")
+            {
+                REQUIRE(view.bodies == std::vector<std::string>{"m1", "m2", "m3"});
+                REQUIRE_FALSE(view.limited);
             }
         }
 

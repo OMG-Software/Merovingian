@@ -161,6 +161,11 @@ auto HistoryVisibility::state_group_of(std::string_view event_id) -> std::option
     return found == group_by_event_.end() ? std::nullopt : std::optional<std::string_view>{found->second};
 }
 
+auto HistoryVisibility::has_state_group(std::string_view event_id) -> bool
+{
+    return state_group_of(event_id).has_value();
+}
+
 // Finds the event ID that `group_id`'s full state holds for (event_type, state_key), walking
 // the delta chain newest first exactly as database::read_state_group_full_state does: bounded,
 // cycle-checked, and broken (not "absent") when a group on the chain is missing.

@@ -91,6 +91,11 @@ public:
     // index (ADR-0215), with no walk of the events.
     [[nodiscard]] auto find_event(std::string_view event_id) -> database::PersistentEvent const*;
 
+    // True when `event_id` has a recorded state group (ADR-0064): its state was computed from its own
+    // prev_events, which is what separates an event placed in the graph from a state or auth-chain
+    // outlier (ADR-0290). An index lookup.
+    [[nodiscard]] auto has_state_group(std::string_view event_id) -> bool;
+
 private:
     struct GroupView final
     {
