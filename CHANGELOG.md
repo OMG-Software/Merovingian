@@ -2,6 +2,66 @@
 
 Fixes for the failures Complement run 12 found against main at 0.12.63.
 
+### Federation
+
+- A PDU this server already stores is answered as handled in the `/send` result, with no `error`
+  entry, and is not re-verified, re-authorised or re-stored; a stored rejected PDU stays rejected
+  (`PduIngestionStatus::already_stored`, ADR-0285). The check runs before signature verification in
+  `/send` and in main's worker `pdu_ingest` relay, and again under the room stripe, so two
+  transactions racing with one PDU store it once. Since 0.12.63 a re-sent PDU was answered
+  `internal error: event persistence pre-check failed`.
+- A per-PDU internal error in a `/send` transaction is logged at WARNING with its event ID, room ID,
+  origin and reason.
+- `GET /event_auth`, the `auth_chain` of `GET /state` and the `auth_chain_ids` of `GET /state_ids`
+  include the room's `m.room.create` event in room version 12 and later, where no event lists it in
+  `auth_events` (ADR-0286). It counts toward `max_event_auth_chain_events`.
+- An invite to a user of another server is offered to that server (`PUT /v2/invite`) before it is
+  stored, sent to the room's other servers or acknowledged to the client, for `POST /invite` and
+  createRoom's `invite` list. A refusing server fails the request; an unreachable one is retried from
+  the queue (ADR-0293).
+- Rejecting an invite from another server keeps the signed leave as an outlier, so the next `/sync`
+  reports it under `rooms.leave` (ADR-0294).
+- This server neither serves nor consults notary key servers; `/_matrix/key/v2/query` is an unknown
+  endpoint (ADR-0297).
+
+### Rooms
+
+- A local user who meets a restricted or knock_restricted room's allow condition, in a room this
+  server is resident in but where no local user can invite, joins through another resident server
+  (make_join/send_join) instead of getting 403: the client's servers first, then other servers with
+  joined members, at most 4 (ADR-0287). The resident's co-signed join is stored as a received event
+  only after its event ID, this server's signature and the authorising server's signature verify;
+  the answer's state is never used.
+- Before such a join is refused or sent away, it waits for any event of the room being applied at
+  that moment and decides again, so a power-levels event that arrived milliseconds earlier gives a
+  local join (ADR-0288).
+
+### Client-Server API
+
+- The server accepts the `access_token` query parameter on client-server and media routes, which
+  v1.19 says homeservers MUST support; the Authorization header wins when both are sent (ADR-0295).
+- Classic `/sync`: a hole in a room's event graph (an event whose `prev_events` this server never
+  received, or holds only as an outlier) makes the timeline `limited`; the timeline starts at the
+  first event after the hole and `prev_batch` reaches the earlier events (ADR-0289). A limited
+  incremental sync also carries the room state at the start of the timeline. Sliding sync is
+  unchanged.
+- Sending a message no longer ends the sender's typing; typing ends on the client's `typing: false`
+  or the timeout (ADR-0298).
+
+### Federation worker
+
+- The federation worker no longer loads application service registrations or creates their sender
+  users (ADR-0296). It has no filesystem grant for the secrets directory and never uses the registry,
+  so it logged a rejection on every start.
+
+### Complement
+
+- `skip-list.toml` gains eight entries for owner decisions of 2026-10-30, each checked against the
+  pinned spec: a newly joined room's incremental timeline stays bounded by `since`; strict
+  `device_lists.changed` equality depends on EDU timing (three subtests); a failed UIA stage is 401
+  and the notary endpoint is unknown (both signed off); createRoom's default invite level stays 50;
+  the A8 recovery after an empty `/get_missing_events` stays.
+
 ## 0.12.63
 
 Fixes for the failures Complement run 10 found against the signed 0.12.62 release package.
