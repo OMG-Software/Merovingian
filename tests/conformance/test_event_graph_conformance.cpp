@@ -720,6 +720,12 @@ struct VersionedRoom final
 
 } // namespace
 
+// Spec: Matrix Server-Server API v1.19; Room Version 12
+// Endpoint / Section: GET /_matrix/federation/v1/event_auth/{roomId}/{eventId}; rooms/v12 "Auth chain"
+// URL: ../../docs/matrix-v1.19-spec/server-server-api.md#get_matrixfederationv1event_authroomideventid
+//
+// v12: "The m.room.create event MUST NOT be selected for auth_events on events. The room_id ...
+// implies this instead." The chains this server serves include that implied event once (ADR-0286).
 SCENARIO("event_auth includes the create event of a room whose ID implies it, once",
          "[federation][conformance][event-graph][event_auth][create-implied]")
 {

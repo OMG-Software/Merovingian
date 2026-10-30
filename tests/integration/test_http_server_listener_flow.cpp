@@ -981,13 +981,14 @@ SCENARIO("merovingian-server accepts an access token in the query string as well
         auto stats = merovingian::homeserver::HttpServeStats{};
 
         // Serves one request on a socketpair and returns the whole response.
-        auto const serve = [&](std::string const& request_line, std::string const& extra_headers) -> std::string {
+        auto const serve = [&](std::string const& request_line, std::string const& extra_headers,
+                               std::string const& body = {}) -> std::string {
             auto sockets = std::array<int, 2>{-1, -1};
             REQUIRE(::socketpair(AF_UNIX, SOCK_STREAM, 0, sockets.data()) == 0);
             auto server = merovingian::core::FileDescriptor{sockets[0]};
             auto client = merovingian::core::FileDescriptor{sockets[1]};
             REQUIRE(send_all(client.get(), request_line + " HTTP/1.1\r\nHost: localhost\r\n" + extra_headers +
-                                               "Connection: close\r\n\r\n"));
+                                               "Connection: close\r\n\r\n" + body));
             REQUIRE_FALSE(merovingian::homeserver::serve_one_http_connection(
                 server.get(), runtime, stats, merovingian::homeserver::HttpDispatchMode::client_server));
             server.reset();
@@ -1061,6 +1062,38 @@ SCENARIO("merovingian-server accepts an access token in the query string as well
                 INFO(response.substr(0U, 300U));
                 REQUIRE(response.starts_with("HTTP/1.1 200"));
                 REQUIRE(response.find(user_member) != std::string::npos);
+            }
+        }
+
+        WHEN("routes matched by their exact path are called with the token in the query")
+        {
+            // createRoom and logout compare the whole target with a fixed path, so the
+            // parameter must not still be on the target when they are routed (ADR-0295).
+            auto const created = serve("POST /_matrix/client/v3/createRoom?access_token=" + login.value,
+                                       "Content-Type: application/json\r\nContent-Length: 2\r\n", "{}");
+            auto const room_at = created.find(R"("room_id":")");
+            auto const room_id =
+                room_at == std::string::npos
+                    ? std::string{}
+                    : created.substr(room_at + 11U, created.find('"', room_at + 11U) - (room_at + 11U));
+            auto const messages = serve("GET /_matrix/client/v3/rooms/" + room_id +
+                                            "/messages?dir=b&access_token=" + login.value + "&limit=1",
+                                        "");
+            auto const logged_out =
+                serve("POST /_matrix/client/v3/logout?access_token=" + login.value, "Content-Length: 0\r\n");
+            auto const after_logout = serve(whoami + "?access_token=" + login.value, "");
+
+            THEN("each reaches its handler, and the other query parameters are kept")
+            {
+                INFO(created.substr(0U, 300U));
+                REQUIRE(created.starts_with("HTTP/1.1 200"));
+                REQUIRE_FALSE(room_id.empty());
+                INFO(messages.substr(0U, 300U));
+                // `dir` is required: a 200 shows it survived the token's removal.
+                REQUIRE(messages.starts_with("HTTP/1.1 200"));
+                INFO(logged_out.substr(0U, 300U));
+                REQUIRE(logged_out.starts_with("HTTP/1.1 200"));
+                REQUIRE(after_logout.starts_with("HTTP/1.1 401"));
             }
         }
 

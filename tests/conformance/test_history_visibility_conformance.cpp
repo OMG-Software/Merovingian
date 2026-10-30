@@ -1382,12 +1382,15 @@ struct TimestampLookup final
 
 } // namespace
 
-// Spec: client-server-api.md GET /rooms/{roomId}/timestamp_to_event returns "the event closest to the
-// given timestamp"; "Room History Visibility" decides which events a user may be shown: "In all
-// cases except `world_readable`, a user needs to join a room to view events in that room", and with
-// `joined` visibility only the events sent while the user was joined. The spec says nothing of how
-// the two meet; the project treats an event the user may not see as absent and goes on to the next
-// one in the direction asked (ADR-0299), so the endpoint never names an event /event would refuse.
+// Spec: Matrix Client-Server API v1.19
+// Endpoint / Section: GET /_matrix/client/v1/rooms/{roomId}/timestamp_to_event; Room History Visibility
+// URL: ../../docs/matrix-v1.19-spec/client-server-api.md#room-history-visibility
+//
+// GET /rooms/{roomId}/timestamp_to_event returns "the event closest to the given timestamp"; "Room History Visibility"
+// decides which events a user may be shown: "In all cases except `world_readable`, a user needs to join a room to view
+// events in that room", and with `joined` visibility only the events sent while the user was joined. The spec says
+// nothing of how the two meet; the project treats an event the user may not see as absent and goes on to the next one
+// in the direction asked (ADR-0299), so the endpoint never names an event /event would refuse.
 SCENARIO("GET /timestamp_to_event never names an event the user may not see",
          "[history-visibility][csaz-3][security][conformance][timestamp-to-event]")
 {

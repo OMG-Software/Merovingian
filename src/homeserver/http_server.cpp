@@ -1040,6 +1040,46 @@ namespace
         return {};
     }
 
+    // `target` with every `access_token` query parameter removed, and the `?` too when nothing is
+    // left after it (ADR-0295). Handlers match exact paths such as `/_matrix/client/v3/createRoom`,
+    // and a credential has no business in the target routing, rate-limit keys and logs see.
+    [[nodiscard]] auto without_query_access_token(std::string_view target) -> std::string
+    {
+        auto const query_pos = target.find('?');
+        if (query_pos == std::string_view::npos)
+        {
+            return std::string{target};
+        }
+        auto result = std::string{target.substr(0U, query_pos)};
+        auto kept = std::string{};
+        auto query = target.substr(query_pos + 1U);
+        while (true)
+        {
+            auto const amp = query.find('&');
+            auto const pair = query.substr(0U, amp);
+            auto const name = pair.substr(0U, pair.find('='));
+            if (!pair.empty() && name != "access_token")
+            {
+                if (!kept.empty())
+                {
+                    kept.push_back('&');
+                }
+                kept.append(pair);
+            }
+            if (amp == std::string_view::npos)
+            {
+                break;
+            }
+            query.remove_prefix(amp + 1U);
+        }
+        if (!kept.empty())
+        {
+            result.push_back('?');
+            result.append(kept);
+        }
+        return result;
+    }
+
     [[nodiscard]] auto build_local_request(http::RequestHead const& head, std::string body, std::string_view peer_addr)
         -> LocalHttpRequest
     {
@@ -1062,6 +1102,11 @@ namespace
             // `access_token=TheTokenHere`. [...] Homeservers MUST support both
             // methods." Complement's blueprint runner sends every token this way.
             request.access_token = query_access_token(request.target);
+        }
+        if (carries_query_access_token(request.target))
+        {
+            // Read (or overridden by the header) either way: the parameter leaves the target.
+            request.target = without_query_access_token(request.target);
         }
         request.remote_addr = std::string{peer_addr};
         return request;

@@ -39,6 +39,10 @@ read (ADR-0077), so a query token is honoured before the body as well.
 * The spec is silent about a request with both forms. The header wins, the
   query value is ignored, and nothing is rejected: the deprecated form is the
   fallback, never an override. This is a choice, not a spec requirement.
+* Every `access_token` parameter is then removed from the request's target,
+  whichever credential won (`without_query_access_token`). Handlers such as
+  `createRoom` and `logout` match the exact path, and the routing, rate-limit
+  and log code that reads the target never sees the credential.
 * The token is percent-decoded. The logged target already redacts the value
   (`observability::sanitized_http_target`), so accepting the query form leaks
   nothing new into logs.

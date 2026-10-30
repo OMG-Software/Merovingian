@@ -596,6 +596,59 @@ SCENARIO("Federation send transaction answers a PDU already stored as handled, n
         }
     }
 
+    GIVEN("a runtime whose probe says a PDU relayed from another server is stored, and a resolver that counts lookups")
+    {
+        auto runtime = merovingian::federation::make_federation_runtime_state(runtime_config());
+        merovingian::federation::upsert_remote(runtime, remote_for_origin());
+        runtime.pdu_sink = []([[maybe_unused]] merovingian::federation::InboundPduEnvelope const& envelope)
+            -> merovingian::federation::PduIngestionResult {
+            return {merovingian::federation::PduIngestionStatus::internal_error, "must not be reached", {}};
+        };
+        runtime.pdu_already_stored = []([[maybe_unused]] std::string_view room_id,
+                                        [[maybe_unused]] std::string_view event_id) {
+            return true;
+        };
+        auto relayed_lookups = std::make_shared<std::size_t>(0U);
+        runtime.remote_key_resolver = [relayed_lookups](std::string_view server_name,
+                                                        [[maybe_unused]] std::string_view relayed_key_id)
+            -> std::optional<merovingian::federation::FederationRemoteRuntime> {
+            if (server_name == "relayed.example.org")
+            {
+                ++(*relayed_lookups);
+            }
+            return std::nullopt;
+        };
+
+        WHEN("a transaction carries a PDU whose sender is a user of a third server")
+        {
+            // The sender's server is not the origin, so its key would be fetched ahead of the
+            // per-PDU loop. The PDU is already stored, so nothing about it needs verifying.
+            auto const relayed_pdu =
+                std::string{"{\"auth_events\":[],\"content\":{\"body\":\"relayed\",\"msgtype\":\"m.text\"},\"depth\":4,"
+                            "\"hashes\":{\"sha256\":\"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\"},"
+                            "\"origin_server_ts\":1001,\"prev_events\":[\"$prev:local.example.org\"],"
+                            "\"room_id\":\"!test:local.example.org\",\"sender\":\"@bob:relayed.example.org\","
+                            "\"signatures\":{\"relayed.example.org\":{\"ed25519:relay1\":\"AAAA\"}},"
+                            "\"type\":\"m.room.message\"}"};
+            auto const body = std::string{"{\"origin\":\"remote.example.org\","
+                                          "\"origin_server_ts\":1000,"
+                                          "\"pdus\":["} +
+                              relayed_pdu + "]}";
+            auto const response = merovingian::federation::handle_inbound_federation_request(
+                runtime, signed_send_request("txn_relayed_dup", body));
+
+            THEN("the third server's key is never looked up and the PDU is answered as handled")
+            {
+                REQUIRE(response.status == 200U);
+                REQUIRE(*relayed_lookups == 0U);
+                auto const results = pdu_results(response);
+                REQUIRE(results.has_value());
+                REQUIRE(results->size() == 1U);
+                REQUIRE_FALSE(any_error(*results));
+            }
+        }
+    }
+
     GIVEN("a runtime whose sink fails with an internal error")
     {
         auto runtime = merovingian::federation::make_federation_runtime_state(runtime_config());

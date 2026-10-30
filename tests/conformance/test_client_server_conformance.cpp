@@ -11742,6 +11742,12 @@ struct TimestampToEventReply final
 
 } // namespace
 
+// Spec: Matrix Client-Server API v1.19
+// Endpoint / Section: GET /_matrix/client/v1/rooms/{roomId}/timestamp_to_event
+// URL: ../../docs/matrix-v1.19-spec/client-server-api.md#get_matrixclientv1roomsroomidtimestamp_to_event
+//
+// "Get the ID of the event closest to the given timestamp, in the direction specified by the dir
+// parameter"; 404 when no event is found. The boundary is inclusive (ADR-0299).
 SCENARIO("GET /rooms/{roomId}/timestamp_to_event finds the event nearest the timestamp in either direction",
          "[conformance][client-server][room-participation][timestamp-to-event]")
 {
@@ -11813,6 +11819,12 @@ SCENARIO("GET /rooms/{roomId}/timestamp_to_event finds the event nearest the tim
     }
 }
 
+// Spec: Matrix Client-Server API v1.19
+// Endpoint / Section: GET /_matrix/client/v1/rooms/{roomId}/timestamp_to_event
+// URL: ../../docs/matrix-v1.19-spec/client-server-api.md#get_matrixclientv1roomsroomidtimestamp_to_event
+//
+// The spec names no order among events with the same origin_server_ts; ADR-0299 orders them by
+// depth, then arrival, so dir=f gives the first and dir=b the last.
 SCENARIO("GET /rooms/{roomId}/timestamp_to_event orders events that share a timestamp by their place in the room",
          "[conformance][client-server][room-participation][timestamp-to-event]")
 {
@@ -11843,6 +11855,12 @@ SCENARIO("GET /rooms/{roomId}/timestamp_to_event orders events that share a time
     }
 }
 
+// Spec: Matrix Client-Server API v1.19
+// Endpoint / Section: GET /_matrix/client/v1/rooms/{roomId}/timestamp_to_event; Room History Visibility
+// URL: ../../docs/matrix-v1.19-spec/client-server-api.md#get_matrixclientv1roomsroomidtimestamp_to_event
+//
+// "Requires authentication: Yes". The endpoint lists no 403; a user who may not read the room is
+// refused 403 M_FORBIDDEN as on /messages and /context (owner decision, ADR-0299).
 SCENARIO("GET /rooms/{roomId}/timestamp_to_event refuses a user who cannot read the room",
          "[conformance][client-server][room-participation][timestamp-to-event]")
 {
@@ -11897,6 +11915,12 @@ SCENARIO("GET /rooms/{roomId}/timestamp_to_event refuses a user who cannot read 
     }
 }
 
+// Spec: Matrix Client-Server API v1.19
+// Endpoint / Section: GET /_matrix/client/v1/rooms/{roomId}/timestamp_to_event
+// URL: ../../docs/matrix-v1.19-spec/client-server-api.md#get_matrixclientv1roomsroomidtimestamp_to_event
+//
+// `ts` and `dir` are both "Required". A missing one is 400 M_MISSING_PARAM, a malformed one
+// 400 M_INVALID_PARAM (Common error codes).
 SCENARIO("GET /rooms/{roomId}/timestamp_to_event requires a timestamp and a direction",
          "[conformance][client-server][room-participation][timestamp-to-event]")
 {
