@@ -73,6 +73,15 @@ Fixes for the failures Complement run 12 found against main at 0.12.63.
   `origin_server_ts`, so the lookup is a bounded binary search (ADR-0300).
 - State events carry `unsigned.prev_content` (the content of the state event they replaced) when the
   viewer may see it.
+- Application services can set an event's `origin_server_ts` with `?ts=` on `PUT /rooms/{roomId}/send/...`
+  and `PUT /rooms/{roomId}/state/...` (Application Service API, "Timestamp massaging"; ADR-0303). A `ts`
+  that is not an integer in the Matrix integer range is `400 M_INVALID_PARAM`; an ordinary user's `ts`
+  and `ts` on other routes are ignored, and event order is unchanged.
+- `POST /createRoom` is matched on its path, so an appservice acting as a user with `?user_id=` no
+  longer gets 405.
+- A user's own `m.room.member` event held as an outlier with no state group (a received invite, the
+  leave that rejected one) is visible to that user, so a federated join that replaces an invite carries
+  `unsigned.prev_content` with the invite's content (ADR-0304).
 - Sending a message no longer ends the sender's typing; typing ends on the client's `typing: false`
   or the timeout (ADR-0298).
 
