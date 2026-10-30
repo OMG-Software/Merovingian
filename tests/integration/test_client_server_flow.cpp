@@ -1683,6 +1683,13 @@ auto add_event_behind_a_gap(merovingian::homeserver::ClientServerRuntime& rt, st
     REQUIRE(rt.homeserver.database.persistent_store.events.push_back(std::move(gap)));
 }
 
+// The client-outbound budget key the requests of these tests are counted under (they carry no peer address).
+[[nodiscard]] auto test_request_client_key(merovingian::homeserver::ClientServerRuntime const& rt) -> std::string
+{
+    return merovingian::homeserver::rate_limit_client_key(merovingian::homeserver::LocalHttpRequest{},
+                                                          rt.homeserver.config.server());
+}
+
 [[nodiscard]] auto timestamp_to_event_get(merovingian::homeserver::ClientServerRuntime& rt,
                                           RoomWithRemoteMember const& room, std::string const& query)
     -> merovingian::homeserver::DispatchResult
@@ -1735,12 +1742,15 @@ SCENARIO("GET /timestamp_to_event asks a server of the room only when its own hi
             }
         }
 
-        WHEN("the only client-outbound slot is busy for a moment when the lookup needs it")
+        WHEN("the client's own client-outbound slot is busy for a moment when the lookup needs it")
         {
-            // ADR-0306: the lookup waits for a slot within its own deadline instead of being refused at
-            // once, so parallel lookups by one client are served in turn.
-            rt.homeserver.client_outbound_proxy_policy.global_cap = 1U;
-            auto held = merovingian::homeserver::admit_client_outbound_proxy(rt.homeserver, "another-lookup");
+            // ADR-0306: the lookup waits for its client's slot within its own deadline instead of being
+            // refused at once, so parallel lookups by one client are served in turn. It waits from a place
+            // under the global cap (ADR-0310), which has room here.
+            rt.homeserver.client_outbound_proxy_policy.global_cap = 4U;
+            rt.homeserver.client_outbound_proxy_policy.per_client_cap = 1U;
+            auto held =
+                merovingian::homeserver::admit_client_outbound_proxy(rt.homeserver, test_request_client_key(rt));
             REQUIRE(held.has_value());
             auto const not_found = merovingian::tests::tls_mock::json_http_response(
                 "404 Not Found", R"({"errcode":"M_NOT_FOUND","error":"no event"})");
@@ -1995,9 +2005,35 @@ SCENARIO("GET /timestamp_to_event does not call another server without a client-
             }
         }
 
+        WHEN("calls in flight fill the global cap")
+        {
+            // ADR-0310: there is no room to wait either, so the lookup is refused at once instead of
+            // holding its thread for the one-second deadline.
+            rt.homeserver.client_outbound_proxy_policy.global_cap = 1U;
+            auto const other_client =
+                merovingian::homeserver::admit_client_outbound_proxy(rt.homeserver, "another-client");
+            REQUIRE(other_client.has_value());
+            auto const started_at = std::chrono::steady_clock::now();
+            auto const response = timestamp_to_event_get(rt, room, "ts=999999&dir=f");
+            auto const elapsed = std::chrono::steady_clock::now() - started_at;
+
+            THEN("it is told to retry shortly without waiting for its deadline")
+            {
+                CAPTURE(std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count());
+                REQUIRE(response.response.status == 429U);
+                REQUIRE(elapsed < std::chrono::milliseconds{500});
+            }
+        }
+
         WHEN("the local answer lies behind a gap, and alice leaves and forgets the room while the lookup waits")
         {
-            // The wait releases runtime.mutex, so the access judged before it may be gone after it.
+            // The wait releases runtime.mutex, so the access judged before it may be gone after it. Her own
+            // client's slot is taken for the whole deadline, and the global cap has room for her to wait.
+            rt.homeserver.client_outbound_proxy_policy.global_cap = 4U;
+            rt.homeserver.client_outbound_proxy_policy.per_client_cap = 1U;
+            auto const own_slot_taken =
+                merovingian::homeserver::admit_client_outbound_proxy(rt.homeserver, test_request_client_key(rt));
+            REQUIRE(own_slot_taken.has_value());
             auto leaver = std::thread{[&rt, &room]() {
                 std::this_thread::sleep_for(std::chrono::milliseconds{300});
                 auto const base = "/_matrix/client/v3/rooms/" + room.room_id;

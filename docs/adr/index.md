@@ -290,6 +290,7 @@
 * [0307 - An invite for an unreachable server is queued before it is stored](0307-an-invite-for-an-unreachable-server-is-queued-before-it-is-stored.md)
 * [0308 - Shared history visibility orders the join and the event by depth](0308-shared-history-visibility-orders-the-join-and-the-event-by-depth.md)
 * [0309 - A federation retry waits from the end of the failed attempt](0309-a-federation-retry-waits-from-the-end-of-the-failed-attempt.md)
+* [0310 - Waiting requests and outbound calls share the global cap](0310-waiting-requests-and-outbound-calls-share-the-global-cap.md)
 
 ## Proposed Records
 

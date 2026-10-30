@@ -208,3 +208,51 @@ SCENARIO("The in-flight budget never admits more than the global cap under concu
         }
     }
 }
+
+// ADR-0310: a request waiting for a slot holds a request thread as surely as one making its call, so the
+// waiters and the calls in flight are one population under the global cap. A request may start waiting only
+// while that population is under the cap, and its place passes to the call when it gets its slot.
+SCENARIO("Waiting requests and calls in flight share the global cap", "[http][in-flight-budget][adr-0310]")
+{
+    GIVEN("a global cap of two and a per-client cap of one, with client A making one call")
+    {
+        auto budget = InFlightBudget{};
+        auto a_call = budget.try_acquire("client-a", 2U, 1U);
+        REQUIRE(a_call.has_value());
+
+        WHEN("client A's second request reserves a place to wait")
+        {
+            auto waiter = budget.try_reserve_wait(2U);
+            REQUIRE(waiter.has_value());
+
+            THEN("the cap is full: nobody else may call or wait")
+            {
+                REQUIRE(budget.waiting() == 1U);
+                REQUIRE_FALSE(budget.try_acquire("client-b", 2U, 1U).has_value());
+                REQUIRE_FALSE(budget.try_reserve_wait(2U).has_value());
+            }
+
+            THEN("the waiter gets no slot while its client is at its own cap")
+            {
+                REQUIRE_FALSE(budget.try_acquire_waiting(*waiter, "client-a", 1U).has_value());
+                REQUIRE(budget.waiting() == 1U);
+            }
+
+            THEN("once client A's call ends the waiter becomes a call, and the population stays two")
+            {
+                a_call.reset();
+                auto const slot = budget.try_acquire_waiting(*waiter, "client-a", 1U);
+                REQUIRE(slot.has_value());
+                REQUIRE(budget.active() == 1U);
+                REQUIRE(budget.waiting() == 0U);
+            }
+
+            THEN("a waiter that gives up returns its place")
+            {
+                waiter.reset();
+                REQUIRE(budget.waiting() == 0U);
+                REQUIRE(budget.try_acquire("client-b", 2U, 1U).has_value());
+            }
+        }
+    }
+}

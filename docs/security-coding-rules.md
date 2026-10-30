@@ -912,7 +912,9 @@ quickly finding everything a given `AGENTS.md` file contributed.
   16 remote requests and 3 servers per room. `timestamp_to_event` (authenticated) waits for a
   refused slot, within its own deadline and with the runtime mutex released (ADR-0306), and so
   does a remote invite offer, which queues the invite when no slot comes (ADR-0307); the
-  unauthenticated proxies keep the immediate refusal.
+  unauthenticated proxies keep the immediate refusal. A waiter counts toward the global cap with
+  the calls in flight (`try_reserve_wait`, ADR-0310), so waiting can never hold more than half
+  the request pool.
   Source: `src/homeserver/AGENTS.md`.
 
 - **Nothing may put a TLS client socket back into blocking mode after the handshake, and

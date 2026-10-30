@@ -1113,7 +1113,10 @@ Rules:
   invites) waits the same way and, with no slot, tries to queue the invite for
   retry (ADR-0307). If the queue refuses it, `POST /invite` answers `503` and
   stores nothing; createRoom keeps the room and logs
-  `room.create.invite_not_queued`.
+  `room.create.invite_not_queued`. A request waits only from a place reserved
+  under the same global cap as the calls in flight (`try_reserve_wait`,
+  ADR-0310): waiting holds a thread, so calls and waiters together never pass
+  half the pool, and with that population full the request is refused at once.
 - **Deadline.** 10 s for directory lookups (`timestamp_to_event` included), 30 s
   for remote media and for offering remote invites (one for all of a createRoom's), in total:
   server discovery and the request(s) that follow draw from one

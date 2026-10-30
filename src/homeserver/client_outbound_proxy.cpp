@@ -31,9 +31,23 @@ auto admit_client_outbound_proxy_waiting(HomeserverRuntime& runtime, std::string
                                          std::unique_lock<RuntimeMutex>& guard, OutboundDeadline const& deadline)
     -> std::optional<http::InFlightBudget::Slot>
 {
+    if (auto slot = admit_client_outbound_proxy(runtime, client_key); slot.has_value())
+    {
+        return slot;
+    }
+    // A waiting request holds its thread, so it waits only from a place reserved under the same global cap as
+    // the calls in flight (ADR-0310): with that population full, it is refused at once like any other. What it
+    // waits for is its own client's slot.
+    auto const& policy = runtime.client_outbound_proxy_policy;
+    auto waiter = runtime.client_outbound_budget->try_reserve_wait(policy.global_cap);
+    if (!waiter.has_value())
+    {
+        return std::nullopt;
+    }
     while (true)
     {
-        if (auto slot = admit_client_outbound_proxy(runtime, client_key); slot.has_value())
+        if (auto slot = runtime.client_outbound_budget->try_acquire_waiting(*waiter, client_key, policy.per_client_cap);
+            slot.has_value())
         {
             return slot;
         }
