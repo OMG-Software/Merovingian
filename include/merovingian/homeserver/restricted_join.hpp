@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace merovingian::database
 {
@@ -74,6 +75,24 @@ inline constexpr std::size_t max_restricted_join_conditions{32U};
 [[nodiscard]] auto decide_restricted_join(database::PersistentStore const& store, std::string_view room_id,
                                           std::string_view user_id, std::string_view our_server,
                                           std::string_view named_authoriser = {}) -> RestrictedJoinDecision;
+
+// The most servers a local join tries through the federated join handshake when
+// `decide_restricted_join` finds the user meets a condition but no user of this
+// server can authorise the join (ADR-0287). Each candidate costs one make_join, so
+// the list is bounded however many servers the room has.
+inline constexpr std::size_t max_restricted_join_fallback_candidates{4U};
+
+// The servers a local join of a restricted room this server is resident in goes
+// through when no local user can authorise it (server-server-api.md "Restricted
+// rooms": M_UNABLE_TO_GRANT_JOIN, "the joining server should try a different
+// server"): the servers the client named (`via_servers`, in order) first, then
+// the other servers with joined members (`resident_servers`). This server is
+// never a candidate, a server appears once, and at most `max_candidates` are
+// returned.
+[[nodiscard]] auto restricted_join_fallback_candidates(std::vector<std::string> const& via_servers,
+                                                       std::vector<std::string> const& resident_servers,
+                                                       std::string_view our_server, std::size_t max_candidates)
+    -> std::vector<std::string>;
 
 // The HTTP status and Matrix errcode for a refusing verdict
 // (unable_to_authorise, unable_to_grant, forbidden). Any other verdict is not

@@ -345,6 +345,28 @@ auto decide_restricted_join(database::PersistentStore const& store, std::string_
                       : "join_authorised_via_users_server is not a user of this server who can authorise the join");
 }
 
+auto restricted_join_fallback_candidates(std::vector<std::string> const& via_servers,
+                                         std::vector<std::string> const& resident_servers, std::string_view our_server,
+                                         std::size_t max_candidates) -> std::vector<std::string>
+{
+    auto candidates = std::vector<std::string>{};
+    for (auto const* list : {&via_servers, &resident_servers})
+    {
+        for (auto const& server : *list)
+        {
+            if (candidates.size() == max_candidates)
+            {
+                return candidates;
+            }
+            if (!server.empty() && server != our_server && std::ranges::find(candidates, server) == candidates.end())
+            {
+                candidates.push_back(server);
+            }
+        }
+    }
+    return candidates;
+}
+
 auto restricted_join_refusal_status(RestrictedJoinVerdict verdict) noexcept -> std::uint16_t
 {
     switch (verdict)
