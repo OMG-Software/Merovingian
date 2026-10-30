@@ -88,8 +88,8 @@ struct TimestampFixture final
 
     explicit TimestampFixture(std::string_view name)
         : registration_path{std::filesystem::temp_directory_path() /
-                            (std::string{"merovingian-ts-"} + std::string{name} + ".json")},
-          started{start_homeserver_with_bridge(registration_path)}
+                            (std::string{"merovingian-ts-"} + std::string{name} + ".json")}
+        , started{start_homeserver_with_bridge(registration_path)}
     {
         REQUIRE(started.started);
         started.runtime.homeserver.test_frozen_event_clock_ms = frozen_now_ms;
@@ -291,29 +291,27 @@ SCENARIO("an appservice's ts that origin_server_ts cannot hold is a bad request"
 
         WHEN("the bridge sends with a ts that is not an integer, is empty, or is outside the integer range")
         {
-            auto const bad_values =
-                std::vector<std::string>{"abc",
-                                         "",
-                                         "1.5",
-                                         "1e3",
-                                         "12abc",
-                                         "+5",
-                                         "0x10",
-                                         "9007199254740992",
-                                         "-9007199254740992",
-                                         "9223372036854775808",
-                                         "99999999999999999999"};
+            auto const bad_values = std::vector<std::string>{"abc",
+                                                             "",
+                                                             "1.5",
+                                                             "1e3",
+                                                             "12abc",
+                                                             "+5",
+                                                             "0x10",
+                                                             "9007199254740992",
+                                                             "-9007199254740992",
+                                                             "9223372036854775808",
+                                                             "99999999999999999999"};
             auto sent_statuses = std::vector<unsigned>{};
             auto state_statuses = std::vector<unsigned>{};
             auto txn = 0;
             for (auto const& value : bad_values)
             {
-                auto const sent = fixture.as_request(
-                    "PUT", fixture.send_path("bad" + std::to_string(++txn)) + "?ts=" + value,
-                    R"({"msgtype":"m.text","body":"x"})");
+                auto const sent =
+                    fixture.as_request("PUT", fixture.send_path("bad" + std::to_string(++txn)) + "?ts=" + value,
+                                       R"({"msgtype":"m.text","body":"x"})");
                 sent_statuses.push_back(sent.response.status);
-                auto const state =
-                    fixture.as_request("PUT", fixture.state_path() + "?ts=" + value, R"({"topic":"x"})");
+                auto const state = fixture.as_request("PUT", fixture.state_path() + "?ts=" + value, R"({"topic":"x"})");
                 state_statuses.push_back(state.response.status);
             }
 
@@ -370,12 +368,12 @@ SCENARIO("a ts from anyone but an appservice does not change origin_server_ts",
 
         WHEN("the user sends a message and sets the topic, each with ts=42")
         {
-            auto const sent = fixture.request("PUT",
-                                              "/_matrix/client/v3/rooms/" + *own_room + "/send/m.room.message/u1?ts=42",
-                                              *token, R"({"msgtype":"m.text","body":"hello"})");
-            auto const topic = fixture.request(
-                "PUT", "/_matrix/client/v3/rooms/" + *own_room + "/state/m.room.topic/?ts=42", *token,
-                R"({"topic":"hello"})");
+            auto const sent =
+                fixture.request("PUT", "/_matrix/client/v3/rooms/" + *own_room + "/send/m.room.message/u1?ts=42",
+                                *token, R"({"msgtype":"m.text","body":"hello"})");
+            auto const topic =
+                fixture.request("PUT", "/_matrix/client/v3/rooms/" + *own_room + "/state/m.room.topic/?ts=42", *token,
+                                R"({"topic":"hello"})");
 
             THEN("both events carry the server's own timestamp")
             {

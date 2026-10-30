@@ -8372,6 +8372,41 @@ namespace
         return std::nullopt;
     }
 
+    // Application Service API, "Timestamp massaging": the `ts` an application service appended to
+    // PUT /send or PUT /state. Only an application service's request is read: the as_token was matched
+    // at the top of the dispatcher, which left the masquerade identity in req.access_token. Anyone
+    // else's `ts` is not looked at, so it changes nothing. `valid` is false when `ts` is present but is
+    // not an integer origin_server_ts can hold: the spec's "anything other than what is accepted by
+    // origin_server_ts should be rejected ... as a bad request". origin_server_ts is an `integer`, and
+    // a Matrix integer lies in [-(2**53)+1, (2**53)-1] (Appendices, Canonical JSON).
+    struct MassagedTimestamp final
+    {
+        bool valid{true};
+        std::optional<std::int64_t> value{};
+    };
+
+    [[nodiscard]] auto massaged_timestamp(LocalHttpRequest const& req) -> MassagedTimestamp
+    {
+        if (!appservice::decode_masquerade_token(req.access_token).has_value())
+        {
+            return {};
+        }
+        auto const text = query_param_value(req.target, "ts");
+        if (!text.has_value())
+        {
+            return {};
+        }
+        auto constexpr max_integer = std::int64_t{9'007'199'254'740'991};
+        auto parsed = std::int64_t{0};
+        auto const [end, error] = std::from_chars(text->data(), text->data() + text->size(), parsed);
+        if (text->empty() || error != std::errc{} || end != text->data() + text->size() || parsed > max_integer ||
+            parsed < -max_integer)
+        {
+            return {false, std::nullopt};
+        }
+        return {true, parsed};
+    }
+
     [[nodiscard]] auto room_send_path_parts(std::string_view target) -> std::optional<RoomSendPathParts>
     {
         auto constexpr prefix = std::string_view{"/_matrix/client/v3/rooms/"};
@@ -11849,6 +11884,8 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
     // then works completely unmodified, whether the caller presented an
     // ordinary session token or an appservice's as_token.
     auto req = raw_req;
+    // Set only below, from a validated appservice `ts`; never taken from the caller.
+    req.origin_server_ts.reset();
     if (appservice::is_masquerade_token(req.access_token))
     {
         // A raw token in this internal reserved shape must NEVER be trusted
@@ -16274,6 +16311,12 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             }
             if (auto const path = room_send_path_parts(req.target); path.has_value())
             {
+                auto const massaged = massaged_timestamp(req);
+                if (!massaged.valid)
+                {
+                    return dispatch_err(req, rt, 400U, "M_INVALID_PARAM",
+                                        "ts must be an integer origin_server_ts in milliseconds");
+                }
                 // CS API §10.5.1: idempotent send — replay the original response.
                 if (auto const cached = database::find_client_txn_event_id(
                         rt.homeserver.database.persistent_store, *user, path->room_id, path->event_type, path->txn_id);
@@ -16302,6 +16345,7 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                 rewritten.method = "POST";
                 rewritten.target = "/_matrix/client/v3/rooms/" + path->room_id + "/send";
                 rewritten.body = *event_body;
+                rewritten.origin_server_ts = massaged.value;
                 auto const result = wrap(call_local(rewritten), "event_id");
                 log_diagnostic(result.status == 200U ? "room.send_event.accepted" : "room.send_event.rejected",
                                {
@@ -16338,6 +16382,12 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             }
             if (auto const path = room_state_path_parts(req.target); path.has_value())
             {
+                auto const massaged = massaged_timestamp(req);
+                if (!massaged.valid)
+                {
+                    return dispatch_err(req, rt, 400U, "M_INVALID_PARAM",
+                                        "ts must be an integer origin_server_ts in milliseconds");
+                }
                 auto rewritten = req;
                 auto event_body = event_body_from_content(path->event_type, req.body, path->state_key);
                 if (!event_body.has_value())
@@ -16373,6 +16423,7 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                 rewritten.method = "POST";
                 rewritten.target = "/_matrix/client/v3/rooms/" + path->room_id + "/send";
                 rewritten.body = *event_body;
+                rewritten.origin_server_ts = massaged.value;
                 auto const result = wrap(call_local(rewritten), "event_id");
                 log_diagnostic(result.status == 200U ? "room.state_event.accepted" : "room.state_event.rejected",
                                {

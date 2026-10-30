@@ -188,3 +188,14 @@ and `load_registrations()` take the homeserver's `server_name` (defaulted empty,
 which skips only this check) so the sender user id can be built. A registration's
 own sender legitimately sits inside its own exclusive namespace, so the check
 never self-compares — flagging that would refuse to start every correct bridge.
+
+## Timestamp massaging
+
+`?ts=` on `PUT /rooms/{roomId}/send/...` and `PUT /rooms/{roomId}/state/...` sets the resulting event's
+`origin_server_ts` (Application Service API, "Timestamp massaging"; ADR-0303). `homeserver/client_server.cpp`
+`massaged_timestamp()` reads it only when `req.access_token` is the masquerade token minted from a matched
+`as_token`, validates it (decimal integer, `[-(2**53)+1, (2**53)-1]`, else `400 M_INVALID_PARAM`) and hands it to the
+local router in `LocalHttpRequest::origin_server_ts`, then `send_event(..., origin_server_ts)` and
+`compose_signed_event`. Never pass `ts` on in the rewritten target's query string: the internal `POST /send` route
+takes a caller's query, so an ordinary user could then set it. Ordering (depth, prev_events, stream position) is not
+affected. The spec does not say what a non-appservice `ts` does; it is ignored.

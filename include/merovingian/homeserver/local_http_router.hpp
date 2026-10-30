@@ -8,6 +8,7 @@
 #include "merovingian/http/request.hpp"
 
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -41,6 +42,11 @@ struct LocalHttpRequest final
     bool sig_verified{false};
     std::string verified_origin{};
     std::string verified_key_id{};
+    // Application Service API, "Timestamp massaging": the `ts` an application service appended to
+    // PUT /rooms/{roomId}/send/... or PUT /rooms/{roomId}/state/..., already validated, to become the
+    // event's origin_server_ts. Set only by the client-server dispatcher after it has matched an
+    // as_token; it is never read from the wire, so no other caller can set it.
+    std::optional<std::int64_t> origin_server_ts{};
 };
 
 struct LocalHttpResponse final

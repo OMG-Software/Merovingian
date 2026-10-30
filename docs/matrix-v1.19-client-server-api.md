@@ -528,3 +528,15 @@ reads (403 for a server with no joined user, events its users could not see step
 The 400 and 403 answers are not in the operation's response list above, which is generated from the spec: 400 follows the
 common error codes for a missing or malformed required parameter, and 403 is the owner's choice for a user who may not read
 the room (ADR-0299).
+
+## Application service timestamp massaging (0.12.64)
+
+An application service (a request authenticated with an `as_token`) may append `ts=<milliseconds>` to
+`PUT /rooms/{roomId}/send/{eventType}/{txnId}` and `PUT /rooms/{roomId}/state/{eventType}/{stateKey}` (Application
+Service API, "Timestamp massaging"; ADR-0303). The event's `origin_server_ts` is then `ts`. A `ts` that is not a
+decimal integer in `[-(2**53)+1, (2**53)-1]` (empty, fractional, exponent, signed `+`, out of range) is refused with
+`400 M_INVALID_PARAM` and nothing is stored. Without `ts` the server's own clock is used. Only these two routes read
+`ts`; on any other route, or from a caller that is not an application service, it is ignored. The spec is silent on
+whether a non-appservice `ts` should be rejected, so the server leaves such a request as it would be without it.
+The event is still appended at the tip of the DAG: `depth`, `prev_events` and the stream position are those of "now",
+and `GET /timestamp_to_event` orders by the massaged timestamp as it does for any event.
