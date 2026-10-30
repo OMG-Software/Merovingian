@@ -111,7 +111,10 @@ struct WorkerAndMain final
         store_with_group(main_store,
                          make_event("$create", room_id, alice, "m.room.create", R"("state_key":"",)",
                                     R"({"room_version":"10","creator":"@alice:local.example"})", 1U),
-                         "sg:create", std::nullopt, {{"sg:create", "m.room.create", "", "$create"}});
+                         "sg:create", std::nullopt,
+                         {
+                             {"sg:create", "m.room.create", "", "$create"}
+        });
         REQUIRE(db::create_or_reuse_state_group(main_store, other_room_id, "sg:other", std::nullopt, {}).has_value());
 
         worker_open = db::open_sqlite_persistent_store(path.string());
@@ -125,11 +128,13 @@ struct WorkerAndMain final
         REQUIRE(db::store_membership(main_store, {std::string{room_id}, std::string{bob}}) ==
                 db::MembershipStoreResult::stored);
         store_with_group(main_store,
-                         make_event("$bob_join", room_id, bob, "m.room.member",
-                                    R"("state_key":"@bob:remote.example",)", R"({"membership":"join"})", 2U),
+                         make_event("$bob_join", room_id, bob, "m.room.member", R"("state_key":"@bob:remote.example",)",
+                                    R"({"membership":"join"})", 2U),
                          "sg:join", "sg:create",
-                         {{"sg:join", "m.room.create", "", "$create"},
-                          {"sg:join", "m.room.member", std::string{bob}, "$bob_join"}});
+                         {
+                             {"sg:join", "m.room.create", "",               "$create"  },
+                             {"sg:join", "m.room.member", std::string{bob}, "$bob_join"}
+        });
         auto message = make_event("$message", room_id, alice, "m.room.message", "",
                                   R"({"msgtype":"m.text","body":"visible-body"})", 3U);
         message.prev_event_ids = {"$bob_join"};
@@ -232,9 +237,8 @@ SCENARIO("A reloaded worker store lets a joined server see an event created afte
 
         WHEN("the server asks for the event nearest the message's timestamp")
         {
-            auto const result =
-                fed::build_timestamp_to_event_response(fixture.worker(), room_id, 1003, db::TimeDirection::forwards,
-                                                       remote_server);
+            auto const result = fed::build_timestamp_to_event_response(fixture.worker(), room_id, 1003,
+                                                                       db::TimeDirection::forwards, remote_server);
 
             THEN("the answer names the message instead of 404")
             {

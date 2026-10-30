@@ -1285,6 +1285,44 @@ namespace
                                                            column_text(row, 2), column_text(row, 3)});
                              }) &&
              read_done("current_state");
+        // The room's state groups, their own entries and its events' group mappings (ADR-0064), read in
+        // the same transaction as the rows above. Federation reads judge an event on the group recorded
+        // for it and treat one without a group as invisible, so these must travel with the events.
+        ok = ok &&
+             load_rows_bound(connection,
+                             "SELECT state_group_id, room_id, parent_state_group_id, delta_depth FROM state_groups "
+                             "WHERE room_id = ?1",
+                             {room_id_str},
+                             [&](sqlite3_stmt& row) {
+                                 PersistentStateGroup group{};
+                                 group.state_group_id = column_text(row, 0);
+                                 group.room_id = column_text(row, 1);
+                                 auto const parent_text = column_text(row, 2);
+                                 group.parent_state_group_id =
+                                     parent_text.empty() ? std::nullopt : std::optional<std::string>{parent_text};
+                                 group.delta_depth = static_cast<std::uint32_t>(parse_u64(column_text(row, 3)));
+                                 snapshot.state_groups.push_back(std::move(group));
+                             }) &&
+             read_done("state_groups");
+        ok = ok &&
+             load_rows_bound(connection,
+                             "SELECT s.state_group_id, s.event_type, s.state_key, s.event_id FROM state_group_state s "
+                             "INNER JOIN state_groups g ON g.state_group_id = s.state_group_id WHERE g.room_id = ?1",
+                             {room_id_str},
+                             [&](sqlite3_stmt& row) {
+                                 snapshot.state_group_state.push_back({column_text(row, 0), column_text(row, 1),
+                                                                       column_text(row, 2), column_text(row, 3)});
+                             }) &&
+             read_done("state_group_state");
+        ok = ok &&
+             load_rows_bound(connection,
+                             "SELECT m.event_id, m.state_group_id FROM event_state_groups m "
+                             "INNER JOIN events ev ON ev.event_id = m.event_id WHERE ev.room_id = ?1",
+                             {room_id_str},
+                             [&](sqlite3_stmt& row) {
+                                 snapshot.event_state_groups.push_back({column_text(row, 0), column_text(row, 1)});
+                             }) &&
+             read_done("event_state_groups");
         if (!ok)
         {
             return std::nullopt;

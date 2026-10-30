@@ -1302,6 +1302,13 @@ struct RoomReloadSnapshot final
     std::vector<PersistentInvite> invites{};
     std::vector<PersistentEvent> events{};
     std::vector<PersistentStateEvent> state{};
+    // The room's state groups (ADR-0064), their own entries, and the event -> group mapping of the
+    // room's events, read in the same transaction as the rest. Federation reads judge an event on
+    // its recorded group and fail closed without one, so a reload that left these behind made every
+    // event created after the worker started look invisible.
+    std::vector<PersistentStateGroup> state_groups{};
+    std::vector<PersistentStateGroupStateEntry> state_group_state{};
+    std::vector<PersistentEventStateGroup> event_state_groups{};
 };
 
 // Serialise a token expiry time_point to its TEXT column form (epoch-ms decimal
@@ -1422,7 +1429,8 @@ enum class MembershipStoreResult
 // Idempotent: safe to call on a store where the fields are already populated.
 auto reconstruct_event_relations(PersistentStore& store) -> void;
 // Re-reads a single room's rows (room, membership, invites, events, state,
-// and the event relation tables scoped to that room's events) from the
+// the room's state groups with their entries and its events' state-group
+// mappings, and the event relation tables scoped to that room's events) from the
 // backing database and replaces this store's in-memory copy of that room
 // with the fresh result. Used by the federation worker, whose PersistentStore
 // is otherwise a point-in-time snapshot taken once at worker startup with no
