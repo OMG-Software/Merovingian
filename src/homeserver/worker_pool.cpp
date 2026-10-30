@@ -15,6 +15,7 @@
 #include "merovingian/federation/invite_room_state.hpp"
 #include "merovingian/federation/membership_endpoints.hpp"
 #include "merovingian/federation/transactions.hpp"
+#include "merovingian/homeserver/local_http_router.hpp"
 #include "merovingian/homeserver/request_lock.hpp"
 #include "merovingian/homeserver/runtime.hpp"
 #include "merovingian/ipc/channel.hpp"
@@ -303,6 +304,9 @@ namespace
             break;
         case federation::PduIngestionStatus::deferred:
             status_str = "deferred";
+            break;
+        case federation::PduIngestionStatus::already_stored:
+            status_str = "already_stored";
             break;
         }
         auto body = std::string{R"({"type":"pdu_ingest_result","status":)"};
@@ -812,6 +816,14 @@ auto handle_pdu_ingest_request(HomeserverRuntime& runtime, std::string_view requ
     if (!runtime.federation.pdu_sink)
     {
         return {federation::PduIngestionStatus::internal_error, "pdu_sink not wired"};
+    }
+    // ADR-0285: an event main already stores was handled when it first arrived. Answered before
+    // the signature is re-verified (no key lookup) and without touching pdu_sink, so a re-sent PDU
+    // has no side effect here. The frame's claim cannot do harm: "stored" only ever suppresses work,
+    // and the worker is told nothing it could not learn from the answer to a re-send.
+    if (!frame.event_id.empty() && pdu_event_already_stored(runtime, frame.room_id, frame.event_id))
+    {
+        return {federation::PduIngestionStatus::already_stored, "event already stored"};
     }
     auto const relayed = reverify_relayed_envelope(runtime, frame);
     if (!relayed.envelope.has_value())

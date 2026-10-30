@@ -3689,6 +3689,26 @@ namespace
                 }
             }
 
+            // A PDU this server already stored (in any status) was handled when it first
+            // arrived, so a re-send in another transaction is answered as handled. Spec:
+            // server-server-api.md "PDU Processing Result" -- no `error` means the PDU "can
+            // be considered successfully handled". It is not verified, authorised or stored
+            // again and has no side effect (ADR-0285). The probe comes after the ACL check
+            // (a denied server is still refused) and before signature verification, which
+            // would otherwise cost a key lookup for an event whose verdict is already in.
+            // A forged copy of a stored event ID gains nothing: nothing happens for it.
+            if (runtime.pdu_already_stored && !pdu.event_id.empty() && !pdu.room_id.empty() &&
+                runtime.pdu_already_stored(pdu.room_id, pdu.event_id))
+            {
+                log_diagnostic("pdu.already_stored", {
+                                                         {"origin",         request.origin,             false},
+                                                         {"transaction_id", transaction.transaction_id, false},
+                                                         {"event_id",       pdu.event_id,               false},
+                                                         {"room_id",        pdu.room_id,                false}
+                });
+                continue;
+            }
+
             // Signature verification (Ed25519 + key validity) against every key ID
             // the PDU lists for its sender's server, up to
             // max_signature_keys_per_server (R05, ADR-0183): the request's X-Matrix
@@ -3786,7 +3806,22 @@ namespace
                 ++pdus_rejected;
                 audit_federation(runtime, "federation.pdu_rejected", request.origin, request.target, ingestion.reason);
                 break;
+            case PduIngestionStatus::already_stored:
+                // Stored by an earlier delivery (ADR-0285): handled, so no error entry, and
+                // not counted as appended, rejected or deferred -- nothing happened.
+                log_diagnostic("pdu.already_stored", {
+                                                         {"origin",         request.origin,             false},
+                                                         {"transaction_id", transaction.transaction_id, false},
+                                                         {"event_id",       envelope->event_id,         false},
+                                                         {"room_id",        envelope->room_id,          false}
+                });
+                break;
             case PduIngestionStatus::internal_error:
+                // WARNING, not only an audit entry: the sender is told this PDU failed, and an
+                // operator must be able to see why at the default log level (Complement run 12).
+                LOG_WARNING("Inbound PDU could not be processed (internal error); event_id=" + envelope->event_id +
+                            " room_id=" + envelope->room_id + " origin=" + request.origin +
+                            " reason=" + ingestion.reason);
                 audit_federation(runtime, "federation.pdu_internal_error", request.origin, request.target,
                                  ingestion.reason);
                 // Not handled, and not kept for a retry: the sender must hear that, as for

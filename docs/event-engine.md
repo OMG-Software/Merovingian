@@ -748,6 +748,16 @@ also records the device-list `changed`/`left` rows for the local members. At mai
 roster: a row is rewritten to the current member event when it is missing, when it says `join` and the event
 does not, or when the event is newer; a row newer than its event (a federated leave, an `/invite`) is kept.
 
+### A PDU already stored is answered as handled (ADR-0285)
+
+Before any receipt check, `ingest_pdu_event` looks the event ID up in the room it names. A copy stored in
+any status (accepted, soft-failed, rejected, outlier) means this server handled the PDU when it first
+arrived, so the answer is `PduIngestionStatus::already_stored`: no error entry in the `/send` response
+(spec "PDU Processing Result"), no re-verification, re-authorisation or second store, no stream ordering,
+and a rejected copy stays rejected. The `/send` handler and main's `pdu_ingest` relay ask even earlier,
+before the sender's signature is checked. The check inside `ingest_pdu_event` is repeated under the room
+stripe so two transactions racing with one PDU store it once.
+
 ### Phase B2: the receipt-order auth checks themselves (ADR-0064)
 
 Phase B1 made the state model correct; `ingest_pdu_event` still authorised

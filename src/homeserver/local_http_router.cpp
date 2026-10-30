@@ -3116,6 +3116,11 @@ namespace
         // inspects the current m.room.server_acl state for the room and applies
         // MSC4436 rules (deny list, allow list, allow_ip_literals) to the remote
         // server name. Ports are stripped and matching is case-insensitive.
+        // ADR-0285: lets the transaction handler answer a re-sent PDU before verifying it.
+        runtime.federation.pdu_already_stored = [rt](std::string_view room_id, std::string_view event_id) -> bool {
+            return pdu_event_already_stored(*rt, room_id, event_id);
+        };
+
         runtime.federation.room_server_acl_provider = [rt](std::string_view room_id,
                                                            std::string_view server_name) -> bool {
             return federation::room_server_acl_allows(rt->database.persistent_store, room_id, server_name);
@@ -4835,6 +4840,51 @@ namespace
 namespace
 {
 
+    // What this store holds under an inbound PDU's event ID. `runtime.mutex` must be held.
+    enum class StoredCopy : std::uint8_t
+    {
+        none,
+        in_room,
+        in_other_room,
+    };
+
+    [[nodiscard]] auto stored_copy_of(database::PersistentStore const& store, std::string_view room_id,
+                                      std::string_view event_id) -> StoredCopy
+    {
+        auto const existing = store.events.find(event_id);
+        if (existing == store.events.end())
+        {
+            return StoredCopy::none;
+        }
+        return existing->room_id == room_id ? StoredCopy::in_room : StoredCopy::in_other_room;
+    }
+
+    // The answer for a PDU whose event ID is already stored, or nullopt when it is not (ADR-0285).
+    // Spec: server-server-api.md "PDU Processing Result" -- a PDU with no error "can be considered
+    // successfully handled"; this server handled it when it first arrived, whatever status it gave
+    // the event (accepted, soft_failed, rejected or outlier). It is answered as handled and neither
+    // verified, authorised nor stored again, so a re-send allocates no stream ordering and has no side
+    // effect. A stored copy is never re-judged: rejection depends only on the event's own auth events
+    // and state before it, which its event ID fixes. An event ID held for a different room cannot be
+    // the same event (rooms v3 and up derive the ID from the content, room ID included) and is refused.
+    // `runtime.mutex` must be held.
+    [[nodiscard]] auto answer_for_stored_pdu(HomeserverRuntime& runtime, federation::InboundPduEnvelope const& envelope)
+        -> std::optional<federation::PduIngestionResult>
+    {
+        switch (stored_copy_of(runtime.database.persistent_store, envelope.room_id, envelope.event_id))
+        {
+        case StoredCopy::none:
+            return std::nullopt;
+        case StoredCopy::in_room:
+            return federation::PduIngestionResult{federation::PduIngestionStatus::already_stored,
+                                                  "event already stored"};
+        case StoredCopy::in_other_room:
+            return federation::PduIngestionResult{federation::PduIngestionStatus::rejected_invalid,
+                                                  "event ID is already used by an event in another room"};
+        }
+        return std::nullopt;
+    }
+
     // The leave a server sends for a user it invited who has not joined, when this server holds no
     // state for the room. nullopt when `envelope` is not that, so the ordinary receipt checks run.
     //
@@ -4931,6 +4981,19 @@ namespace
     if (room_id.empty())
     {
         return {federation::PduIngestionStatus::rejected_invalid, "missing room_id"};
+    }
+
+    // ADR-0285: a PDU already stored here is answered before anything else runs, so a re-send
+    // (a second transaction, or the same PDU twice in one) costs no parsing, no stream
+    // ordering and no sync stream ID. This check is the cheap path only: a concurrent
+    // ingest of the same event can store it after this look, so it is made again below,
+    // under the room stripe, where it is decisive.
+    {
+        auto const guard = std::unique_lock<RuntimeMutex>{runtime.mutex};
+        if (auto const stored = answer_for_stored_pdu(runtime, envelope); stored.has_value())
+        {
+            return *stored;
+        }
     }
 
     auto const* room_policy =
@@ -5099,6 +5162,18 @@ namespace
         {
             return defer_unresolved("missing PDU references remain after backfill");
         }
+    }
+
+    // ADR-0285: the decisive duplicate check. The room stripe and runtime.mutex are both held
+    // here, and nothing between this point and prepare_store_event_with_state releases either
+    // (the backfill above did, so a transaction racing this one may have stored the event
+    // meanwhile). Every ingest of a room's events runs under that room's stripe and applies its
+    // event to the in-memory store before it releases the stripe, so of two racing copies the
+    // loser, once it holds the stripe, finds the winner's event here and is answered as handled
+    // instead of reaching the store's duplicate guard, which can only report failure.
+    if (auto const stored = answer_for_stored_pdu(runtime, envelope); stored.has_value())
+    {
+        return *stored;
     }
 
     auto const third_party_invite_token = [&]() -> std::string {
@@ -5384,6 +5459,13 @@ namespace
     }
 
     return result;
+}
+
+auto pdu_event_already_stored(HomeserverRuntime& runtime, std::string_view room_id, std::string_view event_id)
+    -> bool
+{
+    auto const guard = std::unique_lock<RuntimeMutex>{runtime.mutex};
+    return stored_copy_of(runtime.database.persistent_store, room_id, event_id) == StoredCopy::in_room;
 }
 
 auto ingest_pdu_event(HomeserverRuntime& runtime, federation::InboundPduEnvelope const& envelope)

@@ -262,6 +262,11 @@ using RoomVersionResolver = std::function<std::string(std::string_view room_id)>
 // true when the server is allowed to participate in the room, or when the
 // room has no m.room.server_acl event. When unset, ACL checks are skipped.
 using RoomServerAclProvider = std::function<bool(std::string_view room_id, std::string_view server_name)>;
+// Optional probe for a PDU this server already stored (any status) in `room_id` (ADR-0285). The
+// transaction handler asks it before verifying a PDU's signatures, so a re-sent PDU costs no key lookup,
+// and answers a hit as handled without invoking pdu_sink. Unset means every PDU goes on to the sink,
+// which still answers PduIngestionStatus::already_stored for a stored event.
+using PduStoredProbe = std::function<bool(std::string_view room_id, std::string_view event_id)>;
 using FederationRuntimeMutex = std::shared_ptr<std::recursive_mutex>; // SHARED_PTR: reviewed
 // Signalled whenever a key-resolution slot is given back. Shared like the mutex
 // it is used with, so the state stays movable.
@@ -398,6 +403,7 @@ struct FederationRuntimeState final
     // Optional provider for per-room server ACL enforcement (MSC4436).
     // When unset, ACL checks are skipped (e.g. in low-level unit tests).
     RoomServerAclProvider room_server_acl_provider{};
+    PduStoredProbe pdu_already_stored{};
 };
 
 struct FederationDecision final

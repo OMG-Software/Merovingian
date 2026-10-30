@@ -97,4 +97,10 @@ auto wire_federation_callbacks(HomeserverRuntime& runtime) -> void;
 [[nodiscard]] auto ingest_pdu_event(HomeserverRuntime& runtime, federation::InboundPduEnvelope const& envelope)
     -> federation::PduIngestionResult;
 
+// True when this server already stores `event_id` in `room_id`, in any status (ADR-0285). Takes
+// runtime.mutex itself. Used before a re-sent PDU is verified: the main-process /send handler
+// (runtime.federation.pdu_already_stored) and main's side of a worker's pdu_ingest relay.
+[[nodiscard]] auto pdu_event_already_stored(HomeserverRuntime& runtime, std::string_view room_id,
+                                            std::string_view event_id) -> bool;
+
 } // namespace merovingian::homeserver

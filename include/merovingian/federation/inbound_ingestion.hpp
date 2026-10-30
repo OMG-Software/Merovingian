@@ -82,6 +82,12 @@ enum class PduIngestionStatus : std::uint8_t
     // origin to fetch from, or the retained set is full): the sender is told
     // so in the transaction response because nothing will retry it.
     deferred,
+    // Complement run 12: the event ID is already stored here, in any status, so this server handled the
+    // PDU when it first arrived. Spec: server-server-api.md "PDU Processing Result" -- a PDU with no
+    // error "can be considered successfully handled". It is answered as handled (no error entry) and
+    // is NOT verified, authorised or stored again: no stream ordering, push, fan-out or membership
+    // projection. A stored copy is never re-judged, whatever its status (ADR-0285).
+    already_stored,
 };
 
 struct PduIngestionResult final

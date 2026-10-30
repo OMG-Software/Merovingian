@@ -261,6 +261,16 @@ inline by `refuse_forbidden_worker_request`, which takes no runtime and so canno
 `runtime.mutex` or reach a crypto provider; the handler calls it before any other frame
 type. Do not add a worker-to-main frame that signs caller-supplied bytes.
 
+## A re-sent PDU (ADR-0285)
+
+`ingest_pdu_event` answers `PduIngestionStatus::already_stored` for an event ID this store holds in the PDU's
+room, in any status, before it parses, allocates a stream ordering or sync stream ID, or judges anything
+(`answer_for_stored_pdu`). The check is made again, with the room stripe and `runtime.mutex` held, after any
+missing-history fetch and before the ordering is reserved; that one is the race-proof one, because an ingest
+applies its event to the in-memory store before it releases the stripe. Keep nothing between that check and
+`prepare_store_event_with_state` that releases either lock. `pdu_event_already_stored` takes `runtime.mutex`
+itself, for the `/send` handler's probe and for `handle_pdu_ingest_request`.
+
 ## Recovering a PDU whose history is missing (A8)
 
 `backfill_missing_pdu_references` (`local_http_router.cpp`) asks the sending server for what a PDU lacks, using

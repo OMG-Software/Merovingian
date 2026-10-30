@@ -76,6 +76,7 @@ namespace
         case federation::PduIngestionStatus::rejected_auth:
         case federation::PduIngestionStatus::rejected_state_conflict:
         case federation::PduIngestionStatus::rejected_invalid:
+        case federation::PduIngestionStatus::already_stored:
             return true;
         case federation::PduIngestionStatus::internal_error:
         case federation::PduIngestionStatus::missing_prev_state:

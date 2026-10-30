@@ -225,6 +225,10 @@ namespace
         {
             result.status = federation::PduIngestionStatus::deferred;
         }
+        else if (status_str == "already_stored")
+        {
+            result.status = federation::PduIngestionStatus::already_stored;
+        }
         else
         {
             result.status = federation::PduIngestionStatus::internal_error;
@@ -711,6 +715,11 @@ auto WorkerEventLoop::run() -> void
     }
     auto& runtime = started.runtime;
     homeserver::wire_federation_callbacks(runtime);
+
+    // ADR-0285: the wired probe answers from this process's own event snapshot, which is taken at
+    // start-up and is not main's record of what is stored. Left in place it could call a PDU main
+    // never stored "handled". Unset, every PDU goes to main, which holds the record and checks.
+    runtime.federation.pdu_already_stored = nullptr;
 
     // Override pdu_sink: instead of writing to DB directly, call main via IPC.
     runtime.federation.pdu_sink =

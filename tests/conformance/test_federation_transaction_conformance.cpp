@@ -42,6 +42,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <string_view>
 
 #include <sodium.h>
 
@@ -462,6 +463,164 @@ SCENARIO("Federation send transaction answers every PDU, an accepted one with an
                 REQUIRE(result != nullptr);
                 // Spec: "If no error is present, the PDU can be considered successfully handled."
                 REQUIRE(result->empty());
+            }
+        }
+    }
+}
+
+// Spec: Matrix Server-Server API v1.19
+// Endpoint: PUT /_matrix/federation/v1/send/{txnId}, "PDU Processing Result"
+// URL: ../../docs/matrix-v1.19-spec/server-server-api.md#put_matrixfederationv1sendtxnid
+//
+// "If no error is present, the PDU can be considered successfully handled." A PDU this server
+// already stored was handled when it first arrived: a re-send in a later transaction (a different
+// txnId) or twice in one is answered with an empty result, never an error. A real failure still is.
+SCENARIO("Federation send transaction answers a PDU already stored as handled, not as an error",
+         "[federation][transaction][conformance][pdu_duplicate]")
+{
+    auto const pdu_results = [](merovingian::federation::FederationResponse const& response)
+        -> std::optional<merovingian::canonicaljson::Object> {
+        auto const parsed = merovingian::canonicaljson::parse_lossless(response.body);
+        auto const* root = std::get_if<merovingian::canonicaljson::Object>(&parsed.value.storage());
+        if (root == nullptr)
+        {
+            return std::nullopt;
+        }
+        auto const pdus = std::ranges::find_if(*root, [](auto const& member) {
+            return member.key == "pdus";
+        });
+        if (pdus == root->end())
+        {
+            return std::nullopt;
+        }
+        auto const* results = std::get_if<merovingian::canonicaljson::Object>(&pdus->value->storage());
+        return results == nullptr ? std::nullopt : std::optional{*results};
+    };
+    auto const any_error = [](merovingian::canonicaljson::Object const& results) {
+        return std::ranges::any_of(results, [](auto const& entry) {
+            auto const* result = std::get_if<merovingian::canonicaljson::Object>(&entry.value->storage());
+            return result == nullptr || !result->empty();
+        });
+    };
+
+    GIVEN("a runtime whose sink stores a PDU the first time and answers already_stored after")
+    {
+        auto runtime = merovingian::federation::make_federation_runtime_state(runtime_config());
+        merovingian::federation::upsert_remote(runtime, remote_for_origin());
+        auto stored = std::make_shared<std::size_t>(0U);
+        runtime.pdu_sink = [stored]([[maybe_unused]] merovingian::federation::InboundPduEnvelope const& envelope)
+            -> merovingian::federation::PduIngestionResult {
+            if (*stored == 0U)
+            {
+                ++(*stored);
+                return {merovingian::federation::PduIngestionStatus::accepted, {}, {}};
+            }
+            return {merovingian::federation::PduIngestionStatus::already_stored, "event already stored", {}};
+        };
+
+        WHEN("the same PDU is sent in two transactions with different IDs")
+        {
+            auto const body = std::string{"{\"origin\":\"remote.example.org\","
+                                          "\"origin_server_ts\":1000,"
+                                          "\"pdus\":["} +
+                              minimal_pdu() + "]}";
+            auto const first = merovingian::federation::handle_inbound_federation_request(
+                runtime, signed_send_request("txn_dup_a", body));
+            auto const second = merovingian::federation::handle_inbound_federation_request(
+                runtime, signed_send_request("txn_dup_b", body));
+
+            THEN("both answer 200 and neither carries an error for the PDU")
+            {
+                // Spec MUST: no `error` means the PDU "can be considered successfully handled".
+                REQUIRE(first.status == 200U);
+                REQUIRE(second.status == 200U);
+                auto const results = pdu_results(second);
+                REQUIRE(results.has_value());
+                REQUIRE(results->size() == 1U);
+                REQUIRE_FALSE(any_error(*results));
+            }
+        }
+
+        WHEN("the same PDU is sent twice in one transaction")
+        {
+            auto const body = std::string{"{\"origin\":\"remote.example.org\","
+                                          "\"origin_server_ts\":1000,"
+                                          "\"pdus\":["} +
+                              minimal_pdu() + "," + minimal_pdu() + "]}";
+            auto const response = merovingian::federation::handle_inbound_federation_request(
+                runtime, signed_send_request("txn_dup_c", body));
+
+            THEN("the answer has no error for it")
+            {
+                REQUIRE(response.status == 200U);
+                auto const results = pdu_results(response);
+                REQUIRE(results.has_value());
+                REQUIRE_FALSE(any_error(*results));
+            }
+        }
+    }
+
+    GIVEN("a runtime whose probe says the PDU is stored")
+    {
+        auto runtime = merovingian::federation::make_federation_runtime_state(runtime_config());
+        merovingian::federation::upsert_remote(runtime, remote_for_origin());
+        auto sink_calls = std::make_shared<std::size_t>(0U);
+        runtime.pdu_sink = [sink_calls]([[maybe_unused]] merovingian::federation::InboundPduEnvelope const& envelope)
+            -> merovingian::federation::PduIngestionResult {
+            ++(*sink_calls);
+            return {merovingian::federation::PduIngestionStatus::internal_error, "must not be reached", {}};
+        };
+        runtime.pdu_already_stored = []([[maybe_unused]] std::string_view room_id,
+                                        [[maybe_unused]] std::string_view event_id) {
+            return true;
+        };
+
+        WHEN("the PDU is sent")
+        {
+            auto const body = std::string{"{\"origin\":\"remote.example.org\","
+                                          "\"origin_server_ts\":1000,"
+                                          "\"pdus\":["} +
+                              minimal_pdu() + "]}";
+            auto const response = merovingian::federation::handle_inbound_federation_request(
+                runtime, signed_send_request("txn_probe", body));
+
+            THEN("it is answered as handled without reaching the sink")
+            {
+                REQUIRE(response.status == 200U);
+                REQUIRE(*sink_calls == 0U);
+                auto const results = pdu_results(response);
+                REQUIRE(results.has_value());
+                REQUIRE(results->size() == 1U);
+                REQUIRE_FALSE(any_error(*results));
+            }
+        }
+    }
+
+    GIVEN("a runtime whose sink fails with an internal error")
+    {
+        auto runtime = merovingian::federation::make_federation_runtime_state(runtime_config());
+        merovingian::federation::upsert_remote(runtime, remote_for_origin());
+        runtime.pdu_sink = []([[maybe_unused]] merovingian::federation::InboundPduEnvelope const& envelope)
+            -> merovingian::federation::PduIngestionResult {
+            return {merovingian::federation::PduIngestionStatus::internal_error, "persistence failed", {}};
+        };
+
+        WHEN("a PDU is sent")
+        {
+            auto const body = std::string{"{\"origin\":\"remote.example.org\","
+                                          "\"origin_server_ts\":1000,"
+                                          "\"pdus\":["} +
+                              minimal_pdu() + "]}";
+            auto const response = merovingian::federation::handle_inbound_federation_request(
+                runtime, signed_send_request("txn_internal", body));
+
+            THEN("the sender is still told the PDU failed")
+            {
+                REQUIRE(response.status == 200U);
+                auto const results = pdu_results(response);
+                REQUIRE(results.has_value());
+                REQUIRE(results->size() == 1U);
+                REQUIRE(any_error(*results));
             }
         }
     }
