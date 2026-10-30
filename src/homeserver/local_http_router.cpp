@@ -5461,8 +5461,7 @@ namespace
     return result;
 }
 
-auto pdu_event_already_stored(HomeserverRuntime& runtime, std::string_view room_id, std::string_view event_id)
-    -> bool
+auto pdu_event_already_stored(HomeserverRuntime& runtime, std::string_view room_id, std::string_view event_id) -> bool
 {
     auto const guard = std::unique_lock<RuntimeMutex>{runtime.mutex};
     return stored_copy_of(runtime.database.persistent_store, room_id, event_id) == StoredCopy::in_room;

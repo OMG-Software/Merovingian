@@ -433,9 +433,9 @@ SCENARIO("A PDU this server already stored is answered as handled and is not sto
             build_event_json(room_id, "m.room.message", std::nullopt, "@admin:local.example.org", std::move(content),
                              {genesis.admin_member_id}, {genesis.pl_id, genesis.admin_member_id}, 3, 4);
         auto const event_id = std::string{"$dupe:local.example.org"};
-        auto const envelope = make_envelope(room_id, event_id, "m.room.message", std::nullopt,
-                                            "@admin:local.example.org", {genesis.admin_member_id},
-                                            {genesis.pl_id, genesis.admin_member_id}, 3, json);
+        auto const envelope =
+            make_envelope(room_id, event_id, "m.room.message", std::nullopt, "@admin:local.example.org",
+                          {genesis.admin_member_id}, {genesis.pl_id, genesis.admin_member_id}, 3, json);
         auto const first = merovingian::homeserver::ingest_pdu_event(runtime, envelope);
         REQUIRE(first.status == PduIngestionStatus::accepted);
 
@@ -487,12 +487,12 @@ SCENARIO("A PDU this server already stored is answered as handled and is not sto
             auto race_content = merovingian::canonicaljson::Object{};
             race_content.push_back(merovingian::canonicaljson::make_member(
                 "body", merovingian::canonicaljson::Value{std::string{"race"}}));
-            auto const race_json = build_event_json(
-                room_id, "m.room.message", std::nullopt, "@admin:local.example.org", std::move(race_content),
-                {genesis.admin_member_id}, {genesis.pl_id, genesis.admin_member_id}, 3, 5);
-            auto const race_envelope = make_envelope(room_id, race_event_id, "m.room.message", std::nullopt,
-                                                     "@admin:local.example.org", {genesis.admin_member_id},
-                                                     {genesis.pl_id, genesis.admin_member_id}, 3, race_json);
+            auto const race_json = build_event_json(room_id, "m.room.message", std::nullopt, "@admin:local.example.org",
+                                                    std::move(race_content), {genesis.admin_member_id},
+                                                    {genesis.pl_id, genesis.admin_member_id}, 3, 5);
+            auto const race_envelope =
+                make_envelope(room_id, race_event_id, "m.room.message", std::nullopt, "@admin:local.example.org",
+                              {genesis.admin_member_id}, {genesis.pl_id, genesis.admin_member_id}, 3, race_json);
             {
                 auto threads = std::vector<std::jthread>{};
                 for (auto& slot : results)
