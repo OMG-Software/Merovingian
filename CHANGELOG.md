@@ -125,6 +125,8 @@ Fixes for the failures Complement run 10 found against the signed 0.12.62 releas
   403 `M_FORBIDDEN`), `/event_auth` with no provider, and every federation media refusal's errcode;
   a unit scenario covers a retry whose first answer was too large to keep. The ADR-0284 auth-chain
   bound is a server limit, not a spec rule, so its boundary cases are unit tests, not conformance.
+  CodeQL: the redacted-event conformance scenario now says why each property it checks matters,
+  and a no-op `std::ignore` on a thread-join guard is gone.
 - **Remote aliases created after the federation worker started were not found.** `query/directory` is
   relayed to main instead of read from the worker's start-up snapshot (ADR-0281).
 - **Profiles of users on other servers were 404.** `GET /profile/{userId}[/{keyName}]` asks the user's

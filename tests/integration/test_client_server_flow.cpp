@@ -1032,7 +1032,6 @@ SCENARIO("GET /profile/{userId} for a user of another server asks that server ov
             merovingian::tests::tls_mock::run_path_dispatch_tls_server(acceptor, tls_context, responses, &captured);
         }};
         auto const join_server = merovingian::tests::tls_mock::ScopedThreadJoin{server_thread};
-        std::ignore = join_server;
 
         WHEN("a client reads the whole profile of @bob:remote.example.net")
         {

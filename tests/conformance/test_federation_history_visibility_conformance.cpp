@@ -562,6 +562,8 @@ SCENARIO("A redacted event keeps its identity, hashes, signatures and place in t
             REQUIRE(served != nullptr);
             auto const original = parse_object(stored->json);
 
+            // A message's redaction keeps none of its content keys (room version redaction
+            // algorithm), so an empty object is what the receiver must see.
             THEN("its content is stripped")
             {
                 auto const* content = object_of(*served, "content");
@@ -569,11 +571,15 @@ SCENARIO("A redacted event keeps its identity, hashes, signatures and place in t
                 REQUIRE(content->empty());
             }
 
+            // `unsigned` is not covered by the signatures and could leak what redaction hides.
             THEN("its unsigned block is not sent")
             {
                 REQUIRE(member_of(*served, "unsigned") == nullptr);
             }
 
+            // The receiver checks the signatures on the redacted form, which they cover, and on a
+            // content-hash mismatch redacts and carries on (SS API "Checks performed on receipt of a
+            // PDU", step 3). Both must therefore be the original values, not recomputed ones.
             THEN("its hashes and signatures are exactly the original's")
             {
                 auto const* original_hashes = object_of(original, "hashes");
@@ -590,6 +596,8 @@ SCENARIO("A redacted event keeps its identity, hashes, signatures and place in t
                         string_of(*original_server_signatures, "ed25519:a"));
             }
 
+            // The graph links and identity fields survive redaction, so the receiver can place the
+            // event and authorise later events against it.
             THEN("its prev_events, auth_events, depth and sender are unchanged")
             {
                 auto const strings = [](cj::Object const& object, std::string_view key) {
@@ -614,6 +622,8 @@ SCENARIO("A redacted event keeps its identity, hashes, signatures and place in t
                 REQUIRE(string_of(*served, "room_id") == string_of(original, "room_id"));
             }
 
+            // From room version 3 the event ID is the reference hash, computed over the redacted
+            // event; serving the redaction must not change it, or the event would not be found.
             THEN("its event ID, the reference hash of the redacted event, is unchanged")
             {
                 auto const original_id =
@@ -632,6 +642,8 @@ SCENARIO("A redacted event keeps its identity, hashes, signatures and place in t
             auto const* events = array_of(body, "events");
             REQUIRE(events != nullptr);
 
+            // The walk must not drop what the server could not see, or the receiver's graph would
+            // have a hole no later request fills (ADR-0282); the hidden events come back redacted.
             THEN("the events before its join are present and redacted, the later one is full")
             {
                 auto saw_before = false;
