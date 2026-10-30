@@ -37,4 +37,5 @@ the queue is for. That fallback is the one case where the room's servers hear of
 * The event is composed before the lock is released and stored after it is re-taken, so a concurrent event
   may have been stored in between; the invite is then a fork, which the DAG allows. The inviter's presence
   in the room is checked again.
-* The invitee's signature in the response is not yet merged into the stored event.
+* The invitee's signature in the response is merged into the stored event, after the answer is checked
+  (ADR-0302): an answer that is not this event validly signed by the invitee's server is a refusal.

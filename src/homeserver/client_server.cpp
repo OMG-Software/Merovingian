@@ -15917,7 +15917,22 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             auto const invite_event_id = invite_state->event_id;
             auto const delivery = merovingian::homeserver::deliver_remote_invite(
                 rt.homeserver, guard, room_id, invitee_server, invite_event_id, *invite_json);
-            if (delivery.outcome == merovingian::homeserver::RemoteInviteOutcome::unreachable)
+            if (delivery.outcome == merovingian::homeserver::RemoteInviteOutcome::delivered)
+            {
+                // The invite is already stored, signed by this server only; keep the copy signed by both.
+                if (!merovingian::homeserver::store_cosigned_invite(rt.homeserver, room_id, invite_event_id,
+                                                                    delivery.cosigned_event_json))
+                {
+                    log_diagnostic(
+                        "room.create.invite_cosignature_not_stored",
+                        {
+                            {"actor",   *user,   false},
+                            {"room_id", room_id, false},
+                            {"invitee", invitee, false}
+                    });
+                }
+            }
+            else if (delivery.outcome == merovingian::homeserver::RemoteInviteOutcome::unreachable)
             {
                 merovingian::homeserver::queue_remote_invite(rt.homeserver, room_id, invitee_server, invite_event_id,
                                                              *invite_json);

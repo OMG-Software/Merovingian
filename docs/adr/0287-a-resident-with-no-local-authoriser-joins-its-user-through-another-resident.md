@@ -88,4 +88,6 @@ for backfill, so the auth rules judge it against this server's own state:
 
 * Builds on [ADR-0171](0171-every-pdu-ingestion-path-verifies-the-authorising-servers-signature.md) and
   [ADR-0252](0252-one-membership-exchange-per-user-and-room-at-a-time.md)
+* Refined by [ADR-0302](0302-a-remote-signature-is-merged-into-this-servers-own-event-after-it-is-verified.md):
+  the join stored is this server's own, with the resident's signatures merged in
 * Refined by [ADR-0288](0288-a-restricted-join-waits-for-in-flight-room-events-before-it-is-refused-or-sent-away.md)
