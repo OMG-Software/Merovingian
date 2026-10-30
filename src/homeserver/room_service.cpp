@@ -6852,8 +6852,10 @@ namespace
     // was copied above.
     auto const call = [&] {
         auto const released = RuntimeLockRelease{guard};
-        return perform_outbound_call(runtime, room_id, transaction, key_id, std::move(secret_key),
-                                     "room.invite.remote_failed", offer_seconds, 0U, std::nullopt);
+        // Bounded: discovery and the request draw from one deadline, so the exchange stays within the offer's
+        // budget instead of giving each its own `offer_seconds` (ADR-0307).
+        return perform_bounded_outbound_call_with_status(runtime, room_id, transaction, key_id, std::move(secret_key),
+                                                         "room.invite.remote_failed", offer_seconds);
     }();
 
     if (call.ok)

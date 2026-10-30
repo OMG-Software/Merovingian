@@ -682,17 +682,29 @@ SCENARIO("The worker waits rather than spins while every queued transaction is i
             std::move(config), client, std::move(resolver), std::move(now_ms), {}};
         REQUIRE(worker.enqueue(sample_transaction("remote.example.org")));
 
-        WHEN("it runs for 200 ms")
+        WHEN("its first attempt has failed and it idles for 200 ms")
         {
             worker.start();
+            // Wait (bounded) until the attempt has failed and the transaction is back in the queue, so the
+            // measurement covers the backoff wait and not the time before the first attempt.
+            auto const give_up = std::chrono::steady_clock::now() + std::chrono::seconds{5};
+            while (std::chrono::steady_clock::now() < give_up &&
+                   (worker.summary().failed != 1U || worker.summary().pending != 1U))
+            {
+                std::this_thread::sleep_for(std::chrono::milliseconds{1});
+            }
+            auto const attempted = worker.summary().failed == 1U && worker.summary().pending == 1U;
+            auto const reads_before = clock_reads->load();
             std::this_thread::sleep_for(std::chrono::milliseconds{200});
+            auto const idle_reads = clock_reads->load() - reads_before;
             worker.request_shutdown();
             worker.join();
 
             THEN("it looked at the clock about once per idle poll, not millions of times")
             {
-                CAPTURE(clock_reads->load());
-                REQUIRE(clock_reads->load() < 1000U);
+                REQUIRE(attempted);
+                CAPTURE(idle_reads);
+                REQUIRE(idle_reads < 1000U);
             }
         }
     }
