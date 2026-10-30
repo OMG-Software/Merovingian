@@ -15808,7 +15808,7 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             }
         }
     }
-    if (req.method == "POST" && req.target == "/_matrix/client/v3/createRoom")
+    if (req.method == "POST" && target_path(req.target) == "/_matrix/client/v3/createRoom")
     {
         auto const body_object = req.body.empty() ? std::optional<canonicaljson::Object>{canonicaljson::Object{}}
                                                   : parsed_json_object(req.body);

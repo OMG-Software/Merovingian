@@ -540,3 +540,6 @@ decimal integer in `[-(2**53)+1, (2**53)-1]` (empty, fractional, exponent, signe
 whether a non-appservice `ts` should be rejected, so the server leaves such a request as it would be without it.
 The event is still appended at the tip of the DAG: `depth`, `prev_events` and the stream position are those of "now",
 and `GET /timestamp_to_event` orders by the massaged timestamp as it does for any event.
+
+`POST /createRoom` is routed by its path alone, so an application service's `?user_id=` (identity assertion) no longer
+makes it answer `405`.
