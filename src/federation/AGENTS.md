@@ -213,6 +213,18 @@ Federation is the highest-risk surface: **all input comes from untrusted remote 
    with 502 `M_TOO_LARGE`; only the thumbnail has 413. `query/directory` has no room ID, so a worker
    relays it to main (`directory_query_ingest`).
 
+16. **A PDU whose event ID is already stored is answered as handled, before it is verified (ADR-0285).**
+   Spec "PDU Processing Result": no `error` means "successfully handled". A re-send in another
+   transaction, or twice in one, is looked up by event ID (any status, in the PDU's own room) first:
+   `FederationRuntimeState::pdu_already_stored` in `/send` after the ACL check and before signature
+   verification, `pdu_event_already_stored` on main's side of a worker `pdu_ingest` relay, and
+   `ingest_pdu_event` (twice; the check under the room stripe is the decisive one). A hit is
+   `PduIngestionStatus::already_stored`: empty result, not re-verified, re-authorised or stored, no
+   stream ordering, push, fan-out or projection, and a stored `rejected` copy is never re-judged. The
+   worker leaves `pdu_already_stored` unset (its event snapshot is not the record). A per-PDU
+   `internal_error` is logged at WARNING level as well as audited: never turn a duplicate back into
+   one, or the sender is told a stored event failed.
+
 ## Key files
 
 | File | Responsibility |
