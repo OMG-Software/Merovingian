@@ -272,6 +272,7 @@
 * [0287 - A resident with no local authoriser joins its user through another resident](0287-a-resident-with-no-local-authoriser-joins-its-user-through-another-resident.md)
 * [0288 - A restricted join waits for in-flight room events before it is refused or sent away](0288-a-restricted-join-waits-for-in-flight-room-events-before-it-is-refused-or-sent-away.md)
 * [0289 - A hole in the event graph makes a /sync timeline limited](0289-a-hole-in-the-event-graph-makes-a-sync-timeline-limited.md)
+* [0290 - A backfilled outlier with a state group is held](0290-a-backfilled-outlier-with-a-state-group-is-held.md)
 * [0293 - A remote invite is offered to the invitee's server before it is stored or sent on](0293-offer-a-remote-invite-to-the-invitees-server-before-storing-it.md)
 * [0294 - The leave that rejects a remote invite is kept as an outlier](0294-the-leave-that-rejects-a-remote-invite-is-kept-as-an-outlier.md)
 * [0295 - The access_token query parameter is read on client-server and media routes only, and the header wins](0295-the-access-token-query-parameter-is-read-on-client-and-media-routes-only.md)
