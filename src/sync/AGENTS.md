@@ -41,7 +41,7 @@ Use `stream_token.hpp` — never parse or construct tokens manually.
 A classic `/sync` joined room's `timeline` is the newest `timeline_cap` events after `since` that pass
 the filters. `limited` is true when that window was cut by the cap **or** when an event in it has a hole
 before it: any ID in its `prev_events` that is not *held*, i.e. has no `store.events` row or a row whose
-status is `outlier` (rejected and soft-failed rows are held). The window then starts at the newest such
+status is `outlier` with no state group (rejected and soft-failed rows are held; an outlier that `/get_missing_events` or backfill placed has a state group and is held, ADR-0290). The window then starts at the newest such
 event (kept: the hole lies before it) and `prev_batch` is that event's stream ordering, so `/messages`
 (and its backfill) reaches what lies before. An outlier is never the event the check starts from. Look
 only at the window's events and look prev events up with `EventTable::contains`/`find` (indexed); never

@@ -5040,21 +5040,25 @@ namespace
         return events;
     }
 
-    // ADR-0289: whether this server holds `event_id` as part of its event graph. A row of any
-    // status counts, rejected and soft-failed events included (they were walked and are only
-    // withheld from clients), except an outlier: stored for auth-chain lookups but not reachable
-    // from the events held, so the stretch between it and them was never received.
-    [[nodiscard]] auto event_is_held(database::PersistentStore const& store, std::string_view event_id) -> bool
+    // ADR-0289, ADR-0290: whether this server holds `event_id` as part of its event graph. A row
+    // of any status counts, rejected and soft-failed events included (they were walked and are only
+    // withheld from clients). An outlier counts only once it has been placed, that is, has a state
+    // group computed from its own prev_events: that is what /get_missing_events and /backfill give
+    // what they fetch. A send_join state or auth-chain outlier has none, was not reached by walking
+    // prev_events from anything held, and is not part of the graph.
+    [[nodiscard]] auto event_is_held(database::PersistentStore const& store, sync::HistoryVisibility& visibility,
+                                     std::string_view event_id) -> bool
     {
         auto const row = store.events.find(event_id);
-        return row != store.events.end() && row->status != "outlier";
+        return row != store.events.end() &&
+               (row->status != "outlier" || visibility.has_state_group(event_id));
     }
 
     // ADR-0289: the newest event in [first, last) with a hole before it, or `last` when there is
     // none: an event with a `prev_events` ID that is not held. Only the window's events are read and
-    // each predecessor is one indexed lookup. An outlier is never the answer; its predecessors are
-    // missing by construction and it is not part of the live graph.
-    [[nodiscard]] auto newest_graph_hole(database::PersistentStore const& store,
+    // each predecessor is one indexed lookup. An outlier that was never placed is never the answer;
+    // its predecessors are missing by construction and it is not part of the live graph.
+    [[nodiscard]] auto newest_graph_hole(database::PersistentStore const& store, sync::HistoryVisibility& visibility,
                                          std::vector<database::PersistentEvent const*>::const_iterator first,
                                          std::vector<database::PersistentEvent const*>::const_iterator last)
         -> std::vector<database::PersistentEvent const*>::const_iterator
@@ -5063,8 +5067,9 @@ namespace
         {
             --it;
             auto const& event = **it;
-            if (event.status != "outlier" && !std::ranges::all_of(event.prev_event_ids, [&](std::string const& prev) {
-                    return event_is_held(store, prev);
+            if (event_is_held(store, visibility, event.event_id) &&
+                !std::ranges::all_of(event.prev_event_ids, [&](std::string const& prev) {
+                    return event_is_held(store, visibility, prev);
                 }))
             {
                 return it;
@@ -5574,7 +5579,7 @@ namespace
             // ADR-0289: a hole in the room's own event graph (an event whose `prev_events` this server
             // never received) also leaves a gap the client must fill through /messages. The timeline
             // starts at the newest such event, which is kept, and is limited. Only the window is read.
-            auto const hole = newest_graph_hole(store, window_begin, matched.end());
+            auto const hole = newest_graph_hole(store, history_visibility, window_begin, matched.end());
             if (hole != matched.end())
             {
                 window_begin = hole;
