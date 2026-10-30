@@ -21,6 +21,12 @@ Fixes for the failures Complement run 12 found against main at 0.12.63.
   the queue (ADR-0293).
 - Rejecting an invite from another server keeps the signed leave as an outlier, so the next `/sync`
   reports it under `rooms.leave` (ADR-0294).
+- Held room state counts as current only while a user of this server is joined to the room: an invite
+  for a user who left through a federated leave is no longer refused as "already joined", and `/sync`
+  does not show a remote invite for a room this server is in until the room's state holds the invite
+  event (ADR-0301). Sliding sync does not apply this gate yet.
+- `GET /_matrix/federation/v1/timestamp_to_event/{roomId}` is served by the federation worker and
+  applies the requesting server's room access and history visibility like the other federation reads.
 - This server neither serves nor consults notary key servers; `/_matrix/key/v2/query` is an unknown
   endpoint (ADR-0297).
 
@@ -44,7 +50,16 @@ Fixes for the failures Complement run 12 found against main at 0.12.63.
   received, or holds only as an outlier) makes the timeline `limited`; the timeline starts at the
   first event after the hole and `prev_batch` reaches the earlier events (ADR-0289). A limited
   incremental sync also carries the room state at the start of the timeline. Sliding sync is
-  unchanged.
+  unchanged. An outlier placed from its own `prev_events` (it has a state group, as events recovered
+  by `/get_missing_events` and backfill do) counts as held, so filled gaps are not cut (ADR-0290).
+- `GET /_matrix/client/v1/rooms/{roomId}/timestamp_to_event` is implemented: inclusive boundary, ties
+  ordered by timestamp, depth and arrival; a user who may not read the room gets 403; events the user
+  may not see are stepped over; when the local answer is missing or sits at a gap in the graph, up to
+  three of the room's servers are asked under an ADR-0079 slot and a closer event is fetched and
+  verified before it is returned (ADR-0299). The event table keeps a per-room index by
+  `origin_server_ts`, so the lookup is a bounded binary search (ADR-0300).
+- State events carry `unsigned.prev_content` (the content of the state event they replaced) when the
+  viewer may see it.
 - Sending a message no longer ends the sender's typing; typing ends on the client's `typing: false`
   or the timeout (ADR-0298).
 
