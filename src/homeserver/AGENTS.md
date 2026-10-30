@@ -232,6 +232,31 @@ frame whose user ID is malformed or local. The decision reads state under `runti
 the room version through `declared_room_version`, and is bounded by
 `max_restricted_join_conditions` (32).
 
+### A local join no local user can authorise goes through another resident (ADR-0287, ADR-0288)
+
+When `join_room` gets `unable_to_grant` for a local user (a condition holds, no local user can
+invite), it does not refuse at once. It takes the `MembershipExchangeClaim`, runs
+`wait_for_in_flight_room_events` (releases `runtime.mutex`, takes and drops the room's stripe
+mutex, restores it: an event being applied now may be the power-levels event that gives a local
+user the power) and decides again. Still `unable_to_grant`: `join_through_other_resident` makes
+the federated handshake (`perform_federated_join` with
+`FederatedJoinPurpose::join_through_resident`) to at most `max_restricted_join_fallback_candidates`
+(4) servers from `restricted_join_fallback_candidates` (the client's named servers first, then
+other servers with joined members; never this server), offering only the room's own version. Rules:
+
+- Only `unable_to_grant` goes remote. A user meeting no condition (403) or a condition this server
+  cannot verify (`unable_to_authorise`) is refused here, so the handshake never runs for a user this
+  server has not found entitled. `decide_restricted_join` stays the only place that decides.
+- The room's state is already here. Never feed the answer's `state` / `auth_chain` to
+  `ingest_send_join_state`: that path seeds a room the server holds nothing of and would replace
+  state it holds. The answer's `event` is stored as a received PDU through `federation.pdu_sink`
+  (`origin` = the resident), so the auth rules judge it against this server's own state.
+- The `event` is taken only if `verify_resident_signed_join` accepts it: the reference-hash event ID
+  is that of the join this server signed, it names an authorising user of another server, and
+  `filter_verified_send_join_events` verifies this server's signature and the authorising server's
+  (ADR-0171). Never store a join authorised by a server whose signature was not checked.
+- If no candidate succeeds the client gets the original 403, not an upstream error.
+
 ## The resident sends accepted membership events on
 
 As the resident, the `membership_acceptor` stores a `send_join`, `send_leave` or `send_knock` and then

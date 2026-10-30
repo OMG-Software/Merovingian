@@ -223,7 +223,14 @@ Implemented now:
   refuses it unsigned otherwise. A local user's join into a local
   restricted room carries the field, and `compose_signed_event` refuses any
   local join naming a local authoriser the decision does not accept (so
-  `PUT /state/m.room.member` cannot skip the check)
+  `PUT /state/m.room.member` cannot skip the check). When the decision is
+  `unable_to_grant` for a local user's `/join` (0.12.64, ADR-0287, ADR-0288), the
+  join waits for the room's in-flight events, decides again, and then goes
+  through another resident: make_join and send_join to the servers the client
+  named, then other servers with joined members (at most 4), and the resident's
+  co-signed `event` (same reference-hash ID as the join this server signed, both
+  signatures verified) is stored as a received event; the answer's state is not
+  used. If every candidate fails, the client gets the 403
 - a content-hash mismatch on a direct membership endpoint redacts, it does not
   reject (0.12.36, R06): `handle_send_membership` and `handle_invite` refuse
   only a signature failure (400 `M_INVALID_PARAM`); the acceptor and the
@@ -276,10 +283,9 @@ Implemented now:
 Not implemented yet:
 
 - full Matrix room-version conformance fixture suite
-- joining a local user through another resident when this server meets a
-  restricted room's condition but has no local user who can invite (refused
-  with 403 today), and sending an accepted `send_join` event on to the room's
-  other servers
+- sending an accepted `send_join` event on to the room's other servers is done
+  (0.12.60); an ordinary (non-resident) federated join still stores its own
+  signed copy of a restricted join, not the resident's co-signed `event`
 - the `PUT /_matrix/federation/v1/exchange_third_party_invite/{roomId}`
   endpoint (signing an intermediate invite on behalf of a remote inviter).
   `POST /invite` with a 3PID address (a real identity-server round trip,
