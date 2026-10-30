@@ -36,6 +36,19 @@ Spec authority:
 For `/messages` and timeline `prev_batch`, the token is a plain stream-ordering integer.
 Use `stream_token.hpp` — never parse or construct tokens manually.
 
+## Joined-room timelines and holes in the event graph (ADR-0289)
+
+A classic `/sync` joined room's `timeline` is the newest `timeline_cap` events after `since` that pass
+the filters. `limited` is true when that window was cut by the cap **or** when an event in it has a hole
+before it: any ID in its `prev_events` that is not *held*, i.e. has no `store.events` row or a row whose
+status is `outlier` (rejected and soft-failed rows are held). The window then starts at the newest such
+event (kept: the hole lies before it) and `prev_batch` is that event's stream ordering, so `/messages`
+(and its backfill) reaches what lies before. An outlier is never the event the check starts from. Look
+only at the window's events and look prev events up with `EventTable::contains`/`find` (indexed); never
+scan the store per event, this runs under `runtime.mutex`. A limited incremental response also carries
+the state at the start of the timeline. Sliding sync has its own builder and `limited` rule and is not
+affected.
+
 ## Sliding sync connection state
 
 MSC4186 tracks per-connection state keyed by `conn_id`. On a no-`pos` poll, the server
