@@ -216,6 +216,10 @@ nothing else decides what a user may see** (ADR-0084; audit CSAZ-2, CSAZ-3).
   `/messages`, `/context` (target and both lists), `/event`, `/search` and its per-result
   context, `/relations`, `/threads`, the `initialSync` chunk. A new endpoint that returns room
   events must call it.
+- Rule 3 (`shared`: the user joined "after the event was sent") compares the depth of the user's newest
+  accepted join with the event's depth, never stream orderings (ADR-0308): an event fetched as history is
+  stored after the join it precedes. Do not order by stream ordering anywhere the question is "before or after
+  in the room".
 - It fails closed. A broken group chain, a group naming an event the store lacks, or a
   rejected or soft-failed event means not visible. Never substitute the room's current state.
   An event with no state group (pre-ADR-0064 history) is judged by rule 2 alone from the user's

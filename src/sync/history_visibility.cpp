@@ -285,14 +285,14 @@ auto HistoryVisibility::view_of_group(std::string_view group_id) -> GroupView co
     return group_views_.emplace(key, std::move(view)).first->second;
 }
 
-// The stream ordering of the newest accepted `join` event of the user in `room_id`. Every
-// `m.room.member` event of the user that was ever part of a room's state is named by some
-// state group row (or by the current state), so scanning those rows finds them without parsing
-// the room's events.
-auto HistoryVisibility::max_join_ordering(std::string_view room_id) -> std::optional<std::uint64_t>
+// The depth of the newest accepted `join` event of the user in `room_id`: its place in the room's
+// history (ADR-0308). Every `m.room.member` event of the user that was ever part of a room's state is
+// named by some state group row (or by the current state), so scanning those rows finds them without
+// parsing the room's events.
+auto HistoryVisibility::max_join_depth(std::string_view room_id) -> std::optional<std::uint64_t>
 {
     auto const key = std::string{room_id};
-    if (auto const cached = join_orderings_.find(key); cached != join_orderings_.end())
+    if (auto const cached = join_depths_.find(key); cached != join_depths_.end())
     {
         return cached->second;
     }
@@ -320,12 +320,12 @@ auto HistoryVisibility::max_join_ordering(std::string_view room_id) -> std::opti
             continue;
         }
         if (content_string(candidate, "membership") == std::optional<std::string>{"join"} &&
-            (!newest.has_value() || event->stream_ordering > *newest))
+            (!newest.has_value() || event->depth > *newest))
         {
-            newest = event->stream_ordering;
+            newest = event->depth;
         }
     }
-    join_orderings_.emplace(key, newest);
+    join_depths_.emplace(key, newest);
     return newest;
 }
 
@@ -444,9 +444,12 @@ auto HistoryVisibility::allows(HistoryVisibilityValue visibility, std::string_vi
     }
     if (visibility == HistoryVisibilityValue::shared)
     {
-        // Rule 3: the user joined the room at any point after the event was sent.
-        auto const joined = max_join_ordering(event.room_id);
-        return joined.has_value() && *joined > event.stream_ordering;
+        // Rule 3: the user joined the room at any point after the event was sent. "After" is the room's
+        // history, not this server's: a join deeper than the event comes after it (ADR-0308). The order
+        // events were stored in is not it, since an event fetched as history is stored after the join it
+        // precedes. A concurrent event of equal depth is not before the join (fails closed).
+        auto const joined = max_join_depth(event.room_id);
+        return joined.has_value() && *joined > event.depth;
     }
     // Rule 4; rule 5 (deny) otherwise.
     return membership == "invite" && visibility == HistoryVisibilityValue::invited;

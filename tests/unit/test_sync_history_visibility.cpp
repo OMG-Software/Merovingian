@@ -45,8 +45,10 @@ using merovingian::sync::RoomReadKind;
 constexpr auto room = std::string_view{"!room:example.org"};
 constexpr auto bob = std::string_view{"@bob:example.org"};
 
-auto add_event(PersistentStore& store, std::string_view event_id, std::string_view json, std::uint64_t ordering,
-               std::string_view status = "accepted") -> void
+// An event stored at `ordering` whose place in the room's history is `depth`: one fetched as history
+// (backfill, a timestamp lookup) is stored after events that come later in the room.
+auto add_event_at_depth(PersistentStore& store, std::string_view event_id, std::string_view json,
+                        std::uint64_t ordering, std::uint64_t depth, std::string_view status = "accepted") -> void
 {
     auto event = PersistentEvent{};
     event.event_id = std::string{event_id};
@@ -54,8 +56,16 @@ auto add_event(PersistentStore& store, std::string_view event_id, std::string_vi
     event.sender_user_id = "@alice:example.org";
     event.json = std::string{json};
     event.stream_ordering = ordering;
+    event.depth = depth;
     event.status = std::string{status};
     store.events.push_back(std::move(event));
+}
+
+// An event received live: its place in the room's history (depth) follows the order it was stored in.
+auto add_event(PersistentStore& store, std::string_view event_id, std::string_view json, std::uint64_t ordering,
+               std::string_view status = "accepted") -> void
+{
+    add_event_at_depth(store, event_id, json, ordering, ordering, status);
 }
 
 [[nodiscard]] auto visibility_json(std::string_view value) -> std::string
@@ -793,6 +803,53 @@ SCENARIO("HistoryVisibility shows a user their own outlier membership event with
             {
                 REQUIRE_FALSE(filter.can_see_event_id("$bob_invite"));
                 REQUIRE(filter.can_see_event_id("$carol_invite"));
+            }
+        }
+    }
+}
+
+// Spec: Client-Server API v1.19, "History visibility", rule 3: "If `history_visibility` was set to `shared`,
+// and the user joined the room at any point after the event was sent, allow." ADR-0308: "after the event was
+// sent" is judged by the room's history, the depth of the user's join against the event's, never by the order
+// this server stored them in: an event fetched as history is stored after the join it precedes.
+SCENARIO("HistoryVisibility judges a shared room's history by depth, not by when this server stored it",
+         "[sync][history-visibility][adr-0308]")
+{
+    GIVEN("a shared room bob joined at depth 5 and left at depth 8, and two events stored after both")
+    {
+        auto store = PersistentStore{};
+        add_event(store, "$vis", visibility_json("shared"), 1U);
+        add_group(store, "g1", std::nullopt,
+                  {
+                      {{"m.room.history_visibility", ""}, "$vis"}
+        });
+        add_event(store, "$join", member_json(bob, "join"), 5U);
+        add_group(store, "g2", "g1",
+                  {
+                      {{"m.room.member", std::string{bob}}, "$join"}
+        });
+        map_event(store, "$join", "g2");
+        add_event(store, "$leave", member_json(bob, "leave"), 8U);
+        add_group(store, "g3", "g2",
+                  {
+                      {{"m.room.member", std::string{bob}}, "$leave"}
+        });
+        map_event(store, "$leave", "g3");
+        // Sent at depth 3, before bob joined, but fetched (and stored) only now.
+        add_event_at_depth(store, "$before", R"({"type":"m.room.message","content":{"body":"x"}})", 30U, 3U);
+        map_event(store, "$before", "g1");
+        // Sent at depth 9, after bob left; stored now too.
+        add_event_at_depth(store, "$after_leave", R"({"type":"m.room.message","content":{"body":"y"}})", 31U, 9U);
+        map_event(store, "$after_leave", "g3");
+
+        WHEN("bob asks about both")
+        {
+            auto filter = HistoryVisibility{store, bob};
+
+            THEN("he sees the one sent before his join, and not the one sent after he left")
+            {
+                REQUIRE(filter.can_see_event_id("$before"));
+                REQUIRE_FALSE(filter.can_see_event_id("$after_leave"));
             }
         }
     }

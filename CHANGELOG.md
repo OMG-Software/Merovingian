@@ -54,6 +54,9 @@ Fixes for the failures Complement run 12 found against main at 0.12.63.
   the leave.
 - A join made through another resident (ADR-0287) succeeds only if the stored join is the user's current
   member event, whether the sink accepted it now or already held it.
+- In a `shared` room, a user who joined sees the history this server fetches for them (backfill, `/messages`,
+  a remote `timestamp_to_event` answer): "joined after the event was sent" now compares the depth of the
+  user's join with the event's, not the order this server stored them in (ADR-0308).
 - Sliding sync withholds a subscribed invite until the room's state holds it, as `/sync` does (ADR-0301).
   Both build one index of the room state per request instead of scanning the store's state twice per
   invite under `runtime.mutex`.

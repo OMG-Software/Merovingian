@@ -122,7 +122,8 @@ private:
                                        std::string_view state_key) -> LookupResult;
     [[nodiscard]] auto view_of_group(std::string_view group_id) -> GroupView const&;
     [[nodiscard]] auto content_string(std::string_view event_id, std::string_view key) -> std::optional<std::string>;
-    [[nodiscard]] auto max_join_ordering(std::string_view room_id) -> std::optional<std::uint64_t>;
+    // The depth of the user's newest accepted join in the room (ADR-0308): its place in the room's history.
+    [[nodiscard]] auto max_join_depth(std::string_view room_id) -> std::optional<std::uint64_t>;
     // One entry of the user's own membership in a room: the stream ordering of an
     // m.room.member event of theirs and the membership it set.
     struct MembershipStep final
@@ -154,7 +155,7 @@ private:
 
     std::unordered_map<std::string, GroupView> group_views_{};
     std::unordered_map<std::string, std::optional<std::string>> content_cache_{};
-    std::unordered_map<std::string, std::optional<std::uint64_t>> join_orderings_{};
+    std::unordered_map<std::string, std::optional<std::uint64_t>> join_depths_{};
     std::unordered_map<std::string, std::optional<std::vector<MembershipStep>>> membership_timelines_{};
 };
 

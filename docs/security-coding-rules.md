@@ -1247,7 +1247,8 @@ media-fetch-pool task.
   Why: the spec judges visibility from the state at each event, and a path that re-derives a
   rule, or checks only "is a member", discloses history the room's owner restricted and lets a
   banned or departed user read on (audit CSAZ-2, CSAZ-3). The filter fails closed: no recorded
-  state at an event means not visible, never a fallback to current state.
+  state at an event means not visible, never a fallback to current state. Rule 3 (`shared`)
+  orders the user's join and the event by depth, never by stream ordering (ADR-0308).
   Source: `src/sync/AGENTS.md`, `src/homeserver/AGENTS.md`.
 
 - **A sliding-sync sort key is computed once per room before the sort, never inside the
