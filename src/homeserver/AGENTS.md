@@ -140,8 +140,10 @@ the main pool's threads for the round trip. Every such call therefore:
 
 `GET /rooms/{roomId}/timestamp_to_event` (`handle_timestamp_to_event`) is the same kind of request, but only when the local answer is
 absent or the event found has a `prev_event` this server does not hold (`event_is_held`, ADR-0289): it asks at most 3 servers with
-joined members, one at a time, under one slot and one `OutboundDeadline`, and with a local answer in hand a refused slot costs only the
-remote improvement. A remote answer is used only if it is on the requested side of `ts` and closer; the event is fetched with
+joined members, one at a time, under one slot and one `OutboundDeadline`. It is the one such request that WAITS for a slot
+(`admit_client_proxy_waiting`, polling every 25 ms with `runtime.mutex` released) until that deadline, so one client's parallel
+lookups are served in turn (ADR-0306); with a local answer in hand a slot that never comes costs only the remote improvement.
+Do not copy the wait to the unauthenticated proxies above: they keep the immediate 429. A remote answer is used only if it is on the requested side of `ts` and closer; the event is fetched with
 `fetch_remote_event_into_store` (verified, stored as an outlier) and judged again, after the lock is back, by `HistoryVisibility` and by its
 own stored `origin_server_ts`, never the number the remote server sent.
 

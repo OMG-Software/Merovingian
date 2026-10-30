@@ -8,6 +8,7 @@
 #include "merovingian/config/config.hpp"
 #include "merovingian/database/persistent_store.hpp"
 #include "merovingian/homeserver/auth_service.hpp"
+#include "merovingian/homeserver/client_outbound_proxy.hpp"
 #include "merovingian/homeserver/client_server.hpp"
 #include "merovingian/homeserver/local_http_router.hpp"
 #include "merovingian/homeserver/local_services.hpp"
@@ -15,6 +16,7 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <algorithm>
+#include <chrono>
 #include <string>
 #include <thread>
 #include <tuple>
@@ -1732,6 +1734,38 @@ SCENARIO("GET /timestamp_to_event asks a server of the room only when its own hi
             }
         }
 
+        WHEN("the only client-outbound slot is busy for a moment when the lookup needs it")
+        {
+            // ADR-0306: the lookup waits for a slot within its own deadline instead of being refused at
+            // once, so parallel lookups by one client are served in turn.
+            rt.homeserver.client_outbound_proxy_policy.global_cap = 1U;
+            auto held = merovingian::homeserver::admit_client_outbound_proxy(rt.homeserver, "another-lookup");
+            REQUIRE(held.has_value());
+            auto const not_found = merovingian::tests::tls_mock::json_http_response(
+                "404 Not Found", R"({"errcode":"M_NOT_FOUND","error":"no event"})");
+            auto const responses = std::vector<std::pair<std::string, std::string>>{
+                {"timestamp_to_event", not_found}
+            };
+            auto captured = std::vector<std::string>{};
+            auto server_thread = std::thread{[&]() {
+                merovingian::tests::tls_mock::run_path_dispatch_tls_server(acceptor, tls_context, responses, &captured);
+            }};
+            auto const join_server = merovingian::tests::tls_mock::ScopedThreadJoin{server_thread};
+            auto releaser = std::thread{[&held]() {
+                std::this_thread::sleep_for(std::chrono::milliseconds{300});
+                held.reset();
+            }};
+            auto const response = timestamp_to_event_get(rt, room, "ts=999999&dir=f");
+            releaser.join();
+
+            THEN("it waits, then asks the remote server instead of being refused")
+            {
+                REQUIRE(response.response.status == 404U);
+                REQUIRE(response.response.body.find("M_NOT_FOUND") != std::string::npos);
+                REQUIRE(captured.size() == 1U);
+            }
+        }
+
         WHEN("no local event lies after the timestamp and the remote server has none either")
         {
             auto const not_found = merovingian::tests::tls_mock::json_http_response(
@@ -1831,13 +1865,13 @@ SCENARIO("GET /timestamp_to_event asks a server of the room only when its own hi
     }
 }
 
-// ADR-0079: a client request that calls another server holds a slot of the client-outbound budget, and is
-// refused with 429 M_LIMIT_EXCEEDED when there is none, before any outbound call. With an answer in hand
-// the request does not need the remote improvement and is answered locally instead.
+// ADR-0079: a client request that calls another server holds a slot of the client-outbound budget, and makes
+// no outbound call without one. GET /timestamp_to_event waits for a slot within its deadline (ADR-0306); when
+// none comes it is refused with 429 M_LIMIT_EXCEEDED, or, with an answer in hand, answered locally.
 SCENARIO("GET /timestamp_to_event does not call another server without a client-outbound slot",
          "[homeserver][client-server][timestamp-to-event][adr-0079]")
 {
-    GIVEN("a room with a remote member, and a budget with no slot to give")
+    GIVEN("a room with a remote member, and a budget with no slot to give within a one-second deadline")
     {
         auto started = merovingian::homeserver::start_client_server(registration_enabled_config());
         REQUIRE(started.started);
@@ -1845,6 +1879,7 @@ SCENARIO("GET /timestamp_to_event does not call another server without a client-
         auto const room = room_with_remote_member(rt);
         add_event_behind_a_gap(rt, room.room_id);
         rt.homeserver.client_outbound_proxy_policy.global_cap = 0U;
+        rt.homeserver.client_outbound_proxy_policy.directory_deadline_seconds = 1U;
 
         WHEN("no local event lies after the timestamp")
         {
