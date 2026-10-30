@@ -219,7 +219,11 @@ nothing else decides what a user may see** (ADR-0084; audit CSAZ-2, CSAZ-3).
 - Rule 3 (`shared`: the user joined "after the event was sent") compares the depth of the user's newest
   accepted join with the event's depth, never stream orderings (ADR-0308): an event fetched as history is
   stored after the join it precedes. Do not order by stream ordering anywhere the question is "before or after
-  in the room".
+  in the room". Depth is chosen by whoever creates an event (a federated join's by the resident), so for a user
+  whose membership is `leave` or `ban` an event the depth rule allows is hidden if it descends from their leave
+  (`may_descend_from_departure`, ADR-0311): a walk of held `prev_events` that stops at events stored before the
+  leave and at events not held, and fails closed past 500 events or when the leave event is not held. Never
+  replace it with a local depth: after a federated join the join's predecessors are not held (ADR-0311).
 - It fails closed. A broken group chain, a group naming an event the store lacks, or a
   rejected or soft-failed event means not visible. Never substitute the room's current state.
   An event with no state group (pre-ADR-0064 history) is judged by rule 2 alone from the user's

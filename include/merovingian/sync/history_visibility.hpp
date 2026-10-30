@@ -126,6 +126,21 @@ private:
     [[nodiscard]] auto content_string(std::string_view event_id, std::string_view key) -> std::optional<std::string>;
     // The depth of the user's newest accepted join in the room (ADR-0308): its place in the room's history.
     [[nodiscard]] auto max_join_depth(std::string_view room_id) -> std::optional<std::uint64_t>;
+    // ADR-0311: the user's departure from a room they are no longer in: the stream ordering of their current
+    // `leave` or `ban` membership row, and that leave's event when it is held as their current member state.
+    struct Departure final
+    {
+        std::uint64_t ordering{0U};
+        std::optional<std::string> event_id{};
+    };
+    // The user's departure from `room_id`, or nullopt while their membership is anything but leave or ban.
+    [[nodiscard]] auto departure_of(std::string_view room_id) -> std::optional<Departure> const&;
+    // Whether `event` may descend from `departure` (ADR-0311): a walk back through its held prev_events that
+    // stops at events stored before the departure (none of them can descend from it) and at events not held.
+    // True when the walk reaches the leave, when the leave event is not held (nothing to walk to), or when it
+    // runs past max_departure_walk events (fail closed).
+    [[nodiscard]] auto may_descend_from_departure(database::PersistentEvent const& event, Departure const& departure)
+        -> bool;
     // One entry of the user's own membership in a room: the stream ordering of an
     // m.room.member event of theirs and the membership it set.
     struct MembershipStep final
@@ -158,6 +173,7 @@ private:
     std::unordered_map<std::string, GroupView> group_views_{};
     std::unordered_map<std::string, std::optional<std::string>> content_cache_{};
     std::unordered_map<std::string, std::optional<std::uint64_t>> join_depths_{};
+    std::unordered_map<std::string, std::optional<Departure>> departures_{};
     std::unordered_map<std::string, std::optional<std::vector<MembershipStep>>> membership_timelines_{};
 };
 

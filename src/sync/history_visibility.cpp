@@ -449,10 +449,103 @@ auto HistoryVisibility::allows(HistoryVisibilityValue visibility, std::string_vi
         // events were stored in is not it, since an event fetched as history is stored after the join it
         // precedes. A concurrent event of equal depth is not before the join (fails closed).
         auto const joined = max_join_depth(event.room_id);
-        return joined.has_value() && *joined > event.depth;
+        if (!joined.has_value() || *joined <= event.depth)
+        {
+            return false;
+        }
+        // Depth is chosen by whoever creates an event, a federated join's by the resident's make_join
+        // template, so depth alone could show a user who left events sent after they left. For such a
+        // user, an event that descends from their leave is not before their join (ADR-0311).
+        auto const& departure = departure_of(event.room_id);
+        return !departure.has_value() || !may_descend_from_departure(event, *departure);
     }
     // Rule 4; rule 5 (deny) otherwise.
     return membership == "invite" && visibility == HistoryVisibilityValue::invited;
+}
+
+namespace
+{
+
+    // The most held events one departure walk visits (ADR-0311) before it gives up and hides the event.
+    constexpr auto max_departure_walk = std::size_t{500U};
+
+} // namespace
+
+auto HistoryVisibility::departure_of(std::string_view room_id) -> std::optional<Departure> const&
+{
+    auto const key = std::string{room_id};
+    if (auto const cached = departures_.find(key); cached != departures_.end())
+    {
+        return cached->second;
+    }
+    auto departure = std::optional<Departure>{};
+    auto const row = std::ranges::find_if(store_.memberships, [&](database::PersistentMembership const& membership) {
+        return membership.room_id == room_id && membership.user_id == user_id_;
+    });
+    if (row != store_.memberships.end() && (row->membership == "leave" || row->membership == "ban"))
+    {
+        departure.emplace();
+        departure->ordering = row->stream_ordering;
+        // The leave itself, when it is held as the user's current member state. A federated leave of a room
+        // this server is no longer in keeps only the membership row.
+        auto const state = std::ranges::find_if(store_.state, [&](database::PersistentStateEvent const& entry) {
+            return entry.room_id == room_id && entry.event_type == member_type && entry.state_key == user_id_;
+        });
+        if (state != store_.state.end())
+        {
+            auto const membership = content_string(state->event_id, "membership");
+            if (membership == std::optional<std::string>{"leave"} || membership == std::optional<std::string>{"ban"})
+            {
+                departure->event_id = state->event_id;
+            }
+        }
+    }
+    return departures_.emplace(key, std::move(departure)).first->second;
+}
+
+auto HistoryVisibility::may_descend_from_departure(database::PersistentEvent const& event, Departure const& departure)
+    -> bool
+{
+    // Stored before the user left: nothing built on their leave can have been stored before it.
+    if (event.stream_ordering < departure.ordering)
+    {
+        return false;
+    }
+    if (!departure.event_id.has_value())
+    {
+        return true;
+    }
+    if (event.event_id == *departure.event_id)
+    {
+        return false;
+    }
+    auto pending = std::vector<std::string_view>{event.prev_event_ids.begin(), event.prev_event_ids.end()};
+    auto visited = std::unordered_set<std::string_view>{};
+    auto walked = std::size_t{0U};
+    while (!pending.empty())
+    {
+        auto const id = pending.back();
+        pending.pop_back();
+        if (id == *departure.event_id)
+        {
+            return true;
+        }
+        if (!visited.insert(id).second)
+        {
+            continue;
+        }
+        auto const* prev = find_event(id);
+        if (prev == nullptr || prev->room_id != event.room_id || prev->stream_ordering < departure.ordering)
+        {
+            continue;
+        }
+        if (++walked > max_departure_walk)
+        {
+            return true;
+        }
+        pending.insert(pending.end(), prev->prev_event_ids.begin(), prev->prev_event_ids.end());
+    }
+    return false;
 }
 
 auto HistoryVisibility::can_see(database::PersistentEvent const& event) -> bool

@@ -65,6 +65,10 @@ Fixes for the failures Complement run 12 found against main at 0.12.63.
   leave event to report.
 - A join made through another resident (ADR-0287) succeeds only if the stored join is the user's current
   member event, whether the sink accepted it now or already held it.
+- A user who left a `shared` room never sees an event built on their leave, whatever depths another server
+  chose (ADR-0311): depth is set by an event's creator, a federated join's by the resident, so the depth rule
+  alone could show a former member events sent after they left. Such an event is found by a bounded walk of
+  its held `prev_events`, which stops at events stored before the leave and fails closed.
 - In a `shared` room, a user who joined sees the history this server fetches for them (backfill, `/messages`,
   a remote `timestamp_to_event` answer): "joined after the event was sent" now compares the depth of the
   user's join with the event's, not the order this server stored them in (ADR-0308).

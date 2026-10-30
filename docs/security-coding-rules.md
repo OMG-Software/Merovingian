@@ -1250,7 +1250,9 @@ media-fetch-pool task.
   rule, or checks only "is a member", discloses history the room's owner restricted and lets a
   banned or departed user read on (audit CSAZ-2, CSAZ-3). The filter fails closed: no recorded
   state at an event means not visible, never a fallback to current state. Rule 3 (`shared`)
-  orders the user's join and the event by depth, never by stream ordering (ADR-0308).
+  orders the user's join and the event by depth, never by stream ordering (ADR-0308); because
+  depth is chosen by the event's creator (a join's by the resident), a former member is never
+  shown an event that descends from their leave (`may_descend_from_departure`, ADR-0311).
   Source: `src/sync/AGENTS.md`, `src/homeserver/AGENTS.md`.
 
 - **A sliding-sync sort key is computed once per room before the sort, never inside the
