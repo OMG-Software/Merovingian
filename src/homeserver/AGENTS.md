@@ -23,6 +23,7 @@ This is the largest and most complex module — read this file carefully before 
 | `deferred_pdu_retry.cpp` | Retains federation PDUs that could not yet be placed (`deferred_pdus`) and retries them: `retry_deferred_pdus`, `DeferredPduRetryJob` (R03, ADR-0165). A retry holds no lock across `ingest_pdu_event`; `ingest_pdu_event` writes rows only after signature verification |
 | `redaction_service.cpp` | Applies redactions (judge, overwrite the target's stored JSON, withhold unapplied redactions from clients) and checks a local client's redaction |
 | `room_power.cpp` | `may_send_state_event()`: whether a user may send a state event of a type in a room's current state, judged as the auth rules judge it (CSAZ-12) |
+| `room_residency.cpp` | `room_state_is_current()`: whether held room state is current, i.e. the create event is stored and a user of this server is joined (ADR-0301) |
 | `restricted_join.cpp` | `decide_restricted_join()`: as the resident, whether a user meets a restricted room's allow conditions and which local user authorises the join (R04, ADR-0185) |
 | `remote_timestamp_event.cpp` | Asking other servers for `GET /rooms/{roomId}/timestamp_to_event` (ADR-0299): `timestamp_to_event_candidate_servers`, `parse_timestamp_to_event_answer`, `timestamp_is_closer`, `acquire_closer_timestamp_event` (the loop over at most 3 servers; releases `runtime.mutex` for each exchange and for the verified fetch, `fetch_remote_event_into_store` in `local_http_router.cpp`) |
 | `space_hierarchy.cpp` | `GET /_matrix/client/v1/rooms/{roomId}/hierarchy` (a child room this server holds no state for is asked for over federation, see "Client requests that call another server") and the answer to `GET /_matrix/federation/v1/hierarchy/{roomId}`, judged for the authenticated requesting server; also `handle_client_room_summary` (`GET /_matrix/client/v1/room_summary/{roomIdOrAlias}`, local rooms only; a request with no token is answered before the auth gate in `client_server.cpp` and may see only a public, knock or world-readable room) |
@@ -212,14 +213,18 @@ on that record, each by the inviter's server, which the spec calls a resident se
 - An invite this server sends to another server's user (`invite_user`, createRoom's `invite` list) is offered
   to that server first (`deliver_remote_invite`, ADR-0293) and stored and sent to the room's other servers only
   after it accepted. Only an unreachable server falls back to `queue_remote_invite`. Never go back to queueing
-  first: the invitee's client acts on what a third server shows it.
+  first: the invitee's client acts on what a third server shows it. For an unreachable server `invite_user` queues
+  before it stores, and answers 503 with nothing stored when the queue refuses (ADR-0307); never report an invite
+  sent that was neither delivered nor queued.
 - The invitee's answer is not trusted (ADR-0302): `check_invite_answer` requires the event sent (same
   reference-hash ID) validly signed by the invitee's server, and returns this server's own event with only those
   verified signatures merged in (`with_server_signatures`). That co-signed event is what `invite_user` stores and
   sends on; createRoom replaces its already stored invite with it (`store_cosigned_invite`). An answer that fails
   is `refused` (502), never `delivered`, and never queued. The key lookup runs with `runtime.mutex` released.
 - The invite handler judges an invite against held room state only while a user of this server is joined to the
-  room (ADR-0301); after a federated leave the state is stale. For a room this server is in, it stores no event (the
+  room (ADR-0301); after a federated leave the state is stale. `room_state_is_current` (`room_residency.hpp`) is the
+  one test; the invite handler, `rescind_invite_from_inviter` and `leave_room`'s rejection of a remote invite
+  (which keeps the leave as an outlier when the state is not current) use it and must agree. For a room this server is in, it stores no event (the
   transaction's copy places it) and `/sync` hides the invite until the state has it (`invite_awaits_room_state`).
   Do not store the event in the handler, or make the invite visible before the state has it.
 - The leave that rejects an invite is stored as an outlier (ADR-0294), or `/sync` has no leave event to report.
@@ -345,6 +350,9 @@ only endpoints the spec requires and the origin may be asked for:
   supply, never at a prev_event that was already fetched; held PDUs are placed oldest first afterwards.
 - A snapshot fetches every missing named event before it stores any, so an auth chain the origin cannot supply leaves
   nothing stored.
+- `verify_and_store_backfilled_event` is called with `runtime.mutex` released. It takes the room stripe and then
+  `runtime.mutex` itself once its last signature check (which may fetch a key) is done, and holds them through the
+  authorization reads and the write. Never read the store in it before that point.
 - `verify_and_store_backfilled_event` stores an event with resolvable but disallowed, rejected or denied `auth_events`
   as `rejected` (after-state equal to its state-before), never drops it; only an unresolvable auth event is a gap.
   Dropping it left every event that named it unplaced.

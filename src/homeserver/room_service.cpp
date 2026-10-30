@@ -46,6 +46,7 @@
 #include "merovingian/homeserver/redaction_service.hpp"
 #include "merovingian/homeserver/request_lock.hpp"
 #include "merovingian/homeserver/restricted_join.hpp"
+#include "merovingian/homeserver/room_residency.hpp"
 #include "merovingian/homeserver/runtime.hpp"
 #include "merovingian/homeserver/runtime_signing_key_store.hpp"
 #include "merovingian/homeserver/state_bookkeeping.hpp"
@@ -5444,10 +5445,12 @@ namespace
         // while the send_join was being answered (server-server-api.md "Joining Rooms"): the event ID
         // is the same whatever the signatures, so the sink answers `already_stored`. That is the join
         // done only if that event is the one that made the user a member; a copy stored any other way
-        // (an outlier, soft-failed, rejected) did not, and the join has not happened.
-        auto const arrived_first = ingested.status == federation::PduIngestionStatus::already_stored &&
-                                   join_event_made_member(runtime, room_id, user_id, joined.event_id_result.event_id);
-        if (ingested.status != federation::PduIngestionStatus::accepted && !arrived_first)
+        // (an outlier, soft-failed, rejected) did not, and the join has not happened. An `accepted` join
+        // is checked the same way: accepted means it passed the auth rules, but state resolution across
+        // the room's forward extremities can still leave another member event for the user current.
+        auto const stored_or_accepted = ingested.status == federation::PduIngestionStatus::accepted ||
+                                        ingested.status == federation::PduIngestionStatus::already_stored;
+        if (!stored_or_accepted || !join_event_made_member(runtime, room_id, user_id, joined.event_id_result.event_id))
         {
             auto const refused = ingested.status == federation::PduIngestionStatus::rejected_auth ||
                                  ingested.status == federation::PduIngestionStatus::soft_failed ||
@@ -6421,8 +6424,10 @@ namespace
         auto const exchange = MembershipExchangeClaim{runtime, room_id, *user_id};
         // Read with runtime.mutex held: the exchange below runs with it released, and nothing in
         // the store may be read there (ADR-0294 decides from this whether the leave is kept as an
-        // outlier).
-        auto const room_state_held = stored_room_version(runtime.database.persistent_store, room_id).has_value();
+        // outlier). Held state counts only while it is current (ADR-0301): after the last local
+        // member left, no resident sends this server the leave, so it must be kept here.
+        auto const room_state_current =
+            room_state_is_current(runtime.database.persistent_store, room_id, runtime.config.server().server_name);
 
         // The whole remote-leave exchange runs with runtime.mutex released:
         // three federation round trips must not freeze every other request.
@@ -6571,7 +6576,7 @@ namespace
                     return make_operation_result(false, {}, "event_id computation failed", 500U);
                 }
 
-                if (rejecting_invite && !room_state_held)
+                if (rejecting_invite && !room_state_current)
                 {
                     auto const ids_of = [&event_object](std::string_view key) {
                         auto ids = std::vector<std::string>{};
@@ -6901,19 +6906,19 @@ namespace
 }
 
 auto queue_remote_invite(HomeserverRuntime& runtime, std::string_view room_id, std::string_view invitee_server,
-                         std::string_view event_id, std::string_view event_json) -> void
+                         std::string_view event_id, std::string_view event_json) -> bool
 {
     wire_federation_callbacks(runtime);
     if (runtime.dispatch_worker == nullptr)
     {
-        return;
+        return false;
     }
     auto const& store = runtime.database.persistent_store;
     auto transaction = federation::make_outbound_invite(invitee_server, runtime.config.server().server_name, room_id,
                                                         event_id, stored_room_version(store, room_id).value_or("10"),
                                                         event_json, stripped_state_pdus(store, room_id));
     transaction.transaction_id = federation::make_federation_transaction_id();
-    std::ignore = runtime.dispatch_worker->enqueue(std::move(transaction));
+    return runtime.dispatch_worker->enqueue(std::move(transaction));
 }
 
 [[nodiscard]] auto invite_user(HomeserverRuntime& runtime, std::string_view access_token, std::string_view room_id,
@@ -6985,14 +6990,26 @@ auto queue_remote_invite(HomeserverRuntime& runtime, std::string_view room_id, s
     {
         return make_operation_result(false, {}, "user is not joined", 403U);
     }
+    // An unreachable invitee's server gets the invite from the retry queue. Queued before the invite is
+    // stored: once stored, the invite cannot be taken back, and an invite that was neither delivered nor
+    // queued reaches nobody, so the client must not be told it was sent (ADR-0307).
+    if (delivery.outcome == RemoteInviteOutcome::unreachable &&
+        !queue_remote_invite(runtime, room_id, invitee_server, invite_event.event_id, invite_event.json))
+    {
+        log_diagnostic("room.invite.not_queued",
+                       {
+                           {"actor",          *user_id,                    false},
+                           {"room_id",        std::string{room_id},        false},
+                           {"invitee_server", std::string{invitee_server}, false}
+        },
+                       observability::LogEventSeverity::warning);
+        return make_operation_result(false, {}, "the invitee's server cannot be reached and no retry can be queued",
+                                     503U);
+    }
     auto const stored = store_composed_membership(runtime, room_id, *user_id, target_user_id, "invite", invite_event);
     if (!stored.ok)
     {
         return stored;
-    }
-    if (delivery.outcome == RemoteInviteOutcome::unreachable)
-    {
-        queue_remote_invite(runtime, room_id, invitee_server, invite_event.event_id, invite_event.json);
     }
     append_local_audit(runtime.database, observability::AuditCategory::admin, "room.invited", *user_id, target_user_id,
                        std::string{room_id});

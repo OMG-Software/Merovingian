@@ -15999,10 +15999,20 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                     });
                 }
             }
-            else if (delivery.outcome == merovingian::homeserver::RemoteInviteOutcome::unreachable)
+            else if (delivery.outcome == merovingian::homeserver::RemoteInviteOutcome::unreachable &&
+                     !merovingian::homeserver::queue_remote_invite(rt.homeserver, room_id, invitee_server,
+                                                                   invite_event_id, *invite_json))
             {
-                merovingian::homeserver::queue_remote_invite(rt.homeserver, room_id, invitee_server, invite_event_id,
-                                                             *invite_json);
+                // The room exists and the invite is stored; createRoom still answers. The invitee's server
+                // learns of it from nobody, so say so (ADR-0307).
+                log_diagnostic("room.create.invite_not_queued",
+                               {
+                                   {"actor",          *user,                       false},
+                                   {"room_id",        room_id,                     false},
+                                   {"invitee",        invitee,                     false},
+                                   {"invitee_server", std::string{invitee_server}, false}
+                },
+                               observability::LogEventSeverity::warning);
             }
             else if (delivery.outcome == merovingian::homeserver::RemoteInviteOutcome::refused)
             {

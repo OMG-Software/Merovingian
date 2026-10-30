@@ -645,6 +645,13 @@ quickly finding everything a given `AGENTS.md` file contributed.
   rejected-auth outlier left every later event that named it unplaced.
   Source: `src/homeserver/AGENTS.md`.
 
+- **A fetched event is authorised against the store only with the room stripe and `runtime.mutex`
+  held.** `verify_and_store_backfilled_event` runs unlocked for its signature checks (a key may be
+  fetched) and takes both locks before its first store read, holding them through the write.
+  Why: its authorization reads ran unlocked, so a concurrent insertion into the event table could
+  invalidate what they were reading and crash the server (CWE-362; PR #546 review).
+  Source: `src/homeserver/AGENTS.md`.
+
 - **Every outbound destination holds a bounded share of the dispatch queue, and every queued
   transaction has its own transaction ID. Never discard `DispatchWorker::enqueue`'s result.**
   Why: one dead or hostile peer filled the shared queue and starved every other peer; a shared

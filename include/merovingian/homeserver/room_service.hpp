@@ -117,9 +117,12 @@ struct RemoteInviteResult final
                                          std::string_view event_id, std::string_view cosigned_event_json) -> bool;
 
 // Queues the invite for the outbound dispatch worker, which retries it. For an invite whose server could
-// not be reached by `deliver_remote_invite`. Call with `runtime.mutex` held.
-auto queue_remote_invite(HomeserverRuntime& runtime, std::string_view room_id, std::string_view invitee_server,
-                         std::string_view event_id, std::string_view event_json) -> void;
+// not be reached by `deliver_remote_invite`. False when nothing was queued: no dispatch worker, or the worker
+// refused it (shutting down, queue full, the destination's share full); the invite then reaches nobody, so
+// the caller must not report it sent. Call with `runtime.mutex` held.
+[[nodiscard]] auto queue_remote_invite(HomeserverRuntime& runtime, std::string_view room_id,
+                                       std::string_view invitee_server, std::string_view event_id,
+                                       std::string_view event_json) -> bool;
 // Creates a local-only third-party identifier invite. Generates a random token
 // and an Ed25519 keypair, then composes and persists an
 // `m.room.third_party_invite` state event whose `state_key` is the token and

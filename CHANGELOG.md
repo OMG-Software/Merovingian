@@ -39,6 +39,17 @@ Fixes for the failures Complement run 12 found against main at 0.12.63.
   group mappings (ADR-0305). Without them every event created after the worker started had no state
   group there, so `timestamp_to_event` answered 404 and `/backfill` and `/get_missing_events` sent
   those events redacted.
+- Fetched history (`/get_missing_events`, `/event`, `/state_ids`, `/event_auth`, the remote
+  `timestamp_to_event` answer) is authorised against the store with the room stripe and `runtime.mutex`
+  held; the reads ran unlocked and could race a concurrent insertion into the event table.
+- An invite to a user of an unreachable server is queued for retry before it is stored. When the retry
+  queue refuses it, `POST /invite` answers 503 and stores nothing, instead of answering 200 for an invite
+  that reached nobody; createRoom logs `room.create.invite_not_queued` (ADR-0307).
+- Rejecting a remote invite keeps the leave as an outlier whenever this server's held state for the room is
+  not current (no local user joined, ADR-0301), not only when it holds no state at all, so `/sync` reports
+  the leave.
+- A join made through another resident (ADR-0287) succeeds only if the stored join is the user's current
+  member event, whether the sink accepted it now or already held it.
 - This server neither serves nor consults notary key servers; `/_matrix/key/v2/query` is an unknown
   endpoint (ADR-0297).
 

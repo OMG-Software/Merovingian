@@ -26,6 +26,7 @@ homeserver_sources = files(
   'redaction_service.cpp',
   'remote_timestamp_event.cpp',
   'room_power.cpp',
+  'room_residency.cpp',
   'stored_room_version.cpp',
   'remote_media_fetch_scope.cpp',
   'request_lock.cpp',

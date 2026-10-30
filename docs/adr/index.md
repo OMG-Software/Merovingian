@@ -287,6 +287,7 @@
 * [0304 - A user's own outlier membership event is visible to them](0304-a-users-own-outlier-membership-event-is-visible-to-them.md)
 * [0305 - A worker's room reload carries the room's state groups](0305-a-worker-room-reload-carries-the-rooms-state-groups.md)
 * [0306 - timestamp_to_event waits for a client-outbound slot within its deadline](0306-timestamp-to-event-waits-for-a-client-outbound-slot.md)
+* [0307 - An invite for an unreachable server is queued before it is stored](0307-an-invite-for-an-unreachable-server-is-queued-before-it-is-stored.md)
 
 ## Proposed Records
 
