@@ -285,6 +285,8 @@
 * [0302 - A remote server's signature is merged into this server's own event, only after it is verified](0302-a-remote-signature-is-merged-into-this-servers-own-event-after-it-is-verified.md)
 * [0303 - An appservice's `ts` reaches the event composer as a field the dispatcher sets, never as a query string](0303-an-appservice-ts-reaches-the-event-composer-as-a-dispatcher-set-field.md)
 * [0304 - A user's own outlier membership event is visible to them](0304-a-users-own-outlier-membership-event-is-visible-to-them.md)
+* [0305 - A worker's room reload carries the room's state groups](0305-a-worker-room-reload-carries-the-rooms-state-groups.md)
+* [0306 - timestamp_to_event waits for a client-outbound slot within its deadline](0306-timestamp-to-event-waits-for-a-client-outbound-slot.md)
 
 ## Proposed Records
 

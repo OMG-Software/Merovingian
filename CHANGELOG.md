@@ -35,6 +35,10 @@ Fixes for the failures Complement run 12 found against main at 0.12.63.
   never during the federation exchange.
 - `GET /_matrix/federation/v1/timestamp_to_event/{roomId}` is served by the federation worker and
   applies the requesting server's room access and history visibility like the other federation reads.
+- The federation worker's room reload carries the room's state groups, their entries and its events'
+  group mappings (ADR-0305). Without them every event created after the worker started had no state
+  group there, so `timestamp_to_event` answered 404 and `/backfill` and `/get_missing_events` sent
+  those events redacted.
 - This server neither serves nor consults notary key servers; `/_matrix/key/v2/query` is an unknown
   endpoint (ADR-0297).
 
@@ -75,6 +79,9 @@ Fixes for the failures Complement run 12 found against main at 0.12.63.
   three of the room's servers are asked under an ADR-0079 slot and a closer event is fetched and
   verified before it is returned (ADR-0299). The event table keeps a per-room index by
   `origin_server_ts`, so the lookup is a bounded binary search (ADR-0300).
+- A `timestamp_to_event` lookup that needs another server waits for its client-outbound slot, polling
+  with `runtime.mutex` released, until its 10 s deadline runs out, instead of answering 429 at once;
+  one client's parallel lookups are served in turn (ADR-0306).
 - State events carry `unsigned.prev_content` (the content of the state event they replaced) when the
   viewer may see it.
 - Application services can set an event's `origin_server_ts` with `?ts=` on `PUT /rooms/{roomId}/send/...`
