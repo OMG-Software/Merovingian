@@ -35,6 +35,12 @@ Fixes for the failures Complement run 12 found against main at 0.12.63.
   never during the federation exchange.
 - `GET /_matrix/federation/v1/timestamp_to_event/{roomId}` is served by the federation worker and
   applies the requesting server's room access and history visibility like the other federation reads.
+- A federation retry waits its backoff from the end of the failed attempt, not its start (ADR-0309). A
+  connection timeout outlasted the early backoffs, so a stopped peer used up the doubling in half a
+  minute and was retried long after it came back (Complement `TestToDeviceMessagesOverFederation`,
+  `stopped_server`). The shutdown drain no longer retries a transaction that fails during it, so a
+  server whose peer is down stops instead of running until it is killed, and the idle dispatch loop no
+  longer spins while every queued transaction waits out its backoff.
 - The federation worker's room reload carries the room's state groups, their entries and its events'
   group mappings (ADR-0305). Without them every event created after the worker started had no state
   group there, so `timestamp_to_event` answered 404 and `/backfill` and `/get_missing_events` sent

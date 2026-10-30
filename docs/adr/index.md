@@ -289,6 +289,7 @@
 * [0306 - timestamp_to_event waits for a client-outbound slot within its deadline](0306-timestamp-to-event-waits-for-a-client-outbound-slot.md)
 * [0307 - An invite for an unreachable server is queued before it is stored](0307-an-invite-for-an-unreachable-server-is-queued-before-it-is-stored.md)
 * [0308 - Shared history visibility orders the join and the event by depth](0308-shared-history-visibility-orders-the-join-and-the-event-by-depth.md)
+* [0309 - A federation retry waits from the end of the failed attempt](0309-a-federation-retry-waits-from-the-end-of-the-failed-attempt.md)
 
 ## Proposed Records
 

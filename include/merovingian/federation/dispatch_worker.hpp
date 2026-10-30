@@ -154,7 +154,12 @@ public:
 
 private:
     auto loop() -> void;
-    auto take_next(OutboundTransaction& out) -> bool;
+    // One attempt of a transaction due by `due_by` (ADR-0309): run_once passes now; the shutdown drain
+    // passes the moment it started, so a transaction that fails during the drain waits for replay.
+    [[nodiscard]] auto run_due(std::uint64_t due_by) -> bool;
+    auto take_next(OutboundTransaction& out, std::uint64_t due_by) -> bool;
+    // Whether a queued transaction is due by `due_by`. Call with mutex_ held.
+    [[nodiscard]] auto has_due_locked(std::uint64_t due_by) const -> bool;
     auto re_enqueue_with_backoff(OutboundTransaction transaction, std::uint64_t now_ts) -> void;
     auto find_or_create_destination(std::string_view server_name) -> FederationDestination&;
     // Promote replay-overflow rows into the active queue while capacity allows.

@@ -232,19 +232,24 @@ auto DispatchWorker::join() -> void
     }
 }
 
-auto DispatchWorker::take_next(OutboundTransaction& out) -> bool
+auto DispatchWorker::has_due_locked(std::uint64_t due_by) const -> bool
+{
+    return std::ranges::any_of(queue_, [due_by](OutboundTransaction const& candidate) {
+        return candidate.next_retry_ts <= due_by;
+    });
+}
+
+auto DispatchWorker::take_next(OutboundTransaction& out, std::uint64_t due_by) -> bool
 {
     auto lock = std::lock_guard{mutex_};
     if (queue_.empty())
     {
         return false;
     }
-    auto const now = now_ms_();
-    // Pull the next transaction whose retry delay has elapsed. Skipping
-    // future-scheduled retries preserves FIFO among ready work without
-    // burning CPU on items still in backoff.
-    auto const ready = std::ranges::find_if(queue_, [now](OutboundTransaction const& candidate) {
-        return candidate.next_retry_ts <= now;
+    // Pull the next transaction whose retry delay has elapsed by `due_by`. Skipping
+    // future-scheduled retries preserves FIFO among ready work.
+    auto const ready = std::ranges::find_if(queue_, [due_by](OutboundTransaction const& candidate) {
+        return candidate.next_retry_ts <= due_by;
     });
     if (ready == queue_.end())
     {
@@ -330,8 +335,13 @@ auto DispatchWorker::re_enqueue_with_backoff(OutboundTransaction transaction, st
 
 auto DispatchWorker::run_once() -> bool
 {
+    return run_due(now_ms_());
+}
+
+auto DispatchWorker::run_due(std::uint64_t due_by) -> bool
+{
     auto transaction = OutboundTransaction{};
-    if (!take_next(transaction))
+    if (!take_next(transaction, due_by))
     {
         return false;
     }
@@ -356,11 +366,13 @@ auto DispatchWorker::run_once() -> bool
         // Resolver failure: surface as a transport failure so the destination
         // accounting captures it, and let the backoff curve gate the next
         // attempt. The transaction goes back on the queue with retry+1.
+        // ADR-0309: the backoff runs from when the failure was known, not from when the attempt began.
+        auto const failed_at = now_ms_();
         auto& destination = find_or_create_destination(transaction.destination);
         auto result = OutboundTransactionResult{};
         result.sent = false;
         result.error = "discovery_failed";
-        apply_outbound_result(destination, result, now);
+        apply_outbound_result(destination, result, failed_at);
         {
             auto lock = std::lock_guard{mutex_};
             if (persistent_store_ != nullptr)
@@ -370,7 +382,7 @@ auto DispatchWorker::run_once() -> bool
             }
             ++summary_.failed;
         }
-        re_enqueue_with_backoff(std::move(transaction), now);
+        re_enqueue_with_backoff(std::move(transaction), failed_at);
         return true;
     }
 
@@ -391,7 +403,9 @@ auto DispatchWorker::run_once() -> bool
     }
 
     auto& destination = find_or_create_destination(transaction.destination);
-    auto const result = perform_outbound_transaction(client_, call, destination, now);
+    auto const result = perform_outbound_transaction(client_, call, destination, now, now_ms_);
+    // ADR-0309: every retry scheduled below runs from the end of this attempt.
+    auto const finished_at = now_ms_();
 
     if (result.sent && result.http_status >= 200U && result.http_status < 300U)
     {
@@ -426,7 +440,7 @@ auto DispatchWorker::run_once() -> bool
         }
         if (durable_drop_failed)
         {
-            re_enqueue_with_backoff(std::move(transaction), now);
+            re_enqueue_with_backoff(std::move(transaction), finished_at);
         }
         return true;
     }
@@ -447,8 +461,9 @@ auto DispatchWorker::run_once() -> bool
                            {"destination",    transaction.destination,                 false},
                            {"retry_count",    std::to_string(transaction.retry_count), false}
         });
-        transaction.next_retry_ts = destination.retry_after_ts > now ? destination.retry_after_ts
-                                                                     : now + compute_backoff(transaction.retry_count);
+        transaction.next_retry_ts = destination.retry_after_ts > finished_at
+                                        ? destination.retry_after_ts
+                                        : finished_at + compute_backoff(transaction.retry_count);
         {
             auto lock = std::lock_guard{mutex_};
             // Same hard-failure rule as re_enqueue_with_backoff: persisting the
@@ -467,7 +482,7 @@ auto DispatchWorker::run_once() -> bool
         cv_.notify_one();
         return true;
     }
-    re_enqueue_with_backoff(std::move(transaction), now);
+    re_enqueue_with_backoff(std::move(transaction), finished_at);
     return true;
 }
 
@@ -551,21 +566,22 @@ auto DispatchWorker::loop() -> void
     {
         if (!run_once())
         {
+            // Wait for a transaction that is due, an enqueue, or shutdown. A queue holding only
+            // transactions still in backoff is no reason to wake: waking on "not empty" spun this
+            // thread for the whole backoff (ADR-0309).
             auto lock = std::unique_lock{mutex_};
             cv_.wait_for(lock, config_.idle_poll, [this] {
-                return !queue_.empty() || shutdown_requested_.load(std::memory_order_acquire);
+                return shutdown_requested_.load(std::memory_order_acquire) || has_due_locked(now_ms_());
             });
         }
     }
-    // Drain phase: shutdown was requested. Continue processing transactions
-    // whose retry deadline is reached so in-flight work completes. Work
-    // still in backoff stays pending and durable replay handles it next start.
-    while (true)
+    // Drain phase: shutdown was requested. Process what was due when the drain began, so work
+    // already scheduled completes. A transaction that fails during the drain is due again only
+    // later, so it stays pending and durable replay handles it next start; retrying it here kept
+    // a process whose peer was down alive until it was killed (ADR-0309).
+    auto const due_by = now_ms_();
+    while (run_due(due_by))
     {
-        if (!run_once())
-        {
-            break;
-        }
     }
 }
 

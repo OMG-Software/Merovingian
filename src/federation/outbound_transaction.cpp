@@ -294,7 +294,8 @@ auto apply_outbound_result(FederationDestination& destination, OutboundTransacti
 }
 
 auto perform_outbound_transaction(http::OutboundClient& client, OutboundCall const& call,
-                                  FederationDestination& destination, std::uint64_t now_ts) -> OutboundTransactionResult
+                                  FederationDestination& destination, std::uint64_t now_ts,
+                                  std::function<std::uint64_t()> const& finished_clock) -> OutboundTransactionResult
 {
     if (!destination_should_retry(destination, now_ts))
     {
@@ -317,7 +318,7 @@ auto perform_outbound_transaction(http::OutboundClient& client, OutboundCall con
     result.response_body = outcome.response.body;
     result.error = outcome.ok ? std::string{} : std::string{http::outbound_error_name(outcome.error)};
 
-    apply_outbound_result(destination, result, now_ts);
+    apply_outbound_result(destination, result, finished_clock ? finished_clock() : now_ts);
 
     if (result.sent && status_is_success(result.http_status))
     {

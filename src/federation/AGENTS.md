@@ -174,6 +174,11 @@ Federation is the highest-risk surface: **all input comes from untrusted remote 
    under `mutex_`. Replay parks rows past a destination's share instead of promoting them. A new
    path that touches `queue_` uses these. Never discard `enqueue`'s result: log a refusal. Give
    every destination its own transaction ID: it is the durable `federation_transactions` key.
+   A failure's backoff runs from the end of the attempt (`finished_at`, `perform_outbound_transaction`'s
+   `finished_clock`), never from its start: a timeout is longer than the early backoffs (ADR-0309). The
+   shutdown drain takes only what was due when it began (`run_due`), so a transaction that fails during
+   it waits for replay and shutdown ends. The idle wait wakes for a due transaction (`has_due_locked`),
+   never for a queue that is merely not empty.
 
 13. **The private-range allowlist is for federation callers only (ADR-0231).**
    `security.federation.allow_private_ip_ranges` lets federation reach named RFC 1918 / ULA
