@@ -1,3 +1,7 @@
+## 0.12.64
+
+Fixes for the failures Complement run 12 found against main at 0.12.63.
+
 ## 0.12.63
 
 Fixes for the failures Complement run 10 found against the signed 0.12.62 release package.
