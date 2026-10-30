@@ -269,6 +269,50 @@ namespace
         return ordered;
     }
 
+    // The ID of the room's m.room.create event when the room's version implies it from the room ID
+    // (create_event_is_room_id, room version 12 and up) and this server holds it; nullopt for an
+    // earlier version, or a room whose create event is not held.
+    //
+    // From that version no event lists the create event in `auth_events` (rooms/v12.md: "The
+    // `room_id` ... implies this instead"), so walking `auth_events` never reaches it, yet a peer needs
+    // it to apply the auth rules. The owner chose to put it in every auth chain this server serves
+    // (ADR-0286). Serving only: state resolution's own auth-chain computation does not use this.
+    [[nodiscard]] auto implied_create_event_id(database::PersistentStore const& store, std::string_view room_id)
+        -> std::optional<std::string>
+    {
+        auto const* policy = homeserver::stored_room_version_policy(store, room_id);
+        if (policy == nullptr || !policy->create_event_is_room_id)
+        {
+            return std::nullopt;
+        }
+        for (auto const& state : store.state)
+        {
+            if (state.room_id != room_id || state.event_type != "m.room.create" || !state.state_key.empty())
+            {
+                continue;
+            }
+            auto const* event = find_event(store, state.event_id);
+            if (event == nullptr || event->room_id != room_id || event->json.empty())
+            {
+                return std::nullopt;
+            }
+            return event->event_id;
+        }
+        return std::nullopt;
+    }
+
+    // Adds the room's implied create event to `chain` unless it is already there (or is `exclude`,
+    // the event whose chain this is: an event is not in its own auth chain).
+    auto append_implied_create_event(database::PersistentStore const& store, std::string_view room_id,
+                                     std::vector<std::string>& chain, std::string_view exclude = {}) -> void
+    {
+        auto const create_id = implied_create_event_id(store, room_id);
+        if (create_id.has_value() && *create_id != exclude && std::ranges::find(chain, *create_id) == chain.end())
+        {
+            chain.push_back(*create_id);
+        }
+    }
+
     // The (type, state_key) identity of a stored event, derived from its JSON.
     // `is_state` is true only when the event carries a `state_key` member, which
     // is what distinguishes a state event from a message event per the spec.
@@ -893,7 +937,9 @@ auto build_state_response(database::PersistentStore const& store, std::string_vi
     // so a receiving server can authorize the returned state. Spec: SS API
     // GET /_matrix/federation/v1/state/{roomId}.
     auto auth_chain = canonicaljson::Array{};
-    for (auto const& auth_id : collect_auth_chain(store, auth_seed_ids))
+    auto auth_ids = collect_auth_chain(store, auth_seed_ids);
+    append_implied_create_event(store, room_id, auth_ids);
+    for (auto const& auth_id : auth_ids)
     {
         auto const* event = find_event(store, auth_id);
         if (event == nullptr || event->json.empty())
@@ -946,7 +992,9 @@ auto build_event_auth_response(database::PersistentStore const& store, std::stri
     // store. The spec promises "the complete auth chain", so a chain longer than
     // the bound is refused, never answered with part of it (ADR-0284). The walk
     // collects one past the bound, which is how a longer chain is told apart.
-    auto const auth_ids = collect_auth_chain(store, event->auth_event_ids, max_event_auth_chain_events);
+    auto auth_ids = collect_auth_chain(store, event->auth_event_ids, max_event_auth_chain_events);
+    // The implied create event is part of the chain, so it counts toward the bound (ADR-0286).
+    append_implied_create_event(store, room_id, auth_ids, event_id);
     if (auth_ids.size() > max_event_auth_chain_events)
     {
         log_diagnostic("event_auth_query.too_large",
@@ -1019,7 +1067,9 @@ auto build_state_ids_response(database::PersistentStore const& store, std::strin
         return not_found_result();
     }
     auto auth_chain_ids = canonicaljson::Array{};
-    for (auto const& auth_id : collect_auth_chain(store, auth_seed_ids))
+    auto auth_ids = collect_auth_chain(store, auth_seed_ids);
+    append_implied_create_event(store, room_id, auth_ids);
+    for (auto const& auth_id : auth_ids)
     {
         auth_chain_ids.push_back(canonicaljson::Value{auth_id});
     }

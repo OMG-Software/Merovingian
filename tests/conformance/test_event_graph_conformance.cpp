@@ -24,6 +24,7 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <algorithm>
+#include <cstddef>
 #include <cstdint>
 #include <optional>
 #include <string>
@@ -621,6 +622,306 @@ SCENARIO("get_missing_events walks prev_events from latest_events, excluding ear
             THEN("the spec default of 10 applies")
             {
                 REQUIRE(events_in(result) == 10U);
+            }
+        }
+    }
+}
+
+// --- The create event of a room whose ID implies it (ADR-0286) ------------------
+// Spec: Matrix Server-Server API v1.19, GET /_matrix/federation/v1/event_auth/{roomId}/{eventId}
+// URL:  ../../docs/matrix-v1.19-spec/server-server-api.md#get_matrixfederationv1event_authroomideventid
+// Spec: Room Version 12, "Auth rules" and "Auth chain"
+// URL:  ../../docs/matrix-v1.19-spec/rooms/v12.md
+//
+// v12.md: "The `m.room.create` event MUST NOT be selected for `auth_events` on events. The `room_id`
+// (being the `m.room.create` event's ID) implies this instead." The same document defines an event's
+// auth chain as what is reachable through its `auth_events` links, so read literally it leaves the
+// create event out. The owner chose the other reading: the create event is an implied auth event of
+// every event of such a room, and a peer needs it to apply the auth rules, so the auth chains this
+// server SERVES hold it, once. Earlier room versions list the create event in `auth_events` and are
+// unchanged. State resolution's own auth-chain computation is not part of this.
+namespace
+{
+
+// A room of `version` holding a create, a creator's join, a power_levels and a message. From v12
+// the create event is in no `auth_events`; before it, every event names it.
+struct VersionedRoom final
+{
+    std::string room{};
+    std::string create_id{};
+};
+
+[[nodiscard]] auto make_versioned_room(merovingian::database::PersistentStore& store, std::string const& version)
+    -> VersionedRoom
+{
+    auto const implied = version == "12";
+    auto const room = implied ? std::string{"!v12hash"} : std::string{"!v11room:example.org"};
+    auto const create_id = implied ? std::string{"$v12hash"} : std::string{"$create"};
+    auto const create_auth = std::vector<std::string>{};
+    auto create = make_state_event(create_id, room, "m.room.create", "", 1U, create_auth, {});
+    create.json = "{\"type\":\"m.room.create\",\"state_key\":\"\",\"sender\":\"@creator:example.org\","
+                  "\"content\":{\"room_version\":\"" +
+                  version + "\"}}";
+    store.events.push_back(std::move(create));
+    auto const with_create = [&](std::vector<std::string> ids) {
+        if (!implied)
+        {
+            ids.insert(ids.begin(), create_id);
+        }
+        return ids;
+    };
+    store.events.push_back(
+        make_state_event("$member", room, "m.room.member", "@creator:example.org", 2U, with_create({}), {create_id}));
+    store.events.push_back(
+        make_state_event("$pl", room, "m.room.power_levels", "", 3U, with_create({"$member"}), {"$member"}));
+    store.events.push_back(make_event("$message", room, "m.room.message", with_create({"$pl", "$member"}), {"$pl"}));
+    store.state.push_back({room, "m.room.create", "", create_id});
+    store.state.push_back({room, "m.room.member", "@creator:example.org", "$member"});
+    store.state.push_back({room, "m.room.power_levels", "", "$pl"});
+    return {room, create_id};
+}
+
+// The `type` of every PDU in the answer's `array_key` array, in order.
+[[nodiscard]] auto pdu_types_in(std::string_view body, std::string_view array_key) -> std::vector<std::string>
+{
+    auto const parsed = merovingian::canonicaljson::parse_lossless(body);
+    REQUIRE(parsed.error == merovingian::canonicaljson::ParseError::none);
+    auto const* object = std::get_if<merovingian::canonicaljson::Object>(&parsed.value.storage());
+    REQUIRE(object != nullptr);
+    auto types = std::vector<std::string>{};
+    for (auto const& member : *object)
+    {
+        if (member.key != array_key)
+        {
+            continue;
+        }
+        auto const* array = std::get_if<merovingian::canonicaljson::Array>(&member.value->storage());
+        REQUIRE(array != nullptr);
+        for (auto const& pdu : *array)
+        {
+            auto const* event = std::get_if<merovingian::canonicaljson::Object>(&pdu.storage());
+            REQUIRE(event != nullptr);
+            for (auto const& field : *event)
+            {
+                if (field.key == "type")
+                {
+                    types.push_back(std::get<std::string>(field.value->storage()));
+                }
+            }
+        }
+    }
+    return types;
+}
+
+[[nodiscard]] auto count_of(std::vector<std::string> const& values, std::string_view wanted) -> std::ptrdiff_t
+{
+    return std::ranges::count(values, wanted);
+}
+
+} // namespace
+
+SCENARIO("event_auth includes the create event of a room whose ID implies it, once",
+         "[federation][conformance][event-graph][event_auth][create-implied]")
+{
+    GIVEN("a room version 12 room, whose events do not list the create event in auth_events")
+    {
+        auto store = merovingian::database::PersistentStore{};
+        auto const fixture = make_versioned_room(store, "12");
+
+        WHEN("the auth chain of the message is requested")
+        {
+            auto const body = ok_body(
+                merovingian::federation::build_event_auth_response(store, fixture.room, "$message", requesting_server));
+            auto const types = pdu_types_in(body, "auth_chain");
+
+            THEN("the create event is in the chain exactly once, with the power_levels and member events")
+            {
+                // The owner's reading of v12.md "The `room_id` ... implies this instead": served chains
+                // hold the implied create event so a peer can apply the auth rules.
+                REQUIRE(count_of(types, "m.room.create") == 1);
+                REQUIRE(count_of(types, "m.room.power_levels") == 1);
+                REQUIRE(count_of(types, "m.room.member") == 1);
+                REQUIRE(types.size() == 3U);
+            }
+        }
+
+        WHEN("the auth chain of the create event itself is requested")
+        {
+            auto const body = ok_body(merovingian::federation::build_event_auth_response(
+                store, fixture.room, fixture.create_id, requesting_server));
+
+            THEN("it is empty: an event is not in its own auth chain")
+            {
+                REQUIRE(pdu_types_in(body, "auth_chain").empty());
+            }
+        }
+
+        WHEN("an event that (wrongly) lists the create event is asked for")
+        {
+            store.events.push_back(
+                make_event("$odd", fixture.room, "m.room.message", {fixture.create_id, "$pl"}, {"$pl"}));
+            auto const body = ok_body(
+                merovingian::federation::build_event_auth_response(store, fixture.room, "$odd", requesting_server));
+
+            THEN("the create event is still in the chain only once")
+            {
+                REQUIRE(count_of(pdu_types_in(body, "auth_chain"), "m.room.create") == 1);
+            }
+        }
+    }
+
+    GIVEN("a room version 12 room this server holds no create event for")
+    {
+        auto store = merovingian::database::PersistentStore{};
+        auto const fixture = make_versioned_room(store, "12");
+        store.state.erase(std::remove_if(store.state.begin(), store.state.end(),
+                                         [](merovingian::database::PersistentStateEvent const& row) {
+                                             return row.event_type == "m.room.create";
+                                         }),
+                          store.state.end());
+
+        WHEN("the auth chain of the message is requested")
+        {
+            auto const body = ok_body(
+                merovingian::federation::build_event_auth_response(store, fixture.room, "$message", requesting_server));
+
+            THEN("nothing is invented: the chain is what is held")
+            {
+                REQUIRE(count_of(pdu_types_in(body, "auth_chain"), "m.room.create") == 0);
+            }
+        }
+    }
+
+    GIVEN("a room version 11 room, whose events list the create event in auth_events")
+    {
+        auto store = merovingian::database::PersistentStore{};
+        auto const fixture = make_versioned_room(store, "11");
+
+        WHEN("the auth chain of the message is requested")
+        {
+            auto const body = ok_body(
+                merovingian::federation::build_event_auth_response(store, fixture.room, "$message", requesting_server));
+            auto const types = pdu_types_in(body, "auth_chain");
+
+            THEN("the answer is unchanged: the create event once, reached through auth_events")
+            {
+                REQUIRE(count_of(types, "m.room.create") == 1);
+                REQUIRE(types.size() == 3U);
+            }
+        }
+    }
+}
+
+// Spec: Matrix Server-Server API v1.19, GET /_matrix/federation/v1/event_auth/{roomId}/{eventId}
+// URL:  ../../docs/matrix-v1.19-spec/server-server-api.md#get_matrixfederationv1event_authroomideventid
+//
+// "Retrieves the complete auth chain": a chain this server will not send whole is refused, never cut
+// (ADR-0284). The implied create event is part of the chain, so it counts toward that bound.
+SCENARIO("the implied create event counts toward the event_auth bound",
+         "[federation][conformance][event-graph][event_auth][create-implied]")
+{
+    auto const build_long_chain = [](merovingian::database::PersistentStore& store, std::string const& version) {
+        auto const fixture = make_versioned_room(store, version);
+        // The chain of "$tip" is exactly the bound, without the implied create event: the links, each
+        // naming the one before, then "$member" (and, before v12, the create event "$member" names).
+        auto previous = std::string{"$member"};
+        auto const links = merovingian::federation::max_event_auth_chain_events - (version == "12" ? 1U : 2U);
+        for (auto i = std::size_t{0U}; i < links; ++i)
+        {
+            auto id = "$link" + std::to_string(i);
+            store.events.push_back(make_event(id, fixture.room, "m.room.message", {previous}, {"$pl"}));
+            previous = std::move(id);
+        }
+        store.events.push_back(make_event("$tip", fixture.room, "m.room.message", {previous}, {"$pl"}));
+        return fixture;
+    };
+
+    GIVEN("a room version 12 room where an event's chain, without the create event, is exactly the bound")
+    {
+        auto store = merovingian::database::PersistentStore{};
+        auto const fixture = build_long_chain(store, "12");
+
+        WHEN("its auth chain is requested")
+        {
+            auto const result =
+                merovingian::federation::build_event_auth_response(store, fixture.room, "$tip", requesting_server);
+
+            THEN("it is refused as too large, because the create event would make it one more")
+            {
+                REQUIRE(result.status == merovingian::federation::RoomReadStatus::too_large);
+            }
+        }
+    }
+
+    GIVEN("a room version 11 room with a chain of exactly the bound")
+    {
+        auto store = merovingian::database::PersistentStore{};
+        auto const fixture = build_long_chain(store, "11");
+
+        WHEN("its auth chain is requested")
+        {
+            auto const result =
+                merovingian::federation::build_event_auth_response(store, fixture.room, "$tip", requesting_server);
+
+            THEN("it is answered whole")
+            {
+                REQUIRE(result.status == merovingian::federation::RoomReadStatus::ok);
+            }
+        }
+    }
+}
+
+// Spec: Matrix Server-Server API v1.19, GET /_matrix/federation/v1/state/{roomId}
+// URL:  ../../docs/matrix-v1.19-spec/server-server-api.md#get_matrixfederationv1stateroomid
+//
+// `auth_chain`: "The full set of authorisation events that make up the state of the room, and their
+// authorisation events, recursively." In a room whose ID implies its create event, that event is one
+// of them (ADR-0286). /state_ids lists the same set by ID.
+SCENARIO("state and state_ids auth chains include the implied create event, once",
+         "[federation][conformance][event-graph][state][create-implied]")
+{
+    GIVEN("a room version 12 room")
+    {
+        auto store = merovingian::database::PersistentStore{};
+        auto const fixture = make_versioned_room(store, "12");
+
+        WHEN("the state at the message is requested")
+        {
+            auto const body = ok_body(
+                merovingian::federation::build_state_response(store, fixture.room, "$message", requesting_server));
+
+            THEN("auth_chain holds the create event exactly once")
+            {
+                REQUIRE(count_of(pdu_types_in(body, "auth_chain"), "m.room.create") == 1);
+            }
+        }
+
+        WHEN("the state IDs at the message are requested")
+        {
+            auto const body = ok_body(
+                merovingian::federation::build_state_ids_response(store, fixture.room, "$message", requesting_server));
+            auto const ids = string_array_member(body, "auth_chain_ids");
+
+            THEN("auth_chain_ids names the create event exactly once")
+            {
+                REQUIRE(std::ranges::count(ids, fixture.create_id) == 1);
+            }
+        }
+    }
+
+    GIVEN("a room version 11 room")
+    {
+        auto store = merovingian::database::PersistentStore{};
+        auto const fixture = make_versioned_room(store, "11");
+
+        WHEN("the state at the message is requested")
+        {
+            auto const body = ok_body(
+                merovingian::federation::build_state_response(store, fixture.room, "$message", requesting_server));
+
+            THEN("the create event is in auth_chain once, as before")
+            {
+                REQUIRE(count_of(pdu_types_in(body, "auth_chain"), "m.room.create") == 1);
             }
         }
     }

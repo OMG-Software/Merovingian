@@ -225,6 +225,15 @@ Federation is the highest-risk surface: **all input comes from untrusted remote 
    `internal_error` is logged at WARNING level as well as audited: never turn a duplicate back into
    one, or the sender is told a stored event failed.
 
+17. **Served auth chains hold the create event a room version implies (ADR-0286).** From room version 12 no event
+   lists `m.room.create` in `auth_events` (rooms/v12.md: the `room_id` implies it), so the walk over
+   `auth_events` never reaches it. `build_event_auth_response`, `build_state_response` (`auth_chain`) and
+   `build_state_ids_response` (`auth_chain_ids`) add it through `append_implied_create_event`: once, never to the
+   create event's own chain, only when this server holds it, and only for a version with
+   `create_event_is_room_id`. It counts toward `max_event_auth_chain_events`. The resident's `send_join`
+   `auth_chain` already holds it (its walk starts at the pre-join state). State resolution's own auth-chain
+   computation and what this server accepts are not changed.
+
 ## Key files
 
 | File | Responsibility |
