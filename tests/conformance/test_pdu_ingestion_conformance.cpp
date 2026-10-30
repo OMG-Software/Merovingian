@@ -165,8 +165,8 @@ struct Genesis final
     std::string admin_member_id{};
 };
 
-[[nodiscard]] auto seed_room_genesis(HomeserverRuntime& runtime, std::string const& room_id, std::string const& admin)
-    -> Genesis
+[[nodiscard]] auto seed_room_genesis(HomeserverRuntime& runtime, std::string const& room_id, std::string const& admin,
+                                     std::string const& create_id_override = {}) -> Genesis
 {
     using namespace merovingian;
 
@@ -174,7 +174,7 @@ struct Genesis final
     store.rooms.push_back({room_id, admin});
     runtime.database.rooms.push_back({room_id, admin, {}, {}, false});
 
-    auto const create_id = room_id + ":create";
+    auto const create_id = create_id_override.empty() ? room_id + ":create" : create_id_override;
     auto create_content = canonicaljson::Object{};
     create_content.push_back(canonicaljson::make_member("room_version", canonicaljson::Value{std::string{"12"}}));
     auto const create_json =
@@ -573,6 +573,69 @@ SCENARIO("A re-sent PDU that was rejected stays rejected and is not an error",
                 REQUIRE(merovingian::database::find_event_status(runtime.database.persistent_store, event_id) ==
                         std::optional<std::string>{"rejected"});
                 REQUIRE(runtime.database.next_stream_ordering == ordering_before);
+            }
+        }
+
+        std::filesystem::remove(path);
+    }
+}
+
+// Spec: Matrix Server-Server API v1.19, PUT /_matrix/federation/v2/send_join/{roomId}/{eventId}
+// URL: ../../docs/matrix-v1.19-spec/server-server-api.md#put_matrixfederationv2send_joinroomideventid
+// Spec: Room Version 12, "Auth rules"
+// URL: ../../docs/matrix-v1.19-spec/rooms/v12.md
+//
+// `auth_chain`: "All events in the auth chain for the new join event, as well as those in the auth chains
+// for any events returned in `state`." In a room whose ID implies its create event (v12.md: "The `room_id`
+// ... implies this instead") that event is part of the chain the resident serves, once (ADR-0286).
+SCENARIO("send_join in a room version 12 room answers an auth_chain holding the create event once",
+         "[conformance][federation][send_join][create-implied]")
+{
+    GIVEN("a room version 12 room, whose create event ID is its room ID, with public join rules")
+    {
+        auto const path = unique_sqlite_path();
+        std::filesystem::remove(path);
+        auto started = merovingian::homeserver::start_runtime(config_with_sqlite(path));
+        REQUIRE(started.started);
+        merovingian::homeserver::wire_federation_callbacks(started.runtime);
+        REQUIRE(started.runtime.federation.membership_acceptor != nullptr);
+
+        auto const room_id = std::string{"!implied12hash"};
+        auto const genesis =
+            seed_room_genesis(started.runtime, room_id, "@admin:local.example.org", "$implied12hash");
+
+        auto join_rules_content = merovingian::canonicaljson::Object{};
+        join_rules_content.push_back(merovingian::canonicaljson::make_member(
+            "join_rule", merovingian::canonicaljson::Value{std::string{"public"}}));
+        auto const join_rules_id = std::string{"$implied12:join-rules"};
+        auto const join_rules_json = build_event_json(
+            room_id, "m.room.join_rules", std::string{}, "@admin:local.example.org", std::move(join_rules_content),
+            {genesis.admin_member_id}, {genesis.pl_id, genesis.admin_member_id}, 3, 4);
+        seed_accepted_event(started.runtime, room_id, join_rules_id, "m.room.join_rules", std::string{},
+                            "@admin:local.example.org", join_rules_json, {genesis.admin_member_id}, 3U);
+
+        auto content = merovingian::canonicaljson::Object{};
+        content.push_back(merovingian::canonicaljson::make_member(
+            "membership", merovingian::canonicaljson::Value{std::string{"join"}}));
+        auto const join_json = build_event_json(room_id, "m.room.member", std::string{"@bob:remote.example.org"},
+                                                "@bob:remote.example.org", std::move(content), {join_rules_id},
+                                                {genesis.pl_id, join_rules_id}, 4, 5);
+        auto const envelope = make_envelope(room_id, "$implied12join:remote.example.org", "m.room.member",
+                                            std::string{"@bob:remote.example.org"}, "@bob:remote.example.org",
+                                            {join_rules_id}, {genesis.pl_id, join_rules_id}, 4, join_json);
+
+        WHEN("a remote user's send_join is accepted")
+        {
+            auto const result = started.runtime.federation.membership_acceptor(
+                merovingian::federation::FederationEndpoint::send_join, room_id, envelope.event_id, envelope);
+
+            THEN("the auth_chain holds the create event exactly once")
+            {
+                REQUIRE(result.accepted);
+                auto const creates = std::ranges::count_if(result.auth_chain_json, [](std::string const& pdu) {
+                    return pdu.find("\"type\":\"m.room.create\"") != std::string::npos;
+                });
+                REQUIRE(creates == 1);
             }
         }
 
