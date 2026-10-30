@@ -909,9 +909,10 @@ quickly finding everything a given `AGENTS.md` file contributed.
   take the slot too, whenever they will call an appservice, but keep each appservice's own timeout
   rather than one shared deadline (ADR-0181). The space hierarchy takes the slot at the first
   child room it must ask another server for, holds it for the whole walk, and bounds the walk to
-  16 remote requests and 3 servers per room. `timestamp_to_event` (authenticated) is the only one
-  that waits for a refused slot, within its own deadline and with the runtime mutex released
-  (ADR-0306); the unauthenticated proxies keep the immediate refusal.
+  16 remote requests and 3 servers per room. `timestamp_to_event` (authenticated) waits for a
+  refused slot, within its own deadline and with the runtime mutex released (ADR-0306), and so
+  does a remote invite offer, which queues the invite when no slot comes (ADR-0307); the
+  unauthenticated proxies keep the immediate refusal.
   Source: `src/homeserver/AGENTS.md`.
 
 - **Nothing may put a TLS client socket back into blocking mode after the handshake, and

@@ -34,6 +34,7 @@
 #include "merovingian/homeserver/appservice_delivery.hpp"
 #include "merovingian/homeserver/appservice_ephemeral.hpp"
 #include "merovingian/homeserver/auth_service.hpp"
+#include "merovingian/homeserver/client_outbound_proxy.hpp"
 #include "merovingian/homeserver/email_push.hpp"
 #include "merovingian/homeserver/federation_proxy.hpp"
 #include "merovingian/homeserver/local_http_router.hpp"
@@ -6922,7 +6923,8 @@ auto queue_remote_invite(HomeserverRuntime& runtime, std::string_view room_id, s
 }
 
 [[nodiscard]] auto invite_user(HomeserverRuntime& runtime, std::string_view access_token, std::string_view room_id,
-                               std::string_view target_user_id, std::string_view reason) -> OperationResult
+                               std::string_view target_user_id, std::string_view reason, std::string_view client_key)
+    -> OperationResult
 {
     auto guard = std::unique_lock<RuntimeMutex>{runtime.mutex};
     auto const user_id = authenticated_user(runtime, access_token);
@@ -6966,8 +6968,18 @@ auto queue_remote_invite(HomeserverRuntime& runtime, std::string_view room_id, s
         return composed.failure;
     }
     auto& invite_event = *composed.event;
-    auto const delivery = deliver_remote_invite(runtime, guard, room_id, invitee_server, invite_event.event_id,
-                                                invite_event.json, runtime.federation.config.remote_timeout_seconds);
+    // ADR-0079: the offer holds a client-outbound slot, waited for within its deadline (ADR-0306). The wait
+    // releases runtime.mutex, as the exchange does; the room is found again below. With no slot the invite
+    // takes the unreachable path: queued, and stored only if the queue takes it (ADR-0307).
+    auto const offer_deadline =
+        OutboundDeadline{effective_client_outbound_deadline(runtime, remote_invite_offer_seconds)};
+    auto const offer_slot =
+        admit_client_outbound_proxy_waiting(runtime, std::string{client_key}, guard, offer_deadline);
+    auto const delivery =
+        offer_slot.has_value()
+            ? deliver_remote_invite(runtime, guard, room_id, invitee_server, invite_event.event_id, invite_event.json,
+                                    offer_deadline.remaining_seconds())
+            : RemoteInviteResult{RemoteInviteOutcome::unreachable, 503U, "no client-outbound slot for the offer"};
     if (delivery.outcome == RemoteInviteOutcome::refused)
     {
         return make_operation_result(false, {}, delivery.reason, delivery.status);

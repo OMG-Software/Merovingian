@@ -1085,6 +1085,7 @@ The paths under the budget:
 | `GET /_matrix/client/v3/profile/{userId}[/{keyName}]` for a user of another server | federation `GET /query/profile`, 10 s directory deadline |
 | `GET /_matrix/client/v1/rooms/{roomId}/hierarchy`, once a child room is not held locally | federation `GET /hierarchy/{roomId}` to the link's `via` servers: one slot and one 10 s deadline for the whole walk, at most 3 servers per room and 16 requests per walk; the slot is taken at the first such request and `429 M_LIMIT_EXCEEDED` answers the whole walk when it is refused |
 | `GET /_matrix/client/v1/rooms/{roomId}/timestamp_to_event`, when the local answer is missing or sits at a gap (ADR-0299) | federation `GET /timestamp_to_event` and `GET /event` to at most 3 servers with joined members: one slot and one 10 s deadline; the request waits for the slot within that deadline (ADR-0306) |
+| `POST /_matrix/client/v3/rooms/{roomId}/invite` and createRoom's `invite` list, for a user of another server | federation `PUT /v2/invite`: one slot per request, one deadline (30 s, or `remote_timeout`) for all offers (ADR-0307) |
 | `GET /_matrix/client/v3/thirdparty/*`, when an appservice will be called | appservice `GET /_matrix/app/v1/thirdparty/*` (ADR-0181) |
 | `GET /_matrix/media/v3/download` and `/thumbnail` for remote media, without a media fetch pool | discovery, federation media, legacy fallback, redirect follow |
 | `GET /_matrix/client/v1/media/download` and `/thumbnail` for remote media, without a media fetch pool | as above |
@@ -1105,10 +1106,12 @@ Rules:
   count too. Local `publicRooms`, local aliases and local media never take a slot.
 - **Refusal.** Over either cap the answer is `429 M_LIMIT_EXCEEDED` with
   `retry_after_ms` 1000 and a `Retry-After: 1` header, immediately, before any
-  discovery or outbound call. Nothing queues, with one exception: `timestamp_to_event`
-  requires authentication and waits for a slot, polling every 25 ms with the
-  runtime lock released, until its deadline runs out (ADR-0306); then it answers
-  `429`, or its local answer when it has one.
+  discovery or outbound call. Nothing queues, with two exceptions, both
+  authenticated: `timestamp_to_event` waits for a slot, polling every 25 ms with
+  the runtime lock released, until its deadline runs out (ADR-0306), then answers
+  `429` or its local answer; a remote invite offer (`POST /invite`, createRoom's
+  invites) waits the same way and, with no slot, leaves the invite to the retry
+  queue (ADR-0307).
 - **Deadline.** 10 s for directory lookups, 30 s for remote media, in total:
   server discovery and the request(s) that follow draw from one
   `OutboundDeadline`. Never longer than the operator's

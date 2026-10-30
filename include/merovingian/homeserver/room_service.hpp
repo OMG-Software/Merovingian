@@ -71,9 +71,12 @@ struct ValidatedMakeLeaveResponse final
 // (Server-Server API, "Inviting to a room": "a request to that homeserver to have the event signed and
 // verified must be made") and only stored, and sent to the room's other servers, once that server has
 // accepted it. A server that cannot be reached is asked again later by the outbound queue; one that
-// refuses the invite fails the request.
+// refuses the invite fails the request. The offer is a client-triggered outbound call: it holds an ADR-0079
+// slot of `client_key` (`rate_limit_client_key`; empty is one shared bucket), waiting for one within the
+// offer's deadline, and with none the invite goes to the queue as for an unreachable server (ADR-0307).
 [[nodiscard]] auto invite_user(HomeserverRuntime& runtime, std::string_view access_token, std::string_view room_id,
-                               std::string_view target_user_id, std::string_view reason = {}) -> OperationResult;
+                               std::string_view target_user_id, std::string_view reason = {},
+                               std::string_view client_key = {}) -> OperationResult;
 
 // How the server of an invited user answered `PUT /_matrix/federation/v2/invite`.
 enum class RemoteInviteOutcome : std::uint8_t

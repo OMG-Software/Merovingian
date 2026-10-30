@@ -144,7 +144,8 @@ absent or the event found has a `prev_event` this server does not hold (`event_i
 joined members, one at a time, under one slot and one `OutboundDeadline`. It is the one such request that WAITS for a slot
 (`admit_client_proxy_waiting`, polling every 25 ms with `runtime.mutex` released) until that deadline, so one client's parallel
 lookups are served in turn (ADR-0306); with a local answer in hand a slot that never comes costs only the remote improvement.
-Do not copy the wait to the unauthenticated proxies above: they keep the immediate 429. A remote answer is used only if it is on the requested side of `ts` and closer; the event is fetched with
+Remote invite offers wait the same way (ADR-0307). Do not copy the wait to the unauthenticated proxies above: they keep
+the immediate 429. A remote answer is used only if it is on the requested side of `ts` and closer; the event is fetched with
 `fetch_remote_event_into_store` (verified, stored as an outlier) and judged again, after the lock is back, by `HistoryVisibility` and by its
 own stored `origin_server_ts`, never the number the remote server sent.
 
@@ -216,7 +217,9 @@ on that record, each by the inviter's server, which the spec calls a resident se
   first: the invitee's client acts on what a third server shows it. For an unreachable server `invite_user` queues
   before it stores, and answers 503 with nothing stored when the queue refuses (ADR-0307); never report an invite
   sent that was neither delivered nor queued. createRoom offers all of its remote invites under one
-  `OutboundDeadline` and queues those left when it runs out; never give each offer its own full timeout.
+  `OutboundDeadline` and queues those left when it runs out; never give each offer its own full timeout. Every
+  offer holds an ADR-0079 slot (`admit_client_outbound_proxy_waiting`: one per `POST /invite`, one for all of a
+  createRoom's), waited for within that deadline; with none the invite is queued.
 - The invitee's answer is not trusted (ADR-0302): `check_invite_answer` requires the event sent (same
   reference-hash ID) validly signed by the invitee's server, and returns this server's own event with only those
   verified signatures merged in (`with_server_signatures`). That co-signed event is what `invite_user` stores and

@@ -2,11 +2,13 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
+#include "merovingian/homeserver/runtime_mutex.hpp"
 #include "merovingian/http/in_flight_budget.hpp"
 
 #include <algorithm>
 #include <chrono>
 #include <cstdint>
+#include <mutex>
 #include <optional>
 #include <string>
 
@@ -118,6 +120,20 @@ private:
 // every exit path. Take it before releasing the runtime lock.
 [[nodiscard]] auto admit_client_outbound_proxy(HomeserverRuntime& runtime, std::string client_key)
     -> std::optional<http::InFlightBudget::Slot>;
+
+// ADR-0306: admit_client_outbound_proxy, but waiting for a slot until `deadline` instead of giving up at
+// once. runtime.mutex is released (through `guard`) while it sleeps, so a waiting request never blocks
+// another; whatever was read from the runtime before the call must be found again after it. Only for an
+// authenticated request: the thread it holds while waiting is bounded by the client's connection share
+// (ADR-0077) and by the deadline.
+[[nodiscard]] auto admit_client_outbound_proxy_waiting(HomeserverRuntime& runtime, std::string const& client_key,
+                                                       std::unique_lock<RuntimeMutex>& guard,
+                                                       OutboundDeadline const& deadline)
+    -> std::optional<http::InFlightBudget::Slot>;
+
+// The budget for offering remote invites (ADR-0307): one `POST /invite`, or all of a createRoom's. The
+// outbound default total timeout; effective_client_outbound_deadline lowers it to `remote_timeout`.
+inline constexpr auto remote_invite_offer_seconds = std::uint32_t{30U};
 
 // `requested_seconds` bounded by the operator's federation remote_timeout when
 // that is configured, so this policy only ever shortens a call.

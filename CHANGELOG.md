@@ -47,6 +47,8 @@ Fixes for the failures Complement run 12 found against main at 0.12.63.
   that reached nobody; createRoom logs `room.create.invite_not_queued` (ADR-0307).
 - createRoom offers all of its remote invites under one deadline (30 s, or `remote_timeout`) instead of a
   full timeout per invitee; invites left when it runs out are queued.
+- A remote invite offer (`POST /invite`, createRoom's invites) holds an ADR-0079 client-outbound slot, waiting
+  for one within its deadline; with none the invite is queued for retry (ADR-0307).
 - Rejecting a remote invite keeps the leave as an outlier whenever this server's held state for the room is
   not current (no local user joined, ADR-0301), not only when it holds no state at all, so `/sync` reports
   the leave.

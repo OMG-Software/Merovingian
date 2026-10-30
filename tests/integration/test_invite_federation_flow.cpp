@@ -1397,6 +1397,27 @@ SCENARIO("An invite to a user of another server is offered to that server before
             }
         }
 
+        WHEN("alice invites bob while no client-outbound slot is free")
+        {
+            // ADR-0079: an invite offer is a client-triggered outbound call and holds a slot. It waits
+            // for one within its deadline (ADR-0306); none comes, so the invite goes to the queue.
+            runtime.homeserver.client_outbound_proxy_policy.global_cap = 0U;
+            runtime.homeserver.federation.config.remote_timeout_seconds = 1U;
+            auto peer = InvitingServer{runtime};
+            auto const invited = call(runtime, "POST", invite_target, alice, invite_body);
+            auto const connection = merovingian::tests::tls_mock::accept_loopback(peer.acceptor, 200);
+            auto const close_connection = merovingian::core::SocketHandle{connection};
+
+            THEN("bob's server is not called, and the invite is stored and queued")
+            {
+                CAPTURE(invited.response.body);
+                REQUIRE(connection < 0);
+                REQUIRE(invited.response.status == 200U);
+                REQUIRE(membership_row(runtime, room_id, bob) == "invite");
+                REQUIRE(queued_bodies(runtime, inviting_server, "/v2/invite/").size() == 1U);
+            }
+        }
+
         WHEN("alice invites bob, bob's server cannot be reached, and nothing more can be queued for it")
         {
             // A worker that is shutting down refuses every transaction, as a full queue or a full
@@ -1476,6 +1497,23 @@ SCENARIO("A createRoom invite to a user of another server reaches that server be
                 CAPTURE(std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count());
                 REQUIRE(elapsed < std::chrono::milliseconds{3500});
                 REQUIRE(queued_bodies(runtime, inviting_server, "/v2/invite/").size() == 2U);
+            }
+        }
+
+        WHEN("alice creates a room with bob in its invite list while no client-outbound slot is free")
+        {
+            runtime.homeserver.client_outbound_proxy_policy.global_cap = 0U;
+            runtime.homeserver.federation.config.remote_timeout_seconds = 1U;
+            auto peer = InvitingServer{runtime};
+            std::ignore =
+                create_room(runtime, alice, std::string{R"({"preset":"private_chat","invite":[")"} + bob + R"("]})");
+            auto const connection = merovingian::tests::tls_mock::accept_loopback(peer.acceptor, 200);
+            auto const close_connection = merovingian::core::SocketHandle{connection};
+
+            THEN("bob's server is not called, and the invite waits in the queue")
+            {
+                REQUIRE(connection < 0);
+                REQUIRE(queued_bodies(runtime, inviting_server, "/v2/invite/").size() == 1U);
             }
         }
 
