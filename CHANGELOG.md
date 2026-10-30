@@ -118,6 +118,9 @@ Fixes for the failures Complement run 10 found against the signed 0.12.62 releas
   `/send` transaction reset the origin's failure count, though it verifies nothing; a peer whose
   transaction carried PDUs that failed verification could resend it to clear the backoff they had
   earned. A duplicate now leaves the peer's trust as the first attempt left it.
+- **CI: the AlmaLinux 10 build-and-test job failed on broken mirror metadata.** `dnf` stopped on a
+  `repomd.xml parser error` before anything was built. The job now retries `dnf` three times with the
+  metadata cleared, as the RHEL RPM package job already did.
 - **CI: the SonarCloud job timed out in the conformance suite.** Under gcov instrumentation the
   suite took 555 s of its 600 s limit, and crossed it in the SonarCloud job. `scripts/build-linux.sh`
   now gives `--coverage` builds a timeout multiplier of 2 by default; other builds keep the limits.

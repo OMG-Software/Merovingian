@@ -157,5 +157,21 @@ class CiWorkflowTests(unittest.TestCase):
         pkgin_packages = setup.split("        pkgin)")[1].split(";;")[0]
         self.assertNotIn(" openssl ", pkgin_packages)
 
+    def test_rhel_job_retries_broken_mirror_metadata(self) -> None:
+        # GIVEN the AlmaLinux 10 build-and-test job, whose mirrors sometimes answer with
+        # broken repository metadata ("repomd.xml parser error"), failing the job before
+        # anything is built (PR #545: AppStream, then BaseOS).
+        workflow = CI_WORKFLOW.read_text(encoding="utf-8")
+        job = workflow.split("  rhel-build-and-test:")[1].split("\n  opensuse-build-and-test:")[0]
+        install = job.split("- name: Install EPEL and build dependencies")[1].split("- uses: actions/checkout")[0]
+
+        # WHEN its dependency step runs
+        # THEN dnf is retried with the cached metadata cleared, as the RPM package job
+        # does, and the step still fails once the attempts run out.
+        self.assertIn("for attempt in 1 2 3; do", install)
+        self.assertIn("dnf clean metadata", install)
+        self.assertIn('if [ "${attempt}" = 3 ]; then', install)
+        self.assertIn("exit 1", install)
+
 if __name__ == "__main__":
     unittest.main()

@@ -358,28 +358,42 @@ jobs:
 
     steps:
       - name: Install EPEL and build dependencies
+        # A mirror occasionally answers with broken repository metadata ("Failed to
+        # download metadata for repo 'baseos': repomd.xml parser error"), which fails
+        # the job before anything is built. Retry with the cached metadata cleared, as
+        # the RHEL RPM job in packages.yml does, and fail when the attempts run out.
         run: |
-          dnf install -y epel-release
-          dnf install -y \
-            bison \
-            ccache \
-            clang \
-            clang-tools-extra \
-            flex \
-            gcc-c++ \
-            git \
-            m4 \
-            meson \
-            ninja-build \
-            libcurl-devel \
-            libpng-devel \
-            libpq-devel \
-            libsodium-devel \
-            openssl-devel \
-            perl \
-            turbojpeg-devel \
-            pkgconf-pkg-config \
-            python3
+          for attempt in 1 2 3; do
+            if dnf install -y epel-release && \
+               dnf install -y \
+                 bison \
+                 ccache \
+                 clang \
+                 clang-tools-extra \
+                 flex \
+                 gcc-c++ \
+                 git \
+                 m4 \
+                 meson \
+                 ninja-build \
+                 libcurl-devel \
+                 libpng-devel \
+                 libpq-devel \
+                 libsodium-devel \
+                 openssl-devel \
+                 perl \
+                 turbojpeg-devel \
+                 pkgconf-pkg-config \
+                 python3; then
+              break
+            fi
+            if [ "${attempt}" = 3 ]; then
+              exit 1
+            fi
+            echo "dnf attempt ${attempt} failed; retrying in 15s"
+            dnf clean metadata
+            sleep 15
+          done
 
       - uses: actions/checkout@v4
 
