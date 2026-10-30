@@ -283,6 +283,7 @@
 * [0300 - The event table keeps a per-room index by origin_server_ts](0300-the-event-table-keeps-a-room-and-time-index.md)
 * [0301 - Held room state is current only while a user of this server is joined](0301-held-room-state-is-current-only-while-a-local-user-is-joined.md)
 * [0302 - A remote server's signature is merged into this server's own event, only after it is verified](0302-a-remote-signature-is-merged-into-this-servers-own-event-after-it-is-verified.md)
+* [0304 - A user's own outlier membership event is visible to them](0304-a-users-own-outlier-membership-event-is-visible-to-them.md)
 
 ## Proposed Records
 
