@@ -267,6 +267,8 @@
 * [0282 - Redact, never drop, room events a requesting server could not see](0282-redact-never-drop-events-a-requesting-server-could-not-see.md)
 * [0283 - A retried /send transaction is given its first answer, kept within a byte budget](0283-a-retried-send-transaction-is-given-its-first-answer.md)
 * [0284 - An auth chain longer than the bound is refused, never truncated](0284-an-auth-chain-longer-than-the-bound-is-refused.md)
+* [0287 - A resident with no local authoriser joins its user through another resident](0287-a-resident-with-no-local-authoriser-joins-its-user-through-another-resident.md)
+* [0288 - A restricted join waits for in-flight room events before it is refused or sent away](0288-a-restricted-join-waits-for-in-flight-room-events-before-it-is-refused-or-sent-away.md)
 * [0295 - The access_token query parameter is read on client-server and media routes only, and the header wins](0295-the-access-token-query-parameter-is-read-on-client-and-media-routes-only.md)
 * [0296 - The federation worker loads no application service registrations](0296-the-federation-worker-loads-no-application-service-registrations.md)
 * [0297 - This server neither serves nor consults notary key servers](0297-this-server-neither-serves-nor-consults-notary-key-servers.md)
