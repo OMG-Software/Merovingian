@@ -101,6 +101,7 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <tuple>
 #include <unordered_map>
 #include <unordered_set>
@@ -5071,8 +5072,7 @@ namespace
                                      std::string_view event_id) -> bool
     {
         auto const row = store.events.find(event_id);
-        return row != store.events.end() &&
-               (row->status != "outlier" || visibility.has_state_group(event_id));
+        return row != store.events.end() && (row->status != "outlier" || visibility.has_state_group(event_id));
     }
 
     // ADR-0289: the newest event in [first, last) with a hole before it, or `last` when there is
@@ -10311,6 +10311,33 @@ namespace
         return admit_client_outbound_proxy(rt.homeserver, rate_limit_client_key(req, rt.homeserver.config.server()));
     }
 
+    // How often a waiting request looks for a free client-outbound slot (ADR-0306).
+    constexpr auto client_proxy_slot_poll_interval = std::chrono::milliseconds{25};
+
+    // ADR-0306: admit_client_proxy, but waiting for a slot until `deadline` instead of giving up at once.
+    // runtime.mutex is released while it sleeps, so a waiting request never blocks another. Only for an
+    // authenticated request: the thread it holds while waiting is bounded by the client's connection share
+    // (ADR-0077) and by the deadline.
+    [[nodiscard]] auto admit_client_proxy_waiting(ClientServerRuntime& rt, LocalHttpRequest const& req,
+                                                  std::unique_lock<RuntimeMutex>& guard,
+                                                  OutboundDeadline const& deadline)
+        -> std::optional<http::InFlightBudget::Slot>
+    {
+        while (true)
+        {
+            if (auto slot = admit_client_proxy(rt, req); slot.has_value())
+            {
+                return slot;
+            }
+            if (deadline.expired())
+            {
+                return std::nullopt;
+            }
+            auto const released = RuntimeLockRelease{guard};
+            std::this_thread::sleep_for(client_proxy_slot_poll_interval);
+        }
+    }
+
     [[nodiscard]] auto client_proxy_refused(LocalHttpRequest const& req, ClientServerRuntime const& rt)
         -> DispatchResult
     {
@@ -10455,14 +10482,17 @@ namespace
             return local.found ? timestamp_to_event_response(req, rt, local.event_id, local.origin_server_ts)
                                : not_found();
         }
-        auto const proxy_slot = admit_client_proxy(rt, req);
+        // ADR-0306: this authenticated lookup waits for a client-outbound slot within its own deadline rather
+        // than being refused at once (ADR-0079), so one client's parallel lookups are served in turn. The wait
+        // releases runtime.mutex, and the deadline it draws from is the one the outbound calls use after it.
+        auto const deadline = OutboundDeadline{effective_client_outbound_deadline(
+            rt.homeserver, rt.homeserver.client_outbound_proxy_policy.directory_deadline_seconds)};
+        auto const proxy_slot = admit_client_proxy_waiting(rt, req, guard, deadline);
         if (!proxy_slot.has_value())
         {
             return local.found ? timestamp_to_event_response(req, rt, local.event_id, local.origin_server_ts)
                                : client_proxy_refused(req, rt);
         }
-        auto const deadline = OutboundDeadline{effective_client_outbound_deadline(
-            rt.homeserver, rt.homeserver.client_outbound_proxy_policy.directory_deadline_seconds)};
         auto const local_ts = local.found ? std::optional<std::int64_t>{local.origin_server_ts} : std::nullopt;
         auto const acquired =
             acquire_closer_timestamp_event(rt.homeserver, guard, room_id, servers, ts, direction, local_ts, deadline);
