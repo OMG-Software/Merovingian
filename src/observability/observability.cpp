@@ -158,6 +158,38 @@ namespace
         return context;
     }
 
+    // A query parameter name with its %XX escapes decoded, so `access%5Ftoken` is judged as
+    // `access_token`. A malformed escape is kept as written.
+    [[nodiscard]] auto decoded_query_name(std::string_view name) -> std::string
+    {
+        auto const hex_value = [](char const character) -> int {
+            if (character >= '0' && character <= '9')
+            {
+                return character - '0';
+            }
+            auto const lower = static_cast<char>(std::tolower(static_cast<unsigned char>(character)));
+            return lower >= 'a' && lower <= 'f' ? lower - 'a' + 10 : -1;
+        };
+        auto decoded = std::string{};
+        decoded.reserve(name.size());
+        for (auto index = std::size_t{0U}; index < name.size(); ++index)
+        {
+            if (name[index] == '%' && index + 2U < name.size())
+            {
+                auto const high = hex_value(name[index + 1U]);
+                auto const low = hex_value(name[index + 2U]);
+                if (high >= 0 && low >= 0)
+                {
+                    decoded.push_back(static_cast<char>((high << 4) | low));
+                    index += 2U;
+                    continue;
+                }
+            }
+            decoded.push_back(name[index]);
+        }
+        return decoded;
+    }
+
     [[nodiscard]] auto sanitize_query(std::string_view query) -> std::string
     {
         auto output = std::string{};
@@ -179,7 +211,9 @@ namespace
             if (equals != std::string_view::npos)
             {
                 output.push_back('=');
-                output.append(contains_sensitive_marker(key) ? std::string_view{"<redacted>"} : value);
+                auto const sensitive =
+                    contains_sensitive_marker(key) || contains_sensitive_marker(decoded_query_name(key));
+                output.append(sensitive ? std::string_view{"<redacted>"} : value);
             }
             if (ampersand == std::string_view::npos)
             {
