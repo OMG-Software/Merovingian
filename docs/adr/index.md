@@ -277,6 +277,7 @@
 * [0295 - The access_token query parameter is read on client-server and media routes only, and the header wins](0295-the-access-token-query-parameter-is-read-on-client-and-media-routes-only.md)
 * [0296 - The federation worker loads no application service registrations](0296-the-federation-worker-loads-no-application-service-registrations.md)
 * [0297 - This server neither serves nor consults notary key servers](0297-this-server-neither-serves-nor-consults-notary-key-servers.md)
+* [0298 - Sending a message does not end the sender's typing](0298-sending-a-message-does-not-end-the-senders-typing.md)
 
 ## Proposed Records
 
