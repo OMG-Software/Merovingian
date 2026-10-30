@@ -16052,14 +16052,16 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             // before createRoom answers, so the client can use the invite at once (Complement
             // TestFederationRoomsInvite). Only a server that gives no usable answer is left to the queue.
             auto const invite_event_id = invite_state->event_id;
+            // Read once: remaining_seconds() rounds up, so 0 means the deadline has passed, and a 0 passed on
+            // would mean "the whole default budget" to deliver_remote_invite.
+            auto const seconds_left = invite_deadline.remaining_seconds();
             auto const delivery =
-                !invite_slot.has_value() || invite_deadline.expired()
+                !invite_slot.has_value() || seconds_left == 0U
                     ? merovingian::homeserver::
                           RemoteInviteResult{merovingian::homeserver::RemoteInviteOutcome::unreachable, 504U,
                                              "no slot or time left to offer the invite"}
                     : merovingian::homeserver::deliver_remote_invite(rt.homeserver, guard, room_id, invitee_server,
-                                                                     invite_event_id, *invite_json,
-                                                                     invite_deadline.remaining_seconds());
+                                                                     invite_event_id, *invite_json, seconds_left);
             if (delivery.outcome == merovingian::homeserver::RemoteInviteOutcome::delivered)
             {
                 // The invite is already stored, signed by this server only; keep the copy signed by both.
