@@ -1,5 +1,6 @@
 // SPDX-FileCopyrightText: 2026 James Chapman
 // SPDX-License-Identifier: GPL-3.0-or-later
+#include "../support/appservice_test_config.hpp"
 #include "../support/in_memory_database_config.hpp"
 //
 // +-------------------------------------------------------------------------+
@@ -29,6 +30,7 @@
 #include "merovingian/database/persistent_store.hpp"
 #include "merovingian/homeserver/appservice_delivery.hpp"
 #include "merovingian/homeserver/client_server.hpp"
+#include "merovingian/homeserver/runtime.hpp"
 #include "merovingian/net/tcp_acceptor.hpp"
 
 #include <catch2/catch_test_macros.hpp>
@@ -925,6 +927,59 @@ SCENARIO("enqueueing the same event twice leaves one row, and the oldest row is 
                 REQUIRE(first->stream_ordering == 20U);
                 REQUIRE(store.appservice_outbox.size() == 3U);
                 REQUIRE_FALSE(merovingian::database::find_first_appservice_outbox_entry(store, "nobody").has_value());
+            }
+        }
+    }
+}
+
+// ADR-0296. The federation worker starts the same runtime as the main process, but a registration
+// holds the as_token and hs_token, which the worker is not granted files for, and everything that
+// uses the registry runs in main. A worker that tried anyway logged a rejection on every start and,
+// had it been able to read the file, would have written the bridge's sender user from a process
+// whose database role may not write.
+SCENARIO("A runtime started without application services loads no registration and creates no sender user",
+         "[appservice][worker][federation][appservice-worker-registry][integration]")
+{
+    GIVEN("a configuration naming one application service registration")
+    {
+        auto const config = merovingian::tests::appservice_test_config({
+            merovingian::tests::TestAppservice{.id = "bridge",
+                                               .url = std::string{"https://bridge.example"},
+                                               .users_regex = "@_bridge_.*:example.org"}
+        });
+        auto const sender_exists = [](merovingian::homeserver::HomeserverRuntime const& runtime) {
+            return std::ranges::any_of(runtime.database.users, [](merovingian::homeserver::LocalUser const& user) {
+                return user.user_id == "@_bridge_bot:example.org";
+            });
+        };
+
+        WHEN("the runtime is started as the main process starts it")
+        {
+            auto options = merovingian::homeserver::RuntimeStartOptions{};
+            options.config = config;
+            auto started = merovingian::homeserver::start_runtime(options);
+            REQUIRE(started.started);
+
+            THEN("the registration is loaded and its sender user exists")
+            {
+                REQUIRE(started.runtime.appservices.size() == 1U);
+                REQUIRE(sender_exists(started.runtime));
+            }
+        }
+
+        WHEN("the runtime is started as the federation worker starts it")
+        {
+            auto options = merovingian::homeserver::RuntimeStartOptions{};
+            options.config = config;
+            options.signing_disabled = true;
+            options.load_appservices = false;
+            auto started = merovingian::homeserver::start_runtime(options);
+            REQUIRE(started.started);
+
+            THEN("no registration is held and no sender user was created")
+            {
+                REQUIRE(started.runtime.appservices.empty());
+                REQUIRE_FALSE(sender_exists(started.runtime));
             }
         }
     }

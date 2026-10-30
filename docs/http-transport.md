@@ -518,6 +518,15 @@ Default request limits are intentionally conservative:
 
 The parser rejects oversized or malformed request heads before any endpoint handling.
 
+### Access token location (ADR-0295)
+
+`build_local_request` takes the access token from `Authorization: Bearer`. With no
+`Authorization` header, a request to `/_matrix/client/...` or `/_matrix/media/...` may carry it as
+the percent-encoded `access_token` query parameter (Matrix v1.19, "Using access tokens":
+"Homeservers MUST support both methods"). A request with both uses the header and ignores the query
+value. Federation targets never read the query parameter as a client credential. The value is
+redacted from logged targets (`sanitized_http_target`).
+
 ## Structured errors
 
 Request parser failures use stable error names and HTTP statuses. Oversized start lines, headers, header counts, and bodies map to `413`. Malformed request lines, invalid methods, invalid targets, and invalid content lengths map to `400`. Unsupported transfer encoding maps to `501` until streaming support exists.

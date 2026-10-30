@@ -97,6 +97,12 @@ one exception to the `merovingian/` include-path rule in `src/AGENTS.md`.
    worker's main thread call `stop()`.
 8. **Drain both thread pools before stopping the IPC channel on shutdown.** An in-flight handler
    still needs the channel to send its response.
+9. **The worker loads no application service registrations (ADR-0296).** It starts its runtime with
+   `RuntimeStartOptions::load_appservices = false`: `runtime.appservices` stays empty and no
+   sender user is created. A registration holds the `as_token` and `hs_token`, kept outside the
+   worker's Landlock grants (it logged `cannot open appservice registration file` on every start
+   when it tried), and everything that consults the registry runs in main. Never grant the worker
+   the registration directory to make a handler work; relay the decision to main.
 
 ## Hardening
 
