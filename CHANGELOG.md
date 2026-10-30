@@ -111,6 +111,9 @@ Fixes for the failures Complement run 12 found against main at 0.12.63.
   one client's parallel lookups are served in turn (ADR-0306).
   When no slot comes, access and the local answer are judged again before it answers: the wait releases
   `runtime.mutex`, so the user may have left.
+- A backward `timestamp_to_event` search asks other servers when the nearest event after `ts` builds on an event
+  this server lacks: the event found has nothing missing before it, so the hole between it and `ts` showed
+  nowhere and a closer remote event was never asked for.
 - A server's timestamp answer whose event the user may not be given (rejected, hidden, or not closer by its
   own timestamp) no longer ends the lookup: the next server is asked, up to three (ADR-0299).
 - State events carry `unsigned.prev_content` (the content of the state event they replaced) when the

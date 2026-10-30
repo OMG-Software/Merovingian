@@ -10421,10 +10421,25 @@ namespace
         result.found = true;
         result.event_id = nearest.event->event_id;
         result.origin_server_ts = *event_ts;
-        result.at_gap =
-            !std::ranges::all_of(nearest.event->prev_event_ids, [&store, &visibility](std::string const& prev) {
+        auto const behind_a_hole = [&store, &visibility](database::PersistentEvent const& event) {
+            return !std::ranges::all_of(event.prev_event_ids, [&store, &visibility](std::string const& prev) {
                 return event_is_held(store, visibility, prev);
             });
+        };
+        result.at_gap = behind_a_hole(*nearest.event);
+        // Backwards, a hole between the event found and `ts` shows only on the far side: the nearest event
+        // at or after `ts` builds on what this server lacks, which may lie closer to `ts` than the event found.
+        // Forwards, the event found is that far-side event, so its own prev_events already show it.
+        if (!result.at_gap && direction == database::TimeDirection::backwards)
+        {
+            auto const after = store.events.nearest_by_time(
+                room_id, ts, database::TimeDirection::forwards,
+                [&visibility](database::PersistentEvent const& event) {
+                    return visibility.can_see(event);
+                },
+                database::max_time_search_examined);
+            result.at_gap = after.event != store.events.end() && behind_a_hole(*after.event);
+        }
         return result;
     }
 

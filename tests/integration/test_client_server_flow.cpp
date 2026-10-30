@@ -1841,6 +1841,33 @@ SCENARIO("GET /timestamp_to_event asks a server of the room only when its own hi
             }
         }
 
+        WHEN("a backward search finds an event before the timestamp, and the next event after it lies behind a gap")
+        {
+            // The hole is between the event found (5000) and the timestamp: $gap (8000) builds on an event
+            // this server lacks, which may lie at 7000 or before it. The event found has nothing missing
+            // before it, so only the event on the other side of the timestamp shows the hole.
+            add_event_behind_a_gap(rt, room.room_id);
+            auto const not_found = merovingian::tests::tls_mock::json_http_response(
+                "404 Not Found", R"({"errcode":"M_NOT_FOUND","error":"no event"})");
+            auto const responses = std::vector<std::pair<std::string, std::string>>{
+                {"timestamp_to_event", not_found}
+            };
+            auto captured = std::vector<std::string>{};
+            auto server_thread = std::thread{[&]() {
+                merovingian::tests::tls_mock::run_path_dispatch_tls_server(acceptor, tls_context, responses, &captured);
+            }};
+            auto const join_server = merovingian::tests::tls_mock::ScopedThreadJoin{server_thread};
+            auto const response = timestamp_to_event_get(rt, room, "ts=7000&dir=b");
+
+            THEN("another server is asked, and with nothing closer the local event is the answer")
+            {
+                REQUIRE(captured.size() == 1U);
+                REQUIRE(captured[0].find("?ts=7000&dir=b") != std::string::npos);
+                REQUIRE(response.response.status == 200U);
+                REQUIRE(response.response.body.find(room.message_id) != std::string::npos);
+            }
+        }
+
         WHEN("the first server asked names an event the caller may not use, and a second server a usable one")
         {
             // ADR-0299 asks up to three servers: an event that is fetched but cannot be returned to the user

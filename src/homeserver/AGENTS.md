@@ -140,7 +140,8 @@ the main pool's threads for the round trip. Every such call therefore:
    anything else (`remote_media_refusal`): 404 `M_NOT_FOUND`, counted but not audited.
 
 `GET /rooms/{roomId}/timestamp_to_event` (`handle_timestamp_to_event`) is the same kind of request, but only when the local answer is
-absent or the event found has a `prev_event` this server does not hold (`event_is_held`, ADR-0289): it asks at most 3 servers with
+absent or the event found has a `prev_event` this server does not hold (`event_is_held`, ADR-0289), or, for `dir=b`, the nearest
+event at or after `ts` has one (a hole between the event found and `ts` shows only there): it asks at most 3 servers with
 joined members, one at a time, under one slot and one `OutboundDeadline`. It is the one such request that WAITS for a slot
 (`admit_client_proxy_waiting`, polling every 25 ms with `runtime.mutex` released) until that deadline, so one client's parallel
 lookups are served in turn (ADR-0306); with a local answer in hand a slot that never comes costs only the remote improvement.
