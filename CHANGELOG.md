@@ -56,10 +56,10 @@ Fixes for the failures Complement run 12 found against main at 0.12.63.
   (resolving its signing key) draws from the same deadline instead of starting a full `remote_timeout`.
 - A remote invite offer (`POST /invite`, createRoom's invites) holds an ADR-0079 client-outbound slot, waiting
   for one within its deadline; with none the invite is queued for retry (ADR-0307).
-- Rejecting a remote invite keeps the leave as an outlier whenever this server's held state for the room is
-  not current (no local user joined, ADR-0301), not only when it holds no state at all, so `/sync` reports
-  the leave. It is judged after the `make_leave`/`send_leave` exchange, with `runtime.mutex` held again: a
-  local user who joined or left while it was released changes the answer.
+- Rejecting a remote invite always keeps the signed leave this server authored (ADR-0294), not only when it
+  holds no room state: the resident never sends an accepted `send_leave` back to the server that sent it, so
+  a leave dropped because the room's state was held left the invite in current state and `/sync` with no
+  leave event to report.
 - A join made through another resident (ADR-0287) succeeds only if the stored join is the user's current
   member event, whether the sink accepted it now or already held it.
 - In a `shared` room, a user who joined sees the history this server fetches for them (backfill, `/messages`,

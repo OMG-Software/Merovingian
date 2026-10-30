@@ -235,13 +235,13 @@ on that record, each by the inviter's server, which the spec calls a resident se
   is `refused` (502), never `delivered`, and never queued. The key lookup runs with `runtime.mutex` released.
 - The invite handler judges an invite against held room state only while a user of this server is joined to the
   room (ADR-0301); after a federated leave the state is stale. `room_state_is_current` (`room_residency.hpp`) is the
-  one test; the invite handler, `rescind_invite_from_inviter` and `leave_room`'s rejection of a remote invite
-  (which keeps the leave as an outlier when the state is not current, judged after the exchange with
-  `runtime.mutex` back, never from a reading taken before it) use it and must agree. For a room this server is in, it stores no event (the
+  one test; the invite handler and `rescind_invite_from_inviter` use it and must agree. For a room this server is in, it stores no event (the
   transaction's copy places it) and `/sync` and sliding sync hide the invite until the state has it
   (`InviteRoomStateIndex`, built once per request: never scan the store's state per invite).
   Do not store the event in the handler, or make the invite visible before the state has it.
 - The leave that rejects an invite is stored as an outlier (ADR-0294), or `/sync` has no leave event to report.
+  Always, whatever the room's residency: the resident's fan-out of an accepted `send_leave` excludes the server
+  that sent it, so no transaction brings it back. Never make keeping it depend on `room_state_is_current`.
 - `rescind_invite_from_inviter` (`local_http_router.cpp`) turns a `leave` PDU for the invitee, sent by a user
   of the inviter's own server, into a `leave` for rooms whose state is not held. Nobody else can withdraw an
   invite this way.

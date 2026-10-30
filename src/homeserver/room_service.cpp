@@ -47,7 +47,6 @@
 #include "merovingian/homeserver/redaction_service.hpp"
 #include "merovingian/homeserver/request_lock.hpp"
 #include "merovingian/homeserver/restricted_join.hpp"
-#include "merovingian/homeserver/room_residency.hpp"
 #include "merovingian/homeserver/runtime.hpp"
 #include "merovingian/homeserver/runtime_signing_key_store.hpp"
 #include "merovingian/homeserver/state_bookkeeping.hpp"
@@ -6571,8 +6570,9 @@ namespace
                     return make_operation_result(false, {}, "event_id computation failed", 500U);
                 }
 
-                // Built for every rejection; whether it is kept is decided once the exchange is over and
-                // runtime.mutex is back (below), since the room's residency can change during it.
+                // Every rejection keeps the leave it authored (ADR-0294): the resident sends an accepted
+                // send_leave on to the room's other servers but never back to the server that sent it, so no
+                // transaction will bring this event here, whether or not this server's held state is current.
                 if (rejecting_invite)
                 {
                     auto const ids_of = [&event_object](std::string_view key) {
@@ -6630,16 +6630,6 @@ namespace
             },
                            observability::LogEventSeverity::warning);
             return make_operation_result(false, {}, "send_leave failed: " + send_body, 502U);
-        }
-
-        // ADR-0294, ADR-0301: keep the rejecting leave as an outlier only when this server's held state for the
-        // room is not current now. Judged after the exchange, with runtime.mutex held: another local user may
-        // have joined or left while it was released. While the state is current, a resident sends this server
-        // the leave in a transaction; otherwise nothing will, and /sync would have no leave event to report.
-        if (leave_outlier.has_value() &&
-            room_state_is_current(runtime.database.persistent_store, room_id, runtime.config.server().server_name))
-        {
-            leave_outlier.reset();
         }
 
         // Step 5: update local membership, device lists and in-memory state. DB-4:
