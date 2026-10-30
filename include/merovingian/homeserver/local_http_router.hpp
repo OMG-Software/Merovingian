@@ -3,6 +3,7 @@
 #pragma once
 
 #include "merovingian/federation/inbound_ingestion.hpp"
+#include "merovingian/homeserver/client_outbound_proxy.hpp"
 #include "merovingian/homeserver/runtime.hpp"
 #include "merovingian/http/request.hpp"
 
@@ -102,5 +103,15 @@ auto wire_federation_callbacks(HomeserverRuntime& runtime) -> void;
 // (runtime.federation.pdu_already_stored) and main's side of a worker's pdu_ingest relay.
 [[nodiscard]] auto pdu_event_already_stored(HomeserverRuntime& runtime, std::string_view room_id,
                                             std::string_view event_id) -> bool;
+
+// Fetches `event_id` of `room_id` from `origin` with GET /_matrix/federation/v1/event/{eventId}
+// and stores it through the verified backfill path (signature, hash and auth checked; stored as
+// an outlier, with the state at it when `origin`'s /state_ids snapshot supplies that; never
+// stored unverified). True when the event is stored afterwards, including when it already was.
+// Every call draws from `deadline`. Call WITHOUT runtime.mutex held: it takes the lock itself
+// where it reads or writes the store and releases it for every network call.
+[[nodiscard]] auto fetch_remote_event_into_store(HomeserverRuntime& runtime, std::string_view room_id,
+                                                 std::string_view origin, std::string_view event_id,
+                                                 OutboundDeadline const& deadline) -> bool;
 
 } // namespace merovingian::homeserver

@@ -1283,4 +1283,52 @@ auto build_get_missing_events_response(database::PersistentStore const& store, s
     return body.empty() ? malformed_result() : RoomReadResult{RoomReadStatus::ok, std::move(body)};
 }
 
+auto build_timestamp_to_event_response(database::PersistentStore const& store, std::string_view room_id,
+                                       std::int64_t ts, database::TimeDirection direction, std::string_view origin)
+    -> RoomReadResult
+{
+    // FED-2: a stranger learns nothing about the room, not even that it has no such event.
+    if (!origin_may_read_room(store, room_id, origin))
+    {
+        return forbidden_result();
+    }
+    auto filter = ServerEventFilter{store, origin};
+    auto const found = store.events.nearest_by_time(
+        room_id, ts, direction,
+        [&filter](database::PersistentEvent const& event) {
+            return filter.can_see(event);
+        },
+        database::max_time_search_examined);
+    if (found.event == store.events.end())
+    {
+        return not_found_result();
+    }
+    auto const parsed = canonicaljson::parse_lossless(found.event->json);
+    auto const* object = parsed.error == canonicaljson::ParseError::none
+                             ? std::get_if<canonicaljson::Object>(&parsed.value.storage())
+                             : nullptr;
+    if (object == nullptr)
+    {
+        return not_found_result();
+    }
+    for (auto const& member : *object)
+    {
+        if (member.key != "origin_server_ts")
+        {
+            continue;
+        }
+        auto const* event_ts = std::get_if<std::int64_t>(&member.value->storage());
+        if (event_ts == nullptr)
+        {
+            break;
+        }
+        auto response = canonicaljson::Object{};
+        response.push_back(canonicaljson::make_member("event_id", canonicaljson::Value{found.event->event_id}));
+        response.push_back(canonicaljson::make_member("origin_server_ts", canonicaljson::Value{*event_ts}));
+        auto body = serialize(std::move(response));
+        return body.empty() ? malformed_result() : RoomReadResult{RoomReadStatus::ok, std::move(body)};
+    }
+    return not_found_result();
+}
+
 } // namespace merovingian::federation

@@ -383,6 +383,8 @@ SCENARIO("HTTP-3 gives every implemented dynamic client route its own coalesced 
          "/_matrix/client/v3/presence/%40b%3Aexample.org/status"                                                                                                                                                                               },
         {"/_matrix/client/v3/login/sso/redirect/{idpId}",                           "/_matrix/client/v3/login/sso/redirect/one",
          "/_matrix/client/v3/login/sso/redirect/two"                                                                                                                                                                                           },
+        {"/_matrix/client/v1/rooms/{roomId}/timestamp_to_event",
+         "/_matrix/client/v1/rooms/%21a%3Aexample.org/timestamp_to_event?ts=1&dir=f",                                                        "/_matrix/client/v1/rooms/%21b%3Aexample.org/timestamp_to_event?ts=2&dir=b"                       },
         {"/_matrix/client/v1/room_summary/{roomIdOrAlias}",                         "/_matrix/client/v1/room_summary/%21a%3Aexample.org",
          "/_matrix/client/v1/room_summary/%23b%3Aexample.org"                                                                                                                                                                                  },
         {"/_matrix/client/unstable/im.nheko.summary/summary/{roomIdOrAlias}",

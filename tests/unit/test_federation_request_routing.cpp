@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+#include "merovingian/federation/transactions.hpp"
 #include "merovingian/homeserver/federation_request_routing.hpp"
 
 #include <catch2/catch_test_macros.hpp>
@@ -729,6 +730,48 @@ SCENARIO("Federation key server endpoint is matched exactly", "[federation][rout
             {
                 REQUIRE_FALSE(is_federation_key_server_endpoint("/_matrix/federation/v1/state/!room:example.com"));
                 REQUIRE_FALSE(is_federation_key_server_endpoint("/_matrix/federation/v1/query/profile"));
+            }
+        }
+    }
+}
+
+// ADR-0281: a federation route that names a room is served by the worker shard that owns the room
+// (from its snapshot), never relayed to main, so its room ID must reach shard selection decoded.
+SCENARIO("GET /timestamp_to_event/{roomId} is routed to the shard that owns the room",
+         "[federation][routing][room-id][shard][timestamp-to-event]")
+{
+    GIVEN("the endpoint, with its room ID percent-encoded as a real server sends it")
+    {
+        auto const request = make_request("/_matrix/federation/v1/timestamp_to_event/%21room%3Aexample.com?ts=1&dir=f");
+
+        WHEN("the worker room is chosen")
+        {
+            THEN("the decoded room ID selects the shard, the query string is not part of it, and main is not bypassed")
+            {
+                REQUIRE(federation_worker_room_id_from_request(request) == "!room:example.com");
+                REQUIRE_FALSE(federation_request_should_bypass_worker(request));
+            }
+        }
+    }
+
+    GIVEN("the endpoint in the transaction route table")
+    {
+        auto const match = merovingian::federation::match_federation_route(
+            "GET", "/_matrix/federation/v1/timestamp_to_event/%21room%3Aexample.com?ts=1&dir=f");
+        auto const wrong_method = merovingian::federation::match_federation_route(
+            "POST", "/_matrix/federation/v1/timestamp_to_event/%21room%3Aexample.com");
+        auto const no_room =
+            merovingian::federation::match_federation_route("GET", "/_matrix/federation/v1/timestamp_to_event/");
+
+        WHEN("the route is matched")
+        {
+            THEN("only GET with a room ID segment matches, and the worker answers it without relaying to main")
+            {
+                REQUIRE(match.matched);
+                REQUIRE(match.route.endpoint == merovingian::federation::FederationEndpoint::timestamp_to_event);
+                REQUIRE_FALSE(merovingian::federation::federation_endpoint_requires_main_relay(match.route.endpoint));
+                REQUIRE_FALSE(wrong_method.matched);
+                REQUIRE_FALSE(no_room.matched);
             }
         }
     }

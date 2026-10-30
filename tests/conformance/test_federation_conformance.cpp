@@ -3619,3 +3619,164 @@ SCENARIO("invite v1 for a room of unknown version is refused, not verified under
         }
     }
 }
+
+// Spec: Matrix Server-Server API v1.19
+// Endpoint: GET /_matrix/federation/v1/timestamp_to_event/{roomId}
+// URL: ../../docs/matrix-v1.19-spec/server-server-api.md#get_matrixfederationv1timestamp_to_eventroomid
+//
+// Query parameters `ts` (integer, milliseconds) and `dir` (`f` or `b`) are both required. 200
+// carries `event_id` and `origin_server_ts`; 404 means no event was found. The endpoint is not
+// rate-limited and requires X-Matrix authentication. A server with no user in the room is refused
+// (FED-2), as on every room-scoped read.
+SCENARIO("GET /timestamp_to_event/{roomId} answers an authenticated server through the provider",
+         "[federation][conformance][timestamp-to-event]")
+{
+    GIVEN("a runtime with timestamp_to_event_query_provider installed")
+    {
+        auto runtime = merovingian::federation::make_federation_runtime_state(runtime_config());
+        merovingian::federation::upsert_remote(runtime, remote_for(origin, key_id, key_seed));
+
+        struct Seen final
+        {
+            std::string room_id{};
+            std::int64_t ts{0};
+            merovingian::database::TimeDirection direction{merovingian::database::TimeDirection::forwards};
+            std::string origin{};
+            int calls{0};
+        };
+        auto seen = std::make_shared<Seen>();
+        runtime.timestamp_to_event_query_provider =
+            [seen](std::string_view requested_room, std::int64_t ts, merovingian::database::TimeDirection direction,
+                   std::string_view requesting_origin) -> merovingian::federation::RoomReadResult {
+            seen->room_id = std::string{requested_room};
+            seen->ts = ts;
+            seen->direction = direction;
+            seen->origin = std::string{requesting_origin};
+            ++seen->calls;
+            return {merovingian::federation::RoomReadStatus::ok,
+                    R"({"event_id":"$found:remote.example.org","origin_server_ts":1432735824653})"};
+        };
+        auto const get = [&](std::string const& target) {
+            return merovingian::federation::handle_inbound_federation_request(
+                runtime, signed_get_request(origin, key_id, key_seed, target));
+        };
+
+        WHEN("a signed GET with ts and dir=f is dispatched for a percent-encoded room ID")
+        {
+            auto const response = get("/_matrix/federation/v1/timestamp_to_event/%21room%3Aexample.org?ts=-5&dir=f");
+
+            THEN("the provider gets the decoded room, the integer, the direction and the authenticated origin")
+            {
+                REQUIRE(response.status == 200U);
+                REQUIRE(seen->calls == 1);
+                REQUIRE(seen->room_id == "!room:example.org");
+                REQUIRE(seen->ts == -5);
+                REQUIRE(seen->direction == merovingian::database::TimeDirection::forwards);
+                // The origin is the one the X-Matrix signature proved, never a request value.
+                REQUIRE(seen->origin == origin);
+                auto const parsed = merovingian::canonicaljson::parse_lossless(response.body);
+                auto const* root = std::get_if<merovingian::canonicaljson::Object>(&parsed.value.storage());
+                REQUIRE(root != nullptr);
+                REQUIRE(json_get(*root, std::string{"event_id"}) != nullptr);
+                REQUIRE(json_get(*root, std::string{"origin_server_ts"}) != nullptr);
+            }
+        }
+
+        WHEN("dir=b is asked for")
+        {
+            auto const response = get("/_matrix/federation/v1/timestamp_to_event/!room:example.org?dir=b&ts=7");
+
+            THEN("the provider is told to look backwards, whatever the order of the parameters")
+            {
+                REQUIRE(response.status == 200U);
+                REQUIRE(seen->direction == merovingian::database::TimeDirection::backwards);
+                REQUIRE(seen->ts == 7);
+            }
+        }
+
+        WHEN("ts or dir is missing or not valid")
+        {
+            auto const no_ts = get("/_matrix/federation/v1/timestamp_to_event/!room:example.org?dir=f");
+            auto const no_dir = get("/_matrix/federation/v1/timestamp_to_event/!room:example.org?ts=1");
+            auto const bad_ts = get("/_matrix/federation/v1/timestamp_to_event/!room:example.org?ts=1.5&dir=f");
+            auto const bad_dir = get("/_matrix/federation/v1/timestamp_to_event/!room:example.org?ts=1&dir=x");
+
+            THEN("each is 400 and the provider is never asked")
+            {
+                REQUIRE(no_ts.status == 400U);
+                REQUIRE(no_dir.status == 400U);
+                REQUIRE(bad_ts.status == 400U);
+                REQUIRE(bad_dir.status == 400U);
+                REQUIRE(seen->calls == 0);
+            }
+        }
+
+        WHEN("the provider finds no event, or refuses the origin")
+        {
+            runtime.timestamp_to_event_query_provider =
+                [](std::string_view, std::int64_t, merovingian::database::TimeDirection,
+                   std::string_view requesting_origin) -> merovingian::federation::RoomReadResult {
+                return {requesting_origin == origin ? merovingian::federation::RoomReadStatus::not_found
+                                                    : merovingian::federation::RoomReadStatus::forbidden,
+                        {}};
+            };
+            auto const none = get("/_matrix/federation/v1/timestamp_to_event/!room:example.org?ts=1&dir=f");
+
+            THEN("the answer is 404 M_NOT_FOUND")
+            {
+                // Spec: "404 - No event was found."
+                REQUIRE(none.status == 404U);
+                REQUIRE(none.body.find("M_NOT_FOUND") != std::string::npos);
+            }
+        }
+
+        WHEN("the provider says the origin is not in the room")
+        {
+            runtime.timestamp_to_event_query_provider =
+                [](std::string_view, std::int64_t, merovingian::database::TimeDirection,
+                   std::string_view) -> merovingian::federation::RoomReadResult {
+                return {merovingian::federation::RoomReadStatus::forbidden, {}};
+            };
+            auto const refused = get("/_matrix/federation/v1/timestamp_to_event/!room:example.org?ts=1&dir=f");
+
+            THEN("the answer is 403 M_FORBIDDEN and carries no room data")
+            {
+                REQUIRE(refused.status == 403U);
+                REQUIRE(refused.body.find("M_FORBIDDEN") != std::string::npos);
+                REQUIRE(refused.body.find("event_id") == std::string::npos);
+            }
+        }
+
+        WHEN("the request is not signed by a known server")
+        {
+            auto request = signed_get_request(origin, key_id, key_seed,
+                                              "/_matrix/federation/v1/timestamp_to_event/!r:example.org?ts=1&dir=f");
+            request.signature = "bogus";
+            auto const response = merovingian::federation::handle_inbound_federation_request(runtime, request);
+
+            THEN("it is refused before the provider is asked")
+            {
+                REQUIRE(response.status != 200U);
+                REQUIRE(seen->calls == 0);
+            }
+        }
+    }
+
+    GIVEN("a runtime with no timestamp_to_event_query_provider installed")
+    {
+        auto runtime = merovingian::federation::make_federation_runtime_state(runtime_config());
+        merovingian::federation::upsert_remote(runtime, remote_for(origin, key_id, key_seed));
+
+        WHEN("a signed GET is dispatched")
+        {
+            auto const response = merovingian::federation::handle_inbound_federation_request(
+                runtime, signed_get_request(origin, key_id, key_seed,
+                                            "/_matrix/federation/v1/timestamp_to_event/!r:example.org?ts=1&dir=f"));
+
+            THEN("the answer is 501 Not Implemented, as for every unwired route")
+            {
+                REQUIRE(response.status == 501U);
+            }
+        }
+    }
+}

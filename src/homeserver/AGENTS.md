@@ -24,6 +24,7 @@ This is the largest and most complex module — read this file carefully before 
 | `redaction_service.cpp` | Applies redactions (judge, overwrite the target's stored JSON, withhold unapplied redactions from clients) and checks a local client's redaction |
 | `room_power.cpp` | `may_send_state_event()`: whether a user may send a state event of a type in a room's current state, judged as the auth rules judge it (CSAZ-12) |
 | `restricted_join.cpp` | `decide_restricted_join()`: as the resident, whether a user meets a restricted room's allow conditions and which local user authorises the join (R04, ADR-0185) |
+| `remote_timestamp_event.cpp` | Asking other servers for `GET /rooms/{roomId}/timestamp_to_event` (ADR-0299): `timestamp_to_event_candidate_servers`, `parse_timestamp_to_event_answer`, `timestamp_is_closer`, `acquire_closer_timestamp_event` (the loop over at most 3 servers; releases `runtime.mutex` for each exchange and for the verified fetch, `fetch_remote_event_into_store` in `local_http_router.cpp`) |
 | `space_hierarchy.cpp` | `GET /_matrix/client/v1/rooms/{roomId}/hierarchy` (a child room this server holds no state for is asked for over federation, see "Client requests that call another server") and the answer to `GET /_matrix/federation/v1/hierarchy/{roomId}`, judged for the authenticated requesting server; also `handle_client_room_summary` (`GET /_matrix/client/v1/room_summary/{roomIdOrAlias}`, local rooms only; a request with no token is answered before the auth gate in `client_server.cpp` and may see only a public, knock or world-readable room) |
 | `default_push_ruleset.cpp` | The server-default push ruleset (`homeserver::default_push_ruleset`) |
 | `stored_push_rules.cpp` | `load_user_push_rules` / `load_push_ruleset`: a user's push rules from their `m.push_rules` account data over the defaults (ADR-0204) |
@@ -136,6 +137,13 @@ the main pool's threads for the round trip. Every such call therefore:
    `remote_timeout`;
 3. for media, is checked against `security.media.remote_fetch_enabled` and `allow_remote` before
    anything else (`remote_media_refusal`): 404 `M_NOT_FOUND`, counted but not audited.
+
+`GET /rooms/{roomId}/timestamp_to_event` (`handle_timestamp_to_event`) is the same kind of request, but only when the local answer is
+absent or the event found has a `prev_event` this server does not hold (`event_is_held`, ADR-0289): it asks at most 3 servers with
+joined members, one at a time, under one slot and one `OutboundDeadline`, and with a local answer in hand a refused slot costs only the
+remote improvement. A remote answer is used only if it is on the requested side of `ts` and closer; the event is fetched with
+`fetch_remote_event_into_store` (verified, stored as an outlier) and judged again, after the lock is back, by `HistoryVisibility` and by its
+own stored `origin_server_ts`, never the number the remote server sent.
 
 The space hierarchy (`handle_client_space_hierarchy`) is the same kind of request: a child room not held locally is asked
 for from the `via` servers of its link, so the walk takes one slot at its first such call (`RemoteHierarchy` in
@@ -333,7 +341,8 @@ visibility and room read access") and ADR-0084. Checking "is the user a member" 
 the user may be joined but not entitled to an old event, and a user who has left or been banned
 may still read what they saw. Today these are `/messages`, `/context`, `/event`, `/search`,
 `/relations`, `/threads`, `/sync`, sliding sync, `initialSync`, `/members`, `/joined_members`,
-`/state` and `/state/{type}/{key}`. A new endpoint of that kind gets a conformance scenario in
+`/state`, `/state/{type}/{key}` and `/timestamp_to_event` (a user who cannot read the room gets 403; an event
+`HistoryVisibility` withholds is stepped over). A new endpoint of that kind gets a conformance scenario in
 `tests/conformance/test_history_visibility_conformance.cpp`. `/notifications` is the one
 deliberate exception (its rows are created at delivery for a then-joined user); say so if you
 add another.
@@ -373,6 +382,11 @@ client, sender or remote server controls, and per-user rows that requests scan m
   is written only for a room the user holds a membership row in, and refuses a new type past
   `max_room_account_data_per_room` per room the same way (ADR-0197). Server-written rows (`m.tag`,
   `m.fully_read`) go through `set_account_data` and are never refused.
+- `GET /rooms/{roomId}/timestamp_to_event` and the federation `timestamp_to_event` provider seek the per-room
+  time index of `EventTable` (`nearest_by_time`, ADR-0300) and offer at most `database::max_time_search_examined`
+  (1000) events to the visibility filter; never replace the seek with a walk of the room's events. The federation
+  provider takes `runtime.mutex` itself (the other federation read providers do not), because the index changes
+  under that mutex.
 - `/search` judges a room the user has left with `room_read_access_for` only when one of its
   events would be returned, so those scans stay bounded by the page (R16).
 - `expire_typing` groups the typing table by room in a fixed number of passes and hands each

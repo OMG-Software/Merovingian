@@ -2,11 +2,13 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
+#include "merovingian/database/event_table.hpp"
 #include "merovingian/database/persistent_store.hpp"
 #include "merovingian/federation/membership_endpoints.hpp"
 #include "merovingian/federation/room_read_result.hpp"
 
 #include <cstddef>
+#include <cstdint>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -130,6 +132,19 @@ inline constexpr auto max_event_auth_chain_events = std::size_t{10000U};
 [[nodiscard]] auto build_backfill_response(database::PersistentStore const& store, BackfillRequest const& request,
                                            FederationQueryPolicy const& policy = FederationQueryPolicy{})
     -> BackfillResult;
+
+// Builds the response for an inbound federation
+// `GET /_matrix/federation/v1/timestamp_to_event/{roomId}?ts=&dir=` request (SS API, added in v1.6):
+// `{event_id, origin_server_ts}` of the event nearest `ts` in `direction`, in the order (origin_server_ts,
+// depth, stream_ordering), the boundary inclusive (forwards `>= ts`, backwards `<= ts`; ADR-0299).
+// `origin` must pass `origin_may_read_room` (checked first, so a stranger learns nothing about the
+// room): otherwise `forbidden`. Events none of `origin`'s users could see (`event_visible_to_server`) are
+// stepped over, as the other reads that return history judge the requesting server; no event within
+// `database::max_time_search_examined` candidates is `not_found`. Seeks the store's room-and-time index
+// (ADR-0300): it never scans the room.
+[[nodiscard]] auto build_timestamp_to_event_response(database::PersistentStore const& store, std::string_view room_id,
+                                                     std::int64_t ts, database::TimeDirection direction,
+                                                     std::string_view origin) -> RoomReadResult;
 
 // Builds the response for an inbound federation
 // `POST /_matrix/federation/v1/get_missing_events/{roomId}` request.

@@ -1631,3 +1631,239 @@ SCENARIO("A profile change whose membership event cannot be serialised sends not
         }
     }
 }
+
+namespace
+{
+
+// A room of @alice:example.org with one message at origin_server_ts 5000 (everything else at 100), and
+// @bob:remote.example.net joined, so another server is in the room to be asked.
+struct RoomWithRemoteMember final
+{
+    std::string alice{};
+    std::string room_id{};
+    std::string message_id{};
+};
+
+[[nodiscard]] auto room_with_remote_member(merovingian::homeserver::ClientServerRuntime& rt) -> RoomWithRemoteMember
+{
+    rt.homeserver.test_frozen_event_clock_ms = 100;
+    auto room = RoomWithRemoteMember{};
+    room.alice = register_and_login(rt, "alice", "CorrectHorse7!", "ALICE1");
+    auto const created = merovingian::homeserver::handle_client_server_request(
+        rt, {"POST", "/_matrix/client/v3/createRoom", room.alice, "{}"});
+    REQUIRE(created.response.status == 200U);
+    room.room_id = response_string_field(created.response.body, "room_id");
+    rt.homeserver.test_frozen_event_clock_ms = 5000;
+    auto const sent = merovingian::homeserver::handle_client_server_request(
+        rt, {"PUT", "/_matrix/client/v3/rooms/" + room.room_id + "/send/m.room.message/ts1", room.alice,
+             R"({"msgtype":"m.text","body":"hello"})"});
+    REQUIRE(sent.response.status == 200U);
+    room.message_id = response_string_field(sent.response.body, "event_id");
+    rt.homeserver.database.persistent_store.memberships.push_back(
+        {room.room_id, "@bob:remote.example.net", "join", 4U});
+    return room;
+}
+
+// A message at origin_server_ts 8000 whose only prev_event this server does not hold: the ADR-0289 graph
+// hole, behind which a closer event may lie.
+auto add_event_behind_a_gap(merovingian::homeserver::ClientServerRuntime& rt, std::string const& room_id) -> void
+{
+    auto gap = merovingian::database::PersistentEvent{};
+    gap.event_id = "$gap:example.org";
+    gap.room_id = room_id;
+    gap.sender_user_id = "@alice:example.org";
+    gap.json =
+        R"({"type":"m.room.message","sender":"@alice:example.org","origin_server_ts":8000,"content":{"body":"x"}})";
+    gap.depth = 50U;
+    gap.stream_ordering = 1000000U;
+    gap.prev_event_ids = {"$missing:example.org"};
+    REQUIRE(rt.homeserver.database.persistent_store.events.push_back(std::move(gap)));
+}
+
+[[nodiscard]] auto timestamp_to_event_get(merovingian::homeserver::ClientServerRuntime& rt,
+                                          RoomWithRemoteMember const& room, std::string const& query)
+    -> merovingian::homeserver::DispatchResult
+{
+    return merovingian::homeserver::handle_client_server_request(
+        rt, {"GET", "/_matrix/client/v1/rooms/" + room.room_id + "/timestamp_to_event?" + query, room.alice, {}});
+}
+
+} // namespace
+
+// Spec: Matrix Client-Server API v1.19, GET /rooms/{roomId}/timestamp_to_event: "If the server does not
+// have all of the room history and does not have an event suitably close to the requested timestamp, it
+// can use the corresponding federation endpoint to ask other servers for a suitable event." Server-Server
+// API v1.19, GET /timestamp_to_event/{roomId}: the answer is used only if its `origin_server_ts` is closer
+// than the local one, and the event is then fetched with `/event/{event_id}`. A remote answer is untrusted.
+// URL: ../../docs/matrix-v1.19-spec/server-server-api.md#get_matrixfederationv1timestamp_to_eventroomid
+SCENARIO("GET /timestamp_to_event asks a server of the room only when its own history may be incomplete",
+         "[homeserver][client-server][timestamp-to-event][fed-endpoints]")
+{
+    GIVEN("a room with a message at 5000 and a remote member, and a remote server that answers with a closer event")
+    {
+        auto started = merovingian::homeserver::start_client_server(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& rt = started.runtime;
+        auto const room = room_with_remote_member(rt);
+
+        auto certificate = merovingian::tests::tls_mock::write_test_tls_certificate("localhost");
+        auto tls = merovingian::homeserver::make_tls_server_context(certificate.certificate_file,
+                                                                    certificate.private_key_file);
+        REQUIRE(tls.ok());
+        auto tls_context = std::move(*tls.context);
+        auto acceptor = merovingian::net::TcpAcceptor{};
+        REQUIRE(acceptor.bind("127.0.0.1", 0U).ok);
+        rt.homeserver.test_forced_outbound_resolution["remote.example.net"] =
+            merovingian::homeserver::TestOnlyForcedOutboundResolution{
+                "localhost", acceptor.bound_port(), {"127.0.0.1"}, certificate.certificate_pem};
+
+        WHEN("the local answer is complete: an event lies after the timestamp and nothing is missing before it")
+        {
+            auto const response = timestamp_to_event_get(rt, room, "ts=1000&dir=f");
+
+            THEN("it is answered locally without asking anybody")
+            {
+                // No mock server thread runs: a call to the remote would fail to connect and be logged.
+                REQUIRE(response.response.status == 200U);
+                REQUIRE(response.response.body.find(room.message_id) != std::string::npos);
+                REQUIRE(response.response.body.find("\"origin_server_ts\":5000") != std::string::npos);
+            }
+        }
+
+        WHEN("no local event lies after the timestamp and the remote server has none either")
+        {
+            auto const not_found = merovingian::tests::tls_mock::json_http_response(
+                "404 Not Found", R"({"errcode":"M_NOT_FOUND","error":"no event"})");
+            auto const responses = std::vector<std::pair<std::string, std::string>>{
+                {"timestamp_to_event", not_found}
+            };
+            auto captured = std::vector<std::string>{};
+            auto server_thread = std::thread{[&]() {
+                merovingian::tests::tls_mock::run_path_dispatch_tls_server(acceptor, tls_context, responses, &captured);
+            }};
+            auto const join_server = merovingian::tests::tls_mock::ScopedThreadJoin{server_thread};
+            auto const response = timestamp_to_event_get(rt, room, "ts=999999&dir=f");
+
+            THEN("one server is asked, with the timestamp and direction, and the client gets 404 M_NOT_FOUND")
+            {
+                REQUIRE(response.response.status == 404U);
+                REQUIRE(response.response.body.find("M_NOT_FOUND") != std::string::npos);
+                REQUIRE(captured.size() == 1U);
+                REQUIRE(captured[0].find("GET /_matrix/federation/v1/timestamp_to_event/") == 0U);
+                REQUIRE(captured[0].find("?ts=999999&dir=f") != std::string::npos);
+            }
+        }
+
+        WHEN("the remote server names an event on the wrong side of the timestamp")
+        {
+            auto const wrong_side = merovingian::tests::tls_mock::json_http_response(
+                "200 OK", R"({"event_id":"$early:remote.example.net","origin_server_ts":10})");
+            auto const responses = std::vector<std::pair<std::string, std::string>>{
+                {"timestamp_to_event", wrong_side}
+            };
+            auto captured = std::vector<std::string>{};
+            auto server_thread = std::thread{[&]() {
+                merovingian::tests::tls_mock::run_path_dispatch_tls_server(acceptor, tls_context, responses, &captured);
+            }};
+            auto const join_server = merovingian::tests::tls_mock::ScopedThreadJoin{server_thread};
+            auto const response = timestamp_to_event_get(rt, room, "ts=999999&dir=f");
+
+            THEN("the answer is not used and the event is not even fetched")
+            {
+                REQUIRE(response.response.status == 404U);
+                REQUIRE(captured.size() == 1U);
+            }
+        }
+
+        WHEN("the local answer lies behind a gap and the remote server names a closer event it then cannot serve")
+        {
+            add_event_behind_a_gap(rt, room.room_id);
+            auto const closer = merovingian::tests::tls_mock::json_http_response(
+                "200 OK", R"({"event_id":"$closer:remote.example.net","origin_server_ts":7500})");
+            auto const gone = merovingian::tests::tls_mock::json_http_response(
+                "404 Not Found", R"({"errcode":"M_NOT_FOUND","error":"no such event"})");
+            auto const responses = std::vector<std::pair<std::string, std::string>>{
+                {"timestamp_to_event", closer},
+                {"/event/",            gone  }
+            };
+            auto captured = std::vector<std::string>{};
+            auto server_thread = std::thread{[&]() {
+                merovingian::tests::tls_mock::run_path_dispatch_tls_server(acceptor, tls_context, responses, &captured);
+            }};
+            auto const join_server = merovingian::tests::tls_mock::ScopedThreadJoin{server_thread};
+            auto const response = timestamp_to_event_get(rt, room, "ts=7000&dir=f");
+
+            THEN("the event is asked for by ID, and failing to get it the client is given the local answer")
+            {
+                REQUIRE(response.response.status == 200U);
+                REQUIRE(response.response.body.find("$gap:example.org") != std::string::npos);
+                REQUIRE(response.response.body.find("closer") == std::string::npos);
+                REQUIRE(captured.size() == 2U);
+                REQUIRE(captured[1].find("GET /_matrix/federation/v1/event/") == 0U);
+                REQUIRE(captured[1].find("closer") != std::string::npos);
+            }
+        }
+
+        WHEN("the remote server names a farther event than the one behind the gap")
+        {
+            add_event_behind_a_gap(rt, room.room_id);
+            auto const farther = merovingian::tests::tls_mock::json_http_response(
+                "200 OK", R"({"event_id":"$farther:remote.example.net","origin_server_ts":9000})");
+            auto const responses = std::vector<std::pair<std::string, std::string>>{
+                {"timestamp_to_event", farther}
+            };
+            auto captured = std::vector<std::string>{};
+            auto server_thread = std::thread{[&]() {
+                merovingian::tests::tls_mock::run_path_dispatch_tls_server(acceptor, tls_context, responses, &captured);
+            }};
+            auto const join_server = merovingian::tests::tls_mock::ScopedThreadJoin{server_thread};
+            auto const response = timestamp_to_event_get(rt, room, "ts=7000&dir=f");
+
+            THEN("it is ignored: the local event is closer, and nothing is fetched")
+            {
+                REQUIRE(response.response.status == 200U);
+                REQUIRE(response.response.body.find("$gap:example.org") != std::string::npos);
+                REQUIRE(captured.size() == 1U);
+            }
+        }
+    }
+}
+
+// ADR-0079: a client request that calls another server holds a slot of the client-outbound budget, and is
+// refused with 429 M_LIMIT_EXCEEDED when there is none, before any outbound call. With an answer in hand
+// the request does not need the remote improvement and is answered locally instead.
+SCENARIO("GET /timestamp_to_event does not call another server without a client-outbound slot",
+         "[homeserver][client-server][timestamp-to-event][adr-0079]")
+{
+    GIVEN("a room with a remote member, and a budget with no slot to give")
+    {
+        auto started = merovingian::homeserver::start_client_server(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& rt = started.runtime;
+        auto const room = room_with_remote_member(rt);
+        add_event_behind_a_gap(rt, room.room_id);
+        rt.homeserver.client_outbound_proxy_policy.global_cap = 0U;
+
+        WHEN("no local event lies after the timestamp")
+        {
+            auto const response = timestamp_to_event_get(rt, room, "ts=999999&dir=f");
+
+            THEN("the client is told to retry shortly")
+            {
+                REQUIRE(response.response.status == 429U);
+                REQUIRE(response.response.body.find("M_LIMIT_EXCEEDED") != std::string::npos);
+            }
+        }
+
+        WHEN("the local answer lies behind a gap")
+        {
+            auto const response = timestamp_to_event_get(rt, room, "ts=7000&dir=f");
+
+            THEN("the client is given the local answer")
+            {
+                REQUIRE(response.response.status == 200U);
+                REQUIRE(response.response.body.find("$gap:example.org") != std::string::npos);
+            }
+        }
+    }
+}

@@ -3,6 +3,7 @@
 #pragma once
 
 #include "merovingian/crypto/ed25519.hpp"
+#include "merovingian/database/event_table.hpp"
 #include "merovingian/events/event.hpp"
 #include "merovingian/federation/inbound_ingestion.hpp"
 #include "merovingian/federation/membership_endpoints.hpp"
@@ -220,6 +221,11 @@ using EventAuthQueryProvider =
     std::function<RoomReadResult(std::string_view room_id, std::string_view event_id, std::string_view origin)>;
 using MissingEventsQueryProvider =
     std::function<RoomReadResult(std::string_view room_id, std::string_view request_body, std::string_view origin)>;
+// `GET /timestamp_to_event/{roomId}?ts=&dir=`: the room, the timestamp in milliseconds, the direction and
+// the authenticated origin. The handler has already parsed `ts` and `dir`; the provider decides the
+// access of the origin (`forbidden`) and finds the event (`not_found` when there is none).
+using TimestampToEventQueryProvider = std::function<RoomReadResult(
+    std::string_view room_id, std::int64_t ts, database::TimeDirection direction, std::string_view origin)>;
 
 // Returns the canonical-JSON body for an inbound `GET /_matrix/federation/v1/hierarchy/{roomId}`
 // request. The `room_id` path component is already percent-decoded; `suggested_only` reflects the
@@ -387,6 +393,7 @@ struct FederationRuntimeState final
     StateIdsQueryProvider state_ids_query_provider{};
     EventAuthQueryProvider event_auth_query_provider{};
     MissingEventsQueryProvider missing_events_query_provider{};
+    TimestampToEventQueryProvider timestamp_to_event_query_provider{};
     // Optional resolver for inbound space hierarchy. When unset the handler
     // responds 501 Not Implemented.
     SpaceHierarchyProvider space_hierarchy_provider{};

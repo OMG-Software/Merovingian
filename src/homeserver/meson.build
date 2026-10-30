@@ -24,6 +24,7 @@ homeserver_sources = files(
   'push_rule_unread_classifier.cpp',
   'remote_media_fetch_coalescer.cpp',
   'redaction_service.cpp',
+  'remote_timestamp_event.cpp',
   'room_power.cpp',
   'stored_room_version.cpp',
   'remote_media_fetch_scope.cpp',

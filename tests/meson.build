@@ -252,6 +252,7 @@ shell = find_program('sh')
       'unit/test_event_auth_rejected_fallback.cpp',
       'unit/test_membership_acceptor_receipt_checks.cpp',
       'unit/test_remote_membership_device_lists.cpp',
+      'unit/test_remote_timestamp_event.cpp',
       'unit/test_restricted_join_resident.cpp',
       'unit/test_federation_invite_join.cpp',
       'unit/test_federation_key_query.cpp',

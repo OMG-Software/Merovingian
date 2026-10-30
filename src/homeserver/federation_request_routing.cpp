@@ -72,6 +72,7 @@ namespace
             "/_matrix/federation/v1/event_auth/",
             "/_matrix/federation/v1/backfill/",
             "/_matrix/federation/v1/get_missing_events/",
+            "/_matrix/federation/v1/timestamp_to_event/",
             "/_matrix/federation/v1/make_join/",
             "/_matrix/federation/v1/send_join/",
             "/_matrix/federation/v1/make_leave/",
@@ -224,7 +225,7 @@ auto federation_worker_room_read_may_fallback_to_main(LocalHttpRequest const& re
     static auto const prefixes = std::vector<std::string_view>{
         "/_matrix/federation/v1/state/",      "/_matrix/federation/v1/state_ids/",
         "/_matrix/federation/v1/backfill/",   "/_matrix/federation/v1/get_missing_events/",
-        "/_matrix/federation/v1/event_auth/",
+        "/_matrix/federation/v1/event_auth/", "/_matrix/federation/v1/timestamp_to_event/",
     };
     return std::ranges::any_of(prefixes, [&path](std::string_view prefix) {
         return path.starts_with(prefix);
