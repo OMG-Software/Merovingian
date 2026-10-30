@@ -6423,12 +6423,6 @@ namespace
         // leave in this server's own records, and nothing is sent.
         auto reject_locally = false;
         auto const exchange = MembershipExchangeClaim{runtime, room_id, *user_id};
-        // Read with runtime.mutex held: the exchange below runs with it released, and nothing in
-        // the store may be read there (ADR-0294 decides from this whether the leave is kept as an
-        // outlier). Held state counts only while it is current (ADR-0301): after the last local
-        // member left, no resident sends this server the leave, so it must be kept here.
-        auto const room_state_current =
-            room_state_is_current(runtime.database.persistent_store, room_id, runtime.config.server().server_name);
 
         // The whole remote-leave exchange runs with runtime.mutex released:
         // three federation round trips must not freeze every other request.
@@ -6577,7 +6571,9 @@ namespace
                     return make_operation_result(false, {}, "event_id computation failed", 500U);
                 }
 
-                if (rejecting_invite && !room_state_current)
+                // Built for every rejection; whether it is kept is decided once the exchange is over and
+                // runtime.mutex is back (below), since the room's residency can change during it.
+                if (rejecting_invite)
                 {
                     auto const ids_of = [&event_object](std::string_view key) {
                         auto ids = std::vector<std::string>{};
@@ -6634,6 +6630,16 @@ namespace
             },
                            observability::LogEventSeverity::warning);
             return make_operation_result(false, {}, "send_leave failed: " + send_body, 502U);
+        }
+
+        // ADR-0294, ADR-0301: keep the rejecting leave as an outlier only when this server's held state for the
+        // room is not current now. Judged after the exchange, with runtime.mutex held: another local user may
+        // have joined or left while it was released. While the state is current, a resident sends this server
+        // the leave in a transaction; otherwise nothing will, and /sync would have no leave event to report.
+        if (leave_outlier.has_value() &&
+            room_state_is_current(runtime.database.persistent_store, room_id, runtime.config.server().server_name))
+        {
+            leave_outlier.reset();
         }
 
         // Step 5: update local membership, device lists and in-memory state. DB-4:

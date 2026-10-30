@@ -58,7 +58,8 @@ Fixes for the failures Complement run 12 found against main at 0.12.63.
   for one within its deadline; with none the invite is queued for retry (ADR-0307).
 - Rejecting a remote invite keeps the leave as an outlier whenever this server's held state for the room is
   not current (no local user joined, ADR-0301), not only when it holds no state at all, so `/sync` reports
-  the leave.
+  the leave. It is judged after the `make_leave`/`send_leave` exchange, with `runtime.mutex` held again: a
+  local user who joined or left while it was released changes the answer.
 - A join made through another resident (ADR-0287) succeeds only if the stored join is the user's current
   member event, whether the sink accepted it now or already held it.
 - In a `shared` room, a user who joined sees the history this server fetches for them (backfill, `/messages`,
