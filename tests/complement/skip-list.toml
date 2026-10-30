@@ -627,3 +627,11 @@ mode = "expect-fail"
 category = "non-spec"
 spec = "docs/matrix-v1.19-spec/server-server-api.md#backfilling-and-retrieving-missing-events"
 reason = "After the second /get_missing_events answers {}, this server asks GET /event and /state_ids for the missing history, which the spec permits and the A8 recovery does; the test's mock server treats any request it did not script as an error. The bad-JSON event itself is ignored as the test intends."
+
+[[entry]]
+test = "TestFederationRoomsInvite/Parallel/Invited_user_has_'is_direct'_flag_in_prev_content_after_joining"
+package = "tests"
+mode = "expect-fail"
+category = "non-spec"
+spec = "docs/matrix-v1.19-spec/client-server-api.md#get_matrixclientv3sync"
+reason = "Also requires unsigned.prev_sender, which v1.19's ClientEvent unsigned does not define; unsigned.prev_content (the invite's content, is_direct included) and replaces_state are returned (ADR-0304)."
