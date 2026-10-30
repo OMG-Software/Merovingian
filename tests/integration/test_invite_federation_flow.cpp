@@ -1383,6 +1383,22 @@ SCENARIO("An invite to a user of another server is offered to that server before
                 REQUIRE(queued_memberships_for(runtime, remote_server, bob).empty());
             }
         }
+
+        WHEN("alice invites bob, bob's server cannot be reached, and nothing more can be queued for it")
+        {
+            // A worker that is shutting down refuses every transaction, as a full queue or a full
+            // destination share does.
+            runtime.homeserver.dispatch_worker->request_shutdown();
+            auto const invited = call(runtime, "POST", invite_target, alice, invite_body);
+
+            THEN("alice is refused, since the invite was neither delivered nor queued, and nothing is stored")
+            {
+                CAPTURE(invited.response.body);
+                REQUIRE(invited.response.status == 503U);
+                REQUIRE(membership_row(runtime, room_id, bob).empty());
+                REQUIRE(queued_memberships_for(runtime, remote_server, bob).empty());
+            }
+        }
     }
 }
 
@@ -1492,6 +1508,90 @@ SCENARIO("A rejected remote invite appears under rooms.leave of the next increme
                 REQUIRE(left_room != nullptr);
                 // The client learns it left from a member event for itself with membership "leave", in
                 // the timeline or the state; the invite that preceded it does not say so.
+                auto reports_leave = false;
+                for (auto const section : {"state", "timeline"})
+                {
+                    auto const* part = object_member_as_object(*left_room, section);
+                    auto const* events = part == nullptr ? nullptr : object_member_as_array(*part, "events");
+                    for (auto const& entry : events == nullptr ? merovingian::canonicaljson::Array{} : *events)
+                    {
+                        auto const* event = std::get_if<merovingian::canonicaljson::Object>(&entry.storage());
+                        auto const* state_key = event == nullptr ? nullptr : string_member(*event, "state_key");
+                        auto const* content = event == nullptr ? nullptr : object_member_as_object(*event, "content");
+                        auto const* membership = content == nullptr ? nullptr : string_member(*content, "membership");
+                        reports_leave = reports_leave || (state_key != nullptr && *state_key == alice.user_id &&
+                                                          membership != nullptr && *membership == "leave");
+                    }
+                }
+                REQUIRE(reports_leave);
+            }
+        }
+    }
+}
+
+// Spec: as above. ADR-0301: state this server kept after its last local member left is not current, so
+// the leave that rejects an invite to such a room reaches this server through no transaction (no
+// resident sends it to a server with no joined member) and must be kept as an outlier, like the leave
+// for a room whose state was never held (ADR-0294).
+SCENARIO("A rejected remote invite to a room whose held state is stale appears under rooms.leave",
+         "[integration][federation][invite][reject-invite][reject-invite-sync][adr-0301]")
+{
+    GIVEN("alice, invited by a user of another server to a room whose create event this server still holds "
+          "but no local user is joined to, and a sync that showed the invite")
+    {
+        REQUIRE(sodium_init() >= 0);
+        auto started = merovingian::homeserver::start_client_server(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        auto const alice = invited_user(runtime);
+        auto inviter = InvitingServer{runtime};
+        {
+            // Stale state left from an earlier stay: the room's create event, and no local join.
+            auto const lock = std::lock_guard{runtime.homeserver.mutex};
+            auto& store = runtime.homeserver.database.persistent_store;
+            auto const creator = "@inviter:" + std::string{inviting_server};
+            auto create = merovingian::database::PersistentEvent{};
+            create.event_id = "$create:" + std::string{inviting_server};
+            create.room_id = alice.room_id;
+            create.sender_user_id = creator;
+            create.json = R"({"auth_events":[],"content":{"room_version":"12"},"depth":1,"origin_server_ts":0,)"
+                          R"("prev_events":[],"room_id":")" +
+                          alice.room_id + R"(","sender":")" + creator + R"(","state_key":"","type":"m.room.create"})";
+            create.status = "accepted";
+            REQUIRE(store.events.push_back(std::move(create)));
+            store.state.push_back({alice.room_id, "m.room.create", "", "$create:" + std::string{inviting_server}});
+        }
+        auto const first = call(runtime, "GET", "/_matrix/client/v3/sync", alice.token);
+        REQUIRE(first.response.status == 200U);
+        auto const since = std::string{*string_member(parse_object(first.response.body), "next_batch")};
+
+        WHEN("alice rejects the invite and the inviting server accepts the leave")
+        {
+            auto server = std::thread{[&]() {
+                merovingian::tests::tls_mock::run_path_dispatch_tls_server(
+                    inviter.acceptor, *inviter.tls.context,
+                    {
+                        {"/make_leave/",
+                         merovingian::tests::tls_mock::json_http_response("200 OK",                 make_leave_template(alice))},
+                        {"/send_leave/", merovingian::tests::tls_mock::json_http_response("200 OK", "{}")                      }
+                });
+            }};
+            auto const left =
+                call(runtime, "POST", "/_matrix/client/v3/rooms/" + std::string{bare_room_id_encoded} + "/leave",
+                     alice.token, "{}");
+            server.join();
+            REQUIRE(left.response.status == 200U);
+            auto const next = call(runtime, "GET", "/_matrix/client/v3/sync?since=" + since, alice.token);
+
+            THEN("the next sync reports alice's leave under rooms.leave")
+            {
+                REQUIRE(next.response.status == 200U);
+                auto const body = parse_object(next.response.body);
+                auto const* rooms = object_member_as_object(body, "rooms");
+                auto const* leave = rooms == nullptr ? nullptr : object_member_as_object(*rooms, "leave");
+                REQUIRE(leave != nullptr);
+                auto const* left_room = object_member_as_object(*leave, alice.room_id);
+                REQUIRE(left_room != nullptr);
                 auto reports_leave = false;
                 for (auto const section : {"state", "timeline"})
                 {
