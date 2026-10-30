@@ -10337,9 +10337,10 @@ namespace
         result.found = true;
         result.event_id = nearest.event->event_id;
         result.origin_server_ts = *event_ts;
-        result.at_gap = !std::ranges::all_of(nearest.event->prev_event_ids, [&store](std::string const& prev) {
-            return event_is_held(store, prev);
-        });
+        result.at_gap =
+            !std::ranges::all_of(nearest.event->prev_event_ids, [&store, &visibility](std::string const& prev) {
+                return event_is_held(store, visibility, prev);
+            });
         return result;
     }
 
