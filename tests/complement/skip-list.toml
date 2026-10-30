@@ -573,6 +573,7 @@ mode = "expect-fail"
 category = "non-spec"
 spec = "docs/matrix-v1.19-spec/client-server-api.md#get_matrixclientv3sync"
 reason = "Requires device_lists.changed to equal exactly [alice]; the remote user's join-time m.device_list_update EDU (which the spec makes the remote server send) lands milliseconds later and is reported too, which the `changed` definition allows."
+signed_off_by = "James Chapman, 2026-10-30"
 
 [[entry]]
 test = "TestDeviceListsUpdateOverFederation/interrupted_connectivity"
@@ -581,6 +582,7 @@ mode = "expect-fail"
 category = "non-spec"
 spec = "docs/matrix-v1.19-spec/client-server-api.md#get_matrixclientv3sync"
 reason = "Same strict device_lists.changed equality as good_connectivity, broken by the same spec-mandated join-time EDU arriving just after the share-start change."
+signed_off_by = "James Chapman, 2026-10-30"
 
 [[entry]]
 test = "TestDeviceListsUpdateOverFederation/stopped_server"
@@ -589,6 +591,7 @@ mode = "expect-fail"
 category = "non-spec"
 spec = "docs/matrix-v1.19-spec/client-server-api.md#get_matrixclientv3sync"
 reason = "Same strict device_lists.changed equality as good_connectivity, broken by the same spec-mandated join-time EDU arriving just after the share-start change."
+signed_off_by = "James Chapman, 2026-10-30"
 
 [[entry]]
 test = "TestDeviceManagement/DELETE_/device/{deviceId}_requires_UI_auth_user_to_match_device_owner"
@@ -615,6 +618,7 @@ mode = "expect-fail"
 category = "non-spec"
 spec = "docs/matrix-v1.19-spec/client-server-api.md#post_matrixclientv3createroom"
 reason = "Has a member at power level 0 invite in a private_chat room; this server's generated m.room.power_levels sets invite to 50 (owner decision 2026-10-30), and v1.19 leaves the generated content to the server (power_level_content_override applies on top of it), so the invite is refused before the rescind check."
+signed_off_by = "James Chapman, 2026-10-30"
 
 [[entry]]
 test = "TestOutboundFederationIgnoresMissingEventWithBadJSONForRoomVersion6"
