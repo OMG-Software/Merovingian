@@ -1266,7 +1266,7 @@ SCENARIO("An invite to a user of another server is offered to that server before
                 auto const stored = stored_member_json(runtime, room_id, bob);
                 CAPTURE(stored);
                 REQUIRE(stored.find(invitee_signature_marker) != std::string::npos);
-                REQUIRE(stored.find(R"("local.example.org":{")") != std::string::npos);
+                REQUIRE(stored.find(R"("signatures":{"example.org":{"ed25519:)") != std::string::npos);
                 auto const sent_to_delia = queued_bodies(runtime, remote_server, "/send/");
                 REQUIRE_FALSE(sent_to_delia.empty());
                 REQUIRE(std::ranges::any_of(sent_to_delia, [](std::string const& body) {
@@ -1348,7 +1348,7 @@ SCENARIO("A createRoom invite to a user of another server reaches that server be
                 auto const stored = stored_member_json(runtime, room_id, bob);
                 CAPTURE(stored);
                 REQUIRE(stored.find(invitee_signature_marker) != std::string::npos);
-                REQUIRE(stored.find(R"("local.example.org":{")") != std::string::npos);
+                REQUIRE(stored.find(R"("signatures":{"example.org":{"ed25519:)") != std::string::npos);
             }
         }
 
