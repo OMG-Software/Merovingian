@@ -220,6 +220,9 @@ nothing else decides what a user may see** (ADR-0084; audit CSAZ-2, CSAZ-3).
   rejected or soft-failed event means not visible. Never substitute the room's current state.
   An event with no state group (pre-ADR-0064 history) is judged by rule 2 alone from the user's
   own membership timeline; an undeterminable timeline denies.
+  The one exception is the user's own `m.room.member` event held as an outlier with no state group
+  (a received invite, the leave that rejected it): it is visible to that user, who was sent it already
+  (ADR-0304). Do not widen it to other events or other users.
 - `room_read_access_for(store, room, user)` (`room_read_access.hpp`) answers "what room state
   may this user read?": `current` (joined), `as_of` (was joined and left, was kicked or banned:
   the state recorded at the event that ended the join, `boundary_event_id`), or `none` (knock,

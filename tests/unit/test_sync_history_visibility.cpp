@@ -755,3 +755,45 @@ SCENARIO("HistoryVisibility judges an event with no state group by the user's ow
         }
     }
 }
+
+// Spec: Client-Server API v1.19, "Room History Visibility" and "Joining rooms"/invites: an invitee is sent
+// their invite (the `invite` section of /sync), so the content of their own m.room.member event is
+// theirs to see. An invite this server received for a room it holds no state for is kept as an outlier
+// with no state group (ADR-0294 does the same for the leave that rejects one), so the state at the
+// event cannot be read. The user's own outlier membership event is visible to that user; nothing else
+// about such an event changes (ADR-0304). ClientEvent `unsigned.prev_content` depends on it after a
+// federated join replaces the invite.
+SCENARIO("HistoryVisibility shows a user their own outlier membership event with no state group",
+         "[sync][history-visibility][prev-content][security]")
+{
+    GIVEN("outlier invites for bob and for carol, and an outlier message, none with a state group, bob never joined")
+    {
+        auto store = PersistentStore{};
+        add_event(store, "$bob_invite", member_json(bob, "invite"), 5U, "outlier");
+        add_event(store, "$carol_invite", member_json("@carol:example.org", "invite"), 6U, "outlier");
+        add_event(store, "$outlier_msg", R"({"type":"m.room.message","content":{}})", 7U, "outlier");
+
+        WHEN("bob asks about each")
+        {
+            auto filter = HistoryVisibility{store, bob};
+
+            THEN("he sees his own invite, and neither carol's invite nor the message")
+            {
+                REQUIRE(filter.can_see_event_id("$bob_invite"));
+                REQUIRE_FALSE(filter.can_see_event_id("$carol_invite"));
+                REQUIRE_FALSE(filter.can_see_event_id("$outlier_msg"));
+            }
+        }
+
+        WHEN("carol asks about bob's invite")
+        {
+            auto filter = HistoryVisibility{store, "@carol:example.org"};
+
+            THEN("it is not hers, so she does not see it")
+            {
+                REQUIRE_FALSE(filter.can_see_event_id("$bob_invite"));
+                REQUIRE(filter.can_see_event_id("$carol_invite"));
+            }
+        }
+    }
+}

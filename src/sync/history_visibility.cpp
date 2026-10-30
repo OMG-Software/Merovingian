@@ -22,6 +22,32 @@ namespace
     constexpr auto history_visibility_type = std::string_view{"m.room.history_visibility"};
     constexpr auto member_type = std::string_view{"m.room.member"};
 
+    // Whether a stored event's JSON is an m.room.member event whose state_key is `user_id`.
+    [[nodiscard]] auto is_membership_of(std::string_view event_json, std::string_view user_id) -> bool
+    {
+        auto const parsed = canonicaljson::parse_lossless(event_json);
+        auto const* event = std::get_if<canonicaljson::Object>(&parsed.value.storage());
+        if (parsed.error != canonicaljson::ParseError::none || event == nullptr)
+        {
+            return false;
+        }
+        auto type_matches = false;
+        auto key_matches = false;
+        for (auto const& member : *event)
+        {
+            auto const* text = std::get_if<std::string>(&member.value->storage());
+            if (member.key == "type")
+            {
+                type_matches = text != nullptr && *text == member_type;
+            }
+            else if (member.key == "state_key")
+            {
+                key_matches = text != nullptr && *text == user_id;
+            }
+        }
+        return type_matches && key_matches;
+    }
+
     // The string at `content.<key>` of a stored event's JSON.
     [[nodiscard]] auto content_string_of(std::string_view event_json, std::string_view key)
         -> std::optional<std::string>
@@ -442,6 +468,14 @@ auto HistoryVisibility::can_see(database::PersistentEvent const& event) -> bool
     auto const group_id = state_group_of(event.event_id);
     if (!group_id.has_value())
     {
+        // ADR-0304: the user's own membership event held as an outlier (an invite received for a room
+        // whose state is not held, or the leave that rejected one, ADR-0294) has no recorded state. The
+        // user was sent it already (the invite in /sync, the leave in rooms.leave), so it is theirs to
+        // see. This covers no other event and no other user.
+        if (event.status == "outlier" && is_membership_of(event.json, user_id_))
+        {
+            return true;
+        }
         // No recorded state (history from before ADR-0064): the visibility at the time cannot
         // be proved, so only rule 2 applies, judged from the user's own membership timeline.
         return joined_when_sent(event);
