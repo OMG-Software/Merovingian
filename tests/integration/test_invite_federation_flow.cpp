@@ -835,6 +835,79 @@ SCENARIO("An invite withdrawn by the server that sent it is rescinded for the in
     }
 }
 
+// ADR-0301: state this server kept after its last user left is not current, so an invite for that room
+// is stored as an outlier, like one for a room never held. The inviter's withdrawal of it must then be
+// rescinded the same way, not taken through ordinary receipt checks that need history this server
+// lacks. Complement TestFederationRoomsInvite, "Inviter user can rescind invite over federation", after
+// a leave.
+SCENARIO("An invite to a room whose held state is stale is rescinded by the server that sent it",
+         "[integration][federation][invite][rescind-invite][inbound-rescind][adr-0301]")
+{
+    GIVEN("carol of this server, invited to a room whose create event this server still holds but no local user "
+          "is joined to")
+    {
+        REQUIRE(sodium_init() >= 0);
+        auto started = merovingian::homeserver::start_client_server(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        merovingian::homeserver::wire_federation_callbacks(runtime.homeserver);
+        auto const carol = register_user(runtime, "carol");
+        auto const carol_id = "@carol:" + std::string{runtime.homeserver.config.server().server_name};
+        auto const bob = std::string{"@bob:"} + std::string{remote_server};
+        auto const room_id = std::string{bare_room_id};
+        // Stale state left from an earlier stay: the room's create event, and no local join.
+        auto& store = runtime.homeserver.database.persistent_store;
+        auto create = merovingian::database::PersistentEvent{};
+        create.event_id = "$create:" + std::string{remote_server};
+        create.room_id = room_id;
+        create.sender_user_id = bob;
+        create.json = R"({"auth_events":[],"content":{"room_version":"12"},"depth":1,"origin_server_ts":0,)"
+                      R"("prev_events":[],"room_id":")" +
+                      room_id + R"(","sender":")" + bob + R"(","state_key":"","type":"m.room.create"})";
+        create.status = "accepted";
+        REQUIRE(store.events.push_back(std::move(create)));
+        store.state.push_back({room_id, "m.room.create", "", "$create:" + std::string{remote_server}});
+
+        auto invite = merovingian::federation::InviteRequest{};
+        invite.room_id = room_id;
+        invite.event_id = "$invite:" + std::string{remote_server};
+        invite.room_version = "12";
+        invite.origin = std::string{remote_server};
+        invite.invite_event_json =
+            R"({"auth_events":[],"content":{"membership":"invite"},"depth":3,"origin_server_ts":1,"prev_events":[],)"
+            R"("room_id":")" +
+            room_id + R"(","sender":")" + bob + R"(","state_key":")" + carol_id + R"(","type":"m.room.member"})";
+        REQUIRE(runtime.homeserver.federation.invite_handler(invite).accepted);
+        REQUIRE(sync_invites_room(runtime, carol, room_id));
+
+        WHEN("the inviter's server sends the leave that withdraws the invite")
+        {
+            auto envelope = merovingian::federation::InboundPduEnvelope{};
+            envelope.event_id = "$rescind:" + std::string{remote_server};
+            envelope.room_id = room_id;
+            envelope.sender = bob;
+            envelope.event_type = "m.room.member";
+            envelope.state_key = carol_id;
+            envelope.depth = 4U;
+            envelope.origin = std::string{remote_server};
+            envelope.room_version = "12";
+            envelope.prev_event_ids = {invite.event_id};
+            envelope.json = R"({"auth_events":[],"content":{"membership":"leave"},"depth":4,"origin_server_ts":2,)"
+                            R"("prev_events":[")" +
+                            invite.event_id + R"("],"room_id":")" + room_id + R"(","sender":")" + bob +
+                            R"(","state_key":")" + carol_id + R"(","type":"m.room.member"})";
+            auto const result = runtime.homeserver.federation.pdu_sink(envelope);
+
+            THEN("carol is no longer invited")
+            {
+                CAPTURE(result.reason);
+                REQUIRE(membership_row(runtime, room_id, carol_id) == "leave");
+                REQUIRE_FALSE(sync_invites_room(runtime, carol, room_id));
+            }
+        }
+    }
+}
+
 // Spec: Matrix Server-Server API v1.19, PUT /v1/send_knock: `knock_room_state` is "Required" and "MUST
 // contain the `m.room.create` event for the room. All events listed MUST additionally be formatted
 // according to the room version specification." Changed in v1.16. As the resident, this server fills

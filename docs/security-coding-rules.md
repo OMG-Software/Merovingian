@@ -720,6 +720,15 @@ quickly finding everything a given `AGENTS.md` file contributed.
   Why: it holds a request-pool thread for up to the appservice timeout (ADR-0079).
   Source: `src/homeserver/AGENTS.md`.
 
+- **An appservice's `?ts=` reaches the event composer only through `LocalHttpRequest::origin_server_ts`,
+  which the dispatcher clears on every request and sets only for a validated masquerade (as_token)
+  request on `PUT /send` and `PUT /state`. Never pass `ts` on through the rewritten target's query
+  string** (ADR-0303).
+  Why: the internal `POST /rooms/{roomId}/send` route also accepts a caller's own query string, so a
+  `ts` carried there would let any user set an event's `origin_server_ts`, which `/timestamp_to_event`,
+  clients' timelines and other servers trust as the sending time.
+  Source: `src/appservice/AGENTS.md`.
+
 ## Identity Service client
 
 - **Every Identity Service host must resolve to SSRF-safe pinned addresses via

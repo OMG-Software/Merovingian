@@ -6419,6 +6419,10 @@ namespace
         // leave in this server's own records, and nothing is sent.
         auto reject_locally = false;
         auto const exchange = MembershipExchangeClaim{runtime, room_id, *user_id};
+        // Read with runtime.mutex held: the exchange below runs with it released, and nothing in
+        // the store may be read there (ADR-0294 decides from this whether the leave is kept as an
+        // outlier).
+        auto const room_state_held = stored_room_version(runtime.database.persistent_store, room_id).has_value();
 
         // The whole remote-leave exchange runs with runtime.mutex released:
         // three federation round trips must not freeze every other request.
@@ -6567,7 +6571,7 @@ namespace
                     return make_operation_result(false, {}, "event_id computation failed", 500U);
                 }
 
-                if (rejecting_invite && !stored_room_version(runtime.database.persistent_store, room_id).has_value())
+                if (rejecting_invite && !room_state_held)
                 {
                     auto const ids_of = [&event_object](std::string_view key) {
                         auto ids = std::vector<std::string>{};

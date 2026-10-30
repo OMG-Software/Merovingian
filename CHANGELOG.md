@@ -28,7 +28,11 @@ Fixes for the failures Complement run 12 found against main at 0.12.63.
 - Held room state counts as current only while a user of this server is joined to the room: an invite
   for a user who left through a federated leave is no longer refused as "already joined", and `/sync`
   does not show a remote invite for a room this server is in until the room's state holds the invite
-  event (ADR-0301). Sliding sync does not apply this gate yet.
+  event (ADR-0301). Sliding sync does not apply this gate yet. The inviter's withdrawal of such an
+  invite takes the same test (`room_state_is_current`), so it is rescinded even when the room's create
+  event is still held from an earlier stay.
+- Rejecting a remote invite reads whether the room's state is held before releasing `runtime.mutex`,
+  never during the federation exchange.
 - `GET /_matrix/federation/v1/timestamp_to_event/{roomId}` is served by the federation worker and
   applies the requesting server's room access and history visibility like the other federation reads.
 - This server neither serves nor consults notary key servers; `/_matrix/key/v2/query` is an unknown

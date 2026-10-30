@@ -668,6 +668,26 @@ namespace
         return auth::user_id_server_name(user_id);
     }
 
+    // ADR-0301: whether this server's held state for `room_id` is current, so an inbound invite is
+    // judged against it and a leave for an invited user is ordinary room history. It needs the room's
+    // create event AND a user of this server joined to the room: state kept after the last local user
+    // left through a federated leave is stale (only a membership row recorded the leave). The invite
+    // handler and `rescind_invite_from_inviter` must agree, or an invite stored as an outlier cannot be
+    // rescinded.
+    [[nodiscard]] auto room_state_is_current(HomeserverRuntime const& runtime, std::string_view room_id) -> bool
+    {
+        auto const& store = runtime.database.persistent_store;
+        if (std::holds_alternative<std::nullptr_t>(create_event_json_for_room(store, room_id).storage()))
+        {
+            return false;
+        }
+        auto const& our_server = runtime.config.server().server_name;
+        return std::ranges::any_of(store.memberships, [&](database::PersistentMembership const& membership) {
+            return membership.room_id == room_id && membership.membership == "join" &&
+                   server_name_from_user_id(membership.user_id) == our_server;
+        });
+    }
+
     [[nodiscard]] auto local_user_exists(LocalDatabase const& database, std::string_view user_id) noexcept -> bool
     {
         return std::ranges::any_of(database.users, [&](LocalUser const& user) {
@@ -2885,14 +2905,7 @@ namespace
             // would refuse the user's own re-invite ("cannot invite already-joined user"). The room
             // counts as held only while a user of this server is joined to it, as for restricted
             // joins; a banned target is still refused by the membership row check below (ADR-0301).
-            auto const room_known_locally =
-                !std::holds_alternative<std::nullptr_t>(
-                    create_event_json_for_room(rt->database.persistent_store, invite.room_id).storage()) &&
-                std::ranges::any_of(rt->database.persistent_store.memberships,
-                                    [&](database::PersistentMembership const& m) {
-                                        return m.room_id == invite.room_id && m.membership == "join" &&
-                                               server_name_from_user_id(m.user_id) == rt->config.server().server_name;
-                                    });
+            auto const room_known_locally = room_state_is_current(*rt, invite.room_id);
             if (room_known_locally)
             {
                 auto const auth = authorize_invite_against_local_room(*rt, invite.room_id, invite.room_version,
@@ -4934,8 +4947,10 @@ namespace
         }
         auto guard = std::unique_lock<RuntimeMutex>{runtime.mutex};
         auto& store = runtime.database.persistent_store;
+        // A room whose held state is not current (ADR-0301) takes the rescission path: its invite was
+        // stored as an outlier, and ordinary receipt checks would need history this server lacks.
         if (server_name_from_user_id(target) != runtime.config.server().server_name ||
-            !std::holds_alternative<std::nullptr_t>(create_event_json_for_room(store, envelope.room_id).storage()))
+            room_state_is_current(runtime, envelope.room_id))
         {
             return std::nullopt;
         }
