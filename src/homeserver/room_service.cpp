@@ -6822,7 +6822,8 @@ namespace
 
 [[nodiscard]] auto deliver_remote_invite(HomeserverRuntime& runtime, std::unique_lock<RuntimeMutex>& guard,
                                          std::string_view room_id, std::string_view invitee_server,
-                                         std::string_view event_id, std::string_view event_json) -> RemoteInviteResult
+                                         std::string_view event_id, std::string_view event_json,
+                                         std::uint32_t timeout_seconds) -> RemoteInviteResult
 {
     wire_federation_callbacks(runtime);
     auto const signing_key = find_active_server_signing_key(runtime);
@@ -6844,8 +6845,7 @@ namespace
     auto const call = [&] {
         auto const released = RuntimeLockRelease{guard};
         return perform_outbound_call(runtime, room_id, transaction, key_id, std::move(secret_key),
-                                     "room.invite.remote_failed", runtime.federation.config.remote_timeout_seconds, 0U,
-                                     std::nullopt);
+                                     "room.invite.remote_failed", timeout_seconds, 0U, std::nullopt);
     }();
 
     if (call.ok)
@@ -6966,8 +6966,8 @@ auto queue_remote_invite(HomeserverRuntime& runtime, std::string_view room_id, s
         return composed.failure;
     }
     auto& invite_event = *composed.event;
-    auto const delivery =
-        deliver_remote_invite(runtime, guard, room_id, invitee_server, invite_event.event_id, invite_event.json);
+    auto const delivery = deliver_remote_invite(runtime, guard, room_id, invitee_server, invite_event.event_id,
+                                                invite_event.json, runtime.federation.config.remote_timeout_seconds);
     if (delivery.outcome == RemoteInviteOutcome::refused)
     {
         return make_operation_result(false, {}, delivery.reason, delivery.status);

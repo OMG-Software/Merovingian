@@ -105,10 +105,12 @@ struct RemoteInviteResult final
 // Sends the invite event to the invited user's server and waits for its answer. Called with
 // `runtime.mutex` held through `guard`: it is released for the exchange and held again on return, so
 // nothing read from the runtime before the call may be used after it without being found again. The
-// event is not stored by this call.
+// event is not stored by this call. `timeout_seconds` bounds the exchange (0: the outbound default); a
+// caller offering several invites in one request draws it from one deadline (ADR-0307).
 [[nodiscard]] auto deliver_remote_invite(HomeserverRuntime& runtime, std::unique_lock<RuntimeMutex>& guard,
                                          std::string_view room_id, std::string_view invitee_server,
-                                         std::string_view event_id, std::string_view event_json) -> RemoteInviteResult;
+                                         std::string_view event_id, std::string_view event_json,
+                                         std::uint32_t timeout_seconds) -> RemoteInviteResult;
 
 // Replaces the stored copy of an invite that is already stored (createRoom stores its invites before
 // they are offered) by `cosigned_event_json`, the copy `deliver_remote_invite` returned. False when the

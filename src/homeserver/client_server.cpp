@@ -10352,6 +10352,9 @@ namespace
 
     // How often a waiting request looks for a free client-outbound slot (ADR-0306).
     constexpr auto client_proxy_slot_poll_interval = std::chrono::milliseconds{25};
+    // createRoom's budget for offering all of its remote invites (ADR-0307): the outbound default total
+    // timeout, lowered to `remote_timeout` when one is configured.
+    constexpr auto create_room_invite_offer_seconds = std::uint32_t{30U};
 
     // ADR-0306: admit_client_proxy, but waiting for a slot until `deadline` instead of giving up at once.
     // runtime.mutex is released while it sleeps, so a waiting request never blocks another. Only for an
@@ -10529,6 +10532,12 @@ namespace
         auto const proxy_slot = admit_client_proxy_waiting(rt, req, guard, deadline);
         if (!proxy_slot.has_value())
         {
+            // The wait released the lock: judge access and the local answer again before using either.
+            if (!may_read_room_events(store, room_id, user_id))
+            {
+                return dispatch_err(req, rt, 403U, "M_FORBIDDEN", "not a member of this room");
+            }
+            local = find_local_timestamp_event(store, room_id, ts, direction, user_id);
             return local.found ? timestamp_to_event_response(req, rt, local.event_id, local.origin_server_ts)
                                : client_proxy_refused(req, rt);
         }
@@ -15995,6 +16004,11 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             return dispatch_err(req, rt, create_result.status, errcode, create_result.reason);
         }
         auto const& room_id = create_result.value;
+        // One deadline for offering every remote invite (ADR-0307): each offer is a synchronous federation
+        // round trip on this request's thread, and a client names the invitees. An invite left when it runs
+        // out goes to the retry queue, as one to an unreachable server does.
+        auto const invite_deadline =
+            OutboundDeadline{effective_client_outbound_deadline(rt.homeserver, create_room_invite_offer_seconds)};
         for (auto const& invitee : invitees)
         {
             auto const invitee_server = server_name_from_user_id(invitee);
@@ -16021,8 +16035,14 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             // before createRoom answers, so the client can use the invite at once (Complement
             // TestFederationRoomsInvite). Only a server that gives no usable answer is left to the queue.
             auto const invite_event_id = invite_state->event_id;
-            auto const delivery = merovingian::homeserver::deliver_remote_invite(
-                rt.homeserver, guard, room_id, invitee_server, invite_event_id, *invite_json);
+            auto const delivery =
+                invite_deadline.expired()
+                    ? merovingian::homeserver::
+                          RemoteInviteResult{merovingian::homeserver::RemoteInviteOutcome::unreachable, 504U,
+                                             "createRoom's invite deadline ran out"}
+                    : merovingian::homeserver::deliver_remote_invite(rt.homeserver, guard, room_id, invitee_server,
+                                                                     invite_event_id, *invite_json,
+                                                                     invite_deadline.remaining_seconds());
             if (delivery.outcome == merovingian::homeserver::RemoteInviteOutcome::delivered)
             {
                 // The invite is already stored, signed by this server only; keep the copy signed by both.

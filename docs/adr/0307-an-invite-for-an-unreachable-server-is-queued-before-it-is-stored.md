@@ -28,6 +28,13 @@ refused. `POST /invite` answers `503` and stores nothing when the queue refuses 
 already created the room and stored its invites when it offers them, so it keeps answering and logs a
 warning (`room.create.invite_not_queued`) for an invite that was neither delivered nor queued.
 
+createRoom offers its invites one after another on the request's thread, and the client chooses how many.
+All of them draw from one `OutboundDeadline` (30 s, lowered to `remote_timeout` when configured); an invite
+still to be offered when it runs out is treated as unreachable and queued. The offers take no ADR-0079
+client-outbound slot: neither do `POST /invite` and federated joins, which like createRoom require
+authentication, and a per-client cap of one would make a createRoom with invites wait on the same client's
+other lookups.
+
 ### Positive Consequences
 
 * The client is never told an invite was sent that no server will receive.

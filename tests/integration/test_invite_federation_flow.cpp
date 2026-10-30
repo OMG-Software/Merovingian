@@ -37,6 +37,7 @@
 #include <algorithm>
 #include <array>
 #include <charconv>
+#include <chrono>
 #include <cstdint>
 #include <functional>
 #include <memory>
@@ -1450,6 +1451,31 @@ SCENARIO("A createRoom invite to a user of another server reaches that server be
                 CAPTURE(stored);
                 REQUIRE(stored.find(invitee_signature_marker) != std::string::npos);
                 REQUIRE(stored.find(R"("signatures":{"example.org":{"ed25519:)") != std::string::npos);
+            }
+        }
+
+        WHEN("alice creates a room inviting bob and carol of a server that does not answer in time")
+        {
+            // One request-wide deadline (ADR-0307): the first offer uses it up, and carol's is not
+            // started; both invites are left to the queue.
+            runtime.homeserver.federation.config.remote_timeout_seconds = 2U;
+            auto const carol = std::string{"@carol:"} + std::string{inviting_server};
+            auto invitee = InviteeServer{runtime, [](std::string const&) {
+                                             std::this_thread::sleep_for(std::chrono::milliseconds{3500});
+                                             return merovingian::tests::tls_mock::json_http_response("200 OK", "{}");
+                                         }};
+            auto const started_at = std::chrono::steady_clock::now();
+            std::ignore =
+                create_room(runtime, alice,
+                            std::string{R"({"preset":"private_chat","invite":[")"} + bob + R"(",")" + carol + R"("]})");
+            auto const elapsed = std::chrono::steady_clock::now() - started_at;
+            invitee.thread.join();
+
+            THEN("createRoom answers within one remote timeout, and both invites wait in the queue")
+            {
+                CAPTURE(std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count());
+                REQUIRE(elapsed < std::chrono::milliseconds{3500});
+                REQUIRE(queued_bodies(runtime, inviting_server, "/v2/invite/").size() == 2U);
             }
         }
 

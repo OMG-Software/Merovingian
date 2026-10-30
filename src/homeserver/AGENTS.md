@@ -215,7 +215,8 @@ on that record, each by the inviter's server, which the spec calls a resident se
   after it accepted. Only an unreachable server falls back to `queue_remote_invite`. Never go back to queueing
   first: the invitee's client acts on what a third server shows it. For an unreachable server `invite_user` queues
   before it stores, and answers 503 with nothing stored when the queue refuses (ADR-0307); never report an invite
-  sent that was neither delivered nor queued.
+  sent that was neither delivered nor queued. createRoom offers all of its remote invites under one
+  `OutboundDeadline` and queues those left when it runs out; never give each offer its own full timeout.
 - The invitee's answer is not trusted (ADR-0302): `check_invite_answer` requires the event sent (same
   reference-hash ID) validly signed by the invitee's server, and returns this server's own event with only those
   verified signatures merged in (`with_server_signatures`). That co-signed event is what `invite_user` stores and

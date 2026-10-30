@@ -1902,5 +1902,26 @@ SCENARIO("GET /timestamp_to_event does not call another server without a client-
                 REQUIRE(response.response.body.find("$gap:example.org") != std::string::npos);
             }
         }
+
+        WHEN("the local answer lies behind a gap, and alice leaves and forgets the room while the lookup waits")
+        {
+            // The wait releases runtime.mutex, so the access judged before it may be gone after it.
+            auto leaver = std::thread{[&rt, &room]() {
+                std::this_thread::sleep_for(std::chrono::milliseconds{300});
+                auto const base = "/_matrix/client/v3/rooms/" + room.room_id;
+                std::ignore = merovingian::homeserver::handle_client_server_request(
+                    rt, {"POST", base + "/leave", room.alice, "{}"});
+                std::ignore = merovingian::homeserver::handle_client_server_request(
+                    rt, {"POST", base + "/forget", room.alice, "{}"});
+            }};
+            auto const join_leaver = merovingian::tests::tls_mock::ScopedThreadJoin{leaver};
+            auto const response = timestamp_to_event_get(rt, room, "ts=7000&dir=f");
+
+            THEN("she is refused: her access is judged again after the wait")
+            {
+                CAPTURE(response.response.body);
+                REQUIRE(response.response.status == 403U);
+            }
+        }
     }
 }

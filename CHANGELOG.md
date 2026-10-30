@@ -45,6 +45,8 @@ Fixes for the failures Complement run 12 found against main at 0.12.63.
 - An invite to a user of an unreachable server is queued for retry before it is stored. When the retry
   queue refuses it, `POST /invite` answers 503 and stores nothing, instead of answering 200 for an invite
   that reached nobody; createRoom logs `room.create.invite_not_queued` (ADR-0307).
+- createRoom offers all of its remote invites under one deadline (30 s, or `remote_timeout`) instead of a
+  full timeout per invitee; invites left when it runs out are queued.
 - Rejecting a remote invite keeps the leave as an outlier whenever this server's held state for the room is
   not current (no local user joined, ADR-0301), not only when it holds no state at all, so `/sync` reports
   the leave.
@@ -96,6 +98,8 @@ Fixes for the failures Complement run 12 found against main at 0.12.63.
 - A `timestamp_to_event` lookup that needs another server waits for its client-outbound slot, polling
   with `runtime.mutex` released, until its 10 s deadline runs out, instead of answering 429 at once;
   one client's parallel lookups are served in turn (ADR-0306).
+  When no slot comes, access and the local answer are judged again before it answers: the wait releases
+  `runtime.mutex`, so the user may have left.
 - State events carry `unsigned.prev_content` (the content of the state event they replaced) when the
   viewer may see it.
 - Application services can set an event's `origin_server_ts` with `?ts=` on `PUT /rooms/{roomId}/send/...`
