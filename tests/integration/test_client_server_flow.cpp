@@ -1723,8 +1723,10 @@ SCENARIO("GET /timestamp_to_event asks a server of the room only when its own hi
 
             THEN("it is answered locally without asking anybody")
             {
-                // No mock server thread runs: a call to the remote would fail to connect and be logged.
                 REQUIRE(response.response.status == 200U);
+                // Nothing accepts on the remote's listener, so a connection attempt would still be
+                // waiting in its backlog: an empty backlog shows nobody was asked.
+                REQUIRE(merovingian::tests::tls_mock::accept_loopback(acceptor, 0) < 0);
                 REQUIRE(response.response.body.find(room.message_id) != std::string::npos);
                 REQUIRE(response.response.body.find("\"origin_server_ts\":5000") != std::string::npos);
             }

@@ -866,10 +866,13 @@ SCENARIO("The timestamp_to_event answer is the event nearest the timestamp in th
     }
 }
 
-// Server-Server API, Authentication: a request is judged for the authenticated origin. The spec
-// gives this endpoint no ACL of its own; the project applies the rule of the other room reads
-// (a server with no joined user in the room is refused, FED-2) and the history visibility of the
-// requesting server (owner decision 2026-10-29), stepping over events its users could not see.
+// Spec: Matrix Server-Server API v1.19
+// Endpoint / Section: GET /_matrix/federation/v1/timestamp_to_event/{roomId}; Authentication
+// URL: ../../docs/matrix-v1.19-spec/server-server-api.md#get_matrixfederationv1timestamp_to_eventroomid
+//
+// A request is judged for the authenticated origin. The spec gives this endpoint no ACL of its own; the project applies
+// the rule of the other room reads (a server with no joined user in the room is refused, FED-2) and the history
+// visibility of the requesting server (owner decision 2026-10-29), stepping over events its users could not see.
 SCENARIO("The timestamp_to_event answer is refused to a stranger and skips events the server could not see",
          "[federation][conformance][timestamp-to-event][history-visibility][server-visibility]")
 {

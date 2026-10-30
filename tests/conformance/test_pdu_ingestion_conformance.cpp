@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+#include "../support/joining_threads.hpp"
 #include "../support/master_key.hpp"
 #include "../support/remote_room_fixture.hpp"
 #include "merovingian/canonicaljson/serializer.hpp"
@@ -494,7 +495,8 @@ SCENARIO("A PDU this server already stored is answered as handled and is not sto
                 make_envelope(room_id, race_event_id, "m.room.message", std::nullopt, "@admin:local.example.org",
                               {genesis.admin_member_id}, {genesis.pl_id, genesis.admin_member_id}, 3, race_json);
             {
-                auto threads = std::vector<std::jthread>{};
+                // JoiningThreads, not std::jthread: FreeBSD and OpenBSD libc++ lack jthread.
+                auto threads = merovingian::tests::JoiningThreads{};
                 for (auto& slot : results)
                 {
                     threads.emplace_back([&runtime, &race_envelope, &slot] {

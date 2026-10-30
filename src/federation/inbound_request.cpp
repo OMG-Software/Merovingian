@@ -3651,6 +3651,13 @@ namespace
                 {
                     continue;
                 }
+                // ADR-0285: a PDU already stored is answered as handled without being verified,
+                // so its sender's key is not fetched ahead either.
+                if (runtime.pdu_already_stored && !pdu.event_id.empty() && !pdu.room_id.empty() &&
+                    runtime.pdu_already_stored(pdu.room_id, pdu.event_id))
+                {
+                    continue;
+                }
                 // Only the first listed key is fetched ahead: it is the one a
                 // server signs with. Any further candidate (R05) is looked up only
                 // if that one does not verify, through the same admitted path.
