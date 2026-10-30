@@ -19,6 +19,10 @@ Fixes for the failures Complement run 12 found against main at 0.12.63.
   stored, sent to the room's other servers or acknowledged to the client, for `POST /invite` and
   createRoom's `invite` list. A refusing server fails the request; an unreachable one is retried from
   the queue (ADR-0293).
+- The invited server's answer to a remote invite is validated: it must be the event sent (same event ID),
+  validly signed by that server; only those verified signatures are merged into this server's own event,
+  which is what is stored and sent on. An empty, unsigned, wrongly signed or different answer is refused
+  with 502 (ADR-0302).
 - Rejecting an invite from another server keeps the signed leave as an outlier, so the next `/sync`
   reports it under `rooms.leave` (ADR-0294).
 - Held room state counts as current only while a user of this server is joined to the room: an invite
@@ -41,11 +45,20 @@ Fixes for the failures Complement run 12 found against main at 0.12.63.
 - Before such a join is refused or sent away, it waits for any event of the room being applied at
   that moment and decides again, so a power-levels event that arrived milliseconds earlier gives a
   local join (ADR-0288).
+- The join stored after such a fallback is this server's own signed join with only the resident's
+  verified authorising-server signature merged in, so a resident cannot change a redactable field such
+  as the display name; a join the resident's transaction already stored counts as success only if it
+  made the user a member (ADR-0302).
 
 ### Client-Server API
 
 - The server accepts the `access_token` query parameter on client-server and media routes, which
   v1.19 says homeservers MUST support; the Authorization header wins when both are sent (ADR-0295).
+  Every `access_token` parameter, under any percent-encoded spelling of the name, is removed from the
+  request target once read, so exact-path routes such as `createRoom` and `logout` still match, and
+  the log sanitiser redacts a sensitive parameter under its decoded name too.
+- A re-sent PDU relayed from a third server no longer costs a key lookup in the `/send` pre-pass
+  (ADR-0285).
 - Classic `/sync`: a hole in a room's event graph (an event whose `prev_events` this server never
   received, or holds only as an outlier) makes the timeline `limited`; the timeline starts at the
   first event after the hole and `prev_batch` reaches the earlier events (ADR-0289). A limited
