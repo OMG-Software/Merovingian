@@ -69,7 +69,7 @@ one exception to the `merovingian/` include-path rule in `src/AGENTS.md`.
 4. **The worker's own `PersistentStore` is a read-only snapshot for room-scoped federation reads —
    never the system of record.** `pdu_sink`, `membership_acceptor`, `invite_handler`, `edu_sink`,
    `one_time_keys_claim_provider`, `user_devices_provider`, `device_keys_query_provider`,
-   `profile_query_provider` and `event_query_provider` all relay to main over IPC. Each was a
+   `profile_query_provider`, `directory_query_provider` (an alias made after the worker started) and `event_query_provider` all relay to main over IPC. Each was a
    shipped bug when it did not (worker-accepted joins and invites invisible to main, split-brain
    one-time-key claims, stale device and profile reads); see the comments above each override in
    `worker_event_loop.cpp`. `membership_template_provider` relays `make_join` (only) as

@@ -8,7 +8,7 @@ called by it rather than directly.
 
 | Script | Purpose |
 |---|---|
-| `build-linux.sh` | Linux release build (Meson + Ninja) |
+| `build-linux.sh` | Linux release build (Meson + Ninja). `--coverage` builds run `meson test` with `--timeout-multiplier 2` unless `MESON_TEST_TIMEOUT_MULTIPLIER` sets one: gcov instrumentation took the conformance suite to 555 s of its 600 s limit, and other builds keep the plain limits that catch a hang. Covered by `tests/tooling/test_dependency_wraps.py` |
 | `build-wsl.sh` / `build-wsl.ps1` | WSL build wrapper (runs the Linux build inside WSL from Windows) |
 | `build-static-linux.sh` | Fully static Linux binary (musl) |
 | `build-bsd.sh` | POSIX-sh build/test driver for BSD hosts (FreeBSD/NetBSD/OpenBSD): configures Meson with system libsodium/openssl/libpq/libcurl, supports named profiles (`debug`, `release`, `sanitizer`, `coverage`, `fuzz`, `hardened`), and runs `meson test` with hardening disabled in-process for the Catch2 runner and `--timeout-multiplier 2` by default (`MESON_TEST_TIMEOUT_MULTIPLIER` overrides it), because the BSD CI VMs' speed varies between runs |

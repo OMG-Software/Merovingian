@@ -60,7 +60,10 @@ query_thirdparty_protocol`/`query_thirdparty_location_by_alias`/
   YAML parser: 2-space-indented block maps and lists, plain/single-/double-quoted
   scalars, `#` comments, `null`/`~`.
 - Anchors, aliases, tags, block scalars, tabs, document markers and unknown
-  keys are **parse failures**, never silently coerced. Booleans are
+  keys are **parse failures**, never silently coerced. The one exception (ADR-0273): a
+  reverse-DNS namespaced key (lower case, at least one dot, e.g. `org.matrix.msc3202`) and
+  MSC2409's `push_ephemeral` are skipped and logged at warning as `registration.key_ignored`;
+  their values are never read. A typo of a real key is still a finding. Booleans are
   `true`/`false` only — the YAML 1.1 spellings (`yes/no/on/off`) are rejected
   because real YAML parsers disagree about them.
 - **Flow collections**: only the empty sequence `[]` is accepted, because the

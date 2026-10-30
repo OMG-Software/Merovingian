@@ -27,6 +27,7 @@
 #include "merovingian/canonicaljson/serializer.hpp"
 #include "merovingian/canonicaljson/value.hpp"
 #include "merovingian/config/config.hpp"
+#include "merovingian/core/query_params.hpp"
 #include "merovingian/federation/inbound_ingestion.hpp"
 #include "merovingian/federation/inbound_request.hpp"
 #include "merovingian/federation/key_query.hpp"
@@ -40,6 +41,7 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <algorithm>
+#include <cctype>
 #include <memory>
 #include <optional>
 #include <string>
@@ -275,7 +277,7 @@ struct SignedMemberPdu final
 // Build a properly signed v2 invite body wrapping a signed m.room.member
 // invite event from the remote server.
 [[nodiscard]] auto make_signed_v2_invite_body(std::string const& room_id_arg, std::string const& sender,
-                                              std::string const& state_key, std::string_view room_ver = "12")
+                                              std::string const& state_key, std::string_view room_ver = "10")
     -> std::string
 {
     auto const unsigned_json = std::string{"{\"type\":\"m.room.member\",\"room_id\":\""} + room_id_arg +
@@ -290,7 +292,7 @@ struct SignedMemberPdu final
 
 // The event ID of the event carried in a v2 invite body. The {eventId} in the
 // invite URL must equal it (audit FED-5): "$" + the reference hash of the event.
-[[nodiscard]] auto v2_invite_body_event_id(std::string const& body, std::string_view room_ver = "12") -> std::string
+[[nodiscard]] auto v2_invite_body_event_id(std::string const& body, std::string_view room_ver = "10") -> std::string
 {
     auto const parsed = merovingian::canonicaljson::parse_lossless(body);
     auto const* root = std::get_if<merovingian::canonicaljson::Object>(&parsed.value.storage());
@@ -744,7 +746,7 @@ SCENARIO("invite v2 into a room of an unsupported version is refused as incompat
             // one this server does not support.
             auto body = make_signed_v2_invite_body(std::string{room_id}, "@remote:remote.example.org",
                                                    "@local:local.example.org");
-            auto const declared = std::string{R"({"room_version":"12")"};
+            auto const declared = std::string{R"({"room_version":"10")"};
             REQUIRE(body.starts_with(declared));
             body.replace(0U, declared.size(), std::string{R"({"room_version":")"} + version + "\"");
 
@@ -793,7 +795,7 @@ SCENARIO("invite v1 processes inbound invite and returns signed event", "[federa
         auto runtime = merovingian::federation::make_federation_runtime_state(runtime_config());
         merovingian::federation::upsert_remote(runtime, remote_for(origin, key_id, key_seed));
         runtime.room_version_resolver = [](std::string_view) {
-            return std::string{"12"};
+            return std::string{"10"};
         };
 
         auto invite_invoked = std::make_shared<bool>(false);
@@ -1740,6 +1742,517 @@ SCENARIO("GET /query/profile returns user profile fields when the profile_query_
             THEN("the response is 501 Not Implemented")
             {
                 REQUIRE(response.status == 501U);
+            }
+        }
+    }
+}
+
+// --- query/profile: malformed user_id ----------------------------------------
+// Spec: Matrix Server-Server API v1.19
+// Endpoint: GET /_matrix/federation/v1/query/profile
+// URL: ../../docs/matrix-v1.19-spec/server-server-api.md#get_matrixfederationv1queryprofile
+//
+// "`user_id` ... **Required**: The user ID to query. MUST be a user local to the
+// receiving homeserver." and, for the identifier, Appendices "User Identifiers"
+// and "Server Name": a server name's port, when present, is 1 to 5 digits. A
+// user ID that is not a valid identifier (`@user1:localhost:http`) is a request
+// the server cannot answer as a lookup, so it is refused with 400 M_INVALID_PARAM
+// as a standard JSON error, never looked up and never a 404 "does not exist".
+SCENARIO("GET /query/profile refuses a malformed user_id with 400 M_INVALID_PARAM",
+         "[federation][conformance][query_profile][fed-endpoints]")
+{
+    GIVEN("a runtime whose profile provider would answer any user")
+    {
+        auto runtime = merovingian::federation::make_federation_runtime_state(runtime_config());
+        merovingian::federation::upsert_remote(runtime, remote_for(origin, key_id, key_seed));
+        auto lookups = std::make_shared<int>(0);
+        runtime.profile_query_provider = [lookups](std::string_view) -> merovingian::federation::FederationProfile {
+            ++*lookups;
+            return {true, "Anyone", {}};
+        };
+
+        for (auto const* bad_user : {"@user1:localhost:http", "user1:localhost", "@user1", "@user1:local host"})
+        {
+            WHEN(std::string{"the user_id is "} + bad_user)
+            {
+                auto const target = std::string{"/_matrix/federation/v1/query/profile?user_id="} + bad_user;
+                auto const response = merovingian::federation::handle_inbound_federation_request(
+                    runtime, signed_get_request(origin, key_id, key_seed, target));
+
+                THEN("the answer is a 400 JSON error and the provider is never asked")
+                {
+                    // Spec: the identifier grammar, not the user directory, decides a malformed ID.
+                    REQUIRE(response.status == 400U);
+                    REQUIRE(response.body.find("M_INVALID_PARAM") != std::string::npos);
+                    REQUIRE(merovingian::canonicaljson::parse_lossless(response.body).error ==
+                            merovingian::canonicaljson::ParseError::none);
+                    REQUIRE(*lookups == 0);
+                }
+            }
+        }
+    }
+}
+
+// --- Error bodies are standard JSON error objects -----------------------------
+// Spec: Matrix Server-Server API v1.19
+// Endpoint: every federation endpoint; "Standard error response" (Client-Server API,
+// which the Server-Server API reuses for its error bodies)
+// URL: ../../docs/matrix-v1.19-spec/server-server-api.md#api-standards
+//
+// "Any errors which occur at the Matrix API level MUST return a 'standard error
+// response'. This is a JSON object which looks like: {"errcode": "<code>", "error":
+// "<message>"}". A refusal the resident gives in plain text (a banned user's
+// send_join, a malformed path, a missing provider) is therefore not a conforming
+// answer: a joining server parses the body of a 4xx to read its errcode.
+namespace
+{
+[[nodiscard]] auto is_standard_error_object(std::string const& body) -> bool
+{
+    auto const parsed = merovingian::canonicaljson::parse_lossless(body);
+    if (parsed.error != merovingian::canonicaljson::ParseError::none)
+    {
+        return false;
+    }
+    auto const* root = std::get_if<merovingian::canonicaljson::Object>(&parsed.value.storage());
+    if (root == nullptr)
+    {
+        return false;
+    }
+    auto const* errcode = json_get(*root, std::string{"errcode"});
+    auto const* error = json_get(*root, std::string{"error"});
+    return errcode != nullptr && std::get_if<std::string>(&errcode->storage()) != nullptr && error != nullptr &&
+           std::get_if<std::string>(&error->storage()) != nullptr;
+}
+
+[[nodiscard]] auto error_code_of(std::string const& body) -> std::string
+{
+    auto const parsed = merovingian::canonicaljson::parse_lossless(body);
+    auto const* root = std::get_if<merovingian::canonicaljson::Object>(&parsed.value.storage());
+    if (root == nullptr)
+    {
+        return {};
+    }
+    auto const* errcode = json_get(*root, std::string{"errcode"});
+    auto const* text = errcode == nullptr ? nullptr : std::get_if<std::string>(&errcode->storage());
+    return text == nullptr ? std::string{} : *text;
+}
+} // namespace
+
+SCENARIO("a refused federation request is answered with a standard JSON error object",
+         "[federation][conformance][error-body][fed-endpoints]")
+{
+    GIVEN("a runtime whose acceptor and template provider refuse in plain text")
+    {
+        auto runtime = merovingian::federation::make_federation_runtime_state(runtime_config());
+        merovingian::federation::upsert_remote(runtime, remote_for(origin, key_id, key_seed));
+        auto const join_pdu = make_signed_member_pdu(std::string{room_id}, "@remote:remote.example.org", "join");
+
+        runtime.membership_acceptor =
+            [](merovingian::federation::FederationEndpoint, std::string_view, std::string_view,
+               merovingian::federation::InboundPduEnvelope const&) -> merovingian::federation::MembershipAcceptResult {
+            auto result = merovingian::federation::MembershipAcceptResult{};
+            result.accepted = false;
+            result.status = 403U;
+            result.reason = "event auth denied against state before the event: banned user cannot join";
+            return result;
+        };
+        runtime.membership_template_provider =
+            [](merovingian::federation::FederationEndpoint, std::string_view, std::string_view,
+               std::vector<std::string> const&) -> std::optional<merovingian::federation::MembershipEventTemplate> {
+            auto tmpl = merovingian::federation::MembershipEventTemplate{};
+            tmpl.reason = "user is banned from the room";
+            tmpl.error_status = 403U;
+            return tmpl;
+        };
+
+        WHEN("a banned user's send_join is refused with 403")
+        {
+            auto const target = "/_matrix/federation/v2/send_join/" + std::string{room_id} + "/" + join_pdu.event_id;
+            auto const response = merovingian::federation::handle_inbound_federation_request(
+                runtime, signed_put_request(origin, key_id, key_seed, target, join_pdu.body));
+
+            THEN("the body is {errcode: M_FORBIDDEN, error: ...} and keeps the reason")
+            {
+                // Spec MUST: a standard error response is a JSON object with errcode and error.
+                REQUIRE(response.status == 403U);
+                REQUIRE(is_standard_error_object(response.body));
+                REQUIRE(error_code_of(response.body) == "M_FORBIDDEN");
+                REQUIRE(response.body.find("banned user cannot join") != std::string::npos);
+            }
+        }
+
+        WHEN("a make_join template is refused with 403")
+        {
+            auto const target =
+                "/_matrix/federation/v1/make_join/" + std::string{room_id} + "/@remote:remote.example.org?ver=12";
+            auto const response = merovingian::federation::handle_inbound_federation_request(
+                runtime, signed_get_request(origin, key_id, key_seed, target));
+
+            THEN("the body is a standard error object with M_FORBIDDEN")
+            {
+                REQUIRE(response.status == 403U);
+                REQUIRE(is_standard_error_object(response.body));
+                REQUIRE(error_code_of(response.body) == "M_FORBIDDEN");
+            }
+        }
+
+        WHEN("requests that other handlers refuse are dispatched")
+        {
+            auto const requests = std::vector<merovingian::federation::SignedFederationRequest>{
+                // missing user_id on query/profile (no provider wired: 501)
+                signed_get_request(origin, key_id, key_seed, "/_matrix/federation/v1/query/profile"),
+                // a send_* path with no event ID segment
+                signed_put_request(origin, key_id, key_seed,
+                                   "/_matrix/federation/v2/send_join/" + std::string{room_id} + "/", "{}"),
+                // a backfill with no providers wired
+                signed_get_request(origin, key_id, key_seed,
+                                   "/_matrix/federation/v1/backfill/" + std::string{room_id} + "?limit=5"),
+                // keys query with no provider wired
+                signed_post_request(origin, key_id, key_seed, "/_matrix/federation/v1/user/keys/query", "{}"),
+                // a v2 invite with a body that is not an invite
+                signed_put_request(origin, key_id, key_seed,
+                                   "/_matrix/federation/v2/invite/" + std::string{room_id} + "/$abc", "{}"),
+            };
+
+            THEN("every non-2xx answer is a standard error object")
+            {
+                for (auto const& request : requests)
+                {
+                    auto const response = merovingian::federation::handle_inbound_federation_request(runtime, request);
+                    INFO(request.method << " " << request.target << " -> " << response.status << " " << response.body);
+                    REQUIRE(response.status >= 400U);
+                    REQUIRE(is_standard_error_object(response.body));
+                }
+            }
+        }
+    }
+
+    GIVEN("a runtime whose profile provider is wired")
+    {
+        auto runtime = merovingian::federation::make_federation_runtime_state(runtime_config());
+        merovingian::federation::upsert_remote(runtime, remote_for(origin, key_id, key_seed));
+        runtime.profile_query_provider = [](std::string_view) -> merovingian::federation::FederationProfile {
+            return {};
+        };
+        runtime.device_keys_query_provider = [](std::string_view) -> std::string {
+            return {};
+        };
+
+        WHEN("query/profile has no user_id and keys/query has an unusable body")
+        {
+            auto const profile = merovingian::federation::handle_inbound_federation_request(
+                runtime, signed_get_request(origin, key_id, key_seed, "/_matrix/federation/v1/query/profile"));
+            auto const keys = merovingian::federation::handle_inbound_federation_request(
+                runtime, signed_post_request(origin, key_id, key_seed, "/_matrix/federation/v1/user/keys/query", "{}"));
+
+            THEN("both are 400 standard error objects")
+            {
+                REQUIRE(profile.status == 400U);
+                REQUIRE(is_standard_error_object(profile.body));
+                REQUIRE(keys.status == 400U);
+                REQUIRE(is_standard_error_object(keys.body));
+            }
+        }
+    }
+}
+
+// --- query/directory: Unicode aliases ------------------------------------------
+// Spec: Matrix Server-Server API v1.19
+// Endpoint: GET /_matrix/federation/v1/query/directory
+// URL: ../../docs/matrix-v1.19-spec/server-server-api.md#get_matrixfederationv1querydirectory
+//
+// Appendices "Room Aliases": an alias is "#localpart:domain" where the localpart may hold any
+// Unicode (UTF-8) character but ':' and NUL. The requesting server sends it in the `room_alias`
+// query parameter, percent-encoded, so what this server's outbound encoding produces must decode
+// to the same UTF-8 bytes on the receiving side, or a remote lookup of a Unicode alias misses.
+SCENARIO("a Unicode room alias survives the outbound encoding and the inbound query/directory decoding",
+         "[federation][conformance][query_directory][fed-endpoints]")
+{
+    GIVEN("a runtime whose directory provider holds a Unicode alias")
+    {
+        auto const alias = std::string{"#老虎Â£я🤨👉ඞ:local.example.org"};
+        auto runtime = merovingian::federation::make_federation_runtime_state(runtime_config());
+        merovingian::federation::upsert_remote(runtime, remote_for(origin, key_id, key_seed));
+        auto asked = std::make_shared<std::string>();
+        runtime.directory_query_provider =
+            [alias, asked](std::string_view room_alias) -> merovingian::federation::FederationDirectory {
+            *asked = std::string{room_alias};
+            if (room_alias != alias)
+            {
+                return {};
+            }
+            return {true, "!aliased:local.example.org", {"local.example.org"}};
+        };
+
+        WHEN("the request target is built the way this server's own client proxy builds it")
+        {
+            auto const target = std::string{"/_matrix/federation/v1/query/directory?room_alias="} +
+                                merovingian::core::percent_encode_path_component(alias);
+            auto const response = merovingian::federation::handle_inbound_federation_request(
+                runtime, signed_get_request(origin, key_id, key_seed, target));
+
+            THEN("the provider is asked for exactly the same UTF-8 alias and the room is found")
+            {
+                REQUIRE(*asked == alias);
+                REQUIRE(response.status == 200U);
+                REQUIRE(response.body.find("!aliased:local.example.org") != std::string::npos);
+            }
+        }
+
+        WHEN("another server encodes the alias with lowercase hex digits")
+        {
+            auto encoded = merovingian::core::percent_encode_path_component(alias);
+            for (auto& ch : encoded)
+            {
+                ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
+            }
+            // The encoded alias has no letters outside its escapes, so lowercasing it changes only
+            // the hex digits, which RFC 3986 makes case-insensitive.
+            auto const target = std::string{"/_matrix/federation/v1/query/directory?room_alias="} + encoded;
+            auto const response = merovingian::federation::handle_inbound_federation_request(
+                runtime, signed_get_request(origin, key_id, key_seed, target));
+
+            THEN("the percent escapes still decode to the same bytes")
+            {
+                REQUIRE(*asked == alias);
+                REQUIRE(response.status == 200U);
+            }
+        }
+    }
+}
+
+// --- media/thumbnail -----------------------------------------------------------
+// Spec: Matrix Server-Server API v1.19
+// Endpoint: GET /_matrix/federation/v1/media/thumbnail/{mediaId}
+// URL: ../../docs/matrix-v1.19-spec/server-server-api.md#get_matrixfederationv1mediathumbnailmediaid
+//
+// "Download a thumbnail of content from the content repository." `width` and `height` are
+// required; `method` is `crop` or `scale`. 200: "Must be `multipart/mixed`" with "exactly two
+// parts: the first ... `application/json` ... an empty object; the second ... the bytes of the
+// media". 400: "the caller requested non-integer dimensions or asked for negatively-sized images".
+// 504 M_NOT_YET_UPLOADED when the content is not available yet.
+SCENARIO("GET /media/thumbnail answers a multipart/mixed thumbnail of local media",
+         "[federation][conformance][media_thumbnail][fed-endpoints]")
+{
+    GIVEN("a runtime whose thumbnail provider records the request and returns a PNG")
+    {
+        auto runtime = merovingian::federation::make_federation_runtime_state(runtime_config());
+        merovingian::federation::upsert_remote(runtime, remote_for(origin, key_id, key_seed));
+        auto asked = std::make_shared<std::vector<std::string>>();
+        runtime.media_thumbnail_provider = [asked](merovingian::federation::FederationThumbnailQuery const& query)
+            -> merovingian::media::LocalMediaDownloadResult {
+            asked->assign({query.media_id, std::to_string(query.width), std::to_string(query.height),
+                           query.method == merovingian::media::ThumbnailMethod::crop ? "crop" : "scale", query.origin});
+            if (query.media_id == "missing")
+            {
+                return {false, 404U, {}, {}, "media not found"};
+            }
+            if (query.media_id == "pending")
+            {
+                return {false, 504U, {}, {}, "Content has not yet been uploaded"};
+            }
+            if (query.media_id == "huge")
+            {
+                return {false, 413U, {}, {}, "image dimensions exceed the limit"};
+            }
+            return {true, 200U, "image/png", "PNGBYTES", {}};
+        };
+        auto const get = [&](std::string const& query) {
+            return merovingian::federation::handle_inbound_federation_request(
+                runtime,
+                signed_get_request(origin, key_id, key_seed, "/_matrix/federation/v1/media/thumbnail/" + query));
+        };
+
+        WHEN("a thumbnail of 64x32 cropped is requested")
+        {
+            auto const response = get("abc123?width=64&height=32&method=crop");
+
+            THEN("the answer is two-part multipart/mixed with the bytes, and the provider saw the parameters")
+            {
+                // Spec: 200 Content-Type "Must be multipart/mixed", exactly two parts.
+                REQUIRE(response.status == 200U);
+                REQUIRE(response.content_type.rfind("multipart/mixed", 0U) == 0U);
+                REQUIRE(response.body.find("PNGBYTES") != std::string::npos);
+                REQUIRE(response.body.find("application/json") != std::string::npos);
+                REQUIRE(response.body.find("image/png") != std::string::npos);
+                REQUIRE(asked->size() == 5U);
+                REQUIRE((*asked)[0] == "abc123");
+                REQUIRE((*asked)[1] == "64");
+                REQUIRE((*asked)[2] == "32");
+                REQUIRE((*asked)[3] == "crop");
+                // The origin is the X-Matrix-authenticated one.
+                REQUIRE((*asked)[4] == origin);
+            }
+        }
+
+        WHEN("the local content is too large to thumbnail")
+        {
+            auto const response = get("huge?width=64&height=32");
+
+            THEN("the answer is 413 M_TOO_LARGE")
+            {
+                // Spec 413: "The local content is too large for the server to thumbnail".
+                REQUIRE(response.status == 413U);
+                REQUIRE(response.body.find("M_TOO_LARGE") != std::string::npos);
+            }
+        }
+
+        WHEN("no method is given")
+        {
+            auto const response = get("abc123?width=64&height=32");
+
+            THEN("the answer is 200 and the method is scale")
+            {
+                REQUIRE(response.status == 200U);
+                REQUIRE((*asked)[3] == "scale");
+            }
+        }
+
+        WHEN("the dimensions are missing, not integers, negative or zero")
+        {
+            auto const missing = get("abc123?width=64");
+            auto const fractional = get("abc123?width=6.4&height=32");
+            auto const negative = get("abc123?width=-64&height=32");
+            auto const zero = get("abc123?width=0&height=32");
+            auto const bad_method = get("abc123?width=64&height=32&method=stretch");
+
+            THEN("each is a 400 standard error object and the provider is never asked")
+            {
+                // Spec 400: "non-integer dimensions or ... negatively-sized images".
+                for (auto const* response : {&missing, &fractional, &negative, &zero, &bad_method})
+                {
+                    REQUIRE(response->status == 400U);
+                    REQUIRE(is_standard_error_object(response->body));
+                }
+                REQUIRE(asked->empty());
+            }
+        }
+
+        WHEN("the media is unknown, or reserved but not yet uploaded")
+        {
+            auto const missing = get("missing?width=64&height=32");
+            auto const pending = get("pending?width=64&height=32");
+
+            THEN("the answers are 404 M_NOT_FOUND and 504 M_NOT_YET_UPLOADED")
+            {
+                REQUIRE(missing.status == 404U);
+                REQUIRE(error_code_of(missing.body) == "M_NOT_FOUND");
+                REQUIRE(pending.status == 504U);
+                REQUIRE(error_code_of(pending.body) == "M_NOT_YET_UPLOADED");
+            }
+        }
+    }
+
+    GIVEN("a runtime with no thumbnail provider")
+    {
+        auto runtime = merovingian::federation::make_federation_runtime_state(runtime_config());
+        merovingian::federation::upsert_remote(runtime, remote_for(origin, key_id, key_seed));
+
+        WHEN("a thumbnail is requested")
+        {
+            auto const response = merovingian::federation::handle_inbound_federation_request(
+                runtime, signed_get_request(origin, key_id, key_seed,
+                                            "/_matrix/federation/v1/media/thumbnail/abc?width=1&height=1"));
+
+            THEN("the route exists and answers a standard error object, not 404 route-not-found")
+            {
+                REQUIRE(response.status == 501U);
+                REQUIRE(is_standard_error_object(response.body));
+            }
+        }
+    }
+}
+
+// --- event_auth routing --------------------------------------------------------
+// Spec: Matrix Server-Server API v1.19
+// Endpoint: GET /_matrix/federation/v1/event_auth/{roomId}/{eventId}
+// URL: ../../docs/matrix-v1.19-spec/server-server-api.md#get_matrixfederationv1event_authroomideventid
+//
+// "Retrieves the complete auth chain for a given event." The route exists, carries both IDs
+// percent-decoded to the provider, and answers with the provider's `{auth_chain: [...]}` as 200.
+SCENARIO("GET /event_auth/{roomId}/{eventId} is routed to the event_auth provider with both IDs decoded",
+         "[federation][conformance][event_auth][fed-endpoints]")
+{
+    GIVEN("a runtime with an event_auth provider that records what it is asked")
+    {
+        auto runtime = merovingian::federation::make_federation_runtime_state(runtime_config());
+        merovingian::federation::upsert_remote(runtime, remote_for(origin, key_id, key_seed));
+        auto asked = std::make_shared<std::vector<std::string>>();
+        runtime.event_auth_query_provider =
+            [asked](std::string_view asked_room, std::string_view asked_event,
+                    std::string_view asked_origin) -> merovingian::federation::RoomReadResult {
+            asked->assign({std::string{asked_room}, std::string{asked_event}, std::string{asked_origin}});
+            return {merovingian::federation::RoomReadStatus::ok, R"({"auth_chain":[]})"};
+        };
+
+        WHEN("a signed GET /event_auth request names a percent-encoded room and event")
+        {
+            auto const target = std::string{"/_matrix/federation/v1/event_auth/%21conformance%3Alocal.example.org/"
+                                            "%24event%3Aremote.example.org"};
+            auto const response = merovingian::federation::handle_inbound_federation_request(
+                runtime, signed_get_request(origin, key_id, key_seed, target));
+
+            THEN("the answer is 200 with the provider's body and the provider saw the decoded IDs and the origin")
+            {
+                REQUIRE(response.status == 200U);
+                REQUIRE(response.body == R"({"auth_chain":[]})");
+                REQUIRE(asked->size() == 3U);
+                REQUIRE((*asked)[0] == "!conformance:local.example.org");
+                REQUIRE((*asked)[1] == "$event:remote.example.org");
+                // The origin is the X-Matrix-authenticated one, never taken from the request.
+                REQUIRE((*asked)[2] == origin);
+            }
+        }
+
+        WHEN("the path lacks the event ID")
+        {
+            auto const target = std::string{"/_matrix/federation/v1/event_auth/%21conformance%3Alocal.example.org"};
+            auto const response = merovingian::federation::handle_inbound_federation_request(
+                runtime, signed_get_request(origin, key_id, key_seed, target));
+
+            THEN("it is not routed to the provider")
+            {
+                REQUIRE(response.status >= 400U);
+                REQUIRE(asked->empty());
+            }
+        }
+
+        // Spec, "Server Access Control Lists": `/_matrix/federation/v1/event_auth` is among the
+        // endpoints that MUST be protected; a denied server is answered 403 M_FORBIDDEN.
+        WHEN("the room's server ACL denies the requesting server")
+        {
+            auto acl_room = std::make_shared<std::string>();
+            runtime.room_server_acl_provider = [acl_room](std::string_view acl_room_id, std::string_view) {
+                *acl_room = std::string{acl_room_id};
+                return false;
+            };
+            auto const target = std::string{"/_matrix/federation/v1/event_auth/%21conformance%3Alocal.example.org/"
+                                            "%24event%3Aremote.example.org"};
+            auto const response = merovingian::federation::handle_inbound_federation_request(
+                runtime, signed_get_request(origin, key_id, key_seed, target));
+
+            THEN("the request is refused 403 M_FORBIDDEN for the named room and the provider is not asked")
+            {
+                // Spec MUST: ACL-protected endpoints refuse a denied server.
+                REQUIRE(response.status == 403U);
+                REQUIRE(response.body.find("M_FORBIDDEN") != std::string::npos);
+                REQUIRE(*acl_room == room_id);
+                REQUIRE(asked->empty());
+            }
+        }
+
+        WHEN("no event_auth provider is wired")
+        {
+            runtime.event_auth_query_provider = {};
+            auto const target = std::string{"/_matrix/federation/v1/event_auth/%21conformance%3Alocal.example.org/"
+                                            "%24event%3Aremote.example.org"};
+            auto const response = merovingian::federation::handle_inbound_federation_request(
+                runtime, signed_get_request(origin, key_id, key_seed, target));
+
+            THEN("the route answers 501 as a standard error object")
+            {
+                REQUIRE(response.status == 501U);
+                REQUIRE(is_standard_error_object(response.body));
             }
         }
     }

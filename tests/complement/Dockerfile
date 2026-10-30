@@ -41,7 +41,7 @@ RUN if ! printf '%s\n' "${MEROVINGIAN_DEB_SHA256:-}" | grep -Eqx '[0-9a-f]{64}';
     && rm -rf /var/lib/apt/lists/* /tmp/merovingian.deb
 
 COPY nginx.conf /etc/nginx/nginx.conf
-COPY entrypoint.sh render-config.sh prepare-state.sh mint-tls.sh server-name.sh merovingian.conf.template /usr/local/lib/merovingian-complement/
+COPY entrypoint.sh render-config.sh prepare-state.sh mint-tls.sh install-appservices.sh server-name.sh merovingian.conf.template /usr/local/lib/merovingian-complement/
 RUN chmod 0755 /usr/local/lib/merovingian-complement/*.sh \
     && chmod 0644 /usr/local/lib/merovingian-complement/merovingian.conf.template /etc/nginx/nginx.conf \
     && nginx -t -q

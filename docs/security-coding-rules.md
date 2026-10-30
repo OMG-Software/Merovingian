@@ -573,6 +573,10 @@ quickly finding everything a given `AGENTS.md` file contributed.
   Why: until 0.12.15 the only gate was the server ACL, so any federating server that knew a
   room ID could dump the state, member list and full history of a private room
   (`docs/threat-model.md`, "Federation reads not limited to servers in the room").
+  The gate is then followed by a per-event filter: `/event`, `/backfill` and
+  `/get_missing_events` redact (never drop) an event none of the origin's users could see
+  under the history visibility in the state AT that event (`ServerEventFilter`); `/state`,
+  `/state_ids` and `/event_auth` stay whole because state is part of the room's authorisation.
   Source: `src/federation/AGENTS.md`.
 
 - **Never relay a remote server's answer about users to a client unfiltered. Keep only
@@ -607,8 +611,9 @@ quickly finding everything a given `AGENTS.md` file contributed.
 
 - **Main's `accepted_transactions` ring is the record of completed `/send` transactions,
   whichever process ran them.** A path that runs an inbound transaction outside main's handler
-  records its completions there (`record_completed_federation_transaction`) and sends a
-  transaction already there to main.
+  records its completions there (`record_completed_federation_transaction`), with the 200 body
+  it answered, and sends a transaction already there to main. A duplicate is given the kept
+  body; the kept bodies are bounded in bytes as well as entries (ADR-0283).
   Why: each process kept its own ring, so a retry that reached main after the worker completed
   it (a room whose reload failed) was processed again and its EDUs delivered twice (OpenBSD CI,
   ADR-0160).

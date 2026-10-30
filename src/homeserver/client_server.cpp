@@ -1285,6 +1285,40 @@ namespace
         return stored_room_version(store, room_id).value_or("10");
     }
 
+    // True when `body` is not JSON at all: the text is malformed or is not valid UTF-8 (the
+    // errors a JSON reader gives for the grammar). Spec: "M_NOT_JSON: Request did not contain
+    // valid JSON." Text that is JSON but that this server refuses for its content or size (an
+    // integer outside the canonical range, a duplicate key, nesting or member counts past the
+    // bounds) is not "not JSON": that stays the endpoint's M_BAD_JSON.
+    [[nodiscard]] auto body_is_not_json(std::string_view body) -> bool
+    {
+        if (body.find_first_not_of(" \t\r\n") == std::string_view::npos)
+        {
+            return false;
+        }
+        // The general parser: a fraction or an exponent is JSON (the canonical parser refuses it
+        // for signed data, which is the endpoint's concern, not a reason to say "not JSON").
+        switch (canonicaljson::parse_json(body).error)
+        {
+        case canonicaljson::ParseError::trailing_data:
+        case canonicaljson::ParseError::unexpected_end:
+        case canonicaljson::ParseError::unexpected_token:
+        case canonicaljson::ParseError::invalid_literal:
+        case canonicaljson::ParseError::invalid_string:
+        case canonicaljson::ParseError::invalid_escape:
+        case canonicaljson::ParseError::invalid_unicode_escape:
+        case canonicaljson::ParseError::invalid_number:
+            return true;
+        case canonicaljson::ParseError::none:
+        case canonicaljson::ParseError::integer_out_of_range:
+        case canonicaljson::ParseError::duplicate_object_key:
+        case canonicaljson::ParseError::nesting_too_deep:
+        case canonicaljson::ParseError::too_many_object_members:
+            return false;
+        }
+        return false;
+    }
+
     [[nodiscard]] auto parsed_json_object(std::string_view body) -> std::optional<canonicaljson::Object>
     {
         auto parsed = canonicaljson::parse_lossless(body);
@@ -3076,13 +3110,23 @@ namespace
                         return variable_room_action("typing", 1U, "/typing/{userId}");
                     }
                     static constexpr auto room_actions = std::to_array<std::string_view>({
-                        "aliases",     "joined_members", "members",
-                        "state_ids",   "messages",       "context",
-                        "initialSync", "threads",        "read_markers",
-                        "forget",      "invite",         "kick",
-                        "ban",         "leave",          "join",
-                        "upgrade",     "report",         "receipt",
-                        "typing",      "hierarchy",      "timestamp_to_event",
+                        "aliases",
+                        "joined_members",
+                        "members",
+                        "messages",
+                        "context",
+                        "initialSync",
+                        "read_markers",
+                        "forget",
+                        "invite",
+                        "kick",
+                        "ban",
+                        "leave",
+                        "join",
+                        "upgrade",
+                        "report",
+                        "receipt",
+                        "typing",
                         "unban",
                     });
                     if (std::ranges::find(room_actions, action) == room_actions.end() ||
@@ -3179,6 +3223,16 @@ namespace
             }
             auto const normalized = replace_two_tail_segments(room_keys_keys_prefix, rest, "{roomId}", "{sessionId}");
             return normalized.empty() ? std::string{unmatched} : normalized;
+        }
+        // GET /_matrix/client/v1/room_summary/{roomIdOrAlias} (v1.15).
+        auto constexpr room_summary_prefix = std::string_view{"/_matrix/client/v1/room_summary/"};
+        if (starts_with(out, room_summary_prefix))
+        {
+            if (has_one_segment(std::string_view{out}.substr(room_summary_prefix.size())))
+            {
+                return std::string{room_summary_prefix} + "{roomIdOrAlias}";
+            }
+            return std::string{unmatched};
         }
         // Nheko's unstable room-summary probes (im.nheko.summary).
         auto constexpr nheko_summary_prefix = std::string_view{"/_matrix/client/unstable/im.nheko.summary/"};
@@ -3593,6 +3647,124 @@ namespace
         return normalized_target(target) != "/_matrix/client/{unmatched}";
     }
 
+    // The HTTP methods this server serves on a fixed (identifier-free) client-server path, as an
+    // `Allow` value, or empty for a path with no row. Spec (M_UNRECOGNIZED): "a 405 HTTP status code
+    // if the endpoint is implemented, but the incorrect HTTP method is used". This is the answer
+    // given before authentication, so an unauthenticated probe learns it too. A path with an
+    // identifier in it is judged after authentication, when no handler took the request (the end of
+    // handle_client_server_request_impl). A row must list EVERY method the path serves: a missing one
+    // would refuse a request that works today.
+    [[nodiscard]] auto client_static_route_allow(std::string_view path) -> std::string_view
+    {
+        struct StaticRouteMethods final
+        {
+            std::string_view path;
+            std::string_view allow;
+        };
+        static constexpr auto routes = std::to_array<StaticRouteMethods>({
+            {"/_matrix/client/v3/admin/safety/reports",                         "GET, POST"       },
+            {"/_matrix/client/v3/admin/safety/policy_rules",                    "GET, POST, PUT"  },
+            {"/_matrix/client/v3/pushrules/",                                   "GET"             },
+            {"/_matrix/client/v3/pushrules/global/",                            "GET"             },
+            {"/_matrix/client/v3/sync",                                         "GET"             },
+            {"/_matrix/client/v4/sync",                                         "GET, POST"       },
+            {"/_matrix/client/unstable/org.matrix.msc4186/sync",                "GET, POST"       },
+            {"/_matrix/client/unstable/org.matrix.simplified_msc3575/sync",     "GET, POST"       },
+            {"/_matrix/client/v3/publicRooms",                                  "GET, POST"       },
+            {"/_matrix/client/v3/register/available",                           "GET"             },
+            {"/_matrix/client/v1/register/m.login.registration_token/validity", "GET"             },
+            {"/_matrix/client/v3/register/email/requestToken",                  "POST"            },
+            {"/_matrix/client/v3/register/msisdn/requestToken",                 "POST"            },
+            {"/_matrix/client/v3/register",                                     "POST"            },
+            {"/_matrix/client/v3/login",                                        "GET, POST"       },
+            {"/_matrix/client/v3/login/sso/redirect",                           "GET"             },
+            {"/_matrix/client/v3/refresh",                                      "POST"            },
+            {"/_matrix/client/v3/logout",                                       "POST"            },
+            {"/_matrix/client/v3/logout/all",                                   "POST"            },
+            {"/_matrix/client/v1/auth_metadata",                                "GET"             },
+            {"/_matrix/client/v3/account/3pid/email/requestToken",              "POST"            },
+            {"/_matrix/client/v3/account/3pid/msisdn/requestToken",             "POST"            },
+            {"/_matrix/client/v3/account/whoami",                               "GET"             },
+            {"/_matrix/client/v3/account/password",                             "POST"            },
+            {"/_matrix/client/v3/account/deactivate",                           "POST"            },
+            {"/_matrix/client/v3/account/3pid",                                 "GET, POST"       },
+            {"/_matrix/client/v3/account/3pid/add",                             "POST"            },
+            {"/_matrix/client/v3/account/3pid/bind",                            "POST"            },
+            {"/_matrix/client/v3/account/3pid/unbind",                          "POST"            },
+            {"/_matrix/client/v3/account/3pid/delete",                          "POST"            },
+            {"/_matrix/client/v3/pushers",                                      "GET"             },
+            {"/_matrix/client/v3/pushers/set",                                  "POST"            },
+            {"/_matrix/client/v3/notifications",                                "GET"             },
+            {"/_matrix/client/v3/capabilities",                                 "GET"             },
+            {"/_matrix/client/v3/keys/changes",                                 "GET"             },
+            {"/_matrix/client/v3/keys/claim",                                   "POST"            },
+            {"/_matrix/client/v3/keys/device_signing/upload",                   "POST"            },
+            {"/_matrix/client/v3/keys/query",                                   "POST"            },
+            {"/_matrix/client/v3/keys/signatures/upload",                       "POST"            },
+            {"/_matrix/client/v3/keys/upload",                                  "POST"            },
+            {"/_matrix/client/v3/thirdparty/protocols",                         "GET"             },
+            {"/_matrix/client/v3/thirdparty/location",                          "GET"             },
+            {"/_matrix/client/v3/thirdparty/user",                              "GET"             },
+            {"/_matrix/media/v3/config",                                        "GET"             },
+            {"/_matrix/media/v3/upload",                                        "POST"            },
+            {"/_matrix/media/v1/create",                                        "POST"            },
+            {"/_matrix/media/v3/preview_url",                                   "GET"             },
+            {"/_matrix/client/v1/media/config",                                 "GET"             },
+            {"/_matrix/client/v1/media/upload",                                 "POST"            },
+            {"/_matrix/client/v1/media/preview_url",                            "GET"             },
+            {"/_matrix/client/v3/voip/turnServer",                              "GET"             },
+            {"/_matrix/client/v3/room_keys/version",                            "GET, POST"       },
+            {"/_matrix/client/v3/room_keys/keys",                               "DELETE, GET, PUT"},
+            {"/_matrix/client/v3/devices",                                      "GET"             },
+            {"/_matrix/client/v3/delete_devices",                               "POST"            },
+            {"/_matrix/client/v3/createRoom",                                   "POST"            },
+            {"/_matrix/client/v3/joined_rooms",                                 "GET"             },
+            {"/_matrix/client/v1/mutual_rooms",                                 "GET"             },
+            {"/_matrix/client/v3/user_directory/search",                        "POST"            },
+            {"/_matrix/client/v3/search",                                       "POST"            },
+        });
+        auto const row = std::ranges::find(routes, path, &StaticRouteMethods::path);
+        return row == routes.end() ? std::string_view{} : row->allow;
+    }
+
+    [[nodiscard]] auto allow_lists_method(std::string_view allow, std::string_view method) -> bool
+    {
+        // No client handler serves HEAD, so it is not read as GET: a HEAD on a fixed path is
+        // answered 405 with the Allow header here, never passed on to fall through without one.
+        auto const wanted = method;
+        while (!allow.empty())
+        {
+            auto const comma = allow.find(',');
+            auto const entry = allow.substr(0U, comma);
+            if (entry == wanted)
+            {
+                return true;
+            }
+            if (comma == std::string_view::npos)
+            {
+                break;
+            }
+            allow.remove_prefix(comma + 1U);
+            while (!allow.empty() && allow.front() == ' ')
+            {
+                allow.remove_prefix(1U);
+            }
+        }
+        return false;
+    }
+
+    // 405 M_UNRECOGNIZED, with the `Allow` header when the methods are known (RFC 9110 15.5.6).
+    [[nodiscard]] auto dispatch_method_not_allowed(LocalHttpRequest const& req, ClientServerRuntime const& rt,
+                                                   std::string_view allow = {}) -> DispatchResult
+    {
+        auto result = dispatch_err(req, rt, 405U, "M_UNRECOGNIZED", "the endpoint does not support this HTTP method");
+        if (!allow.empty())
+        {
+            result.response.headers.emplace_back("Allow", std::string{allow});
+        }
+        return result;
+    }
+
     [[nodiscard]] auto allow(ClientServerRuntime& rt, LocalHttpRequest const& req) -> http::RateLimitDecision
     {
         // Matrix v1.19 CS API "Third-party Lookups" (client-server-api.md):
@@ -3759,6 +3931,37 @@ namespace
             json_member("device_id", json_str(device.device_id)),
             json_member("display_name", json_str(device.display_name)),
         }));
+    }
+
+    // User-Interactive Authentication API: "If the homeserver decides that an attempt on a stage
+    // was unsuccessful, but the client may make a second attempt, it returns the same HTTP status
+    // 401 response as above, with the addition of the standard `errcode` and `error` fields".
+    // `challenge` is the serialised 401 body (flows, params, session) the endpoint would have
+    // sent had no attempt been made; the result is that object plus the two fields. A challenge
+    // that does not parse as an object is returned unchanged, so a refusal never becomes empty.
+    [[nodiscard]] auto uia_failure_body(std::string_view challenge, std::string_view errcode, std::string_view error)
+        -> std::string
+    {
+        auto parsed = canonicaljson::parse_lossless(challenge);
+        auto* object = parsed.error == canonicaljson::ParseError::none
+                           ? std::get_if<canonicaljson::Object>(&parsed.value.storage())
+                           : nullptr;
+        if (object == nullptr)
+        {
+            return std::string{challenge};
+        }
+        auto members = *object;
+        members.push_back(canonicaljson::make_member("errcode", canonicaljson::Value{std::string{errcode}}));
+        members.push_back(canonicaljson::make_member("error", canonicaljson::Value{std::string{error}}));
+        auto const result = canonicaljson::serialize_canonical(canonicaljson::Value{std::move(members)});
+        return result.output;
+    }
+
+    // The failure of a password stage: the account password was wrong (M_FORBIDDEN, as for a
+    // failed login).
+    [[nodiscard]] auto uia_password_failure_body(std::string_view challenge) -> std::string
+    {
+        return uia_failure_body(challenge, "M_FORBIDDEN", "Invalid password");
     }
 
     [[nodiscard]] auto device_delete_uia_challenge(std::string_view session_id) -> std::string
@@ -8255,6 +8458,23 @@ namespace
                                     core::percent_decode_path_component(event_id)};
     }
 
+    // GET /_matrix/client/v1/room_summary/{roomIdOrAlias}: the (percent-decoded) room ID or alias, or
+    // nothing when the path is some other endpoint.
+    [[nodiscard]] auto room_summary_target(std::string_view request_path) -> std::optional<std::string>
+    {
+        auto constexpr prefix = std::string_view{"/_matrix/client/v1/room_summary/"};
+        if (!starts_with(request_path, prefix) || request_path.size() == prefix.size())
+        {
+            return std::nullopt;
+        }
+        auto const encoded = request_path.substr(prefix.size());
+        if (encoded.find('/') != std::string_view::npos)
+        {
+            return std::nullopt;
+        }
+        return core::percent_decode_path_component(encoded);
+    }
+
     // GET /_matrix/client/v1/rooms/{roomId}/threads — returns the (percent-decoded)
     // room id, or nullopt when the target is some other v1 room endpoint.
     [[nodiscard]] auto room_threads_room_id(std::string_view target) -> std::optional<std::string>
@@ -8432,6 +8652,80 @@ namespace
         return {};
     }
 
+    // Spec (Server-side key backups): "When a client uploads a key for a session that the server
+    // already has a key for, the server will choose to either keep the existing key or replace it
+    // ... if the keys have different values for `is_verified`, then it will keep the key that has
+    // `is_verified` set to `true`; if they have the same values for `is_verified`, then it will
+    // keep the key with a lower `first_message_index`; and finally, if `is_verified` and
+    // `first_message_index` are equal, then it will keep the key with a lower `forwarded_count`."
+    //
+    // True when `offered` should replace `held`. Keys equal on all three fields are not ordered by
+    // the spec; the offered one replaces, so a re-upload of the same metadata still refreshes the
+    // stored ciphertext. A missing or mistyped field counts as the worst value (unverified, the
+    // highest index and count), so a key without metadata never displaces one that has it.
+    [[nodiscard]] auto key_backup_offer_replaces(std::string_view held_json, std::string_view offered_json) -> bool
+    {
+        struct Metadata final
+        {
+            bool is_verified{false};
+            std::int64_t first_message_index{std::numeric_limits<std::int64_t>::max()};
+            std::int64_t forwarded_count{std::numeric_limits<std::int64_t>::max()};
+        };
+        auto const read = [](std::string_view json) -> Metadata {
+            auto metadata = Metadata{};
+            auto const object = parsed_json_object(json);
+            if (!object.has_value())
+            {
+                return metadata;
+            }
+            if (auto const* verified = boolean_member(*object, "is_verified"); verified != nullptr)
+            {
+                metadata.is_verified = *verified;
+            }
+            auto const integer = [&object](std::string_view key, std::int64_t& out) {
+                if (auto const* value = object_member(*object, key); value != nullptr)
+                {
+                    if (auto const* number = std::get_if<std::int64_t>(&value->storage()); number != nullptr)
+                    {
+                        out = *number;
+                    }
+                }
+            };
+            integer("first_message_index", metadata.first_message_index);
+            integer("forwarded_count", metadata.forwarded_count);
+            return metadata;
+        };
+        auto const held = read(held_json);
+        auto const offered = read(offered_json);
+        if (held.is_verified != offered.is_verified)
+        {
+            return offered.is_verified;
+        }
+        if (held.first_message_index != offered.first_message_index)
+        {
+            return offered.first_message_index < held.first_message_index;
+        }
+        return offered.forwarded_count <= held.forwarded_count;
+    }
+
+    // Stores `session` unless the key the backup already holds for that session wins under
+    // key_backup_offer_replaces. True when the request is done (stored, or deliberately kept the
+    // held key); false only when the store refused to write.
+    [[nodiscard]] auto store_key_backup_session_by_rules(database::PersistentStore& store,
+                                                         database::PersistentKeyBackupSession session) -> bool
+    {
+        auto const held =
+            std::ranges::find_if(store.key_backup_sessions, [&session](database::PersistentKeyBackupSession const& s) {
+                return s.user_id == session.user_id && s.version == session.version && s.room_id == session.room_id &&
+                       s.session_id == session.session_id;
+            });
+        if (held != store.key_backup_sessions.end() && !key_backup_offer_replaces(held->json, session.json))
+        {
+            return true;
+        }
+        return database::store_key_backup_session(store, std::move(session));
+    }
+
     [[nodiscard]] auto room_key_backup_path_parts(std::string_view target) -> std::optional<RoomKeyBackupPathParts>
     {
         auto constexpr prefix = std::string_view{"/_matrix/client/v3/room_keys/keys/"};
@@ -8506,6 +8800,128 @@ namespace
         auto const* event = std::get_if<canonicaljson::Object>(&parsed.value.storage());
         auto const* content = event == nullptr ? nullptr : object_member_as_object(*event, "content");
         return content == nullptr ? std::nullopt : std::optional<canonicaljson::Object>{*content};
+    }
+
+    struct CanonicalAliasRefusal final
+    {
+        std::string_view errcode{};
+        std::string message{};
+    };
+
+    // Spec (PUT /rooms/{roomId}/state/{eventType}/{stateKey}): "If the event type being sent is
+    // `m.room.canonical_alias` servers SHOULD ensure that any new aliases being listed in the event
+    // are valid per their grammar/syntax and that they point to the room ID where the state event
+    // is to be sent to. Servers do not validate aliases which are being removed or are already
+    // present in the state event." 400 `M_INVALID_PARAM` for syntax, `M_BAD_ALIAS` for an alias that
+    // does not point to the room.
+    //
+    // Only this server's directory can say where an alias points, so an alias on another server is
+    // checked for syntax and accepted: asking its server would be a client-triggered outbound call
+    // (ADR-0079) and the spec only says SHOULD; clients are told not to trust the list either
+    // ("Clients SHOULD NOT treat the aliases as accurate").
+    //
+    // A body that is not a JSON object is left for the state handler's own 400.
+    [[nodiscard]] auto canonical_alias_refusal(database::PersistentStore const& store, std::string_view room_id,
+                                               std::string_view local_server_name, std::string_view body)
+        -> std::optional<CanonicalAliasRefusal>
+    {
+        auto const content = parsed_json_object(body);
+        if (!content.has_value())
+        {
+            return std::nullopt;
+        }
+        // Collects the aliases of a canonical-alias content: `alias` (absent, null or empty means
+        // none) and each entry of `alt_aliases`. False when a field has the wrong type.
+        auto const collect = [](canonicaljson::Object const& object, std::vector<std::string>& out) -> bool {
+            if (auto const* alias = object_member(object, "alias"); alias != nullptr)
+            {
+                if (auto const* text = std::get_if<std::string>(&alias->storage()); text != nullptr)
+                {
+                    if (!text->empty())
+                    {
+                        out.push_back(*text);
+                    }
+                }
+                else if (!std::holds_alternative<std::nullptr_t>(alias->storage()))
+                {
+                    return false;
+                }
+            }
+            if (auto const* alt = object_member(object, "alt_aliases"); alt != nullptr)
+            {
+                if (auto const* array = std::get_if<canonicaljson::Array>(&alt->storage()); array != nullptr)
+                {
+                    for (auto const& entry : *array)
+                    {
+                        auto const* text = std::get_if<std::string>(&entry.storage());
+                        if (text == nullptr)
+                        {
+                            return false;
+                        }
+                        out.push_back(*text);
+                    }
+                }
+                else if (!std::holds_alternative<std::nullptr_t>(alt->storage()))
+                {
+                    return false;
+                }
+            }
+            return true;
+        };
+
+        auto listed = std::vector<std::string>{};
+        if (!collect(*content, listed))
+        {
+            return CanonicalAliasRefusal{"M_INVALID_PARAM", "alias and alt_aliases must be room aliases"};
+        }
+
+        // The aliases the room's current event already lists are not validated again.
+        auto present = std::vector<std::string>{};
+        auto const current = std::ranges::find_if(store.state, [room_id](database::PersistentStateEvent const& state) {
+            return state.room_id == room_id && state.event_type == "m.room.canonical_alias" && state.state_key.empty();
+        });
+        if (current != store.state.end())
+        {
+            if (auto const json = event_json_for_id(store, current->event_id); json.has_value())
+            {
+                auto const parsed = canonicaljson::parse_lossless(*json);
+                auto const* event = std::get_if<canonicaljson::Object>(&parsed.value.storage());
+                auto const* old_content = event == nullptr ? nullptr : object_member_as_object(*event, "content");
+                if (old_content != nullptr)
+                {
+                    std::ignore = collect(*old_content, present);
+                }
+            }
+        }
+        auto const is_new = [&present](std::string const& alias) {
+            return std::ranges::find(present, alias) == present.end();
+        };
+
+        for (auto const& alias : listed)
+        {
+            if (is_new(alias) && !auth::room_alias_is_valid(alias))
+            {
+                return CanonicalAliasRefusal{"M_INVALID_PARAM", "'" + alias + "' is not a valid room alias"};
+            }
+        }
+        for (auto const& alias : listed)
+        {
+            if (!is_new(alias))
+            {
+                continue;
+            }
+            // room_alias_is_valid ended the localpart at the first ':', which the domain follows.
+            if (std::string_view{alias}.substr(alias.find(':') + 1U) != local_server_name)
+            {
+                continue;
+            }
+            auto const mapping = database::find_room_alias(store, alias);
+            if (!mapping.has_value() || mapping->room_id != room_id)
+            {
+                return CanonicalAliasRefusal{"M_BAD_ALIAS", "The alias '" + alias + "' does not point to this room."};
+            }
+        }
+        return std::nullopt;
     }
 
     // The replacement room's creation options for POST /rooms/{roomId}/upgrade (spec, "Server
@@ -9760,7 +10176,8 @@ namespace
     {
         if (refused.status == 401U)
         {
-            return dispatch_err(req, rt, 401U, "M_UNKNOWN_TOKEN", refused.body);
+            return dispatch_err(req, rt, 401U, req.access_token.empty() ? "M_MISSING_TOKEN" : "M_UNKNOWN_TOKEN",
+                                refused.body);
         }
         auto const status = refused.status == 415U || refused.status == 507U ? std::uint16_t{403U} : refused.status;
         // A failure on this server's side (5xx) is M_UNKNOWN, never a client error code.
@@ -9800,6 +10217,82 @@ namespace
         });
         return dispatch_err(req, rt, 429U, "M_LIMIT_EXCEEDED", "too many concurrent remote lookups, retry shortly",
                             rt.homeserver.client_outbound_proxy_policy.retry_after_ms);
+    }
+
+    // GET /_matrix/client/v3/profile/{userId}[/{keyName}] for a user of another server. Asks that server's
+    // GET /_matrix/federation/v1/query/profile and relays only what the client API defines, a string
+    // `displayname` and `avatar_url`: a remote answer is untrusted, so nothing else is copied (rule 6 of
+    // src/federation/AGENTS.md). It is a client request that calls another server, so it holds an ADR-0079
+    // slot, runs under the directory deadline and releases the runtime lock for the call (src/homeserver/
+    // AGENTS.md, "Client requests that call another server"). The remote's 404 is this server's 404.
+    [[nodiscard]] auto remote_profile_response(ClientServerRuntime& rt, LocalHttpRequest const& req,
+                                               std::unique_lock<RuntimeMutex>& guard, std::string const& target_user,
+                                               std::string_view field) -> DispatchResult
+    {
+        auto const proxy_slot = admit_client_proxy(rt, req);
+        if (!proxy_slot.has_value())
+        {
+            return client_proxy_refused(req, rt);
+        }
+        if (!field.empty() && field != "displayname" && field != "avatar_url")
+        {
+            return dispatch_err(req, rt, 404U, "M_NOT_FOUND", "profile field not found");
+        }
+        auto const proxy_deadline = effective_client_outbound_deadline(
+            rt.homeserver, rt.homeserver.client_outbound_proxy_policy.directory_deadline_seconds);
+        wire_federation_callbacks(rt.homeserver);
+        auto const signing_key = ensure_runtime_server_signing_key(rt.homeserver);
+        auto const key_id = signing_key.has_value() ? signing_key->key_id : std::string{};
+        auto secret = core::SecretBuffer{rt.homeserver.database.signing_secret_key.bytes()};
+        auto const& our_server = rt.homeserver.config.server().server_name;
+        auto target = std::string{"/_matrix/federation/v1/query/profile?user_id="} +
+                      core::percent_encode_path_component(target_user);
+        if (!field.empty())
+        {
+            target += "&field=" + std::string{field};
+        }
+        auto const tx = federation::make_outbound_transaction(std::string{server_name_from_user_id(target_user)}, "GET",
+                                                              target, our_server, {});
+        auto const result = [&] {
+            // Re-acquire before returning: dispatch_resp/dispatch_err read reloadable runtime state.
+            auto const released = merovingian::homeserver::RuntimeLockRelease{guard};
+            return perform_bounded_outbound_call_with_status(rt.homeserver, {}, tx, key_id, std::move(secret),
+                                                             "profile.proxy", proxy_deadline);
+        }();
+        if (result.remote_status == 404U)
+        {
+            return dispatch_err(req, rt, 404U, "M_NOT_FOUND", "profile not found");
+        }
+        if (result.remote_status == 403U)
+        {
+            return dispatch_err(req, rt, 403U, "M_FORBIDDEN", "the user's server does not share the profile");
+        }
+        if (!result.ok)
+        {
+            return dispatch_err(req, rt, 502U, "M_UNKNOWN", "Failed to fetch the profile from the remote server");
+        }
+        auto const parsed = parsed_json_object(result.body);
+        if (!parsed.has_value())
+        {
+            return dispatch_err(req, rt, 502U, "M_UNKNOWN", "The remote server returned an unusable profile");
+        }
+        auto object = canonicaljson::Object{};
+        for (auto const* key : {"displayname", "avatar_url"})
+        {
+            if (!field.empty() && field != key)
+            {
+                continue;
+            }
+            if (auto const* value = string_member(*parsed, key); value != nullptr)
+            {
+                object.push_back(json_member(key, json_str(*value)));
+            }
+        }
+        if (!field.empty() && object.empty())
+        {
+            return dispatch_err(req, rt, 404U, "M_NOT_FOUND", "profile field not found");
+        }
+        return dispatch_resp(req, rt, 200U, json_serialize(json_obj(std::move(object))));
     }
 
     // The local media router returns successful download/thumbnail results as
@@ -10086,7 +10579,7 @@ namespace
             {
                 return false;
             }
-            return database::store_key_backup_session(
+            return store_key_backup_session_by_rules(
                 store, {std::string{user}, std::string{version}, path->room_id, *path->session_id, req.body});
         }
         case auth::KeyApiEndpoint::put_room_key_backup_room: {
@@ -10114,8 +10607,8 @@ namespace
                     stored = false;
                     continue;
                 }
-                if (!database::store_key_backup_session(store, {std::string{user}, std::string{version}, path->room_id,
-                                                                session.key, serialized.output}))
+                if (!store_key_backup_session_by_rules(store, {std::string{user}, std::string{version}, path->room_id,
+                                                               session.key, serialized.output}))
                 {
                     stored = false;
                 }
@@ -10161,7 +10654,7 @@ namespace
                     {
                         continue;
                     }
-                    std::ignore = database::store_key_backup_session(
+                    std::ignore = store_key_backup_session_by_rules(
                         store, {std::string{user}, std::string{version}, room.key, session.key, session_json.output});
                 }
             }
@@ -10401,7 +10894,7 @@ namespace
                     apply_cors_headers(req, response, rt.cors);
                     return response;
                 }
-                return resp(401U, json_serialize(cs_uia));
+                return resp(401U, uia_password_failure_body(json_serialize(cs_uia)));
             }
             if (!store_key_api_payload(rt, route.endpoint, user, device_id, req, {}))
             {
@@ -11269,6 +11762,19 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
         return dispatch_err(req, rt, 429U, "M_LIMIT_EXCEEDED", "rate limit exceeded",
                             rate_limit_decision.retry_after_ms);
     }
+    // Spec M_NOT_JSON: "Request did not contain valid JSON." A body that is not JSON (including
+    // invalid UTF-8 in a string) is refused here, for every endpoint at once, so no handler
+    // answers it with the M_BAD_JSON that is for JSON malformed in some other way. Only the
+    // Client-Server API is judged: media content is bytes, the operator surface
+    // (/_merovingian/admin) takes plain text, and a GET carries no body. After the rate
+    // limit, so the parse is metered like any other work a request causes.
+    if (auto const path_only = std::string_view{req.target}.substr(0U, std::string_view{req.target}.find('?'));
+        !req.body.empty() && req.method != "GET" && req.method != "HEAD" && !is_media_upload &&
+        starts_with(path_only, "/_matrix/client/") && !starts_with(path_only, "/_matrix/client/v1/media/") &&
+        body_is_not_json(req.body))
+    {
+        return dispatch_err(req, rt, 400U, "M_NOT_JSON", "the request body is not valid JSON");
+    }
     auto call_local = [&](LocalHttpRequest const& inner) {
         auto response = [&] {
             auto const released = merovingian::homeserver::RuntimeLockRelease{guard};
@@ -11902,6 +12408,31 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                                      json_member("device_id", json_str(reg_device_id)),
                                  })));
         }
+        // Spec (POST /register, 400): "Homeservers MUST perform the relevant checks and return
+        // these codes before performing User-Interactive Authentication" -- M_INVALID_USERNAME,
+        // M_USER_IN_USE and M_EXCLUSIVE. The same checks run again after authentication below
+        // (the name may be taken meanwhile, and a generated localpart is checked there too). An
+        // omitted username is generated later, so there is nothing to check yet.
+        if (auto const* desired_localpart = string_member(*registration_object, "username");
+            desired_localpart != nullptr)
+        {
+            if (!auth::localpart_is_valid_new(*desired_localpart))
+            {
+                return dispatch_err(req, rt, 400U, "M_INVALID_USERNAME", "desired username is not valid");
+            }
+            auto const& local_server_name = rt.homeserver.config.server().server_name;
+            auto const desired_user_id = matrix_user_id(local_server_name, *desired_localpart);
+            if (auth::localpart_is_reserved(*desired_localpart) || user_exists(rt, desired_user_id) ||
+                rt.homeserver.appservices.is_sender_user_id(desired_user_id, local_server_name))
+            {
+                return dispatch_err(req, rt, 400U, "M_USER_IN_USE", "desired username is already taken");
+            }
+            if (rt.homeserver.appservices.user_namespace_exclusively_owned_by_other(desired_user_id, {}))
+            {
+                return dispatch_err(req, rt, 400U, "M_EXCLUSIVE",
+                                    "this username is reserved for a registered appservice");
+            }
+        }
         // Registration always uses User-Interactive Authentication. Spec: a UIA
         // request "never succeeds without auth. Homeservers may allow requests
         // that don't require auth by offering a stage with only the
@@ -11929,8 +12460,10 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                 return dispatch_resp(req, rt, 401U, uia_challenge);
             }
             // A supplied session must be one this server issued for this
-            // endpoint. Omitting it is still allowed (single-shot flow);
-            // echoing a stale, guessed, or cross-endpoint id is not.
+            // endpoint; echoing a stale, guessed, or cross-endpoint id is not
+            // allowed. Omitting it is the single-shot flow, which the spec
+            // allows: the client "must pass back" a session only "if one is
+            // provided" (ADR-0276). Complement's own blueprints register this way.
             if (auto const* supplied_session = string_member(*auth, "session");
                 supplied_session != nullptr && !uia_session_is_valid(rt, "register", *supplied_session))
             {
@@ -12308,16 +12841,26 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
     }
     if (req.method == "POST" && req.target == "/_matrix/client/v3/logout")
     {
+        // The device the token belongs to, read before logout revokes the token: logout also deletes
+        // the device (spec POST /logout), and the runtime's device list is this layer's to update.
+        auto const logged_out_session = authenticated_session(rt.homeserver, req.access_token);
         auto const r = call_local(req);
+        if (r.status == 200U && logged_out_session.has_value())
+        {
+            erase_runtime_device(rt, logged_out_session->user_id, logged_out_session->device_id);
+            record_shared_room_device_change(rt, logged_out_session->user_id);
+        }
         // actor is not yet resolved here (pre-auth gate); log token presence only
         log_diagnostic(r.status == 200U ? "account.logout.accepted" : "account.logout.rejected",
                        {
                            {"has_token", req.access_token.empty() ? "false" : "true", false},
                            {"status",    std::to_string(r.status),                    false}
         });
+        // Spec: a missing token is M_MISSING_TOKEN, an unrecognised one M_UNKNOWN_TOKEN.
+        auto const unauthenticated_errcode = req.access_token.empty() ? "M_MISSING_TOKEN" : "M_UNKNOWN_TOKEN";
         return r.status == 200U
                    ? dispatch_resp(req, rt, 200U, "{}")
-                   : dispatch_err(req, rt, r.status, r.status == 401U ? "M_UNKNOWN_TOKEN" : "M_UNKNOWN", r.body);
+                   : dispatch_err(req, rt, r.status, r.status == 401U ? unauthenticated_errcode : "M_UNKNOWN", r.body);
     }
 
     // MSC2965 OIDC discovery: Cinny and Element probe auth_metadata and
@@ -12369,6 +12912,15 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
         auto const encoded_target = slash == std::string_view::npos ? path_remainder : path_remainder.substr(0U, slash);
         auto const field = slash == std::string_view::npos ? std::string_view{} : path_remainder.substr(slash + 1U);
         auto const target_user = core::percent_decode_path_component(encoded_target);
+        // Spec (CS API, Profiles): a profile is read from "the server the user is on"; for a user of
+        // another server this one asks that server over federation (SS API GET /query/profile,
+        // which is for "users that belong to the target server") and relays what it says.
+        if (auto const profile_server = server_name_from_user_id(target_user);
+            !profile_server.empty() && profile_server != rt.homeserver.config.server().server_name &&
+            auth::user_id_is_valid_federated(target_user))
+        {
+            return remote_profile_response(rt, req, guard, target_user, field);
+        }
         auto const& store = rt.homeserver.database.persistent_store;
         auto user_exists = std::ranges::any_of(store.users, [&target_user](database::PersistentUser const& u) {
             return u.user_id == target_user;
@@ -12656,6 +13208,13 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
     // it before authenticating: a client probing an endpoint this server does not
     // serve (Element X asking for GET /_matrix/client/r0/login) must learn that,
     // not be told to find an access token it cannot have yet (ADR-0230).
+    // A fixed path used with a method it does not serve is 405 M_UNRECOGNIZED, also before
+    // authentication ("implemented, but the incorrect HTTP method is used").
+    if (auto const allow = client_static_route_allow(request_path);
+        !allow.empty() && !allow_lists_method(allow, req.method))
+    {
+        return dispatch_method_not_allowed(req, rt, allow);
+    }
     if (!client_route_is_known(req.target))
     {
         log_diagnostic("request.route_not_found",
@@ -12665,6 +13224,20 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                            {"status", "404",                                            false}
         });
         return dispatch_err(req, rt, 404U, "M_UNRECOGNIZED", "route not found");
+    }
+
+    // GET /_matrix/client/v1/room_summary/{roomIdOrAlias}. Spec: "Servers MAY allow unauthenticated
+    // access to this API if ... The room has a join rule of `public`, `knock` or `knock_restricted`
+    // ... The room has a `world_readable` history visibility." A request that carries a token goes
+    // through the gate below like any other; one without a token is answered here, and a room
+    // outside those conditions gets the 401 the gate would give.
+    if (req.method == "GET" && req.access_token.empty())
+    {
+        if (auto const target = room_summary_target(request_path); target.has_value())
+        {
+            auto const result = handle_client_room_summary(rt.homeserver, {}, *target);
+            return dispatch_resp(req, rt, result.status, result.body);
+        }
     }
 
     auto const user = auth(rt, req.access_token);
@@ -13092,6 +13665,14 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
     if (req.method == "POST" && target_path(req.target) == "/_matrix/client/v3/logout/all")
     {
         auto const r = logout_all_local_user(rt.homeserver, req.access_token);
+        if (r.ok)
+        {
+            // Spec (POST /logout/all): "All devices for the user are also deleted."
+            std::erase_if(rt.devices, [&user](ClientDevice const& device) {
+                return device.user_id == *user;
+            });
+            record_shared_room_device_change(rt, *user);
+        }
         log_diagnostic(r.ok ? "account.logout_all.accepted" : "account.logout_all.rejected",
                        {
                            {"actor",  *user,                    false},
@@ -13317,7 +13898,7 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                 return dispatch_err(req, rt, 429U, "M_LIMIT_EXCEEDED",
                                     "Too many password attempts. Please try again later.", retry_after);
             }
-            return dispatch_resp(req, rt, 401U, json_serialize(uia_challenge));
+            return dispatch_resp(req, rt, 401U, uia_password_failure_body(json_serialize(uia_challenge)));
         }
         // Spec §5.5: logout_devices defaults to true — the server MUST revoke the
         // access tokens of the user's other devices when the password changes. The
@@ -13389,7 +13970,7 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                 return dispatch_err(req, rt, 429U, "M_LIMIT_EXCEEDED",
                                     "Too many password attempts. Please try again later.", retry_after);
             }
-            return dispatch_resp(req, rt, 401U, json_serialize(uia_challenge));
+            return dispatch_resp(req, rt, 401U, uia_password_failure_body(json_serialize(uia_challenge)));
         }
         auto const result = deactivate_local_user(rt.homeserver, req.access_token);
         if (!result.ok)
@@ -13482,7 +14063,11 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                 return dispatch_err(req, rt, 429U, "M_LIMIT_EXCEEDED",
                                     "Too many password attempts. Please try again later.", retry_after);
             }
-            return dispatch_resp(req, rt, 401U, json_serialize(uia_challenge));
+            // No password at all is no attempt; a wrong one is a failed attempt.
+            return dispatch_resp(req, rt, 401U,
+                                 password_verified.has_value()
+                                     ? uia_password_failure_body(json_serialize(uia_challenge))
+                                     : json_serialize(uia_challenge));
         }
         // AUTH-5: the 3PID is added only once the identity server that issued the
         // session confirms its owner validated it.
@@ -14833,7 +15418,7 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                 return dispatch_err(req, rt, 429U, "M_LIMIT_EXCEEDED",
                                     "Too many password attempts. Please try again later.", retry_after);
             }
-            return dispatch_resp(req, rt, 401U, uia_challenge);
+            return dispatch_resp(req, rt, 401U, uia_password_failure_body(uia_challenge));
         }
         auto const device_id = request_path.substr(dev_prefix.size());
         auto const result = delete_local_device(rt.homeserver, *user, device_id);
@@ -14892,7 +15477,7 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                 return dispatch_err(req, rt, 429U, "M_LIMIT_EXCEEDED",
                                     "Too many password attempts. Please try again later.", retry_after);
             }
-            return dispatch_resp(req, rt, 401U, uia_challenge);
+            return dispatch_resp(req, rt, 401U, uia_password_failure_body(uia_challenge));
         }
         auto deleted_any = false;
         for (auto const& device_id : devices)
@@ -14977,6 +15562,12 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             return "private_chat";
         }();
         auto const invitees = string_array_member(body, "invite");
+        // Spec (createRoom): `room_version` is a `string`. A number, boolean, null, array or object
+        // is a malformed body, not an unsupported version.
+        if (object_member(body, "room_version") != nullptr && string_member(body, "room_version") == nullptr)
+        {
+            return dispatch_err(req, rt, 400U, "M_BAD_JSON", "room_version must be a string");
+        }
         auto const* room_version_value = string_member(body, "room_version");
         auto const room_version =
             room_version_value != nullptr && !room_version_value->empty() ? *room_version_value : std::string{"12"};
@@ -15085,9 +15676,10 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             merovingian::homeserver::wire_federation_callbacks(rt.homeserver);
             if (rt.homeserver.dispatch_worker != nullptr)
             {
-                auto transaction =
-                    federation::make_outbound_invite(invitee_server, rt.homeserver.config.server().server_name, room_id,
-                                                     invite_state->event_id, room_version, *invite_json, {});
+                auto transaction = federation::make_outbound_invite(
+                    invitee_server, rt.homeserver.config.server().server_name, room_id, invite_state->event_id,
+                    room_version, *invite_json,
+                    merovingian::homeserver::stripped_state_pdus(rt.homeserver.database.persistent_store, room_id));
                 transaction.transaction_id = federation::make_federation_transaction_id();
                 std::ignore = rt.homeserver.dispatch_worker->enqueue(std::move(transaction));
             }
@@ -15536,6 +16128,19 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                     });
                     return dispatch_err(req, rt, 400U, "M_BAD_JSON", "state content must be a JSON object");
                 }
+                // Only for a sender who may send it: anyone else gets the 403 the send path gives.
+                if (path->event_type == "m.room.canonical_alias" && path->state_key.empty() &&
+                    may_send_state_event(rt.homeserver.database.persistent_store, path->room_id, *user,
+                                         "m.room.canonical_alias"))
+                {
+                    if (auto const refusal =
+                            canonical_alias_refusal(rt.homeserver.database.persistent_store, path->room_id,
+                                                    rt.homeserver.config.server().server_name, req.body);
+                        refusal.has_value())
+                    {
+                        return dispatch_err(req, rt, 400U, std::string{refusal->errcode}, refusal->message);
+                    }
+                }
                 log_diagnostic("room.state_event.dispatch", {
                                                                 {"actor",      *user,            false},
                                                                 {"room_id",    path->room_id,    false},
@@ -15612,7 +16217,9 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                 auto const& store = rt.homeserver.database.persistent_store;
                 if (!may_read_room_events(store, path->room_id, *user))
                 {
-                    return dispatch_err(req, rt, 403U, "M_FORBIDDEN", "not a member of this room");
+                    // The endpoint's only error is 404, and answering the same as for an event that
+                    // does not exist keeps a non-member from learning that the event does.
+                    return dispatch_err(req, rt, 404U, "M_NOT_FOUND", "event not found");
                 }
                 auto const event = store.events.find_in_room(path->room_id, path->event_id);
                 // ADR-0064 phase B2: a rejected or soft-failed event is
@@ -16429,7 +17036,8 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                         {
                             auto transaction = federation::make_outbound_invite(
                                 invitee_server, rt.homeserver.config.server().server_name, room_id,
-                                invite_state->event_id, room_version, *invite_json, {});
+                                invite_state->event_id, room_version, *invite_json,
+                                merovingian::homeserver::stripped_state_pdus(store, room_id));
                             transaction.transaction_id = federation::make_federation_transaction_id();
                             std::ignore = rt.homeserver.dispatch_worker->enqueue(std::move(transaction));
                         }
@@ -17685,6 +18293,17 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
         return dispatch_err(req, rt, 404U, "M_NOT_FOUND", "room summary not found");
     }
 
+    // GET /_matrix/client/v1/room_summary/{roomIdOrAlias}: the authenticated caller (a request
+    // without a token was answered before the auth gate).
+    if (req.method == "GET")
+    {
+        if (auto const target = room_summary_target(request_path); target.has_value())
+        {
+            auto const result = handle_client_room_summary(rt.homeserver, *user, *target);
+            return dispatch_resp(req, rt, result.status, result.body);
+        }
+    }
+
     // GET /_matrix/client/v1/rooms/{roomId}/hierarchy
     // Spec: returns a paginated depth-first list of rooms in the space hierarchy.
     auto constexpr hierarchy_prefix = std::string_view{"/_matrix/client/v1/rooms/"};
@@ -17748,13 +18367,15 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                                          starts_with(request_path, "/_matrix/client/v1/admin/lock/"));
     }
 
+    // No handler took the request. The path is one this server serves (an unknown path was
+    // answered 404 before authentication), so no handler serves it with this method: 405.
     log_diagnostic("request.route_not_found", {
                                                   {"method", req.method,                                       false},
                                                   {"target", observability::sanitized_http_target(req.target), false},
                                                   {"actor",  *user,                                            false},
-                                                  {"status", "404",                                            false}
+                                                  {"status", "405",                                            false}
     });
-    return dispatch_err(req, rt, 404U, "M_UNRECOGNIZED", "route not found");
+    return dispatch_method_not_allowed(req, rt);
 }
 
 // Matrix spec §web-browser-clients (v1.19):

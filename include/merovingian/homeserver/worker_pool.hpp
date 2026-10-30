@@ -118,6 +118,12 @@ struct HomeserverRuntime;
 [[nodiscard]] auto handle_profile_query_ingest_request(HomeserverRuntime& runtime, std::string_view request_json)
     -> std::string;
 
+// Handles a "directory_query_ingest" IPC request (a worker relaying an inbound
+// GET /_matrix/federation/v1/query/directory). The route carries no room ID, so a worker's
+// `room_sync` reloads never refresh its alias table; main answers from its own store.
+[[nodiscard]] auto handle_directory_query_ingest_request(HomeserverRuntime& runtime, std::string_view request_json)
+    -> std::string;
+
 // Handles a "membership_template_ingest" IPC request (a worker relaying an
 // inbound GET /_matrix/federation/v1/make_join). A restricted room's template
 // names an authorising user only after its allow conditions are checked, and

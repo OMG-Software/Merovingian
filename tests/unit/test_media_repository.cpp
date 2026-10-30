@@ -702,6 +702,119 @@ SCENARIO("Federation media download derives Content-Disposition from the inline-
     }
 }
 
+// Owner decision 2026-10-29: a declared type that is a spelling variant of the
+// sniffed type (letter case, or img for image) is not a mismatch, and the file
+// is given back under the type the uploader declared.
+SCENARIO("Local media repository serves an upload under its declared type when that is a spelling variant",
+         "[media][repository][mime-equivalence]")
+{
+    GIVEN("a repository that allows image/png")
+    {
+        auto repository = test_repository();
+
+        WHEN("a PNG is declared as img/png")
+        {
+            auto const uploaded = merovingian::media::upload_local_media(
+                repository, "example.org", {"@alice:example.org", "img/png", "image/png", "png", true});
+            auto const downloaded = merovingian::media::resolve_local_media_download(repository, uploaded.media_id);
+
+            THEN("it is stored available and served as img/png")
+            {
+                REQUIRE(uploaded.ok);
+                REQUIRE_FALSE(uploaded.quarantined);
+                REQUIRE(uploaded.content_type == "img/png");
+                REQUIRE(downloaded.ok);
+                REQUIRE(downloaded.content_type == "img/png");
+            }
+        }
+
+        WHEN("a PNG is declared as img/jpeg")
+        {
+            auto const uploaded = merovingian::media::upload_local_media(
+                repository, "example.org", {"@alice:example.org", "img/jpeg", "image/png", "png", true});
+            auto const downloaded = merovingian::media::resolve_local_media_download(repository, uploaded.media_id);
+
+            THEN("it is quarantined and never served")
+            {
+                REQUIRE(uploaded.quarantined);
+                REQUIRE_FALSE(downloaded.ok);
+                REQUIRE(downloaded.status == 451U);
+            }
+        }
+
+        WHEN("a PNG is declared as IMAGE/PNG")
+        {
+            auto const uploaded = merovingian::media::upload_local_media(
+                repository, "example.org", {"@alice:example.org", "IMAGE/PNG", "image/png", "png", true});
+
+            THEN("it is stored available")
+            {
+                REQUIRE(uploaded.ok);
+                REQUIRE_FALSE(uploaded.quarantined);
+                REQUIRE(uploaded.content_type == "IMAGE/PNG");
+            }
+        }
+    }
+}
+
+SCENARIO("Federation media download body names the file the upload was made with",
+         "[media][repository][federation][r17]")
+{
+    GIVEN("an inline-safe type and an upload filename")
+    {
+        WHEN("the body is built with a plain ASCII filename")
+        {
+            auto const envelope =
+                merovingian::media::build_federation_media_download_body("image/png", "png-bytes", "photo.png");
+
+            THEN("the media part's Content-Disposition carries the filename")
+            {
+                REQUIRE(envelope.body.find("Content-Disposition: inline; filename=\"photo.png\"\r\n\r\n") !=
+                        std::string::npos);
+            }
+        }
+
+        WHEN("the body is built with a non-ASCII filename")
+        {
+            auto const envelope =
+                merovingian::media::build_federation_media_download_body("image/png", "png-bytes", "\xF0\x9F\x90\x94");
+
+            THEN("the filename is encoded as an RFC 6266 extended value")
+            {
+                REQUIRE(envelope.body.find("Content-Disposition: inline; filename*=utf-8''%F0%9F%90%94\r\n\r\n") !=
+                        std::string::npos);
+            }
+        }
+
+        WHEN("the body is built with a filename a header could not carry")
+        {
+            auto const envelope = merovingian::media::build_federation_media_download_body("image/png", "png-bytes",
+                                                                                           "evil\r\nX-Injected: 1");
+
+            THEN("the filename is left out rather than cleaned")
+            {
+                REQUIRE(envelope.body.find("X-Injected") == std::string::npos);
+                REQUIRE(envelope.body.find("filename") == std::string::npos);
+            }
+        }
+    }
+
+    GIVEN("a type that is not inline-safe and an upload filename")
+    {
+        WHEN("the body is built")
+        {
+            auto const envelope = merovingian::media::build_federation_media_download_body("application/x-msdownload",
+                                                                                           "MZ-bytes", "setup.exe");
+
+            THEN("the disposition stays attachment and still names the file")
+            {
+                REQUIRE(envelope.body.find("Content-Disposition: attachment; filename=\"setup.exe\"\r\n") !=
+                        std::string::npos);
+            }
+        }
+    }
+}
+
 SCENARIO("Federation media download body is a valid multipart/mixed envelope", "[media][repository][federation]")
 {
     GIVEN("a media content type and raw bytes")

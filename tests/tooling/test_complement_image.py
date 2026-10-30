@@ -28,6 +28,7 @@ ENTRYPOINT = COMPLEMENT_DIR / "entrypoint.sh"
 RENDER_CONFIG = COMPLEMENT_DIR / "render-config.sh"
 PREPARE_STATE = COMPLEMENT_DIR / "prepare-state.sh"
 MINT_TLS = COMPLEMENT_DIR / "mint-tls.sh"
+INSTALL_APPSERVICES = COMPLEMENT_DIR / "install-appservices.sh"
 TEMPLATE = COMPLEMENT_DIR / "merovingian.conf.template"
 NGINX_CONF = COMPLEMENT_DIR / "nginx.conf"
 ROOT_DOCKERFILE = REPO_ROOT / "Dockerfile"
@@ -67,6 +68,33 @@ def current_owner() -> str:
     import pwd
 
     return f"{pwd.getpwuid(os.getuid()).pw_name}:{grp.getgrgid(os.getgid()).gr_name}"
+
+
+# An application service registration exactly as Complement writes one
+# (internal/docker/builder.go, generateASRegistrationYaml).
+COMPLEMENT_REGISTRATION = (
+    "id: my_as_id\n"
+    "hs_token: hs_token_value\n"
+    "as_token: as_token_value\n"
+    "url: 'http://host.docker.internal:9000'\n"
+    "sender_localpart: the-bridge-user\n"
+    "rate_limited: false\n"
+    "de.sorunome.msc2409.push_ephemeral: false\n"
+    "push_ephemeral: false\n"
+    "org.matrix.msc3202: false\n"
+    "namespaces:\n"
+    "  users:\n"
+    "    - exclusive: false\n"
+    "      regex: .*\n"
+    "  rooms: []\n"
+    "  aliases: []\n"
+)
+
+
+def current_group() -> str:
+    import grp
+
+    return grp.getgrgid(os.getgid()).gr_name
 
 
 def run(*args: str, env: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
@@ -545,6 +573,103 @@ class MintTlsTests(unittest.TestCase):
 
 
 @POSIX_ONLY
+class InstallAppservicesTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.workdir = Path(tempfile.mkdtemp(prefix="complement-appservice-"))
+        self.source = self.workdir / "complement" / "appservice"
+        self.dest = self.workdir / "etc" / "appservice"
+
+    def tearDown(self) -> None:
+        shutil.rmtree(self.workdir, ignore_errors=True)
+
+    def install(self) -> subprocess.CompletedProcess[str]:
+        return run("sh", str(INSTALL_APPSERVICES), str(self.source), str(self.dest), current_group())
+
+    def test_no_registrations_gives_an_empty_value(self) -> None:
+        # GIVEN a container Complement started without application services.
+        # WHEN the registrations are installed.
+        result = self.install()
+        # THEN there is nothing to configure.
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.strip(), "")
+
+    def test_registrations_are_copied_where_only_root_writes_and_listed(self) -> None:
+        # GIVEN two registrations Complement copied in.
+        self.source.mkdir(parents=True)
+        (self.source / "bridge_a.yaml").write_text(COMPLEMENT_REGISTRATION, encoding="utf-8")
+        (self.source / "bridge_b.yaml").write_text(COMPLEMENT_REGISTRATION.replace("my_as_id", "other"),
+                                                   encoding="utf-8")
+        # WHEN they are installed.
+        result = self.install()
+        # THEN both are copied unchanged, readable by the server's group and not
+        # by others, into a directory only its owner can write, and listed for
+        # appservice.registration_files.
+        self.assertEqual(result.returncode, 0, result.stderr)
+        listed = result.stdout.strip().split(",")
+        self.assertEqual(sorted(listed), [str(self.dest / "bridge_a.yaml"), str(self.dest / "bridge_b.yaml")])
+        for path in listed:
+            copied = Path(path)
+            self.assertFalse(copied.is_symlink())
+            self.assertEqual(stat.S_IMODE(copied.stat().st_mode), 0o640)
+        self.assertEqual((self.dest / "bridge_a.yaml").read_text(encoding="utf-8"), COMPLEMENT_REGISTRATION)
+        self.assertEqual(stat.S_IMODE(self.dest.stat().st_mode), 0o755)
+
+    def test_a_restart_replaces_the_previous_copies(self) -> None:
+        # GIVEN registrations installed on an earlier start, one since withdrawn.
+        self.source.mkdir(parents=True)
+        (self.source / "kept.yaml").write_text(COMPLEMENT_REGISTRATION, encoding="utf-8")
+        (self.source / "withdrawn.yaml").write_text(COMPLEMENT_REGISTRATION, encoding="utf-8")
+        self.assertEqual(self.install().returncode, 0)
+        (self.source / "withdrawn.yaml").unlink()
+        # WHEN the container starts again.
+        result = self.install()
+        # THEN only the current registration is installed and listed.
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.strip(), str(self.dest / "kept.yaml"))
+        self.assertEqual(sorted(path.name for path in self.dest.iterdir()), ["kept.yaml"])
+
+    def test_anything_but_a_plainly_named_regular_file_is_refused_before_writing(self) -> None:
+        # GIVEN a registration directory holding something Complement never writes.
+        secret = self.workdir / "secret"
+        secret.write_text("not a registration", encoding="utf-8")
+        cases = {
+            "a link": lambda: (self.source / "linked.yaml").symlink_to(secret),
+            "a directory": lambda: (self.source / "nested.yaml").mkdir(),
+            "a name with a comma": lambda: (self.source / "a,b.yaml").write_text(COMPLEMENT_REGISTRATION,
+                                                                                encoding="utf-8"),
+            "another extension": lambda: (self.source / "bridge.json").write_text("{}", encoding="utf-8"),
+            "an oversized file": lambda: (self.source / "big.yaml").write_text("x" * 70_000, encoding="utf-8"),
+        }
+        for label, plant in cases.items():
+            with self.subTest(label):
+                shutil.rmtree(self.workdir / "complement", ignore_errors=True)
+                shutil.rmtree(self.dest, ignore_errors=True)
+                self.source.mkdir(parents=True)
+                (self.source / "good.yaml").write_text(COMPLEMENT_REGISTRATION, encoding="utf-8")
+                plant()
+                # WHEN the registrations are installed.
+                result = self.install()
+                # THEN it refuses and writes nothing at all.
+                self.assertNotEqual(result.returncode, 0)
+                self.assertEqual(result.stdout.strip(), "")
+                self.assertFalse(self.dest.exists())
+
+    def test_a_linked_destination_is_refused(self) -> None:
+        # GIVEN a destination replaced by a link to somewhere else.
+        elsewhere = self.workdir / "elsewhere"
+        elsewhere.mkdir()
+        self.dest.parent.mkdir(parents=True)
+        self.dest.symlink_to(elsewhere)
+        self.source.mkdir(parents=True)
+        (self.source / "good.yaml").write_text(COMPLEMENT_REGISTRATION, encoding="utf-8")
+        # WHEN the registrations are installed.
+        result = self.install()
+        # THEN it refuses and writes nothing through the link.
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(list(elsewhere.iterdir()), [])
+
+
+@POSIX_ONLY
 @NEEDS_OPENSSL
 @unittest.skipUnless(SERVER_BINARY, "no merovingian-server binary given")
 class ServerAcceptsTheRenderedConfigTests(unittest.TestCase):
@@ -577,11 +702,55 @@ class ServerAcceptsTheRenderedConfigTests(unittest.TestCase):
         # THEN it has no findings.
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
+    def test_the_server_accepts_a_registration_as_complement_writes_it(self) -> None:
+        # GIVEN the entrypoint's config with a registration installed the way
+        # the entrypoint installs one.
+        owner = current_owner()
+        state = self.root / "var" / "lib" / "merovingian"
+        (self.root / "etc" / "merovingian" / "tls").mkdir(parents=True)
+        make_ca(self.root / "ca")
+        self.assertEqual(run("sh", str(PREPARE_STATE), str(state), "hs1", owner).returncode, 0)
+        self.assertEqual(run("sh", str(MINT_TLS), str(self.root / "ca"), "hs1",
+                             str(self.root / "etc" / "merovingian" / "tls" / "server.crt"),
+                             str(state / "secrets" / "tls.key"), owner).returncode, 0)
+        source = self.root / "complement" / "appservice"
+        source.mkdir(parents=True)
+        (source / "my_as_id.yaml").write_text(COMPLEMENT_REGISTRATION, encoding="utf-8")
+        installed = run("sh", str(INSTALL_APPSERVICES), str(source),
+                        str(self.root / "etc" / "merovingian" / "appservice"), current_group())
+        self.assertEqual(installed.returncode, 0, installed.stderr)
+        rendered = render("hs1", root=str(self.root))
+        self.assertEqual(rendered.returncode, 0, rendered.stderr)
+        config = self.root / "etc" / "merovingian" / "merovingian.conf"
+        config.write_text(rendered.stdout + f"appservice.registration_files={installed.stdout.strip()}\n",
+                          encoding="utf-8")
+        config.chmod(0o644)
+        # WHEN the real server checks it.
+        result = run(SERVER_BINARY, "--check-config", str(config))
+        # THEN it has no findings.
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
 
 class DockerfileTests(unittest.TestCase):
     def setUp(self) -> None:
         self.text = DOCKERFILE.read_text(encoding="utf-8")
         self.instructions = re.sub(r"\\\r?\n", " ", self.text)
+
+    def test_every_file_the_dockerfile_copies_reaches_the_build(self) -> None:
+        # GIVEN the files the Dockerfile's COPY instructions name, and the
+        # .dockerignore that lets only listed files into the build context.
+        copied = set()
+        for line in self.instructions.splitlines():
+            parts = line.split()
+            if parts and parts[0] == "COPY":
+                copied.update(part for part in parts[1:-1] if not part.startswith("--"))
+        allowed = {line[1:].strip() for line in (COMPLEMENT_DIR / ".dockerignore").read_text(encoding="utf-8").splitlines()
+                   if line.startswith("!")}
+        # WHEN they are compared.
+        missing = sorted(copied - allowed)
+        # THEN nothing the image needs is left out of the context (a new script
+        # once was, and the image failed to build on Complement's first run).
+        self.assertEqual(missing, [])
 
     def test_builds_on_the_same_pinned_base_as_the_shipped_image(self) -> None:
         # GIVEN the shipped image's runtime base and the Complement image's base.

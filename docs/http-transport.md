@@ -837,8 +837,28 @@ not implemented. A client probing an endpoint this server does not serve (such
 as Element X asking for `GET /_matrix/client/r0/login`) is told so, not asked
 for a token. So a fixed-path route must be in `static_routes` too, not only a
 variable one in a template: a served route the matcher cannot place is
-answered `404` for everyone. The check is on the path only; a served path
-asked for with a method it does not serve still authenticates first.
+answered `404` for everyone. The 404 check is on the path only.
+
+A served path asked for with a method it does not serve is `405 M_UNRECOGNIZED`
+(the spec: "a 405 HTTP status code if the endpoint is implemented, but the
+incorrect HTTP method is used"). A fixed path in the `client_static_route_allow`
+table (`client_server.cpp`, the methods it serves, sent back as `Allow`) is
+answered before the access-token check, like the 404, so an unauthenticated
+probe learns it too. A path with an identifier in it is judged after
+authentication: when no handler took the request and `normalized_target()`
+places the path, the answer is 405 rather than 404. A fixed route added to
+`static_routes` therefore also needs a row in `client_static_route_allow` with
+EVERY method it serves, or that method is refused. The federation surface does
+the same through `federation_unsupported_method_allow` (the federation route
+table plus `/_matrix/key/v2/server`, `/_matrix/federation/v1/version` and the
+OpenID userinfo endpoint, all GET only), in the federation proxy and in
+`handle_federation_http_request`, before any signature is demanded.
+
+A request body that is not JSON (malformed, or invalid UTF-8 inside a string)
+is `400 M_NOT_JSON` for every client endpoint, decided once by the dispatcher
+after the rate limit and before routing; media content is exempt. JSON that is
+well formed but refused for its content, size or shape stays the endpoint's
+`M_BAD_JSON`.
 
 ### Inbound federation
 
@@ -1053,6 +1073,7 @@ The paths under the budget:
 | `GET /_matrix/client/v3/publicRooms?server=<remote>` | federation `GET /publicRooms` |
 | `POST /_matrix/client/v3/publicRooms?server=<remote>` | federation `GET` or `POST /publicRooms` |
 | `GET /_matrix/client/v3/directory/room/{alias}` for a remote alias | federation `GET /query/directory` |
+| `GET /_matrix/client/v3/profile/{userId}[/{keyName}]` for a user of another server | federation `GET /query/profile`, 10 s directory deadline |
 | `GET /_matrix/client/v1/rooms/{roomId}/hierarchy`, once a child room is not held locally | federation `GET /hierarchy/{roomId}` to the link's `via` servers: one slot and one 10 s deadline for the whole walk, at most 3 servers per room and 16 requests per walk; the slot is taken at the first such request and `429 M_LIMIT_EXCEEDED` answers the whole walk when it is refused |
 | `GET /_matrix/client/v3/thirdparty/*`, when an appservice will be called | appservice `GET /_matrix/app/v1/thirdparty/*` (ADR-0181) |
 | `GET /_matrix/media/v3/download` and `/thumbnail` for remote media, without a media fetch pool | discovery, federation media, legacy fallback, redirect follow |

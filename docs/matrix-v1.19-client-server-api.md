@@ -273,6 +273,38 @@ a join is (ADR-0242, ADR-0243), with the body's `reason` on the knock event. A r
 resident's `knock_room_state` is kept, without entries whose signature does not check out, and shown as
 `knock_state`. A room alias is not resolved by `/knock` yet: it answers 404.
 
+Implementation note (Complement run 10): `POST /rooms/{roomId}/kick` answers `403 M_FORBIDDEN` when the target is not currently in
+the room (spec, kick 403: "The kickee is not currently in the room."). "In the room" is a membership of `join`, `invite`
+or `knock`, the states a `leave` event can end; a user who left, was banned or never had a membership is refused (a
+ban is lifted with `/unban`).
+
+Implementation note (Complement run 10):
+
+- `GET /rooms/{roomId}/event/{eventId}` answers `404 M_NOT_FOUND` to a user with no read access to the room, the same
+  answer as for an event that does not exist (the endpoint's only error is 404). `/context` still answers 403.
+- `PUT /rooms/{roomId}/state/m.room.canonical_alias` validates the aliases the new content adds (those not already in the
+  room's current event): `400 M_INVALID_PARAM` for invalid syntax or a wrong field type, `400 M_BAD_ALIAS` for an alias on
+  this server that is not in the directory or points at another room. An alias on another server is checked for syntax
+  only (the SHOULD would need a federation call); aliases already listed or being removed are not validated. The check
+  runs only for a sender who may send the event, so anyone else gets the 403. `createRoom` `initial_state` is not
+  validated this way.
+- `createRoom` `topic` writes `m.room.topic` with both `topic` and `m.topic` = `{"m.text":[{"body":..,"mimetype":"text/plain"}]}`,
+  after `initial_state`, so it overwrites a topic given there. A `room_version` that is not a JSON string is
+  `400 M_BAD_JSON`.
+- Key backup uploads (`PUT /room_keys/keys[/{roomId}[/{sessionId}]]`) keep the better key for a session the backup
+  already holds: a verified key beats an unverified one, then the lower `first_message_index`, then the lower
+  `forwarded_count`. Keys equal on all three are not ordered by the spec; the one just uploaded replaces. The response
+  is 200 either way.
+
+Implementation note (run 10, 0.12.63): `invite_room_state` (an invite sent to another server) and
+`knock_room_state` (a `send_knock` answer from this server) hold the room's stored signed PDUs of the
+stripped-state types, create event first, as spec v1.16 requires; the client's `invite_state` and
+`knock_state` are still stripped events. An inbound room version 12+ invite whose `invite_room_state` has no
+create event, an unsigned or stripped entry, or an entry of another room is refused with 400
+`M_INVALID_PARAM`; versions 1 to 11 are accepted as sent. `POST /rooms/{roomId}/leave` on an invite from
+another server is a `make_leave` / `send_leave` to the inviter's server (the invite is ended locally when that
+server no longer has the room), and `POST /join/{roomId}` with no server named tries the inviter's server.
+
 ## Room participation
 
 | Method | Path | Operation ID | Auth | Request body | Responses |
@@ -369,6 +401,15 @@ walk, one outbound-budget slot and one deadline per request, `429 M_LIMIT_EXCEED
 the requesting user may see it according to what that server reported; local state, where the server has it, is always used
 instead of the remote answer. With `suggested_only=true` the walk and every space's `children_state` carry the suggested links only.
 
+`getRoomSummary` (Complement run 10) answers for a room, or a local alias, this server holds state for. `via` is accepted and
+ignored: a room this server has no state of, or an alias on another server, is `404` to an authenticated caller and `401
+M_MISSING_TOKEN` to one without a token, as every room it may not see is (asking a peer for a summary is not implemented). An authenticated caller is shown a room they are joined to, invited to or have knocked on, or that is `public`,
+`knock` / `knock_restricted`, `world_readable`, or `restricted` with the caller joined to an allowed room; any other room is
+`404 M_NOT_FOUND`. `membership` is the caller's own membership when they have one, and is absent without a token. A request
+without a token (the spec's MAY) is served for `public`, `knock`, `knock_restricted` and `world_readable` rooms only, and
+every other room, existing or not, gets the same `401 M_MISSING_TOKEN`. The body is the hierarchy's room chunk without
+`children_state`.
+
 ## Third-party Lookup
 
 | Method | Path | Operation ID | Auth | Request body | Responses |
@@ -449,6 +490,15 @@ In each case below the spec leaves the choice to the server; the owner decided t
 - **Initial `/sync` carries `m.push_rules`.** An initial `/sync` (no usable `since`) always holds a global `m.push_rules` account-data event with the user's effective ruleset (the server defaults plus their changes), if the filter's `account_data` admits it. An incremental `/sync` carries it only after a change.
 - **`POST /user_directory/search` searches visible users only.** A search considers the users who share a joined room with the requester, and users joined to a room whose join rule is `public` or whose history visibility is `world_readable`. The requester is found only through a public or world-readable room. Before, every local profile matched.
 - **`POST /account/password` deletes pushers of revoked devices.** With `logout_devices` true (the default), the pushers set (`POST /pushers/set`) with the access token of a device whose tokens the change revokes are deleted. The requesting device's pushers, and pushers with no recorded device, stay. A pusher records its device in `pushers.device_id`.
+- **A failed UIA stage carries `errcode` and `error`.** A wrong account password on `POST /account/password`, `/account/deactivate`, `/account/3pid/add`, `/keys/device_signing/upload`, `DELETE /devices/{deviceId}` and `POST /delete_devices` is `401` with the `flows`, `params` and `session` of the challenge plus `errcode: M_FORBIDDEN` and `error`; a request making no attempt gets the bare challenge. `DELETE /devices/{deviceId}` does not compare the user a password `identifier` names with the token's user: the password checked is the token owner's (the spec states no status for a mismatch).
+- **`POST /logout` and `POST /logout/all` delete the device(s).** `GET /devices` no longer lists the logged-out device (all of the user's devices after `/logout/all`). A request with no token is `401 M_MISSING_TOKEN`.
+- **`POST /register`.** `username` is checked (`400 M_INVALID_USERNAME`, `M_USER_IN_USE`, `M_EXCLUSIVE`) before UIA starts, as the spec requires; a single-shot `m.login.dummy` request with no `session` completes, and a `session` the server did not issue is answered `401` with the challenge (ADR-0276).
+- **`M_NOT_JSON` and `405 M_UNRECOGNIZED`.** A request body that is not valid JSON (including invalid UTF-8) is `400 M_NOT_JSON` on every client endpoint. A served path used with a method it does not serve is `405 M_UNRECOGNIZED` (with `Allow` for fixed paths) on the client, media, key and federation surfaces; an unserved path stays `404 M_UNRECOGNIZED`. See [http-transport.md](http-transport.md).
+
+## Remote profiles and redactions of unknown events (Complement run 10)
+
+- **`GET /profile/{userId}[/{keyName}]` for a user of another server** asks that server's `GET /_matrix/federation/v1/query/profile` (with `field` for a single key) and answers with its `displayname` and `avatar_url` only; the remote's 404 is a 404 here, its 403 a 403, and any other failure `502 M_UNKNOWN`. It is a client request that calls another server, so it holds a client-outbound slot (`429 M_LIMIT_EXCEEDED` when refused) and runs under the directory deadline (ADR-0079).
+- **`PUT /rooms/{roomId}/redact/{eventId}/{txnId}` for an event this server does not hold** is accepted (200) when the sender holds the room's `redact` level, because the spec defines no 404 and the redaction must reach the servers that hold the event. A sender below that level is refused `403 M_FORBIDDEN`: whose event it is cannot be checked. An event held in another room is still `404 M_NOT_FOUND`. The redaction is judged against its target if the target arrives later.
 
 ## Configurable response budgets (0.12.18)
 

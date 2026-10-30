@@ -251,6 +251,22 @@
 * [0266 - Pin third-party GitHub Actions to a full commit SHA](0266-pin-third-party-github-actions-to-a-full-commit-sha.md)
 * [0267 - Bounded parallel work holds each slot in an RAII permit](0267-bounded-parallel-work-holds-each-slot-in-an-raii-permit.md)
 * [0268 - Runtime state structs keep their implicit, possibly throwing, moves](0268-runtime-state-structs-keep-their-implicit-throwing-moves.md)
+* [0269 - The room version resolver does not guess for unknown rooms](0269-the-room-version-resolver-does-not-guess-for-unknown-rooms.md)
+* [0270 - Spelling variants of the sniffed MIME type match](0270-spelling-variants-of-the-sniffed-mime-type-match.md)
+* [0271 - Room summaries answer unauthenticated callers uniformly, for local rooms only](0271-room-summaries-answer-unauthenticated-callers-uniformly.md)
+* [0272 - Canonical alias validation checks the aliases an event adds, and only local ones fully](0272-canonical-alias-validation-checks-added-local-aliases.md)
+* [0273 - Appservice registrations ignore namespaced extension keys](0273-appservice-registrations-ignore-namespaced-extension-keys.md)
+* [0274 - Method-not-allowed is decided by a static table before authentication, and by fall-through after it](0274-method-not-allowed-is-decided-by-a-static-table-and-by-fall-through.md)
+* [0275 - M_NOT_JSON is decided once in the dispatcher](0275-m-not-json-is-decided-once-in-the-dispatcher.md)
+* [0276 - Registration checks the username before UIA; a single-shot dummy stage still completes](0276-dummy-registration-needs-a-server-issued-session.md)
+* [0277 - invite_room_state is validated for room versions 12 and up only](0277-invite-room-state-is-validated-for-room-versions-12-and-up.md)
+* [0278 - Only the inviting server withdraws an invite this server holds no room state for](0278-only-the-inviting-server-withdraws-an-invite-without-room-state.md)
+* [0279 - A ban does not end this server's interest in PDUs about its banned user](0279-a-ban-does-not-end-interest-in-pdus-about-the-banned-user.md)
+* [0280 - Every federation error is a standard JSON error, and /send answers every PDU](0280-federation-errors-and-send-results-are-spec-shaped.md)
+* [0281 - Federation routes that name no room are served by main, not a worker snapshot](0281-federation-routes-without-a-room-are-served-by-main.md)
+* [0282 - Redact, never drop, room events a requesting server could not see](0282-redact-never-drop-events-a-requesting-server-could-not-see.md)
+* [0283 - A retried /send transaction is given its first answer, kept within a byte budget](0283-a-retried-send-transaction-is-given-its-first-answer.md)
+* [0284 - An auth chain longer than the bound is refused, never truncated](0284-an-auth-chain-longer-than-the-bound-is-refused.md)
 
 ## Proposed Records
 
@@ -290,3 +306,4 @@
 * [0069 - Spec-conformant /state_ids fallback via /event_auth](0069-spec-conformant-state-ids-fallback-via-event-auth.md) — Refined by ADR-0255: events a `/state_ids` snapshot names are fetched with `GET /event`; `/event_auth` is a last resort
 * [0238 - The key resolver uses the key it fetched, not a cache read-back](0238-the-key-resolver-uses-the-key-it-fetched-not-a-cache-read-back.md) — Refined by ADR-0263: a worker re-reads public key rows main cached before fetching
 * [0204 - Keep a user's push rules as their m.push_rules account data, applied over the current defaults](0204-keep-a-users-push-rules-as-their-m-push-rules-account-data.md) — Refined by ADR-0264: an initial `/sync` carries the effective ruleset even for a user who never changed a rule
+* [0035 - Parse appservice registrations as a bounded YAML subset](0035-parse-appservice-registrations-as-a-bounded-yaml-subset.md) — Refined by ADR-0273: reverse-DNS namespaced keys and `push_ephemeral` are ignored with a warning; other unknown keys are still parse failures

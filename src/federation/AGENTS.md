@@ -101,6 +101,24 @@ Federation is the highest-risk surface: **all input comes from untrusted remote 
    back to current state — and `get_missing_events` is a bounded walk (limit at most 20), not
    a room scan. The server ACL check in `inbound_request.cpp` stays in front of all of this.
 
+   **The gate is not the whole rule: what comes back is filtered per event by server-level history
+   visibility.** The S2S spec says nothing about it, so the project applies the client-server "Room
+   History Visibility" settings to the requesting server (owner decision 2026-10-29). `/event`,
+   `/backfill` and `/get_missing_events` send an event in full only when `ServerEventFilter` (in
+   `event_query.cpp`; `event_visible_to_server()` for one event) finds it visible to `origin`, judged on the
+   room's state AT the event (its ADR-0064 state group, never current state): `world_readable` or
+   `shared` (also the default when the state has no `m.room.history_visibility`) is visible; `invited`
+   needs a user of `origin` invited or joined in that state; `joined` needs one joined. Any other event is
+   sent REDACTED (`events::redact_event` with the room's version policy): its signatures, hashes,
+   `prev_events`, `auth_events` and event ID are untouched, and it is never dropped, which would leave a hole
+   in the receiver's graph. Fail closed: an event with no state group or a broken chain is redacted; if it
+   cannot be redacted either (room version unknown) it is left out, never sent in full. One filter serves
+   one request, so the group index is built once and a membership scan runs once per distinct group.
+   `/state`, `/state_ids` and `/event_auth` are deliberately NOT filtered: state events are part of the
+   room's authorisation, and a joining or catching-up server needs the whole of them to compute state and
+   authorise events. Do not add a filter there without an ADR. A new read that returns room events goes
+   through the filter.
+
 8. **An inbound EDU's identity claims are the sending server's, so bind them to it.** A
    `m.direct_to_device` `sender` must be a user of the sending origin, and only local, active
    users may be targeted; `message_id` (1 to 32 codepoints) is de-duplicated per
@@ -130,7 +148,11 @@ Federation is the highest-risk surface: **all input comes from untrusted remote 
    main, so a retry can reach the process that did not run the original. `FederationProxy`
    records each transaction the worker answers with 200 in main's ring and sends any
    transaction already there to main, which answers it as a duplicate. A new path that runs
-   an inbound transaction outside main's handler does the same (ADR-0160).
+   an inbound transaction outside main's handler does the same (ADR-0160). Each entry keeps the
+   200 body the transaction was first answered with, and a duplicate is given that body, so a
+   PDU that failed is not reported as handled on a retry. Record a completion only once its
+   whole answer is built, and pass the body. The kept bodies are bounded by
+   `accepted_transaction_cache_bytes` as well as the entry cap (ADR-0283).
 
 11. **A PDU that cannot yet be placed is retained, not dropped (R03, ADR-0165).** When
    `ingest_pdu_event` cannot resolve a `prev_event`, `auth_event` or state before an
@@ -164,6 +186,33 @@ Federation is the highest-risk surface: **all input comes from untrusted remote 
    `ip_address_in_allowed_private_range`, which re-checks each range with
    `config::private_ip_range_is_allowable` so loopback and link-local can never open.
 
+14. **An invite's `invite_room_state` is validated for room versions 12 and up, and left alone below.**
+   Spec v1.19 (`PUT /v2/invite`): the list "MUST contain the `m.room.create` event" and every entry is a
+   full PDU of the room version, not a stripped event. `validate_invite_room_state`
+   (`invite_room_state.cpp`) refuses with 400 `M_INVALID_PARAM` a missing create event, an entry that is
+   not a version-formatted PDU, an entry in another room (a v12 create event has no `room_id`; its room is
+   `!` plus its reference hash), an entry whose signature does not verify, or more than
+   `max_invite_room_state_entries` (16) entries. Every entry's signature goes through the same admitted
+   key lookup as the invite's own (rule 3); a lookup refused for local load is a 503, not a verdict.
+   `handle_invite` calls it, and so does main's `invite_ingest` relay, because the stripped state travels in
+   the relayed frame. Room versions 1 through 11 stay accepted as they arrive (spec: validation is a MAY
+   there, and servers still migrating send stripped entries). Our own outbound invites and `send_knock`
+   answers fill the list from `homeserver::stripped_state_pdus`.
+
+15. **Every federation error is a standard `{errcode, error}` JSON object, and every PDU of a `/send`
+   has an entry in the answer (SS API "API standards", "Transactions").** A handler may return
+   `{status, "reason"}`; `handle_inbound_federation_request` wraps it with `standard_error_body`
+   (errcode from the status: 400 `M_INVALID_PARAM`, 403 `M_FORBIDDEN`, 404 `M_NOT_FOUND`, ...), and
+   leaves a body that already starts with `{` alone, so a handler with a more exact errcode builds
+   its own `matrix_error`. The `pdus` object lists every PDU: `{}` for one that was handled (including
+   one retained for retry), `{"error": ...}` otherwise. A bad `user_id` on `query/profile` is 400
+   `M_INVALID_PARAM`, never a 404. `GET /event_auth/{roomId}/{eventId}` returns the closure of the
+   event's `auth_events` (not the event), behind the same origin-in-room gate as the other reads
+   (rule 7). A chain longer than `max_event_auth_chain_events` is refused with 502 `M_TOO_LARGE`,
+   never answered with part of it (ADR-0284). The media download answers content too large to serve
+   with 502 `M_TOO_LARGE`; only the thumbnail has 413. `query/directory` has no room ID, so a worker
+   relays it to main (`directory_query_ingest`).
+
 ## Key files
 
 | File | Responsibility |
@@ -173,6 +222,7 @@ Federation is the highest-risk surface: **all input comes from untrusted remote 
 | `outbound_transaction.cpp` | Batches local events and delivers them to remote servers |
 | `server_discovery.cpp` | Resolves `server_name` → host:port per SS API §Resolving Server Names |
 | `remote_key_cache.cpp` | Caches remote server signing keys with validity TTL |
+| `invite_room_state.cpp` | `validate_invite_room_state`: the `invite_room_state` checks of an inbound v12+ invite (rule 14) |
 | `membership_endpoints.cpp` | /make_join, /send_join, /make_leave, /send_leave (a refused template carries `error_status`, e.g. 403 `M_FORBIDDEN` for a restricted room) |
 | `key_query.cpp` | E2EE key responses served over federation, key EDU contents, filtering remote key-query responses |
 | `key_signatures.cpp` | The one place uploaded key signatures are merged into published keys (visibility per ADR-0060) |

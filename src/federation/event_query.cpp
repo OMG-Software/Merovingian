@@ -6,18 +6,25 @@
 #include "merovingian/canonicaljson/parser.hpp"
 #include "merovingian/canonicaljson/serializer.hpp"
 #include "merovingian/canonicaljson/value.hpp"
+#include "merovingian/events/limits.hpp"
+#include "merovingian/events/redaction.hpp"
 #include "merovingian/federation/server_acl.hpp"
+#include "merovingian/homeserver/stored_room_version.hpp"
 #include "merovingian/observability/logger.hpp"
 #include "merovingian/observability/observability.hpp"
+#include "merovingian/rooms/room_version_policy.hpp"
 
 #include <algorithm>
 #include <chrono>
 #include <cstdint>
 #include <deque>
+#include <limits>
 #include <map>
 #include <optional>
 #include <string>
 #include <string_view>
+#include <tuple>
+#include <unordered_map>
 #include <unordered_set>
 #include <utility>
 #include <variant>
@@ -227,7 +234,9 @@ namespace
     // stored event are skipped rather than emitted, so callers never surface a
     // dangling ID for which no PDU body exists.
     [[nodiscard]] auto collect_auth_chain(database::PersistentStore const& store,
-                                          std::vector<std::string> const& seed_ids) -> std::vector<std::string>
+                                          std::vector<std::string> const& seed_ids,
+                                          std::size_t limit = std::numeric_limits<std::size_t>::max())
+        -> std::vector<std::string>
     {
         auto ordered = std::vector<std::string>{};
         auto seen = std::unordered_set<std::string>{};
@@ -239,7 +248,7 @@ namespace
                 queue.push_back(id);
             }
         }
-        while (!queue.empty())
+        while (!queue.empty() && ordered.size() <= limit)
         {
             auto const id = std::move(queue.front());
             queue.pop_front();
@@ -422,6 +431,349 @@ namespace
         return ids;
     }
 
+    enum class ServerVisibility : unsigned char
+    {
+        world_readable,
+        shared,
+        invited,
+        joined,
+    };
+
+    // The four values of `m.room.history_visibility`'s `history_visibility`. Anything else, and an
+    // event with no such field, is `shared` (CS API "Room History Visibility": "if no
+    // `history_visibility` is set, or if the value is not understood, the visibility is assumed to
+    // be `shared`").
+    [[nodiscard]] auto parse_server_visibility(std::string_view value) noexcept -> ServerVisibility
+    {
+        if (value == "world_readable")
+        {
+            return ServerVisibility::world_readable;
+        }
+        if (value == "invited")
+        {
+            return ServerVisibility::invited;
+        }
+        if (value == "joined")
+        {
+            return ServerVisibility::joined;
+        }
+        return ServerVisibility::shared;
+    }
+
+    // Decides, for one requesting server, which room events it may read in full, and redacts the
+    // rest. One instance serves one request: it builds its indexes over the store once, lazily, and
+    // caches per state group, so a page of events costs one group lookup per event and one
+    // membership scan per DISTINCT group, never a walk of the room. Not thread-safe; it must not
+    // outlive the store reference.
+    //
+    // The rule is the client-server "Room History Visibility" rule applied to the server `origin`
+    // (owner decision 2026-10-29), against the state group recorded for the event (ADR-0064): the
+    // room's state immediately after it, so the event's own state change counts.
+    //   world_readable, shared  visible;
+    //   invited                 visible when a user of `origin` is invited or joined in that state;
+    //   joined                  visible when a user of `origin` is joined in that state.
+    // It fails closed: an event with no state group, a broken group chain, or a group naming an
+    // event the store lacks is not visible.
+    class ServerEventFilter final
+    {
+    public:
+        ServerEventFilter(database::PersistentStore const& store, std::string_view origin)
+            : store_{store}
+            , origin_{origin}
+        {
+        }
+
+        [[nodiscard]] auto can_see(database::PersistentEvent const& event) -> bool
+        {
+            if (origin_.empty())
+            {
+                return false;
+            }
+            auto const group_id = group_of(event.event_id);
+            if (!group_id.has_value())
+            {
+                return false;
+            }
+            auto const& view = view_of_group(*group_id);
+            if (!view.valid)
+            {
+                return false;
+            }
+            switch (view.visibility)
+            {
+            case ServerVisibility::world_readable:
+            case ServerVisibility::shared:
+                return true;
+            case ServerVisibility::invited:
+                return view.origin_invited_or_joined;
+            case ServerVisibility::joined:
+                return view.origin_joined;
+            }
+            return false;
+        }
+
+        // The event as a JSON value for `origin`: as stored when visible, otherwise the room
+        // version's redaction of it (signatures, hashes, `prev_events`, `auth_events` and so the event
+        // ID are kept, so the receiver can verify it and place it in the graph). nullopt when the
+        // stored JSON does not parse, or the event is invisible and cannot be redacted (the room's
+        // version is unknown or unsupported): the caller then leaves the event out rather than send
+        // it in full.
+        [[nodiscard]] auto value_for(database::PersistentEvent const& event) -> std::optional<canonicaljson::Value>
+        {
+            auto parsed = parsed_value(event.json);
+            if (!parsed.has_value() || can_see(event))
+            {
+                return parsed;
+            }
+            auto const* policy = policy_for(event.room_id);
+            if (policy == nullptr)
+            {
+                log_diagnostic("event_query.redaction_unavailable",
+                               {
+                                   {"event_id", event.event_id, false}
+                },
+                               observability::LogEventSeverity::warning);
+                return std::nullopt;
+            }
+            auto redaction = events::redact_event(*parsed, *policy);
+            if (!redaction.error.empty())
+            {
+                return std::nullopt;
+            }
+            log_diagnostic("event_query.redacted_for_server",
+                           {
+                               {"event_id", event.event_id,       false},
+                               {"origin",   std::string{origin_}, false}
+            });
+            return std::move(redaction.event);
+        }
+
+        // As `value_for`, serialised: the stored JSON itself when visible.
+        [[nodiscard]] auto json_for(database::PersistentEvent const& event) -> std::optional<std::string>
+        {
+            if (can_see(event))
+            {
+                return event.json;
+            }
+            auto const redacted = value_for(event);
+            if (!redacted.has_value())
+            {
+                return std::nullopt;
+            }
+            auto const serialized = canonicaljson::serialize_canonical(*redacted);
+            if (serialized.error != canonicaljson::CanonicalJsonError::none)
+            {
+                return std::nullopt;
+            }
+            return serialized.output;
+        }
+
+    private:
+        struct GroupView final
+        {
+            bool valid{false};
+            ServerVisibility visibility{ServerVisibility::shared};
+            // Computed only for `invited` and `joined`, the settings that ask.
+            bool origin_joined{false};
+            bool origin_invited_or_joined{false};
+        };
+
+        enum class Lookup : unsigned char
+        {
+            found,
+            absent,
+            broken,
+        };
+
+        struct LookupResult final
+        {
+            Lookup outcome{Lookup::broken};
+            std::string_view event_id{};
+        };
+
+        [[nodiscard]] auto group_of(std::string_view event_id) -> std::optional<std::string_view>
+        {
+            if (!event_group_index_built_)
+            {
+                group_by_event_.reserve(store_.event_state_groups.size());
+                for (auto const& mapping : store_.event_state_groups)
+                {
+                    group_by_event_.emplace(mapping.event_id, mapping.state_group_id);
+                }
+                event_group_index_built_ = true;
+            }
+            auto const found = group_by_event_.find(event_id);
+            return found == group_by_event_.end() ? std::nullopt : std::optional<std::string_view>{found->second};
+        }
+
+        auto ensure_group_index() -> void
+        {
+            if (group_index_built_)
+            {
+                return;
+            }
+            groups_by_id_.reserve(store_.state_groups.size());
+            for (auto const& group : store_.state_groups)
+            {
+                groups_by_id_.emplace(group.state_group_id, &group);
+            }
+            for (auto const& entry : store_.state_group_state)
+            {
+                entries_by_group_[entry.state_group_id].push_back(&entry);
+            }
+            group_index_built_ = true;
+        }
+
+        // Finds the event ID `group_id`'s full state holds for (event_type, state_key), walking the
+        // delta chain newest first exactly as database::read_state_group_full_state does: bounded,
+        // cycle-checked, and broken (not "absent") when a group on the chain is missing.
+        [[nodiscard]] auto lookup_in_group(std::string_view group_id, std::string_view event_type,
+                                           std::string_view state_key) -> LookupResult
+        {
+            ensure_group_index();
+            auto visited = std::unordered_set<std::string_view>{};
+            auto current = group_id;
+            for (auto hops = std::size_t{0U};; ++hops)
+            {
+                if (!visited.insert(current).second || hops > events::max_state_group_delta_depth)
+                {
+                    return {Lookup::broken, {}};
+                }
+                auto const group = groups_by_id_.find(current);
+                if (group == groups_by_id_.end())
+                {
+                    return {Lookup::broken, {}};
+                }
+                if (auto const entries = entries_by_group_.find(current); entries != entries_by_group_.end())
+                {
+                    for (auto const* entry : entries->second)
+                    {
+                        if (entry->event_type == event_type && entry->state_key == state_key)
+                        {
+                            return {Lookup::found, entry->event_id};
+                        }
+                    }
+                }
+                if (!group->second->parent_state_group_id.has_value())
+                {
+                    return {Lookup::absent, {}};
+                }
+                current = *group->second->parent_state_group_id;
+            }
+        }
+
+        // Fills `origin_joined` and `origin_invited_or_joined` from every `m.room.member` entry of
+        // `group_id`'s full state whose user is on `origin`. A key set by a newer group on the chain
+        // shadows the same key in an older one. False when the chain is broken or names a member
+        // event the store lacks.
+        [[nodiscard]] auto scan_origin_membership(std::string_view group_id, GroupView& view) -> bool
+        {
+            ensure_group_index();
+            auto visited = std::unordered_set<std::string_view>{};
+            auto shadowed = std::unordered_set<std::string_view>{};
+            auto current = group_id;
+            for (auto hops = std::size_t{0U};; ++hops)
+            {
+                if (!visited.insert(current).second || hops > events::max_state_group_delta_depth)
+                {
+                    return false;
+                }
+                auto const group = groups_by_id_.find(current);
+                if (group == groups_by_id_.end())
+                {
+                    return false;
+                }
+                if (auto const entries = entries_by_group_.find(current); entries != entries_by_group_.end())
+                {
+                    for (auto const* entry : entries->second)
+                    {
+                        if (entry->event_type != "m.room.member" || user_id_server_name(entry->state_key) != origin_ ||
+                            !shadowed.insert(entry->state_key).second)
+                        {
+                            continue;
+                        }
+                        auto const* member_event = find_event(store_, entry->event_id);
+                        if (member_event == nullptr)
+                        {
+                            return false;
+                        }
+                        auto const membership = content_string(member_event->json, "membership");
+                        if (membership == std::optional<std::string>{"join"})
+                        {
+                            view.origin_joined = true;
+                            view.origin_invited_or_joined = true;
+                            return true;
+                        }
+                        if (membership == std::optional<std::string>{"invite"})
+                        {
+                            view.origin_invited_or_joined = true;
+                        }
+                    }
+                }
+                if (!group->second->parent_state_group_id.has_value())
+                {
+                    return true;
+                }
+                current = *group->second->parent_state_group_id;
+            }
+        }
+
+        [[nodiscard]] auto view_of_group(std::string_view group_id) -> GroupView const&
+        {
+            auto const key = std::string{group_id};
+            if (auto const cached = group_views_.find(key); cached != group_views_.end())
+            {
+                return cached->second;
+            }
+            auto view = GroupView{};
+            auto const visibility_event = lookup_in_group(group_id, "m.room.history_visibility", "");
+            if (visibility_event.outcome != Lookup::broken)
+            {
+                view.valid = true;
+                if (visibility_event.outcome == Lookup::found)
+                {
+                    auto const* event = find_event(store_, visibility_event.event_id);
+                    if (event == nullptr)
+                    {
+                        view.valid = false; // the group names an event this store does not hold
+                    }
+                    else if (auto const value = content_string(event->json, "history_visibility"); value.has_value())
+                    {
+                        view.visibility = parse_server_visibility(*value);
+                    }
+                }
+                if (view.valid &&
+                    (view.visibility == ServerVisibility::invited || view.visibility == ServerVisibility::joined))
+                {
+                    view.valid = scan_origin_membership(group_id, view);
+                }
+            }
+            return group_views_.emplace(key, view).first->second;
+        }
+
+        [[nodiscard]] auto policy_for(std::string const& room_id) -> rooms::RoomVersionPolicy const*
+        {
+            if (auto const cached = policies_.find(room_id); cached != policies_.end())
+            {
+                return cached->second;
+            }
+            auto const* policy = homeserver::stored_room_version_policy(store_, room_id);
+            policies_.emplace(room_id, policy);
+            return policy;
+        }
+
+        database::PersistentStore const& store_;
+        std::string_view origin_;
+        bool event_group_index_built_{false};
+        std::unordered_map<std::string_view, std::string_view> group_by_event_{};
+        bool group_index_built_{false};
+        std::unordered_map<std::string_view, database::PersistentStateGroup const*> groups_by_id_{};
+        std::unordered_map<std::string_view, std::vector<database::PersistentStateGroupStateEntry const*>>
+            entries_by_group_{};
+        std::unordered_map<std::string, GroupView> group_views_{};
+        std::unordered_map<std::string, rooms::RoomVersionPolicy const*> policies_{};
+    };
+
 } // namespace
 
 auto origin_has_joined_user_in_room(database::PersistentStore const& store, std::string_view room_id,
@@ -464,7 +816,10 @@ auto build_event_response(database::PersistentStore const& store, std::string_vi
         });
         return forbidden_result();
     }
-    auto event_value = parsed_value(event->json);
+    // A visible event goes out as stored; one none of the origin's users could see goes out
+    // redacted (server-level history visibility, see ServerEventFilter).
+    auto filter = ServerEventFilter{store, origin};
+    auto event_value = filter.value_for(*event);
     if (!event_value.has_value())
     {
         log_diagnostic("event_query.parse_failed", {
@@ -504,6 +859,10 @@ auto build_state_response(database::PersistentStore const& store, std::string_vi
     {
         return not_found_result();
     }
+    // Deliberately NOT filtered by server-level history visibility (unlike /event, /backfill and
+    // /get_missing_events): state events are part of the room's authorisation, and a joining or
+    // catching-up server computes state and authorises events from them, so they are sent whole.
+    // The origin_may_read_room gate above still applies. Filtering state would need an ADR.
     auto pdus = canonicaljson::Array{};
     // Seed IDs for the auth chain: every auth event named by a returned state
     // event. The transitive closure is computed once after the state is gathered.
@@ -562,6 +921,68 @@ auto build_state_response(database::PersistentStore const& store, std::string_vi
     return body.empty() ? not_found_result() : RoomReadResult{RoomReadStatus::ok, std::move(body)};
 }
 
+auto build_event_auth_response(database::PersistentStore const& store, std::string_view room_id,
+                               std::string_view event_id, std::string_view origin) -> RoomReadResult
+{
+    if (!origin_may_read_room(store, room_id, origin))
+    {
+        log_diagnostic("event_auth_query.forbidden",
+                       {
+                           {"room_id", std::string{room_id}, false},
+                           {"origin",  std::string{origin},  false}
+        });
+        return forbidden_result();
+    }
+    auto const* event = event_id.empty() ? nullptr : find_event(store, event_id);
+    if (event == nullptr || event->room_id != room_id)
+    {
+        return not_found_result();
+    }
+    // Like /state, the auth chain is NOT filtered by server-level history visibility: auth events are
+    // state events, part of the room's authorisation, and the receiver needs them whole to authorise
+    // the event. The origin_may_read_room gate above still applies.
+    // The chain is the closure of the event's auth events, not the event itself.
+    // The walk is bounded so one request cannot read an unbounded part of the
+    // store. The spec promises "the complete auth chain", so a chain longer than
+    // the bound is refused, never answered with part of it (ADR-0284). The walk
+    // collects one past the bound, which is how a longer chain is told apart.
+    auto const auth_ids = collect_auth_chain(store, event->auth_event_ids, max_event_auth_chain_events);
+    if (auth_ids.size() > max_event_auth_chain_events)
+    {
+        log_diagnostic("event_auth_query.too_large",
+                       {
+                           {"room_id",  std::string{room_id},                        false},
+                           {"event_id", std::string{event_id},                       false},
+                           {"bound",    std::to_string(max_event_auth_chain_events), false}
+        },
+                       observability::LogEventSeverity::warning);
+        return RoomReadResult{RoomReadStatus::too_large, {}};
+    }
+    auto chain = canonicaljson::Array{};
+    for (auto const& auth_id : auth_ids)
+    {
+        auto const* auth_event = find_event(store, auth_id);
+        if (auth_event == nullptr || auth_event->room_id != room_id || auth_event->json.empty())
+        {
+            continue;
+        }
+        if (auto value = parsed_value(auth_event->json); value.has_value())
+        {
+            chain.push_back(std::move(*value));
+        }
+    }
+    auto const chain_count = chain.size();
+    auto response = canonicaljson::Object{};
+    response.push_back(canonicaljson::make_member("auth_chain", canonicaljson::Value{std::move(chain)}));
+    log_diagnostic("event_auth_query.accepted",
+                   {
+                       {"room_id",    std::string{room_id},        false},
+                       {"auth_chain", std::to_string(chain_count), false}
+    });
+    auto body = serialize(std::move(response));
+    return body.empty() ? not_found_result() : RoomReadResult{RoomReadStatus::ok, std::move(body)};
+}
+
 auto build_state_ids_response(database::PersistentStore const& store, std::string_view room_id,
                               std::string_view at_event_id, std::string_view origin) -> RoomReadResult
 {
@@ -579,6 +1000,7 @@ auto build_state_ids_response(database::PersistentStore const& store, std::strin
     {
         return not_found_result();
     }
+    // IDs only, and unfiltered for the same reason as /state: state is the room's authorisation record.
     auto pdu_ids = canonicaljson::Array{};
     auto auth_seed_ids = std::vector<std::string>{};
     for (auto const& state_event_id : reconstruct_state_at_event(store, room_id, at_event_id))
@@ -630,13 +1052,29 @@ auto resolve_state_event_ids_at(database::PersistentStore const& store, std::str
     return reconstruct_state_including_event(store, room_id, *at);
 }
 
+auto event_visible_to_server(database::PersistentStore const& store, std::string_view event_id, std::string_view origin)
+    -> bool
+{
+    auto const* event = find_event(store, event_id);
+    if (event == nullptr)
+    {
+        return false;
+    }
+    auto filter = ServerEventFilter{store, origin};
+    return filter.can_see(*event);
+}
+
 auto build_backfill_pdus(database::PersistentStore const& store, std::string_view room_id,
-                         std::vector<std::string> const& event_ids, std::size_t limit) -> std::vector<std::string>
+                         std::vector<std::string> const& event_ids, std::size_t limit, std::string_view origin)
+    -> std::vector<std::string>
 {
     if (limit == 0U)
     {
         return {};
     }
+    // Server-level history visibility: an event none of the origin's users could see is sent
+    // redacted, not dropped, and the walk continues through its prev_events either way.
+    auto filter = ServerEventFilter{store, origin};
     auto pdus = std::vector<std::string>{};
     auto seen = std::unordered_set<std::string>{};
     auto queue = std::deque<std::string>{};
@@ -656,7 +1094,10 @@ auto build_backfill_pdus(database::PersistentStore const& store, std::string_vie
         {
             continue;
         }
-        pdus.push_back(event->json);
+        if (auto pdu = filter.json_for(*event); pdu.has_value())
+        {
+            pdus.push_back(std::move(*pdu));
+        }
         for (auto const& prev_event_id : event->prev_event_ids)
         {
             if (seen.insert(prev_event_id).second)
@@ -689,7 +1130,7 @@ auto build_backfill_response(database::PersistentStore const& store, BackfillReq
             200U,
             {},
             build_backfill_pdus(store, request.room_id, request.event_ids,
-                                std::min(request.limit, policy.max_backfill_pdus))};
+                                std::min(request.limit, policy.max_backfill_pdus), request.origin)};
 }
 
 auto build_get_missing_events_response(database::PersistentStore const& store, std::string_view room_id,
@@ -774,10 +1215,13 @@ auto build_get_missing_events_response(database::PersistentStore const& store, s
         }
     }
     // The walk runs newest to oldest; hand the requester the oldest first.
+    // Server-level history visibility: an event none of the origin's users could see comes back
+    // redacted, not dropped (the walk above is unchanged, so the graph stays whole).
+    auto filter = ServerEventFilter{store, origin};
     auto events = canonicaljson::Array{};
     for (auto it = collected.rbegin(); it != collected.rend(); ++it)
     {
-        auto value = parsed_value((*it)->json);
+        auto value = filter.value_for(**it);
         if (value.has_value())
         {
             events.push_back(std::move(*value));

@@ -17,6 +17,7 @@
 #include "merovingian/homeserver/media_service.hpp"
 #include "merovingian/homeserver/room_service.hpp"
 #include "merovingian/homeserver/runtime.hpp"
+#include "merovingian/observability/logger.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -25,8 +26,10 @@
 #include <condition_variable>
 #include <filesystem>
 #include <fstream>
+#include <iostream>
 #include <mutex>
 #include <optional>
+#include <sstream>
 #include <string>
 #include <string_view>
 #include <thread>
@@ -422,7 +425,8 @@ SCENARIO("Federation auth failures do not surface as client-style 401s", "[homes
                 // client-server request, which Element interprets as an invalid
                 // access token and turns into an automatic logout.
                 REQUIRE(response.status == 502U);
-                REQUIRE(response.body == "malformed federation authorization");
+                REQUIRE(response.body.find("malformed federation authorization") != std::string::npos);
+                REQUIRE(response.body.find("\"errcode\"") != std::string::npos);
             }
         }
     }
@@ -448,7 +452,8 @@ SCENARIO("Pipe-delimited federation fixture auth is rejected on the production f
             THEN("the request is rejected instead of being accepted as real X-Matrix auth")
             {
                 REQUIRE(response.status == 502U);
-                REQUIRE(response.body == "malformed federation authorization");
+                REQUIRE(response.body.find("malformed federation authorization") != std::string::npos);
+                REQUIRE(response.body.find("\"errcode\"") != std::string::npos);
             }
         }
     }
@@ -1031,6 +1036,67 @@ SCENARIO("SQLite persistent transactions roll back failed statement groups",
                     });
                 REQUIRE(transaction_statements == 0U);
                 REQUIRE(reopened.store.rooms.empty());
+            }
+        }
+
+        std::filesystem::remove(sqlite_path);
+    }
+}
+
+// Complement run 10 (F14): a federated join answered 500 "initial join state
+// persistence failed" under load with nothing in the log to say why. A SQLite
+// write that fails now says which stage failed, which statement, and SQLite's
+// own error, never the bound values (src/database/AGENTS.md rule 2).
+SCENARIO("A failed SQLite transaction is logged with its stage, statement and SQLite error",
+         "[database][sqlite][persistence][transaction][observability]")
+{
+    GIVEN("a SQLite store and a transaction whose second insert repeats the first room's ID")
+    {
+        auto const sqlite_path = unique_sqlite_path("logged-rollback");
+        std::filesystem::remove(sqlite_path);
+        auto opened = merovingian::database::open_sqlite_persistent_store(sqlite_path.string());
+        REQUIRE(opened.ok);
+        auto& store = opened.store;
+        auto const statements = std::vector<merovingian::database::PreparedStatement>{
+            {"insert_room",
+             "INSERT INTO rooms (room_id, creator_user_id) VALUES ($1, $2)", {{"!logged:example.org", false}, {"@alice:example.org", false}}},
+            {"insert_room_duplicate",
+             "INSERT INTO rooms (room_id, creator_user_id) VALUES ($1, $2)", {{"!logged:example.org", false}, {"@bob:example.org", false}}  },
+        };
+
+        WHEN("the transaction is committed")
+        {
+            auto& logger = merovingian::observability::SingleLog::instance();
+            REQUIRE_FALSE(logger.writers_started());
+            auto const previous_level = logger.exchange_console_log_level(merovingian::observability::LogLevel::info);
+            auto output = std::ostringstream{};
+            auto* const previous_buffer = std::cout.rdbuf(output.rdbuf());
+            auto const committed = merovingian::database::commit_persistent_transaction(store, statements);
+            std::cout.rdbuf(previous_buffer);
+            std::ignore = logger.exchange_console_log_level(previous_level);
+            auto const logged = output.str();
+
+            THEN("it fails and a warning names the statement and SQLite's constraint error, without the values")
+            {
+                REQUIRE_FALSE(committed);
+                auto lines = std::istringstream{logged};
+                auto warning = std::string{};
+                for (auto line = std::string{}; std::getline(lines, line);)
+                {
+                    if (line.find("<WARNING>") != std::string::npos &&
+                        line.find("transaction.failed") != std::string::npos)
+                    {
+                        warning = line;
+                    }
+                }
+                INFO("log: " << logged);
+                REQUIRE_FALSE(warning.empty());
+                REQUIRE(warning.find("stage=statement") != std::string::npos);
+                REQUIRE(warning.find("statement=insert_room_duplicate") != std::string::npos);
+                REQUIRE(warning.find("sqlite_code=") != std::string::npos);
+                REQUIRE(warning.find("constraint") != std::string::npos);
+                REQUIRE(warning.find("@bob:example.org") == std::string::npos);
+                REQUIRE(warning.find("!logged:example.org") == std::string::npos);
             }
         }
 

@@ -77,8 +77,10 @@ namespace
         // membership_acceptor (inbound send_join/send_leave/send_knock
         // acceptance — has its own compute_state_before/record_event_state/
         // recompute_current_state sequence, the same trust boundary as
-        // ingest_pdu_event) and invite_handler (outlier).
-        {"src/homeserver/local_http_router.cpp", 2U},
+        // ingest_pdu_event), invite_handler (outlier) and
+        // rescind_invite_from_inviter (outlier: the leave that withdraws an invite for a room whose
+        // state this server does not hold, like the invite it replaces).
+        {"src/homeserver/local_http_router.cpp", 3U},
     };
 }
 

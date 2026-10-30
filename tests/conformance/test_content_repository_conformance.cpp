@@ -324,6 +324,105 @@ SCENARIO("GET /media/v3/download/{serverName}/{mediaId}/{fileName} names pre-fre
 }
 
 // Spec: Matrix Client-Server API v1.19
+// Endpoint / Section: Content repository (the freeze of the deprecated media endpoints)
+// URL: ../../docs/matrix-v1.19-spec/client-server-api.md#content-repository
+//
+// Summary: media uploaded after the freeze "SHOULD only be accessible via the
+// new, authenticated, endpoints", and remote media the server "had to
+// re-download" during the freeze counts as media from after the freeze (ADR-0068). So
+// the deprecated routes serve a remote copy only when it was cached before the
+// freeze, and never fetch one: the fetch would itself make it post-freeze media.
+SCENARIO("The deprecated media routes serve only remote media cached before the freeze, and never fetch",
+         "[conformance][client-server][media][freeze]")
+{
+    GIVEN("a server that fetches remote media, holding a copy of remote.example.org's media cached during the freeze")
+    {
+        auto config = content_config();
+        config.security().media.remote_fetch_enabled = true;
+        config.security().media.remote_fetch_media_policy = "allow";
+        auto started = merovingian::homeserver::start_client_server(std::move(config));
+        // Fixture: the server starts.
+        REQUIRE(started.started);
+        auto const token = login(started.runtime, "carol");
+        auto const local_id = upload(started.runtime, token, "/_matrix/client/v1/media/upload");
+        auto& repository = started.runtime.homeserver.media_repository;
+        auto const record = std::ranges::find_if(repository.records, [&local_id](auto const& current) {
+            return current.media_id == local_id;
+        });
+        // Fixture: the stored copy exists, so it can stand for a cached remote file.
+        REQUIRE(record != repository.records.end());
+        record->from_remote_fetch = true;
+        auto const now = merovingian::media::remote_media_cache_now_ms();
+        repository.remote_media_cache.push_back(
+            {"remote.example.org", "cachedRemote", local_id, now + 3'600'000U, now});
+
+        WHEN("the cached remote media is downloaded or thumbnailed by the deprecated routes")
+        {
+            auto const download =
+                get(started.runtime, {}, "/_matrix/media/v3/download/remote.example.org/cachedRemote");
+            auto const thumbnail = get(started.runtime, {},
+                                       "/_matrix/media/v3/thumbnail/remote.example.org/cachedRemote"
+                                       "?width=32&height=32&method=scale");
+
+            THEN("neither serves it")
+            {
+                // Spec SHOULD: media re-downloaded during the freeze is new, so only the authenticated endpoints serve
+                // it.
+                REQUIRE(download.response.status == 404U);
+                REQUIRE(errcode_of(download) == "M_NOT_FOUND");
+                REQUIRE(thumbnail.response.status == 404U);
+                REQUIRE(errcode_of(thumbnail) == "M_NOT_FOUND");
+            }
+        }
+
+        WHEN("remote media this server does not hold is asked for by the deprecated download route")
+        {
+            auto const response = get(started.runtime, {}, "/_matrix/media/v3/download/remote.example.org/notCached");
+
+            THEN("it is refused at once, without fetching it")
+            {
+                // Spec SHOULD: a fetch now would make it post-freeze media, which the deprecated endpoints do not
+                // serve.
+                REQUIRE(response.response.status == 404U);
+                REQUIRE(errcode_of(response) == "M_NOT_FOUND");
+                REQUIRE(repository.remote_media_cache.size() == 1U);
+            }
+        }
+
+        WHEN("the cached remote media is downloaded by the authenticated route")
+        {
+            auto const response =
+                get(started.runtime, token, "/_matrix/client/v1/media/download/remote.example.org/cachedRemote");
+
+            THEN("it is served")
+            {
+                // Spec SHOULD: post-freeze media stays accessible via the authenticated endpoints.
+                REQUIRE(response.response.status == 200U);
+                REQUIRE(response.response.body == png_bytes);
+            }
+        }
+
+        AND_GIVEN("the copy was cached before the freeze")
+        {
+            record->legacy_endpoint_visible = true;
+
+            WHEN("it is downloaded by the deprecated route")
+            {
+                auto const response =
+                    get(started.runtime, {}, "/_matrix/media/v3/download/remote.example.org/cachedRemote");
+
+                THEN("it is served there, like local media uploaded before the freeze")
+                {
+                    // Spec SHOULD: media from before the freeze remains accessible via the deprecated endpoints.
+                    REQUIRE(response.response.status == 200U);
+                    REQUIRE(response.response.body == png_bytes);
+                }
+            }
+        }
+    }
+}
+
+// Spec: Matrix Client-Server API v1.19
 // Endpoint / Section: GET /_matrix/client/v1/media/download/{serverName}/{mediaId}, 200 response headers
 // URL: ../../docs/matrix-v1.19-spec/client-server-api.md#get_matrixclientv1mediadownloadservernamemediaid
 //
@@ -545,6 +644,34 @@ SCENARIO("PUT /media/v3/upload/{serverName}/{mediaId} fills a reserved URI exact
                     REQUIRE(errcode_of(again) == "M_CANNOT_OVERWRITE_MEDIA");
                 }
             }
+
+            AND_WHEN("alice uploads an empty body to the same URI")
+            {
+                auto const again = put_upload(started.runtime, alice, media_id, std::string{}, "image/png");
+
+                THEN("the server refuses to overwrite it with 409 M_CANNOT_OVERWRITE_MEDIA, whatever the body")
+                {
+                    // Spec MUST: 409 M_CANNOT_OVERWRITE_MEDIA, "a media ID that already has content"; the media ID,
+                    // not the request body, decides the answer.
+                    REQUIRE(again.response.status == 409U);
+                    REQUIRE(errcode_of(again) == "M_CANNOT_OVERWRITE_MEDIA");
+                }
+            }
+
+            AND_WHEN("alice uploads different content with no Content-Type to the same URI")
+            {
+                auto const again = merovingian::homeserver::handle_client_server_request(
+                    started.runtime, {"PUT", "/_matrix/media/v3/upload/example.org/" + media_id, alice, "other bytes"});
+
+                THEN("the server refuses to overwrite it with 409 M_CANNOT_OVERWRITE_MEDIA")
+                {
+                    // Spec MUST: 409 M_CANNOT_OVERWRITE_MEDIA, "a media ID that already has content".
+                    REQUIRE(again.response.status == 409U);
+                    REQUIRE(errcode_of(again) == "M_CANNOT_OVERWRITE_MEDIA");
+                    // Spec MUST: the first upload's content is still served at the URI.
+                    REQUIRE(download(started.runtime, alice, media_id).response.body == png_bytes);
+                }
+            }
         }
 
         WHEN("bob uploads to alice's reserved URI")
@@ -636,6 +763,145 @@ SCENARIO("PUT /media/v3/upload/{serverName}/{mediaId} fills a reserved URI exact
                 // Spec MUST: 403 M_FORBIDDEN, "The server does not permit the file type".
                 REQUIRE(response.response.status == 403U);
                 REQUIRE(errcode_of(response) == "M_FORBIDDEN");
+            }
+        }
+    }
+}
+
+// Spec: Matrix Client-Server API v1.19
+// Endpoint / Section: GET /_matrix/client/v1/media/download/{serverName}/{mediaId}, 200 response headers
+// URL: ../../docs/matrix-v1.19-spec/client-server-api.md#get_matrixclientv1mediadownloadservernamemediaid
+//
+// Summary: Content-Disposition "If the upload was made with a filename, this
+// header MUST contain the same filename." A remote server downloads our media
+// through the federation endpoint, so the filename the upload was made with
+// must reach that endpoint's answer, or the remote server cannot serve it.
+SCENARIO("The federation media provider gives the filename the upload was made with",
+         "[conformance][client-server][media][federation][r17]")
+{
+    GIVEN("an upload made with a Unicode filename and one made without a filename")
+    {
+        auto started = merovingian::homeserver::start_client_server(content_config());
+        // Fixture: the server starts.
+        REQUIRE(started.started);
+        auto const token = login(started.runtime, "alice");
+        auto const named = upload(started.runtime, token, "/_matrix/media/v3/upload?filename=%F0%9F%90%94");
+        auto const unnamed = upload(started.runtime, token, "/_matrix/media/v3/upload");
+
+        WHEN("a remote server's download is answered for each")
+        {
+            auto const with_name =
+                merovingian::homeserver::download_local_media_for_federation(started.runtime.homeserver, named);
+            auto const without_name =
+                merovingian::homeserver::download_local_media_for_federation(started.runtime.homeserver, unnamed);
+
+            THEN("the first carries the filename and the second none")
+            {
+                // Spec MUST: "this header MUST contain the same filename"; "Otherwise, filename is excluded".
+                REQUIRE(with_name.ok);
+                REQUIRE(with_name.upload_name == "\xF0\x9F\x90\x94");
+                REQUIRE(without_name.ok);
+                REQUIRE(without_name.upload_name.empty());
+            }
+        }
+    }
+}
+
+// Spec: Matrix Client-Server API v1.19
+// Endpoint / Section: GET /_matrix/client/v1/media/download/{serverName}/{mediaId}, 200 Content-Type
+// URL: ../../docs/matrix-v1.19-spec/client-server-api.md#get_matrixclientv1mediadownloadservernamemediaid
+//
+// Summary: the 200 response's Content-Type is "The content type of the file that
+// was previously uploaded", so an upload made with Content-Type img/png is given
+// back as img/png. Project policy (owner decision 2026-10-29): a
+// declared type that is a spelling variant of the sniffed one (letter case, or
+// the misspelt top-level type img for image) is not a mismatch, so the upload is
+// not quarantined; any other mismatch still is.
+SCENARIO("An upload whose declared type is a spelling variant of its content type is served as declared",
+         "[conformance][client-server][media][mime-equivalence]")
+{
+    GIVEN("alice uploads a PNG declared as img/png, once with POST and once into a reserved URI with PUT")
+    {
+        auto started = merovingian::homeserver::start_client_server(content_config());
+        // Fixture: the server starts.
+        REQUIRE(started.started);
+        auto const alice = login(started.runtime, "alice");
+        auto const posted = merovingian::homeserver::handle_client_server_request(
+            started.runtime, {"POST",
+                              "/_matrix/media/v3/upload",
+                              alice,
+                              png_bytes,
+                              {merovingian::http::Header{"Content-Type", "img/png"}}});
+        // Spec MUST: 200 with a content_uri for an accepted upload.
+        REQUIRE(posted.response.status == 200U);
+        auto const posted_body = parse_object(posted.response.body);
+        auto const* posted_uri = string_member(posted_body, "content_uri");
+        REQUIRE(posted_uri != nullptr);
+        auto const posted_id = posted_uri->substr(std::string_view{"mxc://example.org/"}.size());
+        auto const reserved_id = created_media_id(create(started.runtime, alice));
+        REQUIRE(put_upload(started.runtime, alice, reserved_id, png_bytes, "img/png").response.status == 200U);
+
+        WHEN("each is downloaded")
+        {
+            auto const from_post = download(started.runtime, alice, posted_id);
+            auto const from_put = download(started.runtime, alice, reserved_id);
+
+            THEN("both are served, not held as quarantined")
+            {
+                // Spec MUST: 200 "The content that was previously uploaded".
+                REQUIRE(from_post.response.status == 200U);
+                REQUIRE(from_post.response.body == png_bytes);
+                REQUIRE(from_put.response.status == 200U);
+                REQUIRE(from_put.response.body == png_bytes);
+            }
+
+            THEN("the Content-Type is the one the upload declared")
+            {
+                // Spec MUST: Content-Type is "The content type of the file that was previously uploaded".
+                REQUIRE(header_value(from_post.response, "Content-Type") == std::optional<std::string>{"img/png"});
+                REQUIRE(header_value(from_put.response, "Content-Type") == std::optional<std::string>{"img/png"});
+            }
+
+            THEN("the safe response headers are still sent")
+            {
+                // Project policy: nosniff on every response, so a browser never second-guesses the type.
+                REQUIRE(header_value(from_post.response, "X-Content-Type-Options") ==
+                        std::optional<std::string>{"nosniff"});
+            }
+        }
+    }
+
+    GIVEN("uploads whose declared type is not equivalent to their content")
+    {
+        auto started = merovingian::homeserver::start_client_server(content_config());
+        // Fixture: the server starts.
+        REQUIRE(started.started);
+        auto const alice = login(started.runtime, "alice");
+
+        WHEN("a PNG is declared as img/jpeg or as text/html")
+        {
+            auto const upload_declared = [&](std::string const& declared) {
+                auto const response = merovingian::homeserver::handle_client_server_request(
+                    started.runtime, {"POST",
+                                      "/_matrix/media/v3/upload",
+                                      alice,
+                                      png_bytes,
+                                      {merovingian::http::Header{"Content-Type", declared}}});
+                // Project policy: a held upload still answers 200 with a content_uri.
+                REQUIRE(response.response.status == 200U);
+                auto const body = parse_object(response.response.body);
+                auto const* uri = string_member(body, "content_uri");
+                REQUIRE(uri != nullptr);
+                return download(started.runtime, alice, uri->substr(std::string_view{"mxc://example.org/"}.size()));
+            };
+            auto const jpeg = upload_declared("img/jpeg");
+            auto const html = upload_declared("text/html");
+
+            THEN("both are still quarantined, so a download is answered 451")
+            {
+                // Project policy: a declared type that does not match the content is held for review.
+                REQUIRE(jpeg.response.status == 451U);
+                REQUIRE(html.response.status == 451U);
             }
         }
     }

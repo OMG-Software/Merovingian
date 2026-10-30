@@ -19,6 +19,7 @@
 #include "../support/temp_directory.hpp"
 #include "merovingian/config/config.hpp"
 #include "merovingian/homeserver/client_server.hpp"
+#include "merovingian/homeserver/local_http_router.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -219,6 +220,49 @@ SCENARIO("Concurrent pending-upload waits stay below the media fetch pool's size
                 REQUIRE(errcode_of(response) == "M_NOT_YET_UPLOADED");
                 REQUIRE(waited < std::chrono::seconds{2});
                 REQUIRE(started.runtime.homeserver.media_upload_notifier->waiting() == 0U);
+            }
+        }
+    }
+}
+
+// Spec: Server-Server API v1.19, GET /_matrix/federation/v1/media/thumbnail/{mediaId}: "504: The
+// content is not yet available. A standard error response will be returned with the errcode
+// M_NOT_YET_UPLOADED." The request is answered at once (the spec lets the server respond before
+// `timeout_ms`): inbound federation has no media fetch pool to wait on (ADR-0212), and an unknown ID is 404.
+SCENARIO("A federation thumbnail of a reserved or unknown local media ID is answered at once",
+         "[integration][media][async-upload][fed-endpoints]")
+{
+    GIVEN("a server with one reserved, empty mxc:// URI")
+    {
+        auto started = merovingian::homeserver::start_client_server(pending_config(16U));
+        REQUIRE(started.started);
+        merovingian::homeserver::wire_federation_callbacks(started.runtime.homeserver);
+        REQUIRE(static_cast<bool>(started.runtime.homeserver.federation.media_thumbnail_provider));
+        auto const alice = login(started.runtime, "alice");
+        auto const media_id = reserve(started.runtime, alice);
+        auto const ask = [&](std::string const& id) {
+            auto query = merovingian::federation::FederationThumbnailQuery{};
+            query.media_id = id;
+            query.width = 32U;
+            query.height = 32U;
+            query.origin = "remote.example.net";
+            return started.runtime.homeserver.federation.media_thumbnail_provider(query);
+        };
+
+        WHEN("the reserved ID and an unknown ID are asked for")
+        {
+            auto const started_at = std::chrono::steady_clock::now();
+            auto const reserved = ask(media_id);
+            auto const waited = std::chrono::steady_clock::now() - started_at;
+            auto const unknown = ask("neverAllocated");
+
+            THEN("the reserved one is 504 without waiting and the unknown one is 404")
+            {
+                REQUIRE_FALSE(reserved.ok);
+                REQUIRE(reserved.status == 504U);
+                REQUIRE(waited < std::chrono::seconds{2});
+                REQUIRE_FALSE(unknown.ok);
+                REQUIRE(unknown.status == 404U);
             }
         }
     }

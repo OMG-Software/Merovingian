@@ -1842,12 +1842,33 @@ auto logout_local_user(HomeserverRuntime& runtime, std::string_view access_token
     {
         return make_operation_result(false, {}, "token revocation persistence failed", 500U);
     }
+    // The device is deleted next, and deleting a device "invalidates any access token associated
+    // with it" (DELETE /devices/{deviceId}): another login under the same device ID holds a token of
+    // its own, which must not outlive the device.
+    std::ignore = database::revoke_access_tokens_for_device(runtime.database.persistent_store, user_id, device_id);
+    if (!device_tokens_are_revoked(runtime.database.persistent_store, user_id, device_id))
+    {
+        return make_operation_result(false, {}, "token revocation persistence failed", 500U);
+    }
     for (auto& session : runtime.database.sessions)
     {
-        if (matches_any_token_hash(session.access_token_hash, token_hashes))
+        if (matches_any_token_hash(session.access_token_hash, token_hashes) ||
+            (session.user_id == user_id && session.device_id == device_id))
         {
             session.revoked = true;
         }
+    }
+    // Spec (POST /logout): "The device associated with the access token is also deleted." The
+    // tokens are already revoked, so a failure here leaves a listed device nobody can use; it is
+    // retried by nothing, so it is logged rather than turned into a failed logout.
+    if (!database::delete_device(runtime.database.persistent_store, user_id, device_id))
+    {
+        log_diagnostic("logout.device_not_deleted",
+                       {
+                           {"user_id",   user_id,   false},
+                           {"device_id", device_id, false}
+        },
+                       observability::LogEventSeverity::warning);
     }
     append_local_audit(runtime.database, observability::AuditCategory::auth, "auth.logout", user_id, device_id,
                        "revoked");
@@ -1878,6 +1899,28 @@ auto logout_all_local_user(HomeserverRuntime& runtime, std::string_view access_t
         if (candidate.user_id == session->user_id)
         {
             candidate.revoked = true;
+        }
+    }
+    // Spec (POST /logout/all): "All devices for the user are also deleted." Taken as a copy: the
+    // store erases from its own list as each device goes.
+    auto devices_to_delete = std::vector<std::string>{};
+    for (auto const& device : runtime.database.persistent_store.devices)
+    {
+        if (device.user_id == session->user_id)
+        {
+            devices_to_delete.push_back(device.device_id);
+        }
+    }
+    for (auto const& device_id : devices_to_delete)
+    {
+        if (!database::delete_device(runtime.database.persistent_store, session->user_id, device_id))
+        {
+            log_diagnostic("logout_all.device_not_deleted",
+                           {
+                               {"user_id",   session->user_id, false},
+                               {"device_id", device_id,        false}
+            },
+                           observability::LogEventSeverity::warning);
         }
     }
     append_local_audit(runtime.database, observability::AuditCategory::auth, "auth.logout_all", session->user_id,

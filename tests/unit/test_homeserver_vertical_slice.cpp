@@ -405,8 +405,11 @@ SCENARIO("Homeserver local auth route creates unique sessions and revokes tokens
                           merovingian::tests::registration_pipe("alice", "CorrectHorse7!")});
             auto const login = merovingian::homeserver::handle_local_http_request(
                 runtime, {"POST", "/_matrix/client/v3/login", {}, user.body + "|CorrectHorse7!|DEVICE1"});
+            // Another device: logout deletes the logged-out token's device, and deleting a device
+            // "invalidates any access token associated with it" (DELETE /devices/{deviceId}), so a
+            // second token under DEVICE1 ends with it (test_account_lifecycle_conformance.cpp).
             auto const second_login = merovingian::homeserver::handle_local_http_request(
-                runtime, {"POST", "/_matrix/client/v3/login", {}, user.body + "|CorrectHorse7!|DEVICE1"});
+                runtime, {"POST", "/_matrix/client/v3/login", {}, user.body + "|CorrectHorse7!|DEVICE2"});
             auto const authenticated = merovingian::homeserver::authenticated_user(runtime, login.body);
             auto const logout = merovingian::homeserver::handle_local_http_request(
                 runtime, {"POST", "/_matrix/client/v3/logout", login.body, {}});
@@ -437,7 +440,7 @@ SCENARIO("Homeserver local auth route creates unique sessions and revokes tokens
                 // Do NOT remove - a non-200 or missing revocation leaves sessions open forever.
                 REQUIRE(logout.status == 200U);
                 REQUIRE_FALSE(after_logout.has_value());
-                // Spec MUST: logout of one token MUST NOT affect other sessions.
+                // Spec MUST: logout of one device's token MUST NOT affect another device's session.
                 // Do NOT remove - session isolation is a core Matrix security property.
                 REQUIRE(second_still_authenticated.has_value());
                 // Spec MUST: all auth actions MUST be recorded in the audit log.

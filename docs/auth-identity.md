@@ -812,10 +812,32 @@ The boundary establishes these guarantees:
   ambiguous or unaddressable.
 - UIAA challenges carry a random per-attempt session id, scoped to the endpoint
   that issued it, held in memory and TTL-pruned. A client-supplied
-  `auth.session` is honoured only if this server issued it for that endpoint;
-  omitting it is still served, because the spec permits completing a
-  single-stage flow in one shot. See
-  [ADR-0057](adr/0057-uiaa-sessions-are-in-memory-and-single-stage.md).
+  `auth.session` is honoured only if this server issued it for that endpoint.
+  Omitting it is the single-shot flow, which the spec permits: the client
+  passes a session back only "if one is provided". An `m.login.dummy` request
+  with no `session` therefore completes open registration in one request, as
+  Complement's own blueprints do; a `session` this server did not issue is
+  answered with the 401 challenge. See
+  [ADR-0057](adr/0057-uiaa-sessions-are-in-memory-and-single-stage.md) and
+  [ADR-0276](adr/0276-dummy-registration-needs-a-server-issued-session.md).
+- A UIA stage that fails (a wrong account password on `POST /account/password`,
+  `POST /account/deactivate`, `POST /account/3pid/add`, `DELETE /devices/{deviceId}`,
+  `POST /delete_devices` and `POST /keys/device_signing/upload`) answers `401`
+  with the challenge (`flows`, `params`, `session`) plus `errcode: M_FORBIDDEN`
+  and `error`. A request that makes no attempt (no `auth`, or no password in it)
+  gets the bare challenge. `uia_failure_body` in `client_server.cpp` adds the two
+  fields; a new UIA endpoint uses it for a failed attempt.
+- `POST /register` checks `username` before it starts UIA: `M_INVALID_USERNAME`,
+  `M_USER_IN_USE` (taken, reserved, or an appservice sender) and `M_EXCLUSIVE`
+  are `400` whatever `auth` holds ("Homeservers MUST perform the relevant checks
+  and return these codes before performing User-Interactive Authentication").
+  The checks run again after authentication. An omitted username is generated
+  after UIA, so there is nothing to check before it.
+- `POST /logout` deletes the device the token belongs to, and `POST /logout/all`
+  every device of the user, as well as revoking the tokens (spec: "The device
+  associated with the access token is also deleted"). A request that needs a
+  token and has none is `401 M_MISSING_TOKEN`, a token the server does not
+  recognise `M_UNKNOWN_TOKEN`, on logout as on every endpoint.
 - Key API runtime records store route metadata and redacted payload summaries,
   not uploaded key material.
 - Persisted key material is represented as server-blind sensitive JSON payloads

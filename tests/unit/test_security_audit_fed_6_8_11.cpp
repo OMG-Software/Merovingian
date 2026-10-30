@@ -666,7 +666,7 @@ SCENARIO("PDU admission requires current local room interest", "[security][feder
 // not in. Without a gate those events are stored as rejected and never pruned.
 // This admission policy must distinguish unsolicited transactions from an
 // active outbound join and must run before stream allocation or backfill.
-// A room-version resolver is not such a signal (unknown rooms resolve to v10).
+// A room-version resolver is not such a signal (it does not know unknown rooms).
 SCENARIO("PDUs for rooms with no local membership are not stored", "[security][federation][fed-11]")
 {
     GIVEN("a runtime with no membership in evil.example rooms and a trusted remote")
@@ -694,11 +694,12 @@ SCENARIO("PDUs for rooms with no local membership are not stored", "[security][f
         };
         auto const evil_room = std::string{"!unsolicited:remote.example.org"};
         auto const origin = std::string{remote_origin};
-        // Unknown rooms currently resolve to legacy v10. Sign for that actual
-        // policy, with a valid domain-bearing room ID, so admission is the only
-        // reason this transaction could be discarded.
-        auto const room_version = runtime.federation.room_version_resolver(evil_room);
-        REQUIRE(room_version == "10");
+        // The resolver does not know an unknown room (empty), and /send parses
+        // its PDUs as v12. Sign for that actual policy, with a valid
+        // domain-bearing room ID, so admission is the only reason this
+        // transaction could be discarded.
+        REQUIRE(runtime.federation.room_version_resolver(evil_room).empty());
+        auto const room_version = std::string{"12"};
         auto const event_ids_before = runtime.database.persistent_store.events.size();
         auto const sync_stream_before = runtime.database.persistent_store.next_sync_stream_id;
         auto const ordering_before = runtime.database.next_stream_ordering;

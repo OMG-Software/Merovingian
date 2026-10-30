@@ -13,6 +13,7 @@
 #include "merovingian/events/authorization.hpp"
 #include "merovingian/events/event_id.hpp"
 #include "merovingian/events/event_signer.hpp"
+#include "merovingian/federation/invite_room_state.hpp"
 #include "merovingian/federation/membership_endpoints.hpp"
 #include "merovingian/federation/server_acl.hpp"
 #include "merovingian/homeserver/client_server.hpp"
@@ -1032,6 +1033,55 @@ namespace
         return serialize_response_object(std::move(response));
     }
 
+    // The errcode a plain-text refusal of `status` carries once it is wrapped in
+    // the standard error object. A handler that knows a more precise code builds
+    // its own `matrix_error`; this is only the status-derived default.
+    [[nodiscard]] auto errcode_for_status(std::uint16_t status) noexcept -> std::string_view
+    {
+        switch (status)
+        {
+        case 400U:
+            return "M_INVALID_PARAM";
+        case 401U:
+            return "M_UNAUTHORIZED";
+        case 403U:
+            return "M_FORBIDDEN";
+        case 404U:
+            return "M_NOT_FOUND";
+        case 413U:
+            return "M_TOO_LARGE";
+        case 429U:
+            return "M_LIMIT_EXCEEDED";
+        case 501U:
+            return "M_UNRECOGNIZED";
+        default:
+            return "M_UNKNOWN";
+        }
+    }
+
+    // Spec (SS API, "API standards"): "Any errors which occur at the Matrix API
+    // level MUST return a 'standard error response'", a JSON object with `errcode`
+    // and `error`. A refusal carrying a bare reason string becomes that object;
+    // a body that is already a JSON object (including a handler's own
+    // `matrix_error`, or an error carrying extra keys such as `room_version`) and
+    // every non-error response is left as it is.
+    [[nodiscard]] auto standard_error_body(FederationResponse response) -> FederationResponse
+    {
+        if (response.status < 400U || (!response.body.empty() && response.body.front() == '{'))
+        {
+            return response;
+        }
+        auto const reason = response.body.empty() ? std::string{"request refused"} : std::move(response.body);
+        response.body = homeserver::matrix_error(errcode_for_status(response.status), reason);
+        response.content_type.clear();
+        return response;
+    }
+
+    [[nodiscard]] auto refusal_response(std::uint16_t status, std::string_view reason) -> FederationResponse
+    {
+        return {status, homeserver::matrix_error(errcode_for_status(status), reason)};
+    }
+
     [[nodiscard]] auto handle_make_membership(FederationRuntimeState& runtime, SignedFederationRequest const& request,
                                               FederationRoute const& route) -> FederationResponse
     {
@@ -1092,7 +1142,8 @@ namespace
         }
         if (!populated.reason.empty())
         {
-            return {populated.error_status == 0U ? std::uint16_t{400U} : populated.error_status, populated.reason};
+            return refusal_response(populated.error_status == 0U ? std::uint16_t{400U} : populated.error_status,
+                                    populated.reason);
         }
         auto body = build_make_template_response(populated);
         if (body.empty())
@@ -1208,7 +1259,8 @@ namespace
             runtime.membership_acceptor(route.endpoint, params->room_id, params->subject, *envelope);
         if (!acceptance.accepted)
         {
-            return {acceptance.status == 0U ? std::uint16_t{400U} : acceptance.status, acceptance.reason};
+            return refusal_response(acceptance.status == 0U ? std::uint16_t{400U} : acceptance.status,
+                                    acceptance.reason);
         }
         // Matrix v2 send_join/send_leave/send_knock responses are a JSON object
         // with `auth_chain` and `state` arrays of signed PDUs. v1 send_join
@@ -1354,15 +1406,14 @@ namespace
             // PUT /invite (v1 and v2): "servers SHOULD return `M_INVALID_PARAM`
             // if: The invite event fails a signature check". A local
             // key-resolution overload is not a verdict: 503, retryable.
-            auto const pdu_decision = authorize_federation_pdu_sender(
-                pdu, remote.signing_key,
-                [&runtime, &request](std::string_view server_name,
-                                     std::string_view key_id) -> VerificationKeyResolution {
-                    auto resolved = resolve_admitted_sender_key(runtime, request.remote_addr, server_name, key_id);
-                    auto const denied = !resolved.key.has_value() &&
-                                        resolved.failure == KeyResolutionFailureKind::local_resource_denial;
-                    return {std::move(resolved.key), denied};
-                });
+            auto const resolve_invite_key = [&runtime, &request](std::string_view server_name,
+                                                                 std::string_view key_id) -> VerificationKeyResolution {
+                auto resolved = resolve_admitted_sender_key(runtime, request.remote_addr, server_name, key_id);
+                auto const denied =
+                    !resolved.key.has_value() && resolved.failure == KeyResolutionFailureKind::local_resource_denial;
+                return {std::move(resolved.key), denied};
+            };
+            auto const pdu_decision = authorize_federation_pdu_sender(pdu, remote.signing_key, resolve_invite_key);
             if (!pdu_decision.accepted)
             {
                 audit_federation(runtime, "federation.invite_rejected", request.origin, request.target,
@@ -1372,6 +1423,23 @@ namespace
                     return {503U, homeserver::matrix_error("M_UNKNOWN", pdu_decision.reason)};
                 }
                 return {400U, homeserver::matrix_error("M_INVALID_PARAM", pdu_decision.reason)};
+            }
+
+            // Spec v1.19 PUT /v2/invite: servers SHOULD apply the `invite_room_state` validation
+            // to room versions 12 and up (it is MAY for 1 through 11, which
+            // validate_invite_room_state leaves alone). Every entry's signature goes through
+            // the same admitted key lookup as the invite's own, within a bounded entry count.
+            auto const state_decision =
+                validate_invite_room_state(invite_request->room_id, room_ver, invite_request->invite_room_state_json,
+                                           remote.signing_key, resolve_invite_key);
+            if (!state_decision.accepted)
+            {
+                audit_federation(runtime, "federation.invite_rejected", request.origin, request.target,
+                                 state_decision.reason);
+                // Only a 400 is about the request's own invite_room_state; a 500 or 503 is this
+                // server's failure, which M_INVALID_PARAM would wrongly blame on the sender.
+                auto const errcode = state_decision.status == 400U ? "M_INVALID_PARAM" : "M_UNKNOWN";
+                return {state_decision.status, homeserver::matrix_error(errcode, state_decision.reason)};
             }
 
             // Audit R06: the content hash is NOT checked here. Spec "Checks
@@ -1519,7 +1587,14 @@ namespace
         auto const user_id = query_param_value(request.target, "user_id");
         if (user_id.empty())
         {
-            return {400U, "query/profile requires a user_id parameter"};
+            return {400U, homeserver::matrix_error("M_MISSING_PARAM", "query/profile requires a user_id parameter")};
+        }
+        // Spec: `user_id` is a user ID, so it must meet the identifier grammar
+        // (Appendices, "User Identifiers" and "Server Name": a port is 1 to 5
+        // digits). A malformed ID is a bad request, not a user that does not exist.
+        if (!auth::user_id_is_valid_federated(user_id))
+        {
+            return {400U, homeserver::matrix_error("M_INVALID_PARAM", "user_id is not a valid user ID")};
         }
         // Spec v1.19 (query/profile, `field`): "Defined values are `displayname`,
         // `avatar_url` and `m.tz`. In addition to these servers MAY allow users to
@@ -1640,6 +1715,10 @@ namespace
             return {403U, homeserver::matrix_error("M_FORBIDDEN", "The requesting server is not in the room")};
         case RoomReadStatus::malformed:
             return {400U, homeserver::matrix_error("M_BAD_JSON", std::string{malformed_message})};
+        case RoomReadStatus::too_large:
+            // ADR-0284: as the spec's media download answers content "too large for the server
+            // to serve".
+            return {502U, homeserver::matrix_error("M_TOO_LARGE", "The answer is too large for this server to serve")};
         case RoomReadStatus::not_found:
             break;
         }
@@ -1708,6 +1787,52 @@ namespace
                                   "Room state not found", "state_ids request is malformed");
     }
 
+    // The room and event IDs of `GET /event_auth/{roomId}/{eventId}`, each percent-decoded. nullopt
+    // unless the path has exactly those two non-empty segments.
+    struct EventAuthPath final
+    {
+        std::string room_id{};
+        std::string event_id{};
+    };
+
+    [[nodiscard]] auto parse_event_auth_path(std::string_view target) -> std::optional<EventAuthPath>
+    {
+        auto constexpr prefix = std::string_view{"/_matrix/federation/v1/event_auth/"};
+        auto const path = target.substr(0U, target.find('?'));
+        if (path.size() <= prefix.size() || path.substr(0U, prefix.size()) != prefix)
+        {
+            return std::nullopt;
+        }
+        auto const rest = path.substr(prefix.size());
+        auto const slash = rest.find('/');
+        if (slash == std::string_view::npos || slash == 0U || slash + 1U >= rest.size() ||
+            rest.find('/', slash + 1U) != std::string_view::npos)
+        {
+            return std::nullopt;
+        }
+        return EventAuthPath{core::percent_decode(rest.substr(0U, slash)),
+                             core::percent_decode(rest.substr(slash + 1U))};
+    }
+
+    // Spec: GET /_matrix/federation/v1/event_auth/{roomId}/{eventId}
+    // ../../docs/matrix-v1.19-spec/server-server-api.md#get_matrixfederationv1event_authroomideventid
+    [[nodiscard]] auto handle_event_auth(FederationRuntimeState& runtime, SignedFederationRequest const& request)
+        -> FederationResponse
+    {
+        if (!runtime.event_auth_query_provider)
+        {
+            return {501U, "event_auth not implemented"};
+        }
+        auto const path = parse_event_auth_path(request.target);
+        if (!path.has_value())
+        {
+            return {400U, "event_auth path is malformed"};
+        }
+        // FED-2: the provider decides from the authenticated origin whether it may read the room.
+        return room_read_response(runtime.event_auth_query_provider(path->room_id, path->event_id, request.origin),
+                                  "Event not found", "event_auth request is malformed");
+    }
+
     [[nodiscard]] auto handle_get_missing_events(FederationRuntimeState& runtime,
                                                  SignedFederationRequest const& request) -> FederationResponse
     {
@@ -1754,6 +1879,43 @@ namespace
         return {200U, std::move(body)};
     }
 
+    // The standard error response for a refused media download or thumbnail.
+    // `too_large_status` is the endpoint's own status for content too large:
+    // the spec gives the download 502 ("too large for the server to serve") and
+    // the thumbnail 413 ("The local content is too large ... to thumbnail").
+    [[nodiscard]] auto media_failure_response(media::LocalMediaDownloadResult const& result,
+                                              std::uint16_t too_large_status) -> FederationResponse
+    {
+        // A media policy refusal (media_policy_decision).
+        if (result.status == 403U)
+        {
+            return {403U, homeserver::matrix_error("M_FORBIDDEN", result.reason)};
+        }
+        if (result.status == 404U)
+        {
+            return {404U, homeserver::matrix_error("M_NOT_FOUND", result.reason)};
+        }
+        if (result.status == 451U)
+        {
+            return {451U, homeserver::matrix_error("M_NOT_FOUND", result.reason)};
+        }
+        // ADR-0212: a reserved media ID whose content has not been
+        // uploaded. Spec: 504 with errcode M_NOT_YET_UPLOADED.
+        if (result.status == 504U)
+        {
+            return {504U, homeserver::matrix_error("M_NOT_YET_UPLOADED", result.reason)};
+        }
+        if (result.status == 413U)
+        {
+            return {too_large_status, homeserver::matrix_error("M_TOO_LARGE", result.reason)};
+        }
+        if (result.status == 429U)
+        {
+            return {429U, homeserver::matrix_error("M_LIMIT_EXCEEDED", result.reason)};
+        }
+        return {result.status, homeserver::matrix_error("M_UNKNOWN", result.reason)};
+    }
+
     // Spec: Matrix Server-Server API v1.19 — GET /_matrix/federation/v1/media/download/{mediaId}
     // URL: ../../docs/matrix-v1.19-spec/server-server-api.md#get_matrixfederationv1mediadownloadmediaid
     //
@@ -1775,23 +1937,82 @@ namespace
         auto const result = runtime.media_download_provider(media_id);
         if (!result.ok)
         {
-            if (result.status == 404U)
-            {
-                return {404U, homeserver::matrix_error("M_NOT_FOUND", result.reason)};
-            }
-            if (result.status == 451U)
-            {
-                return {451U, homeserver::matrix_error("M_NOT_FOUND", result.reason)};
-            }
-            // ADR-0212: a reserved media ID whose content has not been
-            // uploaded. Spec: 504 with errcode M_NOT_YET_UPLOADED.
-            if (result.status == 504U)
-            {
-                return {504U, homeserver::matrix_error("M_NOT_YET_UPLOADED", result.reason)};
-            }
-            return {result.status, homeserver::matrix_error("M_UNKNOWN", result.reason)};
+            return media_failure_response(result, 502U);
         }
-        auto envelope = media::build_federation_media_download_body(result.content_type, result.bytes);
+        auto envelope =
+            media::build_federation_media_download_body(result.content_type, result.bytes, result.upload_name);
+        if (envelope.body.empty())
+        {
+            return {500U, "failed to build media response"};
+        }
+        auto response = FederationResponse{200U, std::move(envelope.body)};
+        response.content_type = std::move(envelope.content_type);
+        return response;
+    }
+
+    // A thumbnail dimension: one to five decimal digits, not zero. Anything else (empty, signed,
+    // fractional, huge) is a request "the server cannot thumbnail" (400).
+    [[nodiscard]] auto parse_thumbnail_dimension(std::string_view text) noexcept -> std::optional<std::uint32_t>
+    {
+        auto constexpr max_digits = std::size_t{5U};
+        if (text.empty() || text.size() > max_digits)
+        {
+            return std::nullopt;
+        }
+        auto value = std::uint32_t{0U};
+        for (auto const ch : text)
+        {
+            if (ch < '0' || ch > '9')
+            {
+                return std::nullopt;
+            }
+            value = value * 10U + static_cast<std::uint32_t>(ch - '0');
+        }
+        return value == 0U ? std::nullopt : std::optional<std::uint32_t>{value};
+    }
+
+    // Spec: GET /_matrix/federation/v1/media/thumbnail/{mediaId}
+    // ../../docs/matrix-v1.19-spec/server-server-api.md#get_matrixfederationv1mediathumbnailmediaid
+    //
+    // A thumbnail of local media for an authenticated remote homeserver, answered like a download:
+    // multipart/mixed with an empty JSON part and the thumbnail bytes.
+    [[nodiscard]] auto handle_media_thumbnail(FederationRuntimeState& runtime, SignedFederationRequest const& request)
+        -> FederationResponse
+    {
+        if (!runtime.media_thumbnail_provider)
+        {
+            return {501U, "media thumbnail not implemented"};
+        }
+        auto query = FederationThumbnailQuery{};
+        query.media_id = extract_path_segment(request.target, "/_matrix/federation/v1/media/thumbnail/");
+        if (query.media_id.empty())
+        {
+            return {400U, homeserver::matrix_error("M_INVALID_PARAM", "mediaId is required")};
+        }
+        auto const width = parse_thumbnail_dimension(query_param_value(request.target, "width"));
+        auto const height = parse_thumbnail_dimension(query_param_value(request.target, "height"));
+        if (!width.has_value() || !height.has_value())
+        {
+            return {400U, homeserver::matrix_error("M_INVALID_PARAM", "width and height must be positive integers")};
+        }
+        query.width = *width;
+        query.height = *height;
+        if (auto const method = query_param_value(request.target, "method"); method == "crop")
+        {
+            query.method = media::ThumbnailMethod::crop;
+        }
+        else if (!method.empty() && method != "scale")
+        {
+            return {400U, homeserver::matrix_error("M_INVALID_PARAM", "method must be crop or scale")};
+        }
+        query.origin = request.origin;
+        auto const result = runtime.media_thumbnail_provider(query);
+        if (!result.ok)
+        {
+            return media_failure_response(result, 413U);
+        }
+        auto envelope =
+            media::build_federation_media_download_body(result.content_type, result.bytes, result.upload_name);
         if (envelope.body.empty())
         {
             return {500U, "failed to build media response"};
@@ -1837,12 +2058,16 @@ namespace
             return handle_query_state(runtime, request);
         case FederationEndpoint::query_state_ids:
             return handle_query_state_ids(runtime, request);
+        case FederationEndpoint::event_auth:
+            return handle_event_auth(runtime, request);
         case FederationEndpoint::get_missing_events:
             return handle_get_missing_events(runtime, request);
         case FederationEndpoint::space_hierarchy:
             return handle_space_hierarchy(runtime, request);
         case FederationEndpoint::media_download:
             return handle_media_download(runtime, request);
+        case FederationEndpoint::media_thumbnail:
+            return handle_media_thumbnail(runtime, request);
         case FederationEndpoint::edu:
             // Plain send_edu requests have always been a 200 stub; ingestion
             // happens through the transaction path which carries EDUs.
@@ -2677,8 +2902,10 @@ auto parse_federation_pdu(std::string_view encoded, RoomVersionResolver const& v
             return {};
         }
         // Resolve room version from the room's m.room.create state when the
-        // resolver is available; fall back to "12" for unknown rooms.
-        auto const room_ver = version_resolver ? version_resolver(envelope.event.room_id) : std::string{"12"};
+        // resolver is available; fall back to "12" for unknown rooms, which the
+        // resolver answers with an empty string (as parse_inbound_pdu_envelope does).
+        auto const resolved = version_resolver ? version_resolver(envelope.event.room_id) : std::string{};
+        auto const room_ver = resolved.empty() ? std::string{"12"} : resolved;
         auto const* room_version = rooms::find_room_version_policy(room_ver);
         if (room_version == nullptr)
         {
@@ -2736,8 +2963,11 @@ namespace
                                {"status", "404",                                                false},
                                {"reason", route_match.reason,                                   false}
             });
+            // Spec (M_UNRECOGNIZED): an endpoint this server does not implement is 404
+            // M_UNRECOGNIZED, as the client API answers; standard_error_body's status default
+            // (M_NOT_FOUND) is for a resource that does not exist.
             return {
-                .accepted = false, .error = {404U, route_match.reason}
+                .accepted = false, .error = {404U, homeserver::matrix_error("M_UNRECOGNIZED", route_match.reason)}
             };
         }
         // #323 / ADR-0110: when the main process has already verified the X-Matrix
@@ -3020,6 +3250,10 @@ namespace
             return extract_path_segment(target, "/_matrix/federation/v1/state/");
         case FederationEndpoint::query_state_ids:
             return extract_path_segment(target, "/_matrix/federation/v1/state_ids/");
+        case FederationEndpoint::event_auth: {
+            auto const path = parse_event_auth_path(target);
+            return path.has_value() ? std::optional<std::string>{path->room_id} : std::nullopt;
+        }
         case FederationEndpoint::get_missing_events:
             return extract_path_segment(target, "/_matrix/federation/v1/get_missing_events/");
         case FederationEndpoint::space_hierarchy:
@@ -3098,7 +3332,9 @@ auto verify_inbound_federation_signature(FederationRuntimeState& runtime, Signed
     auto resolution = resolve_inbound_remote(runtime, request);
     if (!resolution.accepted)
     {
-        return {.accepted = false, .identity = VerifiedFederationIdentity{}, .error = std::move(resolution.error)};
+        return {.accepted = false,
+                .identity = VerifiedFederationIdentity{},
+                .error = standard_error_body(std::move(resolution.error))};
     }
     // Security (audit M-05): this verifier is exported and ALWAYS performs the
     // Ed25519 check. It deliberately ignores request.signature_verified — that
@@ -3112,7 +3348,8 @@ auto verify_inbound_federation_signature(FederationRuntimeState& runtime, Signed
         auto const rejection = check_inbound_request_signature(runtime, request, resolution.remote);
         if (rejection.has_value())
         {
-            return {.accepted = false, .identity = VerifiedFederationIdentity{}, .error = std::move(*rejection)};
+            return {
+                .accepted = false, .identity = VerifiedFederationIdentity{}, .error = standard_error_body(*rejection)};
         }
     }
     return {
@@ -3122,543 +3359,611 @@ auto verify_inbound_federation_signature(FederationRuntimeState& runtime, Signed
     };
 }
 
-auto handle_inbound_federation_request(FederationRuntimeState& runtime, SignedFederationRequest const& request)
-    -> FederationResponse
+namespace
 {
-    log_diagnostic("request.received", {
-                                           {"method",     request.method,                                       false},
-                                           {"target",     observability::sanitized_http_target(request.target), false},
-                                           {"origin",     request.origin,                                       false},
-                                           {"key_id",     request.key_id,                                       false},
-                                           {"body_bytes", std::to_string(request.body.size()),                  false}
-    });
-    auto const inbound_resolution = resolve_inbound_remote(runtime, request);
-    if (!inbound_resolution.accepted)
+    // File-local: the public handle_inbound_federation_request wraps this and gives
+    // every refusal the standard JSON error body.
+    [[nodiscard]] auto handle_inbound_federation_request_unchecked(FederationRuntimeState& runtime,
+                                                                   SignedFederationRequest const& request)
+        -> FederationResponse
     {
-        return inbound_resolution.error;
-    }
-    auto const& route_match = inbound_resolution.route_match;
-    auto remote = inbound_resolution.remote;
-    // The main process verifies the X-Matrix signature before forwarding the
-    // request to the worker over the authenticated IPC channel (#323). When
-    // signature_verified is set we trust that result and skip the crypto check
-    // here; the worker still ran resolve_inbound_remote above to obtain its
-    // own remote record (PDU verification needs the peer's published key).
-    if (!request.signature_verified)
-    {
-        auto const rejection = check_inbound_request_signature(runtime, request, remote);
-        if (rejection.has_value())
+        log_diagnostic("request.received", {
+                                               {"method",     request.method,                                       false},
+                                               {"target",     observability::sanitized_http_target(request.target), false},
+                                               {"origin",     request.origin,                                       false},
+                                               {"key_id",     request.key_id,                                       false},
+                                               {"body_bytes", std::to_string(request.body.size()),                  false}
+        });
+        auto const inbound_resolution = resolve_inbound_remote(runtime, request);
+        if (!inbound_resolution.accepted)
         {
-            return *rejection;
+            return inbound_resolution.error;
         }
-    }
-    if (auto const acl_rejection = check_room_acl_for_endpoint(runtime, request, route_match.route);
-        acl_rejection.has_value())
-    {
-        audit_federation(runtime, "federation.rejected", request.origin, request.target,
-                         "server ACL denied access to room");
-        return *acl_rejection;
-    }
-
-    if (route_match.route.endpoint != FederationEndpoint::transaction)
-    {
-        // Per-origin cap on non-/send endpoints, keyed by the X-Matrix-verified
-        // origin. /send traffic is exempt here (it keeps the weighted
-        // transaction/PDU/EDU trio) so a transaction and its contents are
-        // never double-counted.
-        auto const request_rate = check_federation_origin_request_rate(runtime, request.origin);
-        if (!request_rate.allowed)
+        auto const& route_match = inbound_resolution.route_match;
+        auto remote = inbound_resolution.remote;
+        // The main process verifies the X-Matrix signature before forwarding the
+        // request to the worker over the authenticated IPC channel (#323). When
+        // signature_verified is set we trust that result and skip the crypto check
+        // here; the worker still ran resolve_inbound_remote above to obtain its
+        // own remote record (PDU verification needs the peer's published key).
+        if (!request.signature_verified)
         {
-            log_diagnostic("request.rate_limited",
-                           {
-                               {"origin",         request.origin,                                       false},
-                               {"target",         observability::sanitized_http_target(request.target), false},
-                               {"status",         "429",                                                false},
-                               {"reason",         request_rate.reason,                                  false},
-                               {"max_requests",   std::to_string(request_rate.max_requests),            false},
-                               {"window_seconds", std::to_string(request_rate.window_seconds),          false},
-                               {"requests_seen",  std::to_string(request_rate.requests_seen),           false}
-            },
-                           observability::LogEventSeverity::warning);
-            audit_federation(runtime, "federation.rate_limited", request.origin, request.target, request_rate.reason);
-            return {429U, homeserver::matrix_error("M_LIMIT_EXCEEDED", request_rate.reason)};
+            auto const rejection = check_inbound_request_signature(runtime, request, remote);
+            if (rejection.has_value())
+            {
+                return *rejection;
+            }
         }
-        auto const non_transaction_response =
-            dispatch_non_transaction_endpoint(runtime, request, route_match.route, remote);
-        if (non_transaction_response.status >= 200U && non_transaction_response.status < 300U)
+        if (auto const acl_rejection = check_room_acl_for_endpoint(runtime, request, route_match.route);
+            acl_rejection.has_value())
         {
-            remote.trust.consecutive_failures = 0U;
-            persist_remote_trust(runtime, remote);
-            log_diagnostic("request.accepted",
-                           {
-                               {"origin", request.origin,                                       false},
-                               {"target", observability::sanitized_http_target(request.target), false},
-                               {"status", std::to_string(non_transaction_response.status),      false}
-            });
-            audit_federation(runtime, "federation.accepted", request.origin, request.target,
-                             federation_route_audit_event(route_match.route, request.origin));
-        }
-        else
-        {
-            log_diagnostic("request.rejected",
-                           {
-                               {"origin", request.origin,                                       false},
-                               {"target", observability::sanitized_http_target(request.target), false},
-                               {"status", std::to_string(non_transaction_response.status),      false},
-                               {"reason", non_transaction_response.body,                        false}
-            });
             audit_federation(runtime, "federation.rejected", request.origin, request.target,
-                             non_transaction_response.body);
+                             "server ACL denied access to room");
+            return *acl_rejection;
         }
-        return non_transaction_response;
-    }
 
-    auto const parsed_body = parse_transaction_body(request.body);
-    auto const transaction_id = federation_send_transaction_id(request.target);
-    if (!parsed_body.valid)
-    {
-        record_remote_trust_failure(remote.trust);
-        persist_remote_trust(runtime, remote);
-        log_diagnostic("transaction.rejected", {
-                                                   {"origin",         request.origin,    false},
-                                                   {"transaction_id", transaction_id,    false},
-                                                   {"status",         "400",             false},
-                                                   {"reason",         parsed_body.error, false}
-        });
-        audit_federation(runtime, "federation.rejected", request.origin, request.target, parsed_body.error);
-        return {400U, homeserver::matrix_error("M_BAD_JSON", parsed_body.error)};
-    }
-    if (parsed_body.origin != request.origin)
-    {
-        auto constexpr reason = "transaction origin does not match request origin";
-        record_remote_trust_failure(remote.trust);
-        persist_remote_trust(runtime, remote);
-        log_diagnostic("transaction.rejected", {
-                                                   {"origin",         request.origin, false},
-                                                   {"transaction_id", transaction_id, false},
-                                                   {"status",         "403",          false},
-                                                   {"reason",         reason,         false}
-        });
-        audit_federation(runtime, "federation.rejected", request.origin, request.target, reason);
-        return {403U, reason};
-    }
-    auto transaction = FederationTransaction{};
-    transaction.origin = parsed_body.origin;
-    transaction.transaction_id = transaction_id;
-    transaction.byte_size = request.body.size();
-    transaction.pdus = parsed_body.pdus;
-    for (auto const& [edu_type, edu_content] : parsed_body.edus)
-    {
-        transaction.edus.push_back(edu_type);
-    }
-    auto const transaction_decision =
-        validate_federation_transaction(transaction, runtime.config.max_transaction_bytes,
-                                        runtime.config.max_transaction_pdus, runtime.config.max_transaction_edus);
-    if (!transaction_decision.accepted)
-    {
-        record_remote_trust_failure(remote.trust);
-        persist_remote_trust(runtime, remote);
-        log_diagnostic("transaction.rejected", {
-                                                   {"origin",         request.origin,                          false},
-                                                   {"transaction_id", transaction.transaction_id,              false},
-                                                   {"status",         "400",                                   false},
-                                                   {"reason",         transaction_decision.reason,             false},
-                                                   {"pdu_count",      std::to_string(transaction.pdus.size()), false},
-                                                   {"edu_count",      std::to_string(transaction.edus.size()), false}
-        });
-        audit_federation(runtime, "federation.rejected", request.origin, request.target, transaction_decision.reason);
-        return {400U, homeserver::matrix_error("M_BAD_JSON", transaction_decision.reason)};
-    }
-    auto const rate_limit =
-        check_federation_origin_rate_limit(runtime, request.origin, transaction.pdus.size(), transaction.edus.size());
-    if (!rate_limit.allowed)
-    {
-        log_diagnostic("transaction.rate_limited",
-                       {
-                           {"origin",         request.origin,                            false},
-                           {"transaction_id", transaction.transaction_id,                false},
-                           {"status",         "429",                                     false},
-                           {"reason",         rate_limit.reason,                         false},
-                           {"pdu_count",      std::to_string(transaction.pdus.size()),   false},
-                           {"edu_count",      std::to_string(transaction.edus.size()),   false},
-                           {"max_requests",   std::to_string(rate_limit.max_requests),   false},
-                           {"window_seconds", std::to_string(rate_limit.window_seconds), false},
-                           {"requests_seen",  std::to_string(rate_limit.requests_seen),  false},
-                           {"weight",         std::to_string(rate_limit.weight),         false}
-        },
-                       observability::LogEventSeverity::warning);
-        audit_federation(runtime, "federation.rate_limited", request.origin, request.target, rate_limit.reason);
-        return {429U, homeserver::matrix_error("M_LIMIT_EXCEEDED", rate_limit.reason)};
-    }
-    if (federation_transaction_completed(runtime, request.origin, transaction.transaction_id))
-    {
-        remote.trust.consecutive_failures = 0U;
-        persist_remote_trust(runtime, remote);
-        audit_federation(runtime, "federation.duplicate", request.origin, request.target,
-                         "transaction already accepted");
-        return {200U, serialize_response_object(canonicaljson::Object{
-                          canonicaljson::make_member("pdus", canonicaljson::Value{canonicaljson::Object{}}),
-                      })};
-    }
-    auto pdus_appended = std::size_t{0U};
-    auto pdus_rejected = std::size_t{0U};
-    auto pdus_soft_failed = std::size_t{0U};
-    auto pdus_missing_prev_state = std::size_t{0U};
-    auto pdus_deferred = std::size_t{0U};
-    // Per-spec (Matrix federation /send): individual PDU failures must be
-    // reported in the response body as {"pdus": {"$id": {"error": "..."}}}
-    // rather than as a non-200 HTTP status. Returning 4xx/5xx causes the
-    // remote server (e.g. Synapse) to back off the entire destination for a
-    // backoff period, blocking all subsequent federation.
-    auto pdu_errors = canonicaljson::Object{};
-    // Security (audit H-04): counts the PDUs in this transaction that failed a
-    // trust check (signature, sender-key resolution, event authorization, or
-    // content hash). `remote` is a local copy of the peer's trust record, so
-    // the per-PDU increments below are only durable if they are persisted; the
-    // handler used to overwrite them with zero at transaction completion, which
-    // let a peer flood forged PDUs forever without ever tripping the backoff.
-    // Room-ACL denials are deliberately excluded — an ACL is local policy, not
-    // evidence that the peer is misbehaving.
-    auto pdu_trust_failures = std::size_t{0U};
-    auto local_key_resolution_denied = false;
-    // Pre-resolve distinct relayed sender-domain signing keys in parallel so a
-    // large inbound transaction carrying PDUs from many senders does not pay N
-    // serial discovery+fetch round-trips. Each task writes a disjoint slot in
-    // `resolved` (no synchronisation on the vector); the resolver callable is
-    // thread-safe — PersistentStore reads are guarded, OutboundClient uses a
-    // thread_local CURL handle, and CachedServerDiscovery is mutex-guarded.
-    // Fan-out is capped by `join_parallelism` (the federation-wide concurrency
-    // cap; see docs/user-manual.md). A configured value of 0 is clamped to 1
-    // (sequential) — config validation already rejects 0, this is defensive.
-    auto sender_key_map = PrefetchedSenderKeys{};
-    if (runtime.remote_key_resolver && !transaction.pdus.empty())
-    {
-        auto distinct_pairs = std::vector<std::pair<std::string, std::string>>{};
-        auto seen = std::set<std::pair<std::string, std::string>>{};
-        for (auto const& encoded_pdu : transaction.pdus)
+        if (route_match.route.endpoint != FederationEndpoint::transaction)
         {
-            auto const pdu = parse_federation_pdu(encoded_pdu, runtime.room_version_resolver);
-            auto const dom = std::string{sender_domain(pdu.sender)};
-            if (dom.empty() || dom == request.origin)
+            // Per-origin cap on non-/send endpoints, keyed by the X-Matrix-verified
+            // origin. /send traffic is exempt here (it keeps the weighted
+            // transaction/PDU/EDU trio) so a transaction and its contents are
+            // never double-counted.
+            auto const request_rate = check_federation_origin_request_rate(runtime, request.origin);
+            if (!request_rate.allowed)
             {
-                continue;
+                log_diagnostic("request.rate_limited",
+                               {
+                                   {"origin",         request.origin,                                       false},
+                                   {"target",         observability::sanitized_http_target(request.target), false},
+                                   {"status",         "429",                                                false},
+                                   {"reason",         request_rate.reason,                                  false},
+                                   {"max_requests",   std::to_string(request_rate.max_requests),            false},
+                                   {"window_seconds", std::to_string(request_rate.window_seconds),          false},
+                                   {"requests_seen",  std::to_string(request_rate.requests_seen),           false}
+                },
+                               observability::LogEventSeverity::warning);
+                audit_federation(runtime, "federation.rate_limited", request.origin, request.target,
+                                 request_rate.reason);
+                return {429U, homeserver::matrix_error("M_LIMIT_EXCEEDED", request_rate.reason)};
             }
-            // Only the first listed key is fetched ahead: it is the one a
-            // server signs with. Any further candidate (R05) is looked up only
-            // if that one does not verify, through the same admitted path.
-            auto const key_ids = signature_key_ids_for_server(pdu.signatures, dom);
-            if (key_ids.empty())
+            auto const non_transaction_response =
+                dispatch_non_transaction_endpoint(runtime, request, route_match.route, remote);
+            if (non_transaction_response.status >= 200U && non_transaction_response.status < 300U)
             {
-                continue;
-            }
-            auto const key = std::make_pair(dom, key_ids.front());
-            if (seen.insert(key).second)
-            {
-                distinct_pairs.push_back(key);
-            }
-        }
-        if (!distinct_pairs.empty())
-        {
-            auto const parallelism = sender_key_prepass_parallelism(runtime.config);
-            auto resolved = std::vector<SenderKeyResolution>(distinct_pairs.size());
-            auto const source = std::string{request.remote_addr};
-            // Every task writes only its own slot of `resolved`, and the call
-            // returns only once all of them have finished.
-            core::run_bounded_parallel(
-                distinct_pairs.size(), static_cast<std::size_t>(parallelism), [&](std::size_t const i) {
-                    auto const& pair = distinct_pairs[i];
-                    resolved[i] = resolve_admitted_sender_key(runtime, source, pair.first, pair.second);
+                remote.trust.consecutive_failures = 0U;
+                persist_remote_trust(runtime, remote);
+                log_diagnostic("request.accepted",
+                               {
+                                   {"origin", request.origin,                                       false},
+                                   {"target", observability::sanitized_http_target(request.target), false},
+                                   {"status", std::to_string(non_transaction_response.status),      false}
                 });
-            for (auto i = std::size_t{0U}; i < distinct_pairs.size(); ++i)
-            {
-                sender_key_map[distinct_pairs[i]] = std::move(resolved[i]);
-            }
-        }
-    }
-    for (auto const& encoded_pdu : transaction.pdus)
-    {
-        // Resolve room version from local state when the runtime provides a
-        // resolver; otherwise fall back to "12". The resolved version is stored
-        // in pdu.room_version and forwarded to authorize_federation_pdu so that
-        // event-ID computation and signature verification both use the right rules.
-        auto const pdu = parse_federation_pdu(encoded_pdu, runtime.room_version_resolver);
-        // For relayed PDUs (sender domain != transport origin), the transport peer's
-        // signing key cannot verify the sender's PDU signature. Resolve the sender
-        // domain's key separately so authorize_federation_pdu can perform real
-        // Ed25519 verification. Fail-closed: if the resolver is wired but returns
-        // no key, the PDU is rejected rather than persisted without verification.
-        auto const pdu_sender_dom = sender_domain(pdu.sender);
-
-        // Server ACL enforcement (MSC4436): each PDU must come from a server that
-        // is allowed to participate in the room. Both the transport origin and
-        // the PDU sender's homeserver are checked, so a denied server cannot
-        // bypass the ACL by relaying events through an allowed peer.
-        if (!pdu.room_id.empty() && runtime.room_server_acl_provider)
-        {
-            auto const origin_allowed = runtime.room_server_acl_provider(pdu.room_id, request.origin);
-            auto const sender_allowed = runtime.room_server_acl_provider(pdu.room_id, pdu_sender_dom);
-            if (!origin_allowed || !sender_allowed)
-            {
-                auto const reason = std::string{"server is denied by room ACL"};
-                log_diagnostic("pdu.acl_rejected", {
-                                                       {"origin",         request.origin,             false},
-                                                       {"transaction_id", transaction.transaction_id, false},
-                                                       {"event_id",       pdu.event_id,               false},
-                                                       {"room_id",        pdu.room_id,                false},
-                                                       {"reason",         reason,                     false}
-                });
-                audit_federation(runtime, "federation.acl_rejected", request.origin, request.target, reason);
-                pdu_errors.push_back(canonicaljson::make_member(
-                    pdu.event_id, canonicaljson::Value{canonicaljson::Object{
-                                      canonicaljson::make_member("error", canonicaljson::Value{reason})}}));
-                continue;
-            }
-        }
-
-        // Signature verification (Ed25519 + key validity) against every key ID
-        // the PDU lists for its sender's server, up to
-        // max_signature_keys_per_server (R05, ADR-0183): the request's X-Matrix
-        // key first when the sender is the origin, then the pre-resolved key
-        // from the fan-out above, then an admitted lookup. Fail-closed: no key
-        // that verifies → the PDU is rejected, not persisted; a local
-        // admission denial with nothing verified is a retryable 503. For
-        // restricted joins the authorising user's homeserver signature is
-        // also verified (EVT-1).
-        auto const pdu_decision = authorize_admitted_federation_pdu(runtime, request, pdu, remote.signing_key,
-                                                                    PduSignatureChecks{sender_key_map});
-        if (!pdu_decision.accepted)
-        {
-            if (pdu_decision.status == 503U)
-            {
-                local_key_resolution_denied = true;
+                audit_federation(runtime, "federation.accepted", request.origin, request.target,
+                                 federation_route_audit_event(route_match.route, request.origin));
             }
             else
             {
-                record_remote_trust_failure(remote.trust);
-                ++pdu_trust_failures;
+                log_diagnostic("request.rejected",
+                               {
+                                   {"origin", request.origin,                                       false},
+                                   {"target", observability::sanitized_http_target(request.target), false},
+                                   {"status", std::to_string(non_transaction_response.status),      false},
+                                   {"reason", non_transaction_response.body,                        false}
+                });
+                audit_federation(runtime, "federation.rejected", request.origin, request.target,
+                                 non_transaction_response.body);
             }
-            log_diagnostic("pdu.rejected", {
-                                               {"origin",         request.origin,                      false},
-                                               {"transaction_id", transaction.transaction_id,          false},
-                                               {"event_id",       pdu.event_id,                        false},
-                                               {"room_id",        pdu.room_id,                         false},
-                                               {"event_type",     pdu.event_type,                      false},
-                                               {"status",         std::to_string(pdu_decision.status), false},
-                                               {"reason",         pdu_decision.reason,                 false}
+            return non_transaction_response;
+        }
+
+        auto const parsed_body = parse_transaction_body(request.body);
+        auto const transaction_id = federation_send_transaction_id(request.target);
+        if (!parsed_body.valid)
+        {
+            record_remote_trust_failure(remote.trust);
+            persist_remote_trust(runtime, remote);
+            log_diagnostic("transaction.rejected", {
+                                                       {"origin",         request.origin,    false},
+                                                       {"transaction_id", transaction_id,    false},
+                                                       {"status",         "400",             false},
+                                                       {"reason",         parsed_body.error, false}
             });
-            audit_federation(runtime, "federation.rejected", request.origin, request.target, pdu_decision.reason);
-            // Record the per-PDU error and continue processing remaining PDUs.
-            pdu_errors.push_back(canonicaljson::make_member(
-                pdu.event_id, canonicaljson::Value{canonicaljson::Object{
-                                  canonicaljson::make_member("error", canonicaljson::Value{pdu_decision.reason})}}));
-            continue;
+            audit_federation(runtime, "federation.rejected", request.origin, request.target, parsed_body.error);
+            return {400U, homeserver::matrix_error("M_BAD_JSON", parsed_body.error)};
         }
-        if (!runtime.pdu_sink)
+        if (parsed_body.origin != request.origin)
         {
-            continue;
+            auto constexpr reason = "transaction origin does not match request origin";
+            record_remote_trust_failure(remote.trust);
+            persist_remote_trust(runtime, remote);
+            log_diagnostic("transaction.rejected", {
+                                                       {"origin",         request.origin, false},
+                                                       {"transaction_id", transaction_id, false},
+                                                       {"status",         "403",          false},
+                                                       {"reason",         reason,         false}
+            });
+            audit_federation(runtime, "federation.rejected", request.origin, request.target, reason);
+            return refusal_response(403U, reason);
         }
-        // Spec: Matrix Server-Server API v1.19 — "Checks performed on receipt
-        // of a PDU", step 3 (hash). A content-hash mismatch is no longer
-        // dropped here: the spec requires the event be REDACTED and
-        // processing continued with the redacted form, not rejected. That
-        // redact-or-continue decision needs the room version and the room's
-        // recorded state, neither of which this loop has cheaply, so it is
-        // made once, in order, alongside the rest of the receipt checks
-        // inside the sink itself (homeserver::ingest_pdu_event). See
-        // docs/adr/0064-spec-conformant-pdu-ingestion-with-delta-state-groups.md.
-        //
-        // PDU passed signature and format checks; hand it to the ingestion
-        // sink for the remaining receipt-order checks (hash, auth against
-        // auth_events, auth against state-before, auth against current
-        // state) and persistence. Pass the already-resolved room version so
-        // the envelope uses the correct redaction rules for event-ID
-        // re-computation.
-        auto envelope = parse_inbound_pdu_envelope(encoded_pdu, pdu.room_version);
-        if (!envelope.has_value())
+        auto transaction = FederationTransaction{};
+        transaction.origin = parsed_body.origin;
+        transaction.transaction_id = transaction_id;
+        transaction.byte_size = request.body.size();
+        transaction.pdus = parsed_body.pdus;
+        for (auto const& [edu_type, edu_content] : parsed_body.edus)
         {
-            audit_federation(runtime, "federation.pdu_envelope_unparseable", request.origin, request.target,
-                             "ingestion-skip");
-            continue;
+            transaction.edus.push_back(edu_type);
         }
-        envelope->origin = request.origin;
-        auto const ingestion = runtime.pdu_sink(*envelope);
-        switch (ingestion.status)
+        auto const transaction_decision =
+            validate_federation_transaction(transaction, runtime.config.max_transaction_bytes,
+                                            runtime.config.max_transaction_pdus, runtime.config.max_transaction_edus);
+        if (!transaction_decision.accepted)
         {
-        case PduIngestionStatus::accepted:
-            ++pdus_appended;
-            break;
-        case PduIngestionStatus::soft_failed:
-            // Spec: "Soft failure" — stored, takes part in state resolution,
-            // but never a forward extremity and never relayed to clients.
-            // Not a rejection and not a trust-affecting event.
-            ++pdus_soft_failed;
-            audit_federation(runtime, "federation.pdu_soft_failed", request.origin, request.target, ingestion.reason);
-            break;
-        case PduIngestionStatus::rejected_state_conflict:
-            // Legacy status; no production sink produces this any more
-            // (ADR-0064 phase B2 removed the state-conflict-resolver
-            // plumbing it existed for). Handled defensively as a rejection.
-        case PduIngestionStatus::rejected_auth:
-        case PduIngestionStatus::rejected_invalid:
-            // Spec: "Rejection" — stored so later events can still be
-            // authorised against it, but never updates state, never becomes
-            // a forward extremity, never relayed to clients. Not a
-            // transaction-level error (spec: a rejected PDU in a
-            // transaction must not cause an error response).
-            ++pdus_rejected;
-            audit_federation(runtime, "federation.pdu_rejected", request.origin, request.target, ingestion.reason);
-            break;
-        case PduIngestionStatus::internal_error:
-            audit_federation(runtime, "federation.pdu_internal_error", request.origin, request.target,
-                             ingestion.reason);
-            break;
-        case PduIngestionStatus::main_overloaded:
-            // ADR-0065 (0.12.13 audit H2): main has hit its per-channel IPC
-            // in-flight cap and explicitly rejected this pdu_ingest. Answer the
-            // remote with a retryable 5xx rather than a 4xx, so the sending
-            // server retries the whole transaction instead of dropping the PDU.
-            audit_federation(runtime, "federation.pdu_main_overloaded", request.origin, request.target,
-                             ingestion.reason);
-            // A later local denial must not discard genuine failures already
-            // counted for earlier PDUs. Do not write/reset trust for denial alone.
+            record_remote_trust_failure(remote.trust);
+            persist_remote_trust(runtime, remote);
+            log_diagnostic("transaction.rejected", {
+                                                       {"origin",         request.origin,                          false},
+                                                       {"transaction_id", transaction.transaction_id,              false},
+                                                       {"status",         "400",                                   false},
+                                                       {"reason",         transaction_decision.reason,             false},
+                                                       {"pdu_count",      std::to_string(transaction.pdus.size()), false},
+                                                       {"edu_count",      std::to_string(transaction.edus.size()), false}
+            });
+            audit_federation(runtime, "federation.rejected", request.origin, request.target,
+                             transaction_decision.reason);
+            return {400U, homeserver::matrix_error("M_BAD_JSON", transaction_decision.reason)};
+        }
+        auto const rate_limit = check_federation_origin_rate_limit(runtime, request.origin, transaction.pdus.size(),
+                                                                   transaction.edus.size());
+        if (!rate_limit.allowed)
+        {
+            log_diagnostic("transaction.rate_limited",
+                           {
+                               {"origin",         request.origin,                            false},
+                               {"transaction_id", transaction.transaction_id,                false},
+                               {"status",         "429",                                     false},
+                               {"reason",         rate_limit.reason,                         false},
+                               {"pdu_count",      std::to_string(transaction.pdus.size()),   false},
+                               {"edu_count",      std::to_string(transaction.edus.size()),   false},
+                               {"max_requests",   std::to_string(rate_limit.max_requests),   false},
+                               {"window_seconds", std::to_string(rate_limit.window_seconds), false},
+                               {"requests_seen",  std::to_string(rate_limit.requests_seen),  false},
+                               {"weight",         std::to_string(rate_limit.weight),         false}
+            },
+                           observability::LogEventSeverity::warning);
+            audit_federation(runtime, "federation.rate_limited", request.origin, request.target, rate_limit.reason);
+            return {429U, homeserver::matrix_error("M_LIMIT_EXCEEDED", rate_limit.reason)};
+        }
+        if (auto const first_answer =
+                completed_federation_transaction_answer(runtime, request.origin, transaction.transaction_id);
+            first_answer.has_value())
+        {
+            // The peer's trust is left as the first attempt left it: the retry verifies
+            // nothing, so it is no evidence either way, and resetting the failure count
+            // here let a peer clear its backoff by resending the transaction that earned it.
+            audit_federation(runtime, "federation.duplicate", request.origin, request.target,
+                             "transaction already accepted");
+            // The transaction is not processed again, so the retry gets the first answer, errors
+            // included (ADR-0283).
+            if (!first_answer->empty())
+            {
+                return {200U, *first_answer};
+            }
+            // That answer was too large to keep. Each PDU is answered as handled (an empty result);
+            // a PDU that failed the first time is then reported as handled.
+            auto handled = canonicaljson::Object{};
+            for (auto const& encoded_pdu : transaction.pdus)
+            {
+                auto const event_id = parse_federation_pdu(encoded_pdu, runtime.room_version_resolver).event_id;
+                auto const listed = std::ranges::any_of(handled, [&event_id](auto const& member) {
+                    return member.key == event_id;
+                });
+                if (!event_id.empty() && !listed)
+                {
+                    handled.push_back(
+                        canonicaljson::make_member(event_id, canonicaljson::Value{canonicaljson::Object{}}));
+                }
+            }
+            return {200U, serialize_response_object(canonicaljson::Object{
+                              canonicaljson::make_member("pdus", canonicaljson::Value{std::move(handled)}),
+                          })};
+        }
+        auto pdus_appended = std::size_t{0U};
+        auto pdus_rejected = std::size_t{0U};
+        auto pdus_soft_failed = std::size_t{0U};
+        auto pdus_missing_prev_state = std::size_t{0U};
+        auto pdus_deferred = std::size_t{0U};
+        // Per-spec (Matrix federation /send): individual PDU failures must be
+        // reported in the response body as {"pdus": {"$id": {"error": "..."}}}
+        // rather than as a non-200 HTTP status. Returning 4xx/5xx causes the
+        // remote server (e.g. Synapse) to back off the entire destination for a
+        // backoff period, blocking all subsequent federation.
+        auto pdu_errors = canonicaljson::Object{};
+        // Every PDU of the transaction, to give each one an entry in the response (below).
+        auto processed_pdu_ids = std::vector<std::string>{};
+        // Security (audit H-04): counts the PDUs in this transaction that failed a
+        // trust check (signature, sender-key resolution, event authorization, or
+        // content hash). `remote` is a local copy of the peer's trust record, so
+        // the per-PDU increments below are only durable if they are persisted; the
+        // handler used to overwrite them with zero at transaction completion, which
+        // let a peer flood forged PDUs forever without ever tripping the backoff.
+        // Room-ACL denials are deliberately excluded — an ACL is local policy, not
+        // evidence that the peer is misbehaving.
+        auto pdu_trust_failures = std::size_t{0U};
+        auto local_key_resolution_denied = false;
+        // Pre-resolve distinct relayed sender-domain signing keys in parallel so a
+        // large inbound transaction carrying PDUs from many senders does not pay N
+        // serial discovery+fetch round-trips. Each task writes a disjoint slot in
+        // `resolved` (no synchronisation on the vector); the resolver callable is
+        // thread-safe — PersistentStore reads are guarded, OutboundClient uses a
+        // thread_local CURL handle, and CachedServerDiscovery is mutex-guarded.
+        // Fan-out is capped by `join_parallelism` (the federation-wide concurrency
+        // cap; see docs/user-manual.md). A configured value of 0 is clamped to 1
+        // (sequential) — config validation already rejects 0, this is defensive.
+        auto sender_key_map = PrefetchedSenderKeys{};
+        if (runtime.remote_key_resolver && !transaction.pdus.empty())
+        {
+            auto distinct_pairs = std::vector<std::pair<std::string, std::string>>{};
+            auto seen = std::set<std::pair<std::string, std::string>>{};
+            for (auto const& encoded_pdu : transaction.pdus)
+            {
+                auto const pdu = parse_federation_pdu(encoded_pdu, runtime.room_version_resolver);
+                auto const dom = std::string{sender_domain(pdu.sender)};
+                if (dom.empty() || dom == request.origin)
+                {
+                    continue;
+                }
+                // Only the first listed key is fetched ahead: it is the one a
+                // server signs with. Any further candidate (R05) is looked up only
+                // if that one does not verify, through the same admitted path.
+                auto const key_ids = signature_key_ids_for_server(pdu.signatures, dom);
+                if (key_ids.empty())
+                {
+                    continue;
+                }
+                auto const key = std::make_pair(dom, key_ids.front());
+                if (seen.insert(key).second)
+                {
+                    distinct_pairs.push_back(key);
+                }
+            }
+            if (!distinct_pairs.empty())
+            {
+                auto const parallelism = sender_key_prepass_parallelism(runtime.config);
+                auto resolved = std::vector<SenderKeyResolution>(distinct_pairs.size());
+                auto const source = std::string{request.remote_addr};
+                // Every task writes only its own slot of `resolved`, and the call
+                // returns only once all of them have finished.
+                core::run_bounded_parallel(
+                    distinct_pairs.size(), static_cast<std::size_t>(parallelism), [&](std::size_t const i) {
+                        auto const& pair = distinct_pairs[i];
+                        resolved[i] = resolve_admitted_sender_key(runtime, source, pair.first, pair.second);
+                    });
+                for (auto i = std::size_t{0U}; i < distinct_pairs.size(); ++i)
+                {
+                    sender_key_map[distinct_pairs[i]] = std::move(resolved[i]);
+                }
+            }
+        }
+        for (auto const& encoded_pdu : transaction.pdus)
+        {
+            // Resolve room version from local state when the runtime provides a
+            // resolver; otherwise fall back to "12". The resolved version is stored
+            // in pdu.room_version and forwarded to authorize_federation_pdu so that
+            // event-ID computation and signature verification both use the right rules.
+            auto const pdu = parse_federation_pdu(encoded_pdu, runtime.room_version_resolver);
+            if (!pdu.event_id.empty())
+            {
+                processed_pdu_ids.push_back(pdu.event_id);
+            }
+            // For relayed PDUs (sender domain != transport origin), the transport peer's
+            // signing key cannot verify the sender's PDU signature. Resolve the sender
+            // domain's key separately so authorize_federation_pdu can perform real
+            // Ed25519 verification. Fail-closed: if the resolver is wired but returns
+            // no key, the PDU is rejected rather than persisted without verification.
+            auto const pdu_sender_dom = sender_domain(pdu.sender);
+
+            // Server ACL enforcement (MSC4436): each PDU must come from a server that
+            // is allowed to participate in the room. Both the transport origin and
+            // the PDU sender's homeserver are checked, so a denied server cannot
+            // bypass the ACL by relaying events through an allowed peer.
+            if (!pdu.room_id.empty() && runtime.room_server_acl_provider)
+            {
+                auto const origin_allowed = runtime.room_server_acl_provider(pdu.room_id, request.origin);
+                auto const sender_allowed = runtime.room_server_acl_provider(pdu.room_id, pdu_sender_dom);
+                if (!origin_allowed || !sender_allowed)
+                {
+                    auto const reason = std::string{"server is denied by room ACL"};
+                    log_diagnostic("pdu.acl_rejected", {
+                                                           {"origin",         request.origin,             false},
+                                                           {"transaction_id", transaction.transaction_id, false},
+                                                           {"event_id",       pdu.event_id,               false},
+                                                           {"room_id",        pdu.room_id,                false},
+                                                           {"reason",         reason,                     false}
+                    });
+                    audit_federation(runtime, "federation.acl_rejected", request.origin, request.target, reason);
+                    pdu_errors.push_back(canonicaljson::make_member(
+                        pdu.event_id, canonicaljson::Value{canonicaljson::Object{
+                                          canonicaljson::make_member("error", canonicaljson::Value{reason})}}));
+                    continue;
+                }
+            }
+
+            // Signature verification (Ed25519 + key validity) against every key ID
+            // the PDU lists for its sender's server, up to
+            // max_signature_keys_per_server (R05, ADR-0183): the request's X-Matrix
+            // key first when the sender is the origin, then the pre-resolved key
+            // from the fan-out above, then an admitted lookup. Fail-closed: no key
+            // that verifies → the PDU is rejected, not persisted; a local
+            // admission denial with nothing verified is a retryable 503. For
+            // restricted joins the authorising user's homeserver signature is
+            // also verified (EVT-1).
+            auto const pdu_decision = authorize_admitted_federation_pdu(runtime, request, pdu, remote.signing_key,
+                                                                        PduSignatureChecks{sender_key_map});
+            if (!pdu_decision.accepted)
+            {
+                if (pdu_decision.status == 503U)
+                {
+                    local_key_resolution_denied = true;
+                }
+                else
+                {
+                    record_remote_trust_failure(remote.trust);
+                    ++pdu_trust_failures;
+                }
+                log_diagnostic("pdu.rejected", {
+                                                   {"origin",         request.origin,                      false},
+                                                   {"transaction_id", transaction.transaction_id,          false},
+                                                   {"event_id",       pdu.event_id,                        false},
+                                                   {"room_id",        pdu.room_id,                         false},
+                                                   {"event_type",     pdu.event_type,                      false},
+                                                   {"status",         std::to_string(pdu_decision.status), false},
+                                                   {"reason",         pdu_decision.reason,                 false}
+                });
+                audit_federation(runtime, "federation.rejected", request.origin, request.target, pdu_decision.reason);
+                // Record the per-PDU error and continue processing remaining PDUs.
+                pdu_errors.push_back(canonicaljson::make_member(
+                    pdu.event_id, canonicaljson::Value{canonicaljson::Object{canonicaljson::make_member(
+                                      "error", canonicaljson::Value{pdu_decision.reason})}}));
+                continue;
+            }
+            if (!runtime.pdu_sink)
+            {
+                continue;
+            }
+            // Spec: Matrix Server-Server API v1.19 — "Checks performed on receipt
+            // of a PDU", step 3 (hash). A content-hash mismatch is no longer
+            // dropped here: the spec requires the event be REDACTED and
+            // processing continued with the redacted form, not rejected. That
+            // redact-or-continue decision needs the room version and the room's
+            // recorded state, neither of which this loop has cheaply, so it is
+            // made once, in order, alongside the rest of the receipt checks
+            // inside the sink itself (homeserver::ingest_pdu_event). See
+            // docs/adr/0064-spec-conformant-pdu-ingestion-with-delta-state-groups.md.
+            //
+            // PDU passed signature and format checks; hand it to the ingestion
+            // sink for the remaining receipt-order checks (hash, auth against
+            // auth_events, auth against state-before, auth against current
+            // state) and persistence. Pass the already-resolved room version so
+            // the envelope uses the correct redaction rules for event-ID
+            // re-computation.
+            auto envelope = parse_inbound_pdu_envelope(encoded_pdu, pdu.room_version);
+            if (!envelope.has_value())
+            {
+                audit_federation(runtime, "federation.pdu_envelope_unparseable", request.origin, request.target,
+                                 "ingestion-skip");
+                pdu_errors.push_back(canonicaljson::make_member(
+                    pdu.event_id, canonicaljson::Value{canonicaljson::Object{canonicaljson::make_member(
+                                      "error", canonicaljson::Value{std::string{"event could not be parsed"}})}}));
+                continue;
+            }
+            envelope->origin = request.origin;
+            auto const ingestion = runtime.pdu_sink(*envelope);
+            switch (ingestion.status)
+            {
+            case PduIngestionStatus::accepted:
+                ++pdus_appended;
+                break;
+            case PduIngestionStatus::soft_failed:
+                // Spec: "Soft failure" — stored, takes part in state resolution,
+                // but never a forward extremity and never relayed to clients.
+                // Not a rejection and not a trust-affecting event.
+                ++pdus_soft_failed;
+                audit_federation(runtime, "federation.pdu_soft_failed", request.origin, request.target,
+                                 ingestion.reason);
+                break;
+            case PduIngestionStatus::rejected_state_conflict:
+                // Legacy status; no production sink produces this any more
+                // (ADR-0064 phase B2 removed the state-conflict-resolver
+                // plumbing it existed for). Handled defensively as a rejection.
+            case PduIngestionStatus::rejected_auth:
+            case PduIngestionStatus::rejected_invalid:
+                // Spec: "Rejection" — stored so later events can still be
+                // authorised against it, but never updates state, never becomes
+                // a forward extremity, never relayed to clients. Not a
+                // transaction-level error (spec: a rejected PDU in a
+                // transaction must not cause an error response).
+                ++pdus_rejected;
+                audit_federation(runtime, "federation.pdu_rejected", request.origin, request.target, ingestion.reason);
+                break;
+            case PduIngestionStatus::internal_error:
+                audit_federation(runtime, "federation.pdu_internal_error", request.origin, request.target,
+                                 ingestion.reason);
+                // Not handled, and not kept for a retry: the sender must hear that, as for
+                // missing_prev_state below.
+                pdu_errors.push_back(canonicaljson::make_member(
+                    envelope->event_id, canonicaljson::Value{canonicaljson::Object{canonicaljson::make_member(
+                                            "error", canonicaljson::Value{"internal error: " + ingestion.reason})}}));
+                break;
+            case PduIngestionStatus::main_overloaded:
+                // ADR-0065 (0.12.13 audit H2): main has hit its per-channel IPC
+                // in-flight cap and explicitly rejected this pdu_ingest. Answer the
+                // remote with a retryable 5xx rather than a 4xx, so the sending
+                // server retries the whole transaction instead of dropping the PDU.
+                audit_federation(runtime, "federation.pdu_main_overloaded", request.origin, request.target,
+                                 ingestion.reason);
+                // A later local denial must not discard genuine failures already
+                // counted for earlier PDUs. Do not write/reset trust for denial alone.
+                if (pdu_trust_failures != 0U)
+                {
+                    persist_remote_trust(runtime, remote);
+                }
+                return {503U, homeserver::matrix_error("M_UNKNOWN", ingestion.reason)};
+            case PduIngestionStatus::missing_prev_state:
+                // ADR-0064 phase B1: not stored, not a rejection. Spec: a
+                // delayed-but-legitimate PDU is indistinguishable from one whose
+                // history we simply have not fetched yet, so the transaction
+                // still returns 200 (handled below, unconditionally) and this PDU
+                // is counted separately so it can be revisited once a later
+                // phase backfills the gap.
+                ++pdus_missing_prev_state;
+                audit_federation(runtime, "federation.pdu_missing_prev_state", request.origin, request.target,
+                                 ingestion.reason);
+                // R03: this PDU was NOT kept, so nothing will retry it and the
+                // sender must hear that. Spec: server-server-api.md "Transactions"
+                // -- the response maps each PDU to its processing result, and only
+                // a PDU with no error "can be considered successfully handled".
+                pdu_errors.push_back(canonicaljson::make_member(
+                    envelope->event_id,
+                    canonicaljson::Value{canonicaljson::Object{canonicaljson::make_member(
+                        "error",
+                        canonicaljson::Value{"could not be placed in the room's history: " + ingestion.reason})}}));
+                break;
+            case PduIngestionStatus::deferred:
+                // R03 (ADR-0165): the PDU is kept, durably, and will be placed when
+                // the history it depends on arrives. It is handled, so it has no
+                // error entry. Counted apart from missing_prev_state, which was
+                // dropped.
+                ++pdus_deferred;
+                audit_federation(runtime, "federation.pdu_deferred", request.origin, request.target, ingestion.reason);
+                break;
+            }
+        }
+
+        if (local_key_resolution_denied)
+        {
+            // Preserve penalties for actual failures in a mixed transaction, but do
+            // not reset or write the peer's trust merely because local admission
+            // failed. The original transaction ID must remain retryable (SS v1.19).
             if (pdu_trust_failures != 0U)
             {
                 persist_remote_trust(runtime, remote);
             }
-            return {503U, homeserver::matrix_error("M_UNKNOWN", ingestion.reason)};
-        case PduIngestionStatus::missing_prev_state:
-            // ADR-0064 phase B1: not stored, not a rejection. Spec: a
-            // delayed-but-legitimate PDU is indistinguishable from one whose
-            // history we simply have not fetched yet, so the transaction
-            // still returns 200 (handled below, unconditionally) and this PDU
-            // is counted separately so it can be revisited once a later
-            // phase backfills the gap.
-            ++pdus_missing_prev_state;
-            audit_federation(runtime, "federation.pdu_missing_prev_state", request.origin, request.target,
-                             ingestion.reason);
-            // R03: this PDU was NOT kept, so nothing will retry it and the
-            // sender must hear that. Spec: server-server-api.md "Transactions"
-            // -- the response maps each PDU to its processing result, and only
-            // a PDU with no error "can be considered successfully handled".
-            pdu_errors.push_back(canonicaljson::make_member(
-                envelope->event_id, canonicaljson::Value{canonicaljson::Object{canonicaljson::make_member(
-                                        "error", canonicaljson::Value{"could not be placed in the room's history: " +
-                                                                      ingestion.reason})}}));
-            break;
-        case PduIngestionStatus::deferred:
-            // R03 (ADR-0165): the PDU is kept, durably, and will be placed when
-            // the history it depends on arrives. It is handled, so it has no
-            // error entry. Counted apart from missing_prev_state, which was
-            // dropped.
-            ++pdus_deferred;
-            audit_federation(runtime, "federation.pdu_deferred", request.origin, request.target, ingestion.reason);
-            break;
-        }
-    }
-
-    if (local_key_resolution_denied)
-    {
-        // Preserve penalties for actual failures in a mixed transaction, but do
-        // not reset or write the peer's trust merely because local admission
-        // failed. The original transaction ID must remain retryable (SS v1.19).
-        if (pdu_trust_failures != 0U)
-        {
-            persist_remote_trust(runtime, remote);
-        }
-        auto const reason = std::string{"local signing-key resolution admission unavailable"};
-        audit_federation(runtime, "federation.key_resolution_overloaded", request.origin, request.target, reason);
-        return {503U, serialize_response_object(canonicaljson::Object{
-                          canonicaljson::make_member("errcode", canonicaljson::Value{std::string{"M_UNKNOWN"}}),
-                          canonicaljson::make_member("error", canonicaljson::Value{reason}),
-                          canonicaljson::make_member("pdus", canonicaljson::Value{std::move(pdu_errors)}),
-                      })};
-    }
-
-    auto edus_dispatched = std::size_t{0U};
-    auto edus_dropped = std::size_t{0U};
-    for (auto const& [edu_type, edu_content] : parsed_body.edus)
-    {
-        auto envelope = parse_inbound_edu_envelope(edu_type, request.origin, edu_content);
-        if (!envelope.has_value())
-        {
-            ++edus_dropped;
-            continue;
+            auto const reason = std::string{"local signing-key resolution admission unavailable"};
+            audit_federation(runtime, "federation.key_resolution_overloaded", request.origin, request.target, reason);
+            return {503U, serialize_response_object(canonicaljson::Object{
+                              canonicaljson::make_member("errcode", canonicaljson::Value{std::string{"M_UNKNOWN"}}),
+                              canonicaljson::make_member("error", canonicaljson::Value{reason}),
+                              canonicaljson::make_member("pdus", canonicaljson::Value{std::move(pdu_errors)}),
+                          })};
         }
 
-        // Typing ACL enforcement (MSC4436). Receipt ACLs are applied per room
-        // at the mutation boundary, so denied rooms cannot discard allowed ones.
-        if (auto const edu_room_id = room_id_from_edu_content(envelope->type, edu_content);
-            edu_room_id.has_value() && !edu_room_id->empty() && runtime.room_server_acl_provider)
+        auto edus_dispatched = std::size_t{0U};
+        auto edus_dropped = std::size_t{0U};
+        for (auto const& [edu_type, edu_content] : parsed_body.edus)
         {
-            if (!runtime.room_server_acl_provider(*edu_room_id, request.origin))
+            auto envelope = parse_inbound_edu_envelope(edu_type, request.origin, edu_content);
+            if (!envelope.has_value())
             {
-                auto const reason = std::string{"server is denied by room ACL"};
-                log_diagnostic("edu.acl_rejected", {
-                                                       {"origin",         request.origin,             false},
-                                                       {"transaction_id", transaction.transaction_id, false},
-                                                       {"edu_type",       edu_type,                   false},
-                                                       {"room_id",        *edu_room_id,               false},
-                                                       {"reason",         reason,                     false}
-                });
-                audit_federation(runtime, "federation.acl_rejected", request.origin, request.target, reason);
                 ++edus_dropped;
                 continue;
             }
+
+            // Typing ACL enforcement (MSC4436). Receipt ACLs are applied per room
+            // at the mutation boundary, so denied rooms cannot discard allowed ones.
+            if (auto const edu_room_id = room_id_from_edu_content(envelope->type, edu_content);
+                edu_room_id.has_value() && !edu_room_id->empty() && runtime.room_server_acl_provider)
+            {
+                if (!runtime.room_server_acl_provider(*edu_room_id, request.origin))
+                {
+                    auto const reason = std::string{"server is denied by room ACL"};
+                    log_diagnostic("edu.acl_rejected", {
+                                                           {"origin",         request.origin,             false},
+                                                           {"transaction_id", transaction.transaction_id, false},
+                                                           {"edu_type",       edu_type,                   false},
+                                                           {"room_id",        *edu_room_id,               false},
+                                                           {"reason",         reason,                     false}
+                    });
+                    audit_federation(runtime, "federation.acl_rejected", request.origin, request.target, reason);
+                    ++edus_dropped;
+                    continue;
+                }
+            }
+
+            if (!runtime.edu_sink)
+            {
+                ++edus_dispatched;
+                continue;
+            }
+            auto const disposition = runtime.edu_sink(*envelope);
+            if (disposition.status == EduDispositionStatus::accepted)
+            {
+                ++edus_dispatched;
+            }
+            else
+            {
+                ++edus_dropped;
+            }
         }
 
-        if (!runtime.edu_sink)
+        // Security (audit H-04): only a transaction in which every PDU passed its
+        // trust checks resets the peer's consecutive-failure count. When PDUs were
+        // rejected, `remote.trust.consecutive_failures` already carries the
+        // incremented value and is persisted as-is, so a stream of forged-PDU
+        // transactions eventually trips the backoff and circuit breaker instead of
+        // zeroing the counter on every round trip.
+        if (pdu_trust_failures == 0U)
         {
-            ++edus_dispatched;
-            continue;
+            remote.trust.consecutive_failures = 0U;
         }
-        auto const disposition = runtime.edu_sink(*envelope);
-        if (disposition.status == EduDispositionStatus::accepted)
+        persist_remote_trust(runtime, remote);
+        log_diagnostic("transaction.accepted", {
+                                                   {"origin",           request.origin,                          false},
+                                                   {"transaction_id",   transaction.transaction_id,              false},
+                                                   {"pdu_count",        std::to_string(transaction.pdus.size()), false},
+                                                   {"pdu_appended",     std::to_string(pdus_appended),           false},
+                                                   {"pdu_rejected",     std::to_string(pdus_rejected),           false},
+                                                   {"pdu_soft_failed",  std::to_string(pdus_soft_failed),        false},
+                                                   {"pdu_missing_prev", std::to_string(pdus_missing_prev_state), false},
+                                                   {"pdu_deferred",     std::to_string(pdus_deferred),           false},
+                                                   {"edu_count",        std::to_string(transaction.edus.size()), false},
+                                                   {"edu_dispatched",   std::to_string(edus_dispatched),         false},
+                                                   {"edu_dropped",      std::to_string(edus_dropped),            false}
+        });
+        audit_federation(runtime, "federation.accepted", request.origin, request.target,
+                         federation_route_audit_event(route_match.route, request.origin));
+        // Spec (SS API "Transactions", response): `pdus` is "Required: The PDUs from the original
+        // transaction", keyed by event ID, and an entry with no `error` is "successfully handled"
+        // (`"$successful_event:example.org": {}`). Every PDU without an error above gets that entry,
+        // including one retained for retry (R03), which has been handled.
+        for (auto const& event_id : processed_pdu_ids)
         {
-            ++edus_dispatched;
+            auto const present = std::ranges::any_of(pdu_errors, [&event_id](auto const& member) {
+                return member.key == event_id;
+            });
+            if (!present)
+            {
+                pdu_errors.push_back(
+                    canonicaljson::make_member(event_id, canonicaljson::Value{canonicaljson::Object{}}));
+            }
         }
-        else
-        {
-            ++edus_dropped;
-        }
+        auto answer = serialize_response_object(canonicaljson::Object{
+            canonicaljson::make_member("pdus", canonicaljson::Value{std::move(pdu_errors)}),
+        });
+        // Recorded with the answer, so a retry is given exactly this (ADR-0283).
+        record_completed_federation_transaction(runtime, {request.origin, transaction.transaction_id,
+                                                          transaction.pdus.size(), transaction.edus.size(), answer});
+        return {200U, std::move(answer)};
     }
 
-    // Security (audit H-04): only a transaction in which every PDU passed its
-    // trust checks resets the peer's consecutive-failure count. When PDUs were
-    // rejected, `remote.trust.consecutive_failures` already carries the
-    // incremented value and is persisted as-is, so a stream of forged-PDU
-    // transactions eventually trips the backoff and circuit breaker instead of
-    // zeroing the counter on every round trip.
-    if (pdu_trust_failures == 0U)
-    {
-        remote.trust.consecutive_failures = 0U;
-    }
-    persist_remote_trust(runtime, remote);
-    record_completed_federation_transaction(
-        runtime, {request.origin, transaction.transaction_id, transaction.pdus.size(), transaction.edus.size()});
-    log_diagnostic("transaction.accepted", {
-                                               {"origin",           request.origin,                          false},
-                                               {"transaction_id",   transaction.transaction_id,              false},
-                                               {"pdu_count",        std::to_string(transaction.pdus.size()), false},
-                                               {"pdu_appended",     std::to_string(pdus_appended),           false},
-                                               {"pdu_rejected",     std::to_string(pdus_rejected),           false},
-                                               {"pdu_soft_failed",  std::to_string(pdus_soft_failed),        false},
-                                               {"pdu_missing_prev", std::to_string(pdus_missing_prev_state), false},
-                                               {"pdu_deferred",     std::to_string(pdus_deferred),           false},
-                                               {"edu_count",        std::to_string(transaction.edus.size()), false},
-                                               {"edu_dispatched",   std::to_string(edus_dispatched),         false},
-                                               {"edu_dropped",      std::to_string(edus_dropped),            false}
-    });
-    audit_federation(runtime, "federation.accepted", request.origin, request.target,
-                     federation_route_audit_event(route_match.route, request.origin));
-    if (!runtime.pdu_sink && !runtime.edu_sink && transaction.edus.empty())
-    {
-        return {200U, serialize_response_object(canonicaljson::Object{
-                          canonicaljson::make_member("pdus", canonicaljson::Value{std::move(pdu_errors)}),
-                      })};
-    }
-    return {200U, serialize_response_object(canonicaljson::Object{
-                      canonicaljson::make_member("pdus", canonicaljson::Value{std::move(pdu_errors)}),
-                  })};
+} // namespace
+
+auto handle_inbound_federation_request(FederationRuntimeState& runtime, SignedFederationRequest const& request)
+    -> FederationResponse
+{
+    // Every refusal leaves here as a standard error object, whichever handler
+    // built it (SS API "API standards"); see standard_error_body.
+    return standard_error_body(handle_inbound_federation_request_unchecked(runtime, request));
 }
 
 auto federation_runtime_summary(FederationRuntimeState const& runtime) -> std::string
@@ -3691,11 +3996,22 @@ auto federation_send_transaction_id(std::string_view target) -> std::string
 auto federation_transaction_completed(FederationRuntimeState const& runtime, std::string_view origin,
                                       std::string_view transaction_id) -> bool
 {
+    return completed_federation_transaction_answer(runtime, origin, transaction_id).has_value();
+}
+
+auto completed_federation_transaction_answer(FederationRuntimeState const& runtime, std::string_view origin,
+                                             std::string_view transaction_id) -> std::optional<std::string>
+{
     auto guard = federation_guard(runtime);
-    return std::ranges::any_of(runtime.accepted_transactions,
-                               [origin, transaction_id](FederationAcceptedTransaction const& accepted) {
-                                   return accepted.origin == origin && accepted.transaction_id == transaction_id;
-                               });
+    auto const entry = std::ranges::find_if(
+        runtime.accepted_transactions, [origin, transaction_id](FederationAcceptedTransaction const& accepted) {
+            return accepted.origin == origin && accepted.transaction_id == transaction_id;
+        });
+    if (entry == runtime.accepted_transactions.end())
+    {
+        return std::nullopt;
+    }
+    return entry->response_body;
 }
 
 auto record_completed_federation_transaction(FederationRuntimeState& runtime, FederationAcceptedTransaction transaction)
@@ -3706,14 +4022,26 @@ auto record_completed_federation_transaction(FederationRuntimeState& runtime, Fe
     {
         return;
     }
+    // ADR-0283: an answer larger than the whole budget is not kept; the
+    // transaction is still recorded, so a retry is not processed again.
+    auto const budget = runtime.config.accepted_transaction_cache_bytes;
+    if (transaction.response_body.size() > budget)
+    {
+        transaction.response_body.clear();
+    }
     // #416: cap the replay-dedup ring so a sustained stream of distinct
     // transaction ids (from a single origin with valid keys, or a Sybil of
-    // many) cannot grow the main process's memory without bound. Entries are
-    // appended in completion order, so the front is always the oldest.
-    if (runtime.accepted_transactions.size() >= runtime.config.accepted_transaction_cache_entries)
+    // many) cannot grow the main process's memory without bound, in entries
+    // and in kept answer bytes. Entries are appended in completion order, so
+    // the front is always the oldest.
+    while (!runtime.accepted_transactions.empty() &&
+           (runtime.accepted_transactions.size() >= runtime.config.accepted_transaction_cache_entries ||
+            runtime.accepted_transaction_bytes + transaction.response_body.size() > budget))
     {
+        runtime.accepted_transaction_bytes -= runtime.accepted_transactions.front().response_body.size();
         runtime.accepted_transactions.pop_front();
     }
+    runtime.accepted_transaction_bytes += transaction.response_body.size();
     runtime.accepted_transactions.push_back(std::move(transaction));
 }
 

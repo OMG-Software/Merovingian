@@ -51,6 +51,12 @@ auto FederationProxy::handle(LocalHttpRequest const& request) -> LocalHttpRespon
         refused.errcode = "M_INVALID_PARAM";
         return refused;
     }
+    // A known path used with a method it does not serve is 405 M_UNRECOGNIZED, answered before
+    // any signature is demanded: the request names no endpoint this server implements.
+    if (auto const allow = federation_unsupported_method_allow(request.method, request.target); allow.has_value())
+    {
+        return federation_method_not_allowed_response(*allow);
+    }
     // GET /_matrix/key/v2/server is always served locally. Match the path
     // exactly so unrelated targets that merely contain this substring still go
     // through the worker and federation authorization path.
@@ -133,7 +139,7 @@ auto FederationProxy::handle(LocalHttpRequest const& request) -> LocalHttpRespon
         // 502 rather than 401: Synapse propagates 401 from federation responses
         // to the client, triggering an automatic logout. 502 signals a
         // server-side failure instead.
-        return {502U, "malformed federation authorization"};
+        return {502U, matrix_error("M_UNKNOWN", "malformed federation authorization")};
     }
     auto const verification = federation::verify_inbound_federation_signature(runtime_.federation, *signed_request_opt);
     if (!verification.accepted)
@@ -199,8 +205,11 @@ auto FederationProxy::handle(LocalHttpRequest const& request) -> LocalHttpRespon
     auto response = pool_->handle(verified_request, room_id);
     if (!send_transaction_id.empty() && response.status == 200U)
     {
-        // Only the worker knows the PDU and EDU counts, which nothing reads.
-        federation::record_completed_federation_transaction(runtime_.federation, {origin, send_transaction_id, 0U, 0U});
+        // Only the worker knows the PDU and EDU counts, which nothing reads. Its
+        // answer is kept, so a retry that reaches main is given the same one
+        // (ADR-0283).
+        federation::record_completed_federation_transaction(runtime_.federation,
+                                                            {origin, send_transaction_id, 0U, 0U, response.body});
     }
     return response;
 }

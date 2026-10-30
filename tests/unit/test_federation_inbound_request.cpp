@@ -6,10 +6,13 @@
 #include "merovingian/canonicaljson/value.hpp"
 #include "merovingian/crypto/ed25519.hpp"
 #include "merovingian/crypto/signing_service.hpp"
+#include "merovingian/database/persistent_store.hpp"
 #include "merovingian/events/authorization.hpp"
 #include "merovingian/events/event_id.hpp"
 #include "merovingian/events/event_signer.hpp"
+#include "merovingian/federation/event_query.hpp"
 #include "merovingian/federation/inbound_request.hpp"
+#include "merovingian/federation/room_read_result.hpp"
 #include "merovingian/federation/runtime_federation.hpp"
 #include "merovingian/homeserver/media_service.hpp"
 #include "merovingian/media/repository.hpp"
@@ -34,6 +37,7 @@
 #include <thread>
 #include <tuple>
 #include <utility>
+#include <variant>
 #include <vector>
 
 #include <sodium.h>
@@ -513,9 +517,11 @@ SCENARIO("Inbound federation transaction accepts signed public trusted remotes",
             THEN("the transaction is accepted once and retries are idempotent")
             {
                 REQUIRE(response.status == 200U);
-                REQUIRE(response.body == "{\"pdus\":{}}");
+                // Spec: each PDU of the transaction has an entry, empty when it was handled.
+                REQUIRE(response.body.starts_with("{\"pdus\":{\"$"));
+                REQUIRE(response.body.find("error") == std::string::npos);
                 REQUIRE(duplicate.status == 200U);
-                REQUIRE(duplicate.body == "{\"pdus\":{}}");
+                REQUIRE(duplicate.body == response.body);
                 REQUIRE(runtime.accepted_transactions.size() == 1U);
                 REQUIRE(runtime.accepted_transactions.front().transaction_id == "txn123");
                 REQUIRE(runtime.remotes.front().trust.consecutive_failures == 0U);
@@ -600,7 +606,8 @@ SCENARIO("Inbound federation seeds discovery state for remotes resolved on deman
             THEN("the resolved discovery and signing state allow the transaction")
             {
                 REQUIRE(response.status == 200U);
-                REQUIRE(response.body == "{\"pdus\":{}}");
+                REQUIRE(response.body.starts_with("{\"pdus\":{\"$"));
+                REQUIRE(response.body.find("error") == std::string::npos);
                 REQUIRE(runtime.remotes.size() == 1U);
                 REQUIRE(runtime.remotes.front().discovery.resolved_addresses ==
                         std::vector<std::string>{"203.0.113.10"});
@@ -644,7 +651,7 @@ SCENARIO("Inbound federation handles non-transaction endpoints with PDU validati
         // A v1 invite implies room version 1 or 2 unless the room's version is
         // known locally; v1 and v2 are not supported (ADR-0076).
         runtime.room_version_resolver = [](std::string_view) {
-            return std::string{"12"};
+            return std::string{"10"};
         };
         auto request = signed_request(origin, key_id, token, invite_event_json);
         // The {eventId} must be the event's own reference-hash ID (audit FED-5).
@@ -693,7 +700,9 @@ SCENARIO("Inbound federation rejects malformed send targets and unsigned PDUs", 
             THEN("extra path segments fail closed with 404")
             {
                 REQUIRE(bad_route.status == 404U);
-                REQUIRE(bad_route.body == "federation route not found");
+                REQUIRE(bad_route.body.find("federation route not found") != std::string::npos);
+                // An endpoint this server does not implement is M_UNRECOGNIZED, not M_NOT_FOUND.
+                REQUIRE(bad_route.body.find("\"errcode\":\"M_UNRECOGNIZED\"") != std::string::npos);
             }
 
             THEN("a PDU with missing required fields returns 200 with a per-PDU error — not 400 for the transaction")
@@ -750,13 +759,13 @@ SCENARIO("Inbound federation fails closed for unknown private denied and quarant
             THEN("all failing controls reject the request")
             {
                 REQUIRE(unknown_response.status == 403U);
-                REQUIRE(unknown_response.body == "remote is unknown");
+                REQUIRE(unknown_response.body.find("remote is unknown") != std::string::npos);
                 REQUIRE(private_response.status == 403U);
-                REQUIRE(private_response.body == "remote address is private or loopback");
+                REQUIRE(private_response.body.find("remote address is private or loopback") != std::string::npos);
                 REQUIRE(denied_response.status == 403U);
-                REQUIRE(denied_response.body == "remote server is denied");
+                REQUIRE(denied_response.body.find("remote server is denied") != std::string::npos);
                 REQUIRE(quarantined_response.status == 403U);
-                REQUIRE(quarantined_response.body == "remote server is quarantined");
+                REQUIRE(quarantined_response.body.find("remote server is quarantined") != std::string::npos);
             }
         }
     }
@@ -922,7 +931,7 @@ SCENARIO("Origin-level backoff decays after a quiet period", "[federation][inbou
             THEN("the peer is still backed off")
             {
                 REQUIRE(response.status == 429U);
-                REQUIRE(response.body == "remote backoff required");
+                REQUIRE(response.body.find("remote backoff required") != std::string::npos);
             }
         }
 
@@ -955,6 +964,45 @@ SCENARIO("Origin-level backoff decays after a quiet period", "[federation][inbou
             THEN("the stale count is not carried into the new failure")
             {
                 REQUIRE(runtime.remotes.front().trust.consecutive_failures == 1U);
+            }
+        }
+    }
+}
+
+// A retry of a completed transaction is answered from the ring without verifying
+// anything, so it is no evidence about the peer: the trust failures its first
+// attempt recorded must survive it, or a peer could clear its backoff by
+// resending the transaction that earned it.
+SCENARIO("A retried transaction leaves the peer's trust failures as the first attempt left them",
+         "[federation][inbound][trust][security][duplicate]")
+{
+    GIVEN("a known peer whose transaction carried a PDU that failed verification")
+    {
+        REQUIRE(sodium_is_ready());
+        auto runtime = merovingian::federation::make_federation_runtime_state(runtime_config());
+        auto const origin = std::string{"matrix.example.org"};
+        auto const key_id = std::string{"ed25519:auto"};
+        auto const token = std::string{"verify-token"};
+        merovingian::federation::upsert_remote(runtime, remote_for(origin, key_id, token));
+        auto request = genuine_transaction_from(origin, key_id, token, "txn-forged", "203.0.113.9");
+        request.body = transaction_body(origin, "{\"type\":\"m.room.message\"}");
+        request.signature = merovingian::federation::make_federation_signature(
+            request.origin, request.destination, request.method, request.target, request.body,
+            merovingian::federation::test::keypair_from_seed(token).secret_key);
+        auto const first = merovingian::federation::handle_inbound_federation_request(runtime, request);
+        auto const failures_after_first = runtime.remotes.front().trust.consecutive_failures;
+
+        WHEN("the peer retries the same transaction")
+        {
+            auto const retry = merovingian::federation::handle_inbound_federation_request(runtime, request);
+
+            THEN("the retry gets the first answer and the failure count is unchanged")
+            {
+                REQUIRE(first.status == 200U);
+                REQUIRE(failures_after_first == 1U);
+                REQUIRE(retry.status == 200U);
+                REQUIRE(retry.body == first.body);
+                REQUIRE(runtime.remotes.front().trust.consecutive_failures == failures_after_first);
             }
         }
     }
@@ -1861,7 +1909,8 @@ SCENARIO("A signature_verified request is handled without re-checking the raw si
             THEN("the request is accepted (the raw signature is not re-verified)")
             {
                 REQUIRE(response.status == 200U);
-                REQUIRE(response.body == "{\"pdus\":{}}");
+                REQUIRE(response.body.starts_with("{\"pdus\":{\"$"));
+                REQUIRE(response.body.find("error") == std::string::npos);
             }
         }
 
@@ -2143,7 +2192,7 @@ SCENARIO("Direct invite sender lookup keeps local denial distinct from failed re
                             .accepted = true, .status = 200U, .signed_event_json = invite.invite_event_json};
                     };
                     auto request =
-                        signed_request(relay, key_id, seed, "{\"room_version\":\"12\",\"event\":" + event_json + "}");
+                        signed_request(relay, key_id, seed, "{\"room_version\":\"10\",\"event\":" + event_json + "}");
                     request.remote_addr = "198.51.100.7";
                     request.target = "/_matrix/federation/v2/invite/!room:example.org/" + pdu.event_id;
                     request.signature = merovingian::federation::make_federation_signature(
@@ -4391,7 +4440,7 @@ SCENARIO("Transactions whose PDUs are all rejected keep incrementing the "
                 REQUIRE(after_third == 3U);
                 // Backoff / circuit breaker fires at three consecutive failures.
                 REQUIRE(fourth.status == 429U);
-                REQUIRE(fourth.body == "remote backoff required");
+                REQUIRE(fourth.body.find("remote backoff required") != std::string::npos);
             }
         }
 
@@ -4413,7 +4462,8 @@ SCENARIO("Transactions whose PDUs are all rejected keep incrementing the "
             {
                 REQUIRE(before_success == 2U);
                 REQUIRE(accepted.status == 200U);
-                REQUIRE(accepted.body == "{\"pdus\":{}}");
+                REQUIRE(accepted.body.starts_with("{\"pdus\":{\"$"));
+                REQUIRE(accepted.body.find("error") == std::string::npos);
                 REQUIRE(persisted_failures() == 0U);
             }
         }
@@ -4557,6 +4607,303 @@ SCENARIO("A /send response reports a retained PDU as handled and a dropped one a
                     REQUIRE(error_text.has_value());
                     REQUIRE_FALSE(error_text->empty());
                 }
+            }
+        }
+    }
+}
+
+// Spec: server-server-api.md, "Transactions": the 200 response maps each PDU of
+// the transaction to its processing result. A retried transaction ID is not
+// processed again (ADR-0160), so its answer must be the one the first attempt
+// gave: a PDU that failed then must not be reported as handled now.
+SCENARIO("A retried /send transaction is answered with the first attempt's per-PDU results",
+         "[federation][inbound][transaction][duplicate]")
+{
+    GIVEN("a transaction whose one PDU this server could not place")
+    {
+        auto runtime = merovingian::federation::make_federation_runtime_state(runtime_config());
+        auto const origin = std::string{"sender.example.org"};
+        auto const key_id = std::string{"ed25519:auto"};
+        auto const token = std::string{"sender-server-key"};
+        merovingian::federation::upsert_remote(runtime, remote_for(origin, key_id, token));
+        auto const request =
+            signed_request(origin, key_id, token, transaction_body(origin, signed_json_pdu(origin, key_id, token)));
+        auto sink_calls = 0U;
+        runtime.pdu_sink =
+            [&sink_calls](
+                merovingian::federation::InboundPduEnvelope const&) -> merovingian::federation::PduIngestionResult {
+            ++sink_calls;
+            return {merovingian::federation::PduIngestionStatus::missing_prev_state, "prev_event not yet known"};
+        };
+
+        WHEN("the sender retries the transaction under the same ID")
+        {
+            auto const first = merovingian::federation::handle_inbound_federation_request(runtime, request);
+            auto const retry = merovingian::federation::handle_inbound_federation_request(runtime, request);
+
+            THEN("the PDU is processed once and the retry reports the same error for it")
+            {
+                REQUIRE(first.status == 200U);
+                REQUIRE(first.body.find("\"error\"") != std::string::npos);
+                REQUIRE(retry.status == 200U);
+                REQUIRE(retry.body == first.body);
+                REQUIRE(sink_calls == 1U);
+            }
+        }
+    }
+}
+
+// ADR-0283: an answer larger than the whole byte budget is not kept, but the
+// transaction is still recorded, so a retry is not processed again and each of
+// its PDUs is answered as handled.
+SCENARIO("A retried /send transaction whose first answer was not kept is still not processed again",
+         "[federation][inbound][transaction][duplicate]")
+{
+    GIVEN("a runtime whose answer budget is smaller than any answer")
+    {
+        auto runtime = merovingian::federation::make_federation_runtime_state(runtime_config());
+        runtime.config.accepted_transaction_cache_bytes = 1U;
+        auto const origin = std::string{"sender.example.org"};
+        auto const key_id = std::string{"ed25519:auto"};
+        auto const token = std::string{"sender-server-key"};
+        merovingian::federation::upsert_remote(runtime, remote_for(origin, key_id, token));
+        auto const request =
+            signed_request(origin, key_id, token, transaction_body(origin, signed_json_pdu(origin, key_id, token)));
+        auto sink_calls = 0U;
+        auto event_id = std::string{};
+        runtime.pdu_sink =
+            [&sink_calls, &event_id](
+                merovingian::federation::InboundPduEnvelope const& env) -> merovingian::federation::PduIngestionResult {
+            ++sink_calls;
+            event_id = env.event_id;
+            return {merovingian::federation::PduIngestionStatus::accepted, {}};
+        };
+
+        WHEN("the sender retries the transaction under the same ID")
+        {
+            auto const first = merovingian::federation::handle_inbound_federation_request(runtime, request);
+            auto const retry = merovingian::federation::handle_inbound_federation_request(runtime, request);
+
+            THEN("the PDU is processed once and the retry answers it as handled")
+            {
+                REQUIRE(first.status == 200U);
+                REQUIRE(retry.status == 200U);
+                REQUIRE(sink_calls == 1U);
+                REQUIRE(runtime.accepted_transaction_bytes == 0U);
+                REQUIRE(retry.body == "{\"pdus\":{\"" + event_id + "\":{}}}");
+            }
+        }
+    }
+}
+
+// Spec: server-server-api.md, "Transactions": only a PDU whose entry has no
+// `error` "can be considered successfully handled". A PDU the sink failed on
+// internally was not handled, so the sender must be told.
+SCENARIO("A PDU the sink fails on internally is answered with an error entry",
+         "[federation][inbound][transaction][pdu]")
+{
+    GIVEN("a transaction carrying one validly signed PDU and a sink that fails internally")
+    {
+        auto runtime = merovingian::federation::make_federation_runtime_state(runtime_config());
+        auto const origin = std::string{"sender.example.org"};
+        auto const key_id = std::string{"ed25519:auto"};
+        auto const token = std::string{"sender-server-key"};
+        merovingian::federation::upsert_remote(runtime, remote_for(origin, key_id, token));
+        auto const request =
+            signed_request(origin, key_id, token, transaction_body(origin, signed_json_pdu(origin, key_id, token)));
+        auto event_id = std::string{};
+        runtime.pdu_sink =
+            [&event_id](
+                merovingian::federation::InboundPduEnvelope const& env) -> merovingian::federation::PduIngestionResult {
+            event_id = env.event_id;
+            return {merovingian::federation::PduIngestionStatus::internal_error, "store unavailable"};
+        };
+
+        WHEN("the transaction is handled")
+        {
+            auto const response = merovingian::federation::handle_inbound_federation_request(runtime, request);
+
+            THEN("the transaction is answered 200 and the PDU's entry carries an error")
+            {
+                REQUIRE(response.status == 200U);
+                REQUIRE_FALSE(event_id.empty());
+                REQUIRE(response.body.find("\"" + event_id + "\":{\"error\":") != std::string::npos);
+            }
+        }
+    }
+}
+
+// The kept answers are bounded in bytes as well as in entries (ADR-0283): a
+// flood of large answers evicts the oldest entries instead of growing memory.
+SCENARIO("Completed transactions' answers are kept within a byte budget",
+         "[federation][inbound][transaction][security]")
+{
+    GIVEN("a runtime whose completed-transaction answers may total 64 bytes")
+    {
+        auto runtime = merovingian::federation::make_federation_runtime_state(runtime_config());
+        runtime.config.accepted_transaction_cache_bytes = 64U;
+        auto const answer = std::string(40U, 'a');
+
+        WHEN("two transactions with 40-byte answers complete")
+        {
+            merovingian::federation::record_completed_federation_transaction(runtime,
+                                                                             {"a.example", "txn-1", 1U, 0U, answer});
+            merovingian::federation::record_completed_federation_transaction(runtime,
+                                                                             {"a.example", "txn-2", 1U, 0U, answer});
+
+            THEN("the oldest is evicted and the newest is answered from its kept body")
+            {
+                REQUIRE_FALSE(merovingian::federation::federation_transaction_completed(runtime, "a.example", "txn-1"));
+                REQUIRE(merovingian::federation::completed_federation_transaction_answer(runtime, "a.example",
+                                                                                         "txn-2") == answer);
+                REQUIRE(runtime.accepted_transaction_bytes == answer.size());
+            }
+        }
+
+        WHEN("a transaction's answer alone is larger than the budget")
+        {
+            merovingian::federation::record_completed_federation_transaction(
+                runtime, {"a.example", "txn-big", 1U, 0U, std::string(100U, 'b')});
+
+            THEN("the transaction is still recorded as completed but its answer is not kept")
+            {
+                REQUIRE(merovingian::federation::completed_federation_transaction_answer(runtime, "a.example",
+                                                                                         "txn-big") == std::string{});
+                REQUIRE(runtime.accepted_transaction_bytes == 0U);
+            }
+        }
+
+        WHEN("an unknown transaction is looked up")
+        {
+            auto const missing =
+                merovingian::federation::completed_federation_transaction_answer(runtime, "a.example", "txn-none");
+
+            THEN("there is no answer")
+            {
+                REQUIRE_FALSE(missing.has_value());
+            }
+        }
+    }
+}
+
+// ADR-0284: this server answers /event_auth only within max_event_auth_chain_events
+// (a project bound, not a spec one). The spec's answer is the complete chain, so
+// a chain at the bound is answered whole and a longer one is refused, never cut;
+// the handler answers the refusal 502 M_TOO_LARGE.
+SCENARIO("event_auth answers a chain at the bound whole and refuses a longer one", "[federation][event_auth][adr-0284]")
+{
+    GIVEN("a room whose events form one auth chain of the bound's length above the create event")
+    {
+        using merovingian::federation::max_event_auth_chain_events;
+        auto const room = std::string{"!long:example.org"};
+        auto const event = [&room](std::string id, std::string type, std::string state_key,
+                                   std::vector<std::string> auth) {
+            auto stored = merovingian::database::PersistentEvent{};
+            stored.event_id = std::move(id);
+            stored.room_id = room;
+            stored.sender_user_id = "@creator:example.org";
+            auto const content =
+                type == "m.room.member" ? std::string{",\"content\":{\"membership\":\"join\"}"} : std::string{};
+            stored.json = "{\"type\":\"" + type + "\",\"state_key\":\"" + state_key +
+                          "\",\"sender\":\"@creator:example.org\"" + content + "}";
+            stored.auth_event_ids = std::move(auth);
+            return stored;
+        };
+        auto store = merovingian::database::PersistentStore{};
+        store.events.push_back(event("$create", "m.room.create", "", {}));
+        store.events.push_back(event("$member", "m.room.member", "@creator:example.org", {"$create"}));
+        store.state.push_back({room, "m.room.create", "", "$create"});
+        store.state.push_back({room, "m.room.member", "@creator:example.org", "$member"});
+        auto previous = std::string{"$create"};
+        for (auto i = std::size_t{1U}; i <= max_event_auth_chain_events; ++i)
+        {
+            auto id = "$a" + std::to_string(i);
+            store.events.push_back(event(id, "m.room.topic", "", {previous}));
+            previous = std::move(id);
+        }
+        // $at's chain: $a1..$a(bound-1) and $create, exactly the bound. $over's: one more.
+        store.events.push_back(
+            event("$at", "m.room.topic", "", {"$a" + std::to_string(max_event_auth_chain_events - 1U)}));
+        store.events.push_back(
+            event("$over", "m.room.topic", "", {"$a" + std::to_string(max_event_auth_chain_events)}));
+
+        WHEN("the chain of each is requested by a server in the room")
+        {
+            auto const at = merovingian::federation::build_event_auth_response(store, room, "$at", "example.org");
+            auto const over = merovingian::federation::build_event_auth_response(store, room, "$over", "example.org");
+
+            THEN("the chain at the bound is answered whole and the longer one is refused with no partial chain")
+            {
+                REQUIRE(at.status == merovingian::federation::RoomReadStatus::ok);
+                auto const parsed = merovingian::canonicaljson::parse_lossless(at.body);
+                REQUIRE(parsed.error == merovingian::canonicaljson::ParseError::none);
+                auto const* object = std::get_if<merovingian::canonicaljson::Object>(&parsed.value.storage());
+                REQUIRE(object != nullptr);
+                auto const* chain = std::get_if<merovingian::canonicaljson::Array>(&(*object)[0].value->storage());
+                REQUIRE(chain != nullptr);
+                REQUIRE(chain->size() == max_event_auth_chain_events);
+                REQUIRE(over.status == merovingian::federation::RoomReadStatus::too_large);
+                REQUIRE(over.body.empty());
+            }
+        }
+    }
+
+    GIVEN("a runtime whose event_auth provider finds the chain longer than the bound")
+    {
+        auto runtime = merovingian::federation::make_federation_runtime_state(runtime_config());
+        auto const origin = std::string{"matrix.example.org"};
+        auto const key_id = std::string{"ed25519:auto"};
+        auto const token = std::string{"verify-token"};
+        merovingian::federation::upsert_remote(runtime, remote_for(origin, key_id, token));
+        runtime.event_auth_query_provider = [](std::string_view, std::string_view, std::string_view) {
+            return merovingian::federation::RoomReadResult{merovingian::federation::RoomReadStatus::too_large, {}};
+        };
+        auto request = signed_request(origin, key_id, token, "");
+        request.method = "GET";
+        request.target = "/_matrix/federation/v1/event_auth/%21long%3Aexample.org/%24over%3Aexample.org";
+        request.signature = merovingian::federation::make_federation_signature(
+            request.origin, request.destination, request.method, request.target, request.body,
+            merovingian::federation::test::keypair_from_seed(token).secret_key);
+
+        WHEN("the chain is requested")
+        {
+            auto const response = merovingian::federation::handle_inbound_federation_request(runtime, request);
+
+            THEN("the answer is 502 M_TOO_LARGE, not a 200 with part of the chain")
+            {
+                REQUIRE(response.status == 502U);
+                REQUIRE(response.body.find("M_TOO_LARGE") != std::string::npos);
+                REQUIRE(response.body.find("auth_chain") == std::string::npos);
+            }
+        }
+    }
+}
+
+// The worker -> main relay names a room read's status on the wire. Every status
+// must survive the round trip, and a name this build does not know must never
+// read as a served answer.
+SCENARIO("Room read statuses round-trip through their wire names", "[federation][ipc][room-read]")
+{
+    GIVEN("every room read status")
+    {
+        using merovingian::federation::RoomReadStatus;
+        auto const statuses = std::array{RoomReadStatus::ok, RoomReadStatus::forbidden, RoomReadStatus::not_found,
+                                         RoomReadStatus::malformed, RoomReadStatus::too_large};
+
+        WHEN("each is written as its name and read back, and an unknown name is read")
+        {
+            auto round_tripped = std::vector<RoomReadStatus>{};
+            for (auto const status : statuses)
+            {
+                round_tripped.push_back(merovingian::federation::room_read_status_from_name(
+                    merovingian::federation::room_read_status_name(status)));
+            }
+            auto const unknown = merovingian::federation::room_read_status_from_name("served");
+
+            THEN("each comes back as itself and the unknown name is not found")
+            {
+                REQUIRE(std::ranges::equal(round_tripped, statuses));
+                REQUIRE(unknown == RoomReadStatus::not_found);
             }
         }
     }

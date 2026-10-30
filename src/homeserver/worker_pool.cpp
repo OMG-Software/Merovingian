@@ -12,6 +12,7 @@
 #include "merovingian/events/event_signer.hpp"
 #include "merovingian/federation/inbound_ingestion.hpp"
 #include "merovingian/federation/inbound_request.hpp"
+#include "merovingian/federation/invite_room_state.hpp"
 #include "merovingian/federation/membership_endpoints.hpp"
 #include "merovingian/federation/transactions.hpp"
 #include "merovingian/homeserver/request_lock.hpp"
@@ -594,6 +595,18 @@ namespace
         return body;
     }
 
+    auto serialize_directory_query_ingest_result(federation::FederationDirectory const& directory) -> std::string
+    {
+        auto body = std::string{R"({"type":"directory_query_ingest_result","found":)"};
+        body += directory.found ? "true" : "false";
+        body += R"(,"room_id":)";
+        body += json_str(directory.room_id);
+        body += R"(,"servers":)";
+        body += json_str_array_literal(directory.servers);
+        body += '}';
+        return body;
+    }
+
     auto serialize_event_query_ingest_result(federation::RoomReadResult const& result) -> std::string
     {
         auto body = std::string{R"({"type":"event_query_ingest_result","status":)"};
@@ -934,6 +947,22 @@ auto handle_invite_ingest_request(HomeserverRuntime& runtime, std::string_view r
         result.reason = refusal;
         return serialize_invite_ingest_result(result);
     }
+    // The stripped state travels in the same frame, so a compromised worker cannot hand main an
+    // invite_room_state the worker did not check: the same validation (a create event, every
+    // entry a signed PDU of this room) runs here with main's own key resolution.
+    auto const state_decision = federation::validate_invite_room_state(
+        request.room_id, room_version, request.invite_room_state_json, std::nullopt,
+        [&runtime](std::string_view server_name, std::string_view key_id) {
+            auto const unlocked = RuntimeLockRelease{};
+            return federation::resolve_verification_key(runtime.federation, {}, server_name, key_id);
+        });
+    if (!state_decision.accepted)
+    {
+        log_relay_refused("invite_ingest", request.event_id, state_decision.reason);
+        result.status = state_decision.status == 503U ? 503U : 400U;
+        result.reason = state_decision.reason;
+        return serialize_invite_ingest_result(result);
+    }
     {
         auto guard = std::unique_lock{runtime.mutex};
         result = runtime.federation.invite_handler(request);
@@ -1026,6 +1055,23 @@ auto handle_profile_query_ingest_request(HomeserverRuntime& runtime, std::string
         }
     }
     return serialize_profile_query_ingest_result(profile);
+}
+
+auto handle_directory_query_ingest_request(HomeserverRuntime& runtime, std::string_view request_json) -> std::string
+{
+    // GET /_matrix/federation/v1/query/directory is not room-scoped, so the worker's per-room
+    // `room_sync` reloads never refresh its alias table: an alias created through main after the
+    // worker started would be a 404 for every remote server. The alias is read from main's own store.
+    auto const room_alias = json_get_str(request_json, "room_alias");
+    auto directory = federation::FederationDirectory{};
+    {
+        auto guard = std::unique_lock{runtime.mutex};
+        if (runtime.federation.directory_query_provider && !room_alias.empty())
+        {
+            directory = runtime.federation.directory_query_provider(room_alias);
+        }
+    }
+    return serialize_directory_query_ingest_result(directory);
 }
 
 auto handle_membership_template_ingest_request(HomeserverRuntime& runtime, std::string_view request_json) -> std::string
@@ -1325,6 +1371,16 @@ WorkerPool::WorkerPool(config::FederationWorkerConfig const& cfg, HomeserverRunt
                     if (!submit_limited(handler_pool_, ch, [this, ch, id, json = std::move(json)]() mutable {
                             auto const guard = InFlightGuard{*ch};
                             ch->send_response(id, handle_profile_query_ingest_request(runtime_, json));
+                        }))
+                    {
+                        ch->send_response(id, overload_response_for(type));
+                    }
+                }
+                else if (type == "directory_query_ingest")
+                {
+                    if (!submit_limited(handler_pool_, ch, [this, ch, id, json = std::move(json)]() mutable {
+                            auto const guard = InFlightGuard{*ch};
+                            ch->send_response(id, handle_directory_query_ingest_request(runtime_, json));
                         }))
                     {
                         ch->send_response(id, overload_response_for(type));

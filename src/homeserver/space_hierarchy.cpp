@@ -1386,6 +1386,72 @@ auto handle_client_space_hierarchy(HomeserverRuntime& runtime, std::string_view 
     return {200U, serialized.output};
 }
 
+auto handle_client_room_summary(HomeserverRuntime const& runtime, std::string_view user_id,
+                                std::string_view room_id_or_alias) -> SpaceHierarchyResult
+{
+    auto const& store = runtime.database.persistent_store;
+    auto const authenticated = !user_id.empty();
+
+    // Without a token the answer must not tell a private room from one that does not exist.
+    auto const refuse = [authenticated]() -> SpaceHierarchyResult {
+        if (authenticated)
+        {
+            return {404U, matrix_error("M_NOT_FOUND", "The room could not be found.")};
+        }
+        return {401U, matrix_error("M_MISSING_TOKEN", "Missing access token")};
+    };
+
+    auto room_id = std::string{};
+    if (room_id_or_alias.starts_with('#'))
+    {
+        // Only an alias in this server's directory resolves; resolving one on another server would
+        // be a federation call (see the header).
+        auto const mapping = database::find_room_alias(store, room_id_or_alias);
+        if (!mapping.has_value())
+        {
+            return refuse();
+        }
+        room_id = mapping->room_id;
+    }
+    else
+    {
+        room_id = std::string{room_id_or_alias};
+    }
+    if (!room_exists(store, room_id))
+    {
+        return refuse();
+    }
+
+    auto const membership = authenticated ? user_membership(store, room_id, user_id) : std::nullopt;
+    auto const rule = join_rule(store, room_id);
+    auto const joinable_or_readable =
+        world_readable(store, room_id) ||
+        (rule.has_value() && (*rule == "public" || *rule == "knock" || *rule == "knock_restricted"));
+    auto const visible = authenticated ? (can_view_room_client(store, user_id, room_id) ||
+                                          (membership.has_value() && *membership == "knock"))
+                                       : joinable_or_readable;
+    if (!visible)
+    {
+        return refuse();
+    }
+
+    // RoomSummary has no `children_state`; that belongs to a hierarchy chunk.
+    auto summary = room_summary_object(store, room_id, false, false);
+    std::erase_if(summary, [](canonicaljson::ObjectMember const& member) {
+        return member.key == "children_state";
+    });
+    if (membership.has_value())
+    {
+        summary.push_back(json_member("membership", json_str(*membership)));
+    }
+    auto const serialized = canonicaljson::serialize_canonical(json_obj(std::move(summary)));
+    if (serialized.error != canonicaljson::CanonicalJsonError::none)
+    {
+        return {500U, matrix_error("M_UNKNOWN", "failed to serialize room summary")};
+    }
+    return {200U, serialized.output};
+}
+
 auto build_federation_space_hierarchy_response(HomeserverRuntime const& runtime, std::string_view room_id,
                                                bool suggested_only, std::string_view origin) -> std::string
 {

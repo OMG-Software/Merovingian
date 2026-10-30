@@ -106,6 +106,8 @@ SCENARIO("federation_endpoint_requires_main_relay classifies every registered en
             merovingian::federation::FederationEndpoint::send_knock,
             merovingian::federation::FederationEndpoint::invite,
             merovingian::federation::FederationEndpoint::query_profile,
+            // query_directory has no room ID, so no room_sync refreshes a worker's alias table.
+            merovingian::federation::FederationEndpoint::query_directory,
             merovingian::federation::FederationEndpoint::query_keys,
             merovingian::federation::FederationEndpoint::claim_keys,
             merovingian::federation::FederationEndpoint::query_user_devices,

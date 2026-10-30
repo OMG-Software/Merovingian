@@ -39,7 +39,7 @@ auto install_redaction_reconciler(database::PersistentStore& store) -> void;
 enum class LocalRedactionCheck
 {
     permitted,
-    // The event the redaction names is not in this room, or is not known.
+    // The event the redaction names is held here, but in another room.
     target_unknown,
     // The sender may not redact it (or it may not be redacted at all).
     forbidden,
@@ -54,6 +54,9 @@ enum class LocalRedactionCheck
 // `composed_redaction_json` is the signed m.room.redaction event about to be stored. The first
 // condition (the power level for `m.room.redaction` itself) is the ordinary event authorization
 // the caller has already run; this checks the rest, and that the redaction would then be applied.
+// A target this server does not hold at all cannot be judged: the redaction is permitted only when
+// the sender holds the room's `redact` level (PUT /redact has no 404 response), and is judged
+// against the target if it arrives later.
 [[nodiscard]] auto check_local_redaction(database::PersistentStore const& store, std::string_view room_id,
                                          std::string_view composed_redaction_json, bool sender_is_server_admin,
                                          std::string_view local_server_name) -> LocalRedactionCheck;

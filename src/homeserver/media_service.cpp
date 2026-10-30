@@ -154,6 +154,22 @@ namespace
         return value;
     }
 
+    // A file may be stored under a spelling variant of its real type ("img/png",
+    // media_types_are_equivalent); the thumbnail worker takes the canonical spelling
+    // only, so a variant of a type it decodes is handed over as that type. Any other
+    // string is passed through and refused by the worker as before.
+    [[nodiscard]] auto thumbnail_source_content_type(std::string_view content_type) -> std::string
+    {
+        for (auto const listed : {std::string_view{"image/png"}, std::string_view{"image/jpeg"}})
+        {
+            if (media::media_types_are_equivalent(content_type, listed))
+            {
+                return std::string{listed};
+            }
+        }
+        return std::string{content_type};
+    }
+
     [[nodiscard]] auto extract_multipart_boundary(std::string_view content_type) -> std::string
     {
         // RFC 2046 §5.1.1: parameter names are case-insensitive and the value
@@ -429,6 +445,29 @@ namespace
                            {"origin_server", std::string{origin_server},                                    false},
                            {"media_id",      std::string{media_id},                                         false},
                            {"reason",        enabled ? "allow_remote=false" : "remote_fetch_enabled=false", false}
+        });
+        return make_operation_result(false, {}, "media not found", 404U);
+    }
+
+    // The freeze (ADR-0068) on the deprecated /_matrix/media/v3 routes, for
+    // remote media. The spec counts media the server "had to re-download"
+    // during the freeze as media from after the freeze, which "SHOULD only be accessible via the
+    // new, authenticated, endpoints". So these routes serve a remote copy only
+    // when it was cached before the freeze, and never fetch one: the fetch
+    // would itself make it post-freeze media.
+    [[nodiscard]] auto legacy_remote_media_refusal(HomeserverRuntime& runtime, std::string_view origin_server,
+                                                   std::string_view media_id) -> std::optional<OperationResult>
+    {
+        auto const* cached = media::find_cached_remote_media(runtime.media_repository, origin_server, media_id,
+                                                             media::remote_media_cache_now_ms());
+        if (cached != nullptr && cached->legacy_endpoint_visible)
+        {
+            return std::nullopt;
+        }
+        log_diagnostic("remote_fetch.legacy_frozen", {
+                                                         {"origin_server", std::string{origin_server},           false},
+                                                         {"media_id",      std::string{media_id},                false},
+                                                         {"cached",        cached != nullptr ? "true" : "false", false}
         });
         return make_operation_result(false, {}, "media not found", 404U);
     }
@@ -1384,7 +1423,7 @@ namespace
 
         auto request = media::ThumbnailRequest{};
         request.source_bytes = bytes;
-        request.source_content_type = std::string{content_type};
+        request.source_content_type = thumbnail_source_content_type(content_type);
         request.width = width;
         request.height = height;
         request.method = method;
@@ -1769,6 +1808,13 @@ namespace
         {
             return std::move(*refusal);
         }
+        if (legacy_endpoint)
+        {
+            if (auto frozen = legacy_remote_media_refusal(runtime, server_name, media_id); frozen.has_value())
+            {
+                return std::move(*frozen);
+            }
+        }
     }
     auto const policy = media_policy_decision(runtime, media_id);
     if (!policy.allowed)
@@ -1858,7 +1904,45 @@ namespace
     {
         return {false, 404U, {}, {}, "media not found"};
     }
-    return {true, 200U, target.content_type, std::move(*bytes), {}};
+    auto const* record = media::find_local_media_record(runtime.media_repository, media_id);
+    return {true,
+            200U,
+            target.content_type,
+            std::move(*bytes),
+            {},
+            record == nullptr ? std::string{} : record->upload_name};
+}
+
+[[nodiscard]] auto download_local_media_thumbnail_for_federation(HomeserverRuntime& runtime,
+                                                                 federation::FederationThumbnailQuery const& query)
+    -> media::LocalMediaDownloadResult
+{
+    // As download_local_media_for_federation: the repository's lookups need the runtime mutex, and
+    // the thumbnail path releases it itself for the decode (RuntimeLockRelease finds this guard).
+    auto guard = std::unique_lock<RuntimeMutex>{runtime.mutex};
+    auto const scope = RequestLockScope{guard};
+    // Local media only: a remote server is never asked to fetch more media for another server. A
+    // reserved ID whose content is missing is answered 504 M_NOT_YET_UPLOADED at once (timeout 0),
+    // never waited for: inbound federation has no media fetch pool to wait on (ADR-0212).
+    auto context = RemoteMediaRequestContext{};
+    context.allow_remote = false;
+    context.timeout_ms = 0U;
+    // The decode cap (MED-4) counts the requesting server like a user, so one peer cannot hold
+    // the decoder pool.
+    context.requester = "federation:" + query.origin;
+    context.client_key = context.requester;
+    auto const result = download_local_media_thumbnail(runtime, runtime.config.server().server_name, query.media_id,
+                                                       query.width, query.height, query.method, false, context);
+    if (!result.ok)
+    {
+        return {false, result.status, {}, {}, result.reason};
+    }
+    auto const separator = result.value.find('|');
+    if (separator == std::string::npos)
+    {
+        return {false, 500U, {}, {}, "thumbnail response malformed"};
+    }
+    return {true, 200U, result.value.substr(0U, separator), result.value.substr(separator + 1U), {}};
 }
 
 [[nodiscard]] auto download_local_media_thumbnail(HomeserverRuntime& runtime, std::string_view server_name,
@@ -1872,6 +1956,13 @@ namespace
         if (auto refusal = remote_media_refusal(runtime, server_name, media_id, remote); refusal.has_value())
         {
             return std::move(*refusal);
+        }
+        if (legacy_endpoint)
+        {
+            if (auto frozen = legacy_remote_media_refusal(runtime, server_name, media_id); frozen.has_value())
+            {
+                return std::move(*frozen);
+            }
         }
     }
     auto const policy = media_policy_decision(runtime, media_id);

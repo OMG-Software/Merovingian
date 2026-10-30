@@ -1158,3 +1158,173 @@ SCENARIO("Remote media fetch policy honours the federation private-range allowli
         }
     }
 }
+
+// Owner decision 2026-10-29: the declared and the sniffed type are
+// treated as matching when they are equivalent. Media types compare
+// case-insensitively (RFC 2045 section 5.1, RFC 6838 section 4.2) and the
+// top-level type `img` is a common misspelling of `image`. Nothing else matches.
+SCENARIO("media_types_are_equivalent matches only spelling variants of the sniffed type",
+         "[media][security][mime][equivalence]")
+{
+    GIVEN("a sniffed image/png")
+    {
+        auto const sniffed = std::string{"image/png"};
+
+        WHEN("the declared type differs only in letter case")
+        {
+            THEN("the types are equivalent")
+            {
+                REQUIRE(merovingian::media::media_types_are_equivalent("IMAGE/PNG", sniffed));
+                REQUIRE(merovingian::media::media_types_are_equivalent("Image/Png", sniffed));
+                REQUIRE(merovingian::media::media_types_are_equivalent("image/png", sniffed));
+            }
+        }
+
+        WHEN("the declared top-level type is the misspelling img")
+        {
+            THEN("the types are equivalent in either letter case")
+            {
+                REQUIRE(merovingian::media::media_types_are_equivalent("img/png", sniffed));
+                REQUIRE(merovingian::media::media_types_are_equivalent("IMG/PNG", sniffed));
+            }
+        }
+
+        WHEN("the declared type names another subtype")
+        {
+            THEN("the types do not match")
+            {
+                REQUIRE_FALSE(merovingian::media::media_types_are_equivalent("image/jpeg", sniffed));
+                REQUIRE_FALSE(merovingian::media::media_types_are_equivalent("img/jpeg", sniffed));
+                REQUIRE_FALSE(merovingian::media::media_types_are_equivalent("img/svg+xml", sniffed));
+            }
+        }
+
+        WHEN("the declared type is anything else that merely resembles it")
+        {
+            THEN("the types do not match")
+            {
+                REQUIRE_FALSE(merovingian::media::media_types_are_equivalent("", sniffed));
+                REQUIRE_FALSE(merovingian::media::media_types_are_equivalent("image/png; charset=utf-8", sniffed));
+                REQUIRE_FALSE(merovingian::media::media_types_are_equivalent(" image/png", sniffed));
+                REQUIRE_FALSE(merovingian::media::media_types_are_equivalent("image/png ", sniffed));
+                REQUIRE_FALSE(merovingian::media::media_types_are_equivalent("image/png/x", sniffed));
+                REQUIRE_FALSE(merovingian::media::media_types_are_equivalent("images/png", sniffed));
+                REQUIRE_FALSE(merovingian::media::media_types_are_equivalent("imag/png", sniffed));
+                REQUIRE_FALSE(merovingian::media::media_types_are_equivalent("img", sniffed));
+                REQUIRE_FALSE(merovingian::media::media_types_are_equivalent("text/img", sniffed));
+                REQUIRE_FALSE(merovingian::media::media_types_are_equivalent("application/octet-stream", sniffed));
+            }
+        }
+    }
+
+    GIVEN("a sniffed type outside the image family")
+    {
+        WHEN("the declared top-level type is img")
+        {
+            THEN("img is not rewritten to anything but image")
+            {
+                REQUIRE_FALSE(merovingian::media::media_types_are_equivalent("img/plain", "text/plain"));
+                REQUIRE(merovingian::media::media_types_are_equivalent("TEXT/PLAIN", "text/plain"));
+            }
+        }
+    }
+}
+
+SCENARIO("evaluate_media_upload treats an equivalent declared type as matching the content",
+         "[media][security][upload][sniff][equivalence]")
+{
+    GIVEN("a policy that allows image/png and a PNG upload")
+    {
+        auto const policy = default_upload_policy();
+        auto request = merovingian::media::MediaUploadRequest{};
+        request.byte_size = 64U;
+        request.sniffed_mime_type = "image/png";
+        request.content_hash = "sha256:abc";
+        request.scanner_clean = true;
+
+        WHEN("the declared type is img/png")
+        {
+            request.declared_mime_type = "img/png";
+            auto const decision = merovingian::media::evaluate_media_upload(policy, request);
+
+            THEN("the upload is accepted, not quarantined")
+            {
+                REQUIRE(decision.disposition == merovingian::media::MediaDisposition::accept);
+            }
+        }
+
+        WHEN("the declared type is IMAGE/PNG")
+        {
+            request.declared_mime_type = "IMAGE/PNG";
+            auto const decision = merovingian::media::evaluate_media_upload(policy, request);
+
+            THEN("the upload is accepted, not quarantined")
+            {
+                REQUIRE(decision.disposition == merovingian::media::MediaDisposition::accept);
+            }
+        }
+
+        WHEN("the declared type is img/jpeg, which names another subtype")
+        {
+            request.declared_mime_type = "img/jpeg";
+            auto const decision = merovingian::media::evaluate_media_upload(policy, request);
+
+            THEN("the mismatch is still quarantined")
+            {
+                REQUIRE(decision.disposition == merovingian::media::MediaDisposition::quarantine);
+                REQUIRE(decision.reason == "declared MIME type does not match content");
+            }
+        }
+
+        WHEN("the declared type is img/svg+xml")
+        {
+            request.declared_mime_type = "img/svg+xml";
+            auto const decision = merovingian::media::evaluate_media_upload(policy, request);
+
+            THEN("an unsafe type is still quarantined")
+            {
+                REQUIRE(decision.disposition == merovingian::media::MediaDisposition::quarantine);
+            }
+        }
+    }
+
+    GIVEN("a policy that does not allow image/svg+xml and an upload that sniffs as octet-stream")
+    {
+        auto const policy = default_upload_policy();
+        auto request = merovingian::media::MediaUploadRequest{};
+        request.byte_size = 64U;
+        request.declared_mime_type = "img/svg+xml";
+        request.sniffed_mime_type = "application/octet-stream";
+        request.content_hash = "sha256:abc";
+        request.scanner_clean = true;
+
+        WHEN("the upload is evaluated")
+        {
+            auto const decision = merovingian::media::evaluate_media_upload(policy, request);
+
+            THEN("it is not accepted")
+            {
+                REQUIRE(decision.disposition != merovingian::media::MediaDisposition::accept);
+            }
+        }
+    }
+}
+
+SCENARIO("content_type_is_inline_safe reads a spelling variant of a safe type as that type",
+         "[media][security][mime][equivalence]")
+{
+    GIVEN("spelling variants of a listed type")
+    {
+        WHEN("the disposition is chosen")
+        {
+            THEN("the variants of the listed type are inline and the rest are not")
+            {
+                REQUIRE(merovingian::media::content_type_is_inline_safe("img/png"));
+                REQUIRE(merovingian::media::content_type_is_inline_safe("IMAGE/PNG"));
+                REQUIRE_FALSE(merovingian::media::content_type_is_inline_safe("img/svg+xml"));
+                REQUIRE_FALSE(merovingian::media::content_type_is_inline_safe("img/png-evil"));
+                REQUIRE_FALSE(merovingian::media::content_type_is_inline_safe("img/html"));
+            }
+        }
+    }
+}

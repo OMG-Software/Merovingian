@@ -1,5 +1,5 @@
 Name:           merovingian
-Version:        0.12.62
+Version:        0.12.63
 Release:        1%{?dist}
 Summary:        Secure Matrix Protocol homeserver
 
@@ -112,6 +112,9 @@ fi
 %{_sysconfdir}/merovingian/merovingian.conf.example
 
 %changelog
+* Thu Oct 29 2026 James Chapman <claude@ping.me.uk> - 0.12.63-1
+- Complement run 10 fixes.
+
 * Thu Oct 29 2026 James Chapman <claude@ping.me.uk> - 0.12.62-1
 - Outbound URL parsing assigns the unbracketed IPv6 host directly; three SonarQube Cloud
   move-constructor findings are recorded as false positives (ADR-0268).

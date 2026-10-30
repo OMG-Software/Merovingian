@@ -1196,9 +1196,11 @@ SCENARIO("main key-admission overload survives real worker socket HTTP and uncha
                     REQUIRE(pdus != accepted_object->end());
                     auto const* pdu_results = std::get_if<canonicaljson::Object>(&pdus->value->storage());
                     REQUIRE(pdu_results != nullptr);
-                    // The production response lists only PDU errors. Prove
-                    // acceptance below with the real in-memory and durable event.
-                    CHECK(pdu_results->empty());
+                    // The production response has an entry for the PDU, an empty
+                    // result (no error). Prove acceptance below with the real
+                    // in-memory and durable event.
+                    CHECK(pdu_results->size() == 1U);
+                    CHECK(accepted.body.find("error") == std::string::npos);
                     CHECK(runtime.federation_proxy->healthy());
                     CHECK(raw_calls.load() == 1U);
                     CHECK(edu_deliveries.load() == 1U);
@@ -2631,6 +2633,62 @@ SCENARIO("handle_profile_query_ingest_request reads a profile from main's own st
     }
 }
 
+SCENARIO("handle_directory_query_ingest_request reads a room alias from main's own store",
+         "[integration][federation-worker][query-relay][fed-endpoints]")
+{
+    // GET /_matrix/federation/v1/query/directory is not room-scoped, so the worker's room_sync
+    // notifications never refresh its alias table: an alias created through main's client API after
+    // the worker started was a 404 for every remote server. The worker relays the lookup to main.
+    GIVEN("a runtime with the default federation callbacks wired and a Unicode alias on main's own store")
+    {
+        REQUIRE(sodium_init() >= 0);
+
+        auto const tmp_dir = unique_temp_dir("merovingian-fed-worker-directory-query");
+        auto config = make_federation_worker_config(tmp_dir);
+        config.database().sqlite_path = (tmp_dir / "directory-query-test.sqlite3").string();
+
+        auto started = start_runtime(config);
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        merovingian::homeserver::wire_federation_callbacks(runtime);
+        REQUIRE(runtime.federation.directory_query_provider);
+
+        auto const alias = std::string{"#老虎Â£я🤨👉ඞ:"} + config.server().server_name;
+        auto const room_id = std::string{"!aliased:"} + config.server().server_name;
+        runtime.database.persistent_store.room_aliases.push_back(
+            {alias, room_id, std::string{"@creator:"} + config.server().server_name});
+
+        WHEN("a directory_query_ingest request shaped like a real worker's is handled")
+        {
+            auto const request_json =
+                std::string{R"({"type":"directory_query_ingest","room_alias":)"} + ipc_escape_json_string(alias) + "}";
+
+            auto const response_json =
+                merovingian::homeserver::handle_directory_query_ingest_request(runtime, request_json);
+
+            THEN("the answer names the room and carries the alias bytes exactly as stored")
+            {
+                INFO("response: " << response_json);
+                REQUIRE(response_json.find(R"("found":true)") != std::string::npos);
+                REQUIRE(response_json.find(room_id) != std::string::npos);
+            }
+        }
+
+        WHEN("the alias is not one main holds")
+        {
+            auto const request_json = std::string{R"({"type":"directory_query_ingest","room_alias":)"} +
+                                      ipc_escape_json_string("#absent:" + config.server().server_name) + "}";
+            auto const response_json =
+                merovingian::homeserver::handle_directory_query_ingest_request(runtime, request_json);
+
+            THEN("the answer is not found")
+            {
+                REQUIRE(response_json.find(R"("found":false)") != std::string::npos);
+            }
+        }
+    }
+}
+
 SCENARIO("handle_event_query_ingest_request reads an event from main's own store regardless of shard ownership",
          "[integration][federation-worker][query-relay]")
 {
@@ -2678,6 +2736,14 @@ SCENARIO("handle_event_query_ingest_request reads an event from main's own store
              R"({"type":"m.room.member","state_key":"@member:member.example.org","content":{"membership":"join"}})"}));
         REQUIRE(merovingian::database::store_state(runtime.database.persistent_store,
                                                    {room_id, "m.room.member", member_id, "$member_join"}));
+        // A federation read sends an event in full only when the state recorded for it (ADR-0064) shows the
+        // server may see it: record a state group, without a history_visibility event (so `shared`).
+        {
+            auto const group = merovingian::database::create_or_reuse_state_group(
+                runtime.database.persistent_store, room_id, "sg:event-query-relay", std::nullopt, {});
+            REQUIRE(group.has_value());
+            REQUIRE(merovingian::database::set_event_state_group(runtime.database.persistent_store, event_id, *group));
+        }
 
         auto const relay = [&](std::string const& origin) {
             auto const request_json = std::string{R"({"type":"event_query_ingest","event_id":)"} +
@@ -2760,6 +2826,17 @@ SCENARIO("The wired federation providers refuse a server outside the room and se
                     std::vector<std::string>{"$join"}}));
         REQUIRE(merovingian::database::store_state(store, {room_id, "m.room.create", "", "$create"}));
         REQUIRE(merovingian::database::store_state(store, {room_id, "m.room.member", member_id, "$join"}));
+        // A federation read sends an event in full only when the state recorded for it (ADR-0064) shows the
+        // server may see it: record a state group, without a history_visibility event (so `shared`).
+        {
+            auto const group =
+                merovingian::database::create_or_reuse_state_group(store, room_id, "sg:fed2-shared", std::nullopt, {});
+            REQUIRE(group.has_value());
+            for (auto const* event_id : {"$create", "$join", "$msg"})
+            {
+                REQUIRE(merovingian::database::set_event_state_group(store, event_id, *group));
+            }
+        }
 
         auto const stranger = std::string{"stranger.example.net"};
         auto const member = std::string{"member.example.org"};

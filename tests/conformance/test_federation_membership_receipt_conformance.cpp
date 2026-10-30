@@ -260,7 +260,7 @@ SCENARIO("The invite endpoints pass a hash-mismatched invite on for redaction an
         merovingian::federation::upsert_remote(runtime, remote_for(origin, key_id, token));
         auto seen = std::make_shared<std::vector<merovingian::federation::InviteRequest>>();
         runtime.room_version_resolver = [](std::string_view) {
-            return std::string{"12"};
+            return std::string{"10"};
         };
         runtime.invite_handler = [seen](merovingian::federation::InviteRequest const& request) {
             seen->push_back(request);
@@ -276,7 +276,7 @@ SCENARIO("The invite endpoints pass a hash-mismatched invite on for redaction an
         auto const v2 = GENERATE(true, false);
         CAPTURE(v2);
         auto const body_for = [&](std::string const& event_json) {
-            return v2 ? std::string{R"({"room_version":"12","event":)"} + event_json + R"(,"invite_room_state":[]})"
+            return v2 ? std::string{R"({"room_version":"10","event":)"} + event_json + R"(,"invite_room_state":[]})"
                       : event_json;
         };
         auto const target = std::string{v2 ? "/_matrix/federation/v2/invite/" : "/_matrix/federation/v1/invite/"} +
@@ -294,7 +294,7 @@ SCENARIO("The invite endpoints pass a hash-mismatched invite on for redaction an
                 // Spec MUST: the invite is processed further, so the handler sees it.
                 REQUIRE(seen->size() == 1U);
                 // Spec MUST: it is redacted under the room version it was checked against (v2 `room_version`).
-                REQUIRE(seen->front().room_version == "12");
+                REQUIRE(seen->front().room_version == "10");
             }
         }
 

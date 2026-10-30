@@ -13,8 +13,10 @@
 #include "merovingian/crypto/signing_service.hpp"
 #include "merovingian/database/persistent_store.hpp"
 #include "merovingian/events/authorization.hpp"
+#include "merovingian/events/event.hpp"
 #include "merovingian/events/event_id.hpp"
 #include "merovingian/events/event_signer.hpp"
+#include "merovingian/events/limits.hpp"
 #include "merovingian/events/redaction.hpp"
 #include "merovingian/federation/edu_idempotence.hpp"
 #include "merovingian/federation/event_query.hpp"
@@ -908,12 +910,13 @@ namespace
             fields[index] = remaining.substr(0U, separator);
             remaining = remaining.substr(separator + 1U);
         }
-        for (auto const field : fields)
+        // The first three fields are the wrapper's own and are always present. The last is the
+        // client's body, and a body may be empty: such an upload has to reach the media service so
+        // that the media ID's state (409 for a media ID that already has content) and the policy's
+        // own refusal of an empty file ("empty media upload") answer, not this framing check.
+        if (fields[0].empty() || fields[1].empty() || fields[2].empty())
         {
-            if (field.empty())
-            {
-                return std::nullopt;
-            }
+            return std::nullopt;
         }
         return fields;
     }
@@ -1319,6 +1322,27 @@ namespace
                    (membership.membership == "join" || membership.membership == "invite" ||
                     membership.membership == "knock");
         });
+    }
+
+    // True when `envelope` is an m.room.member event about a user of this server who has a membership row
+    // for the room, in any state. A ban leaves the user with no membership that makes this server interested
+    // in the room (room_has_current_local_interest), but the unban that follows is a PDU about that user,
+    // and Server-Server API "Transactions" sends it to the target's server for that reason. Without it the
+    // ban stayed on record for ever and a later invite, which an unban makes valid, was refused. It still
+    // passes the receipt checks like any other PDU; this only admits it to them.
+    [[nodiscard]] auto concerns_local_member_with_row(HomeserverRuntime const& runtime,
+                                                      federation::InboundPduEnvelope const& envelope) -> bool
+    {
+        auto const target = envelope.state_key.value_or(std::string{});
+        if (envelope.event_type != "m.room.member" || target.empty() ||
+            server_name_from_user_id(target) != runtime.config.server().server_name)
+        {
+            return false;
+        }
+        return std::ranges::any_of(runtime.database.persistent_store.memberships,
+                                   [&](database::PersistentMembership const& membership) {
+                                       return membership.room_id == envelope.room_id && membership.user_id == target;
+                                   });
     }
 
     // Outcome of a direct_to_device enqueue attempt. `targeted` counts every
@@ -2760,13 +2784,20 @@ namespace
             // accepted and stored — redacted after a hash mismatch (R06) and
             // carrying this server's signature when it authorised a
             // restricted join (R04) — never the raw request body.
+            // Spec v1.19 PUT /send_knock: `knock_room_state` MUST contain the room's m.room.create, and
+            // "all events listed MUST additionally be formatted according to the room version
+            // specification": the stored signed PDUs of the stripped-state types, not stripped events.
+            auto knock_room_state = endpoint == federation::FederationEndpoint::send_knock
+                                        ? stripped_state_pdus(store, room_id)
+                                        : std::vector<std::string>{};
             return {true,
                     200U,
                     {},
                     std::move(auth_chain),
                     std::move(state_events),
                     room_version_from_store(store, room_id),
-                    stored_json};
+                    stored_json,
+                    std::move(knock_room_state)};
         };
 
         runtime.federation.invite_handler =
@@ -3037,6 +3068,11 @@ namespace
             return federation::build_state_ids_response(rt->database.persistent_store, room_id, event_id, origin);
         };
 
+        runtime.federation.event_auth_query_provider = [rt](std::string_view room_id, std::string_view event_id,
+                                                            std::string_view origin) -> federation::RoomReadResult {
+            return federation::build_event_auth_response(rt->database.persistent_store, room_id, event_id, origin);
+        };
+
         runtime.federation.missing_events_query_provider = [rt](std::string_view room_id, std::string_view body,
                                                                 std::string_view origin) -> federation::RoomReadResult {
             return federation::build_get_missing_events_response(rt->database.persistent_store, room_id, body, origin,
@@ -3056,14 +3092,24 @@ namespace
             [rt](std::string_view media_id) -> media::LocalMediaDownloadResult {
             return download_local_media_for_federation(*rt, media_id);
         };
+        runtime.federation.media_thumbnail_provider =
+            [rt](federation::FederationThumbnailQuery const& query) -> media::LocalMediaDownloadResult {
+            return download_local_media_thumbnail_for_federation(*rt, query);
+        };
 
         // Resolve the room version from the stored m.room.create state event so
         // that authorize_federation_pdu uses the correct redaction rules when
         // verifying inbound PDU signatures.  Rooms created before v11 include
         // "origin" in the signing payload; using the wrong (later) version strips
         // it and produces a false signature failure for every inbound event.
+        // A room this server holds no create event for is answered with an
+        // empty string, never a guess: every caller has its own fallback for an
+        // unknown room (a relayed invite takes the version the invite declares, a
+        // v1 invite the spec's "1 or 2"). A "10" here once made main verify
+        // invites into rooms it did not hold under v10 redaction, which keeps the
+        // `origin` key v11 and later strip (Complement run 10, F1).
         runtime.federation.room_version_resolver = [rt](std::string_view room_id) -> std::string {
-            return room_version_from_store(rt->database.persistent_store, room_id);
+            return stored_room_version(rt->database.persistent_store, room_id).value_or(std::string{});
         };
 
         // Provide room server ACL enforcement for inbound federation.  The lambda
@@ -4589,6 +4635,21 @@ namespace
     // server, verify each returned event, and store the verified events as
     // outliers with state groups so a later ingestion attempt can resolve state.
     // Preserve transient local key denial separately from an unresolved gap.
+    // True when `json` is a PDU this server may even consider: within the 65 536 byte event limit,
+    // canonical JSON (no floats, integers in range) and with a valid envelope (identifier and type
+    // lengths, a `state_key` of at most 255 bytes). Spec: Client-Server "Size limits" and the
+    // Appendices' Canonical JSON.
+    [[nodiscard]] auto returned_pdu_is_well_formed(std::string_view json) -> bool
+    {
+        if (json.size() > events::max_event_size_bytes)
+        {
+            return false;
+        }
+        auto const parsed = canonicaljson::parse_lossless(json);
+        return parsed.error == canonicaljson::ParseError::none &&
+               events::parse_event_envelope(parsed.value).error.empty();
+    }
+
     [[nodiscard]] auto backfill_missing_pdu_references(HomeserverRuntime& runtime, std::string_view room_id,
                                                        federation::InboundPduEnvelope const& envelope,
                                                        rooms::RoomVersionPolicy const& policy) -> BackfillResult
@@ -4611,6 +4672,7 @@ namespace
         auto const timeout = std::chrono::seconds{runtime.federation.config.backfill_timeout_seconds};
         auto budget = BackfillBudget{0U, limits.max_total_outbound_calls, std::chrono::steady_clock::now() + timeout};
         auto stored_any = false;
+        auto returned_invalid_event = false;
         auto held = HeldPdus{};
         auto const max_held =
             static_cast<std::size_t>(limits.max_missing_events) + static_cast<std::size_t>(limits.max_outbound_calls);
@@ -4655,6 +4717,15 @@ namespace
                     {
                         break;
                     }
+                    // Spec: an event that breaks the PDU format or size limits is rejected
+                    // "as usual", and is neither stored nor held. The origin was asked for the
+                    // events the gap is made of, so one that is unusable is its answer, and
+                    // nothing is fetched to work around it.
+                    if (!returned_pdu_is_well_formed(json))
+                    {
+                        returned_invalid_event = true;
+                        continue;
+                    }
                     if (verify_and_store_backfilled_event(runtime, room_id, envelope.origin, json, policy, budget))
                     {
                         stored_any = true;
@@ -4668,6 +4739,16 @@ namespace
         }
 
         std::tie(missing_auth, missing_prev) = collect();
+
+        // The origin's /get_missing_events answer held an event that is not a valid PDU. Asking
+        // it again by other routes (/event, /state_ids) for the same history would only turn one
+        // refusal into many requests, so the PDU stays unplaced (deferred by the caller).
+        if (returned_invalid_event)
+        {
+            LOG_WARNING("Backfill: /get_missing_events returned an invalid event for room_id=" + std::string{room_id} +
+                        " event_id=" + envelope.event_id + "; not fetching the history another way");
+            return {stored_any, budget.key_resolution_locally_denied};
+        }
 
         // Fetch what is still missing with GET /event/{eventId}. A PDU already
         // held from /get_missing_events is not fetched again, nor is an event
@@ -4751,6 +4832,86 @@ namespace
 
 } // namespace
 
+namespace
+{
+
+    // The leave a server sends for a user it invited who has not joined, when this server holds no
+    // state for the room. nullopt when `envelope` is not that, so the ordinary receipt checks run.
+    //
+    // It is that only when the event is a leave sent by a user other than its target, the target is a
+    // user of this server whose membership is invite, the invite was sent by a user of the sender's own
+    // server, and the room's state is not held here (a room whose state is held is judged against it).
+    // The sender's signature was verified by the caller. The leave is kept as an outlier, like the
+    // invite it replaces: it never enters the room's timeline, because this server is not in the room.
+    [[nodiscard]] auto rescind_invite_from_inviter(HomeserverRuntime& runtime,
+                                                   federation::InboundPduEnvelope const& envelope,
+                                                   std::string const& stored_json)
+        -> std::optional<federation::PduIngestionResult>
+    {
+        auto const target = envelope.state_key.value_or(std::string{});
+        if (envelope.event_type != "m.room.member" || target.empty() || envelope.sender == target)
+        {
+            return std::nullopt;
+        }
+        auto const parsed = canonicaljson::parse_lossless(stored_json);
+        auto const* event = std::get_if<canonicaljson::Object>(&parsed.value.storage());
+        auto const* membership = event == nullptr ? nullptr : content_membership(*event);
+        if (membership == nullptr || *membership != "leave")
+        {
+            return std::nullopt;
+        }
+        auto guard = std::unique_lock<RuntimeMutex>{runtime.mutex};
+        auto& store = runtime.database.persistent_store;
+        if (server_name_from_user_id(target) != runtime.config.server().server_name ||
+            !std::holds_alternative<std::nullptr_t>(create_event_json_for_room(store, envelope.room_id).storage()))
+        {
+            return std::nullopt;
+        }
+        auto const row = std::ranges::find_if(store.memberships, [&](database::PersistentMembership const& current) {
+            return current.room_id == envelope.room_id && current.user_id == target;
+        });
+        if (row == store.memberships.end() || row->membership != "invite")
+        {
+            return std::nullopt;
+        }
+        auto const invite = database::find_invite(store, envelope.room_id, target);
+        if (!invite.has_value() ||
+            server_name_from_user_id(invite->sender_user_id) != server_name_from_user_id(envelope.sender) ||
+            (!envelope.origin.empty() && envelope.origin != server_name_from_user_id(envelope.sender)))
+        {
+            return std::nullopt;
+        }
+
+        auto const stream_ordering = allocate_stream_ordering(runtime.database);
+        auto leave = database::PersistentEvent{};
+        leave.event_id = envelope.event_id;
+        leave.room_id = envelope.room_id;
+        leave.sender_user_id = envelope.sender;
+        leave.json = stored_json;
+        leave.depth = envelope.depth;
+        leave.stream_ordering = stream_ordering;
+        leave.prev_event_ids = envelope.prev_event_ids;
+        leave.auth_event_ids = envelope.auth_event_ids;
+        leave.status = "outlier";
+        auto state = std::optional<database::PersistentStateEvent>{
+            database::PersistentStateEvent{envelope.room_id, "m.room.member", target, envelope.event_id}
+        };
+        auto projection = database::MembershipProjection{target, "leave", stream_ordering, std::nullopt};
+        if (!database::store_event_with_state(store, std::move(leave), std::move(state), std::move(projection)))
+        {
+            return federation::PduIngestionResult{federation::PduIngestionStatus::internal_error,
+                                                  "invite rescission persistence failed"};
+        }
+        auto const sync_stream_id = database::allocate_sync_stream_id(store);
+        if (runtime.sync_notifier != nullptr)
+        {
+            runtime.sync_notifier->publish(visible_stream_position(runtime.database), sync_stream_id);
+        }
+        return federation::PduIngestionResult{federation::PduIngestionStatus::accepted, {}};
+    }
+
+} // namespace
+
 // The body of ingest_pdu_event; the public function below adds what must happen
 // after this one has released its locks. File-local, but deliberately `static`
 // rather than inside the anonymous namespace above: that would re-indent the
@@ -4810,6 +4971,16 @@ namespace
         stored_json = serialized.output;
     }
 
+    // Spec "Leaving Rooms (Rejecting Invites)" and "Transactions": the server that sent an invite
+    // withdraws it with a leave for the invitee, sent to the invitee's server. This server holds nothing
+    // of such a room but the invite, so the leave cannot be judged against the room's state and
+    // would otherwise wait for history it can never fetch (a server that is not in the room may not
+    // read it). The invite's sender's own server is the one party that can withdraw its invite.
+    if (auto const rescinded = rescind_invite_from_inviter(runtime, envelope, stored_json); rescinded.has_value())
+    {
+        return *rescinded;
+    }
+
     // Reserve the sync-surface ID up front under the global mutex. Allocating
     // it writes to the backend, so it must not happen while a room stripe is
     // also held — that would pin the stripe for the whole database write and
@@ -4824,7 +4995,7 @@ namespace
         // room. The explicit /send_join state bootstrap and verified, requested
         // backfill writers are separate paths, not exceptions derived from PDU
         // content, room IDs, event types or claimed membership.
-        if (!room_has_current_local_interest(runtime, room_id))
+        if (!room_has_current_local_interest(runtime, room_id) && !concerns_local_member_with_row(runtime, envelope))
         {
             auto const pending = runtime.pending_federated_joins.find(room_id);
             if (pending == runtime.pending_federated_joins.end())
@@ -5837,6 +6008,12 @@ auto wire_federation_callbacks(HomeserverRuntime& runtime) -> void
         refused.errcode = "M_INVALID_PARAM";
         return refused;
     }
+    // 405 M_UNRECOGNIZED for a known path used with a method it does not serve, before the
+    // runtime lock or any signature check (the same answer the federation proxy gives).
+    if (auto const allow = federation_unsupported_method_allow(request.method, request.target); allow.has_value())
+    {
+        return federation_method_not_allowed_response(*allow);
+    }
     auto signed_request_opt = std::optional<federation::SignedFederationRequest>{};
     auto held_for_review = false;
     auto blocked_by_local_policy = false;
@@ -5845,7 +6022,7 @@ auto wire_federation_callbacks(HomeserverRuntime& runtime) -> void
         auto guard = std::unique_lock<RuntimeMutex>{runtime.mutex};
         if (!runtime.started)
         {
-            return response(503U, "runtime not started");
+            return response(503U, matrix_error("M_UNKNOWN", "runtime not started"));
         }
         wire_federation_callbacks_impl(runtime);
         if (request.method == "GET" && request.target.substr(0U, request.target.find('?')) == "/_matrix/key/v2/server")
@@ -5865,7 +6042,7 @@ auto wire_federation_callbacks(HomeserverRuntime& runtime) -> void
         }
         if (!starts_with(request.target, "/_matrix/federation/"))
         {
-            return response(404U, "route not found");
+            return response(404U, matrix_error("M_UNRECOGNIZED", "route not found"));
         }
 
         if (request.sig_verified)
@@ -5924,7 +6101,7 @@ auto wire_federation_callbacks(HomeserverRuntime& runtime) -> void
             // 502 rather than 401: Synapse propagates 401 from federation
             // responses to the client, triggering an automatic logout. Returning
             // 502 signals a server-side failure instead.
-            return response(502U, "malformed federation authorization");
+            return response(502U, matrix_error("M_UNKNOWN", "malformed federation authorization"));
         }
 
         auto const local_rule = find_policy_rule(runtime, "federation", signed_request_opt->origin);
@@ -5948,7 +6125,7 @@ auto wire_federation_callbacks(HomeserverRuntime& runtime) -> void
     {
         auto const body =
             decision.reason.public_summary.empty() ? decision.reason.code : decision.reason.public_summary;
-        return response(403U, body);
+        return response(403U, matrix_error("M_FORBIDDEN", body));
     }
 
     // The federation core protects its own bookkeeping, and production

@@ -208,3 +208,350 @@ mode = "expect-fail"
 category = "spec"
 spec = "docs/matrix-v1.19-spec/client-server-api.md#leaving-rooms"
 reason = "Expects a forgotten room's leave in the next incremental /sync; the spec says forgotten rooms never appear in /sync until the user rejoins, is re-invited or knocks (ADR-0257)."
+
+# Complement run 10 (0.12.62). Each entry below was checked against the pinned spec text; the
+# owner chose to keep this server's behaviour for the non-spec ones (2026-10-29).
+
+# Push rules: the spec makes servers strip the historical actions, so a rule set with
+# ["dont_notify"] reads back with empty actions. Complement looks for actions.0.
+
+[[entry]]
+test = "TestPushRuleCacheHealth"
+package = "tests/csapi"
+mode = "expect-fail"
+category = "spec"
+spec = "docs/matrix-v1.19-spec/client-server-api.md#historical-actions"
+reason = "Reads back a rule set with [\"dont_notify\"] and expects actions.0; the spec says homeservers MUST ignore dont_notify, for instance by stripping it, so the rule reads back with empty actions."
+
+[[entry]]
+test = "TestPushRuleRoomUpgrade/parallel/joining_a_remote_manually_upgraded_room_carries_over_existing_push_rules"
+package = "tests/csapi"
+mode = "expect-fail"
+category = "spec"
+spec = "docs/matrix-v1.19-spec/client-server-api.md#historical-actions"
+reason = "The room rule is carried over to the new room; the test then expects its [\"dont_notify\"] action, which the spec says homeservers MUST strip."
+
+[[entry]]
+test = "TestPushRuleRoomUpgrade/parallel/joining_a_remote_upgraded_room_carries_over_existing_push_rules"
+package = "tests/csapi"
+mode = "expect-fail"
+category = "spec"
+spec = "docs/matrix-v1.19-spec/client-server-api.md#historical-actions"
+reason = "The room rule is carried over to the new room; the test then expects its [\"dont_notify\"] action, which the spec says homeservers MUST strip."
+
+[[entry]]
+test = "TestPushRuleRoomUpgrade/parallel/manually_upgrading_a_room_carries_over_existing_push_rules_for_local_users"
+package = "tests/csapi"
+mode = "expect-fail"
+category = "spec"
+spec = "docs/matrix-v1.19-spec/client-server-api.md#historical-actions"
+reason = "The room rule is carried over to the new room; the test then expects its [\"dont_notify\"] action, which the spec says homeservers MUST strip."
+
+[[entry]]
+test = "TestPushRuleRoomUpgrade/parallel/upgrading_a_room_carries_over_existing_push_rules_for_local_users"
+package = "tests/csapi"
+mode = "expect-fail"
+category = "spec"
+spec = "docs/matrix-v1.19-spec/client-server-api.md#historical-actions"
+reason = "The room rule is carried over to the new room; the test then expects its [\"dont_notify\"] action, which the spec says homeservers MUST strip."
+
+# Legacy r0 paths: v1.19 defines these client endpoints only under /v3, and this server answers
+# /_matrix/client/r0 with 404 M_UNRECOGNIZED.
+
+[[entry]]
+test = "TestMessagesOverFederation/Visible_shared_history_after_joining_new_room_(backfill)/`messagesRequestLimit`_is_greater_than_the_number_of_messages_backfilled_(in_Synapse,_100)"
+package = "tests/csapi"
+mode = "expect-fail"
+category = "non-spec"
+spec = "docs/matrix-v1.19-spec/client-server-api.md#get_matrixclientv3roomsroomidmessages"
+reason = "Pages through GET /_matrix/client/r0/rooms/{roomId}/messages; v1.19 defines the endpoint only under /v3."
+
+[[entry]]
+test = "TestMessagesOverFederation/Visible_shared_history_after_joining_new_room_(backfill)/`messagesRequestLimit`_is_lower_than_the_number_of_messages_backfilled_(assumed)"
+package = "tests/csapi"
+mode = "expect-fail"
+category = "non-spec"
+spec = "docs/matrix-v1.19-spec/client-server-api.md#get_matrixclientv3roomsroomidmessages"
+reason = "Pages through GET /_matrix/client/r0/rooms/{roomId}/messages; v1.19 defines the endpoint only under /v3."
+
+[[entry]]
+test = "TestMessagesOverFederation/Visible_shared_history_after_re-joining_room_(backfill)/`messagesRequestLimit`_is_lower_than_the_number_of_messages_backfilled_(assumed)"
+package = "tests/csapi"
+mode = "expect-fail"
+category = "non-spec"
+spec = "docs/matrix-v1.19-spec/client-server-api.md#get_matrixclientv3roomsroomidmessages"
+reason = "Pages through GET /_matrix/client/r0/rooms/{roomId}/messages; v1.19 defines the endpoint only under /v3."
+
+[[entry]]
+test = "TestRoomState/Parallel/GET_/rooms/:room_id/joined_members_is_forbidden_after_leaving_room"
+package = "tests/csapi"
+mode = "expect-fail"
+category = "non-spec"
+spec = "docs/matrix-v1.19-spec/client-server-api.md#get_matrixclientv3roomsroomidjoined_members"
+reason = "Calls GET /_matrix/client/r0/rooms/{roomId}/joined_members; v1.19 defines the endpoint only under /v3."
+
+# Behaviour the spec leaves to the server, where this server's choice differs from Synapse's.
+
+[[entry]]
+test = "TestRoomCreate/Parallel/POST_/createRoom_creates_a_room_with_the_given_version"
+package = "tests/csapi"
+mode = "expect-fail"
+category = "room-version"
+adr = "docs/adr/0076-room-versions-1-and-2-are-not-supported.md"
+reason = "Creates a room with room_version \"2\", which this server does not support; it answers M_UNSUPPORTED_ROOM_VERSION."
+
+[[entry]]
+test = "TestRegistration/parallel/POST_/register_downcases_capitals_in_usernames"
+package = "tests/csapi"
+mode = "expect-fail"
+category = "non-spec"
+spec = "docs/matrix-v1.19-spec/appendices.md#user-identifiers"
+reason = "Registers an upper-case username and expects it lower-cased; upper case is not in the user ID localpart grammar and the spec does not ask servers to rewrite a requested username, so it is refused M_INVALID_USERNAME."
+
+[[entry]]
+test = "TestRoomCreationReportsEventsToMyself/parallel/Setting_state_twice_is_idempotent"
+package = "tests/csapi"
+mode = "expect-fail"
+category = "non-spec"
+spec = "docs/matrix-v1.19-spec/client-server-api.md#put_matrixclientv3roomsroomidstateeventtypestatekey"
+reason = "Expects a second identical PUT /state to return the first event ID; the spec asks for no such deduplication, and this server sends a new event each time."
+
+[[entry]]
+test = "TestRoomMembers/Parallel/POST_/join/:room_alias_can_join_a_room_with_custom_content"
+package = "tests/csapi"
+mode = "expect-fail"
+category = "non-spec"
+spec = "docs/matrix-v1.19-spec/client-server-api.md#post_matrixclientv3joinroomidoralias"
+reason = "Expects an arbitrary request body key (foo) in the join event's content; the request body defines only reason and third_party_signed."
+
+[[entry]]
+test = "TestRoomMembers/Parallel/POST_/join/:room_id_can_join_a_room_with_custom_content"
+package = "tests/csapi"
+mode = "expect-fail"
+category = "non-spec"
+spec = "docs/matrix-v1.19-spec/client-server-api.md#post_matrixclientv3roomsroomidjoin"
+reason = "Expects an arbitrary request body key (foo) in the join event's content; the request body defines only reason and third_party_signed."
+
+[[entry]]
+test = "TestRoomState/Parallel/GET_/rooms/:room_id/joined_members_fetches_my_membership"
+package = "tests/csapi"
+mode = "expect-fail"
+category = "non-spec"
+spec = "docs/matrix-v1.19-spec/client-server-api.md#get_matrixclientv3roomsroomidjoined_members"
+reason = "Expects display_name for a user who never set one; the field is optional and this server sets no default display name at registration."
+
+# Room aliases: ADR-0127 makes creating an alias need the power to send m.room.canonical_alias.
+# The spec states no permission rule for PUT and lets servers add access control checks on
+# DELETE; the owner kept the gate (2026-10-29).
+
+[[entry]]
+test = "TestRoomDeleteAlias/Parallel/Alias_creators_can_delete_alias_with_no_ops"
+package = "tests/csapi"
+mode = "expect-fail"
+category = "non-spec"
+spec = "docs/matrix-v1.19-spec/client-server-api.md#put_matrixclientv3directoryroomroomalias"
+reason = "A user without canonical-alias power creates an alias to delete it later; this server's alias gate (ADR-0127), which the spec does not forbid, refuses the create 403."
+
+[[entry]]
+test = "TestRoomDeleteAlias/Parallel/Alias_creators_can_delete_canonical_alias_with_no_ops"
+package = "tests/csapi"
+mode = "expect-fail"
+category = "non-spec"
+spec = "docs/matrix-v1.19-spec/client-server-api.md#put_matrixclientv3directoryroomroomalias"
+reason = "A user without canonical-alias power creates an alias to delete it later; this server's alias gate (ADR-0127), which the spec does not forbid, refuses the create 403."
+
+[[entry]]
+test = "TestRoomDeleteAlias/Parallel/Regular_users_can_add_and_delete_aliases_in_the_default_room_configuration"
+package = "tests/csapi"
+mode = "expect-fail"
+category = "non-spec"
+spec = "docs/matrix-v1.19-spec/client-server-api.md#put_matrixclientv3directoryroomroomalias"
+reason = "A regular member creates an alias; without canonical-alias power this server refuses it 403 (ADR-0127), which the spec does not forbid."
+
+[[entry]]
+test = "TestRoomDeleteAlias/Parallel/Regular_users_can_add_and_delete_aliases_when_m.room.aliases_is_restricted"
+package = "tests/csapi"
+mode = "expect-fail"
+category = "non-spec"
+spec = "docs/matrix-v1.19-spec/client-server-api.md#put_matrixclientv3directoryroomroomalias"
+reason = "A regular member creates an alias; without canonical-alias power this server refuses it 403 (ADR-0127), which the spec does not forbid."
+
+[[entry]]
+test = "TestRoomDeleteAlias/Parallel/Can_delete_canonical_alias"
+package = "tests/csapi"
+mode = "expect-fail"
+category = "non-spec"
+spec = "docs/matrix-v1.19-spec/client-server-api.md#delete_matrixclientv3directoryroomroomalias"
+reason = "Waits for the canonical alias event to drop the deleted alias; the spec says servers may choose to update it, and this server leaves it unchanged."
+
+# Search: every room this server creates is end-to-end encrypted (security.encryption.default_for_new_rooms,
+# which the server refuses to start with turned off), and the spec says server-side search "will not
+# include rooms that are end to end encrypted". TestSearch's rooms are created here, so nothing matches.
+
+[[entry]]
+test = "TestSearch/parallel/Can_back-paginate_search_results"
+package = "tests/csapi"
+mode = "expect-fail"
+category = "spec"
+spec = "docs/matrix-v1.19-spec/client-server-api.md#server-side-search"
+reason = "Searches a room created on this server, which is encrypted by default; the spec says search will not include end-to-end encrypted rooms, so the search finds nothing."
+
+[[entry]]
+test = "TestSearch/parallel/Can_get_context_around_search_results"
+package = "tests/csapi"
+mode = "expect-fail"
+category = "spec"
+spec = "docs/matrix-v1.19-spec/client-server-api.md#server-side-search"
+reason = "Searches a room created on this server, which is encrypted by default; the spec says search will not include end-to-end encrypted rooms, so the search finds nothing."
+
+[[entry]]
+test = "TestSearch/parallel/Can_search_for_an_event_by_body"
+package = "tests/csapi"
+mode = "expect-fail"
+category = "spec"
+spec = "docs/matrix-v1.19-spec/client-server-api.md#server-side-search"
+reason = "Searches a room created on this server, which is encrypted by default; the spec says search will not include end-to-end encrypted rooms, so the search finds nothing."
+
+[[entry]]
+test = "TestSearch/parallel/Search_results_with_rank_ordering_do_not_include_redacted_events"
+package = "tests/csapi"
+mode = "expect-fail"
+category = "spec"
+spec = "docs/matrix-v1.19-spec/client-server-api.md#server-side-search"
+reason = "Searches a room created on this server, which is encrypted by default; the spec says search will not include end-to-end encrypted rooms, so the search finds nothing."
+
+[[entry]]
+test = "TestSearch/parallel/Search_results_with_recent_ordering_do_not_include_redacted_events"
+package = "tests/csapi"
+mode = "expect-fail"
+category = "spec"
+spec = "docs/matrix-v1.19-spec/client-server-api.md#server-side-search"
+reason = "Searches a room created on this server, which is encrypted by default; the spec says search will not include end-to-end encrypted rooms, so the search finds nothing."
+
+[[entry]]
+test = "TestSearch/parallel/Search_works_across_an_upgraded_room_and_its_predecessor"
+package = "tests/csapi"
+mode = "expect-fail"
+category = "spec"
+spec = "docs/matrix-v1.19-spec/client-server-api.md#server-side-search"
+reason = "Searches a room created on this server, which is encrypted by default; the spec says search will not include end-to-end encrypted rooms, so the search finds nothing."
+
+# A late state event in a filtered /sync: S2 reaches this server after E4, so in stream order it is the
+# last event the timeline filter keeps, and this server returns it as the timeline (limited) with the
+# state before it. Complement skips Dendrite for the same reason ("S2 is put in the timeline, not state").
+
+[[entry]]
+test = "TestSyncOmitsStateChangeOnFilteredEvents"
+package = "tests"
+mode = "expect-fail"
+category = "non-spec"
+spec = "docs/matrix-v1.19-spec/client-server-api.md#get_matrixclientv3sync"
+reason = "Expects the late m.room.name event S2 in state; this server returns S2 as the timeline's event and state up to the start of the timeline, as the spec defines state, so the client still learns it."
+
+# URL previews: every preview fetch is refused if it resolves to a private address, and
+# security.federation.allow_private_ip_ranges never applies to previews (ADR-0213). Complement
+# serves its page from host.docker.internal, a private address, so the preview is refused.
+
+[[entry]]
+test = "TestUrlPreview"
+package = "tests/csapi"
+mode = "expect-fail"
+category = "non-spec"
+spec = "docs/matrix-v1.19-spec/client-server-api.md#get_matrixclientv1mediapreview_url"
+reason = "Previews a page on host.docker.internal, a private address; this server never fetches a client-named URL on a private network (ADR-0213), and the spec does not require it to."
+
+# TestKeyChangesLocal signs in through /_matrix/client/r0/login, which v1.19 does not define, so it
+# fails before checking anything. What it checks (a fresh login's device keys reach a room peer's
+# device_lists.changed and /keys/changes) is covered by test_client_server_conformance.cpp,
+# "A fresh login's uploaded device keys reach a room peer's device_lists.changed and /keys/changes".
+
+[[entry]]
+test = "TestKeyChangesLocal/New_login_should_create_a_device_lists.changed_entry"
+package = "tests/csapi"
+mode = "expect-fail"
+category = "non-spec"
+spec = "docs/matrix-v1.19-spec/client-server-api.md#post_matrixclientv3login"
+reason = "Logs in through POST /_matrix/client/r0/login, which v1.19 defines only under /v3, so it stops before its device-list check; this server's own conformance test covers that check through /v3/login."
+signed_off_by = "James Chapman, 2026-10-29"
+
+# MSC4311 / spec v1.16: an invite whose invite_room_state lacks m.room.create is refused with 400. The
+# spec says servers SHOULD answer M_INVALID_PARAM; Complement expects M_MISSING_PARAM.
+
+[[entry]]
+test = "TestMSC4311RejectInvalidStrippedStateFederation/parallel/`m.room.create`_event_missing_from_`invite_room_state`"
+package = "tests"
+mode = "expect-fail"
+category = "spec"
+spec = "docs/matrix-v1.19-spec/server-server-api.md#put_matrixfederationv2inviteroomideventid"
+reason = "This server refuses the invite with 400 M_INVALID_PARAM, the errcode the spec says servers SHOULD return for a missing m.room.create; the test expects M_MISSING_PARAM."
+
+# get_missing_events: the walk follows the spec, but the room the test creates with preset public_chat
+# holds m.room.guest_access: forbidden, which the spec's preset table requires and the test's expected
+# sequence omits.
+
+[[entry]]
+test = "TestInboundCanReturnMissingEvents/Inbound_federation_can_return_missing_events_for_invited_visibility"
+package = "tests"
+mode = "expect-fail"
+category = "spec"
+spec = "docs/matrix-v1.19-spec/client-server-api.md#post_matrixclientv3createroom"
+reason = "The test expects the event sequence of a public_chat room without m.room.guest_access; the spec's preset table gives public_chat guest_access forbidden, so this server's room holds that event and the sequence differs."
+
+[[entry]]
+test = "TestInboundCanReturnMissingEvents/Inbound_federation_can_return_missing_events_for_joined_visibility"
+package = "tests"
+mode = "expect-fail"
+category = "spec"
+spec = "docs/matrix-v1.19-spec/client-server-api.md#post_matrixclientv3createroom"
+reason = "The test expects the event sequence of a public_chat room without m.room.guest_access; the spec's preset table gives public_chat guest_access forbidden, so this server's room holds that event and the sequence differs."
+
+[[entry]]
+test = "TestInboundCanReturnMissingEvents/Inbound_federation_can_return_missing_events_for_shared_visibility"
+package = "tests"
+mode = "expect-fail"
+category = "spec"
+spec = "docs/matrix-v1.19-spec/client-server-api.md#post_matrixclientv3createroom"
+reason = "The test expects the event sequence of a public_chat room without m.room.guest_access; the spec's preset table gives public_chat guest_access forbidden, so this server's room holds that event and the sequence differs."
+
+[[entry]]
+test = "TestInboundCanReturnMissingEvents/Inbound_federation_can_return_missing_events_for_world_readable_visibility"
+package = "tests"
+mode = "expect-fail"
+category = "spec"
+spec = "docs/matrix-v1.19-spec/client-server-api.md#post_matrixclientv3createroom"
+reason = "The test expects the event sequence of a public_chat room without m.room.guest_access; the spec's preset table gives public_chat guest_access forbidden, so this server's room holds that event and the sequence differs."
+
+[[entry]]
+test = "TestOutboundFederationEventSizeGetMissingEvents"
+package = "tests"
+mode = "expect-fail"
+category = "spec"
+spec = "docs/matrix-v1.19-spec/client-server-api.md#size-limits"
+reason = "Expects an event whose state_key is 280 bytes (70 codepoints) to be accepted; the spec says state_key MUST NOT exceed 255 bytes, so this server drops it."
+
+# Complement run 11.
+
+[[entry]]
+test = "TestRegistration/parallel/Registration_without_a_session_fails"
+package = "tests/csapi"
+mode = "expect-fail"
+category = "non-spec"
+spec = "docs/matrix-v1.19-spec/client-server-api.md#user-interactive-authentication-api"
+reason = "Expects a dummy stage sent without a session to be refused; the spec makes the session something the client passes back only if one is provided, and Complement's own blueprints register in one request without one (ADR-0276)."
+
+[[entry]]
+test = "TestIsDirectFlagFederation"
+package = "tests"
+mode = "expect-fail"
+category = "spec"
+spec = "docs/matrix-v1.19-spec/server-server-api.md#put_matrixfederationv2inviteroomideventid"
+reason = "Sends a v12 invite with an empty invite_room_state; the spec says servers SHOULD refuse one without the room's m.room.create for room versions 12 and up, and this server does (400 M_INVALID_PARAM, ADR-0277)."
+
+[[entry]]
+test = "TestUnknownEndpoints/Server-server_endpoints"
+package = "tests"
+mode = "expect-fail"
+category = "non-spec"
+spec = "docs/matrix-v1.19-spec/client-server-api.md#common-error-codes"
+reason = "Calls /_matrix/federation/v1/version on the client listener, which does not serve the federation API; an endpoint not implemented on a listener is 404 M_UNRECOGNIZED. The federation listener answers 405 for it (ADR-0274)."
+

@@ -5,6 +5,7 @@ federation_sources = files(
   'event_query.cpp',
   'inbound_ingestion.cpp',
   'inbound_request.cpp',
+  'invite_room_state.cpp',
   'key_query.cpp',
   'key_signatures.cpp',
   'membership_endpoints.cpp',

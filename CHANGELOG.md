@@ -1,3 +1,177 @@
+## 0.12.63
+
+Fixes for the failures Complement run 10 found against the signed 0.12.62 release package.
+
+### Complement
+
+- `skip-list.toml` gains 27 entries checked against the pinned spec. Five push-rule tests expect
+  `dont_notify` back, which the spec says homeservers MUST strip (`spec`). Six search tests search
+  rooms this server created, which are always encrypted, and the spec says server-side search does
+  not include encrypted rooms (`spec`). One filtered `/sync` test wants a late state event in
+  `state`, where this server returns it as the timeline's event with the state before it, as the
+  spec defines `state` (`non-spec`; Complement skips Dendrite for the same answer). Four tests call
+  `/_matrix/client/r0` paths v1.19 does not define (`non-spec`). One creates a v2 room (`room-version`).
+  Ten assert Synapse behaviour the spec leaves to the server, and the owner kept this server's
+  behaviour for them (`non-spec`): downcasing a requested username, deduplicating identical state,
+  copying extra `/join` body keys into the event, a default display name, and the alias gate of
+  ADR-0127 with its untouched canonical alias on delete.
+
+### Complement image
+
+- `TestKeyChangesLocal` is skip-listed with the maintainer's sign-off: it logs in through `/_matrix/client/r0/login`, which v1.19 does not define, and stops before its device-list check. A conformance scenario now checks the same through `/v3/login`: a fresh login's uploaded device keys reach a room peer's `device_lists.changed` and `/keys/changes`.
+- **The Complement image now loads the application services Complement registers.** Complement
+  copies each test's registration into `/complement/appservice/`, and the image ignored them, so
+  `TestJoinFederatedRoomFromApplicationServiceBridgeUser` and `TestJumpToDateEndpoint` failed while
+  building their blueprint. `install-appservices.sh` copies them beside the master key, out of the
+  directories the federation worker's Landlock grants (their tokens are secrets), refusing links,
+  odd names and files over 64 KiB before writing anything, and the entrypoint adds
+  `appservice.registration_files`.
+- The Complement config raises `server.http.sync_max_per_user` and `sync_max_per_device` to their
+  maxima: parallel subtests long-poll as one user and device and met 429 "too many concurrent sync
+  waits". `TestUrlPreview` is skip-listed: previews never fetch private addresses (ADR-0213), and
+  Complement serves its page from one.
+
+### Fixed
+
+- **Invites from Synapse-family servers into rooms this server does not hold were refused.** Main
+  re-verifies an invite the federation worker relays, and took room version 10 for any room it held
+  no create event for. v10 redaction keeps the top-level `origin` key that v11 and later strip, and
+  gomatrixserverlib-built events (Synapse, Dendrite, Complement) set it, so every such invite into a
+  v11 or v12 room failed with "signature by a known key does not verify". Invites between two
+  Merovingian servers carried no `origin` and passed. The room version resolver now answers "unknown"
+  for such a room, so the relay uses the version the invite declares, the worker's v1 invite path
+  reaches the spec's "1 or 2" rule, and `/send` parses PDUs for unknown rooms as v12, as its
+  comment said (ADR-0269). Complement: `TestIsDirectFlagFederation`.
+- **A federated join's 500 "initial join state persistence failed" logged nothing.** Complement
+  run 10 hit it once in `TestKnocking` under the full suite's load; six isolated reruns passed, so
+  the cause is not yet known. A SQLite write that fails now logs `transaction.failed` (stage,
+  statement name, SQLite's code and message, never the bound values), and the join logs which
+  count fell short and each state entry it dropped, so the next run names the cause.
+- **Appservice registrations written by real bridges were refused.** Any unknown key refused the
+  whole file (ADR-0035), and mautrix-style registrations, Complement's among them, carry
+  `de.sorunome.msc2409.push_ephemeral`, `org.matrix.msc3202` and `push_ephemeral`. Reverse-DNS
+  namespaced keys and `push_ephemeral` are now ignored and logged at warning; any other unknown
+  key, a typo of a real one included, still refuses the file (ADR-0273, owner decision 2026-10-29).
+- **Logout left a device's other tokens and its keys behind.** Logging out deletes the device, and
+  deleting a device invalidates every access token it has, so a second login under the same device ID is
+  revoked too. Deleting a device (logout, `/logout/all`, `DELETE /devices`) now also removes its
+  identity, one-time and fallback keys in the same transaction, so `/keys/query` stops publishing it.
+- An unknown federation route answers 404 `M_UNRECOGNIZED` (it was `M_NOT_FOUND`). `HEAD` is no longer
+  read as `GET` by the 405 table (no handler serves it), and the v3 room routes no longer list
+  `hierarchy` and `timestamp_to_event`, which v1.19 defines only under v1 (an unimplemented endpoint is
+  404, not 405). A SQLite writer that cannot be opened logs `transaction.failed` with stage `open`.
+- **A failed user-interactive authentication stage gave no error.** The 401 now carries
+  `errcode: M_FORBIDDEN` and `error` beside the challenge, on every UIA endpoint.
+- **Logout left the device behind.** `POST /logout` and `/logout/all` delete the device or devices,
+  as the spec says, and a logout with no token answers `M_MISSING_TOKEN`.
+- **`POST /register`:** the username is checked (`M_INVALID_USERNAME`, `M_USER_IN_USE`,
+  `M_EXCLUSIVE`) before UIA, as the spec requires. A single-shot `m.login.dummy` stage still
+  completes without a session; a supplied session must be one this server issued (ADR-0276).
+- **A client body that is not JSON answered `M_BAD_JSON`.** It answers 400 `M_NOT_JSON`, decided
+  once for every client endpoint (ADR-0275).
+- **A known path with the wrong method answered 404.** It answers 405 `M_UNRECOGNIZED` with an
+  `Allow` header on the client, media, key-server and federation surfaces (ADR-0274).
+- **Invites and knocks carried no room state.** Outbound `/v2/invite` sends `invite_room_state` and
+  `send_knock` answers `knock_room_state` as the room's stored signed PDUs, create first (spec v1.16).
+  An inbound v12+ invite whose state lacks the create event, or holds a stripped, unsigned or
+  foreign-room entry, is refused 400 `M_INVALID_PARAM`; versions 1 to 11 are unchanged (ADR-0277).
+- **Rejecting an invite from another server answered 403.** The reject goes through
+  `make_leave`/`send_leave` to the inviting server, and ends locally when that server no longer has the
+  room (ADR-0278).
+- **Joining after a remote invite answered 404 "no resident server".** With no server named, the join
+  tries the inviting server.
+- **An invite withdrawn by the inviting server never reached the invitee.** The inviter's leave is
+  applied for a pending invite this server holds no room state for (ADR-0278).
+- **An unban of a local user was dropped,** so the user could never be invited back. Membership PDUs
+  about a local user with any membership row now reach the receipt checks (ADR-0279).
+- **SECURITY: federation reads sent room history a server could not see.** `/event`, `/backfill` and
+  `/get_missing_events` now send an event in full only when a user of the requesting server could see it,
+  judged by the room's history visibility and memberships in the state recorded for that event:
+  `world_readable` and `shared` always, `invited` when one of its users was invited or joined, `joined`
+  when one was joined. Any other event is sent as the room version's redaction, its signatures, hashes and
+  graph links kept, so the receiver's graph stays whole. `/state`, `/state_ids` and `/event_auth` are
+  unchanged: state is the room's authorisation record (ADR-0282, owner decision 2026-10-29).
+- **ADDED:** `GET /_matrix/federation/v1/event_auth/{roomId}/{eventId}` (the event's auth chain,
+  bounded, behind the origin-in-room gate) and `GET /_matrix/federation/v1/media/thumbnail/{mediaId}`
+  (multipart/mixed, local media only).
+- **Federation errors were plain text, and `/send` listed only failures.** Every federation error is now
+  a standard `{errcode, error}` object, and `/send` answers every PDU, `{}` when handled (ADR-0280).
+  A PDU the ingestion sink failed on internally now gets an `error` entry too.
+- **A retried `/send` transaction reported every PDU as handled.** A retry is not processed again,
+  and was answered `{}` for each PDU, even one that failed the first time. Main's completed-transaction
+  ring now keeps each first answer (from the worker too) and replays it, within a 16 MiB byte budget
+  as well as the entry cap (ADR-0283).
+- **An `invite_room_state` check that failed on this server's side was blamed on the sender.** A 500
+  or 503 from the check answered `M_INVALID_PARAM`; only a 400 does now, the others `M_UNKNOWN`.
+- **A federation media download or thumbnail the media policy refused answered `M_UNKNOWN`.** The 403
+  now carries `M_FORBIDDEN`.
+- **`/_matrix/client/v3/rooms/{roomId}/state_ids` and `.../v3/.../threads` answered 405.** Neither is
+  a v3 client endpoint (`/threads` is v1, `/state_ids` is federation only), so both are 404
+  `M_UNRECOGNIZED`.
+- **`/event_auth` answered a chain longer than 10000 events with part of it, as a 200.** The spec's
+  answer is the complete auth chain, so a receiver could not tell the chain was cut and failed on
+  the missing events later. Such a chain is now refused with 502 `M_TOO_LARGE`; the bound stays
+  (ADR-0284).
+- **A federation media download too large to serve answered 413.** The spec gives the download 502
+  `M_TOO_LARGE`; 413 is the thumbnail endpoint's, for local content, and stays there.
+- **A peer could clear its own trust backoff by resending a transaction.** A retry of a completed
+  `/send` transaction reset the origin's failure count, though it verifies nothing; a peer whose
+  transaction carried PDUs that failed verification could resend it to clear the backoff they had
+  earned. A duplicate now leaves the peer's trust as the first attempt left it.
+- **CI: the AlmaLinux 10 build-and-test job failed on broken mirror metadata.** `dnf` stopped on a
+  `repomd.xml parser error` before anything was built. The job now retries `dnf` three times with the
+  metadata cleared, as the RHEL RPM package job already did.
+- **CI: the SonarCloud job timed out in the conformance suite.** Under gcov instrumentation the
+  suite took 555 s of its 600 s limit, and crossed it in the SonarCloud job. `scripts/build-linux.sh`
+  now gives `--coverage` builds a timeout multiplier of 2 by default; other builds keep the limits.
+- **Tests:** conformance scenarios now cover the server ACL on `/event_auth` (a denied server gets
+  403 `M_FORBIDDEN`), `/event_auth` with no provider, and every federation media refusal's errcode;
+  a unit scenario covers a retry whose first answer was too large to keep. The ADR-0284 auth-chain
+  bound is a server limit, not a spec rule, so its boundary cases are unit tests, not conformance.
+  CodeQL: the redacted-event conformance scenario now says why each property it checks matters,
+  and a no-op `std::ignore` on a thread-join guard is gone.
+- **Remote aliases created after the federation worker started were not found.** `query/directory` is
+  relayed to main instead of read from the worker's start-up snapshot (ADR-0281).
+- **Profiles of users on other servers were 404.** `GET /profile/{userId}[/{keyName}]` asks the user's
+  own server, under an ADR-0079 slot and deadline. Inbound, a malformed `user_id` on `query/profile`
+  answers 400 `M_INVALID_PARAM`.
+- **Redacting an event this server does not hold answered 404.** The spec's `/redact` has only a 200; it
+  is now accepted from a sender with the room's `redact` level and refused 403 otherwise.
+- **Backfill fetched history around an invalid event.** An event returned by `/get_missing_events` that
+  is oversized, not canonical JSON, or has a `state_key` over 255 bytes is dropped, and the recovery stops
+  without asking for the history another way.
+- **`POST /rooms/{roomId}/kick` kicked users who were not in the room.** It answers 403 `M_FORBIDDEN`
+  unless the target is joined, invited or knocking ("The kickee is not currently in the room").
+- **`GET /rooms/{roomId}/event/{eventId}` answered 403 to a user without access.** It answers
+  404 `M_NOT_FOUND`, as for a missing event, so it no longer reveals that the event exists.
+- **`m.room.canonical_alias` content was not validated.** Aliases the event adds are checked: 400
+  `M_INVALID_PARAM` for bad syntax, 400 `M_BAD_ALIAS` for a local alias that does not point to the
+  room. Remote aliases are checked for syntax only (ADR-0272).
+- **`createRoom`:** `topic` also writes the `text/plain` representation in `m.topic`, and a
+  `room_version` that is not a JSON string is refused with 400 `M_BAD_JSON`.
+- **Key backup uploads replaced better keys.** An upload for a session the backup holds keeps the
+  better key: verified over unverified, then lower `first_message_index`, then lower
+  `forwarded_count`.
+- **ADDED:** `GET /_matrix/client/v1/room_summary/{roomIdOrAlias}` for rooms this server holds.
+  Without a token it summarises only public, knock and world-readable rooms and answers every
+  other room, existing or not, with the same 401 (ADR-0271). `via` is not used yet.
+- **An empty-body upload to a filled media ID answered 400.** The local router refused an empty
+  body before the media service could answer 409 `M_CANNOT_OVERWRITE_MEDIA` (ADR-0270).
+- **A PNG declared `img/png` was quarantined.** A declared type that only spells the sniffed type
+  differently (letter case, `img/` for `image/`) is no longer a mismatch; it is stored and served
+  under the declared spelling. Every other mismatch is still quarantined, and the allow-list still
+  judges the sniffed type (ADR-0270, owner decision 2026-10-29).
+- **Federated media downloads lost their filename.** `GET /_matrix/federation/v1/media/download`
+  now names the upload's file in the media part's `Content-Disposition` (RFC 6266 for non-ASCII
+  names), so the fetching server serves it.
+- **The legacy media endpoints served remote media fetched during the freeze.**
+  `GET /_matrix/media/v3/download` and `/thumbnail` fetched remote media on demand and served it,
+  although the spec counts media the server "had to re-download" as new media, which SHOULD only
+  be served by the authenticated endpoints (ADR-0068 froze only local uploads). The legacy routes
+  now serve a remote copy only when it was cached before the freeze, and never fetch. Complement's
+  `TestRemotePngThumbnail/test_/_matrix/media/v3_endpoint` had started to pass for this reason once
+  0.12.60 turned remote fetching on in the Complement config; its expect-fail entry stays.
+
 ## 0.12.62
 
 The four minor SonarQube Cloud findings left over from the 0.12.61 triage.

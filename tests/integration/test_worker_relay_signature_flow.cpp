@@ -986,6 +986,61 @@ SCENARIO("main re-verifies the signature of an invite relayed by a federation wo
             }
         }
 
+        // Complement run 10 (F1): an invite into a room main does not hold is
+        // verified under the room version the invite declares. Main used to take
+        // version 10 for any room it did not hold, whose redaction keeps the
+        // top-level `origin` key that v11 and later strip, so an invite from a
+        // server that sets `origin` (as gomatrixserverlib does) failed main's check.
+        WHEN("the worker relays a genuinely signed v11 invite whose event carries a top-level origin")
+        {
+            auto constexpr declared_version = "11";
+            auto const v11_room_id = std::string{"!remote-v11-room:remote.example.org"};
+            auto content = canonicaljson::Object{};
+            content.push_back(canonicaljson::make_member("membership", canonicaljson::Value{std::string{"invite"}}));
+            auto event = canonicaljson::Object{};
+            event.push_back(canonicaljson::make_member("type", canonicaljson::Value{std::string{"m.room.member"}}));
+            event.push_back(canonicaljson::make_member("state_key", canonicaljson::Value{invitee}));
+            event.push_back(canonicaljson::make_member("room_id", canonicaljson::Value{v11_room_id}));
+            event.push_back(canonicaljson::make_member("sender", canonicaljson::Value{std::string{remote_member}}));
+            event.push_back(canonicaljson::make_member("origin", canonicaljson::Value{std::string{remote_server}}));
+            event.push_back(canonicaljson::make_member("content", canonicaljson::Value{std::move(content)}));
+            event.push_back(canonicaljson::make_member("origin_server_ts", canonicaljson::Value{std::int64_t{60}}));
+            event.push_back(canonicaljson::make_member("depth", canonicaljson::Value{std::int64_t{5}}));
+            event.push_back(canonicaljson::make_member(
+                "prev_events", canonicaljson::Value{canonicaljson::Array{canonicaljson::Value{std::string{"$prev"}}}}));
+            event.push_back(canonicaljson::make_member(
+                "auth_events",
+                canonicaljson::Value{canonicaljson::Array{canonicaljson::Value{std::string{"$create"}}}}));
+            auto const unsigned_json = canonicaljson::serialize_canonical(canonicaljson::Value{std::move(event)});
+            REQUIRE(unsigned_json.error == canonicaljson::CanonicalJsonError::none);
+            auto const event_json = federation::test::make_signed_event_json(
+                unsigned_json.output, remote_server, remote_key_id, remote_key_seed, declared_version);
+            auto const envelope = federation::parse_inbound_pdu_envelope(event_json, declared_version);
+            REQUIRE(envelope.has_value());
+
+            auto frame = canonicaljson::Object{};
+            frame.push_back(canonicaljson::make_member("type", canonicaljson::Value{std::string{"invite_ingest"}}));
+            frame.push_back(canonicaljson::make_member("room_id", canonicaljson::Value{v11_room_id}));
+            frame.push_back(canonicaljson::make_member("event_id", canonicaljson::Value{envelope->event_id}));
+            frame.push_back(
+                canonicaljson::make_member("room_version", canonicaljson::Value{std::string{declared_version}}));
+            frame.push_back(canonicaljson::make_member("invite_event_json", canonicaljson::Value{event_json}));
+            frame.push_back(canonicaljson::make_member("origin", canonicaljson::Value{std::string{remote_server}}));
+            frame.push_back(
+                canonicaljson::make_member("invite_room_state_json", canonicaljson::Value{canonicaljson::Array{}}));
+            auto const serialized = canonicaljson::serialize_canonical(canonicaljson::Value{std::move(frame)});
+            REQUIRE(serialized.error == canonicaljson::CanonicalJsonError::none);
+
+            auto const response = homeserver::handle_invite_ingest_request(runtime, serialized.output);
+
+            THEN("main verifies it under the declared version, accepts it and records the invite")
+            {
+                INFO("response: " << response);
+                REQUIRE(response.find(R"("accepted":true)") != std::string::npos);
+                REQUIRE(membership_of(runtime, v11_room_id, invitee) == "invite");
+            }
+        }
+
         std::filesystem::remove(path);
     }
 }

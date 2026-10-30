@@ -235,6 +235,14 @@ SCENARIO("GET /media/download/{mediaId} serves local media as multipart/mixed",
             {
                 return {true, 200U, "image/png", "PNGDATA", {}};
             }
+            if (queried_media_id == "named")
+            {
+                return {true, 200U, "image/png", "PNGDATA", {}, "photo.png"};
+            }
+            if (queried_media_id == "named-unicode")
+            {
+                return {true, 200U, "image/png", "PNGDATA", {}, "\xF0\x9F\x90\x94"};
+            }
             if (queried_media_id == "missing")
             {
                 return {false, 404U, {}, {}, "media not found"};
@@ -242,6 +250,22 @@ SCENARIO("GET /media/download/{mediaId} serves local media as multipart/mixed",
             if (queried_media_id == "quarantined")
             {
                 return {false, 451U, {}, {}, "media quarantined"};
+            }
+            if (queried_media_id == "denied")
+            {
+                return {false, 403U, {}, {}, "media policy denied"};
+            }
+            if (queried_media_id == "pending")
+            {
+                return {false, 504U, {}, {}, "media not yet uploaded"};
+            }
+            if (queried_media_id == "huge")
+            {
+                return {false, 413U, {}, {}, "media too large"};
+            }
+            if (queried_media_id == "busy")
+            {
+                return {false, 429U, {}, {}, "media fetch busy"};
             }
             return {false, 500U, {}, {}, "unknown media"};
         };
@@ -264,6 +288,41 @@ SCENARIO("GET /media/download/{mediaId} serves local media as multipart/mixed",
                 REQUIRE(parsed.ok);
                 REQUIRE_FALSE(parsed.is_redirect);
                 REQUIRE(parsed.bytes == "PNGDATA");
+            }
+        }
+
+        WHEN("a signed GET /media/download/{mediaId} requests a file that was uploaded with a filename")
+        {
+            auto const named = merovingian::federation::handle_inbound_federation_request(
+                runtime, signed_get_request(origin, key_id, key_seed, "/_matrix/federation/v1/media/download/named"));
+            auto const unicode = merovingian::federation::handle_inbound_federation_request(
+                runtime,
+                signed_get_request(origin, key_id, key_seed, "/_matrix/federation/v1/media/download/named-unicode"));
+            auto const unnamed = merovingian::federation::handle_inbound_federation_request(
+                runtime, signed_get_request(origin, key_id, key_seed, "/_matrix/federation/v1/media/download/abc123"));
+
+            THEN("the media part's Content-Disposition carries the filename, encoded per RFC 6266")
+            {
+                // Spec (Client-Server API, GET /_matrix/client/v1/media/download): "If the upload was made with a
+                // filename, this header MUST contain the same filename"; the federation endpoint's media part
+                // carries "Content-Disposition headers as appropriate" so the requesting server can serve it.
+                REQUIRE(named.status == 200U);
+                REQUIRE(named.body.find("Content-Disposition: inline; filename=\"photo.png\"\r\n") !=
+                        std::string::npos);
+                REQUIRE(unicode.status == 200U);
+                REQUIRE(unicode.body.find("Content-Disposition: inline; filename*=utf-8''%F0%9F%90%94\r\n") !=
+                        std::string::npos);
+                auto const parsed_unicode =
+                    merovingian::homeserver::parse_federation_media_multipart(unicode.content_type, unicode.body);
+                REQUIRE(parsed_unicode.ok);
+                REQUIRE(parsed_unicode.filename == "\xF0\x9F\x90\x94");
+            }
+
+            THEN("a file uploaded without a filename carries none")
+            {
+                // Spec: "Otherwise, filename is excluded from the header."
+                REQUIRE(unnamed.status == 200U);
+                REQUIRE(unnamed.body.find("filename") == std::string::npos);
             }
         }
 
@@ -292,6 +351,48 @@ SCENARIO("GET /media/download/{mediaId} serves local media as multipart/mixed",
                 // Spec: quarantined media returns 451 (unavailable for legal reasons).
                 REQUIRE(response.status == 451U);
                 REQUIRE(response.body.find("M_NOT_FOUND") != std::string::npos);
+            }
+        }
+
+        WHEN("a signed GET /media/download/{mediaId} requests a file the media policy denies")
+        {
+            auto const target = std::string{"/_matrix/federation/v1/media/download/denied"};
+            auto const response = merovingian::federation::handle_inbound_federation_request(
+                runtime, signed_get_request(origin, key_id, key_seed, target));
+
+            THEN("the response is 403 M_FORBIDDEN")
+            {
+                // Spec: "M_FORBIDDEN: Forbidden access, e.g. joining a room without permission".
+                REQUIRE(response.status == 403U);
+                REQUIRE(response.body.find("M_FORBIDDEN") != std::string::npos);
+            }
+        }
+
+        WHEN("a signed GET /media/download/{mediaId} is refused for another reason")
+        {
+            auto const download = [&](std::string const& media_id) {
+                return merovingian::federation::handle_inbound_federation_request(
+                    runtime,
+                    signed_get_request(origin, key_id, key_seed, "/_matrix/federation/v1/media/download/" + media_id));
+            };
+            auto const pending = download("pending");
+            auto const huge = download("huge");
+            auto const busy = download("busy");
+            auto const failed = download("unexpected");
+
+            THEN("each answers the status and errcode the spec gives it")
+            {
+                // Spec: 504 "The content is not yet available", with M_NOT_YET_UPLOADED.
+                REQUIRE(pending.status == 504U);
+                REQUIRE(pending.body.find("M_NOT_YET_UPLOADED") != std::string::npos);
+                // Spec: 502 "The content is too large for the server to serve", with M_TOO_LARGE.
+                // The download endpoint has no 413; that is the thumbnail endpoint's.
+                REQUIRE(huge.status == 502U);
+                REQUIRE(huge.body.find("M_TOO_LARGE") != std::string::npos);
+                REQUIRE(busy.status == 429U);
+                REQUIRE(busy.body.find("M_LIMIT_EXCEEDED") != std::string::npos);
+                REQUIRE(failed.status == 500U);
+                REQUIRE(failed.body.find("M_UNKNOWN") != std::string::npos);
             }
         }
 

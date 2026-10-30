@@ -96,6 +96,15 @@ struct ValidatedMakeLeaveResponse final
 [[nodiscard]] auto knock_room(HomeserverRuntime& runtime, std::string_view access_token, std::string_view room_id,
                               std::vector<std::string> const& via_servers = {}, std::string_view reason = {})
     -> OperationResult;
+// The room's current state events that Server-Server API v1.19 puts in `invite_room_state` (an
+// invite sent to another server) and `knock_room_state` (a send_knock answer): the stripped-state
+// types of Client-Server API "Stripped state" (m.room.create, m.room.name, m.room.avatar,
+// m.room.topic, m.room.join_rules, m.room.canonical_alias, m.room.encryption). Since spec v1.16 the
+// entries "MUST additionally be formatted according to the room version specification" and the list
+// "MUST contain the m.room.create event": each is the stored signed PDU, canonical JSON, without its
+// `unsigned` object, never a stripped event. Empty for a room this server holds no create event of.
+[[nodiscard]] auto stripped_state_pdus(database::PersistentStore const& store, std::string_view room_id)
+    -> std::vector<std::string>;
 // Parses the `server_name=` and `via=` query parameters (each may repeat) from a
 // raw query string into an ordered, de-duplicated list of server names. Values are
 // percent-decoded once. nullopt rejects NUL in recognized values; unrelated
@@ -207,6 +216,14 @@ struct OutboundCallResult final
     std::string body{};
     std::uint16_t remote_status{0U};
 };
+
+// perform_bounded_outbound_call, keeping the remote's HTTP status for a caller whose answer depends on
+// it (a remote profile lookup relays the remote's 404 as its own). Same slot and deadline rules apply.
+[[nodiscard]] auto perform_bounded_outbound_call_with_status(HomeserverRuntime& runtime, std::string_view room_id,
+                                                             federation::OutboundTransaction const& transaction,
+                                                             std::string_view key_id, core::SecretBuffer secret_key,
+                                                             std::string_view diagnostic_event,
+                                                             std::uint32_t deadline_seconds) -> OutboundCallResult;
 
 // The shared implementation of perform_sync_outbound_call (bounded == nullopt)
 // and perform_bounded_outbound_call. Call it directly only when the remote's

@@ -1058,13 +1058,30 @@ auto write_connections_opened(PersistentStore const& store) -> std::uint64_t
     {
         return false;
     }
-    if (!record_and_persist(store, record_statement("delete_device",
-                                                    "DELETE FROM devices WHERE user_id = $1 AND device_id = $2",
-                                                    {public_value(user_id), public_value(device_id)})))
+    // A deleted device's identity, one-time and fallback keys go with it, in the same transaction:
+    // /keys/query returns "the current devices and identity keys", and a key left behind has
+    // clients encrypting to a device that no longer exists (to-device messages for it are dropped).
+    auto const parameters = std::vector<BoundValue>{public_value(user_id), public_value(device_id)};
+    auto const statements = std::vector<PreparedStatement>{
+        record_statement("delete_device", "DELETE FROM devices WHERE user_id = $1 AND device_id = $2", parameters),
+        record_statement("delete_device_keys_of_device",
+                         "DELETE FROM device_keys WHERE user_id = $1 AND device_id = $2", parameters),
+        record_statement("delete_one_time_keys_of_device",
+                         "DELETE FROM one_time_keys WHERE user_id = $1 AND device_id = $2", parameters),
+        record_statement("delete_fallback_keys_of_device",
+                         "DELETE FROM fallback_keys WHERE user_id = $1 AND device_id = $2", parameters),
+    };
+    if (!commit_persistent_transaction(store, statements))
     {
         return false;
     }
     store.devices.erase(existing);
+    auto const of_device = [user_id, device_id](auto const& key) {
+        return key.user_id == user_id && key.device_id == device_id;
+    };
+    std::erase_if(store.device_keys, of_device);
+    std::erase_if(store.one_time_keys, of_device);
+    std::erase_if(store.fallback_keys, of_device);
     return true;
 }
 

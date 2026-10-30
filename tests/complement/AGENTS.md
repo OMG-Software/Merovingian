@@ -21,6 +21,7 @@ are this project's own tests.
 | `merovingian.conf.template` | The config Complement runs with; each departure from the defaults says why |
 | `prepare-state.sh` | Master key and database directories, kept across restarts and bound to one server name |
 | `mint-tls.sh` | One-day P-256 certificate for the federation listener, from Complement's CA |
+| `install-appservices.sh` | Copies the application service registrations Complement mounts at `/complement/appservice/` beside the master key and prints `appservice.registration_files`; refuses links, odd names and oversized files before writing |
 | `nginx.conf` | Puts the loopback client listener (`127.0.0.1:8080`) on 8008 |
 | `run.toml` | The pinned Complement commit, the Go it needs, and the maintainer key that must sign `SHA256SUMS` |
 | `skip-list.toml` | Tests a green run may fail or not run, each with a category and evidence (ADR-0234) |

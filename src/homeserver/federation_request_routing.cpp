@@ -6,8 +6,12 @@
 #include "merovingian/canonicaljson/parser.hpp"
 #include "merovingian/canonicaljson/value.hpp"
 #include "merovingian/core/query_params.hpp"
+#include "merovingian/federation/transactions.hpp"
+#include "merovingian/homeserver/client_server.hpp"
 
 #include <cstdint>
+#include <optional>
+#include <string>
 #include <string_view>
 #include <utility>
 #include <vector>
@@ -202,7 +206,8 @@ auto federation_request_should_bypass_worker(LocalHttpRequest const& request) ->
     // Media download needs the local media repository, which lives only in the
     // main process. The worker has no access to local blobs, so keep this route
     // on main even when the federation worker pool is active.
-    if (request.method == "GET" && request.target.find("/_matrix/federation/v1/media/download/") == 0U)
+    if (request.method == "GET" && (request.target.find("/_matrix/federation/v1/media/download/") == 0U ||
+                                    request.target.find("/_matrix/federation/v1/media/thumbnail/") == 0U))
     {
         return true;
     }
@@ -251,6 +256,46 @@ auto is_federation_version_endpoint(std::string_view target) noexcept -> bool
     auto const query_pos = target.find('?');
     auto const path = target.substr(0U, query_pos);
     return path == "/_matrix/federation/v1/version";
+}
+
+auto federation_unsupported_method_allow(std::string_view method, std::string_view target) -> std::optional<std::string>
+{
+    auto const path = target.substr(0U, target.find('?'));
+    // The endpoints answered without an X-Matrix signature are GET only.
+    if (path == "/_matrix/key/v2/server" || path == "/_matrix/federation/v1/version" ||
+        path == "/_matrix/federation/v1/openid/userinfo")
+    {
+        return method == "GET" ? std::nullopt : std::optional<std::string>{"GET"};
+    }
+    if (federation::match_federation_route(method, target).matched)
+    {
+        return std::nullopt;
+    }
+    auto const methods = federation::federation_methods_for_path(target);
+    if (methods.empty())
+    {
+        return std::nullopt;
+    }
+    auto allow = std::string{};
+    for (auto const& served : methods)
+    {
+        if (!allow.empty())
+        {
+            allow.append(", ");
+        }
+        allow.append(served);
+    }
+    return allow;
+}
+
+auto federation_method_not_allowed_response(std::string_view allow) -> LocalHttpResponse
+{
+    auto response = LocalHttpResponse{};
+    response.status = 405U;
+    response.body = matrix_error("M_UNRECOGNIZED", "the endpoint does not support this HTTP method");
+    response.errcode = "M_UNRECOGNIZED";
+    response.headers.emplace_back("Allow", std::string{allow});
+    return response;
 }
 
 } // namespace merovingian::homeserver

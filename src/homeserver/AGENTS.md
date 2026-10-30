@@ -24,7 +24,7 @@ This is the largest and most complex module — read this file carefully before 
 | `redaction_service.cpp` | Applies redactions (judge, overwrite the target's stored JSON, withhold unapplied redactions from clients) and checks a local client's redaction |
 | `room_power.cpp` | `may_send_state_event()`: whether a user may send a state event of a type in a room's current state, judged as the auth rules judge it (CSAZ-12) |
 | `restricted_join.cpp` | `decide_restricted_join()`: as the resident, whether a user meets a restricted room's allow conditions and which local user authorises the join (R04, ADR-0185) |
-| `space_hierarchy.cpp` | `GET /_matrix/client/v1/rooms/{roomId}/hierarchy` (a child room this server holds no state for is asked for over federation, see "Client requests that call another server") and the answer to `GET /_matrix/federation/v1/hierarchy/{roomId}`, judged for the authenticated requesting server |
+| `space_hierarchy.cpp` | `GET /_matrix/client/v1/rooms/{roomId}/hierarchy` (a child room this server holds no state for is asked for over federation, see "Client requests that call another server") and the answer to `GET /_matrix/federation/v1/hierarchy/{roomId}`, judged for the authenticated requesting server; also `handle_client_room_summary` (`GET /_matrix/client/v1/room_summary/{roomIdOrAlias}`, local rooms only; a request with no token is answered before the auth gate in `client_server.cpp` and may see only a public, knock or world-readable room) |
 | `default_push_ruleset.cpp` | The server-default push ruleset (`homeserver::default_push_ruleset`) |
 | `stored_push_rules.cpp` | `load_user_push_rules` / `load_push_ruleset`: a user's push rules from their `m.push_rules` account data over the defaults (ADR-0204) |
 | `push_room_facts.cpp` | `push_room_facts`, `room_member_display_name`, `push_evaluation_context`: the evaluation context push delivery and unread counting share |
@@ -69,7 +69,9 @@ is `declared_mime|sniffed_mime|scanner_clean|bytes` — the pipe-delimited wrapp
    a variable component (an ID, type or key) needs a template and a row in the HTTP-3
    scenario "gives every implemented dynamic client route its own coalesced bucket"
    in `tests/unit/test_security_audit_http_3.cpp` (ADR-0092); a fixed path needs an
-   entry in `static_routes`. A path the matcher cannot place is answered
+   entry in `static_routes` and a row in `client_static_route_allow` listing EVERY
+   method it serves (a method missing there is answered `405 M_UNRECOGNIZED`
+   before authentication). A path the matcher cannot place is answered
    `404 M_UNRECOGNIZED` before authentication (`client_route_is_known`, ADR-0230), so
    a route missing there is unreachable for every caller
 
@@ -118,7 +120,7 @@ blocking network calls".
 
 ## Client requests that call another server
 
-`publicRooms?server=` (GET and POST), a remote room-alias lookup, remote media download or
+`publicRooms?server=` (GET and POST), a remote room-alias lookup, a remote user's profile (`remote_profile_response`: relays only `displayname`/`avatar_url`), remote media download or
 thumbnail, and the `/thirdparty/*` lookups that call an appservice (ADR-0181) make this server
 call a peer it does not control, and the spec lets clients make them
 without authentication. `RuntimeLockRelease` frees the mutex, not the thread, so each holds one of
@@ -185,6 +187,31 @@ anything. A new path that changes a user's own membership over federation takes 
 new entry point that changes it checks `membership_exchange_refusal` first, or a concurrent request
 is overwritten when the exchange commits.
 
+## Remote invites: reject, accept, rescind (Complement run 10)
+
+An invite from another server leaves this server with a `memberships` row (`invite`) and a `PersistentInvite`
+record, and no room state (an invite for a room whose state is held is judged against it). Three things act
+on that record, each by the inviter's server, which the spec calls a resident server ("Leaving Rooms
+(Rejecting Invites)", "Joining Rooms"):
+
+- `leave_room` rejects it with `make_leave` / `send_leave` to `invite_sender_server` (a version 12 room ID
+  names no server). If that server answers `make_leave` with 403 or 404 (it left the room), no leave can be
+  authored; the invite is ended as a local `leave` row and nothing is sent. Any other failure is a 502 and
+  the invite stays.
+- `join_room` with no `via` uses `invite_sender_server` as the candidate, with the room ID's domain behind it.
+- `rescind_invite_from_inviter` (`local_http_router.cpp`) turns a `leave` PDU for the invitee, sent by a user
+  of the inviter's own server, into a `leave` for rooms whose state is not held. Nobody else can withdraw an
+  invite this way.
+
+A ban leaves a local user with no membership that makes this server interested in the room, yet the unban is
+a PDU about that user: `concerns_local_member_with_row` admits an `m.room.member` PDU about a local user who
+has any row for the room, to the ordinary receipt checks. Do not narrow it back to joined users, or the ban
+stays for ever and the invite an unban makes valid is refused.
+
+`stripped_state_pdus` (`room_service.cpp`) is the one place that builds `invite_room_state` and
+`knock_room_state`: the stored signed PDUs of the stripped-state types, without `unsigned`. The client's
+`invite_state` / `knock_state` are stripped from whatever the record holds (`build_invite_state_events_array`).
+
 ## Restricted joins as the resident (R04, ADR-0184, ADR-0185)
 
 `decide_restricted_join` (`restricted_join.cpp`) is the only place that decides whether a
@@ -245,6 +272,9 @@ only endpoints the spec requires and the origin may be asked for:
 - `GET /event/{eventId}` for each named event the store lacks, and for every event a `/state_ids` snapshot names.
   `GET /event_auth` is the last resort for one event whose own auth events are not stored, never the first step: a
   peer need not serve it.
+- An event the origin returns from `/get_missing_events` that is over 65536 bytes, not canonical JSON or has a
+  `state_key` over 255 bytes (`returned_pdu_is_well_formed`) is dropped, and the recovery ends there: the same
+  history is not then fetched through `/event`, `/state_ids` or `/event_auth`.
 - A fetched PDU that cannot be placed yet goes into `HeldPdus` for that one recovery (bounded, in memory only, verified
   from scratch when placed). The state is asked at `state_snapshot_targets`, the nearest `prev_event` no held PDU can
   supply, never at a prev_event that was already fetched; held PDUs are placed oldest first afterwards.
@@ -355,7 +385,9 @@ local user's event) before storing it, and `compose_signed_event` puts `redacts`
 `install_redaction_reconciler` makes the persistent store call `reconcile_redactions_for_event` after every event it
 stores, so a new ingest path needs no extra call. It overwrites the target's JSON with the redacted form; do not add a
 copy of the original content anywhere. A suspended user may redact only their own events (the handler enforces it, the
-suspension gate lets the route through).
+suspension gate lets the route through). A target this server does not hold is not a 404 (the spec has none): the
+redaction is stored when the sender holds the room's `redact` level and is judged when the target arrives; below
+that level it is 403. A target held in another room is `target_unknown` (404).
 
 ## Errcodes the status cannot name (CSAZ-9)
 
