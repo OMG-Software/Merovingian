@@ -138,7 +138,9 @@ auto timestamp_is_closer(std::int64_t candidate, std::optional<std::int64_t> cur
 auto acquire_closer_timestamp_event(HomeserverRuntime& runtime, std::unique_lock<RuntimeMutex>& guard,
                                     std::string_view room_id, std::vector<std::string> const& servers, std::int64_t ts,
                                     database::TimeDirection direction, std::optional<std::int64_t> local_ts,
-                                    OutboundDeadline const& deadline) -> std::optional<std::string>
+                                    OutboundDeadline const& deadline,
+                                    std::function<bool(std::string_view event_id)> const& usable)
+    -> std::optional<std::string>
 {
     wire_federation_callbacks(runtime);
     auto const our_server = runtime.config.server().server_name;
@@ -177,12 +179,18 @@ auto acquire_closer_timestamp_event(HomeserverRuntime& runtime, std::unique_lock
             auto const released = RuntimeLockRelease{guard};
             return fetch_remote_event_into_store(runtime, room_id, server, answer->event_id, deadline);
         }();
-        if (stored)
+        if (!stored)
+        {
+            LOG_WARNING("timestamp_to_event: the event a server named could not be fetched and verified; room_id=" +
+                        std::string{room_id} + " server=" + server + " event_id=" + answer->event_id);
+            continue;
+        }
+        if (usable(answer->event_id))
         {
             return answer->event_id;
         }
-        LOG_WARNING("timestamp_to_event: the event a server named could not be fetched and verified; room_id=" +
-                    std::string{room_id} + " server=" + server + " event_id=" + answer->event_id);
+        // Held, but not one the caller may return (rejected, hidden from the user, or not closer by its own
+        // timestamp): another server may know a usable one.
     }
     return std::nullopt;
 }

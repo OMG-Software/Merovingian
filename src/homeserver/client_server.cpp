@@ -10522,8 +10522,21 @@ namespace
                                : client_proxy_refused(req, rt);
         }
         auto const local_ts = local.found ? std::optional<std::int64_t>{local.origin_server_ts} : std::nullopt;
-        auto const acquired =
-            acquire_closer_timestamp_event(rt.homeserver, guard, room_id, servers, ts, direction, local_ts, deadline);
+        // An event a server names is used only if it is accepted, the user may see it, and its own stored
+        // timestamp is closer: judged as each one is fetched, so a refused one sends the search on to the next
+        // server (ADR-0299), and judged again below, once the state is final.
+        auto const usable_for_user = [&](std::string_view event_id) {
+            auto const event = store.events.find_in_room(room_id, event_id);
+            if (event == store.events.end() || event->status == "rejected" || event->status == "soft_failed" ||
+                !sync::HistoryVisibility{store, user_id}.can_see(*event))
+            {
+                return false;
+            }
+            auto const event_ts = stored_origin_server_ts(*event);
+            return event_ts.has_value() && timestamp_is_closer(*event_ts, local_ts, ts, direction);
+        };
+        auto const acquired = acquire_closer_timestamp_event(rt.homeserver, guard, room_id, servers, ts, direction,
+                                                             local_ts, deadline, usable_for_user);
 
         // The lock was released for the network: judge everything again from the state now. The user may have left
         // the room, and the event may be one they may not see.

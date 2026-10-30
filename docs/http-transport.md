@@ -1114,7 +1114,8 @@ Rules:
   retry (ADR-0307). If the queue refuses it, `POST /invite` answers `503` and
   stores nothing; createRoom keeps the room and logs
   `room.create.invite_not_queued`.
-- **Deadline.** 10 s for directory lookups, 30 s for remote media, in total:
+- **Deadline.** 10 s for directory lookups (`timestamp_to_event` included), 30 s
+  for remote media and for offering remote invites (one for all of a createRoom's), in total:
   server discovery and the request(s) that follow draw from one
   `OutboundDeadline`. Never longer than the operator's
   `security.federation.remote_timeout` when that is set. The federation-worker

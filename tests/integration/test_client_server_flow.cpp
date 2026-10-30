@@ -12,6 +12,7 @@
 #include "merovingian/homeserver/client_server.hpp"
 #include "merovingian/homeserver/local_http_router.hpp"
 #include "merovingian/homeserver/local_services.hpp"
+#include "merovingian/homeserver/remote_timestamp_event.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -1837,6 +1838,56 @@ SCENARIO("GET /timestamp_to_event asks a server of the room only when its own hi
                 REQUIRE(captured.size() == 2U);
                 REQUIRE(captured[1].find("GET /_matrix/federation/v1/event/") == 0U);
                 REQUIRE(captured[1].find("closer") != std::string::npos);
+            }
+        }
+
+        WHEN("the first server asked names an event the caller may not use, and a second server a usable one")
+        {
+            // ADR-0299 asks up to three servers: an event that is fetched but cannot be returned to the user
+            // does not end the search. Both events are already held, so neither is fetched again.
+            rt.homeserver.test_forced_outbound_resolution["second.example.net"] =
+                merovingian::homeserver::TestOnlyForcedOutboundResolution{
+                    "localhost", acceptor.bound_port(), {"127.0.0.1"}, certificate.certificate_pem};
+            auto const held_event = [&](std::string id, std::int64_t ts) {
+                auto event = merovingian::database::PersistentEvent{};
+                event.event_id = std::move(id);
+                event.room_id = room.room_id;
+                event.sender_user_id = "@bob:remote.example.net";
+                event.json = R"({"type":"m.room.message","sender":"@bob:remote.example.net","origin_server_ts":)" +
+                             std::to_string(ts) + R"(,"content":{"body":"x"}})";
+                event.depth = 60U;
+                event.stream_ordering = 2000000U + static_cast<std::uint64_t>(ts);
+                REQUIRE(rt.homeserver.database.persistent_store.events.push_back(std::move(event)));
+            };
+            held_event("$hidden:remote.example.net", 1000000);
+            held_event("$usable:remote.example.net", 1000001);
+            auto const responses = std::vector<std::pair<std::string, std::string>>{
+                {"timestamp_to_event",
+                 merovingian::tests::tls_mock::json_http_response(
+                     "200 OK", R"({"event_id":"$hidden:remote.example.net","origin_server_ts":1000000})")},
+                {"timestamp_to_event",
+                 merovingian::tests::tls_mock::json_http_response(
+                     "200 OK", R"({"event_id":"$usable:remote.example.net","origin_server_ts":1000001})")}
+            };
+            auto captured = std::vector<std::string>{};
+            auto server_thread = std::thread{[&]() {
+                merovingian::tests::tls_mock::run_path_dispatch_tls_server(acceptor, tls_context, responses, &captured);
+            }};
+            auto const join_server = merovingian::tests::tls_mock::ScopedThreadJoin{server_thread};
+            auto const acquired = [&] {
+                auto guard = std::unique_lock<merovingian::homeserver::RuntimeMutex>{rt.homeserver.mutex};
+                return merovingian::homeserver::acquire_closer_timestamp_event(
+                    rt.homeserver, guard, room.room_id, {"remote.example.net", "second.example.net"}, 999999,
+                    merovingian::database::TimeDirection::forwards, std::nullopt,
+                    merovingian::homeserver::OutboundDeadline{5U}, [](std::string_view event_id) {
+                        return event_id != "$hidden:remote.example.net";
+                    });
+            }();
+
+            THEN("the second server is asked and its event is the one acquired")
+            {
+                REQUIRE(acquired == std::optional<std::string>{"$usable:remote.example.net"});
+                REQUIRE(captured.size() == 2U);
             }
         }
 

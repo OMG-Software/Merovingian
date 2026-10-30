@@ -9,6 +9,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <mutex>
 #include <optional>
 #include <string>
@@ -67,12 +68,16 @@ struct RemoteTimestampEvent final
 //
 // Call with `runtime.mutex` held through `guard`: it is released around each network exchange
 // (RuntimeLockRelease) and held again on return. Every exchange draws from `deadline`. The caller
-// holds an ADR-0079 slot (`admit_client_outbound_proxy`). A stored event is still to be judged by the
-// caller: it may be an outlier, and the user may not be allowed to see it.
+// holds an ADR-0079 slot (`admit_client_outbound_proxy`). Each stored event is offered to `usable`, with
+// the lock held, before it is returned: the caller judges there what the remote server cannot vouch for
+// (its status, whether the user may see it, its own stored timestamp). One it refuses does not end the
+// search: the next server is asked.
 [[nodiscard]] auto acquire_closer_timestamp_event(HomeserverRuntime& runtime, std::unique_lock<RuntimeMutex>& guard,
                                                   std::string_view room_id, std::vector<std::string> const& servers,
                                                   std::int64_t ts, database::TimeDirection direction,
                                                   std::optional<std::int64_t> local_ts,
-                                                  OutboundDeadline const& deadline) -> std::optional<std::string>;
+                                                  OutboundDeadline const& deadline,
+                                                  std::function<bool(std::string_view event_id)> const& usable)
+    -> std::optional<std::string>;
 
 } // namespace merovingian::homeserver

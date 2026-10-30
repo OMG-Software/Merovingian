@@ -53,7 +53,9 @@ enum class HistoryVisibilityValue
 //
 // "State at the event" is the state group recorded for the event (ADR-0064), i.e. the state
 // immediately after it. "Before" for the two special cases is the predecessor recorded in
-// `state_transitions`. "After the event" is stream ordering.
+// `state_transitions`. For rule 3 (`shared`), "after the event was sent" is the room's history: the
+// user's newest accepted join is deeper than the event (ADR-0308), never a later stream ordering. Rule 2
+// for an event with no state group still follows the user's membership timeline in stream order.
 //
 // One instance serves one request: it caches per state group, so a page of events costs one
 // state lookup per distinct group rather than one per event, and it builds its indexes over
