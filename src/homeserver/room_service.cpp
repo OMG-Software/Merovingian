@@ -6976,7 +6976,9 @@ auto queue_remote_invite(HomeserverRuntime& runtime, std::string_view room_id, s
     auto const offer_slot =
         admit_client_outbound_proxy_waiting(runtime, std::string{client_key}, guard, offer_deadline);
     auto const delivery =
-        offer_slot.has_value()
+        // A slot taken on the last poll can come after the deadline; remaining_seconds() is then 0, which
+        // deliver_remote_invite would read as "the outbound default".
+        offer_slot.has_value() && !offer_deadline.expired()
             ? deliver_remote_invite(runtime, guard, room_id, invitee_server, invite_event.event_id, invite_event.json,
                                     offer_deadline.remaining_seconds())
             : RemoteInviteResult{RemoteInviteOutcome::unreachable, 503U, "no client-outbound slot for the offer"};

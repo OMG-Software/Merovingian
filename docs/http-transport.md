@@ -1110,8 +1110,10 @@ Rules:
   authenticated: `timestamp_to_event` waits for a slot, polling every 25 ms with
   the runtime lock released, until its deadline runs out (ADR-0306), then answers
   `429` or its local answer; a remote invite offer (`POST /invite`, createRoom's
-  invites) waits the same way and, with no slot, leaves the invite to the retry
-  queue (ADR-0307).
+  invites) waits the same way and, with no slot, tries to queue the invite for
+  retry (ADR-0307). If the queue refuses it, `POST /invite` answers `503` and
+  stores nothing; createRoom keeps the room and logs
+  `room.create.invite_not_queued`.
 - **Deadline.** 10 s for directory lookups, 30 s for remote media, in total:
   server discovery and the request(s) that follow draw from one
   `OutboundDeadline`. Never longer than the operator's

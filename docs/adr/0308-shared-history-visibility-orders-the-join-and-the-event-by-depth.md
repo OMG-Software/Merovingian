@@ -36,8 +36,11 @@ event arrived would trust the path, not the room's history.
 ### Negative Consequences
 
 * Events on parallel branches are ordered only by depth: one of equal depth to the join counts as not before
-  it (denied), and a concurrent one of lower depth counts as before it. A server can choose the depth of its
-  own events only, so it can only reveal or hide what it sent itself.
+  it (denied), and a concurrent one of lower depth counts as before it.
+* The comparison uses the join's depth for every event in the room. A local join takes this server's next
+  depth for the room, but a federated join keeps the depth of the resident's `make_join` template, so the
+  resident chooses it, and a high one counts later events of any server as before the join. Such a resident
+  already holds those events and could send them to anyone, so this gives it nothing it lacked.
 
 ## Links
 

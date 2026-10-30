@@ -217,9 +217,12 @@ on that record, each by the inviter's server, which the spec calls a resident se
   first: the invitee's client acts on what a third server shows it. For an unreachable server `invite_user` queues
   before it stores, and answers 503 with nothing stored when the queue refuses (ADR-0307); never report an invite
   sent that was neither delivered nor queued. createRoom offers all of its remote invites under one
-  `OutboundDeadline` and queues those left when it runs out; never give each offer its own full timeout. Every
-  offer holds an ADR-0079 slot (`admit_client_outbound_proxy_waiting`: one per `POST /invite`, one for all of a
-  createRoom's), waited for within that deadline; with none the invite is queued.
+  `OutboundDeadline` and tries to queue those left when it runs out; never give each offer its own full timeout.
+  Every offer holds an ADR-0079 slot (`admit_client_outbound_proxy_waiting`: one per `POST /invite`, one for all
+  of a createRoom's), waited for within that deadline; with none the invite is queued if the queue takes it. A
+  refused queue fails `POST /invite` (503, nothing stored), while createRoom keeps the room and logs
+  `room.create.invite_not_queued`: never assume every invite left over was queued. An offer whose deadline has
+  passed is not started, even with a slot (`remaining_seconds()` 0 means the outbound default).
 - The invitee's answer is not trusted (ADR-0302): `check_invite_answer` requires the event sent (same
   reference-hash ID) validly signed by the invitee's server, and returns this server's own event with only those
   verified signatures merged in (`with_server_signatures`). That co-signed event is what `invite_user` stores and
