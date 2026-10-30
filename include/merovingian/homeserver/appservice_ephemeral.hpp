@@ -69,9 +69,8 @@ auto push_appservice_ephemeral(AppserviceEphemeralQueue& queue, AppserviceEpheme
 
 // Queues the room's current typing list for every appservice with `receive_ephemeral` that is
 // interested in the room. Called whenever the set of users typing in a room changes
-// (update_room_typing_stream_id_if_changed), which covers local typing, federated typing and the
-// stop-typing a message send implies. Takes runtime.mutex itself (recursive) and wakes the
-// drainer when anything was queued. Makes no network call.
+// (update_room_typing_stream_id_if_changed), which covers local typing, federated typing and expiry.
+// Takes runtime.mutex itself (recursive) and wakes the drainer when anything was queued. Makes no network call.
 auto queue_appservice_typing(HomeserverRuntime& runtime, std::string_view room_id) -> void;
 // As above, with the room's typing list (sorted user IDs) already in hand, so a caller that has
 // grouped the typing table by room (expire_typing) does not rescan it per room.

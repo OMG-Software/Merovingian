@@ -16333,11 +16333,11 @@ SCENARIO("POST /receipt/{type}/{eventId} MUST reject non-members with 403",
 // Endpoint / Section: Typing Notifications
 // URL: ../../docs/matrix-v1.19-spec/client-server-api.md#typing-notifications
 //
-// "The server MUST send stop typing events to remove typing notifications if a
-// user sends a message."  Sending a message while typing=true MUST result in
-// the server clearing (typing=false) the in-room typing state for that user so
-// that remote and local clients no longer show a stale typing indicator.
-SCENARIO("sending a message implicitly clears the sender's typing state per spec",
+// "When the user stops typing, the state change of the `boolean` to `false` should trigger another
+// HTTP request to inform the server that the user has stopped typing." The spec asks the client, not the
+// server, to end typing: sending a message does not end it. (An earlier version of this test cited a
+// "MUST send stop typing events ... if a user sends a message" that v1.19 does not contain.)
+SCENARIO("sending a message leaves the sender's typing state to the client and the timeout",
          "[homeserver][client-server][typing][conformance]")
 {
     GIVEN("alice registered in a room with an active typing indicator")
@@ -16382,7 +16382,7 @@ SCENARIO("sending a message implicitly clears the sender's typing state per spec
                 rt, {"PUT", "/_matrix/client/v3/rooms/" + id + "/send/m.room.message/txn-conformance-typing",
                      alice_token, R"({"msgtype":"m.text","body":"Hello"})"});
 
-            THEN("the send returns 200 and alice's typing state is cleared to false")
+            THEN("the send returns 200 and alice is still typing until the client says otherwise")
             {
                 // Spec MUST: successful message send → 200
                 REQUIRE(send_resp.response.status == 200U);
@@ -16395,9 +16395,9 @@ SCENARIO("sending a message implicitly clears the sender's typing state per spec
                     }
                     return nullptr;
                 }();
-                // Spec MUST: server clears typing indicator when user sends a message
+                // Spec: only the client's `typing: false` (or the timeout) ends typing.
                 REQUIRE(after != nullptr);
-                REQUIRE_FALSE(after->typing); // typing=false after send
+                REQUIRE(after->typing);
             }
         }
     }

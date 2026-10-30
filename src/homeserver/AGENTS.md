@@ -436,6 +436,9 @@ event type, before anything is created. Membership alone is not enough. Alias `P
 
 ## Typing expiry (R13, ADR-0199)
 
+Sending a message does not end the sender's typing (ADR-0298): typing ends only on the client's
+`typing: false`, the timeout, or the expiry job. Do not add a clear-on-send path.
+
 Every path that sets a typing entry to `typing: true` sets its `expires_at`: the client's
 `timeout` (default `default_typing_timeout`, at most `max_typing_timeout`), or
 `federation_typing_timeout` from an inbound EDU. `expire_typing_notifications` removes expired
