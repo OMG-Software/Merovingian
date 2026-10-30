@@ -3079,6 +3079,17 @@ namespace
                                                                  rt->federation.config.query_policy);
         };
 
+        // Takes runtime.mutex itself, unlike the reads above: it seeks the room-and-time index of the store, which
+        // every writer of the store changes under that mutex (ADR-0300). The work is bounded by
+        // database::max_time_search_examined.
+        runtime.federation.timestamp_to_event_query_provider =
+            [rt](std::string_view room_id, std::int64_t ts, database::TimeDirection direction,
+                 std::string_view origin) -> federation::RoomReadResult {
+            auto const guard = std::unique_lock<RuntimeMutex>{rt->mutex};
+            return federation::build_timestamp_to_event_response(rt->database.persistent_store, room_id, ts, direction,
+                                                                 origin);
+        };
+
         runtime.federation.space_hierarchy_provider = [rt](std::string_view room_id, bool suggested_only,
                                                            std::string_view origin) -> std::string {
             return build_federation_space_hierarchy_response(*rt, room_id, suggested_only, origin);
@@ -6220,6 +6231,47 @@ auto wire_federation_callbacks(HomeserverRuntime& runtime) -> void
         response_headers.emplace_back("Content-Type", federation_response.content_type);
     }
     return response(federation_response.status, federation_response.body, std::move(response_headers));
+}
+
+auto fetch_remote_event_into_store(HomeserverRuntime& runtime, std::string_view room_id, std::string_view origin,
+                                   std::string_view event_id, OutboundDeadline const& deadline) -> bool
+{
+    rooms::RoomVersionPolicy const* policy = nullptr;
+    {
+        auto const guard = std::unique_lock<RuntimeMutex>{runtime.mutex};
+        if (runtime.database.persistent_store.events.find_in_room(room_id, event_id) !=
+            runtime.database.persistent_store.events.end())
+        {
+            return true;
+        }
+        policy = stored_room_version_policy(runtime.database.persistent_store, room_id);
+    }
+    if (policy == nullptr)
+    {
+        return false;
+    }
+    auto const& limits = runtime.federation.config.backfill;
+    auto budget = BackfillBudget{0U, limits.max_total_outbound_calls, deadline.end()};
+    auto outbound_calls = std::size_t{0U};
+    auto snapshot_calls = std::size_t{0U};
+    // Spec: server-server-api.md GET /event/{eventId}. The event is verified (signature, hash, auth) before
+    // it is stored, exactly as one recovered for a PDU: first against the state before it, when that is
+    // held, otherwise against the state snapshot the origin names for it (/state_ids).
+    auto const json = fetch_event_by_id(runtime, room_id, origin, event_id, *policy, outbound_calls, budget);
+    if (!json.has_value())
+    {
+        return false;
+    }
+    if (verify_and_store_backfilled_event(runtime, room_id, origin, *json, *policy, budget))
+    {
+        return true;
+    }
+    if (budget.key_resolution_locally_denied)
+    {
+        return false;
+    }
+    return backfill_state_ids_snapshot(runtime, room_id, origin, event_id, *policy, outbound_calls, snapshot_calls,
+                                       budget, HeldPdus{});
 }
 
 } // namespace merovingian::homeserver

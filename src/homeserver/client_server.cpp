@@ -46,6 +46,7 @@
 #include "merovingian/homeserver/presence_service.hpp"
 #include "merovingian/homeserver/push_rule_unread_classifier.hpp"
 #include "merovingian/homeserver/remote_media_fetch_scope.hpp"
+#include "merovingian/homeserver/remote_timestamp_event.hpp"
 #include "merovingian/homeserver/request_lock.hpp"
 #include "merovingian/homeserver/room_power.hpp"
 #include "merovingian/homeserver/room_service.hpp"
@@ -3302,6 +3303,10 @@ namespace
                 else if (suffix == "/hierarchy")
                 {
                     out = normalized + "/hierarchy";
+                }
+                else if (suffix == "/timestamp_to_event")
+                {
+                    out = normalized + "/timestamp_to_event";
                 }
                 else
                 {
@@ -10256,6 +10261,175 @@ namespace
         });
         return dispatch_err(req, rt, 429U, "M_LIMIT_EXCEEDED", "too many concurrent remote lookups, retry shortly",
                             rt.homeserver.client_outbound_proxy_policy.retry_after_ms);
+    }
+
+    // The event GET /rooms/{roomId}/timestamp_to_event found in this server's own history.
+    struct LocalTimestampEvent final
+    {
+        bool found{false};
+        // The search stopped at database::max_time_search_examined with candidates left.
+        bool truncated{false};
+        std::string event_id{};
+        std::int64_t origin_server_ts{0};
+        // The event has a prev_event this server does not hold (the ADR-0289 graph-hole rule): a closer
+        // event may lie in the gap.
+        bool at_gap{false};
+    };
+
+    [[nodiscard]] auto stored_origin_server_ts(database::PersistentEvent const& event) -> std::optional<std::int64_t>
+    {
+        auto const object = parsed_json_object(event.json);
+        auto const* ts = object.has_value() ? integer_member(*object, "origin_server_ts") : nullptr;
+        return ts == nullptr ? std::nullopt : std::optional<std::int64_t>{*ts};
+    }
+
+    // Spec: client-server-api.md GET /rooms/{roomId}/timestamp_to_event. The event nearest `ts` in
+    // `direction` among those `user_id` may see (Room History Visibility: the others are as good as absent,
+    // so the search goes on to the next one). The boundary is inclusive; ties are ordered by (origin_server_ts,
+    // depth, stream_ordering). One seek of the store room-and-time index, at most
+    // database::max_time_search_examined events offered to the visibility check (ADR-0299, ADR-0300).
+    [[nodiscard]] auto find_local_timestamp_event(database::PersistentStore const& store, std::string_view room_id,
+                                                  std::int64_t ts, database::TimeDirection direction,
+                                                  std::string_view user_id) -> LocalTimestampEvent
+    {
+        auto visibility = sync::HistoryVisibility{store, user_id};
+        auto const nearest = store.events.nearest_by_time(
+            room_id, ts, direction,
+            [&visibility](database::PersistentEvent const& event) {
+                return visibility.can_see(event);
+            },
+            database::max_time_search_examined);
+        auto result = LocalTimestampEvent{};
+        result.truncated = nearest.truncated;
+        if (nearest.event == store.events.end())
+        {
+            return result;
+        }
+        auto const event_ts = stored_origin_server_ts(*nearest.event);
+        if (!event_ts.has_value())
+        {
+            return result;
+        }
+        result.found = true;
+        result.event_id = nearest.event->event_id;
+        result.origin_server_ts = *event_ts;
+        result.at_gap = !std::ranges::all_of(nearest.event->prev_event_ids, [&store](std::string const& prev) {
+            return event_is_held(store, prev);
+        });
+        return result;
+    }
+
+    [[nodiscard]] auto timestamp_to_event_response(LocalHttpRequest const& req, ClientServerRuntime const& rt,
+                                                   std::string_view event_id, std::int64_t origin_server_ts)
+        -> DispatchResult
+    {
+        return dispatch_resp(req, rt, 200U,
+                             json_serialize(json_obj({json_member("event_id", json_str(event_id)),
+                                                      json_member("origin_server_ts", json_int(origin_server_ts))})));
+    }
+
+    // GET /_matrix/client/v1/rooms/{roomId}/timestamp_to_event?ts=&dir=
+    // Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#get_matrixclientv1roomsroomidtimestamp_to_event
+    // 200 {event_id, origin_server_ts}; 404 when no event was found; 429 when rate-limited.
+    //
+    // Access (ADR-0299): a user with no read access to the room (sync::room_read_access_for says none and the room
+    // is not world readable) is answered 403 M_FORBIDDEN as /messages and /context do.
+    //
+    // When this server may lack history ("If the server does not have all of the room history and does not have an
+    // event suitably close to the requested timestamp, it can use the corresponding federation endpoint to ask other
+    // servers"), that is when the local answer is absent or the event found has a prev_event this server does not
+    // hold, up to max_timestamp_to_event_servers servers of the room are asked, one at a time. That makes this a
+    // client request that calls another server (src/homeserver/AGENTS.md): it holds an ADR-0079 slot, runs under one
+    // OutboundDeadline and releases the runtime lock for each exchange. With a local answer in hand a refused slot
+    // costs only the remote improvement; without one the client is told 429.
+    [[nodiscard]] auto handle_timestamp_to_event(ClientServerRuntime& rt, LocalHttpRequest const& req,
+                                                 std::unique_lock<RuntimeMutex>& guard, std::string_view user_id,
+                                                 std::string_view room_id) -> DispatchResult
+    {
+        auto const ts_text = query_param_value(req.target, "ts");
+        auto const dir_text = query_param_value(req.target, "dir");
+        if (!ts_text.has_value())
+        {
+            return dispatch_err(req, rt, 400U, "M_MISSING_PARAM", "ts query parameter is required");
+        }
+        if (!dir_text.has_value())
+        {
+            return dispatch_err(req, rt, 400U, "M_MISSING_PARAM", "dir query parameter is required");
+        }
+        auto ts = std::int64_t{0};
+        auto const parsed_ts = std::from_chars(ts_text->data(), ts_text->data() + ts_text->size(), ts);
+        if (ts_text->empty() || parsed_ts.ec != std::errc{} || parsed_ts.ptr != ts_text->data() + ts_text->size())
+        {
+            return dispatch_err(req, rt, 400U, "M_INVALID_PARAM", "ts must be an integer number of milliseconds");
+        }
+        if (*dir_text != "f" && *dir_text != "b")
+        {
+            return dispatch_err(req, rt, 400U, "M_INVALID_PARAM", "dir must be f or b");
+        }
+        auto const direction =
+            *dir_text == "f" ? database::TimeDirection::forwards : database::TimeDirection::backwards;
+        auto const not_found = [&]() {
+            return dispatch_err(req, rt, 404U, "M_NOT_FOUND",
+                                std::string{"Unable to find event from "} + std::to_string(ts) + " in " +
+                                    (direction == database::TimeDirection::forwards ? "forward" : "backward") +
+                                    " direction");
+        };
+
+        auto const& store = rt.homeserver.database.persistent_store;
+        if (!may_read_room_events(store, room_id, user_id))
+        {
+            return dispatch_err(req, rt, 403U, "M_FORBIDDEN", "not a member of this room");
+        }
+        auto local = find_local_timestamp_event(store, room_id, ts, direction, user_id);
+        // A search cut short does not know the room lacks the event, so it asks nobody.
+        if (local.truncated || (local.found && !local.at_gap))
+        {
+            return local.found ? timestamp_to_event_response(req, rt, local.event_id, local.origin_server_ts)
+                               : not_found();
+        }
+
+        auto const servers =
+            timestamp_to_event_candidate_servers(store, room_id, rt.homeserver.config.server().server_name);
+        if (servers.empty())
+        {
+            return local.found ? timestamp_to_event_response(req, rt, local.event_id, local.origin_server_ts)
+                               : not_found();
+        }
+        auto const proxy_slot = admit_client_proxy(rt, req);
+        if (!proxy_slot.has_value())
+        {
+            return local.found ? timestamp_to_event_response(req, rt, local.event_id, local.origin_server_ts)
+                               : client_proxy_refused(req, rt);
+        }
+        auto const deadline = OutboundDeadline{effective_client_outbound_deadline(
+            rt.homeserver, rt.homeserver.client_outbound_proxy_policy.directory_deadline_seconds)};
+        auto const local_ts = local.found ? std::optional<std::int64_t>{local.origin_server_ts} : std::nullopt;
+        auto const acquired =
+            acquire_closer_timestamp_event(rt.homeserver, guard, room_id, servers, ts, direction, local_ts, deadline);
+
+        // The lock was released for the network: judge everything again from the state now. The user may have left
+        // the room, and the event may be one they may not see.
+        if (!may_read_room_events(store, room_id, user_id))
+        {
+            return dispatch_err(req, rt, 403U, "M_FORBIDDEN", "not a member of this room");
+        }
+        local = find_local_timestamp_event(store, room_id, ts, direction, user_id);
+        auto const local_now = local.found ? std::optional<std::int64_t>{local.origin_server_ts} : std::nullopt;
+        if (acquired.has_value())
+        {
+            auto const event = store.events.find_in_room(room_id, *acquired);
+            if (event != store.events.end() && event->status != "rejected" && event->status != "soft_failed" &&
+                sync::HistoryVisibility{store, user_id}.can_see(*event))
+            {
+                // The event decides its own timestamp, never the answer of the server that named it.
+                auto const event_ts = stored_origin_server_ts(*event);
+                if (event_ts.has_value() && timestamp_is_closer(*event_ts, local_now, ts, direction))
+                {
+                    return timestamp_to_event_response(req, rt, event->event_id, *event_ts);
+                }
+            }
+        }
+        return local.found ? timestamp_to_event_response(req, rt, local.event_id, local.origin_server_ts) : not_found();
     }
 
     // GET /_matrix/client/v3/profile/{userId}[/{keyName}] for a user of another server. Asks that server's
@@ -18282,6 +18456,24 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
         {
             auto const result = handle_client_room_summary(rt.homeserver, *user, *target);
             return dispatch_resp(req, rt, result.status, result.body);
+        }
+    }
+
+    // GET /_matrix/client/v1/rooms/{roomId}/timestamp_to_event
+    // Spec: returns the event nearest a timestamp in a direction (added in v1.6).
+    auto constexpr timestamp_to_event_prefix = std::string_view{"/_matrix/client/v1/rooms/"};
+    auto constexpr timestamp_to_event_suffix = std::string_view{"/timestamp_to_event"};
+    if (req.method == "GET" &&
+        request_path.size() > timestamp_to_event_prefix.size() + timestamp_to_event_suffix.size() &&
+        starts_with(request_path, timestamp_to_event_prefix) && request_path.ends_with(timestamp_to_event_suffix))
+    {
+        auto const encoded_room_id = request_path.substr(timestamp_to_event_prefix.size(),
+                                                         request_path.size() - timestamp_to_event_prefix.size() -
+                                                             timestamp_to_event_suffix.size());
+        if (encoded_room_id.find('/') == std::string_view::npos)
+        {
+            return handle_timestamp_to_event(rt, req, guard, *user,
+                                             core::percent_decode_path_component(encoded_room_id));
         }
     }
 
