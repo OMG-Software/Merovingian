@@ -503,6 +503,10 @@ quickly finding everything a given `AGENTS.md` file contributed.
   server signed; whether the joining user met an allow condition is checked by nobody else, so
   signing without the decision lets anyone into a restricted room (CWE-863 Incorrect
   Authorization; conformance audit R04, ADR-0185).
+  A local user's join that no local user can authorise goes to another resident only on the
+  `unable_to_grant` verdict, and the resident's co-signed event is stored only after its
+  event ID, this server's signature and the authorising server's signature are checked
+  (ADR-0287).
   Source: `src/federation/AGENTS.md`, `src/homeserver/AGENTS.md`.
 
 - **Never refuse a received event for a content-hash mismatch; redact it and continue.**
