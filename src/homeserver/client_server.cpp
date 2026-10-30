@@ -5040,6 +5040,39 @@ namespace
         return events;
     }
 
+    // ADR-0289: whether this server holds `event_id` as part of its event graph. A row of any
+    // status counts, rejected and soft-failed events included (they were walked and are only
+    // withheld from clients), except an outlier: stored for auth-chain lookups but not reachable
+    // from the events held, so the stretch between it and them was never received.
+    [[nodiscard]] auto event_is_held(database::PersistentStore const& store, std::string_view event_id) -> bool
+    {
+        auto const row = store.events.find(event_id);
+        return row != store.events.end() && row->status != "outlier";
+    }
+
+    // ADR-0289: the newest event in [first, last) with a hole before it, or `last` when there is
+    // none: an event with a `prev_events` ID that is not held. Only the window's events are read and
+    // each predecessor is one indexed lookup. An outlier is never the answer; its predecessors are
+    // missing by construction and it is not part of the live graph.
+    [[nodiscard]] auto newest_graph_hole(database::PersistentStore const& store,
+                                         std::vector<database::PersistentEvent const*>::const_iterator first,
+                                         std::vector<database::PersistentEvent const*>::const_iterator last)
+        -> std::vector<database::PersistentEvent const*>::const_iterator
+    {
+        for (auto it = last; it != first;)
+        {
+            --it;
+            auto const& event = **it;
+            if (event.status != "outlier" && !std::ranges::all_of(event.prev_event_ids, [&](std::string const& prev) {
+                    return event_is_held(store, prev);
+                }))
+            {
+                return it;
+            }
+        }
+        return last;
+    }
+
     [[nodiscard]] auto joined_membership_changed_since(database::PersistentStore const& store, std::string_view room_id,
                                                        std::string_view user_id, std::uint64_t since_ordering) -> bool
     {
@@ -5527,16 +5560,26 @@ namespace
             });
 
             // Spec MUST: `limited` is true only when older events were dropped
-            // from this window because it exceeded the page size. When so,
+            // from this window: it exceeded the page size, or (ADR-0289) it
+            // crosses a hole in the event graph. When so,
             // return the MOST RECENT `timeline_cap` events (clients render
             // newest history first); otherwise return the whole window. The old
             // code compared the store's total event count to the cap, so any
             // room with more total events than the page size reported
             // limited=true on every sync, making matrix-js-sdk discard and
             // re-fetch the timeline endlessly.
-            auto const limited = matched.size() > timeline_cap;
-            auto const window_begin =
-                limited ? matched.end() - static_cast<std::ptrdiff_t>(timeline_cap) : matched.begin();
+            auto const cut_by_cap = matched.size() > timeline_cap;
+            auto window_begin = std::vector<database::PersistentEvent const*>::const_iterator{
+                cut_by_cap ? matched.end() - static_cast<std::ptrdiff_t>(timeline_cap) : matched.begin()};
+            // ADR-0289: a hole in the room's own event graph (an event whose `prev_events` this server
+            // never received) also leaves a gap the client must fill through /messages. The timeline
+            // starts at the newest such event, which is kept, and is limited. Only the window is read.
+            auto const hole = newest_graph_hole(store, window_begin, matched.end());
+            if (hole != matched.end())
+            {
+                window_begin = hole;
+            }
+            auto const limited = cut_by_cap || hole != matched.end();
 
             auto timeline_events = canonicaljson::Array{};
             for (auto it = window_begin; it != matched.end(); ++it)
@@ -5563,7 +5606,7 @@ namespace
             auto const newly_joined =
                 since_token.has_value() && joined_membership_changed_since(store, room.room_id, user, since_ordering);
             auto state_events = canonicaljson::Array{};
-            if (!since_token.has_value() || newly_joined)
+            if (!since_token.has_value() || newly_joined || limited)
             {
                 auto at_start =
                     window_begin != matched.end()
