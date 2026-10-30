@@ -268,6 +268,7 @@
 * [0283 - A retried /send transaction is given its first answer, kept within a byte budget](0283-a-retried-send-transaction-is-given-its-first-answer.md)
 * [0284 - An auth chain longer than the bound is refused, never truncated](0284-an-auth-chain-longer-than-the-bound-is-refused.md)
 * [0285 - A PDU whose event ID is already stored is answered as handled, before it is verified](0285-a-pdu-already-stored-is-answered-as-handled.md)
+* [0286 - Auth chains this server serves include the create event a room version implies](0286-served-auth-chains-include-the-implied-create-event.md)
 * [0287 - A resident with no local authoriser joins its user through another resident](0287-a-resident-with-no-local-authoriser-joins-its-user-through-another-resident.md)
 * [0288 - A restricted join waits for in-flight room events before it is refused or sent away](0288-a-restricted-join-waits-for-in-flight-room-events-before-it-is-refused-or-sent-away.md)
 * [0289 - A hole in the event graph makes a /sync timeline limited](0289-a-hole-in-the-event-graph-makes-a-sync-timeline-limited.md)
