@@ -1,3 +1,36 @@
+## 0.12.66
+
+Triage of the 200 open SonarQube Cloud issues on main at 0.12.64. PR #547 (0.12.65) fixes the two
+newest. The 41 workflow findings are fixed here. The rest are false positives, closed in SonarQube
+Cloud with the reason recorded on each.
+
+### CI
+
+- Every workflow installs Meson and Ninja with
+  `pip install --require-hashes --only-binary :all: --requirement requirements-build.txt`, as the
+  SonarQube Cloud job already did (ADR-0313). Until now `ci.yml`, `sanitizers.yml`, `fuzz.yml`,
+  `release.yml`, `postgres-integration.yml`, `coverage.yml`, `codeql.yml` and `static-analysis.yml`
+  ran `pip install --upgrade pip` and `pip install --upgrade meson ninja`. That is whatever PyPI
+  served that day, sdists included, and `release.yml` builds the packages it publishes with it
+  (githubactions:S8541, githubactions:S8544).
+- `pages.yml` installs the documentation tools wheel-only too, and `requirements-docs.txt` is
+  compiled with `--only-binary :all:`. The lock is unchanged: every pinned package already ships a
+  wheel.
+- `workflow-pip-locking-tooling` (`tests/tooling/test_workflow_pip_locking.py`) fails on any
+  workflow `pip install` that is not hash-locked, wheel-only and read from a requirements file.
+
+### Platform
+
+- The comments on `/tmp` in the OpenBSD unveil profile (`default_bsd_hardening_profile`, and
+  `docs/hardening.md`) now give the real reason it is there: SQLite's temporary files. They used to
+  name media thumbnail scratch files, but thumbnails pass through pipes. No behaviour changes
+  (cpp:S5443 reviewed as safe).
+
+### Documentation
+
+- The README badges are regrouped: build, analysis and documentation status first, then coverage
+  and review, then the project facts.
+
 ## 0.12.64
 
 Fixes for the failures Complement run 12 found against main at 0.12.63.

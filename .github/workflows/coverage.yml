@@ -74,8 +74,7 @@ jobs:
             perl \
             pkg-config \
             postgresql-client
-          python -m pip install --upgrade pip
-          python -m pip install --upgrade meson ninja
+          python -m pip install --require-hashes --only-binary :all: --requirement requirements-build.txt
 
       - name: Provision migration and runtime roles
         env:

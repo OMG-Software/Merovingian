@@ -202,10 +202,13 @@ auto default_bsd_hardening_profile() -> RuntimeHardeningProfile
 {
     auto profile = default_linux_hardening_profile();
     profile.platform = HardeningPlatform::bsd;
-    // The test harness and several runtime utilities (e.g. media thumbnail
-    // scratch files) rely on the system temporary directory. OpenBSD's
-    // unveil(2) requires every reachable path to be listed, so /tmp is
-    // included alongside the persistent and runtime state directories.
+    // SQLite writes its temporary files (large sorts, temporary tables,
+    // VACUUM) to the first writable of /var/tmp, /usr/tmp and /tmp. OpenBSD's
+    // unveil(2) hides every path not listed, so /tmp is listed alongside the
+    // persistent and runtime state directories. SQLite opens each file with
+    // O_EXCL|O_NOFOLLOW under a random name and unlinks it at once, so another
+    // user's file there is never followed or reused. Nothing else in the
+    // server writes to /tmp: thumbnails pass through pipes.
     profile.filesystem.writable_paths = {"/var/lib/merovingian", "/var/run/merovingian", "/tmp"};
     return profile;
 }

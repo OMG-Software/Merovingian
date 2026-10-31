@@ -340,7 +340,7 @@ To build and preview it locally with the same pinned dependencies CI uses:
 
 ```bash
 python3 -m venv .venv-docs
-.venv-docs/bin/pip install --require-hashes -r requirements-docs.txt
+.venv-docs/bin/pip install --require-hashes --only-binary :all: -r requirements-docs.txt
 .venv-docs/bin/mkdocs build --strict
 .venv-docs/bin/mkdocs serve
 ```

@@ -1,0 +1,73 @@
+#!/usr/bin/env python3
+"""Every `pip install` a workflow runs installs hash-locked wheels from a requirements file
+(ADR-0313). A package resolved at run time can be any release PyPI serves that day, and an
+sdist runs its own setup script while it installs; either way unreviewed code runs in the job,
+next to its token and, in release.yml, inside the packages that are published."""
+from __future__ import annotations
+
+import re
+import unittest
+from pathlib import Path
+
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+WORKFLOWS = REPO_ROOT / ".github" / "workflows"
+
+PIP_INSTALL = re.compile(r"\bpip3?\s+install\b(?P<arguments>.*)$")
+REQUIREMENT = re.compile(r"(?:--requirement|-r)\s+(?P<path>\S+)")
+HASH_LINE = re.compile(r"--hash=sha256:[0-9a-f]{64}")
+
+
+def pip_installs() -> list[tuple[str, int, str]]:
+    """(workflow file name, 1-based line number, the arguments after `pip install`)."""
+    found = []
+    for workflow in sorted(WORKFLOWS.glob("*.yml")):
+        for number, line in enumerate(workflow.read_text(encoding="utf-8").splitlines(), start=1):
+            if line.strip().startswith("#"):
+                continue
+            match = PIP_INSTALL.search(line)
+            if match:
+                found.append((workflow.name, number, match.group("arguments")))
+    return found
+
+
+class WorkflowPipLockingTests(unittest.TestCase):
+    def test_given_the_workflows_when_read_then_some_install_python_packages(self) -> None:
+        # Guards the checks below against passing because the pattern matched nothing.
+        self.assertGreater(len(pip_installs()), 0)
+
+    def test_given_any_workflow_pip_install_when_read_then_it_requires_hashes(self) -> None:
+        for workflow, number, arguments in pip_installs():
+            with self.subTest(workflow=workflow, line=number):
+                self.assertIn("--require-hashes", arguments)
+
+    def test_given_any_workflow_pip_install_when_read_then_it_installs_wheels_only(self) -> None:
+        for workflow, number, arguments in pip_installs():
+            with self.subTest(workflow=workflow, line=number):
+                self.assertIn("--only-binary :all:", arguments)
+
+    def test_given_any_workflow_pip_install_when_read_then_it_reads_a_locked_requirements_file(self) -> None:
+        for workflow, number, arguments in pip_installs():
+            with self.subTest(workflow=workflow, line=number):
+                requirement = REQUIREMENT.search(arguments)
+                self.assertIsNotNone(requirement, "installs named packages instead of a requirements file")
+                # Nothing else may be named on the line: a bare package beside the file is unlocked.
+                self.assertEqual(REQUIREMENT.sub("", arguments).replace("--require-hashes", "")
+                                 .replace("--only-binary :all:", "").strip(), "")
+                locked = REPO_ROOT / requirement.group("path")
+                self.assertTrue(locked.is_file(), f"{locked} is missing")
+                self.assertRegex(locked.read_text(encoding="utf-8"), HASH_LINE)
+
+    def test_given_a_locked_requirements_file_when_read_then_its_regeneration_command_is_wheel_only(self) -> None:
+        # A lock regenerated without --only-binary could take an sdist that the install then refuses.
+        for workflow, number, arguments in pip_installs():
+            requirement = REQUIREMENT.search(arguments)
+            if requirement is None:
+                continue
+            locked = REPO_ROOT / requirement.group("path")
+            with self.subTest(requirements=locked.name):
+                self.assertIn("--only-binary :all:", locked.read_text(encoding="utf-8").splitlines()[1])
+
+
+if __name__ == "__main__":
+    unittest.main()
