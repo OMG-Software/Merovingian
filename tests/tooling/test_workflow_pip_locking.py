@@ -34,11 +34,31 @@ def workflows() -> list[Path]:
     return sorted([*WORKFLOWS.glob("*.yml"), *WORKFLOWS.glob("*.yaml")])
 
 
+def logical_lines(lines: list[str]) -> list[tuple[int, str]]:
+    """(1-based number of the first physical line, the line) with each shell continuation (a line
+    ending in a backslash) joined to the next, as the shell runs them. PyYAML is not available to
+    the tooling tests (see test_workflow_action_pinning.py), so `run:` scripts are read as text."""
+    joined = []
+    start, pending = 0, ""
+    for number, line in enumerate(lines, start=1):
+        if not pending:
+            start = number
+        stripped = line.rstrip()
+        if stripped.endswith("\\"):
+            pending += stripped[:-1] + " "
+            continue
+        joined.append((start, pending + (line.lstrip() if pending else line)))
+        pending = ""
+    if pending:
+        joined.append((start, pending))
+    return joined
+
+
 def pip_install_lines() -> list[tuple[str, int, str, str]]:
     """(workflow file name, 1-based line number, the line, the arguments after `pip install`)."""
     found = []
     for workflow in workflows():
-        for number, line in enumerate(workflow.read_text(encoding="utf-8").splitlines(), start=1):
+        for number, line in logical_lines(workflow.read_text(encoding="utf-8").splitlines()):
             arguments = install_arguments(line)
             if arguments is not None:
                 found.append((workflow.name, number, line, arguments))
@@ -59,6 +79,12 @@ class WorkflowPipLockingTests(unittest.TestCase):
         self.assertEqual(install_arguments("python -m pip --disable-pip-version-check install meson"), " meson")
         self.assertEqual(install_arguments("pip3 -q install -r x.txt"), " -r x.txt")
         self.assertEqual(install_arguments("          python -m pip install --upgrade pip"), " --upgrade pip")
+
+    def test_given_a_shell_line_continuation_when_read_then_the_install_is_found(self) -> None:
+        # The shell runs `pip \` + `install meson` as one command, so the check must too.
+        lines = logical_lines(["          python -m pip \\", "            install meson", "          meson setup build"])
+        self.assertEqual([(number, install_arguments(line)) for number, line in lines],
+                         [(1, " meson"), (3, None)])
 
     def test_given_lines_that_install_nothing_when_parsed_then_none_is_found(self) -> None:
         self.assertIsNone(install_arguments("# python -m pip install meson"))

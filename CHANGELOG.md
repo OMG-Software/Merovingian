@@ -19,9 +19,9 @@ in SonarQube Cloud with its reason as a comment.
   YAML mapping, and the workflow would not load. `docs/dev-environment.md` says how to install the
   docs tools locally on a BSD host, where PyYAML, MarkupSafe and watchdog have no wheels.
 - `workflow-pip-locking-tooling` (`tests/tooling/test_workflow_pip_locking.py`) fails on any
-  workflow `pip install` (`.yml` or `.yaml`, with or without pip options before `install`) that is
-  not hash-locked, wheel-only and read from a requirements file, or that sits on a plain `run:`
-  value containing `: `.
+  workflow `pip install` (`.yml` or `.yaml`, with or without pip options before `install`, and
+  across shell line continuations) that is not hash-locked, wheel-only and read from a requirements
+  file, or that sits on a plain `run:` value containing a colon followed by a space.
 
 ### Platform
 
