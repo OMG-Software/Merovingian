@@ -99,6 +99,8 @@ struct DispatchWorkerSummary final
 //   - `request_shutdown` signals the loop to stop pulling new work and to
 //     exit after the in-flight attempt completes. The remaining queue is
 //     left intact; persisted queue rows can be replayed by the next worker.
+//     It takes the worker's mutex (ADR-0312), so never call it from an
+//     injected callback: the clock runs inside the idle wait with it held.
 //   - `drain` is the cooperative variant: the loop keeps pulling until the
 //     queue is empty *and* shutdown has been requested. Tests use this to
 //     synchronize against a known set of enqueues.
