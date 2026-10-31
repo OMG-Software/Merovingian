@@ -46,10 +46,11 @@ def logical_lines(lines: list[str]) -> list[tuple[int, str]]:
                 # A comment runs to the end of its line; a trailing backslash continues nothing.
                 joined.append((start, line))
                 continue
-        stripped = line.rstrip()
-        if stripped.endswith("\\"):
-            # The shell removes only the backslash-newline pair; option checks split on whitespace.
-            pending += stripped[:-1]
+        if line.endswith("\\"):
+            # Only a backslash that is the line's last character continues it (`\ ` escapes a
+            # space). The shell removes just the backslash-newline pair; option checks split on
+            # whitespace.
+            pending += line[:-1]
             continue
         joined.append((start, pending + line))
         pending = ""
@@ -120,6 +121,13 @@ class WorkflowPipLockingTests(unittest.TestCase):
         lines = logical_lines(["          # build tools \\", "          python -m pip install meson"])
         self.assertEqual([(number, install_arguments(line)) for number, line in lines],
                          [(1, None), (2, " meson")])
+
+    def test_given_a_backslash_followed_by_whitespace_when_read_then_the_next_line_is_its_own_command(self) -> None:
+        # `\ ` escapes the space; only a backslash that is the line's last character continues it.
+        lines = logical_lines(["          python -m pip install meson \\ ",
+                               "            --require-hashes --only-binary :all: -r requirements-build.txt"])
+        self.assertEqual([number for number, _ in lines], [1, 2])
+        self.assertEqual(install_options(install_arguments(lines[0][1]))[0], set())
 
     def test_given_options_split_across_a_continuation_when_parsed_then_they_still_lock_the_install(self) -> None:
         # The shell drops only the backslash-newline, so the next line's indentation stays.
