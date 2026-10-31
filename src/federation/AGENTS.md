@@ -178,7 +178,10 @@ Federation is the highest-risk surface: **all input comes from untrusted remote 
    `finished_clock`), never from its start: a timeout is longer than the early backoffs (ADR-0309). The
    shutdown drain takes only what was due when it began (`run_due`), so a transaction that fails during
    it waits for replay and shutdown ends. The idle wait wakes for a due transaction (`has_due_locked`),
-   never for a queue that is merely not empty.
+   never for a queue that is merely not empty. `request_shutdown` sets `shutdown_requested_` while
+   holding `mutex_` and notifies after releasing it: the wait predicate reads the flag under the lock,
+   so a lock-free store can land between the check and the block and be lost (ADR-0312). Every
+   access to the flag uses the default memory order.
 
 13. **The private-range allowlist is for federation callers only (ADR-0231).**
    `security.federation.allow_private_ip_ranges` lets federation reach named RFC 1918 / ULA

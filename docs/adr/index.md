@@ -292,6 +292,7 @@
 * [0309 - A federation retry waits from the end of the failed attempt](0309-a-federation-retry-waits-from-the-end-of-the-failed-attempt.md)
 * [0310 - Waiting requests and outbound calls share the global cap](0310-waiting-requests-and-outbound-calls-share-the-global-cap.md)
 * [0311 - A former member never sees events that descend from their leave](0311-a-former-member-never-sees-events-that-descend-from-their-leave.md)
+* [0312 - The dispatch worker sets its shutdown flag under its mutex](0312-the-dispatch-worker-sets-its-shutdown-flag-under-its-mutex.md)
 
 ## Proposed Records
 
