@@ -172,7 +172,8 @@ namespace
         };
         auto decoded = std::string{};
         decoded.reserve(name.size());
-        for (auto index = std::size_t{0U}; index < name.size(); ++index)
+        auto index = std::size_t{0U};
+        while (index < name.size())
         {
             if (name[index] == '%' && index + 2U < name.size())
             {
@@ -180,12 +181,14 @@ namespace
                 auto const low = hex_value(name[index + 2U]);
                 if (high >= 0 && low >= 0)
                 {
+                    // A `%XX` escape: one decoded byte for its three characters.
                     decoded.push_back(static_cast<char>((high << 4) | low));
-                    index += 2U;
+                    index += 3U;
                     continue;
                 }
             }
             decoded.push_back(name[index]);
+            ++index;
         }
         return decoded;
     }

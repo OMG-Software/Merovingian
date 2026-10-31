@@ -5355,8 +5355,8 @@ namespace
     {
         auto const stripe = std::hash<std::string>{}(std::string{room_id}) % room_mutex_stripe_count;
         auto const released = RuntimeLockRelease{guard};
+        // Taken and dropped: waits for any ingestion holding the stripe to finish.
         auto const barrier = std::lock_guard{runtime.room_stripe_mutexes[stripe]};
-        std::ignore = barrier;
     }
 
     // True when `event_id` is stored in `room_id` as an accepted join of `user_id` and is the event
