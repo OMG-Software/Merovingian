@@ -345,6 +345,11 @@ python3 -m venv .venv-docs
 .venv-docs/bin/mkdocs serve
 ```
 
+PyPI has no FreeBSD, OpenBSD or NetBSD wheels for PyYAML, MarkupSafe or watchdog, so on a BSD
+host `--only-binary :all:` refuses them. Drop that option there: `--require-hashes` still pins
+the exact sdist, whose hash is in the lock, but its build script runs during installation, which
+CI never allows (ADR-0313).
+
 What the site expects of each branch:
 
 - **A new document needs a navigation entry.** Add it to `nav` in `mkdocs.yml`,

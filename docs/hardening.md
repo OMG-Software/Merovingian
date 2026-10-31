@@ -653,8 +653,10 @@ leave the process seeing only the paths before it (ADR-0162). The calls are:
 2. `unveil(path, "rwc")` for every path in `filesystem.writable_paths` (e.g.
    `/var/lib/merovingian`, `/var/run/merovingian`, `/tmp`). `/tmp` is included
    because SQLite writes its temporary files (large sorts, temporary tables,
-   `VACUUM`) to the first writable of `/var/tmp`, `/usr/tmp` and `/tmp`, and
-   unveil hides the first two. SQLite opens each one `O_EXCL|O_NOFOLLOW` under a
+   `VACUUM`) to the first usable directory of: `sqlite3_temp_directory` (never
+   set by the server), `$SQLITE_TMPDIR`, `$TMPDIR`, `/var/tmp`, `/usr/tmp`,
+   `/tmp` and the working directory. Unveil hides every directory not listed
+   above, so SQLite skips them, and `/tmp` is listed so one is always usable. SQLite opens each one `O_EXCL|O_NOFOLLOW` under a
    random name and unlinks it at once. Nothing else in the server writes to
    `/tmp`; thumbnails pass through pipes.
 3. `unveil("/etc/ssl", "r")` — LibreSSL CA bundle for outbound TLS.

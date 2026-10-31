@@ -116,6 +116,10 @@ fi
 - Every CI workflow installs its Python build tools from hash-locked wheels
   (SonarQube Cloud findings).
 
+* Sat Oct 31 2026 James Chapman <claude@ping.me.uk> - 0.12.65-1
+- The federation dispatch worker always wakes for a shutdown request; the SQLite room
+  snapshot read no longer chains its table reads through `&&` (SonarQube Cloud findings).
+
 * Fri Oct 30 2026 James Chapman <claude@ping.me.uk> - 0.12.64-1
 - Complement run 12 fixes.
 

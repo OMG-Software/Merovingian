@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+#include "../support/joining_threads.hpp"
 #include "federation_signing_test_support.hpp"
 #include "merovingian/database/persistent_store.hpp"
 #include "merovingian/federation/dispatch_worker.hpp"
@@ -12,11 +13,14 @@
 #include <atomic>
 #include <chrono>
 #include <cstdint>
+#include <latch>
 #include <memory>
 #include <optional>
+#include <semaphore>
 #include <string>
 #include <string_view>
 #include <thread>
+#include <tuple>
 
 namespace
 {
@@ -322,6 +326,63 @@ SCENARIO("Dispatch worker respects shutdown after drain", "[federation][dispatch
                 REQUIRE(summary.enqueued >= 1U);
                 REQUIRE(summary.failed >= 1U);
                 REQUIRE(summary.dropped + summary.pending == 1U);
+            }
+        }
+    }
+}
+
+SCENARIO("Dispatch worker shutdown wakes an idle worker that is checking its wait condition",
+         "[federation][dispatch-worker][shutdown][shutdown-wakeup]")
+{
+    // The idle wait checks "shutdown requested, or a transaction is due" and then blocks. A
+    // shutdown request that set the flag and notified between that check and the block was lost,
+    // and the worker slept for the whole idle poll. The clock is read inside that check, so the
+    // test requests shutdown from there.
+    GIVEN("an idle worker with a long idle poll whose clock asks for shutdown from inside the wait check")
+    {
+        auto client = merovingian::http::OutboundClient{};
+        auto resolver = merovingian::federation::DispatchResolver{[](std::string_view) {
+            return std::optional<merovingian::federation::ServerDiscoveryResult>{};
+        }};
+        auto in_wait_check = std::make_shared<std::latch>(1);
+        auto shutdown_requested = std::make_shared<std::binary_semaphore>(0);
+        auto clock_reads = std::make_shared<std::atomic<int>>(0);
+        // With an empty queue the first read is run_once's and the second is the wait check's.
+        auto now_ms = merovingian::federation::DispatchClock{[in_wait_check, shutdown_requested, clock_reads] {
+            if (clock_reads->fetch_add(1) + 1 == 2)
+            {
+                in_wait_check->count_down();
+                // Give the request time to land while the check is running. A request that
+                // waits for the worker's lock cannot finish yet, so this times out.
+                std::ignore = shutdown_requested->try_acquire_for(std::chrono::milliseconds{500});
+            }
+            return std::uint64_t{0U};
+        }};
+        auto sleep_for =
+            merovingian::federation::DispatchSleep{[](std::chrono::milliseconds) { /* no real sleep in tests */ }};
+        auto config = worker_config();
+        config.idle_poll = std::chrono::seconds{20};
+        auto worker = merovingian::federation::DispatchWorker{std::move(config), client, std::move(resolver),
+                                                              std::move(now_ms), std::move(sleep_for)};
+
+        WHEN("shutdown is requested while the worker is checking its wait condition")
+        {
+            auto const started = std::chrono::steady_clock::now();
+            worker.start();
+            {
+                auto requester = merovingian::tests::JoiningThreads{};
+                requester.emplace_back([&worker, in_wait_check, shutdown_requested] {
+                    in_wait_check->wait();
+                    worker.request_shutdown();
+                    shutdown_requested->release();
+                });
+                worker.join();
+            }
+            auto const elapsed = std::chrono::steady_clock::now() - started;
+
+            THEN("the worker stops well within one idle poll")
+            {
+                CHECK(elapsed < std::chrono::seconds{10});
             }
         }
     }

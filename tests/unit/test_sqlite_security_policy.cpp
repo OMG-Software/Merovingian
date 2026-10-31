@@ -8,9 +8,12 @@
 #include "merovingian/platform/landlock_hardening.hpp"
 
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/generators/catch_generators.hpp>
+#include <catch2/generators/catch_generators_range.hpp>
 
 #include <algorithm>
 #include <chrono>
+#include <cstddef>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -21,6 +24,7 @@
 #include <string_view>
 #include <thread>
 #include <tuple>
+#include <vector>
 
 #include <fcntl.h>
 #include <sqlite3.h>
@@ -530,6 +534,118 @@ SCENARIO("A room snapshot reads one committed state of the room even while main 
                 REQUIRE(snapshot.has_value());
                 REQUIRE(snapshot->state.size() == 1U);
                 CHECK(state_names_only_snapshot_events(*snapshot));
+            }
+        }
+    }
+}
+
+SCENARIO("A room snapshot reads its tables in order and stops at the first one it cannot read",
+         "[database][sqlite-locks][room-snapshot-reads]")
+{
+    // The read hook sees each table once, after that table was read. A failed
+    // read ends the snapshot: no later table is read and nothing is returned.
+    GIVEN("main's SQLite database holding a room with one event that is current state")
+    {
+        auto scratch = DatabaseScratch{};
+        auto const path = scratch.path / "store.db";
+        auto const room_id = std::string{"!torn:example.org"};
+        auto const first_id = std::string{"$first:example.org"};
+        {
+            auto main = merovingian::database::open_sqlite_persistent_store(path.string());
+            REQUIRE(main.ok);
+            REQUIRE(merovingian::database::store_room(main.store, {room_id, "@a:example.org"}));
+            REQUIRE(merovingian::database::store_event_with_state(
+                main.store,
+                merovingian::database::PersistentEvent{first_id, room_id, "@a:example.org", topic_event_json(first_id),
+                                                       1U, 1U},
+                merovingian::database::PersistentStateEvent{room_id, "m.room.topic", "", first_id}));
+        }
+        {
+            // One row in every other table the snapshot reads, so each one's rows are loaded.
+            auto writer = RawSqlite{path};
+            REQUIRE(writer.handle != nullptr);
+            REQUIRE(sqlite3_exec(writer.handle.get(),
+                                 "INSERT INTO membership VALUES ('!torn:example.org', '@a:example.org', 'join', '1');"
+                                 "INSERT INTO invites VALUES ('!torn:example.org', '@b:example.org', '@a:example.org', "
+                                 "'$invite:example.org', '', '[]', '2', '');"
+                                 "INSERT INTO state_groups VALUES ('sg-root', '!torn:example.org', '', '0');"
+                                 "INSERT INTO state_groups VALUES ('sg-child', '!torn:example.org', 'sg-root', '1');"
+                                 "INSERT INTO state_group_state VALUES ('sg-root', 'm.room.topic', '', "
+                                 "'$first:example.org');"
+                                 "INSERT INTO event_state_groups VALUES ('$first:example.org', 'sg-root');"
+                                 "INSERT INTO event_edges VALUES ('$first:example.org', '$prev:example.org');"
+                                 "INSERT INTO event_auth VALUES ('$first:example.org', '$create:example.org');"
+                                 "INSERT INTO event_signatures VALUES ('$first:example.org', 'example.org', "
+                                 "'ed25519:a', 'c2ln');",
+                                 nullptr, nullptr, nullptr) == SQLITE_OK);
+        }
+        auto tables_read = std::vector<std::string>{};
+        auto const record_table = [&tables_read](std::string_view table) {
+            tables_read.emplace_back(table);
+        };
+
+        WHEN("every table can be read")
+        {
+            auto const snapshot =
+                merovingian::database::detail::load_room_snapshot_from_sqlite(path.string(), room_id, record_table);
+
+            THEN("the snapshot holds the room and the hook saw every table once, in read order")
+            {
+                REQUIRE(snapshot.has_value());
+                CHECK(snapshot->room.has_value());
+                CHECK(snapshot->memberships.size() == 1U);
+                CHECK(snapshot->invites.size() == 1U);
+                CHECK(snapshot->state.size() == 1U);
+                REQUIRE(snapshot->state_groups.size() == 2U);
+                CHECK(std::ranges::count_if(snapshot->state_groups, [](auto const& group) {
+                          return group.parent_state_group_id == std::optional<std::string>{"sg-root"};
+                      }) == 1);
+                CHECK(std::ranges::count_if(snapshot->state_groups, [](auto const& group) {
+                          return !group.parent_state_group_id.has_value();
+                      }) == 1);
+                CHECK(snapshot->state_group_state.size() == 1U);
+                CHECK(snapshot->event_state_groups.size() == 1U);
+                REQUIRE(snapshot->events.size() == 1U);
+                CHECK(snapshot->events.front().prev_event_ids == std::vector<std::string>{"$prev:example.org"});
+                CHECK(snapshot->events.front().auth_event_ids == std::vector<std::string>{"$create:example.org"});
+                CHECK(snapshot->events.front().signatures.size() == 1U);
+                CHECK(tables_read == std::vector<std::string>{"rooms", "membership", "invites", "events",
+                                                              "current_state", "state_groups", "state_group_state",
+                                                              "event_state_groups", "event_edges", "event_auth",
+                                                              "event_signatures"});
+            }
+        }
+
+        WHEN("one of its tables cannot be read")
+        {
+            auto const all_tables = std::vector<std::string>{"rooms",
+                                                             "membership",
+                                                             "invites",
+                                                             "events",
+                                                             "current_state",
+                                                             "state_groups",
+                                                             "state_group_state",
+                                                             "event_state_groups",
+                                                             "event_edges",
+                                                             "event_auth",
+                                                             "event_signatures"};
+            auto const failed = GENERATE(range(std::size_t{0U}, std::size_t{11U}));
+            {
+                auto writer = RawSqlite{path};
+                REQUIRE(writer.handle != nullptr);
+                auto const drop = "DROP TABLE " + all_tables[failed];
+                REQUIRE(sqlite3_exec(writer.handle.get(), drop.c_str(), nullptr, nullptr, nullptr) == SQLITE_OK);
+            }
+            auto const snapshot =
+                merovingian::database::detail::load_room_snapshot_from_sqlite(path.string(), room_id, record_table);
+
+            THEN("no snapshot is returned and the hook saw only the tables read before it")
+            {
+                INFO("failed table: " << all_tables[failed]);
+                CHECK_FALSE(snapshot.has_value());
+                CHECK(tables_read ==
+                      std::vector<std::string>{all_tables.begin(),
+                                               all_tables.begin() + static_cast<std::ptrdiff_t>(failed)});
             }
         }
     }

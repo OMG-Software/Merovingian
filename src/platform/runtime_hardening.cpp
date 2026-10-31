@@ -203,9 +203,11 @@ auto default_bsd_hardening_profile() -> RuntimeHardeningProfile
     auto profile = default_linux_hardening_profile();
     profile.platform = HardeningPlatform::bsd;
     // SQLite writes its temporary files (large sorts, temporary tables,
-    // VACUUM) to the first writable of /var/tmp, /usr/tmp and /tmp. OpenBSD's
-    // unveil(2) hides every path not listed, so /tmp is listed alongside the
-    // persistent and runtime state directories. SQLite opens each file with
+    // VACUUM) to the first usable directory of: sqlite3_temp_directory (never
+    // set here), $SQLITE_TMPDIR, $TMPDIR, /var/tmp, /usr/tmp, /tmp and the
+    // working directory. OpenBSD's unveil(2) hides every path not listed, so a
+    // directory outside this list is skipped, and /tmp is listed alongside the
+    // persistent and runtime state directories so one is always usable. SQLite opens each file with
     // O_EXCL|O_NOFOLLOW under a random name and unlinks it at once, so another
     // user's file there is never followed or reused. Nothing else in the
     // server writes to /tmp: thumbnails pass through pipes.
