@@ -560,6 +560,25 @@ SCENARIO("A room snapshot reads its tables in order and stops at the first one i
                                                        1U, 1U},
                 merovingian::database::PersistentStateEvent{room_id, "m.room.topic", "", first_id}));
         }
+        {
+            // One row in every other table the snapshot reads, so each one's rows are loaded.
+            auto writer = RawSqlite{path};
+            REQUIRE(writer.handle != nullptr);
+            REQUIRE(sqlite3_exec(writer.handle.get(),
+                                 "INSERT INTO membership VALUES ('!torn:example.org', '@a:example.org', 'join', '1');"
+                                 "INSERT INTO invites VALUES ('!torn:example.org', '@b:example.org', '@a:example.org', "
+                                 "'$invite:example.org', '', '[]', '2', '');"
+                                 "INSERT INTO state_groups VALUES ('sg-root', '!torn:example.org', '', '0');"
+                                 "INSERT INTO state_groups VALUES ('sg-child', '!torn:example.org', 'sg-root', '1');"
+                                 "INSERT INTO state_group_state VALUES ('sg-root', 'm.room.topic', '', "
+                                 "'$first:example.org');"
+                                 "INSERT INTO event_state_groups VALUES ('$first:example.org', 'sg-root');"
+                                 "INSERT INTO event_edges VALUES ('$first:example.org', '$prev:example.org');"
+                                 "INSERT INTO event_auth VALUES ('$first:example.org', '$create:example.org');"
+                                 "INSERT INTO event_signatures VALUES ('$first:example.org', 'example.org', "
+                                 "'ed25519:a', 'c2ln');",
+                                 nullptr, nullptr, nullptr) == SQLITE_OK);
+        }
         auto tables_read = std::vector<std::string>{};
         auto const record_table = [&tables_read](std::string_view table) {
             tables_read.emplace_back(table);
@@ -574,8 +593,22 @@ SCENARIO("A room snapshot reads its tables in order and stops at the first one i
             {
                 REQUIRE(snapshot.has_value());
                 CHECK(snapshot->room.has_value());
-                CHECK(snapshot->events.size() == 1U);
+                CHECK(snapshot->memberships.size() == 1U);
+                CHECK(snapshot->invites.size() == 1U);
                 CHECK(snapshot->state.size() == 1U);
+                REQUIRE(snapshot->state_groups.size() == 2U);
+                CHECK(std::ranges::count_if(snapshot->state_groups, [](auto const& group) {
+                          return group.parent_state_group_id == std::optional<std::string>{"sg-root"};
+                      }) == 1);
+                CHECK(std::ranges::count_if(snapshot->state_groups, [](auto const& group) {
+                          return !group.parent_state_group_id.has_value();
+                      }) == 1);
+                CHECK(snapshot->state_group_state.size() == 1U);
+                CHECK(snapshot->event_state_groups.size() == 1U);
+                REQUIRE(snapshot->events.size() == 1U);
+                CHECK(snapshot->events.front().prev_event_ids == std::vector<std::string>{"$prev:example.org"});
+                CHECK(snapshot->events.front().auth_event_ids == std::vector<std::string>{"$create:example.org"});
+                CHECK(snapshot->events.front().signatures.size() == 1U);
                 CHECK(tables_read == std::vector<std::string>{"rooms", "membership", "invites", "events",
                                                               "current_state", "state_groups", "state_group_state",
                                                               "event_state_groups", "event_edges", "event_auth",

@@ -1218,14 +1218,15 @@ namespace
                                                detail::RoomSnapshotReadHook const& after_table)
         -> std::optional<RoomReloadSnapshot>
     {
-        auto const room_id_str = std::string{room_id};
+        auto const params = std::vector<std::string>{std::string{room_id}};
         // Reads one table's rows of this room, then tells the hook. False when the read failed: the
         // caller then returns no snapshot, so no later table is read. Not generic, so the eleven
-        // reads share one instantiation.
-        auto const read_table = [&connection, &room_id_str, &after_table](std::string_view table,
-                                                                          std::string const& sql,
-                                                                          std::function<void(sqlite3_stmt&)> load_row) {
-            if (!load_rows_bound(connection, sql, {room_id_str}, std::move(load_row)))
+        // reads share one instantiation, and the SQL text and parameters are built here, not at
+        // each call.
+        auto const read_table = [&connection, &params,
+                                 &after_table](std::string_view table, std::string_view sql,
+                                               std::function<void(sqlite3_stmt&)> const& load_row) {
+            if (!load_rows_bound(connection, std::string{sql}, params, load_row))
             {
                 return false;
             }
@@ -1239,8 +1240,10 @@ namespace
 
         if (!read_table("rooms", "SELECT room_id, creator_user_id, directory_public FROM rooms WHERE room_id = ?1",
                         [&](sqlite3_stmt& row) {
-                            snapshot.room = PersistentRoom{column_text(row, 0), column_text(row, 1),
-                                                           text_is_true(column_text(row, 2))};
+                            auto& room = snapshot.room.emplace();
+                            room.room_id = column_text(row, 0);
+                            room.creator_user_id = column_text(row, 1);
+                            room.directory_public = text_is_true(column_text(row, 2));
                         }))
         {
             return std::nullopt;
@@ -1248,8 +1251,11 @@ namespace
         if (!read_table("membership",
                         "SELECT room_id, user_id, membership, stream_ordering FROM membership WHERE room_id = ?1",
                         [&](sqlite3_stmt& row) {
-                            snapshot.memberships.push_back({column_text(row, 0), column_text(row, 1),
-                                                            column_text(row, 2), parse_u64(column_text(row, 3))});
+                            auto& membership = snapshot.memberships.emplace_back();
+                            membership.room_id = column_text(row, 0);
+                            membership.user_id = column_text(row, 1);
+                            membership.membership = column_text(row, 2);
+                            membership.stream_ordering = parse_u64(column_text(row, 3));
                         }))
         {
             return std::nullopt;
@@ -1258,10 +1264,15 @@ namespace
                         "SELECT room_id, user_id, sender_user_id, event_id, signed_event_json, "
                         "invite_state_json, stream_ordering, resident_server FROM invites WHERE room_id = ?1",
                         [&](sqlite3_stmt& row) {
-                            snapshot.invites.push_back({column_text(row, 0), column_text(row, 1), column_text(row, 2),
-                                                        column_text(row, 3), column_text(row, 4),
-                                                        parse_invite_state_events_json(column_text(row, 5)),
-                                                        parse_u64(column_text(row, 6)), column_text(row, 7)});
+                            auto& invite = snapshot.invites.emplace_back();
+                            invite.room_id = column_text(row, 0);
+                            invite.user_id = column_text(row, 1);
+                            invite.sender_user_id = column_text(row, 2);
+                            invite.event_id = column_text(row, 3);
+                            invite.signed_event_json = column_text(row, 4);
+                            invite.invite_state_events_json = parse_invite_state_events_json(column_text(row, 5));
+                            invite.stream_ordering = parse_u64(column_text(row, 6));
+                            invite.resident_server = column_text(row, 7);
                         }))
         {
             return std::nullopt;
@@ -1270,14 +1281,14 @@ namespace
                         "SELECT event_id, room_id, sender_user_id, json, depth, stream_ordering, status "
                         "FROM events WHERE room_id = ?1",
                         [&](sqlite3_stmt& row) {
-                            auto event = PersistentEvent{column_text(row, 0),
-                                                         column_text(row, 1),
-                                                         column_text(row, 2),
-                                                         column_text(row, 3),
-                                                         parse_u64(column_text(row, 4)),
-                                                         parse_u64(column_text(row, 5))};
+                            auto& event = snapshot.events.emplace_back();
+                            event.event_id = column_text(row, 0);
+                            event.room_id = column_text(row, 1);
+                            event.sender_user_id = column_text(row, 2);
+                            event.json = column_text(row, 3);
+                            event.depth = parse_u64(column_text(row, 4));
+                            event.stream_ordering = parse_u64(column_text(row, 5));
                             event.status = column_text(row, 6);
-                            snapshot.events.push_back(std::move(event));
                         }))
         {
             return std::nullopt;
@@ -1286,8 +1297,11 @@ namespace
                         "SELECT room_id, event_type, state_key, event_id FROM current_state WHERE "
                         "room_id = ?1",
                         [&](sqlite3_stmt& row) {
-                            snapshot.state.push_back(
-                                {column_text(row, 0), column_text(row, 1), column_text(row, 2), column_text(row, 3)});
+                            auto& entry = snapshot.state.emplace_back();
+                            entry.room_id = column_text(row, 0);
+                            entry.event_type = column_text(row, 1);
+                            entry.state_key = column_text(row, 2);
+                            entry.event_id = column_text(row, 3);
                         }))
         {
             return std::nullopt;
@@ -1315,8 +1329,11 @@ namespace
                         "SELECT s.state_group_id, s.event_type, s.state_key, s.event_id FROM state_group_state s "
                         "INNER JOIN state_groups g ON g.state_group_id = s.state_group_id WHERE g.room_id = ?1",
                         [&](sqlite3_stmt& row) {
-                            snapshot.state_group_state.push_back(
-                                {column_text(row, 0), column_text(row, 1), column_text(row, 2), column_text(row, 3)});
+                            auto& entry = snapshot.state_group_state.emplace_back();
+                            entry.state_group_id = column_text(row, 0);
+                            entry.event_type = column_text(row, 1);
+                            entry.state_key = column_text(row, 2);
+                            entry.event_id = column_text(row, 3);
                         }))
         {
             return std::nullopt;
@@ -1325,7 +1342,9 @@ namespace
                         "SELECT m.event_id, m.state_group_id FROM event_state_groups m "
                         "INNER JOIN events ev ON ev.event_id = m.event_id WHERE ev.room_id = ?1",
                         [&](sqlite3_stmt& row) {
-                            snapshot.event_state_groups.push_back({column_text(row, 0), column_text(row, 1)});
+                            auto& mapping = snapshot.event_state_groups.emplace_back();
+                            mapping.event_id = column_text(row, 0);
+                            mapping.state_group_id = column_text(row, 1);
                         }))
         {
             return std::nullopt;
@@ -1343,7 +1362,9 @@ namespace
                         "SELECT e.event_id, e.prev_event_id FROM event_edges e "
                         "INNER JOIN events ev ON ev.event_id = e.event_id WHERE ev.room_id = ?1",
                         [&](sqlite3_stmt& row) {
-                            relations.event_edges.push_back({column_text(row, 0), column_text(row, 1)});
+                            auto& edge = relations.event_edges.emplace_back();
+                            edge.event_id = column_text(row, 0);
+                            edge.prev_event_id = column_text(row, 1);
                         }))
         {
             return std::nullopt;
@@ -1352,7 +1373,9 @@ namespace
                         "SELECT e.event_id, e.auth_event_id FROM event_auth e "
                         "INNER JOIN events ev ON ev.event_id = e.event_id WHERE ev.room_id = ?1",
                         [&](sqlite3_stmt& row) {
-                            relations.event_auth.push_back({column_text(row, 0), column_text(row, 1)});
+                            auto& auth = relations.event_auth.emplace_back();
+                            auth.event_id = column_text(row, 0);
+                            auth.auth_event_id = column_text(row, 1);
                         }))
         {
             return std::nullopt;
@@ -1361,8 +1384,11 @@ namespace
                         "SELECT e.event_id, e.server_name, e.key_id, e.signature FROM event_signatures e "
                         "INNER JOIN events ev ON ev.event_id = e.event_id WHERE ev.room_id = ?1",
                         [&](sqlite3_stmt& row) {
-                            relations.event_signatures.push_back(
-                                {column_text(row, 0), column_text(row, 1), column_text(row, 2), column_text(row, 3)});
+                            auto& signature = relations.event_signatures.emplace_back();
+                            signature.event_id = column_text(row, 0);
+                            signature.server_name = column_text(row, 1);
+                            signature.key_id = column_text(row, 2);
+                            signature.signature = column_text(row, 3);
                         }))
         {
             return std::nullopt;
