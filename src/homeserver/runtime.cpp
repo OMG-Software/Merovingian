@@ -588,9 +588,8 @@ namespace
 {
 
     // Gives the room a new typing stream position and tells appservices its typing list
-    // `current` (sorted). Every typing change (local, federated, cleared by a message send, or
-    // expired) passes through here, so this is the one place appservices that receive ephemeral
-    // data are told (R08, ADR-0190).
+    // `current` (sorted). Every typing change (local, federated or expired) passes through here, so this is the one
+    // place appservices that receive ephemeral data are told (R08, ADR-0190).
     auto advance_room_typing_stream_id(HomeserverRuntime& rt, std::string_view room_id,
                                        std::vector<std::string> const& current) -> std::uint64_t
     {
@@ -1175,6 +1174,8 @@ auto start_runtime(RuntimeStartOptions opts) -> RuntimeStartResult
     // (duplicate id/as_token, which the spec says the homeserver MUST
     // enforce) drops every registration, since routing would otherwise be
     // ambiguous.
+    // The federation worker loads none (ADR-0296): see RuntimeStartOptions::load_appservices.
+    if (opts.load_appservices)
     {
         auto loaded =
             appservice::load_registrations(config.appservice().registration_files, config.server().server_name);

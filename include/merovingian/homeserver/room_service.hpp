@@ -4,6 +4,7 @@
 
 #include "merovingian/canonicaljson/value.hpp"
 #include "merovingian/core/secret_buffer.hpp"
+#include "merovingian/events/event.hpp"
 #include "merovingian/federation/inbound_ingestion.hpp"
 #include "merovingian/federation/outbound_transaction.hpp"
 #include "merovingian/homeserver/runtime.hpp"
@@ -66,8 +67,67 @@ struct ValidatedMakeLeaveResponse final
                              canonicaljson::Object const* third_party_signed = nullptr) -> OperationResult;
 [[nodiscard]] auto leave_room(HomeserverRuntime& runtime, std::string_view access_token, std::string_view room_id)
     -> OperationResult;
+// Invites `target_user_id`. For a user of another server the invite is first offered to that user's server
+// (Server-Server API, "Inviting to a room": "a request to that homeserver to have the event signed and
+// verified must be made") and only stored, and sent to the room's other servers, once that server has
+// accepted it. A server that cannot be reached is asked again later by the outbound queue; one that
+// refuses the invite fails the request. The offer is a client-triggered outbound call: it holds an ADR-0079
+// slot of `client_key` (`rate_limit_client_key`; empty is one shared bucket), waiting for one within the
+// offer's deadline, and with none the invite goes to the queue as for an unreachable server (ADR-0307).
 [[nodiscard]] auto invite_user(HomeserverRuntime& runtime, std::string_view access_token, std::string_view room_id,
-                               std::string_view target_user_id, std::string_view reason = {}) -> OperationResult;
+                               std::string_view target_user_id, std::string_view reason = {},
+                               std::string_view client_key = {}) -> OperationResult;
+
+// How the server of an invited user answered `PUT /_matrix/federation/v2/invite`.
+enum class RemoteInviteOutcome : std::uint8_t
+{
+    // It signed and returned the event, and the answer was checked: the same event, validly signed by
+    // that server (`cosigned_event_json`).
+    delivered,
+    // It said no (a 4xx other than 408 and 429), or a 2xx whose event is not the invite with that server's
+    // valid signature. `status` and `reason` are what to tell the client.
+    refused,
+    // It gave no usable answer; the invite should be queued for another attempt.
+    unreachable,
+};
+
+struct RemoteInviteResult final
+{
+    RemoteInviteOutcome outcome{RemoteInviteOutcome::unreachable};
+    std::uint16_t status{502U};
+    std::string reason{};
+    // Only for `delivered`: the event this server sent with the invited server's verified signatures
+    // merged into its `signatures` (nothing else of the event changed), and those signatures. This, not
+    // the event as first composed, is what is stored and sent to the room's other servers
+    // (Server-Server API, "Inviting to a room": "Once the event has been signed by both the inviting
+    // homeserver and the invited homeserver, it can be sent to all of the servers in the room").
+    std::string cosigned_event_json{};
+    std::vector<events::EventSignature> cosigned_signatures{};
+};
+
+// Sends the invite event to the invited user's server and waits for its answer. Called with
+// `runtime.mutex` held through `guard`: it is released for the exchange and held again on return, so
+// nothing read from the runtime before the call may be used after it without being found again. The
+// event is not stored by this call. `timeout_seconds` bounds the exchange (0: the outbound default); a
+// caller offering several invites in one request draws it from one deadline (ADR-0307).
+[[nodiscard]] auto deliver_remote_invite(HomeserverRuntime& runtime, std::unique_lock<RuntimeMutex>& guard,
+                                         std::string_view room_id, std::string_view invitee_server,
+                                         std::string_view event_id, std::string_view event_json,
+                                         std::uint32_t timeout_seconds) -> RemoteInviteResult;
+
+// Replaces the stored copy of an invite that is already stored (createRoom stores its invites before
+// they are offered) by `cosigned_event_json`, the copy `deliver_remote_invite` returned. False when the
+// event is not stored in `room_id` or the write fails. Call with `runtime.mutex` held.
+[[nodiscard]] auto store_cosigned_invite(HomeserverRuntime& runtime, std::string_view room_id,
+                                         std::string_view event_id, std::string_view cosigned_event_json) -> bool;
+
+// Queues the invite for the outbound dispatch worker, which retries it. For an invite whose server could
+// not be reached by `deliver_remote_invite`. False when nothing was queued: no dispatch worker, or the worker
+// refused it (shutting down, queue full, the destination's share full); the invite then reaches nobody, so
+// the caller must not report it sent. Call with `runtime.mutex` held.
+[[nodiscard]] auto queue_remote_invite(HomeserverRuntime& runtime, std::string_view room_id,
+                                       std::string_view invitee_server, std::string_view event_id,
+                                       std::string_view event_json) -> bool;
 // Creates a local-only third-party identifier invite. Generates a random token
 // and an Ed25519 keypair, then composes and persists an
 // `m.room.third_party_invite` state event whose `state_key` is the token and
@@ -322,8 +382,11 @@ struct SendJoinStateIngestResult final
 // Refreshes the cached /_matrix/key/v2/server response. On success the result value
 // carries the new active key_id.
 [[nodiscard]] auto rotate_server_signing_key(HomeserverRuntime& runtime) -> OperationResult;
+// `origin_server_ts`, when given, is stamped on the event instead of the event clock's reading
+// (Application Service API, "Timestamp massaging"). The caller has validated it; ordering is unchanged.
 [[nodiscard]] auto send_event(HomeserverRuntime& runtime, std::string_view access_token, std::string_view room_id,
-                              std::string_view event_json) -> OperationResult;
+                              std::string_view event_json, std::optional<std::int64_t> origin_server_ts = std::nullopt)
+    -> OperationResult;
 // Spec (Client-Server API, "Events on Change of Profile Information"): when a user changes their
 // display name or avatar URL, "an m.room.member event (with a join membership) is sent to every
 // room the user is a member of, to update the displayname and avatar_url". Sends that event,

@@ -1,5 +1,5 @@
 Name:           merovingian
-Version:        0.12.63
+Version:        0.12.64
 Release:        1%{?dist}
 Summary:        Secure Matrix Protocol homeserver
 
@@ -101,6 +101,9 @@ fi
 %{_sysconfdir}/merovingian/merovingian.conf.example
 
 %changelog
+* Fri Oct 30 2026 James Chapman <claude@ping.me.uk> - 0.12.64-1
+- Complement run 12 fixes.
+
 * Thu Oct 29 2026 James Chapman <claude@ping.me.uk> - 0.12.63-1
 - Complement run 10 fixes.
 

@@ -53,7 +53,9 @@ enum class HistoryVisibilityValue
 //
 // "State at the event" is the state group recorded for the event (ADR-0064), i.e. the state
 // immediately after it. "Before" for the two special cases is the predecessor recorded in
-// `state_transitions`. "After the event" is stream ordering.
+// `state_transitions`. For rule 3 (`shared`), "after the event was sent" is the room's history: the
+// user's newest accepted join is deeper than the event (ADR-0308), never a later stream ordering. Rule 2
+// for an event with no state group still follows the user's membership timeline in stream order.
 //
 // One instance serves one request: it caches per state group, so a page of events costs one
 // state lookup per distinct group rather than one per event, and it builds its indexes over
@@ -91,6 +93,11 @@ public:
     // index (ADR-0215), with no walk of the events.
     [[nodiscard]] auto find_event(std::string_view event_id) -> database::PersistentEvent const*;
 
+    // True when `event_id` has a recorded state group (ADR-0064): its state was computed from its own
+    // prev_events, which is what separates an event placed in the graph from a state or auth-chain
+    // outlier (ADR-0290). An index lookup.
+    [[nodiscard]] auto has_state_group(std::string_view event_id) -> bool;
+
 private:
     struct GroupView final
     {
@@ -117,7 +124,23 @@ private:
                                        std::string_view state_key) -> LookupResult;
     [[nodiscard]] auto view_of_group(std::string_view group_id) -> GroupView const&;
     [[nodiscard]] auto content_string(std::string_view event_id, std::string_view key) -> std::optional<std::string>;
-    [[nodiscard]] auto max_join_ordering(std::string_view room_id) -> std::optional<std::uint64_t>;
+    // The depth of the user's newest accepted join in the room (ADR-0308): its place in the room's history.
+    [[nodiscard]] auto max_join_depth(std::string_view room_id) -> std::optional<std::uint64_t>;
+    // ADR-0311: the user's departure from a room they are no longer in: the stream ordering of their current
+    // `leave` or `ban` membership row, and that leave's event when it is held as their current member state.
+    struct Departure final
+    {
+        std::uint64_t ordering{0U};
+        std::optional<std::string> event_id{};
+    };
+    // The user's departure from `room_id`, or nullopt while their membership is anything but leave or ban.
+    [[nodiscard]] auto departure_of(std::string_view room_id) -> std::optional<Departure> const&;
+    // Whether `event` may descend from `departure` (ADR-0311): a walk back through its held prev_events that
+    // stops at events stored before the departure (none of them can descend from it) and at events not held.
+    // True when the walk reaches the leave, when the leave event is not held (nothing to walk to), or when it
+    // runs past max_departure_walk events (fail closed).
+    [[nodiscard]] auto may_descend_from_departure(database::PersistentEvent const& event, Departure const& departure)
+        -> bool;
     // One entry of the user's own membership in a room: the stream ordering of an
     // m.room.member event of theirs and the membership it set.
     struct MembershipStep final
@@ -149,7 +172,8 @@ private:
 
     std::unordered_map<std::string, GroupView> group_views_{};
     std::unordered_map<std::string, std::optional<std::string>> content_cache_{};
-    std::unordered_map<std::string, std::optional<std::uint64_t>> join_orderings_{};
+    std::unordered_map<std::string, std::optional<std::uint64_t>> join_depths_{};
+    std::unordered_map<std::string, std::optional<Departure>> departures_{};
     std::unordered_map<std::string, std::optional<std::vector<MembershipStep>>> membership_timelines_{};
 };
 

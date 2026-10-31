@@ -4,6 +4,7 @@
 #include "merovingian/homeserver/http_server.hpp"
 
 #include "merovingian/config/config.hpp"
+#include "merovingian/core/query_params.hpp"
 #include "merovingian/core/socket_handle.hpp"
 #include "merovingian/homeserver/federation_proxy.hpp"
 #include "merovingian/homeserver/local_http_router.hpp"
@@ -1002,6 +1003,83 @@ namespace
         return std::string{authorization.substr(prefix.size())};
     }
 
+    // The routes on which an `access_token` query parameter is a client
+    // credential: the client-server API and the media repository. Federation
+    // requests are authenticated by X-Matrix and never read it here (the
+    // federation OpenID userinfo route reads its own parameter).
+    [[nodiscard]] auto carries_query_access_token(std::string_view target) noexcept -> bool
+    {
+        return target.starts_with("/_matrix/client/") || target.starts_with("/_matrix/media/");
+    }
+
+    // The percent-decoded value of the first `access_token` query parameter,
+    // or empty when there is none.
+    [[nodiscard]] auto query_access_token(std::string_view target) -> std::string
+    {
+        auto const query_pos = target.find('?');
+        if (query_pos == std::string_view::npos)
+        {
+            return {};
+        }
+        auto query = target.substr(query_pos + 1U);
+        while (!query.empty())
+        {
+            auto const amp = query.find('&');
+            auto const pair = query.substr(0U, amp);
+            auto const equals = pair.find('=');
+            if (equals != std::string_view::npos && core::percent_decode(pair.substr(0U, equals)) == "access_token")
+            {
+                return core::percent_decode(pair.substr(equals + 1U));
+            }
+            if (amp == std::string_view::npos)
+            {
+                break;
+            }
+            query.remove_prefix(amp + 1U);
+        }
+        return {};
+    }
+
+    // `target` with every `access_token` query parameter removed, and the `?` too when nothing is
+    // left after it (ADR-0295). Handlers match exact paths such as `/_matrix/client/v3/createRoom`,
+    // and a credential has no business in the target routing, rate-limit keys and logs see.
+    [[nodiscard]] auto without_query_access_token(std::string_view target) -> std::string
+    {
+        auto const query_pos = target.find('?');
+        if (query_pos == std::string_view::npos)
+        {
+            return std::string{target};
+        }
+        auto result = std::string{target.substr(0U, query_pos)};
+        auto kept = std::string{};
+        auto query = target.substr(query_pos + 1U);
+        while (true)
+        {
+            auto const amp = query.find('&');
+            auto const pair = query.substr(0U, amp);
+            auto const name = pair.substr(0U, pair.find('='));
+            if (!pair.empty() && core::percent_decode(name) != "access_token")
+            {
+                if (!kept.empty())
+                {
+                    kept.push_back('&');
+                }
+                kept.append(pair);
+            }
+            if (amp == std::string_view::npos)
+            {
+                break;
+            }
+            query.remove_prefix(amp + 1U);
+        }
+        if (!kept.empty())
+        {
+            result.push_back('?');
+            result.append(kept);
+        }
+        return result;
+    }
+
     [[nodiscard]] auto build_local_request(http::RequestHead const& head, std::string body, std::string_view peer_addr)
         -> LocalHttpRequest
     {
@@ -1016,6 +1094,19 @@ namespace
         if (!authorization.empty())
         {
             request.access_token = extract_bearer_token(authorization);
+        }
+        else if (carries_query_access_token(request.target))
+        {
+            // Spec v1.19 client-server-api.md "Using access tokens": "Clients may
+            // alternatively provide the access token via a query string parameter:
+            // `access_token=TheTokenHere`. [...] Homeservers MUST support both
+            // methods." Complement's blueprint runner sends every token this way.
+            request.access_token = query_access_token(request.target);
+        }
+        if (carries_query_access_token(request.target))
+        {
+            // Read (or overridden by the header) either way: the parameter leaves the target.
+            request.target = without_query_access_token(request.target);
         }
         request.remote_addr = std::string{peer_addr};
         return request;

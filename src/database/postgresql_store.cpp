@@ -2510,6 +2510,66 @@ namespace
             }
         }
 
+        // The room's state groups, their own entries and its events' group mappings (ADR-0064), from
+        // the same snapshot. Federation reads judge an event on the group recorded for it and treat one
+        // without a group as invisible, so these must travel with the events.
+        auto state_groups = connection.execute(
+            {"postgresql_reload_state_groups",
+             "SELECT state_group_id, room_id, parent_state_group_id, delta_depth FROM state_groups WHERE room_id = $1",
+             {{room_id_str, false}}});
+        if (!state_groups.ok)
+        {
+            return std::nullopt;
+        }
+        notify_read("state_groups");
+        for (auto const& row : state_groups.rows)
+        {
+            if (row.size() >= 4U)
+            {
+                auto group = PersistentStateGroup{};
+                group.state_group_id = row[0];
+                group.room_id = row[1];
+                group.parent_state_group_id = row[2].empty() ? std::nullopt : std::optional<std::string>{row[2]};
+                group.delta_depth = static_cast<std::uint32_t>(parse_u64(row[3]));
+                snapshot.state_groups.push_back(std::move(group));
+            }
+        }
+
+        auto group_entries = connection.execute(
+            {"postgresql_reload_state_group_state",
+             "SELECT s.state_group_id, s.event_type, s.state_key, s.event_id FROM state_group_state s "
+             "JOIN state_groups g ON g.state_group_id = s.state_group_id WHERE g.room_id = $1",
+             {{room_id_str, false}}});
+        if (!group_entries.ok)
+        {
+            return std::nullopt;
+        }
+        notify_read("state_group_state");
+        for (auto const& row : group_entries.rows)
+        {
+            if (row.size() >= 4U)
+            {
+                snapshot.state_group_state.push_back({row[0], row[1], row[2], row[3]});
+            }
+        }
+
+        auto mappings = connection.execute({"postgresql_reload_event_state_groups",
+                                            "SELECT m.event_id, m.state_group_id FROM event_state_groups m "
+                                            "JOIN events e ON e.event_id = m.event_id WHERE e.room_id = $1",
+                                            {{room_id_str, false}}});
+        if (!mappings.ok)
+        {
+            return std::nullopt;
+        }
+        notify_read("event_state_groups");
+        for (auto const& row : mappings.rows)
+        {
+            if (row.size() >= 2U)
+            {
+                snapshot.event_state_groups.push_back({row[0], row[1]});
+            }
+        }
+
         if (snapshot.events.empty())
         {
             return snapshot;

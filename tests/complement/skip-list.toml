@@ -290,6 +290,22 @@ category = "non-spec"
 spec = "docs/matrix-v1.19-spec/client-server-api.md#get_matrixclientv3roomsroomidjoined_members"
 reason = "Calls GET /_matrix/client/r0/rooms/{roomId}/joined_members; v1.19 defines the endpoint only under /v3."
 
+[[entry]]
+test = "TestJumpToDateEndpoint/parallel/federation/can_paginate_backwards_after_getting_remote_event_from_timestamp_to_event_endpoint_(start)"
+package = "tests"
+mode = "expect-fail"
+category = "non-spec"
+spec = "docs/matrix-v1.19-spec/client-server-api.md#get_matrixclientv3roomsroomidcontexteventid"
+reason = "Calls GET /_matrix/client/r0/rooms/{roomId}/context/{eventId} and r0 /messages; v1.19 defines both only under /v3. The remote timestamp lookup the test needs first passes (ADR-0308)."
+
+[[entry]]
+test = "TestJumpToDateEndpoint/parallel/federation/can_paginate_backwards_after_getting_remote_event_from_timestamp_to_event_endpoint_(end)"
+package = "tests"
+mode = "expect-fail"
+category = "non-spec"
+spec = "docs/matrix-v1.19-spec/client-server-api.md#get_matrixclientv3roomsroomidcontexteventid"
+reason = "Calls GET /_matrix/client/r0/rooms/{roomId}/context/{eventId} and r0 /messages; v1.19 defines both only under /v3. The remote timestamp lookup the test needs first passes (ADR-0308)."
+
 # Behaviour the spec leaves to the server, where this server's choice differs from Synapse's.
 
 [[entry]]
@@ -555,3 +571,83 @@ category = "non-spec"
 spec = "docs/matrix-v1.19-spec/client-server-api.md#common-error-codes"
 reason = "Calls /_matrix/federation/v1/version on the client listener, which does not serve the federation API; an endpoint not implemented on a listener is 404 M_UNRECOGNIZED. The federation listener answers 405 for it (ADR-0274)."
 
+
+# Complement run 12 (0.12.64): owner decisions of 2026-10-30.
+
+[[entry]]
+test = "TestSync/parallel/Newly_joined_room_has_correct_timeline_in_incremental_sync"
+package = "tests/csapi"
+mode = "expect-fail"
+category = "non-spec"
+spec = "docs/matrix-v1.19-spec/client-server-api.md#get_matrixclientv3sync"
+reason = "Requires `limited` true unless exactly six events are returned; this server returns the events after `since` (v1.19 `full_state`: \"The timeline will still be limited by the `since` parameter\") with `limited` false, since none after `since` were cut by the filter limit (`limited`: \"True if the number of events returned was limited by the `limit` on the filter\")."
+
+[[entry]]
+test = "TestDeviceListsUpdateOverFederation/good_connectivity"
+package = "tests"
+mode = "expect-fail"
+category = "non-spec"
+spec = "docs/matrix-v1.19-spec/client-server-api.md#get_matrixclientv3sync"
+reason = "Requires device_lists.changed to equal exactly [alice]; the remote user's join-time m.device_list_update EDU (which the spec makes the remote server send) lands milliseconds later and is reported too, which the `changed` definition allows."
+signed_off_by = "James Chapman, 2026-10-30"
+
+[[entry]]
+test = "TestDeviceListsUpdateOverFederation/interrupted_connectivity"
+package = "tests"
+mode = "expect-fail"
+category = "non-spec"
+spec = "docs/matrix-v1.19-spec/client-server-api.md#get_matrixclientv3sync"
+reason = "Same strict device_lists.changed equality as good_connectivity, broken by the same spec-mandated join-time EDU arriving just after the share-start change."
+signed_off_by = "James Chapman, 2026-10-30"
+
+[[entry]]
+test = "TestDeviceListsUpdateOverFederation/stopped_server"
+package = "tests"
+mode = "expect-fail"
+category = "non-spec"
+spec = "docs/matrix-v1.19-spec/client-server-api.md#get_matrixclientv3sync"
+reason = "Same strict device_lists.changed equality as good_connectivity, broken by the same spec-mandated join-time EDU arriving just after the share-start change."
+signed_off_by = "James Chapman, 2026-10-30"
+
+[[entry]]
+test = "TestDeviceManagement/DELETE_/device/{deviceId}_requires_UI_auth_user_to_match_device_owner"
+package = "tests/csapi"
+mode = "expect-fail"
+category = "non-spec"
+spec = "docs/matrix-v1.19-spec/client-server-api.md#user-interactive-authentication-api"
+reason = "Expects 403 when the UIA credentials belong to another user; v1.19 answers an unsuccessful stage with 401 plus errcode/error (its example is 401 M_FORBIDDEN \"Invalid password\") and DELETE /devices lists only 200 and 401. The device is not deleted either way."
+signed_off_by = "James Chapman, 2026-10-30"
+
+[[entry]]
+test = "TestUnknownEndpoints/Key_endpoints"
+package = "tests"
+mode = "expect-fail"
+category = "spec"
+spec = "docs/matrix-v1.19-spec/server-server-api.md#unsupported-endpoints"
+reason = "Sends PUT /_matrix/key/v2/query, the optional notary endpoint this server does not implement (ADR-0297); an unknown endpoint is 404 M_UNRECOGNIZED, and 405 is only for a known endpoint."
+signed_off_by = "James Chapman, 2026-10-30"
+
+[[entry]]
+test = "TestFederationRoomsInvite/Parallel/Non-invitee_user_cannot_rescind_invite_over_federation"
+package = "tests"
+mode = "expect-fail"
+category = "non-spec"
+spec = "docs/matrix-v1.19-spec/client-server-api.md#post_matrixclientv3createroom"
+reason = "Has a member at power level 0 invite in a private_chat room; this server's generated m.room.power_levels sets invite to 50 (owner decision 2026-10-30), and v1.19 leaves the generated content to the server (power_level_content_override applies on top of it), so the invite is refused before the rescind check."
+signed_off_by = "James Chapman, 2026-10-30"
+
+[[entry]]
+test = "TestOutboundFederationIgnoresMissingEventWithBadJSONForRoomVersion6"
+package = "tests"
+mode = "expect-fail"
+category = "non-spec"
+spec = "docs/matrix-v1.19-spec/server-server-api.md#backfilling-and-retrieving-missing-events"
+reason = "After the second /get_missing_events answers {}, this server asks GET /event and /state_ids for the missing history, which the spec permits and the A8 recovery does; the test's mock server treats any request it did not script as an error. The bad-JSON event itself is ignored as the test intends."
+
+[[entry]]
+test = "TestFederationRoomsInvite/Parallel/Invited_user_has_'is_direct'_flag_in_prev_content_after_joining"
+package = "tests"
+mode = "expect-fail"
+category = "non-spec"
+spec = "docs/matrix-v1.19-spec/client-server-api.md#get_matrixclientv3sync"
+reason = "Also requires unsigned.prev_sender, which v1.19's ClientEvent unsigned does not define; unsigned.prev_content (the invite's content, is_direct included) and replaces_state are returned (ADR-0304)."

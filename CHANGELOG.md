@@ -1,3 +1,161 @@
+## 0.12.64
+
+Fixes for the failures Complement run 12 found against main at 0.12.63.
+
+### Federation
+
+- A PDU this server already stores is answered as handled in the `/send` result, with no `error`
+  entry, and is not re-verified, re-authorised or re-stored; a stored rejected PDU stays rejected
+  (`PduIngestionStatus::already_stored`, ADR-0285). The check runs before signature verification in
+  `/send` and in main's worker `pdu_ingest` relay, and again under the room stripe, so two
+  transactions racing with one PDU store it once. Since 0.12.63 a re-sent PDU was answered
+  `internal error: event persistence pre-check failed`.
+- A per-PDU internal error in a `/send` transaction is logged at WARNING with its event ID, room ID,
+  origin and reason.
+- `GET /event_auth`, the `auth_chain` of `GET /state` and the `auth_chain_ids` of `GET /state_ids`
+  include the room's `m.room.create` event in room version 12 and later, where no event lists it in
+  `auth_events` (ADR-0286). It counts toward `max_event_auth_chain_events`.
+- An invite to a user of another server is offered to that server (`PUT /v2/invite`) before it is
+  stored, sent to the room's other servers or acknowledged to the client, for `POST /invite` and
+  createRoom's `invite` list. A refusing server fails the request; an unreachable one is retried from
+  the queue (ADR-0293).
+- The invited server's answer to a remote invite is validated: it must be the event sent (same event ID),
+  validly signed by that server; only those verified signatures are merged into this server's own event,
+  which is what is stored and sent on. An empty, unsigned, wrongly signed or different answer is refused
+  with 502 (ADR-0302).
+- Rejecting an invite from another server keeps the signed leave as an outlier, so the next `/sync`
+  reports it under `rooms.leave` (ADR-0294).
+- Held room state counts as current only while a user of this server is joined to the room: an invite
+  for a user who left through a federated leave is no longer refused as "already joined", and `/sync`
+  does not show a remote invite for a room this server is in until the room's state holds the invite
+  event (ADR-0301). Sliding sync does not apply this gate yet. The inviter's withdrawal of such an
+  invite takes the same test (`room_state_is_current`), so it is rescinded even when the room's create
+  event is still held from an earlier stay.
+- Rejecting a remote invite reads whether the room's state is held before releasing `runtime.mutex`,
+  never during the federation exchange.
+- `GET /_matrix/federation/v1/timestamp_to_event/{roomId}` is served by the federation worker and
+  applies the requesting server's room access and history visibility like the other federation reads.
+- A federation retry waits its backoff from the end of the failed attempt, not its start (ADR-0309). A
+  connection timeout outlasted the early backoffs, so a stopped peer used up the doubling in half a
+  minute and was retried long after it came back (Complement `TestToDeviceMessagesOverFederation`,
+  `stopped_server`). The shutdown drain no longer retries a transaction that fails during it, so a
+  server whose peer is down stops instead of running until it is killed, and the idle dispatch loop no
+  longer spins while every queued transaction waits out its backoff.
+- The federation worker's room reload carries the room's state groups, their entries and its events'
+  group mappings (ADR-0305). Without them every event created after the worker started had no state
+  group there, so `timestamp_to_event` answered 404 and `/backfill` and `/get_missing_events` sent
+  those events redacted.
+- Fetched history (`/get_missing_events`, `/event`, `/state_ids`, `/event_auth`, the remote
+  `timestamp_to_event` answer) is authorised against the store with the room stripe and `runtime.mutex`
+  held; the reads ran unlocked and could race a concurrent insertion into the event table.
+- An invite to a user of an unreachable server is queued for retry before it is stored. When the retry
+  queue refuses it, `POST /invite` answers 503 and stores nothing, instead of answering 200 for an invite
+  that reached nobody; createRoom logs `room.create.invite_not_queued` (ADR-0307).
+- createRoom offers all of its remote invites under one deadline (30 s, or `remote_timeout`) instead of a
+  full timeout per invitee; invites left when it runs out are queued. Checking an invitee server's answer
+  (resolving its signing key) draws from the same deadline instead of starting a full `remote_timeout`.
+- A request waiting for a client-outbound slot counts toward the same global cap as the calls in flight
+  (ADR-0310): waiting holds a request thread, so calls and waiters together stay within half the pool, and
+  with that population full the request is refused at once instead of waiting out its deadline.
+- A remote invite offer (`POST /invite`, createRoom's invites) holds an ADR-0079 client-outbound slot, waiting
+  for one within its deadline; with none the invite is queued for retry (ADR-0307).
+- Rejecting a remote invite always keeps the signed leave this server authored (ADR-0294), not only when it
+  holds no room state: the resident never sends an accepted `send_leave` back to the server that sent it, so
+  a leave dropped because the room's state was held left the invite in current state and `/sync` with no
+  leave event to report.
+- A join made through another resident (ADR-0287) succeeds only if the stored join is the user's current
+  member event, whether the sink accepted it now or already held it.
+- A user who left a `shared` room never sees an event built on their leave, whatever depths another server
+  chose (ADR-0311): depth is set by an event's creator, a federated join's by the resident, so the depth rule
+  alone could show a former member events sent after they left. Such an event is found by a bounded walk of
+  its held `prev_events`, which stops at events stored before the leave and fails closed.
+- In a `shared` room, a user who joined sees the history this server fetches for them (backfill, `/messages`,
+  a remote `timestamp_to_event` answer): "joined after the event was sent" now compares the depth of the
+  user's join with the event's, not the order this server stored them in (ADR-0308).
+- Sliding sync withholds a subscribed invite until the room's state holds it, as `/sync` does (ADR-0301).
+  Both build one index of the room state per request instead of scanning the store's state twice per
+  invite under `runtime.mutex`.
+- This server neither serves nor consults notary key servers; `/_matrix/key/v2/query` is an unknown
+  endpoint (ADR-0297).
+
+### Rooms
+
+- A local user who meets a restricted or knock_restricted room's allow condition, in a room this
+  server is resident in but where no local user can invite, joins through another resident server
+  (make_join/send_join) instead of getting 403: the client's servers first, then other servers with
+  joined members, at most 4 (ADR-0287). The resident's co-signed join is stored as a received event
+  only after its event ID, this server's signature and the authorising server's signature verify;
+  the answer's state is never used.
+- Before such a join is refused or sent away, it waits for any event of the room being applied at
+  that moment and decides again, so a power-levels event that arrived milliseconds earlier gives a
+  local join (ADR-0288).
+- The join stored after such a fallback is this server's own signed join with only the resident's
+  verified authorising-server signature merged in, so a resident cannot change a redactable field such
+  as the display name; a join the resident's transaction already stored counts as success only if it
+  made the user a member (ADR-0302).
+
+### Client-Server API
+
+- The server accepts the `access_token` query parameter on client-server and media routes, which
+  v1.19 says homeservers MUST support; the Authorization header wins when both are sent (ADR-0295).
+  Every `access_token` parameter, under any percent-encoded spelling of the name, is removed from the
+  request target once read, so exact-path routes such as `createRoom` and `logout` still match, and
+  the log sanitiser redacts a sensitive parameter under its decoded name too.
+- A re-sent PDU relayed from a third server no longer costs a key lookup in the `/send` pre-pass
+  (ADR-0285).
+- Classic `/sync`: a hole in a room's event graph (an event whose `prev_events` this server never
+  received, or holds only as an outlier) makes the timeline `limited`; the timeline starts at the
+  first event after the hole and `prev_batch` reaches the earlier events (ADR-0289). A limited
+  incremental sync also carries the room state at the start of the timeline. Sliding sync is
+  unchanged. An outlier placed from its own `prev_events` (it has a state group, as events recovered
+  by `/get_missing_events` and backfill do) counts as held, so filled gaps are not cut (ADR-0290).
+- `GET /_matrix/client/v1/rooms/{roomId}/timestamp_to_event` is implemented: inclusive boundary, ties
+  ordered by timestamp, depth and arrival; a user who may not read the room gets 403; events the user
+  may not see are stepped over; when the local answer is missing or sits at a gap in the graph, up to
+  three of the room's servers are asked under an ADR-0079 slot and a closer event is fetched and
+  verified before it is returned (ADR-0299). The event table keeps a per-room index by
+  `origin_server_ts`, so the lookup is a bounded binary search (ADR-0300).
+- A `timestamp_to_event` lookup that needs another server waits for its client-outbound slot, polling
+  with `runtime.mutex` released, until its 10 s deadline runs out, instead of answering 429 at once;
+  one client's parallel lookups are served in turn (ADR-0306).
+  When no slot comes, access and the local answer are judged again before it answers: the wait releases
+  `runtime.mutex`, so the user may have left.
+- A backward `timestamp_to_event` search asks other servers when the nearest event after `ts` builds on an event
+  this server lacks: the event found has nothing missing before it, so the hole between it and `ts` showed
+  nowhere and a closer remote event was never asked for.
+- A server's timestamp answer whose event the user may not be given (rejected, hidden, or not closer by its
+  own timestamp) no longer ends the lookup: the next server is asked, up to three (ADR-0299).
+- State events carry `unsigned.prev_content` (the content of the state event they replaced) when the
+  viewer may see it.
+- Application services can set an event's `origin_server_ts` with `?ts=` on `PUT /rooms/{roomId}/send/...`
+  and `PUT /rooms/{roomId}/state/...` (Application Service API, "Timestamp massaging"; ADR-0303). A `ts`
+  that is not an integer in the Matrix integer range is `400 M_INVALID_PARAM`; an ordinary user's `ts`
+  and `ts` on other routes are ignored, and event order is unchanged.
+- `POST /createRoom` is matched on its path, so an appservice acting as a user with `?user_id=` no
+  longer gets 405.
+- A user's own `m.room.member` event held as an outlier with no state group (a received invite, the
+  leave that rejected one) is visible to that user, so a federated join that replaces an invite carries
+  `unsigned.prev_content` with the invite's content (ADR-0304).
+- Sending a message no longer ends the sender's typing; typing ends on the client's `typing: false`
+  or the timeout (ADR-0298).
+
+### Federation worker
+
+- The federation worker no longer loads application service registrations or creates their sender
+  users (ADR-0296). It has no filesystem grant for the secrets directory and never uses the registry,
+  so it logged a rejection on every start.
+
+### Complement
+
+- `skip-list.toml` gains eight entries for owner decisions of 2026-10-30, each checked against the
+  pinned spec: a newly joined room's incremental timeline stays bounded by `since`; strict
+  `device_lists.changed` equality depends on EDU timing (three subtests); a failed UIA stage is 401
+  and the notary endpoint is unknown (both signed off); createRoom's default invite level stays 50;
+  the A8 recovery after an empty `/get_missing_events` stays.
+- The two `TestJumpToDateEndpoint` "can paginate backwards" federation subtests are expected to fail as
+  non-spec: once the remote timestamp lookup they start with passes, they page through
+  `/_matrix/client/r0/.../context` and `/messages`, which v1.19 defines only under `/v3`.
+
 ## 0.12.63
 
 Fixes for the failures Complement run 10 found against the signed 0.12.62 release package.

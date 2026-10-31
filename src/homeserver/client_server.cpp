@@ -46,6 +46,7 @@
 #include "merovingian/homeserver/presence_service.hpp"
 #include "merovingian/homeserver/push_rule_unread_classifier.hpp"
 #include "merovingian/homeserver/remote_media_fetch_scope.hpp"
+#include "merovingian/homeserver/remote_timestamp_event.hpp"
 #include "merovingian/homeserver/request_lock.hpp"
 #include "merovingian/homeserver/room_power.hpp"
 #include "merovingian/homeserver/room_service.hpp"
@@ -100,6 +101,7 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <tuple>
 #include <unordered_map>
 #include <unordered_set>
@@ -1137,6 +1139,46 @@ namespace
                          json_member("state_key", json_str(*state_key)), json_member("content", *content)});
     }
 
+    // ADR-0301, for one request of `user_id`: the rooms whose state this server holds (a create row) and the
+    // user's member state event in each, gathered in one pass over the store's state. Every invite then costs
+    // two lookups, not two scans of the state: a user's invites are chosen by other servers, so work per
+    // invite under runtime.mutex must not grow with the size of the store.
+    class InviteRoomStateIndex final
+    {
+    public:
+        InviteRoomStateIndex(database::PersistentStore const& store, std::string_view user_id)
+        {
+            for (auto const& state : store.state)
+            {
+                if (state.event_type == "m.room.create" && state.state_key.empty())
+                {
+                    held_rooms_.insert(state.room_id);
+                }
+                else if (state.event_type == "m.room.member" && state.state_key == user_id)
+                {
+                    member_event_by_room_.insert_or_assign(state.room_id, state.event_id);
+                }
+            }
+        }
+
+        // True when this server holds the state of `room_id` and that state does not yet have the invite
+        // `invite_event_id` for the user: the invite endpoint recorded it, but the transaction that places
+        // it in the room has not arrived. /sync and sliding sync withhold such an invite.
+        [[nodiscard]] auto awaits_room_state(std::string_view room_id, std::string_view invite_event_id) const -> bool
+        {
+            if (!held_rooms_.contains(room_id))
+            {
+                return false;
+            }
+            auto const member = member_event_by_room_.find(room_id);
+            return member == member_event_by_room_.end() || member->second != invite_event_id;
+        }
+
+    private:
+        std::set<std::string, std::less<>> held_rooms_{};
+        std::map<std::string, std::string, std::less<>> member_event_by_room_{};
+    };
+
     [[nodiscard]] auto build_invite_state_events_array(database::PersistentStore const& store, std::string_view room_id,
                                                        std::string_view user_id) -> canonicaljson::Array
     {
@@ -1274,15 +1316,6 @@ namespace
             return nullptr;
         }
         return std::get_if<canonicaljson::Object>(&value->storage());
-    }
-
-    // The room's version, from its m.room.create through the one accessor
-    // (stored_room_version). A room with no stored create (unknown here) falls
-    // back to "10"; a create without room_version is room version 1.
-    [[nodiscard]] auto room_version_from_store(database::PersistentStore const& store, std::string_view room_id)
-        -> std::string
-    {
-        return stored_room_version(store, room_id).value_or("10");
     }
 
     // True when `body` is not JSON at all: the text is malformed or is not valid UTF-8 (the
@@ -3312,6 +3345,10 @@ namespace
                 {
                     out = normalized + "/hierarchy";
                 }
+                else if (suffix == "/timestamp_to_event")
+                {
+                    out = normalized + "/timestamp_to_event";
+                }
                 else
                 {
                     return std::string{unmatched};
@@ -5049,6 +5086,43 @@ namespace
         return events;
     }
 
+    // ADR-0289, ADR-0290: whether this server holds `event_id` as part of its event graph. A row
+    // of any status counts, rejected and soft-failed events included (they were walked and are only
+    // withheld from clients). An outlier counts only once it has been placed, that is, has a state
+    // group computed from its own prev_events: that is what /get_missing_events and /backfill give
+    // what they fetch. A send_join state or auth-chain outlier has none, was not reached by walking
+    // prev_events from anything held, and is not part of the graph.
+    [[nodiscard]] auto event_is_held(database::PersistentStore const& store, sync::HistoryVisibility& visibility,
+                                     std::string_view event_id) -> bool
+    {
+        auto const row = store.events.find(event_id);
+        return row != store.events.end() && (row->status != "outlier" || visibility.has_state_group(event_id));
+    }
+
+    // ADR-0289: the newest event in [first, last) with a hole before it, or `last` when there is
+    // none: an event with a `prev_events` ID that is not held. Only the window's events are read and
+    // each predecessor is one indexed lookup. An outlier that was never placed is never the answer;
+    // its predecessors are missing by construction and it is not part of the live graph.
+    [[nodiscard]] auto newest_graph_hole(database::PersistentStore const& store, sync::HistoryVisibility& visibility,
+                                         std::vector<database::PersistentEvent const*>::const_iterator first,
+                                         std::vector<database::PersistentEvent const*>::const_iterator last)
+        -> std::vector<database::PersistentEvent const*>::const_iterator
+    {
+        for (auto it = last; it != first;)
+        {
+            --it;
+            auto const& event = **it;
+            if (event_is_held(store, visibility, event.event_id) &&
+                !std::ranges::all_of(event.prev_event_ids, [&](std::string const& prev) {
+                    return event_is_held(store, visibility, prev);
+                }))
+            {
+                return it;
+            }
+        }
+        return last;
+    }
+
     [[nodiscard]] auto joined_membership_changed_since(database::PersistentStore const& store, std::string_view room_id,
                                                        std::string_view user_id, std::uint64_t since_ordering) -> bool
     {
@@ -5536,16 +5610,26 @@ namespace
             });
 
             // Spec MUST: `limited` is true only when older events were dropped
-            // from this window because it exceeded the page size. When so,
+            // from this window: it exceeded the page size, or (ADR-0289) it
+            // crosses a hole in the event graph. When so,
             // return the MOST RECENT `timeline_cap` events (clients render
             // newest history first); otherwise return the whole window. The old
             // code compared the store's total event count to the cap, so any
             // room with more total events than the page size reported
             // limited=true on every sync, making matrix-js-sdk discard and
             // re-fetch the timeline endlessly.
-            auto const limited = matched.size() > timeline_cap;
-            auto const window_begin =
-                limited ? matched.end() - static_cast<std::ptrdiff_t>(timeline_cap) : matched.begin();
+            auto const cut_by_cap = matched.size() > timeline_cap;
+            auto window_begin = std::vector<database::PersistentEvent const*>::const_iterator{
+                cut_by_cap ? matched.end() - static_cast<std::ptrdiff_t>(timeline_cap) : matched.begin()};
+            // ADR-0289: a hole in the room's own event graph (an event whose `prev_events` this server
+            // never received) also leaves a gap the client must fill through /messages. The timeline
+            // starts at the newest such event, which is kept, and is limited. Only the window is read.
+            auto const hole = newest_graph_hole(store, history_visibility, window_begin, matched.end());
+            if (hole != matched.end())
+            {
+                window_begin = hole;
+            }
+            auto const limited = cut_by_cap || hole != matched.end();
 
             auto timeline_events = canonicaljson::Array{};
             for (auto it = window_begin; it != matched.end(); ++it)
@@ -5572,7 +5656,7 @@ namespace
             auto const newly_joined =
                 since_token.has_value() && joined_membership_changed_since(store, room.room_id, user, since_ordering);
             auto state_events = canonicaljson::Array{};
-            if (!since_token.has_value() || newly_joined)
+            if (!since_token.has_value() || newly_joined || limited)
             {
                 auto at_start =
                     window_begin != matched.end()
@@ -5668,6 +5752,8 @@ namespace
         auto leave_members = canonicaljson::Object{};
         auto knock_members = canonicaljson::Object{};
         auto invite_count = std::size_t{0U};
+        // Built on the first invite: most syncs have none.
+        auto invite_room_state = std::optional<InviteRoomStateIndex>{};
         auto leave_count = std::size_t{0U};
         auto knock_count = std::size_t{0U};
         for (auto const& membership : store.memberships)
@@ -5691,6 +5777,18 @@ namespace
                 if (invite_record.has_value() &&
                     trust_safety::is_delivery_suppressed(ignored_senders, invite_record->sender_user_id,
                                                          /*is_state_event=*/true, /*is_new_room_invite=*/true))
+                {
+                    continue;
+                }
+                // A room this server holds the state of: the invite is shown once that state has it
+                // (ADR-0301). The invite endpoint can answer before the transaction that places the
+                // event, and a client that saw the invite then could not join or reject it.
+                if (!invite_room_state.has_value())
+                {
+                    invite_room_state.emplace(store, user);
+                }
+                if (invite_record.has_value() &&
+                    invite_room_state->awaits_room_state(membership.room_id, invite_record->event_id))
                 {
                     continue;
                 }
@@ -6581,13 +6679,22 @@ namespace
         // reported once per connection, without disturbing the `initial` bookkeeping of the
         // room itself should the invite later be accepted. An invite from an ignored user is
         // withheld entirely ("Servers must not send room invites from ignored users to clients").
+        // An invite this server holds the room state of is withheld until that state has it, as /sync does
+        // (ADR-0301).
         auto invites_reported = std::vector<std::string>{};
+        auto const invite_room_state = invited_subscription_ids.empty()
+                                           ? std::optional<InviteRoomStateIndex>{}
+                                           : std::optional<InviteRoomStateIndex>{std::in_place, store, user};
         for (auto const& room_id : invited_subscription_ids)
         {
             auto const invite_record = database::find_invite(store, room_id, user);
             if (invite_record.has_value() &&
                 trust_safety::is_delivery_suppressed(ignored_senders, invite_record->sender_user_id,
                                                      /*is_state_event=*/true, /*is_new_room_invite=*/true))
+            {
+                continue;
+            }
+            if (invite_record.has_value() && invite_room_state->awaits_room_state(room_id, invite_record->event_id))
             {
                 continue;
             }
@@ -8302,6 +8409,41 @@ namespace
             return result;
         }
         return std::nullopt;
+    }
+
+    // Application Service API, "Timestamp massaging": the `ts` an application service appended to
+    // PUT /send or PUT /state. Only an application service's request is read: the as_token was matched
+    // at the top of the dispatcher, which left the masquerade identity in req.access_token. Anyone
+    // else's `ts` is not looked at, so it changes nothing. `valid` is false when `ts` is present but is
+    // not an integer origin_server_ts can hold: the spec's "anything other than what is accepted by
+    // origin_server_ts should be rejected ... as a bad request". origin_server_ts is an `integer`, and
+    // a Matrix integer lies in [-(2**53)+1, (2**53)-1] (Appendices, Canonical JSON).
+    struct MassagedTimestamp final
+    {
+        bool valid{true};
+        std::optional<std::int64_t> value{};
+    };
+
+    [[nodiscard]] auto massaged_timestamp(LocalHttpRequest const& req) -> MassagedTimestamp
+    {
+        if (!appservice::decode_masquerade_token(req.access_token).has_value())
+        {
+            return {};
+        }
+        auto const text = query_param_value(req.target, "ts");
+        if (!text.has_value())
+        {
+            return {};
+        }
+        auto constexpr max_integer = std::int64_t{9'007'199'254'740'991};
+        auto parsed = std::int64_t{0};
+        auto const [end, error] = std::from_chars(text->data(), text->data() + text->size(), parsed);
+        if (text->empty() || error != std::errc{} || end != text->data() + text->size() || parsed > max_integer ||
+            parsed < -max_integer)
+        {
+            return {false, std::nullopt};
+        }
+        return {true, parsed};
     }
 
     [[nodiscard]] auto room_send_path_parts(std::string_view target) -> std::optional<RoomSendPathParts>
@@ -10208,6 +10350,16 @@ namespace
         return admit_client_outbound_proxy(rt.homeserver, rate_limit_client_key(req, rt.homeserver.config.server()));
     }
 
+    // ADR-0306: admit_client_proxy, but waiting for a slot until `deadline` (admit_client_outbound_proxy_waiting).
+    [[nodiscard]] auto admit_client_proxy_waiting(ClientServerRuntime& rt, LocalHttpRequest const& req,
+                                                  std::unique_lock<RuntimeMutex>& guard,
+                                                  OutboundDeadline const& deadline)
+        -> std::optional<http::InFlightBudget::Slot>
+    {
+        return admit_client_outbound_proxy_waiting(
+            rt.homeserver, rate_limit_client_key(req, rt.homeserver.config.server()), guard, deadline);
+    }
+
     [[nodiscard]] auto client_proxy_refused(LocalHttpRequest const& req, ClientServerRuntime const& rt)
         -> DispatchResult
     {
@@ -10217,6 +10369,213 @@ namespace
         });
         return dispatch_err(req, rt, 429U, "M_LIMIT_EXCEEDED", "too many concurrent remote lookups, retry shortly",
                             rt.homeserver.client_outbound_proxy_policy.retry_after_ms);
+    }
+
+    // The event GET /rooms/{roomId}/timestamp_to_event found in this server's own history.
+    struct LocalTimestampEvent final
+    {
+        bool found{false};
+        // The search stopped at database::max_time_search_examined with candidates left.
+        bool truncated{false};
+        std::string event_id{};
+        std::int64_t origin_server_ts{0};
+        // The event has a prev_event this server does not hold (the ADR-0289 graph-hole rule): a closer
+        // event may lie in the gap.
+        bool at_gap{false};
+    };
+
+    [[nodiscard]] auto stored_origin_server_ts(database::PersistentEvent const& event) -> std::optional<std::int64_t>
+    {
+        auto const object = parsed_json_object(event.json);
+        auto const* ts = object.has_value() ? integer_member(*object, "origin_server_ts") : nullptr;
+        return ts == nullptr ? std::nullopt : std::optional<std::int64_t>{*ts};
+    }
+
+    // Spec: client-server-api.md GET /rooms/{roomId}/timestamp_to_event. The event nearest `ts` in
+    // `direction` among those `user_id` may see (Room History Visibility: the others are as good as absent,
+    // so the search goes on to the next one). The boundary is inclusive; ties are ordered by (origin_server_ts,
+    // depth, stream_ordering). One seek of the store room-and-time index, at most
+    // database::max_time_search_examined events offered to the visibility check (ADR-0299, ADR-0300).
+    [[nodiscard]] auto find_local_timestamp_event(database::PersistentStore const& store, std::string_view room_id,
+                                                  std::int64_t ts, database::TimeDirection direction,
+                                                  std::string_view user_id) -> LocalTimestampEvent
+    {
+        auto visibility = sync::HistoryVisibility{store, user_id};
+        auto const nearest = store.events.nearest_by_time(
+            room_id, ts, direction,
+            [&visibility](database::PersistentEvent const& event) {
+                return visibility.can_see(event);
+            },
+            database::max_time_search_examined);
+        auto result = LocalTimestampEvent{};
+        result.truncated = nearest.truncated;
+        if (nearest.event == store.events.end())
+        {
+            return result;
+        }
+        auto const event_ts = stored_origin_server_ts(*nearest.event);
+        if (!event_ts.has_value())
+        {
+            return result;
+        }
+        result.found = true;
+        result.event_id = nearest.event->event_id;
+        result.origin_server_ts = *event_ts;
+        auto const behind_a_hole = [&store, &visibility](database::PersistentEvent const& event) {
+            return !std::ranges::all_of(event.prev_event_ids, [&store, &visibility](std::string const& prev) {
+                return event_is_held(store, visibility, prev);
+            });
+        };
+        result.at_gap = behind_a_hole(*nearest.event);
+        // Backwards, a hole between the event found and `ts` shows only on the far side: the nearest event
+        // at or after `ts` builds on what this server lacks, which may lie closer to `ts` than the event found.
+        // Forwards, the event found is that far-side event, so its own prev_events already show it.
+        if (!result.at_gap && direction == database::TimeDirection::backwards)
+        {
+            auto const after = store.events.nearest_by_time(
+                room_id, ts, database::TimeDirection::forwards,
+                [&visibility](database::PersistentEvent const& event) {
+                    return visibility.can_see(event);
+                },
+                database::max_time_search_examined);
+            result.at_gap = after.event != store.events.end() && behind_a_hole(*after.event);
+        }
+        return result;
+    }
+
+    [[nodiscard]] auto timestamp_to_event_response(LocalHttpRequest const& req, ClientServerRuntime const& rt,
+                                                   std::string_view event_id, std::int64_t origin_server_ts)
+        -> DispatchResult
+    {
+        return dispatch_resp(req, rt, 200U,
+                             json_serialize(json_obj({json_member("event_id", json_str(event_id)),
+                                                      json_member("origin_server_ts", json_int(origin_server_ts))})));
+    }
+
+    // GET /_matrix/client/v1/rooms/{roomId}/timestamp_to_event?ts=&dir=
+    // Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#get_matrixclientv1roomsroomidtimestamp_to_event
+    // 200 {event_id, origin_server_ts}; 404 when no event was found; 429 when rate-limited.
+    //
+    // Access (ADR-0299): a user with no read access to the room (sync::room_read_access_for says none and the room
+    // is not world readable) is answered 403 M_FORBIDDEN as /messages and /context do.
+    //
+    // When this server may lack history ("If the server does not have all of the room history and does not have an
+    // event suitably close to the requested timestamp, it can use the corresponding federation endpoint to ask other
+    // servers"), that is when the local answer is absent or the event found has a prev_event this server does not
+    // hold, up to max_timestamp_to_event_servers servers of the room are asked, one at a time. That makes this a
+    // client request that calls another server (src/homeserver/AGENTS.md): it holds an ADR-0079 slot, runs under one
+    // OutboundDeadline and releases the runtime lock for each exchange. With a local answer in hand a refused slot
+    // costs only the remote improvement; without one the client is told 429.
+    [[nodiscard]] auto handle_timestamp_to_event(ClientServerRuntime& rt, LocalHttpRequest const& req,
+                                                 std::unique_lock<RuntimeMutex>& guard, std::string_view user_id,
+                                                 std::string_view room_id) -> DispatchResult
+    {
+        auto const ts_text = query_param_value(req.target, "ts");
+        auto const dir_text = query_param_value(req.target, "dir");
+        if (!ts_text.has_value())
+        {
+            return dispatch_err(req, rt, 400U, "M_MISSING_PARAM", "ts query parameter is required");
+        }
+        if (!dir_text.has_value())
+        {
+            return dispatch_err(req, rt, 400U, "M_MISSING_PARAM", "dir query parameter is required");
+        }
+        auto ts = std::int64_t{0};
+        auto const parsed_ts = std::from_chars(ts_text->data(), ts_text->data() + ts_text->size(), ts);
+        if (ts_text->empty() || parsed_ts.ec != std::errc{} || parsed_ts.ptr != ts_text->data() + ts_text->size())
+        {
+            return dispatch_err(req, rt, 400U, "M_INVALID_PARAM", "ts must be an integer number of milliseconds");
+        }
+        if (*dir_text != "f" && *dir_text != "b")
+        {
+            return dispatch_err(req, rt, 400U, "M_INVALID_PARAM", "dir must be f or b");
+        }
+        auto const direction =
+            *dir_text == "f" ? database::TimeDirection::forwards : database::TimeDirection::backwards;
+        auto const not_found = [&]() {
+            return dispatch_err(req, rt, 404U, "M_NOT_FOUND",
+                                std::string{"Unable to find event from "} + std::to_string(ts) + " in " +
+                                    (direction == database::TimeDirection::forwards ? "forward" : "backward") +
+                                    " direction");
+        };
+
+        auto const& store = rt.homeserver.database.persistent_store;
+        if (!may_read_room_events(store, room_id, user_id))
+        {
+            return dispatch_err(req, rt, 403U, "M_FORBIDDEN", "not a member of this room");
+        }
+        auto local = find_local_timestamp_event(store, room_id, ts, direction, user_id);
+        // A search cut short does not know the room lacks the event, so it asks nobody.
+        if (local.truncated || (local.found && !local.at_gap))
+        {
+            return local.found ? timestamp_to_event_response(req, rt, local.event_id, local.origin_server_ts)
+                               : not_found();
+        }
+
+        auto const servers =
+            timestamp_to_event_candidate_servers(store, room_id, rt.homeserver.config.server().server_name);
+        if (servers.empty())
+        {
+            return local.found ? timestamp_to_event_response(req, rt, local.event_id, local.origin_server_ts)
+                               : not_found();
+        }
+        // ADR-0306: this authenticated lookup waits for a client-outbound slot within its own deadline rather
+        // than being refused at once (ADR-0079), so one client's parallel lookups are served in turn. The wait
+        // releases runtime.mutex, and the deadline it draws from is the one the outbound calls use after it.
+        auto const deadline = OutboundDeadline{effective_client_outbound_deadline(
+            rt.homeserver, rt.homeserver.client_outbound_proxy_policy.directory_deadline_seconds)};
+        auto const proxy_slot = admit_client_proxy_waiting(rt, req, guard, deadline);
+        if (!proxy_slot.has_value())
+        {
+            // The wait released the lock: judge access and the local answer again before using either.
+            if (!may_read_room_events(store, room_id, user_id))
+            {
+                return dispatch_err(req, rt, 403U, "M_FORBIDDEN", "not a member of this room");
+            }
+            local = find_local_timestamp_event(store, room_id, ts, direction, user_id);
+            return local.found ? timestamp_to_event_response(req, rt, local.event_id, local.origin_server_ts)
+                               : client_proxy_refused(req, rt);
+        }
+        auto const local_ts = local.found ? std::optional<std::int64_t>{local.origin_server_ts} : std::nullopt;
+        // An event a server names is used only if it is accepted, the user may see it, and its own stored
+        // timestamp is closer: judged as each one is fetched, so a refused one sends the search on to the next
+        // server (ADR-0299), and judged again below, once the state is final.
+        auto const usable_for_user = [&](std::string_view event_id) {
+            auto const event = store.events.find_in_room(room_id, event_id);
+            if (event == store.events.end() || event->status == "rejected" || event->status == "soft_failed" ||
+                !sync::HistoryVisibility{store, user_id}.can_see(*event))
+            {
+                return false;
+            }
+            auto const event_ts = stored_origin_server_ts(*event);
+            return event_ts.has_value() && timestamp_is_closer(*event_ts, local_ts, ts, direction);
+        };
+        auto const acquired = acquire_closer_timestamp_event(rt.homeserver, guard, room_id, servers, ts, direction,
+                                                             local_ts, deadline, usable_for_user);
+
+        // The lock was released for the network: judge everything again from the state now. The user may have left
+        // the room, and the event may be one they may not see.
+        if (!may_read_room_events(store, room_id, user_id))
+        {
+            return dispatch_err(req, rt, 403U, "M_FORBIDDEN", "not a member of this room");
+        }
+        local = find_local_timestamp_event(store, room_id, ts, direction, user_id);
+        auto const local_now = local.found ? std::optional<std::int64_t>{local.origin_server_ts} : std::nullopt;
+        if (acquired.has_value())
+        {
+            auto const event = store.events.find_in_room(room_id, *acquired);
+            if (event != store.events.end() && event->status != "rejected" && event->status != "soft_failed" &&
+                sync::HistoryVisibility{store, user_id}.can_see(*event))
+            {
+                // The event decides its own timestamp, never the answer of the server that named it.
+                auto const event_ts = stored_origin_server_ts(*event);
+                if (event_ts.has_value() && timestamp_is_closer(*event_ts, local_now, ts, direction))
+                {
+                    return timestamp_to_event_response(req, rt, event->event_id, *event_ts);
+                }
+            }
+        }
+        return local.found ? timestamp_to_event_response(req, rt, local.event_id, local.origin_server_ts) : not_found();
     }
 
     // GET /_matrix/client/v3/profile/{userId}[/{keyName}] for a user of another server. Asks that server's
@@ -11611,6 +11970,8 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
     // then works completely unmodified, whether the caller presented an
     // ordinary session token or an appservice's as_token.
     auto req = raw_req;
+    // Set only below, from a validated appservice `ts`; never taken from the caller.
+    req.origin_server_ts.reset();
     if (appservice::is_masquerade_token(req.access_token))
     {
         // A raw token in this internal reserved shape must NEVER be trusted
@@ -15533,7 +15894,7 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             }
         }
     }
-    if (req.method == "POST" && req.target == "/_matrix/client/v3/createRoom")
+    if (req.method == "POST" && target_path(req.target) == "/_matrix/client/v3/createRoom")
     {
         auto const body_object = req.body.empty() ? std::optional<canonicaljson::Object>{canonicaljson::Object{}}
                                                   : parsed_json_object(req.body);
@@ -15651,6 +16012,20 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             return dispatch_err(req, rt, create_result.status, errcode, create_result.reason);
         }
         auto const& room_id = create_result.value;
+        // One deadline for offering every remote invite (ADR-0307): each offer is a synchronous federation
+        // round trip on this request's thread, and a client names the invitees. An invite left when it runs
+        // out goes to the retry queue, as one to an unreachable server does.
+        auto const invite_deadline =
+            OutboundDeadline{effective_client_outbound_deadline(rt.homeserver, remote_invite_offer_seconds)};
+        // ADR-0079: the offers are client-triggered outbound calls. One slot for all of them, taken (waiting
+        // within the deadline, ADR-0306) when any invitee is remote; with none, every remote invite goes to
+        // the queue.
+        auto const any_remote_invitee = std::ranges::any_of(invitees, [&rt](std::string const& invitee) {
+            auto const server = server_name_from_user_id(invitee);
+            return !server.empty() && server != rt.homeserver.config.server().server_name;
+        });
+        auto const invite_slot = any_remote_invitee ? admit_client_proxy_waiting(rt, req, guard, invite_deadline)
+                                                    : std::optional<http::InFlightBudget::Slot>{};
         for (auto const& invitee : invitees)
         {
             auto const invitee_server = server_name_from_user_id(invitee);
@@ -15673,15 +16048,58 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             {
                 continue;
             }
-            merovingian::homeserver::wire_federation_callbacks(rt.homeserver);
-            if (rt.homeserver.dispatch_worker != nullptr)
+            // Server-Server API, "Inviting to a room": the invitee's server is asked to sign the invite
+            // before createRoom answers, so the client can use the invite at once (Complement
+            // TestFederationRoomsInvite). Only a server that gives no usable answer is left to the queue.
+            auto const invite_event_id = invite_state->event_id;
+            // Read once: remaining_seconds() rounds up, so 0 means the deadline has passed, and a 0 passed on
+            // would mean "the whole default budget" to deliver_remote_invite.
+            auto const seconds_left = invite_deadline.remaining_seconds();
+            auto const delivery =
+                !invite_slot.has_value() || seconds_left == 0U
+                    ? merovingian::homeserver::
+                          RemoteInviteResult{merovingian::homeserver::RemoteInviteOutcome::unreachable, 504U,
+                                             "no slot or time left to offer the invite"}
+                    : merovingian::homeserver::deliver_remote_invite(rt.homeserver, guard, room_id, invitee_server,
+                                                                     invite_event_id, *invite_json, seconds_left);
+            if (delivery.outcome == merovingian::homeserver::RemoteInviteOutcome::delivered)
             {
-                auto transaction = federation::make_outbound_invite(
-                    invitee_server, rt.homeserver.config.server().server_name, room_id, invite_state->event_id,
-                    room_version, *invite_json,
-                    merovingian::homeserver::stripped_state_pdus(rt.homeserver.database.persistent_store, room_id));
-                transaction.transaction_id = federation::make_federation_transaction_id();
-                std::ignore = rt.homeserver.dispatch_worker->enqueue(std::move(transaction));
+                // The invite is already stored, signed by this server only; keep the copy signed by both.
+                if (!merovingian::homeserver::store_cosigned_invite(rt.homeserver, room_id, invite_event_id,
+                                                                    delivery.cosigned_event_json))
+                {
+                    log_diagnostic(
+                        "room.create.invite_cosignature_not_stored",
+                        {
+                            {"actor",   *user,   false},
+                            {"room_id", room_id, false},
+                            {"invitee", invitee, false}
+                    });
+                }
+            }
+            else if (delivery.outcome == merovingian::homeserver::RemoteInviteOutcome::unreachable &&
+                     !merovingian::homeserver::queue_remote_invite(rt.homeserver, room_id, invitee_server,
+                                                                   invite_event_id, *invite_json))
+            {
+                // The room exists and the invite is stored; createRoom still answers. The invitee's server
+                // learns of it from nobody, so say so (ADR-0307).
+                log_diagnostic("room.create.invite_not_queued",
+                               {
+                                   {"actor",          *user,                       false},
+                                   {"room_id",        room_id,                     false},
+                                   {"invitee",        invitee,                     false},
+                                   {"invitee_server", std::string{invitee_server}, false}
+                },
+                               observability::LogEventSeverity::warning);
+            }
+            else if (delivery.outcome == merovingian::homeserver::RemoteInviteOutcome::refused)
+            {
+                log_diagnostic("room.create.invite_refused", {
+                                                                 {"actor",   *user,           false},
+                                                                 {"room_id", room_id,         false},
+                                                                 {"invitee", invitee,         false},
+                                                                 {"reason",  delivery.reason, false}
+                });
             }
         }
         log_diagnostic("room.create.accepted", {
@@ -16011,6 +16429,12 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             }
             if (auto const path = room_send_path_parts(req.target); path.has_value())
             {
+                auto const massaged = massaged_timestamp(req);
+                if (!massaged.valid)
+                {
+                    return dispatch_err(req, rt, 400U, "M_INVALID_PARAM",
+                                        "ts must be an integer origin_server_ts in milliseconds");
+                }
                 // CS API §10.5.1: idempotent send — replay the original response.
                 if (auto const cached = database::find_client_txn_event_id(
                         rt.homeserver.database.persistent_store, *user, path->room_id, path->event_type, path->txn_id);
@@ -16039,6 +16463,7 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                 rewritten.method = "POST";
                 rewritten.target = "/_matrix/client/v3/rooms/" + path->room_id + "/send";
                 rewritten.body = *event_body;
+                rewritten.origin_server_ts = massaged.value;
                 auto const result = wrap(call_local(rewritten), "event_id");
                 log_diagnostic(result.status == 200U ? "room.send_event.accepted" : "room.send_event.rejected",
                                {
@@ -16048,9 +16473,8 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                                    {"status",     std::to_string(result.status),                           false},
                                    {"reason",     result.status == 200U ? std::string{"ok"} : result.body, false}
                 });
-                // CS API §11.12: the server MUST send a stop-typing event when a
-                // user sends a message.  Clear local typing state and federate a
-                // typing:false EDU so remote servers remove the stale indicator.
+                // Sending a message does not end the sender's typing: only the client's `typing: false`
+                // or the timeout does (Client-Server API, "Typing Notifications"; ADR-0298).
                 if (result.status == 200U)
                 {
                     // Store txn_id → event_id for idempotency replay.
@@ -16071,50 +16495,17 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                             }
                         }
                     }
-                    auto const previous_users = current_typing_users_in_room(rt.homeserver, path->room_id);
-                    auto const typing_it =
-                        std::ranges::find_if(rt.homeserver.typing_users, [&path, user](auto const& t) {
-                            return t.room_id == path->room_id && t.user_id == *user && t.typing;
-                        });
-                    if (typing_it != rt.homeserver.typing_users.end())
-                    {
-                        typing_it->typing = false;
-                        auto const room_stream_id =
-                            update_room_typing_stream_id_if_changed(rt.homeserver, path->room_id, previous_users);
-                        // Federate typing:false only if the room has remote members
-                        auto const room_it = std::ranges::find_if(rt.homeserver.database.rooms, [&path](auto const& r) {
-                            return r.room_id == path->room_id;
-                        });
-                        if (room_it != rt.homeserver.database.rooms.end())
-                        {
-                            auto const edu_content = json_serialize(json_obj({
-                                json_member("room_id", json_str(path->room_id)),
-                                json_member("user_id", json_str(*user)),
-                                json_member("typing", canonicaljson::Value{false}),
-                            }));
-                            auto const enqueued =
-                                dispatch_outbound_edu(rt.homeserver, *room_it, "m.typing", edu_content);
-                            if (enqueued > 0U)
-                            {
-                                log_diagnostic("room.typing.cleared_on_send",
-                                               {
-                                                   {"actor",        *user,                    false},
-                                                   {"room_id",      path->room_id,            false},
-                                                   {"destinations", std::to_string(enqueued), false}
-                                });
-                            }
-                        }
-                        if (room_stream_id != std::uint64_t{0U} && rt.sync_notifier != nullptr)
-                        {
-                            rt.sync_notifier->publish(visible_stream_position(rt.homeserver.database),
-                                                      rt.homeserver.database.persistent_store.next_sync_stream_id);
-                        }
-                    }
                 }
                 return complete(result);
             }
             if (auto const path = room_state_path_parts(req.target); path.has_value())
             {
+                auto const massaged = massaged_timestamp(req);
+                if (!massaged.valid)
+                {
+                    return dispatch_err(req, rt, 400U, "M_INVALID_PARAM",
+                                        "ts must be an integer origin_server_ts in milliseconds");
+                }
                 auto rewritten = req;
                 auto event_body = event_body_from_content(path->event_type, req.body, path->state_key);
                 if (!event_body.has_value())
@@ -16150,6 +16541,7 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                 rewritten.method = "POST";
                 rewritten.target = "/_matrix/client/v3/rooms/" + path->room_id + "/send";
                 rewritten.body = *event_body;
+                rewritten.origin_server_ts = massaged.value;
                 auto const result = wrap(call_local(rewritten), "event_id");
                 log_diagnostic(result.status == 200U ? "room.state_event.accepted" : "room.state_event.rejected",
                                {
@@ -17008,41 +17400,14 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
 
             if (has_user_id)
             {
-                auto const result = merovingian::homeserver::invite_user(rt.homeserver, req.access_token, room_id,
-                                                                         body->user_id, body->reason);
+                auto const result = merovingian::homeserver::invite_user(
+                    rt.homeserver, req.access_token, room_id, body->user_id, body->reason,
+                    rate_limit_client_key(req, rt.homeserver.config.server()));
                 if (!result.ok)
                 {
                     return dispatch_err(req, rt, result.status, error_code_for(result), result.reason);
                 }
-                // For remote invitees dispatch the federation invite so the remote server
-                // learns about the event and can deliver it to the invitee's client.
-                auto const invitee_server = server_name_from_user_id(body->user_id);
-                if (!invitee_server.empty() && invitee_server != rt.homeserver.config.server().server_name)
-                {
-                    auto const& store = rt.homeserver.database.persistent_store;
-                    auto const invite_state =
-                        std::ranges::find_if(store.state, [&room_id, &body](database::PersistentStateEvent const& s) {
-                            return s.room_id == room_id && s.event_type == "m.room.member" &&
-                                   s.state_key == body->user_id;
-                        });
-                    auto const invite_json = invite_state != store.state.end()
-                                                 ? event_json_for_id(store, invite_state->event_id)
-                                                 : std::nullopt;
-                    if (invite_json.has_value())
-                    {
-                        auto const room_version = room_version_from_store(store, room_id);
-                        merovingian::homeserver::wire_federation_callbacks(rt.homeserver);
-                        if (rt.homeserver.dispatch_worker != nullptr)
-                        {
-                            auto transaction = federation::make_outbound_invite(
-                                invitee_server, rt.homeserver.config.server().server_name, room_id,
-                                invite_state->event_id, room_version, *invite_json,
-                                merovingian::homeserver::stripped_state_pdus(store, room_id));
-                            transaction.transaction_id = federation::make_federation_transaction_id();
-                            std::ignore = rt.homeserver.dispatch_worker->enqueue(std::move(transaction));
-                        }
-                    }
-                }
+                // A remote invitee's server has already been offered the invite, inside invite_user.
             }
             else
             {
@@ -18301,6 +18666,24 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
         {
             auto const result = handle_client_room_summary(rt.homeserver, *user, *target);
             return dispatch_resp(req, rt, result.status, result.body);
+        }
+    }
+
+    // GET /_matrix/client/v1/rooms/{roomId}/timestamp_to_event
+    // Spec: returns the event nearest a timestamp in a direction (added in v1.6).
+    auto constexpr timestamp_to_event_prefix = std::string_view{"/_matrix/client/v1/rooms/"};
+    auto constexpr timestamp_to_event_suffix = std::string_view{"/timestamp_to_event"};
+    if (req.method == "GET" &&
+        request_path.size() > timestamp_to_event_prefix.size() + timestamp_to_event_suffix.size() &&
+        starts_with(request_path, timestamp_to_event_prefix) && request_path.ends_with(timestamp_to_event_suffix))
+    {
+        auto const encoded_room_id = request_path.substr(timestamp_to_event_prefix.size(),
+                                                         request_path.size() - timestamp_to_event_prefix.size() -
+                                                             timestamp_to_event_suffix.size());
+        if (encoded_room_id.find('/') == std::string_view::npos)
+        {
+            return handle_timestamp_to_event(rt, req, guard, *user,
+                                             core::percent_decode_path_component(encoded_room_id));
         }
     }
 

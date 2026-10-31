@@ -22,6 +22,32 @@ namespace
     constexpr auto history_visibility_type = std::string_view{"m.room.history_visibility"};
     constexpr auto member_type = std::string_view{"m.room.member"};
 
+    // Whether a stored event's JSON is an m.room.member event whose state_key is `user_id`.
+    [[nodiscard]] auto is_membership_of(std::string_view event_json, std::string_view user_id) -> bool
+    {
+        auto const parsed = canonicaljson::parse_lossless(event_json);
+        auto const* event = std::get_if<canonicaljson::Object>(&parsed.value.storage());
+        if (parsed.error != canonicaljson::ParseError::none || event == nullptr)
+        {
+            return false;
+        }
+        auto type_matches = false;
+        auto key_matches = false;
+        for (auto const& member : *event)
+        {
+            auto const* text = std::get_if<std::string>(&member.value->storage());
+            if (member.key == "type")
+            {
+                type_matches = text != nullptr && *text == member_type;
+            }
+            else if (member.key == "state_key")
+            {
+                key_matches = text != nullptr && *text == user_id;
+            }
+        }
+        return type_matches && key_matches;
+    }
+
     // The string at `content.<key>` of a stored event's JSON.
     [[nodiscard]] auto content_string_of(std::string_view event_json, std::string_view key)
         -> std::optional<std::string>
@@ -161,6 +187,11 @@ auto HistoryVisibility::state_group_of(std::string_view event_id) -> std::option
     return found == group_by_event_.end() ? std::nullopt : std::optional<std::string_view>{found->second};
 }
 
+auto HistoryVisibility::has_state_group(std::string_view event_id) -> bool
+{
+    return state_group_of(event_id).has_value();
+}
+
 // Finds the event ID that `group_id`'s full state holds for (event_type, state_key), walking
 // the delta chain newest first exactly as database::read_state_group_full_state does: bounded,
 // cycle-checked, and broken (not "absent") when a group on the chain is missing.
@@ -254,14 +285,14 @@ auto HistoryVisibility::view_of_group(std::string_view group_id) -> GroupView co
     return group_views_.emplace(key, std::move(view)).first->second;
 }
 
-// The stream ordering of the newest accepted `join` event of the user in `room_id`. Every
-// `m.room.member` event of the user that was ever part of a room's state is named by some
-// state group row (or by the current state), so scanning those rows finds them without parsing
-// the room's events.
-auto HistoryVisibility::max_join_ordering(std::string_view room_id) -> std::optional<std::uint64_t>
+// The depth of the newest accepted `join` event of the user in `room_id`: its place in the room's
+// history (ADR-0308). Every `m.room.member` event of the user that was ever part of a room's state is
+// named by some state group row (or by the current state), so scanning those rows finds them without
+// parsing the room's events.
+auto HistoryVisibility::max_join_depth(std::string_view room_id) -> std::optional<std::uint64_t>
 {
     auto const key = std::string{room_id};
-    if (auto const cached = join_orderings_.find(key); cached != join_orderings_.end())
+    if (auto const cached = join_depths_.find(key); cached != join_depths_.end())
     {
         return cached->second;
     }
@@ -289,12 +320,12 @@ auto HistoryVisibility::max_join_ordering(std::string_view room_id) -> std::opti
             continue;
         }
         if (content_string(candidate, "membership") == std::optional<std::string>{"join"} &&
-            (!newest.has_value() || event->stream_ordering > *newest))
+            (!newest.has_value() || event->depth > *newest))
         {
-            newest = event->stream_ordering;
+            newest = event->depth;
         }
     }
-    join_orderings_.emplace(key, newest);
+    join_depths_.emplace(key, newest);
     return newest;
 }
 
@@ -413,12 +444,108 @@ auto HistoryVisibility::allows(HistoryVisibilityValue visibility, std::string_vi
     }
     if (visibility == HistoryVisibilityValue::shared)
     {
-        // Rule 3: the user joined the room at any point after the event was sent.
-        auto const joined = max_join_ordering(event.room_id);
-        return joined.has_value() && *joined > event.stream_ordering;
+        // Rule 3: the user joined the room at any point after the event was sent. "After" is the room's
+        // history, not this server's: a join deeper than the event comes after it (ADR-0308). The order
+        // events were stored in is not it, since an event fetched as history is stored after the join it
+        // precedes. A concurrent event of equal depth is not before the join (fails closed).
+        auto const joined = max_join_depth(event.room_id);
+        if (!joined.has_value() || *joined <= event.depth)
+        {
+            return false;
+        }
+        // Depth is chosen by whoever creates an event, a federated join's by the resident's make_join
+        // template, so depth alone could show a user who left events sent after they left. For such a
+        // user, an event that descends from their leave is not before their join (ADR-0311).
+        auto const& departure = departure_of(event.room_id);
+        return !departure.has_value() || !may_descend_from_departure(event, *departure);
     }
     // Rule 4; rule 5 (deny) otherwise.
     return membership == "invite" && visibility == HistoryVisibilityValue::invited;
+}
+
+namespace
+{
+
+    // The most held events one departure walk visits (ADR-0311) before it gives up and hides the event.
+    constexpr auto max_departure_walk = std::size_t{500U};
+
+} // namespace
+
+auto HistoryVisibility::departure_of(std::string_view room_id) -> std::optional<Departure> const&
+{
+    auto const key = std::string{room_id};
+    if (auto const cached = departures_.find(key); cached != departures_.end())
+    {
+        return cached->second;
+    }
+    auto departure = std::optional<Departure>{};
+    auto const row = std::ranges::find_if(store_.memberships, [&](database::PersistentMembership const& membership) {
+        return membership.room_id == room_id && membership.user_id == user_id_;
+    });
+    if (row != store_.memberships.end() && (row->membership == "leave" || row->membership == "ban"))
+    {
+        departure.emplace();
+        departure->ordering = row->stream_ordering;
+        // The leave itself, when it is held as the user's current member state. A federated leave of a room
+        // this server is no longer in keeps only the membership row.
+        auto const state = std::ranges::find_if(store_.state, [&](database::PersistentStateEvent const& entry) {
+            return entry.room_id == room_id && entry.event_type == member_type && entry.state_key == user_id_;
+        });
+        if (state != store_.state.end())
+        {
+            auto const membership = content_string(state->event_id, "membership");
+            if (membership == std::optional<std::string>{"leave"} || membership == std::optional<std::string>{"ban"})
+            {
+                departure->event_id = state->event_id;
+            }
+        }
+    }
+    return departures_.emplace(key, std::move(departure)).first->second;
+}
+
+auto HistoryVisibility::may_descend_from_departure(database::PersistentEvent const& event, Departure const& departure)
+    -> bool
+{
+    // Stored before the user left: nothing built on their leave can have been stored before it.
+    if (event.stream_ordering < departure.ordering)
+    {
+        return false;
+    }
+    if (!departure.event_id.has_value())
+    {
+        return true;
+    }
+    if (event.event_id == *departure.event_id)
+    {
+        return false;
+    }
+    auto pending = std::vector<std::string_view>{event.prev_event_ids.begin(), event.prev_event_ids.end()};
+    auto visited = std::unordered_set<std::string_view>{};
+    auto walked = std::size_t{0U};
+    while (!pending.empty())
+    {
+        auto const id = pending.back();
+        pending.pop_back();
+        if (id == *departure.event_id)
+        {
+            return true;
+        }
+        if (!visited.insert(id).second)
+        {
+            continue;
+        }
+        auto const* prev = find_event(id);
+        if (prev == nullptr || prev->room_id != event.room_id || prev->stream_ordering < departure.ordering)
+        {
+            continue;
+        }
+        if (++walked > max_departure_walk)
+        {
+            return true;
+        }
+        pending.insert(pending.end(), prev->prev_event_ids.begin(), prev->prev_event_ids.end());
+    }
+    return false;
 }
 
 auto HistoryVisibility::can_see(database::PersistentEvent const& event) -> bool
@@ -437,6 +564,14 @@ auto HistoryVisibility::can_see(database::PersistentEvent const& event) -> bool
     auto const group_id = state_group_of(event.event_id);
     if (!group_id.has_value())
     {
+        // ADR-0304: the user's own membership event held as an outlier (an invite received for a room
+        // whose state is not held, or the leave that rejected one, ADR-0294) has no recorded state. The
+        // user was sent it already (the invite in /sync, the leave in rooms.leave), so it is theirs to
+        // see. This covers no other event and no other user.
+        if (event.status == "outlier" && is_membership_of(event.json, user_id_))
+        {
+            return true;
+        }
         // No recorded state (history from before ADR-0064): the visibility at the time cannot
         // be proved, so only rule 2 applies, judged from the user's own membership timeline.
         return joined_when_sent(event);

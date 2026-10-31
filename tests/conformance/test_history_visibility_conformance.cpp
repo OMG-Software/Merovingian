@@ -1358,3 +1358,174 @@ SCENARIO("History stored without a state group is visible only to users who were
         }
     }
 }
+
+namespace
+{
+
+// The status and event_id of GET /rooms/{roomId}/timestamp_to_event.
+struct TimestampLookup final
+{
+    std::uint16_t status{0U};
+    std::string event_id{};
+    std::string errcode{};
+};
+
+[[nodiscard]] auto timestamp_lookup(ClientServerRuntime& rt, std::string const& token, std::string const& room_id,
+                                    std::int64_t ts, char direction) -> TimestampLookup
+{
+    auto const reply = call(rt, "GET",
+                            "/_matrix/client/v1/rooms/" + room_id + "/timestamp_to_event?ts=" + std::to_string(ts) +
+                                "&dir=" + std::string{direction},
+                            token);
+    return {reply.status, string_field(reply.body, "event_id"), string_field(reply.body, "errcode")};
+}
+
+} // namespace
+
+// Spec: Matrix Client-Server API v1.19
+// Endpoint / Section: GET /_matrix/client/v1/rooms/{roomId}/timestamp_to_event; Room History Visibility
+// URL: ../../docs/matrix-v1.19-spec/client-server-api.md#room-history-visibility
+//
+// GET /rooms/{roomId}/timestamp_to_event returns "the event closest to the given timestamp"; "Room History Visibility"
+// decides which events a user may be shown: "In all cases except `world_readable`, a user needs to join a room to view
+// events in that room", and with `joined` visibility only the events sent while the user was joined. The spec says
+// nothing of how the two meet; the project treats an event the user may not see as absent and goes on to the next one
+// in the direction asked (ADR-0299), so the endpoint never names an event /event would refuse.
+SCENARIO("GET /timestamp_to_event never names an event the user may not see",
+         "[history-visibility][csaz-3][security][conformance][timestamp-to-event]")
+{
+    GIVEN("a joined-visibility room with a message at 1000, bob's join at 2000 and a message at 3000")
+    {
+        auto started = merovingian::homeserver::start_client_server(visibility_config());
+        REQUIRE(started.started);
+        auto& rt = started.runtime;
+        rt.homeserver.test_frozen_event_clock_ms = 100;
+        auto const alice = register_and_login(rt, "alice");
+        auto const bob = register_and_login(rt, "bob");
+        auto const room_id = create_room_with_visibility(rt, alice, "joined");
+        rt.homeserver.test_frozen_event_clock_ms = 1000;
+        auto const vault = send_text(rt, alice, room_id, "vaultcombination7351");
+        rt.homeserver.test_frozen_event_clock_ms = 1500;
+        invite(rt, alice, room_id, "bob");
+        rt.homeserver.test_frozen_event_clock_ms = 2000;
+        join(rt, bob, room_id);
+        rt.homeserver.test_frozen_event_clock_ms = 3000;
+        auto const after_join = send_text(rt, alice, room_id, "afterbobjoined");
+
+        WHEN("bob looks forwards from before the message sent before he joined")
+        {
+            auto const lookup = timestamp_lookup(rt, bob, room_id, 1000, 'f');
+
+            THEN("that message is stepped over: he is told an event he may see, which /event serves him")
+            {
+                REQUIRE(lookup.status == 200U);
+                REQUIRE(lookup.event_id != vault);
+                REQUIRE(
+                    call(rt, "GET", "/_matrix/client/v3/rooms/" + room_id + "/event/" + lookup.event_id, bob).status ==
+                    200U);
+            }
+        }
+
+        WHEN("bob looks backwards from after the message and before his own join")
+        {
+            auto const lookup = timestamp_lookup(rt, bob, room_id, 1900, 'b');
+
+            THEN("the message is stepped over: whatever he is told, /event serves him it")
+            {
+                REQUIRE(lookup.status == 200U);
+                REQUIRE(lookup.event_id != vault);
+                REQUIRE(
+                    call(rt, "GET", "/_matrix/client/v3/rooms/" + room_id + "/event/" + lookup.event_id, bob).status ==
+                    200U);
+            }
+        }
+
+        WHEN("bob looks backwards from the end")
+        {
+            auto const lookup = timestamp_lookup(rt, bob, room_id, 3000, 'b');
+
+            THEN("he is told the message sent after he joined")
+            {
+                REQUIRE(lookup.status == 200U);
+                REQUIRE(lookup.event_id == after_join);
+            }
+        }
+
+        WHEN("alice, who was joined throughout, looks for the same timestamps")
+        {
+            auto const forwards = timestamp_lookup(rt, alice, room_id, 1000, 'f');
+            auto const backwards = timestamp_lookup(rt, alice, room_id, 1400, 'b');
+
+            THEN("she is told the message bob may not see")
+            {
+                REQUIRE(forwards.event_id == vault);
+                REQUIRE(backwards.event_id == vault);
+            }
+        }
+    }
+
+    GIVEN("a joined-visibility room that bob left before a later message was sent")
+    {
+        auto started = merovingian::homeserver::start_client_server(visibility_config());
+        REQUIRE(started.started);
+        auto& rt = started.runtime;
+        rt.homeserver.test_frozen_event_clock_ms = 100;
+        auto const alice = register_and_login(rt, "alice");
+        auto const bob = register_and_login(rt, "bob");
+        auto const room_id = create_room_with_visibility(rt, alice, "joined");
+        rt.homeserver.test_frozen_event_clock_ms = 1000;
+        invite_and_join(rt, alice, room_id, "bob", bob);
+        rt.homeserver.test_frozen_event_clock_ms = 2000;
+        leave(rt, bob, room_id);
+        rt.homeserver.test_frozen_event_clock_ms = 3000;
+        auto const after_leave = send_text(rt, alice, room_id, "afterbobleft");
+
+        WHEN("bob looks forwards from after he left")
+        {
+            auto const lookup = timestamp_lookup(rt, bob, room_id, 2500, 'f');
+
+            THEN("the later message is invisible to him, so nothing is found")
+            {
+                REQUIRE(lookup.status == 404U);
+            }
+        }
+
+        WHEN("bob looks backwards from after he left")
+        {
+            auto const lookup = timestamp_lookup(rt, bob, room_id, 2500, 'b');
+
+            THEN("he is told the last event he could see, his own leave, and never the message after it")
+            {
+                REQUIRE(lookup.status == 200U);
+                REQUIRE(lookup.event_id != after_leave);
+            }
+        }
+    }
+
+    GIVEN("a room with a message and a user who was banned, and one who never joined")
+    {
+        auto started = merovingian::homeserver::start_client_server(visibility_config());
+        REQUIRE(started.started);
+        auto& rt = started.runtime;
+        auto const alice = register_and_login(rt, "alice");
+        auto const bob = register_and_login(rt, "bob");
+        auto const carol = register_and_login(rt, "carol");
+        auto const room_id = create_room_with_visibility(rt, alice, "shared");
+        invite_and_join(rt, alice, room_id, "bob", bob);
+        ban(rt, alice, room_id, "bob");
+
+        WHEN("the banned user and the user who never joined each ask")
+        {
+            auto const banned = timestamp_lookup(rt, bob, room_id, 0, 'f');
+            auto const stranger = timestamp_lookup(rt, carol, room_id, 0, 'f');
+
+            THEN("the one who was in the room can still look back, and the other is refused with 403")
+            {
+                // Same read gate as /messages and /context: room_read_access_for, a ban "left" too.
+                REQUIRE(banned.status == 200U);
+                REQUIRE(stranger.status == 403U);
+                REQUIRE(stranger.errcode == "M_FORBIDDEN");
+            }
+        }
+    }
+}

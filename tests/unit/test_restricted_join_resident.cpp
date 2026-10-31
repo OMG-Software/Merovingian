@@ -779,3 +779,64 @@ SCENARIO("send_join co-signs a restricted join this server authorises, and refus
         std::filesystem::remove(path);
     }
 }
+
+// Spec: server-server-api.md "Restricted rooms" — "The resident server uses a 400
+// `M_UNABLE_TO_GRANT_JOIN` error on `/make_join` and `/send_join` to denote that the
+// joining server should try a different server." ADR-0287: a resident whose own users cannot
+// authorise a local user's join (the same case, seen from the joining side) tries another
+// resident through the federated join handshake, among a small bounded list of servers.
+SCENARIO("A resident that cannot authorise a local join picks other resident servers in a bounded order",
+         "[homeserver][restricted_join][fallback][adr-0287]")
+{
+    GIVEN("a client that names two servers and a room with three more servers holding joined members")
+    {
+        auto const via = std::vector<std::string>{"via1.example.org", "local.example.org", "via2.example.org"};
+        auto const residents =
+            std::vector<std::string>{"via2.example.org", "res1.example.org", "res2.example.org", "res3.example.org"};
+
+        WHEN("the candidates are chosen with room for them all")
+        {
+            auto const candidates =
+                merovingian::homeserver::restricted_join_fallback_candidates(via, residents, our_server, 10U);
+
+            THEN("the named servers come first, then the other residents, each once and never this server")
+            {
+                REQUIRE(candidates == std::vector<std::string>{"via1.example.org", "via2.example.org",
+                                                               "res1.example.org", "res2.example.org",
+                                                               "res3.example.org"});
+            }
+        }
+
+        WHEN("the candidates are chosen with a bound of three")
+        {
+            auto const candidates =
+                merovingian::homeserver::restricted_join_fallback_candidates(via, residents, our_server, 3U);
+
+            THEN("only the first three are kept, so the named servers are never cut for a resident")
+            {
+                REQUIRE(candidates ==
+                        std::vector<std::string>{"via1.example.org", "via2.example.org", "res1.example.org"});
+            }
+        }
+
+        WHEN("the client names no server and this server is the room's only resident")
+        {
+            auto const candidates = merovingian::homeserver::restricted_join_fallback_candidates(
+                {}, {std::string{our_server}, std::string{}}, our_server, 4U);
+
+            THEN("there is no candidate to try")
+            {
+                REQUIRE(candidates.empty());
+            }
+        }
+
+        WHEN("the fixed bound is looked at")
+        {
+            THEN("it is small, so a room with many servers costs a bounded number of make_join calls")
+            {
+                REQUIRE(merovingian::homeserver::max_restricted_join_fallback_candidates >= 1U);
+                REQUIRE(merovingian::homeserver::max_restricted_join_fallback_candidates <= 8U);
+            }
+        }
+    }
+}

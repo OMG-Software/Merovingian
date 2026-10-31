@@ -469,3 +469,264 @@ SCENARIO("Reloading a room from SQLite keeps both event indexes consistent", "[d
         std::filesystem::remove(sqlite_path);
     }
 }
+
+namespace
+{
+
+// A timeline event of `room_id` stamped `ts`, at `depth` and `stream_ordering`.
+[[nodiscard]] auto make_timed_event(std::string event_id, std::int64_t ts, std::uint64_t depth,
+                                    std::uint64_t stream_ordering, std::string room_id = "!room:example.org",
+                                    std::string status = "accepted") -> PersistentEvent
+{
+    auto event = PersistentEvent{};
+    event.event_id = std::move(event_id);
+    event.room_id = std::move(room_id);
+    event.sender_user_id = "@alice:example.org";
+    // A nested member of the same name before the real one, as in an event whose content carries it.
+    event.json = R"({"content":{"origin_server_ts":1,"body":"{\"origin_server_ts\":2}"},"origin_server_ts":)" +
+                 std::to_string(ts) + R"(,"type":"m.room.message"})";
+    event.depth = depth;
+    event.stream_ordering = stream_ordering;
+    event.status = std::move(status);
+    return event;
+}
+
+[[nodiscard]] auto accept_all(PersistentEvent const&) -> bool
+{
+    return true;
+}
+
+[[nodiscard]] auto nearest_id(EventTable const& table, std::string_view room_id, std::int64_t ts,
+                              merovingian::database::TimeDirection direction) -> std::string
+{
+    auto const found = table.nearest_by_time(room_id, ts, direction, accept_all, 1000U);
+    return found.event == table.end() ? std::string{} : found.event->event_id;
+}
+
+} // namespace
+
+SCENARIO("An event table seeks the event nearest a timestamp in a room, inclusively, by time then depth then stream "
+         "order",
+         "[database][event-table][timestamp-to-event]")
+{
+    using merovingian::database::TimeDirection;
+
+    GIVEN("a table whose events were added out of time order, two sharing a timestamp")
+    {
+        auto table = EventTable{};
+        REQUIRE(table.insert(make_timed_event("$c", 300, 3U, 30U)));
+        REQUIRE(table.insert(make_timed_event("$a", 100, 1U, 10U)));
+        REQUIRE(table.insert(make_timed_event("$b1", 200, 2U, 20U)));
+        REQUIRE(table.insert(make_timed_event("$b2", 200, 2U, 21U)));
+        REQUIRE(table.insert(make_timed_event("$other-room", 150, 1U, 11U, "!other:example.org")));
+
+        WHEN("a timestamp falls between events")
+        {
+            THEN("forwards finds the next later event and backwards the previous earlier one")
+            {
+                REQUIRE(nearest_id(table, "!room:example.org", 150, TimeDirection::forwards) == "$b1");
+                REQUIRE(nearest_id(table, "!room:example.org", 250, TimeDirection::backwards) == "$b2");
+            }
+        }
+
+        WHEN("a timestamp equals the timestamp of an event")
+        {
+            THEN("the boundary is inclusive in both directions")
+            {
+                REQUIRE(nearest_id(table, "!room:example.org", 100, TimeDirection::forwards) == "$a");
+                REQUIRE(nearest_id(table, "!room:example.org", 300, TimeDirection::backwards) == "$c");
+            }
+        }
+
+        WHEN("several events share the timestamp")
+        {
+            THEN("forwards picks the first of them in stream order and backwards the last")
+            {
+                REQUIRE(nearest_id(table, "!room:example.org", 200, TimeDirection::forwards) == "$b1");
+                REQUIRE(nearest_id(table, "!room:example.org", 200, TimeDirection::backwards) == "$b2");
+            }
+        }
+
+        WHEN("a timestamp lies beyond every event in the direction asked")
+        {
+            auto const after =
+                table.nearest_by_time("!room:example.org", 301, TimeDirection::forwards, accept_all, 1000U);
+            auto const before =
+                table.nearest_by_time("!room:example.org", 99, TimeDirection::backwards, accept_all, 1000U);
+
+            THEN("nothing is found, and it is not reported as truncated")
+            {
+                REQUIRE(after.event == table.end());
+                REQUIRE_FALSE(after.truncated);
+                REQUIRE(before.event == table.end());
+                REQUIRE_FALSE(before.truncated);
+            }
+        }
+
+        WHEN("the room is another room, or none the table holds")
+        {
+            THEN("only the events of that room are considered")
+            {
+                REQUIRE(nearest_id(table, "!other:example.org", 0, TimeDirection::forwards) == "$other-room");
+                REQUIRE(nearest_id(table, "!other:example.org", 0, TimeDirection::backwards).empty());
+                REQUIRE(nearest_id(table, "!unknown:example.org", 0, TimeDirection::forwards).empty());
+            }
+        }
+    }
+}
+
+SCENARIO("The time index of an event table follows depth, status and removal",
+         "[database][event-table][timestamp-to-event]")
+{
+    using merovingian::database::TimeDirection;
+
+    GIVEN("two events with one timestamp, the deeper one stored first")
+    {
+        auto table = EventTable{};
+        REQUIRE(table.insert(make_timed_event("$deep", 500, 9U, 1U)));
+        REQUIRE(table.insert(make_timed_event("$shallow", 500, 4U, 2U)));
+
+        WHEN("the nearest event is sought in either direction")
+        {
+            THEN("depth orders them before stream order does")
+            {
+                REQUIRE(nearest_id(table, "!room:example.org", 500, TimeDirection::forwards) == "$shallow");
+                REQUIRE(nearest_id(table, "!room:example.org", 500, TimeDirection::backwards) == "$deep");
+            }
+        }
+    }
+
+    GIVEN("a table holding an accepted event, an outlier, a rejected and a soft-failed event")
+    {
+        auto table = EventTable{};
+        REQUIRE(table.insert(make_timed_event("$ok", 100, 1U, 1U)));
+        REQUIRE(table.insert(make_timed_event("$outlier", 110, 2U, 2U, "!room:example.org", "outlier")));
+        REQUIRE(table.insert(make_timed_event("$rejected", 120, 3U, 3U, "!room:example.org", "rejected")));
+        REQUIRE(table.insert(make_timed_event("$soft", 130, 4U, 4U, "!room:example.org", "soft_failed")));
+
+        WHEN("the nearest event after the first is sought")
+        {
+            THEN("only the accepted event is ever found")
+            {
+                REQUIRE(nearest_id(table, "!room:example.org", 101, TimeDirection::forwards).empty());
+                REQUIRE(nearest_id(table, "!room:example.org", 1000, TimeDirection::backwards) == "$ok");
+            }
+        }
+
+        WHEN("the outlier is later promoted and the accepted event rejected")
+        {
+            table.modify(table.find("$outlier"), [](PersistentEvent& row) {
+                row.status = "accepted";
+            });
+            table.modify(table.find("$ok"), [](PersistentEvent& row) {
+                row.status = "rejected";
+            });
+
+            THEN("the index follows the new statuses")
+            {
+                REQUIRE(nearest_id(table, "!room:example.org", 0, TimeDirection::forwards) == "$outlier");
+                REQUIRE(nearest_id(table, "!room:example.org", 1000, TimeDirection::backwards) == "$outlier");
+            }
+        }
+    }
+
+    GIVEN("a table with three events in one room and one in another")
+    {
+        auto table = EventTable{};
+        REQUIRE(table.insert(make_timed_event("$one", 10, 1U, 1U)));
+        REQUIRE(table.insert(make_timed_event("$two", 20, 2U, 2U)));
+        REQUIRE(table.insert(make_timed_event("$three", 30, 3U, 3U)));
+        REQUIRE(table.insert(make_timed_event("$elsewhere", 25, 1U, 4U, "!other:example.org")));
+
+        WHEN("the middle event is erased")
+        {
+            auto const erased = table.erase_if([](PersistentEvent const& row) {
+                return row.event_id == "$two";
+            });
+
+            THEN("the survivors are still found, at their renumbered positions")
+            {
+                REQUIRE(erased == 1U);
+                REQUIRE(nearest_id(table, "!room:example.org", 11, TimeDirection::forwards) == "$three");
+                REQUIRE(nearest_id(table, "!room:example.org", 29, TimeDirection::backwards) == "$one");
+                REQUIRE(nearest_id(table, "!other:example.org", 0, TimeDirection::forwards) == "$elsewhere");
+            }
+        }
+
+        WHEN("the whole table is cleared")
+        {
+            table.clear();
+
+            THEN("nothing is found")
+            {
+                REQUIRE(nearest_id(table, "!room:example.org", 0, TimeDirection::forwards).empty());
+            }
+        }
+    }
+
+    GIVEN("a bulk load in no particular order")
+    {
+        auto table = EventTable{};
+        REQUIRE(table.insert(make_timed_event("$seed", 50, 5U, 5U)));
+        auto batch = std::vector<PersistentEvent>{};
+        batch.push_back(make_timed_event("$late", 90, 9U, 9U));
+        batch.push_back(make_timed_event("$early", 10, 1U, 1U));
+        batch.push_back(make_timed_event("$mid", 60, 6U, 6U));
+        auto const added = table.insert_all(std::move(batch));
+
+        WHEN("events are sought in either direction")
+        {
+            THEN("the merged index answers as if the events had arrived in order")
+            {
+                REQUIRE(added == 3U);
+                REQUIRE(nearest_id(table, "!room:example.org", 0, TimeDirection::forwards) == "$early");
+                REQUIRE(nearest_id(table, "!room:example.org", 51, TimeDirection::forwards) == "$mid");
+                REQUIRE(nearest_id(table, "!room:example.org", 89, TimeDirection::backwards) == "$mid");
+                REQUIRE(nearest_id(table, "!room:example.org", 1000, TimeDirection::backwards) == "$late");
+            }
+        }
+    }
+}
+
+SCENARIO("The time search of an event table steps over refused rows within a cap",
+         "[database][event-table][timestamp-to-event]")
+{
+    using merovingian::database::TimeDirection;
+
+    GIVEN("a room of five events of which the nearest three are refused")
+    {
+        auto table = EventTable{};
+        for (auto i = 1; i <= 5; ++i)
+        {
+            REQUIRE(table.insert(make_timed_event("$e" + std::to_string(i), i * 10, static_cast<std::uint64_t>(i),
+                                                  static_cast<std::uint64_t>(i))));
+        }
+        auto const refuse_first_three = [](PersistentEvent const& row) {
+            return row.event_id != "$e1" && row.event_id != "$e2" && row.event_id != "$e3";
+        };
+
+        WHEN("the cap allows more rows than are refused")
+        {
+            auto const found =
+                table.nearest_by_time("!room:example.org", 0, TimeDirection::forwards, refuse_first_three, 4U);
+
+            THEN("the first accepted row is found")
+            {
+                REQUIRE(found.event != table.end());
+                REQUIRE(found.event->event_id == "$e4");
+            }
+        }
+
+        WHEN("the cap is reached before an accepted row")
+        {
+            auto const found =
+                table.nearest_by_time("!room:example.org", 0, TimeDirection::forwards, refuse_first_three, 3U);
+
+            THEN("nothing is returned and the search says it was cut short")
+            {
+                REQUIRE(found.event == table.end());
+                REQUIRE(found.truncated);
+            }
+        }
+    }
+}

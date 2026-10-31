@@ -174,6 +174,11 @@ Federation is the highest-risk surface: **all input comes from untrusted remote 
    under `mutex_`. Replay parks rows past a destination's share instead of promoting them. A new
    path that touches `queue_` uses these. Never discard `enqueue`'s result: log a refusal. Give
    every destination its own transaction ID: it is the durable `federation_transactions` key.
+   A failure's backoff runs from the end of the attempt (`finished_at`, `perform_outbound_transaction`'s
+   `finished_clock`), never from its start: a timeout is longer than the early backoffs (ADR-0309). The
+   shutdown drain takes only what was due when it began (`run_due`), so a transaction that fails during
+   it waits for replay and shutdown ends. The idle wait wakes for a due transaction (`has_due_locked`),
+   never for a queue that is merely not empty.
 
 13. **The private-range allowlist is for federation callers only (ADR-0231).**
    `security.federation.allow_private_ip_ranges` lets federation reach named RFC 1918 / ULA
@@ -213,6 +218,27 @@ Federation is the highest-risk surface: **all input comes from untrusted remote 
    with 502 `M_TOO_LARGE`; only the thumbnail has 413. `query/directory` has no room ID, so a worker
    relays it to main (`directory_query_ingest`).
 
+16. **A PDU whose event ID is already stored is answered as handled, before it is verified (ADR-0285).**
+   Spec "PDU Processing Result": no `error` means "successfully handled". A re-send in another
+   transaction, or twice in one, is looked up by event ID (any status, in the PDU's own room) first:
+   `FederationRuntimeState::pdu_already_stored` in `/send` after the ACL check and before signature
+   verification, `pdu_event_already_stored` on main's side of a worker `pdu_ingest` relay, and
+   `ingest_pdu_event` (twice; the check under the room stripe is the decisive one). A hit is
+   `PduIngestionStatus::already_stored`: empty result, not re-verified, re-authorised or stored, no
+   stream ordering, push, fan-out or projection, and a stored `rejected` copy is never re-judged. The
+   worker leaves `pdu_already_stored` unset (its event snapshot is not the record). A per-PDU
+   `internal_error` is logged at WARNING level as well as audited: never turn a duplicate back into
+   one, or the sender is told a stored event failed.
+
+17. **Served auth chains hold the create event a room version implies (ADR-0286).** From room version 12 no event
+   lists `m.room.create` in `auth_events` (rooms/v12.md: the `room_id` implies it), so the walk over
+   `auth_events` never reaches it. `build_event_auth_response`, `build_state_response` (`auth_chain`) and
+   `build_state_ids_response` (`auth_chain_ids`) add it through `append_implied_create_event`: once, never to the
+   create event's own chain, only when this server holds it, and only for a version with
+   `create_event_is_room_id`. It counts toward `max_event_auth_chain_events`. The resident's `send_join`
+   `auth_chain` already holds it (its walk starts at the pre-join state). State resolution's own auth-chain
+   computation and what this server accepts are not changed.
+
 ## Key files
 
 | File | Responsibility |
@@ -231,7 +257,7 @@ Federation is the highest-risk surface: **all input comes from untrusted remote 
 | `server_acl.cpp` | Parses and evaluates `m.room.server_acl` allow/deny lists |
 | `edu_idempotence.cpp` | Bounded in-memory replay window for `m.direct_to_device` `message_id`s, keyed on (origin, sender, message_id), plus `derive_direct_to_device_message_id` for our outbound IDs |
 | `dispatch_worker.cpp` | Background outbound PDU/EDU delivery with per-destination retry and back-off |
-| `event_query.cpp` | Serves the room-scoped reads `event`, `state`, `state_ids`, `backfill`, `get_missing_events`, and owns the origin-in-room gate (`origin_may_read_room`) |
+| `event_query.cpp` | Serves the room-scoped reads `event`, `state`, `state_ids`, `backfill`, `get_missing_events`, `timestamp_to_event` (seeks the store room-and-time index, steps over events `ServerEventFilter` hides, at most `max_time_search_examined` candidates; ADR-0299, ADR-0300), and owns the origin-in-room gate (`origin_may_read_room`) |
 | `outbound_membership.cpp` | Outbound `make_join` / `make_leave` / `make_knock` calls |
 | `cached_server_discovery.cpp` | TTL-bounded in-memory cache in front of server discovery. `DiscoveryCachePolicy::successes_only` is what a call a client request triggers (the federated join's `make_join`/`send_join`) uses, so a remembered failure never refuses a retry; `remember_failures` stays the default for key resolution, pushers and appservices |
 | `runtime_federation.cpp` | Federation route registration and per-origin request caps |

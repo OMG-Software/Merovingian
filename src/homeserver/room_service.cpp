@@ -34,6 +34,7 @@
 #include "merovingian/homeserver/appservice_delivery.hpp"
 #include "merovingian/homeserver/appservice_ephemeral.hpp"
 #include "merovingian/homeserver/auth_service.hpp"
+#include "merovingian/homeserver/client_outbound_proxy.hpp"
 #include "merovingian/homeserver/email_push.hpp"
 #include "merovingian/homeserver/federation_proxy.hpp"
 #include "merovingian/homeserver/local_http_router.hpp"
@@ -1364,28 +1365,45 @@ namespace
                                                ComposedEvent const& composed, std::string_view sender,
                                                std::string_view extra_recipient) -> void;
 
-    [[nodiscard]] auto persist_membership_transition(HomeserverRuntime& runtime, std::string_view room_id,
+    // A membership event composed and signed but not yet stored: the event, or why there is none.
+    struct ComposedMembership final
+    {
+        std::optional<ComposedEvent> event{};
+        OperationResult failure{};
+    };
+
+    [[nodiscard]] auto compose_membership_transition(HomeserverRuntime& runtime, std::string_view room_id,
                                                      std::string_view sender_user_id, std::string_view target_user_id,
-                                                     std::string_view membership, std::string_view reason = {})
-        -> OperationResult
+                                                     std::string_view membership, std::string_view reason)
+        -> ComposedMembership
     {
         auto const event_json = serialize_membership_event_json(target_user_id, membership, reason);
         if (!event_json.has_value())
         {
-            return make_operation_result(false, {}, "membership event serialization failed", 500U);
+            return {std::nullopt, make_operation_result(false, {}, "membership event serialization failed", 500U)};
         }
 
-        auto const composition = compose_signed_event(runtime, room_id, sender_user_id, *event_json);
+        auto composition = compose_signed_event(runtime, room_id, sender_user_id, *event_json);
         if (composition.failure == ComposeFailure::too_large)
         {
-            return event_too_large_result();
+            return {std::nullopt, event_too_large_result()};
         }
-        auto const& composed = composition.event;
-        if (!composed.has_value())
+        if (!composition.event.has_value())
         {
-            return make_operation_result(false, {}, "membership event rejected", 403U);
+            return {std::nullopt, make_operation_result(false, {}, "membership event rejected", 403U)};
         }
-        if (!persist_composed_event(runtime, room_id, sender_user_id, *composed))
+        return {std::move(composition.event), {}};
+    }
+
+    // Stores a composed membership event and tells the room's servers, the room's clients and the push
+    // gateways about it. Split from the composing so that an invite to a user of another server can be
+    // offered to that user's server in between (Server-Server API, "Inviting to a room").
+    [[nodiscard]] auto store_composed_membership(HomeserverRuntime& runtime, std::string_view room_id,
+                                                 std::string_view sender_user_id, std::string_view target_user_id,
+                                                 std::string_view membership, ComposedEvent const& composed_event)
+        -> OperationResult
+    {
+        if (!persist_composed_event(runtime, room_id, sender_user_id, composed_event))
         {
             return make_operation_result(false, {}, "membership event persistence failed", 500U);
         }
@@ -1394,10 +1412,10 @@ namespace
         auto* room = find_room(runtime.database, room_id);
         if (room != nullptr)
         {
-            room->events.push_back(composed->json);
+            room->events.push_back(composed_event.json);
             // An invite reaches the invitee's server through /invite; every other
             // membership change also reaches its target's server.
-            federate_local_event(runtime, room_id, *room, *composed,
+            federate_local_event(runtime, room_id, *room, composed_event,
                                  membership == "invite" ? std::string_view{} : target_user_id);
         }
 
@@ -1416,9 +1434,23 @@ namespace
         // knock) is filtered as the sender regardless.
         if (room != nullptr)
         {
-            dispatch_membership_push_notification(runtime, *room, *composed, sender_user_id, target_user_id);
+            dispatch_membership_push_notification(runtime, *room, composed_event, sender_user_id, target_user_id);
         }
         return make_operation_result(true, std::string{room_id});
+    }
+
+    [[nodiscard]] auto persist_membership_transition(HomeserverRuntime& runtime, std::string_view room_id,
+                                                     std::string_view sender_user_id, std::string_view target_user_id,
+                                                     std::string_view membership, std::string_view reason = {})
+        -> OperationResult
+    {
+        auto const composed =
+            compose_membership_transition(runtime, room_id, sender_user_id, target_user_id, membership, reason);
+        if (!composed.event.has_value())
+        {
+            return composed.failure;
+        }
+        return store_composed_membership(runtime, room_id, sender_user_id, target_user_id, membership, *composed.event);
     }
 
     // Per the Matrix spec v1.19 Sec. 4.4 auth_events, only specific event types
@@ -4656,7 +4688,134 @@ namespace
         // other members' m.room.member events included (ADR-0241).
         canonicaljson::Array verified_state{};
         canonicaljson::Array verified_auth_chain{};
+        // Only for a join through another resident of a room this server is already in
+        // (ADR-0287): the resident's `event`, the join with its co-signature, once checked.
+        std::string resident_signed_event_json{};
     };
+
+    // How `perform_federated_join` uses the send_join answer.
+    enum class FederatedJoinPurpose : std::uint8_t
+    {
+        // This server holds nothing of the room: the answer's `state` and `auth_chain`
+        // become the room's state.
+        enter_room,
+        // This server is resident and holds the room's state (ADR-0287): only the
+        // resident's co-signed copy of the join is wanted, and state is never taken from
+        // the answer.
+        join_through_resident,
+    };
+
+    // `base`, a signed event, with the signature that `source` carries for `server_name` under each of
+    // `key_ids` added to its `signatures`. Nothing else of `base` changes: the result keeps `base`'s
+    // content, hashes and every signature it already had (Server-Server API, PUT /v2/invite: "All other
+    // fields of the events should remain untouched"). nullopt when a named key has no signature in
+    // `source` or the result cannot be built.
+    [[nodiscard]] auto with_server_signatures(canonicaljson::Value const& base,
+                                              std::vector<events::EventSignature> const& source,
+                                              std::string_view server_name, std::vector<std::string> const& key_ids)
+        -> std::optional<canonicaljson::Value>
+    {
+        auto merged = base;
+        for (auto const& key_id : key_ids)
+        {
+            auto const found = std::ranges::find_if(source, [&](events::EventSignature const& candidate) {
+                return candidate.server_name == server_name && candidate.key_id == key_id;
+            });
+            if (found == source.end())
+            {
+                return std::nullopt;
+            }
+            auto const attached = events::attach_event_signature(
+                merged, events::SigningKeyId{std::string{server_name}, key_id}, found->signature);
+            if (attached.error != canonicaljson::CanonicalJsonError::none)
+            {
+                return std::nullopt;
+            }
+            auto parsed = canonicaljson::parse_lossless(attached.output);
+            if (parsed.error != canonicaljson::ParseError::none)
+            {
+                return std::nullopt;
+            }
+            merged = std::move(parsed.value);
+        }
+        return merged;
+    }
+
+    // ADR-0287: checks the `event` of a send_join answer for a restricted join through
+    // another resident, and returns this server's own join with the resident's co-signature
+    // merged in, serialized, or the reason it was refused. The answer's event must be the join
+    // this server signed (same reference-hash event ID) and name an authorising user who is
+    // not a user of this server. Only its authorising-server signatures are taken, and they are
+    // added to `own_signed_event`: the reference hash and the signatures are over the redacted
+    // form, so a resident can change a field redaction drops (a display name) and keep both,
+    // and the event stored is never the resident's copy. The combined event must verify: this
+    // server's own signature and the authorising server's (rooms/v10.md 4.2.1, ADR-0171). A join
+    // authorised by a server whose signature was not checked is never accepted.
+    struct ResidentSignedJoin final
+    {
+        std::string json{};
+        std::string refusal{};
+    };
+
+    [[nodiscard]] auto verify_resident_signed_join(HomeserverRuntime& runtime, canonicaljson::Object const& answer,
+                                                   rooms::RoomVersionPolicy const& policy, std::string_view our_server,
+                                                   std::string_view expected_event_id,
+                                                   canonicaljson::Value const& own_signed_event) -> ResidentSignedJoin
+    {
+        auto const* event_value = object_member(answer, "event");
+        if (event_value == nullptr || !std::holds_alternative<canonicaljson::Object>(event_value->storage()))
+        {
+            return {{}, "send_join answer carries no signed join event"};
+        }
+        auto const& event = std::get<canonicaljson::Object>(event_value->storage());
+        auto const id = events::make_reference_hash_event_id(*event_value, policy);
+        if (!id.error.empty() || id.event_id != expected_event_id)
+        {
+            return {{}, "the resident changed the join event"};
+        }
+        // The reference hash covers the authorising user, so the resident's copy and this server's own
+        // name the same one; read it from the copy that is kept.
+        auto const* own_event = std::get_if<canonicaljson::Object>(&own_signed_event.storage());
+        auto const* content = own_event == nullptr ? object_member_as_object(event, "content")
+                                                   : object_member_as_object(*own_event, "content");
+        auto const* authoriser =
+            content == nullptr ? nullptr : string_member(*content, "join_authorised_via_users_server");
+        if (authoriser == nullptr || sender_domain_from_user_id(*authoriser) == our_server ||
+            sender_domain_from_user_id(*authoriser).empty())
+        {
+            return {{}, "the join names no authorising user of another server"};
+        }
+        auto const authorising_server = std::string{sender_domain_from_user_id(*authoriser)};
+        auto const resident_copy = events::parse_event_envelope(*event_value);
+        if (!resident_copy.error.empty())
+        {
+            return {{}, "the resident's join event could not be read"};
+        }
+        auto const authorising_key_ids =
+            federation::signature_key_ids_for_server(resident_copy.event.signatures, authorising_server);
+        if (authorising_key_ids.empty())
+        {
+            return {{}, "the join carries no signature of its authorising server"};
+        }
+        auto const combined = with_server_signatures(own_signed_event, resident_copy.event.signatures,
+                                                     authorising_server, authorising_key_ids);
+        if (!combined.has_value())
+        {
+            return {{}, "the authorising server's signatures could not be added to the join"};
+        }
+        auto const verified =
+            filter_verified_send_join_events(runtime, canonicaljson::Array{*combined}, policy, our_server);
+        if (verified.size() != 1U)
+        {
+            return {{}, "the join's signatures did not verify"};
+        }
+        auto serialized = canonicaljson::serialize_canonical(verified.front());
+        if (serialized.error != canonicaljson::CanonicalJsonError::none)
+        {
+            return {{}, "the signed join event could not be serialized"};
+        }
+        return {std::move(serialized.output), {}};
+    }
 
     [[nodiscard]] auto federated_join_failure(std::string reason, std::uint16_t status) -> FederatedJoinOutcome
     {
@@ -4723,14 +4882,12 @@ namespace
         bool active_{false};
     };
 
-    [[nodiscard]] auto perform_federated_join(HomeserverRuntime& runtime, std::string_view room_id,
-                                              std::string const& user_id, std::string const& our_server,
-                                              std::vector<std::string> candidates,
-                                              std::vector<std::string> const& supported_versions,
-                                              std::optional<database::PersistentServerSigningKey> const& signing_key,
-                                              std::string_view key_id, core::SecretBuffer secret_key,
-                                              std::optional<database::PersistentProfile> const& profile)
-        -> FederatedJoinOutcome
+    [[nodiscard]] auto perform_federated_join(
+        HomeserverRuntime& runtime, std::string_view room_id, std::string const& user_id, std::string const& our_server,
+        std::vector<std::string> candidates, std::vector<std::string> const& supported_versions,
+        std::optional<database::PersistentServerSigningKey> const& signing_key, std::string_view key_id,
+        core::SecretBuffer secret_key, std::optional<database::PersistentProfile> const& profile,
+        FederatedJoinPurpose purpose = FederatedJoinPurpose::enter_room) -> FederatedJoinOutcome
     {
         // Parallel make_join race: fire up to join_parallelism concurrent make_join
         // calls and return on the first successful response. Still-running losers are
@@ -5070,6 +5227,32 @@ namespace
             });
             return federated_join_failure("malformed send_join response", 502U);
         }
+        if (purpose == FederatedJoinPurpose::join_through_resident)
+        {
+            auto resident_join = verify_resident_signed_join(runtime, *send_obj, *policy, our_server,
+                                                             event_id_result.event_id, signed_value.value);
+            if (!resident_join.refusal.empty())
+            {
+                log_diagnostic("room.join.rejected",
+                               {
+                                   {"actor",         user_id,               false},
+                                   {"room_id",       std::string{room_id},  false},
+                                   {"status",        "502",                 false},
+                                   {"remote_server", remote_server,         false},
+                                   {"reason",        resident_join.refusal, false}
+                },
+                               observability::LogEventSeverity::warning);
+                return federated_join_failure(resident_join.refusal, 502U);
+            }
+            auto outcome = FederatedJoinOutcome{};
+            outcome.policy = *policy;
+            outcome.remote_server = std::move(remote_server);
+            outcome.signed_event = std::move(signed_event);
+            outcome.signed_event_value = signed_value.value;
+            outcome.event_id_result = event_id_result;
+            outcome.resident_signed_event_json = std::move(resident_join.json);
+            return outcome;
+        }
         // ADR-0241: the whole state array — other members' m.room.member events
         // included — is verified here and persisted by join_room before the join
         // returns. The join event's after-state group is built from it, and the
@@ -5147,6 +5330,155 @@ namespace
         outcome.verified_state = std::move(verified_state);
         outcome.verified_auth_chain = std::move(verified_auth_chain);
         return outcome;
+    }
+
+    // The room versions a join advertises to a resident: every one this server implements
+    // (rooms::room_version_policy.cpp is the single source of truth, pinned by
+    // tests/conformance/test_room_version_table_conformance.cpp).
+    [[nodiscard]] auto implemented_room_versions() -> std::vector<std::string>
+    {
+        auto versions = std::vector<std::string>{};
+        for (auto const& policy : rooms::known_room_versions())
+        {
+            versions.emplace_back(policy.id);
+        }
+        return versions;
+    }
+
+    // ADR-0288: waits for the events of `room_id` that another thread is applying now, so
+    // that a decision made next sees them. Ingestion applies a received event under the
+    // room's stripe mutex and then `runtime.mutex`; this releases `runtime.mutex`, takes
+    // and drops the stripe, and restores `runtime.mutex`, which is the order ingestion takes
+    // them in. Anything read from runtime state before the call must be read again after it.
+    auto wait_for_in_flight_room_events(HomeserverRuntime& runtime, std::unique_lock<RuntimeMutex>& guard,
+                                        std::string_view room_id) -> void
+    {
+        auto const stripe = std::hash<std::string>{}(std::string{room_id}) % room_mutex_stripe_count;
+        auto const released = RuntimeLockRelease{guard};
+        // Taken and dropped: waits for any ingestion holding the stripe to finish.
+        auto const barrier = std::lock_guard{runtime.room_stripe_mutexes[stripe]};
+    }
+
+    // True when `event_id` is stored in `room_id` as an accepted join of `user_id` and is the event
+    // that gives `user_id` their joined membership there now. Call with `runtime.mutex` held.
+    [[nodiscard]] auto join_event_made_member(HomeserverRuntime const& runtime, std::string_view room_id,
+                                              std::string_view user_id, std::string_view event_id) -> bool
+    {
+        auto const& store = runtime.database.persistent_store;
+        auto const stored = store.events.find(event_id);
+        if (stored == store.events.end() || stored->room_id != room_id || stored->sender_user_id != user_id ||
+            stored->status != "accepted")
+        {
+            return false;
+        }
+        auto const state = std::ranges::find_if(store.state, [&](database::PersistentStateEvent const& row) {
+            return row.room_id == room_id && row.event_type == "m.room.member" && row.state_key == user_id;
+        });
+        if (state == store.state.end() || state->event_id != event_id)
+        {
+            return false;
+        }
+        return std::ranges::any_of(store.memberships, [&](database::PersistentMembership const& membership) {
+            return membership.room_id == room_id && membership.user_id == user_id && membership.membership == "join";
+        });
+    }
+
+    // ADR-0287. This server is resident in `room_id` and the restricted-join decision found
+    // that `user_id` meets an allow condition but no user of this server can authorise the
+    // join (server-server-api.md "Restricted rooms": M_UNABLE_TO_GRANT_JOIN, "the joining
+    // server should try a different server"). Joins `user_id` through one of `candidates`
+    // with make_join and send_join, and stores the resident's co-signed join as a received
+    // event: the room's state is already here, so none of the answer's state is taken (see
+    // `FederatedJoinPurpose`). The caller holds the MembershipExchangeClaim for the pair and
+    // `runtime.mutex` through `guard`; the network exchange and the signature checks run with
+    // it released.
+    [[nodiscard]] auto join_through_other_resident(HomeserverRuntime& runtime, std::unique_lock<RuntimeMutex>& guard,
+                                                   std::string_view room_id, std::string const& user_id,
+                                                   std::vector<std::string> candidates) -> OperationResult
+    {
+        auto const our_server = runtime.config.server().server_name;
+        // The room's own version is the only one offered, so a template for any other is
+        // not a template for this room.
+        auto const room_version = stored_room_version(runtime.database.persistent_store, room_id);
+        if (!room_version.has_value())
+        {
+            return make_operation_result(false, {}, "the room's version is unknown", 500U);
+        }
+        wire_federation_callbacks(runtime);
+        if (!runtime.federation.pdu_sink)
+        {
+            return make_operation_result(false, {}, "federation is not available", 503U);
+        }
+        auto const signing_key = find_active_server_signing_key(runtime);
+        auto const key_id = signing_key.has_value() ? signing_key->key_id : std::string{};
+        auto secret_key = core::SecretBuffer{runtime.database.signing_secret_key.bytes()};
+        auto const joining_profile = database::find_profile(runtime.database.persistent_store, user_id);
+        auto joined = [&] {
+            auto const released = RuntimeLockRelease{guard};
+            return perform_federated_join(runtime, room_id, user_id, our_server, std::move(candidates),
+                                          std::vector<std::string>{*room_version}, signing_key, key_id,
+                                          std::move(secret_key), joining_profile,
+                                          FederatedJoinPurpose::join_through_resident);
+        }();
+        if (joined.failure.has_value())
+        {
+            return *joined.failure;
+        }
+        if (joined.policy.id != *room_version)
+        {
+            return make_operation_result(false, {}, "the resident's template is for another room version", 502U);
+        }
+        auto envelope = federation::parse_inbound_pdu_envelope(joined.resident_signed_event_json, joined.policy.id);
+        if (!envelope.has_value() || envelope->room_id != room_id || envelope->sender != user_id ||
+            envelope->event_type != "m.room.member" || envelope->state_key != std::optional<std::string>{user_id})
+        {
+            return make_operation_result(false, {}, "the resident's signed join is not this user's join", 502U);
+        }
+        envelope->origin = joined.remote_server;
+        // The sink takes the room stripe and then runtime.mutex itself: drop every level
+        // this thread holds, as the pending-PDU drain after an ordinary join does.
+        auto const ingested = [&] {
+            auto const released = RuntimeLockRelease{guard};
+            return runtime.federation.pdu_sink(*envelope);
+        }();
+        // The same join may have reached this server first, in a transaction from the resident sent
+        // while the send_join was being answered (server-server-api.md "Joining Rooms"): the event ID
+        // is the same whatever the signatures, so the sink answers `already_stored`. That is the join
+        // done only if that event is the one that made the user a member; a copy stored any other way
+        // (an outlier, soft-failed, rejected) did not, and the join has not happened. An `accepted` join
+        // is checked the same way: accepted means it passed the auth rules, but state resolution across
+        // the room's forward extremities can still leave another member event for the user current.
+        auto const stored_or_accepted = ingested.status == federation::PduIngestionStatus::accepted ||
+                                        ingested.status == federation::PduIngestionStatus::already_stored;
+        if (!stored_or_accepted || !join_event_made_member(runtime, room_id, user_id, joined.event_id_result.event_id))
+        {
+            auto const refused = ingested.status == federation::PduIngestionStatus::rejected_auth ||
+                                 ingested.status == federation::PduIngestionStatus::soft_failed ||
+                                 ingested.status == federation::PduIngestionStatus::rejected_invalid;
+            log_diagnostic("room.join.rejected",
+                           {
+                               {"actor",         user_id,                 false},
+                               {"room_id",       std::string{room_id},    false},
+                               {"status",        refused ? "403" : "502", false},
+                               {"remote_server", joined.remote_server,    false},
+                               {"reason",        ingested.reason,         false}
+            },
+                           observability::LogEventSeverity::warning);
+            return make_operation_result(false, {}, "the resident's join was not applied: " + ingested.reason,
+                                         refused ? 403U : 502U);
+        }
+        append_local_audit(runtime.database, observability::AuditCategory::admin, "room.joined_via_other_resident",
+                           user_id, room_id, "joined through " + joined.remote_server);
+        log_diagnostic("room.join.accepted_via_other_resident",
+                       {
+                           {"actor",         user_id,                         false},
+                           {"room_id",       std::string{room_id},            false},
+                           {"remote_server", joined.remote_server,            false},
+                           {"event_id",      joined.event_id_result.event_id, false}
+        },
+                       observability::LogEventSeverity::info);
+        notify_room_changed(runtime, room_id);
+        return make_operation_result(true, std::string{room_id});
     }
 
 } // namespace
@@ -5333,14 +5665,7 @@ namespace
         // even though the rest of the join pipeline (validate_make_join_event,
         // sign_event_for_server, make_reference_hash_event_id) already handles
         // whatever version the response reports via find_room_version_policy.
-        auto const supported_versions = [] {
-            auto versions = std::vector<std::string>{};
-            for (auto const& policy : rooms::known_room_versions())
-            {
-                versions.emplace_back(policy.id);
-            }
-            return versions;
-        }();
+        auto const supported_versions = implemented_room_versions();
         // Best-effort: load the key_id from the persistent store. If no usable key
         // record exists, perform_sync_outbound_call fails with "server signing key not
         // initialized", which join_room surfaces as 502 — the correct status for an
@@ -5780,8 +6105,48 @@ namespace
         auto authorising_user = std::string{};
         if (third_party_signed == nullptr)
         {
-            auto const decision = decide_restricted_join(runtime.database.persistent_store, room_id, *user_id,
-                                                         runtime.config.server().server_name);
+            auto decision = decide_restricted_join(runtime.database.persistent_store, room_id, *user_id,
+                                                   runtime.config.server().server_name);
+            if (decision.verdict == RestrictedJoinVerdict::unable_to_grant)
+            {
+                // ADR-0287, ADR-0288: the user meets a condition but no user of this server can
+                // authorise the join. An event for the room that is being applied now may give a
+                // local user the power, so wait for it and decide again; if it still cannot be
+                // authorised here, join through another resident (server-server-api.md
+                // "Restricted rooms": "the joining server should try a different server").
+                auto const exchange = MembershipExchangeClaim{runtime, room_id, *user_id};
+                wait_for_in_flight_room_events(runtime, guard, room_id);
+                room = find_room(runtime.database, room_id);
+                if (room == nullptr || room_has_member(*room, *user_id))
+                {
+                    auto changed =
+                        make_operation_result(false, {}, "the room changed while the join was decided", 429U);
+                    changed.retry_after_ms = membership_exchange_retry_after_ms;
+                    return changed;
+                }
+                decision = decide_restricted_join(runtime.database.persistent_store, room_id, *user_id,
+                                                  runtime.config.server().server_name);
+                if (decision.verdict == RestrictedJoinVerdict::unable_to_grant)
+                {
+                    auto const our_server = runtime.config.server().server_name;
+                    auto candidates = restricted_join_fallback_candidates(
+                        join_candidate_servers(joining_via, room_id, our_server),
+                        last_known_resident_servers(runtime, room_id), our_server,
+                        std::min<std::size_t>(
+                            max_restricted_join_fallback_candidates,
+                            std::max(std::uint32_t{1U}, runtime.federation.config.join_max_candidates)));
+                    if (!candidates.empty())
+                    {
+                        auto joined_elsewhere =
+                            join_through_other_resident(runtime, guard, room_id, *user_id, std::move(candidates));
+                        if (joined_elsewhere.ok)
+                        {
+                            return joined_elsewhere;
+                        }
+                        // The client is told the refusal that sent it elsewhere (below).
+                    }
+                }
+            }
             if (decision.verdict == RestrictedJoinVerdict::authorised)
             {
                 authorising_user = decision.authorising_user;
@@ -6046,6 +6411,11 @@ namespace
         // in step 5 needs the lock), so it must outlive that scope.
         auto send_ok = false;
         auto send_body = std::string{};
+        // The signed leave this server authored to reject an invite to a room it holds no state of. Kept
+        // as an outlier, like the invite it ends, so the user's next /sync reports the leave event itself
+        // under rooms.leave (Client-Server API, GET /sync: `timeline` is "the timeline of messages and
+        // state changes in the room up to the point when the user left").
+        auto leave_outlier = std::optional<database::PersistentEvent>{};
         // An invite whose inviting server no longer has the room, or will not take the leave (403,
         // 404), cannot be rejected through a resident: no leave event can be authored without a
         // template from one. The spec defines no other route, so the invite is dropped here, as a
@@ -6200,6 +6570,39 @@ namespace
                     return make_operation_result(false, {}, "event_id computation failed", 500U);
                 }
 
+                // Every rejection keeps the leave it authored (ADR-0294): the resident sends an accepted
+                // send_leave on to the room's other servers but never back to the server that sent it, so no
+                // transaction will bring this event here, whether or not this server's held state is current.
+                if (rejecting_invite)
+                {
+                    auto const ids_of = [&event_object](std::string_view key) {
+                        auto ids = std::vector<std::string>{};
+                        auto const* member = object_member(event_object, key);
+                        auto const* array =
+                            member == nullptr ? nullptr : std::get_if<canonicaljson::Array>(&member->storage());
+                        for (auto const& entry : array == nullptr ? canonicaljson::Array{} : *array)
+                        {
+                            if (auto const* id = std::get_if<std::string>(&entry.storage()); id != nullptr)
+                            {
+                                ids.push_back(*id);
+                            }
+                        }
+                        return ids;
+                    };
+                    auto outlier = database::PersistentEvent{};
+                    outlier.event_id = event_id_result.event_id;
+                    outlier.room_id = std::string{room_id};
+                    outlier.sender_user_id = *user_id;
+                    outlier.json = signed_event.event_json;
+                    auto const* depth = integer_member(event_object, "depth");
+                    outlier.depth =
+                        depth == nullptr || *depth < 0 ? std::uint64_t{0U} : static_cast<std::uint64_t>(*depth);
+                    outlier.prev_event_ids = ids_of("prev_events");
+                    outlier.auth_event_ids = ids_of("auth_events");
+                    outlier.status = "outlier";
+                    leave_outlier = std::move(outlier);
+                }
+
                 // Step 4: send_leave — deliver the signed leave event to the remote server.
                 auto send_leave_tx = federation::make_outbound_send_membership(
                     federation::FederationEndpoint::send_leave, remote_server, our_server, room_id,
@@ -6232,8 +6635,20 @@ namespace
         // Step 5: update local membership, device lists and in-memory state. DB-4:
         // the row and the end of any invite commit together.
         auto const membership_stream = allocate_stream_ordering(runtime.database);
-        if (!database::store_membership_projection(runtime.database.persistent_store, room_id,
-                                                   {*user_id, "leave", membership_stream, std::nullopt}))
+        auto const leave_stored = [&] {
+            auto projection = database::MembershipProjection{*user_id, "leave", membership_stream, std::nullopt};
+            if (!leave_outlier.has_value())
+            {
+                return database::store_membership_projection(runtime.database.persistent_store, room_id, projection);
+            }
+            leave_outlier->stream_ordering = membership_stream;
+            auto const leave_event_id = leave_outlier->event_id;
+            return database::store_event_with_state(
+                runtime.database.persistent_store, std::move(*leave_outlier),
+                database::PersistentStateEvent{std::string{room_id}, "m.room.member", *user_id, leave_event_id},
+                std::move(projection));
+        }();
+        if (!leave_stored)
         {
             log_diagnostic("room.leave.rejected", {
                                                       {"actor",   *user_id,                        false},
@@ -6296,8 +6711,226 @@ namespace
     return make_operation_result(true, std::string{room_id});
 }
 
+namespace
+{
+
+    // What the answer of an invited user's server to `PUT /v2/invite` amounts to once checked (ADR-0293).
+    // `refusal` is empty when the answer was good.
+    struct CheckedInviteAnswer final
+    {
+        std::string cosigned_event_json{};
+        std::vector<events::EventSignature> cosigned_signatures{};
+        std::string refusal{};
+    };
+
+    // Server-Server API, PUT /v2/invite: the 200 response is "The event with the invited server's
+    // signature added. All other fields of the events should remain untouched." So the answer must be
+    // the event this server sent (same reference-hash event ID, so nothing the hash covers changed) and
+    // carry a valid signature by the invited user's server (appendices.md "Checking for a Signature";
+    // an unknown or expired key is skipped, a known one that does not verify refuses, and one must
+    // verify). What is returned is this server's own event with only those verified signatures added to
+    // it, never the invited server's copy. The key lookup is a network round trip: call with
+    // `runtime.mutex` RELEASED, with every argument owned by the caller.
+    // `deadline` is the offer's own (ADR-0307): resolving the invitee server's keys draws from what the
+    // exchange left of it, never from a fresh timeout.
+    [[nodiscard]] auto check_invite_answer(HomeserverRuntime& runtime, std::string_view room_version,
+                                           std::string_view invitee_server, std::string_view event_id,
+                                           std::string_view own_event_json, std::string_view answer_body,
+                                           std::chrono::steady_clock::time_point deadline) -> CheckedInviteAnswer
+    {
+        auto const refused = [](std::string reason) {
+            return CheckedInviteAnswer{{}, {}, std::move(reason)};
+        };
+        auto const* policy = rooms::find_room_version_policy(room_version);
+        if (policy == nullptr)
+        {
+            return refused("the room's version is not known");
+        }
+        auto const answer = canonicaljson::parse_lossless(answer_body);
+        auto const* root = std::get_if<canonicaljson::Object>(&answer.value.storage());
+        auto const* answered = answer.error != canonicaljson::ParseError::none || root == nullptr
+                                   ? nullptr
+                                   : object_member(*root, "event");
+        if (answered == nullptr || !std::holds_alternative<canonicaljson::Object>(answered->storage()))
+        {
+            return refused("the invited user's server sent a malformed invite response");
+        }
+        auto const id = events::make_reference_hash_event_id(*answered, *policy);
+        if (!id.error.empty() || id.event_id != event_id)
+        {
+            return refused("the invited user's server returned a different event from the invite");
+        }
+        auto const returned = events::parse_event_envelope(*answered);
+        if (!returned.error.empty() || runtime.crypto_provider == nullptr)
+        {
+            return refused("the invited user's server returned an event that could not be checked");
+        }
+        auto const own_event = canonicaljson::parse_lossless(own_event_json);
+        if (own_event.error != canonicaljson::ParseError::none)
+        {
+            return refused("the invite could not be read back");
+        }
+        // Only keys that resolved can have been verified; those are the signatures merged.
+        auto resolved_key_ids = std::vector<std::string>{};
+        auto const decision = federation::verify_server_signatures_on_event(
+            *answered, *policy, invitee_server, returned.event.signatures,
+            [&](std::string_view server_name, std::string_view key_id) {
+                if (server_name != invitee_server)
+                {
+                    return federation::VerificationKeyResolution{};
+                }
+                auto key = federation::resolve_join_state_key(runtime.federation, server_name, key_id, deadline);
+                if (key.has_value())
+                {
+                    resolved_key_ids.emplace_back(key_id);
+                }
+                return federation::VerificationKeyResolution{std::move(key), false};
+            },
+            *runtime.crypto_provider, deadline);
+        if (!decision.accepted || resolved_key_ids.empty())
+        {
+            return refused("the invited user's server did not validly sign the invite: " + decision.reason);
+        }
+        auto const combined =
+            with_server_signatures(own_event.value, returned.event.signatures, invitee_server, resolved_key_ids);
+        if (!combined.has_value())
+        {
+            return refused("the invited user's signatures could not be added to the invite");
+        }
+        auto serialized = canonicaljson::serialize_canonical(*combined);
+        if (serialized.error != canonicaljson::CanonicalJsonError::none ||
+            serialized.output.size() > events::max_event_size_bytes)
+        {
+            return refused("the invite with the invited user's signatures is not a valid event");
+        }
+        auto result = CheckedInviteAnswer{std::move(serialized.output), {}, {}};
+        for (auto const& signature : returned.event.signatures)
+        {
+            if (signature.server_name == invitee_server &&
+                std::ranges::find(resolved_key_ids, signature.key_id) != resolved_key_ids.end())
+            {
+                result.cosigned_signatures.push_back(signature);
+            }
+        }
+        return result;
+    }
+
+} // namespace
+
+[[nodiscard]] auto deliver_remote_invite(HomeserverRuntime& runtime, std::unique_lock<RuntimeMutex>& guard,
+                                         std::string_view room_id, std::string_view invitee_server,
+                                         std::string_view event_id, std::string_view event_json,
+                                         std::uint32_t timeout_seconds) -> RemoteInviteResult
+{
+    // One deadline for the whole offer: the exchange and the checks of the answer (its key lookups) draw from
+    // it, so a caller offering several invites under one deadline is not held past it (ADR-0307). 0 means the
+    // offer budget (remote_invite_offer_seconds, lowered to remote_timeout when configured).
+    auto const offer_seconds = timeout_seconds > 0U
+                                   ? timeout_seconds
+                                   : effective_client_outbound_deadline(runtime, remote_invite_offer_seconds);
+    auto const offer_deadline = std::chrono::steady_clock::now() + std::chrono::seconds{offer_seconds};
+    wire_federation_callbacks(runtime);
+    auto const signing_key = find_active_server_signing_key(runtime);
+    if (!signing_key.has_value())
+    {
+        return {RemoteInviteOutcome::unreachable, 502U, "server signing key not available"};
+    }
+    auto const& store = runtime.database.persistent_store;
+    auto const room_version = stored_room_version(store, room_id).value_or("10");
+    auto const transaction =
+        federation::make_outbound_invite(invitee_server, runtime.config.server().server_name, room_id, event_id,
+                                         room_version, event_json, stripped_state_pdus(store, room_id));
+    auto const key_id = signing_key->key_id;
+    auto secret_key = core::SecretBuffer{runtime.database.signing_secret_key.bytes()};
+
+    // The exchange runs with runtime.mutex released: it is a federation round trip to a peer this server
+    // does not control, and every other request would wait behind it. Everything read from the runtime
+    // was copied above.
+    auto const call = [&] {
+        auto const released = RuntimeLockRelease{guard};
+        // Bounded: discovery and the request draw from one deadline, so the exchange stays within the offer's
+        // budget instead of giving each its own `offer_seconds` (ADR-0307).
+        return perform_bounded_outbound_call_with_status(runtime, room_id, transaction, key_id, std::move(secret_key),
+                                                         "room.invite.remote_failed", offer_seconds);
+    }();
+
+    if (call.ok)
+    {
+        // Server-Server API, PUT /invite: the response is `{"event": <the signed invite event>}`. It is
+        // checked, and the invited server's signature merged into this server's own event, with the
+        // mutex released: resolving that server's signing key can be a round trip to it. A response
+        // that does not check out is a refusal, not a delivery (ADR-0293).
+        auto const checked = [&] {
+            auto const released = RuntimeLockRelease{guard};
+            return check_invite_answer(runtime, room_version, invitee_server, event_id, event_json, call.body,
+                                       offer_deadline);
+        }();
+        if (!checked.refusal.empty())
+        {
+            log_diagnostic("room.invite.remote_answer_refused",
+                           {
+                               {"room_id",        std::string{room_id},        false},
+                               {"invitee_server", std::string{invitee_server}, false},
+                               {"reason",         checked.refusal,             false}
+            },
+                           observability::LogEventSeverity::warning);
+            return {RemoteInviteOutcome::refused, 502U, checked.refusal};
+        }
+        return {RemoteInviteOutcome::delivered, 200U, {}, checked.cosigned_event_json, checked.cosigned_signatures};
+    }
+    // An answer that says no is final: the same invite would be refused again. A server that gave no
+    // answer, or only an overloaded or failing one, is asked again later by the outbound queue.
+    auto const status = call.remote_status;
+    auto const final_refusal = status >= 400U && status < 500U && status != 408U && status != 429U;
+    if (final_refusal)
+    {
+        return {RemoteInviteOutcome::refused, status == 403U ? std::uint16_t{403U} : std::uint16_t{502U},
+                "the invited user's server refused the invite"};
+    }
+    return {RemoteInviteOutcome::unreachable, 502U, call.body};
+}
+
+[[nodiscard]] auto store_cosigned_invite(HomeserverRuntime& runtime, std::string_view room_id,
+                                         std::string_view event_id, std::string_view cosigned_event_json) -> bool
+{
+    auto& store = runtime.database.persistent_store;
+    auto const stored = store.events.find(event_id);
+    if (stored == store.events.end() || stored->room_id != room_id)
+    {
+        return false;
+    }
+    auto const previous_json = stored->json;
+    if (!database::replace_event_json(store, event_id, std::string{cosigned_event_json}))
+    {
+        return false;
+    }
+    // The in-memory room keeps its own copy of what it was sent.
+    if (auto* room = find_room(runtime.database, room_id); room != nullptr)
+    {
+        std::ranges::replace(room->events, previous_json, std::string{cosigned_event_json});
+    }
+    return true;
+}
+
+auto queue_remote_invite(HomeserverRuntime& runtime, std::string_view room_id, std::string_view invitee_server,
+                         std::string_view event_id, std::string_view event_json) -> bool
+{
+    wire_federation_callbacks(runtime);
+    if (runtime.dispatch_worker == nullptr)
+    {
+        return false;
+    }
+    auto const& store = runtime.database.persistent_store;
+    auto transaction = federation::make_outbound_invite(invitee_server, runtime.config.server().server_name, room_id,
+                                                        event_id, stored_room_version(store, room_id).value_or("10"),
+                                                        event_json, stripped_state_pdus(store, room_id));
+    transaction.transaction_id = federation::make_federation_transaction_id();
+    return runtime.dispatch_worker->enqueue(std::move(transaction));
+}
+
 [[nodiscard]] auto invite_user(HomeserverRuntime& runtime, std::string_view access_token, std::string_view room_id,
-                               std::string_view target_user_id, std::string_view reason) -> OperationResult
+                               std::string_view target_user_id, std::string_view reason, std::string_view client_key)
+    -> OperationResult
 {
     auto guard = std::unique_lock<RuntimeMutex>{runtime.mutex};
     auto const user_id = authenticated_user(runtime, access_token);
@@ -6315,10 +6948,90 @@ namespace
         return make_operation_result(false, {}, "user is not joined", 403U);
     }
 
-    auto const result = persist_membership_transition(runtime, room_id, *user_id, target_user_id, "invite", reason);
-    if (!result.ok)
+    auto const invitee_server = std::string{auth::user_id_server_name(target_user_id)};
+    if (invitee_server.empty() || invitee_server == runtime.config.server().server_name)
     {
-        return result;
+        auto const result = persist_membership_transition(runtime, room_id, *user_id, target_user_id, "invite", reason);
+        if (!result.ok)
+        {
+            return result;
+        }
+        append_local_audit(runtime.database, observability::AuditCategory::admin, "room.invited", *user_id,
+                           target_user_id, std::string{room_id});
+        notify_room_changed(runtime, room_id);
+        return make_operation_result(true, std::string{room_id});
+    }
+
+    // Server-Server API, "Inviting to a room": "when a user invites another user on a different homeserver,
+    // a request to that homeserver to have the event signed and verified must be made", and "Once the event
+    // has been signed by both the inviting homeserver and the invited homeserver, it can be sent to all of
+    // the servers in the room". So the invite is composed, offered to the invitee's server, and only then
+    // stored and sent on to the room's other servers. A client that is told the invite succeeded can rely
+    // on the invitee's server holding it (Complement TestFederationRejectInvite).
+    auto composed = compose_membership_transition(runtime, room_id, *user_id, target_user_id, "invite", reason);
+    if (!composed.event.has_value())
+    {
+        return composed.failure;
+    }
+    auto& invite_event = *composed.event;
+    // ADR-0079: the offer holds a client-outbound slot, waited for within its deadline (ADR-0306). The wait
+    // releases runtime.mutex, as the exchange does; the room is found again below. With no slot the invite
+    // takes the unreachable path: queued, and stored only if the queue takes it (ADR-0307).
+    auto const offer_deadline =
+        OutboundDeadline{effective_client_outbound_deadline(runtime, remote_invite_offer_seconds)};
+    auto const offer_slot =
+        admit_client_outbound_proxy_waiting(runtime, std::string{client_key}, guard, offer_deadline);
+    // A slot taken on the last poll can come after the deadline. Read the time left once: remaining_seconds()
+    // rounds up, so 0 means it has passed, and a 0 passed on would mean "the outbound default" to
+    // deliver_remote_invite.
+    auto const seconds_left = offer_deadline.remaining_seconds();
+    auto const delivery =
+        offer_slot.has_value() && seconds_left > 0U
+            ? deliver_remote_invite(runtime, guard, room_id, invitee_server, invite_event.event_id, invite_event.json,
+                                    seconds_left)
+            : RemoteInviteResult{RemoteInviteOutcome::unreachable, 503U, "no client-outbound slot for the offer"};
+    if (delivery.outcome == RemoteInviteOutcome::refused)
+    {
+        return make_operation_result(false, {}, delivery.reason, delivery.status);
+    }
+    if (delivery.outcome == RemoteInviteOutcome::delivered)
+    {
+        // Signed by both servers now: this is the event that is stored and sent to the room's servers.
+        invite_event.json = delivery.cosigned_event_json;
+        invite_event.signatures.insert(invite_event.signatures.end(), delivery.cosigned_signatures.begin(),
+                                       delivery.cosigned_signatures.end());
+    }
+
+    // runtime.mutex was down for the exchange: the room, or the inviter's place in it, may have changed.
+    room = find_room(runtime.database, room_id);
+    if (room == nullptr)
+    {
+        return make_operation_result(false, {}, "room not found", 404U);
+    }
+    if (!room_has_member(*room, *user_id))
+    {
+        return make_operation_result(false, {}, "user is not joined", 403U);
+    }
+    // An unreachable invitee's server gets the invite from the retry queue. Queued before the invite is
+    // stored: once stored, the invite cannot be taken back, and an invite that was neither delivered nor
+    // queued reaches nobody, so the client must not be told it was sent (ADR-0307).
+    if (delivery.outcome == RemoteInviteOutcome::unreachable &&
+        !queue_remote_invite(runtime, room_id, invitee_server, invite_event.event_id, invite_event.json))
+    {
+        log_diagnostic("room.invite.not_queued",
+                       {
+                           {"actor",          *user_id,                    false},
+                           {"room_id",        std::string{room_id},        false},
+                           {"invitee_server", std::string{invitee_server}, false}
+        },
+                       observability::LogEventSeverity::warning);
+        return make_operation_result(false, {}, "the invitee's server cannot be reached and no retry can be queued",
+                                     503U);
+    }
+    auto const stored = store_composed_membership(runtime, room_id, *user_id, target_user_id, "invite", invite_event);
+    if (!stored.ok)
+    {
+        return stored;
     }
     append_local_audit(runtime.database, observability::AuditCategory::admin, "room.invited", *user_id, target_user_id,
                        std::string{room_id});
@@ -7590,7 +8303,8 @@ namespace
 
 // NOLINTBEGIN(bugprone-easily-swappable-parameters)
 [[nodiscard]] auto send_event(HomeserverRuntime& runtime, std::string_view access_token, std::string_view room_id,
-                              std::string_view event_json) -> OperationResult
+                              std::string_view event_json, std::optional<std::int64_t> origin_server_ts)
+    -> OperationResult
 {
     log_diagnostic("room.event.started", {
                                              {"room_id",          std::string{room_id},                    false},
@@ -7651,7 +8365,7 @@ namespace
         return make_operation_result(false, {}, "m.room.redaction content must name the event in redacts", 400U);
     }
 
-    auto const composition = compose_signed_event(runtime, room_id, *user_id, event_json);
+    auto const composition = compose_signed_event(runtime, room_id, *user_id, event_json, origin_server_ts);
     if (composition.failure == ComposeFailure::invalid_state_key)
     {
         return invalid_state_key_result();

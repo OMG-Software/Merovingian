@@ -23,7 +23,9 @@ This is the largest and most complex module — read this file carefully before 
 | `deferred_pdu_retry.cpp` | Retains federation PDUs that could not yet be placed (`deferred_pdus`) and retries them: `retry_deferred_pdus`, `DeferredPduRetryJob` (R03, ADR-0165). A retry holds no lock across `ingest_pdu_event`; `ingest_pdu_event` writes rows only after signature verification |
 | `redaction_service.cpp` | Applies redactions (judge, overwrite the target's stored JSON, withhold unapplied redactions from clients) and checks a local client's redaction |
 | `room_power.cpp` | `may_send_state_event()`: whether a user may send a state event of a type in a room's current state, judged as the auth rules judge it (CSAZ-12) |
+| `room_residency.cpp` | `room_state_is_current()`: whether held room state is current, i.e. the create event is stored and a user of this server is joined (ADR-0301) |
 | `restricted_join.cpp` | `decide_restricted_join()`: as the resident, whether a user meets a restricted room's allow conditions and which local user authorises the join (R04, ADR-0185) |
+| `remote_timestamp_event.cpp` | Asking other servers for `GET /rooms/{roomId}/timestamp_to_event` (ADR-0299): `timestamp_to_event_candidate_servers`, `parse_timestamp_to_event_answer`, `timestamp_is_closer`, `acquire_closer_timestamp_event` (the loop over at most 3 servers; releases `runtime.mutex` for each exchange and for the verified fetch, `fetch_remote_event_into_store` in `local_http_router.cpp`) |
 | `space_hierarchy.cpp` | `GET /_matrix/client/v1/rooms/{roomId}/hierarchy` (a child room this server holds no state for is asked for over federation, see "Client requests that call another server") and the answer to `GET /_matrix/federation/v1/hierarchy/{roomId}`, judged for the authenticated requesting server; also `handle_client_room_summary` (`GET /_matrix/client/v1/room_summary/{roomIdOrAlias}`, local rooms only; a request with no token is answered before the auth gate in `client_server.cpp` and may see only a public, knock or world-readable room) |
 | `default_push_ruleset.cpp` | The server-default push ruleset (`homeserver::default_push_ruleset`) |
 | `stored_push_rules.cpp` | `load_user_push_rules` / `load_push_ruleset`: a user's push rules from their `m.push_rules` account data over the defaults (ADR-0204) |
@@ -137,6 +139,21 @@ the main pool's threads for the round trip. Every such call therefore:
 3. for media, is checked against `security.media.remote_fetch_enabled` and `allow_remote` before
    anything else (`remote_media_refusal`): 404 `M_NOT_FOUND`, counted but not audited.
 
+`GET /rooms/{roomId}/timestamp_to_event` (`handle_timestamp_to_event`) is the same kind of request, but only when the local answer is
+absent or the event found has a `prev_event` this server does not hold (`event_is_held`, ADR-0289), or, for `dir=b`, the nearest
+event at or after `ts` has one (a hole between the event found and `ts` shows only there): it asks at most 3 servers with
+joined members, one at a time, under one slot and one `OutboundDeadline`. It is the one such request that WAITS for a slot
+(`admit_client_proxy_waiting`, polling every 25 ms with `runtime.mutex` released) until that deadline, so one client's parallel
+lookups are served in turn (ADR-0306); with a local answer in hand a slot that never comes costs only the remote improvement.
+Each event fetched is offered to the handler's `usable` check (status, `HistoryVisibility`, its own stored timestamp) inside
+the loop, so one the user may not be given sends the search on to the next server instead of ending it.
+Remote invite offers wait the same way (ADR-0307). A request waits only from a place
+`InFlightBudget::try_reserve_wait` grants under the same global cap as the calls in flight (ADR-0310): waiters hold
+request threads too, so with calls and waiters at the cap it is refused at once. Never wait without that place. Do not copy the wait to the unauthenticated proxies above: they keep
+the immediate 429. A remote answer is used only if it is on the requested side of `ts` and closer; the event is fetched with
+`fetch_remote_event_into_store` (verified, stored as an outlier) and judged again, after the lock is back, by `HistoryVisibility` and by its
+own stored `origin_server_ts`, never the number the remote server sent.
+
 The space hierarchy (`handle_client_space_hierarchy`) is the same kind of request: a child room not held locally is asked
 for from the `via` servers of its link, so the walk takes one slot at its first such call (`RemoteHierarchy` in
 `space_hierarchy.cpp`, held until the walk ends), draws every call from one `OutboundDeadline`, makes at most 16 calls and
@@ -199,6 +216,34 @@ on that record, each by the inviter's server, which the spec calls a resident se
   authored; the invite is ended as a local `leave` row and nothing is sent. Any other failure is a 502 and
   the invite stays.
 - `join_room` with no `via` uses `invite_sender_server` as the candidate, with the room ID's domain behind it.
+- An invite this server sends to another server's user (`invite_user`, createRoom's `invite` list) is offered
+  to that server first (`deliver_remote_invite`, ADR-0293) and stored and sent to the room's other servers only
+  after it accepted. Only an unreachable server falls back to `queue_remote_invite`. Never go back to queueing
+  first: the invitee's client acts on what a third server shows it. For an unreachable server `invite_user` queues
+  before it stores, and answers 503 with nothing stored when the queue refuses (ADR-0307); never report an invite
+  sent that was neither delivered nor queued. createRoom offers all of its remote invites under one
+  `OutboundDeadline` and tries to queue those left when it runs out; never give each offer its own full timeout.
+  `deliver_remote_invite` turns its timeout into one absolute deadline that the exchange and `check_invite_answer`'s
+  key lookups share: never start a fresh timeout for checking the answer.
+  Every offer holds an ADR-0079 slot (`admit_client_outbound_proxy_waiting`: one per `POST /invite`, one for all
+  of a createRoom's), waited for within that deadline; with none the invite is queued if the queue takes it. A
+  refused queue fails `POST /invite` (503, nothing stored), while createRoom keeps the room and logs
+  `room.create.invite_not_queued`: never assume every invite left over was queued. An offer whose deadline has
+  passed is not started, even with a slot (`remaining_seconds()` 0 means the outbound default).
+- The invitee's answer is not trusted (ADR-0302): `check_invite_answer` requires the event sent (same
+  reference-hash ID) validly signed by the invitee's server, and returns this server's own event with only those
+  verified signatures merged in (`with_server_signatures`). That co-signed event is what `invite_user` stores and
+  sends on; createRoom replaces its already stored invite with it (`store_cosigned_invite`). An answer that fails
+  is `refused` (502), never `delivered`, and never queued. The key lookup runs with `runtime.mutex` released.
+- The invite handler judges an invite against held room state only while a user of this server is joined to the
+  room (ADR-0301); after a federated leave the state is stale. `room_state_is_current` (`room_residency.hpp`) is the
+  one test; the invite handler and `rescind_invite_from_inviter` use it and must agree. For a room this server is in, it stores no event (the
+  transaction's copy places it) and `/sync` and sliding sync hide the invite until the state has it
+  (`InviteRoomStateIndex`, built once per request: never scan the store's state per invite).
+  Do not store the event in the handler, or make the invite visible before the state has it.
+- The leave that rejects an invite is stored as an outlier (ADR-0294), or `/sync` has no leave event to report.
+  Always, whatever the room's residency: the resident's fan-out of an accepted `send_leave` excludes the server
+  that sent it, so no transaction brings it back. Never make keeping it depend on `room_state_is_current`.
 - `rescind_invite_from_inviter` (`local_http_router.cpp`) turns a `leave` PDU for the invitee, sent by a user
   of the inviter's own server, into a `leave` for rooms whose state is not held. Nobody else can withdraw an
   invite this way.
@@ -232,6 +277,37 @@ frame whose user ID is malformed or local. The decision reads state under `runti
 the room version through `declared_room_version`, and is bounded by
 `max_restricted_join_conditions` (32).
 
+### A local join no local user can authorise goes through another resident (ADR-0287, ADR-0288)
+
+When `join_room` gets `unable_to_grant` for a local user (a condition holds, no local user can
+invite), it does not refuse at once. It takes the `MembershipExchangeClaim`, runs
+`wait_for_in_flight_room_events` (releases `runtime.mutex`, takes and drops the room's stripe
+mutex, restores it: an event being applied now may be the power-levels event that gives a local
+user the power) and decides again. Still `unable_to_grant`: `join_through_other_resident` makes
+the federated handshake (`perform_federated_join` with
+`FederatedJoinPurpose::join_through_resident`) to at most `max_restricted_join_fallback_candidates`
+(4) servers from `restricted_join_fallback_candidates` (the client's named servers first, then
+other servers with joined members; never this server), offering only the room's own version. Rules:
+
+- Only `unable_to_grant` goes remote. A user meeting no condition (403) or a condition this server
+  cannot verify (`unable_to_authorise`) is refused here, so the handshake never runs for a user this
+  server has not found entitled. `decide_restricted_join` stays the only place that decides.
+- The room's state is already here. Never feed the answer's `state` / `auth_chain` to
+  `ingest_send_join_state`: that path seeds a room the server holds nothing of and would replace
+  state it holds. The join is stored as a received PDU through `federation.pdu_sink`
+  (`origin` = the resident), so the auth rules judge it against this server's own state.
+- What is stored is this server's own signed join with only the resident's authorising-server signatures
+  merged in (`with_server_signatures`, ADR-0302), never the resident's copy: the event ID and the signatures
+  are over the redacted form, so a resident can change a display name and keep both.
+  `verify_resident_signed_join` requires the resident's `event` to have the reference-hash ID of the join this
+  server signed and to name an authorising user of another server, then
+  `filter_verified_send_join_events` verifies the combined event: this server's signature and the authorising
+  server's (ADR-0171). Never store a join authorised by a server whose signature was not checked.
+- A sink answer of `already_stored` (the co-signed join reached this server first, in a transaction) is a
+  success only if `join_event_made_member` holds: that event is accepted, is the user's current member state,
+  and the membership is `join`. Any other stored copy leaves the join failed.
+- If no candidate succeeds the client gets the original 403, not an upstream error.
+
 ## The resident sends accepted membership events on
 
 As the resident, the `membership_acceptor` stores a `send_join`, `send_leave` or `send_knock` and then
@@ -261,6 +337,16 @@ inline by `refuse_forbidden_worker_request`, which takes no runtime and so canno
 `runtime.mutex` or reach a crypto provider; the handler calls it before any other frame
 type. Do not add a worker-to-main frame that signs caller-supplied bytes.
 
+## A re-sent PDU (ADR-0285)
+
+`ingest_pdu_event` answers `PduIngestionStatus::already_stored` for an event ID this store holds in the PDU's
+room, in any status, before it parses, allocates a stream ordering or sync stream ID, or judges anything
+(`answer_for_stored_pdu`). The check is made again, with the room stripe and `runtime.mutex` held, after any
+missing-history fetch and before the ordering is reserved; that one is the race-proof one, because an ingest
+applies its event to the in-memory store before it releases the stripe. Keep nothing between that check and
+`prepare_store_event_with_state` that releases either lock. `pdu_event_already_stored` takes `runtime.mutex`
+itself, for the `/send` handler's probe and for `handle_pdu_ingest_request`.
+
 ## Recovering a PDU whose history is missing (A8)
 
 `backfill_missing_pdu_references` (`local_http_router.cpp`) asks the sending server for what a PDU lacks, using
@@ -280,6 +366,9 @@ only endpoints the spec requires and the origin may be asked for:
   supply, never at a prev_event that was already fetched; held PDUs are placed oldest first afterwards.
 - A snapshot fetches every missing named event before it stores any, so an auth chain the origin cannot supply leaves
   nothing stored.
+- `verify_and_store_backfilled_event` is called with `runtime.mutex` released. It takes the room stripe and then
+  `runtime.mutex` itself once its last signature check (which may fetch a key) is done, and holds them through the
+  authorization reads and the write. Never read the store in it before that point.
 - `verify_and_store_backfilled_event` stores an event with resolvable but disallowed, rejected or denied `auth_events`
   as `rejected` (after-state equal to its state-before), never drops it; only an unresolvable auth event is a gap.
   Dropping it left every event that named it unplaced.
@@ -293,7 +382,8 @@ visibility and room read access") and ADR-0084. Checking "is the user a member" 
 the user may be joined but not entitled to an old event, and a user who has left or been banned
 may still read what they saw. Today these are `/messages`, `/context`, `/event`, `/search`,
 `/relations`, `/threads`, `/sync`, sliding sync, `initialSync`, `/members`, `/joined_members`,
-`/state` and `/state/{type}/{key}`. A new endpoint of that kind gets a conformance scenario in
+`/state`, `/state/{type}/{key}` and `/timestamp_to_event` (a user who cannot read the room gets 403; an event
+`HistoryVisibility` withholds is stepped over). A new endpoint of that kind gets a conformance scenario in
 `tests/conformance/test_history_visibility_conformance.cpp`. `/notifications` is the one
 deliberate exception (its rows are created at delivery for a then-joined user); say so if you
 add another.
@@ -333,6 +423,11 @@ client, sender or remote server controls, and per-user rows that requests scan m
   is written only for a room the user holds a membership row in, and refuses a new type past
   `max_room_account_data_per_room` per room the same way (ADR-0197). Server-written rows (`m.tag`,
   `m.fully_read`) go through `set_account_data` and are never refused.
+- `GET /rooms/{roomId}/timestamp_to_event` and the federation `timestamp_to_event` provider seek the per-room
+  time index of `EventTable` (`nearest_by_time`, ADR-0300) and offer at most `database::max_time_search_examined`
+  (1000) events to the visibility filter; never replace the seek with a walk of the room's events. The federation
+  provider takes `runtime.mutex` itself (the other federation read providers do not), because the index changes
+  under that mutex.
 - `/search` judges a room the user has left with `room_read_access_for` only when one of its
   events would be returned, so those scans stay bounded by the page (R16).
 - `expire_typing` groups the typing table by room in a fixed number of passes and hands each
@@ -430,6 +525,9 @@ event type, before anything is created. Membership alone is not enough. Alias `P
 `auth::room_alias_is_valid` and requires this server's domain; `DELETE` allows the alias's recorded creator.
 
 ## Typing expiry (R13, ADR-0199)
+
+Sending a message does not end the sender's typing (ADR-0298): typing ends only on the client's
+`typing: false`, the timeout, or the expiry job. Do not add a clear-on-send path.
 
 Every path that sets a typing entry to `typing: true` sets its `expires_at`: the client's
 `timeout` (default `default_typing_timeout`, at most `max_typing_timeout`), or

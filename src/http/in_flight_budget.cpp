@@ -28,11 +28,31 @@ InFlightBudget::Slot::~Slot()
     }
 }
 
-auto InFlightBudget::try_acquire(std::string key, std::uint32_t global_cap,
-                                 std::uint32_t per_key_cap) -> std::optional<Slot>
+InFlightBudget::Waiter::Waiter(InFlightBudget& budget) noexcept
+    : m_budget{budget}
+{
+}
+
+InFlightBudget::Waiter::Waiter(Waiter&& other) noexcept
+    : m_budget{other.m_budget}
+    , m_held{std::exchange(other.m_held, false)}
+{
+}
+
+InFlightBudget::Waiter::~Waiter()
+{
+    if (m_held)
+    {
+        m_budget.release_wait();
+    }
+}
+
+auto InFlightBudget::try_acquire(std::string key, std::uint32_t global_cap, std::uint32_t per_key_cap)
+    -> std::optional<Slot>
 {
     auto const lock = std::lock_guard{m_mutex};
-    if (m_total >= global_cap)
+    // Waiters hold threads too (ADR-0310): the room they hold is not free.
+    if (m_total + m_waiting >= global_cap)
     {
         return std::nullopt;
     }
@@ -45,6 +65,54 @@ auto InFlightBudget::try_acquire(std::string key, std::uint32_t global_cap,
     ++m_counts[key];
     ++m_total;
     return Slot{*this, std::move(key)};
+}
+
+auto InFlightBudget::try_reserve_wait(std::uint32_t global_cap) -> std::optional<Waiter>
+{
+    auto const lock = std::lock_guard{m_mutex};
+    if (m_total + m_waiting >= global_cap)
+    {
+        return std::nullopt;
+    }
+    ++m_waiting;
+    return Waiter{*this};
+}
+
+auto InFlightBudget::try_acquire_waiting(Waiter& waiter, std::string key, std::uint32_t per_key_cap)
+    -> std::optional<Slot>
+{
+    auto const lock = std::lock_guard{m_mutex};
+    if (!waiter.m_held)
+    {
+        return std::nullopt;
+    }
+    auto const existing = m_counts.find(key);
+    auto const held_by_key = existing == m_counts.end() ? 0U : existing->second;
+    if (held_by_key >= per_key_cap)
+    {
+        return std::nullopt;
+    }
+    // The waiter's place becomes the operation's: the population under the global cap is unchanged.
+    waiter.m_held = false;
+    --m_waiting;
+    ++m_counts[key];
+    ++m_total;
+    return Slot{*this, std::move(key)};
+}
+
+auto InFlightBudget::waiting() const -> std::uint32_t
+{
+    auto const lock = std::lock_guard{m_mutex};
+    return m_waiting;
+}
+
+auto InFlightBudget::release_wait() noexcept -> void
+{
+    auto const lock = std::lock_guard{m_mutex};
+    if (m_waiting > 0U)
+    {
+        --m_waiting;
+    }
 }
 
 auto InFlightBudget::active() const -> std::uint32_t

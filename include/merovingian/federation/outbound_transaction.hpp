@@ -8,6 +8,7 @@
 #include "merovingian/http/outbound_client.hpp"
 
 #include <cstdint>
+#include <functional>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -138,8 +139,12 @@ auto apply_outbound_result(FederationDestination& destination, OutboundTransacti
 // `error == "circuit_open"` and no network I/O when
 // `destination_should_retry` rejects the attempt. Otherwise calls
 // `client.perform()` and applies the result through `apply_outbound_result`.
+// `now_ts` gates the attempt (destination backoff). `finished_clock`, when given, is read after the
+// exchange and is when a failure's backoff starts (ADR-0309): an attempt can take longer than the
+// backoff, and counted from its start the destination would be due again the moment it failed.
 [[nodiscard]] auto perform_outbound_transaction(http::OutboundClient& client, OutboundCall const& call,
-                                                FederationDestination& destination, std::uint64_t now_ts)
+                                                FederationDestination& destination, std::uint64_t now_ts,
+                                                std::function<std::uint64_t()> const& finished_clock = {})
     -> OutboundTransactionResult;
 
 } // namespace merovingian::federation

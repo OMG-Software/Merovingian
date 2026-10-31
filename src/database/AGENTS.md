@@ -53,7 +53,9 @@ Manages schema migrations and provides a dual-backend (SQLite / PostgreSQL) pers
 
 10. **A read that combines several tables into one picture of a room runs in one read transaction** (ADR-0161):
     `SqliteReadTransaction` on SQLite, `REPEATABLE READ READ ONLY` on PostgreSQL. `reload_room` does; separate
-    autocommit reads let a commit between them give the worker state naming an event its snapshot lacks.
+    autocommit reads let a commit between them give the worker state naming an event its snapshot lacks. The snapshot
+    carries the room's state groups, their entries and its events' group mappings too: federation reads fail closed on an
+    event with no group, so a new table a worker-served read depends on must be added to the snapshot and `reload_room`.
 
 ## Backend selection
 

@@ -37,6 +37,7 @@
 #include "merovingian/homeserver/presence_service.hpp"
 #include "merovingian/homeserver/request_lock.hpp"
 #include "merovingian/homeserver/restricted_join.hpp"
+#include "merovingian/homeserver/room_residency.hpp"
 #include "merovingian/homeserver/room_service.hpp"
 #include "merovingian/homeserver/runtime.hpp"
 #include "merovingian/homeserver/runtime_signing_key_store.hpp"
@@ -2879,8 +2880,14 @@ namespace
             // Audit FED-5: a room whose current state we hold (we have its
             // create event) is authorised against that state before we sign
             // anything. This is what refuses an invite for a banned target.
-            auto const room_known_locally = !std::holds_alternative<std::nullptr_t>(
-                create_event_json_for_room(rt->database.persistent_store, invite.room_id).storage());
+            //
+            // State kept after this server's last user left is not current: a federated leave
+            // records only a membership row, so the held state still says the user is joined and
+            // would refuse the user's own re-invite ("cannot invite already-joined user"). The room
+            // counts as held only while a user of this server is joined to it, as for restricted
+            // joins; a banned target is still refused by the membership row check below (ADR-0301).
+            auto const room_known_locally =
+                room_state_is_current(rt->database.persistent_store, invite.room_id, rt->config.server().server_name);
             if (room_known_locally)
             {
                 auto const auth = authorize_invite_against_local_room(*rt, invite.room_id, invite.room_version,
@@ -2932,14 +2939,13 @@ namespace
                 database::PersistentInvite{invite.room_id, *target_user, *sender, invite.event_id, *signed_event,
                                            invite.invite_room_state_json, stream_ordering}
             };
-            // For a room whose state we hold, stop here (audit FED-5). Spec: "if
-            // the remote homeserver is already in the room, it will receive the
-            // invite event twice; once through this endpoint, and again through
-            // a federation transaction". The transaction path does the full
-            // PDU checks and is what updates room state, and storing the event
-            // here would make that later copy fail to persist (the store refuses
-            // an event ID it already holds; ADR-0085). The membership row and invite metadata
-            // are all the invitee needs in order to see the invite.
+            // For a room whose state we hold, stop here (audit FED-5). Spec: "if the remote
+            // homeserver is already in the room, it will receive the invite event twice; once
+            // through this endpoint, and again through a federation transaction". The transaction
+            // path does the full PDU checks and is what places the event and updates room state, and
+            // storing the event here would make that later copy a duplicate that is never placed
+            // (ADR-0085, ADR-0285). The membership row and invite metadata are all this endpoint
+            // records; /sync shows the invite once the room's state has it (ADR-0301).
             if (room_known_locally)
             {
                 if (!database::store_membership_projection(rt->database.persistent_store, invite.room_id,
@@ -3079,6 +3085,17 @@ namespace
                                                                  rt->federation.config.query_policy);
         };
 
+        // Takes runtime.mutex itself, unlike the reads above: it seeks the room-and-time index of the store, which
+        // every writer of the store changes under that mutex (ADR-0300). The work is bounded by
+        // database::max_time_search_examined.
+        runtime.federation.timestamp_to_event_query_provider =
+            [rt](std::string_view room_id, std::int64_t ts, database::TimeDirection direction,
+                 std::string_view origin) -> federation::RoomReadResult {
+            auto const guard = std::unique_lock<RuntimeMutex>{rt->mutex};
+            return federation::build_timestamp_to_event_response(rt->database.persistent_store, room_id, ts, direction,
+                                                                 origin);
+        };
+
         runtime.federation.space_hierarchy_provider = [rt](std::string_view room_id, bool suggested_only,
                                                            std::string_view origin) -> std::string {
             return build_federation_space_hierarchy_response(*rt, room_id, suggested_only, origin);
@@ -3116,6 +3133,11 @@ namespace
         // inspects the current m.room.server_acl state for the room and applies
         // MSC4436 rules (deny list, allow list, allow_ip_literals) to the remote
         // server name. Ports are stripped and matching is case-insensitive.
+        // ADR-0285: lets the transaction handler answer a re-sent PDU before verifying it.
+        runtime.federation.pdu_already_stored = [rt](std::string_view room_id, std::string_view event_id) -> bool {
+            return pdu_event_already_stored(*rt, room_id, event_id);
+        };
+
         runtime.federation.room_server_acl_provider = [rt](std::string_view room_id,
                                                            std::string_view server_name) -> bool {
             return federation::room_server_acl_allows(rt->database.persistent_store, room_id, server_name);
@@ -3935,6 +3957,14 @@ namespace
             return false;
         }
 
+        // Everything below reads or writes the store, and no network call follows: hold the room stripe
+        // and runtime.mutex from here to the end. Callers run this with the lock released (the signature
+        // checks above may fetch keys), so the authorization reads would otherwise race a concurrent
+        // insertion into the event table.
+        auto const stripe = std::hash<std::string>{}(std::string{room_id}) % room_mutex_stripe_count;
+        auto stripe_guard = std::unique_lock{runtime.room_stripe_mutexes[stripe]};
+        auto global_guard = std::unique_lock<RuntimeMutex>{runtime.mutex};
+
         auto const envelope_opt = federation::parse_inbound_pdu_envelope(stored_json, policy.id);
         if (!envelope_opt.has_value())
         {
@@ -4071,10 +4101,6 @@ namespace
             }
             return compute_state_after(state_before, envelope.event_id, envelope.event_type, envelope.state_key);
         }();
-
-        auto const stripe = std::hash<std::string>{}(std::string{room_id}) % room_mutex_stripe_count;
-        auto stripe_guard = std::unique_lock{runtime.room_stripe_mutexes[stripe]};
-        auto global_guard = std::unique_lock<RuntimeMutex>{runtime.mutex};
 
         auto const record_state_group = [&](std::vector<database::PersistentStateGroupStateEntry> const& after) {
             auto const group =
@@ -4835,6 +4861,51 @@ namespace
 namespace
 {
 
+    // What this store holds under an inbound PDU's event ID. `runtime.mutex` must be held.
+    enum class StoredCopy : std::uint8_t
+    {
+        none,
+        in_room,
+        in_other_room,
+    };
+
+    [[nodiscard]] auto stored_copy_of(database::PersistentStore const& store, std::string_view room_id,
+                                      std::string_view event_id) -> StoredCopy
+    {
+        auto const existing = store.events.find(event_id);
+        if (existing == store.events.end())
+        {
+            return StoredCopy::none;
+        }
+        return existing->room_id == room_id ? StoredCopy::in_room : StoredCopy::in_other_room;
+    }
+
+    // The answer for a PDU whose event ID is already stored, or nullopt when it is not (ADR-0285).
+    // Spec: server-server-api.md "PDU Processing Result" -- a PDU with no error "can be considered
+    // successfully handled"; this server handled it when it first arrived, whatever status it gave
+    // the event (accepted, soft_failed, rejected or outlier). It is answered as handled and neither
+    // verified, authorised nor stored again, so a re-send allocates no stream ordering and has no side
+    // effect. A stored copy is never re-judged: rejection depends only on the event's own auth events
+    // and state before it, which its event ID fixes. An event ID held for a different room cannot be
+    // the same event (rooms v3 and up derive the ID from the content, room ID included) and is refused.
+    // `runtime.mutex` must be held.
+    [[nodiscard]] auto answer_for_stored_pdu(HomeserverRuntime& runtime, federation::InboundPduEnvelope const& envelope)
+        -> std::optional<federation::PduIngestionResult>
+    {
+        switch (stored_copy_of(runtime.database.persistent_store, envelope.room_id, envelope.event_id))
+        {
+        case StoredCopy::none:
+            return std::nullopt;
+        case StoredCopy::in_room:
+            return federation::PduIngestionResult{federation::PduIngestionStatus::already_stored,
+                                                  "event already stored"};
+        case StoredCopy::in_other_room:
+            return federation::PduIngestionResult{federation::PduIngestionStatus::rejected_invalid,
+                                                  "event ID is already used by an event in another room"};
+        }
+        return std::nullopt;
+    }
+
     // The leave a server sends for a user it invited who has not joined, when this server holds no
     // state for the room. nullopt when `envelope` is not that, so the ordinary receipt checks run.
     //
@@ -4862,8 +4933,11 @@ namespace
         }
         auto guard = std::unique_lock<RuntimeMutex>{runtime.mutex};
         auto& store = runtime.database.persistent_store;
+        // A room whose held state is not current (ADR-0301) takes the rescission path: its invite was
+        // stored as an outlier, and ordinary receipt checks would need history this server lacks.
         if (server_name_from_user_id(target) != runtime.config.server().server_name ||
-            !std::holds_alternative<std::nullptr_t>(create_event_json_for_room(store, envelope.room_id).storage()))
+            room_state_is_current(runtime.database.persistent_store, envelope.room_id,
+                                  runtime.config.server().server_name))
         {
             return std::nullopt;
         }
@@ -4931,6 +5005,19 @@ namespace
     if (room_id.empty())
     {
         return {federation::PduIngestionStatus::rejected_invalid, "missing room_id"};
+    }
+
+    // ADR-0285: a PDU already stored here is answered before anything else runs, so a re-send
+    // (a second transaction, or the same PDU twice in one) costs no parsing, no stream
+    // ordering and no sync stream ID. This check is the cheap path only: a concurrent
+    // ingest of the same event can store it after this look, so it is made again below,
+    // under the room stripe, where it is decisive.
+    {
+        auto const guard = std::unique_lock<RuntimeMutex>{runtime.mutex};
+        if (auto const stored = answer_for_stored_pdu(runtime, envelope); stored.has_value())
+        {
+            return *stored;
+        }
     }
 
     auto const* room_policy =
@@ -5099,6 +5186,18 @@ namespace
         {
             return defer_unresolved("missing PDU references remain after backfill");
         }
+    }
+
+    // ADR-0285: the decisive duplicate check. The room stripe and runtime.mutex are both held
+    // here, and nothing between this point and prepare_store_event_with_state releases either
+    // (the backfill above did, so a transaction racing this one may have stored the event
+    // meanwhile). Every ingest of a room's events runs under that room's stripe and applies its
+    // event to the in-memory store before it releases the stripe, so of two racing copies the
+    // loser, once it holds the stripe, finds the winner's event here and is answered as handled
+    // instead of reaching the store's duplicate guard, which can only report failure.
+    if (auto const stored = answer_for_stored_pdu(runtime, envelope); stored.has_value())
+    {
+        return *stored;
     }
 
     auto const third_party_invite_token = [&]() -> std::string {
@@ -5384,6 +5483,12 @@ namespace
     }
 
     return result;
+}
+
+auto pdu_event_already_stored(HomeserverRuntime& runtime, std::string_view room_id, std::string_view event_id) -> bool
+{
+    auto const guard = std::unique_lock<RuntimeMutex>{runtime.mutex};
+    return stored_copy_of(runtime.database.persistent_store, room_id, event_id) == StoredCopy::in_room;
 }
 
 auto ingest_pdu_event(HomeserverRuntime& runtime, federation::InboundPduEnvelope const& envelope)
@@ -5944,7 +6049,7 @@ auto wire_federation_callbacks(HomeserverRuntime& runtime) -> void
                            {"room_id",    room_id,                             false},
                            {"body_bytes", std::to_string(request.body.size()), false}
         });
-        auto result = send_event(runtime, request.access_token, room_id, request.body);
+        auto result = send_event(runtime, request.access_token, room_id, request.body, request.origin_server_ts);
         log_diagnostic(result.ok ? "room.event.accepted" : "room.event.rejected",
                        {
                            {"room_id", room_id,                                                    false},
@@ -5976,7 +6081,8 @@ auto wire_federation_callbacks(HomeserverRuntime& runtime) -> void
                 });
                 return response(400U, "state content must be a JSON object");
             }
-            auto result = send_event(runtime, request.access_token, path->room_id, *event_body);
+            auto result =
+                send_event(runtime, request.access_token, path->room_id, *event_body, request.origin_server_ts);
             log_diagnostic(result.ok ? "room.state_put.accepted" : "room.state_put.rejected",
                            {
                                {"room_id",    path->room_id,                                              false},
@@ -6139,6 +6245,47 @@ auto wire_federation_callbacks(HomeserverRuntime& runtime) -> void
         response_headers.emplace_back("Content-Type", federation_response.content_type);
     }
     return response(federation_response.status, federation_response.body, std::move(response_headers));
+}
+
+auto fetch_remote_event_into_store(HomeserverRuntime& runtime, std::string_view room_id, std::string_view origin,
+                                   std::string_view event_id, OutboundDeadline const& deadline) -> bool
+{
+    rooms::RoomVersionPolicy const* policy = nullptr;
+    {
+        auto const guard = std::unique_lock<RuntimeMutex>{runtime.mutex};
+        if (runtime.database.persistent_store.events.find_in_room(room_id, event_id) !=
+            runtime.database.persistent_store.events.end())
+        {
+            return true;
+        }
+        policy = stored_room_version_policy(runtime.database.persistent_store, room_id);
+    }
+    if (policy == nullptr)
+    {
+        return false;
+    }
+    auto const& limits = runtime.federation.config.backfill;
+    auto budget = BackfillBudget{0U, limits.max_total_outbound_calls, deadline.end()};
+    auto outbound_calls = std::size_t{0U};
+    auto snapshot_calls = std::size_t{0U};
+    // Spec: server-server-api.md GET /event/{eventId}. The event is verified (signature, hash, auth) before
+    // it is stored, exactly as one recovered for a PDU: first against the state before it, when that is
+    // held, otherwise against the state snapshot the origin names for it (/state_ids).
+    auto const json = fetch_event_by_id(runtime, room_id, origin, event_id, *policy, outbound_calls, budget);
+    if (!json.has_value())
+    {
+        return false;
+    }
+    if (verify_and_store_backfilled_event(runtime, room_id, origin, *json, *policy, budget))
+    {
+        return true;
+    }
+    if (budget.key_resolution_locally_denied)
+    {
+        return false;
+    }
+    return backfill_state_ids_snapshot(runtime, room_id, origin, event_id, *policy, outbound_calls, snapshot_calls,
+                                       budget, HeldPdus{});
 }
 
 } // namespace merovingian::homeserver

@@ -3,10 +3,12 @@
 #pragma once
 
 #include "merovingian/federation/inbound_ingestion.hpp"
+#include "merovingian/homeserver/client_outbound_proxy.hpp"
 #include "merovingian/homeserver/runtime.hpp"
 #include "merovingian/http/request.hpp"
 
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -40,6 +42,11 @@ struct LocalHttpRequest final
     bool sig_verified{false};
     std::string verified_origin{};
     std::string verified_key_id{};
+    // Application Service API, "Timestamp massaging": the `ts` an application service appended to
+    // PUT /rooms/{roomId}/send/... or PUT /rooms/{roomId}/state/..., already validated, to become the
+    // event's origin_server_ts. Set only by the client-server dispatcher after it has matched an
+    // as_token; it is never read from the wire, so no other caller can set it.
+    std::optional<std::int64_t> origin_server_ts{};
 };
 
 struct LocalHttpResponse final
@@ -96,5 +103,21 @@ auto wire_federation_callbacks(HomeserverRuntime& runtime) -> void;
 // the in-memory store and update membership.
 [[nodiscard]] auto ingest_pdu_event(HomeserverRuntime& runtime, federation::InboundPduEnvelope const& envelope)
     -> federation::PduIngestionResult;
+
+// True when this server already stores `event_id` in `room_id`, in any status (ADR-0285). Takes
+// runtime.mutex itself. Used before a re-sent PDU is verified: the main-process /send handler
+// (runtime.federation.pdu_already_stored) and main's side of a worker's pdu_ingest relay.
+[[nodiscard]] auto pdu_event_already_stored(HomeserverRuntime& runtime, std::string_view room_id,
+                                            std::string_view event_id) -> bool;
+
+// Fetches `event_id` of `room_id` from `origin` with GET /_matrix/federation/v1/event/{eventId}
+// and stores it through the verified backfill path (signature, hash and auth checked; stored as
+// an outlier, with the state at it when `origin`'s /state_ids snapshot supplies that; never
+// stored unverified). True when the event is stored afterwards, including when it already was.
+// Every call draws from `deadline`. Call WITHOUT runtime.mutex held: it takes the lock itself
+// where it reads or writes the store and releases it for every network call.
+[[nodiscard]] auto fetch_remote_event_into_store(HomeserverRuntime& runtime, std::string_view room_id,
+                                                 std::string_view origin, std::string_view event_id,
+                                                 OutboundDeadline const& deadline) -> bool;
 
 } // namespace merovingian::homeserver

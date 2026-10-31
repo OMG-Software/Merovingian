@@ -488,6 +488,7 @@ In each case below the spec leaves the choice to the server; the owner decided t
 - **`POST /keys/upload` and a malformed `device_keys`.** Missing or non-object `keys`, non-string `user_id`/`device_id`, non-list `algorithms` or non-object `signatures` answer `400 M_BAD_JSON`. A well-formed object naming another user or device, or lacking the `curve25519:`/`ed25519:` pair for the device, stays `M_INVALID_PARAM`. `algorithms` and `signatures` are checked only when present.
 - **`GET /rooms/{roomId}/messages` with `lazy_load_members`.** `state` holds only the `m.room.member` events of the senders of the returned `chunk` (no other state). Redundant membership events are not tracked across calls, so a sender's membership is sent on every page (the spec's `include_redundant_members` default permits it). `/context` is unchanged.
 - **Initial `/sync` carries `m.push_rules`.** An initial `/sync` (no usable `since`) always holds a global `m.push_rules` account-data event with the user's effective ruleset (the server defaults plus their changes), if the filter's `account_data` admits it. An incremental `/sync` carries it only after a change.
+- **A hole in the event graph makes a joined room's `/sync` timeline `limited` (ADR-0289).** The spec defines `limited` by the filter `limit` and leaves events the server never received over federation unspecified; an event in the window whose `prev_events` are not all held (no row, or an outlier with no state group; rejected, soft-failed and backfilled events count as held, ADR-0290) starts a limited timeline at that event, with `prev_batch` for `/messages` to reach what lies before. A limited incremental sync carries the state at the start of the timeline. Sliding sync is unchanged.
 - **`POST /user_directory/search` searches visible users only.** A search considers the users who share a joined room with the requester, and users joined to a room whose join rule is `public` or whose history visibility is `world_readable`. The requester is found only through a public or world-readable room. Before, every local profile matched.
 - **`POST /account/password` deletes pushers of revoked devices.** With `logout_devices` true (the default), the pushers set (`POST /pushers/set`) with the access token of a device whose tokens the change revokes are deleted. The requesting device's pushers, and pushers with no recorded device, stay. A pusher records its device in `pushers.device_id`.
 - **A failed UIA stage carries `errcode` and `error`.** A wrong account password on `POST /account/password`, `/account/deactivate`, `/account/3pid/add`, `/keys/device_signing/upload`, `DELETE /devices/{deviceId}` and `POST /delete_devices` is `401` with the `flows`, `params` and `session` of the challenge plus `errcode: M_FORBIDDEN` and `error`; a request making no attempt gets the bare challenge. `DELETE /devices/{deviceId}` does not compare the user a password `identifier` names with the token's user: the password checked is the token owner's (the spec states no status for a mismatch).
@@ -507,3 +508,38 @@ The client-server runtime applies `server.client_api` policy to sync room/timeli
 ## Conformance audit wave 4 (0.12.38)
 
 Room account data (`GET`/`PUT /user/{userId}/rooms/{roomId}/account_data/{type}`) is routed. Both account-data `PUT`s require a JSON object body (`400 M_NOT_JSON` / `M_BAD_JSON`) and refuse the server-managed `m.fully_read` and `m.push_rules` with `405 M_BAD_JSON`. A room `PUT` needs a membership row in the room and stops new types at `server.client_api.max_room_account_data_per_room` (ADR-0197). `POST /register` without `username` gets a generated localpart (ADR-0198). `PUT /rooms/{roomId}/typing/{userId}` requires a boolean `typing`, and typing expires after its `timeout`, at most 120 s (ADR-0199). `POST /search` covers rooms the user has left, up to the point they left.
+
+## Event lookup by timestamp (0.12.64)
+
+`GET /rooms/{roomId}/timestamp_to_event?ts=&dir=` (ADR-0299, ADR-0300) returns `{event_id, origin_server_ts}` of the event
+nearest `ts` in the direction `dir` (`f` or `b`). Both parameters are required (400 `M_MISSING_PARAM` / `M_INVALID_PARAM`).
+The boundary is inclusive and events sharing a timestamp are ordered by (`origin_server_ts`, `depth`, `stream_ordering`),
+so `f` finds the first and `b` the last. A user who cannot read the room gets 403 `M_FORBIDDEN` like `/messages`; events
+`sync::HistoryVisibility` withholds are stepped over, up to 1000 candidates, then 404. The lookup is one seek of the
+per-room time index of `EventTable`. When the local answer is absent, or has a `prev_event` this server does not hold,
+up to three servers of the room (longest in the room first, by the stream ordering of their earliest current join) are
+asked over `GET /_matrix/federation/v1/timestamp_to_event/{roomId}`, one at a time, under one client-outbound slot and the
+10 s directory deadline. A remote answer counts only if it is on the requested side and strictly closer; the event is then
+fetched with `GET /event/{eventId}` and stored through the verified backfill path, and returned only if that succeeded and
+the user may see it. No slot: 429 when there is no local answer, the local answer otherwise. Rate limiting follows the
+route tier; the federation endpoint is not rate limited (spec) and judges the requesting server like the other room
+reads (403 for a server with no joined user, events its users could not see stepped over).
+
+The 400 and 403 answers are not in the operation's response list above, which is generated from the spec: 400 follows the
+common error codes for a missing or malformed required parameter, and 403 is the owner's choice for a user who may not read
+the room (ADR-0299).
+
+## Application service timestamp massaging (0.12.64)
+
+An application service (a request authenticated with an `as_token`) may append `ts=<milliseconds>` to
+`PUT /rooms/{roomId}/send/{eventType}/{txnId}` and `PUT /rooms/{roomId}/state/{eventType}/{stateKey}` (Application
+Service API, "Timestamp massaging"; ADR-0303). The event's `origin_server_ts` is then `ts`. A `ts` that is not a
+decimal integer in `[-(2**53)+1, (2**53)-1]` (empty, fractional, exponent, signed `+`, out of range) is refused with
+`400 M_INVALID_PARAM` and nothing is stored. Without `ts` the server's own clock is used. Only these two routes read
+`ts`; on any other route, or from a caller that is not an application service, it is ignored. The spec is silent on
+whether a non-appservice `ts` should be rejected, so the server leaves such a request as it would be without it.
+The event is still appended at the tip of the DAG: `depth`, `prev_events` and the stream position are those of "now",
+and `GET /timestamp_to_event` orders by the massaged timestamp as it does for any event.
+
+`POST /createRoom` is routed by its path alone, so an application service's `?user_id=` (identity assertion) no longer
+makes it answer `405`.

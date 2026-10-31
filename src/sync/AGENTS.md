@@ -36,6 +36,19 @@ Spec authority:
 For `/messages` and timeline `prev_batch`, the token is a plain stream-ordering integer.
 Use `stream_token.hpp` — never parse or construct tokens manually.
 
+## Joined-room timelines and holes in the event graph (ADR-0289)
+
+A classic `/sync` joined room's `timeline` is the newest `timeline_cap` events after `since` that pass
+the filters. `limited` is true when that window was cut by the cap **or** when an event in it has a hole
+before it: any ID in its `prev_events` that is not *held*, i.e. has no `store.events` row or a row whose
+status is `outlier` with no state group (rejected and soft-failed rows are held; an outlier that `/get_missing_events` or backfill placed has a state group and is held, ADR-0290). The window then starts at the newest such
+event (kept: the hole lies before it) and `prev_batch` is that event's stream ordering, so `/messages`
+(and its backfill) reaches what lies before. An outlier is never the event the check starts from. Look
+only at the window's events and look prev events up with `EventTable::contains`/`find` (indexed); never
+scan the store per event, this runs under `runtime.mutex`. A limited incremental response also carries
+the state at the start of the timeline. Sliding sync has its own builder and `limited` rule and is not
+affected.
+
 ## Sliding sync connection state
 
 MSC4186 tracks per-connection state keyed by `conn_id`. On a no-`pos` poll, the server
@@ -203,10 +216,21 @@ nothing else decides what a user may see** (ADR-0084; audit CSAZ-2, CSAZ-3).
   `/messages`, `/context` (target and both lists), `/event`, `/search` and its per-result
   context, `/relations`, `/threads`, the `initialSync` chunk. A new endpoint that returns room
   events must call it.
+- Rule 3 (`shared`: the user joined "after the event was sent") compares the depth of the user's newest
+  accepted join with the event's depth, never stream orderings (ADR-0308): an event fetched as history is
+  stored after the join it precedes. Do not order by stream ordering anywhere the question is "before or after
+  in the room". Depth is chosen by whoever creates an event (a federated join's by the resident), so for a user
+  whose membership is `leave` or `ban` an event the depth rule allows is hidden if it descends from their leave
+  (`may_descend_from_departure`, ADR-0311): a walk of held `prev_events` that stops at events stored before the
+  leave and at events not held, and fails closed past 500 events or when the leave event is not held. Never
+  replace it with a local depth: after a federated join the join's predecessors are not held (ADR-0311).
 - It fails closed. A broken group chain, a group naming an event the store lacks, or a
   rejected or soft-failed event means not visible. Never substitute the room's current state.
   An event with no state group (pre-ADR-0064 history) is judged by rule 2 alone from the user's
   own membership timeline; an undeterminable timeline denies.
+  The one exception is the user's own `m.room.member` event held as an outlier with no state group
+  (a received invite, the leave that rejected it): it is visible to that user, who was sent it already
+  (ADR-0304). Do not widen it to other events or other users.
 - `room_read_access_for(store, room, user)` (`room_read_access.hpp`) answers "what room state
   may this user read?": `current` (joined), `as_of` (was joined and left, was kicked or banned:
   the state recorded at the event that ended the join, `boundary_event_id`), or `none` (knock,

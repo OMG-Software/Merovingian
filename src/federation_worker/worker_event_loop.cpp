@@ -225,6 +225,10 @@ namespace
         {
             result.status = federation::PduIngestionStatus::deferred;
         }
+        else if (status_str == "already_stored")
+        {
+            result.status = federation::PduIngestionStatus::already_stored;
+        }
         else
         {
             result.status = federation::PduIngestionStatus::internal_error;
@@ -703,6 +707,10 @@ auto WorkerEventLoop::run() -> void
         // FED-10, ADR-0153: each shard resolves keys within its share of the
         // configured budgets, so all shards together stay within them.
         .key_resolution_shards = config_.federation_worker().shards,
+        // ADR-0296: registrations hold the as_token and hs_token, kept outside
+        // this process's Landlock grants, and everything that uses the registry
+        // runs in main. Loading them here only logged a rejection per start.
+        .load_appservices = false,
     });
     if (!started.started)
     {
@@ -711,6 +719,11 @@ auto WorkerEventLoop::run() -> void
     }
     auto& runtime = started.runtime;
     homeserver::wire_federation_callbacks(runtime);
+
+    // ADR-0285: the wired probe answers from this process's own event snapshot, which is taken at
+    // start-up and is not main's record of what is stored. Left in place it could call a PDU main
+    // never stored "handled". Unset, every PDU goes to main, which holds the record and checks.
+    runtime.federation.pdu_already_stored = nullptr;
 
     // Override pdu_sink: instead of writing to DB directly, call main via IPC.
     runtime.federation.pdu_sink =

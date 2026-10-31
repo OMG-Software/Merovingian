@@ -223,7 +223,14 @@ Implemented now:
   refuses it unsigned otherwise. A local user's join into a local
   restricted room carries the field, and `compose_signed_event` refuses any
   local join naming a local authoriser the decision does not accept (so
-  `PUT /state/m.room.member` cannot skip the check)
+  `PUT /state/m.room.member` cannot skip the check). When the decision is
+  `unable_to_grant` for a local user's `/join` (0.12.64, ADR-0287, ADR-0288), the
+  join waits for the room's in-flight events, decides again, and then goes
+  through another resident: make_join and send_join to the servers the client
+  named, then other servers with joined members (at most 4), and the resident's
+  co-signature (same reference-hash ID as the join this server signed, both
+  signatures verified) is merged into this server's own join, which is stored as a received event (ADR-0302); the answer's state is not
+  used. If every candidate fails, the client gets the 403
 - a content-hash mismatch on a direct membership endpoint redacts, it does not
   reject (0.12.36, R06): `handle_send_membership` and `handle_invite` refuse
   only a signature failure (400 `M_INVALID_PARAM`); the acceptor and the
@@ -276,10 +283,9 @@ Implemented now:
 Not implemented yet:
 
 - full Matrix room-version conformance fixture suite
-- joining a local user through another resident when this server meets a
-  restricted room's condition but has no local user who can invite (refused
-  with 403 today), and sending an accepted `send_join` event on to the room's
-  other servers
+- sending an accepted `send_join` event on to the room's other servers is done
+  (0.12.60); an ordinary (non-resident) federated join still stores its own
+  signed copy of a restricted join, not the resident's co-signed `event`
 - the `PUT /_matrix/federation/v1/exchange_third_party_invite/{roomId}`
   endpoint (signing an intermediate invite on behalf of a remote inviter).
   `POST /invite` with a 3PID address (a real identity-server round trip,
@@ -747,6 +753,16 @@ way, and `send_join`, `send_leave` and PDUs apply it to the roster through `appl
 also records the device-list `changed`/`left` rows for the local members. At main's startup (never in the federation worker) `hydrate_local_database` runs `reconcile_memberships_with_current_state` before building the
 roster: a row is rewritten to the current member event when it is missing, when it says `join` and the event
 does not, or when the event is newer; a row newer than its event (a federated leave, an `/invite`) is kept.
+
+### A PDU already stored is answered as handled (ADR-0285)
+
+Before any receipt check, `ingest_pdu_event` looks the event ID up in the room it names. A copy stored in
+any status (accepted, soft-failed, rejected, outlier) means this server handled the PDU when it first
+arrived, so the answer is `PduIngestionStatus::already_stored`: no error entry in the `/send` response
+(spec "PDU Processing Result"), no re-verification, re-authorisation or second store, no stream ordering,
+and a rejected copy stays rejected. The `/send` handler and main's `pdu_ingest` relay ask even earlier,
+before the sender's signature is checked. The check inside `ingest_pdu_event` is repeated under the room
+stripe so two transactions racing with one PDU store it once.
 
 ### Phase B2: the receipt-order auth checks themselves (ADR-0064)
 

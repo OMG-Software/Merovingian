@@ -503,6 +503,12 @@ quickly finding everything a given `AGENTS.md` file contributed.
   server signed; whether the joining user met an allow condition is checked by nobody else, so
   signing without the decision lets anyone into a restricted room (CWE-863 Incorrect
   Authorization; conformance audit R04, ADR-0185).
+  A local user's join that no local user can authorise goes to another resident only on the
+  `unable_to_grant` verdict, and what is stored is this server's own join with the resident's
+  signatures merged in, only after the resident's event ID, this server's signature and the
+  authorising server's signature are checked (ADR-0287, ADR-0302). The same holds for an
+  invite's answer from the invitee's server: its signature is verified and merged into this
+  server's event, and an unsigned or different event is a refusal (ADR-0302).
   Source: `src/federation/AGENTS.md`, `src/homeserver/AGENTS.md`.
 
 - **Never refuse a received event for a content-hash mismatch; redact it and continue.**
@@ -639,6 +645,13 @@ quickly finding everything a given `AGENTS.md` file contributed.
   rejected-auth outlier left every later event that named it unplaced.
   Source: `src/homeserver/AGENTS.md`.
 
+- **A fetched event is authorised against the store only with the room stripe and `runtime.mutex`
+  held.** `verify_and_store_backfilled_event` runs unlocked for its signature checks (a key may be
+  fetched) and takes both locks before its first store read, holding them through the write.
+  Why: its authorization reads ran unlocked, so a concurrent insertion into the event table could
+  invalidate what they were reading and crash the server (CWE-362; PR #546 review).
+  Source: `src/homeserver/AGENTS.md`.
+
 - **Every outbound destination holds a bounded share of the dispatch queue, and every queued
   transaction has its own transaction ID. Never discard `DispatchWorker::enqueue`'s result.**
   Why: one dead or hostile peer filled the shared queue and starved every other peer; a shared
@@ -713,6 +726,15 @@ quickly finding everything a given `AGENTS.md` file contributed.
   `/thirdparty/*` lookups do (ADR-0181).
   Why: it holds a request-pool thread for up to the appservice timeout (ADR-0079).
   Source: `src/homeserver/AGENTS.md`.
+
+- **An appservice's `?ts=` reaches the event composer only through `LocalHttpRequest::origin_server_ts`,
+  which the dispatcher clears on every request and sets only for a validated masquerade (as_token)
+  request on `PUT /send` and `PUT /state`. Never pass `ts` on through the rewritten target's query
+  string** (ADR-0303).
+  Why: the internal `POST /rooms/{roomId}/send` route also accepts a caller's own query string, so a
+  `ts` carried there would let any user set an event's `origin_server_ts`, which `/timestamp_to_event`,
+  clients' timelines and other servers trust as the sending time.
+  Source: `src/appservice/AGENTS.md`.
 
 ## Identity Service client
 
@@ -887,7 +909,12 @@ quickly finding everything a given `AGENTS.md` file contributed.
   take the slot too, whenever they will call an appservice, but keep each appservice's own timeout
   rather than one shared deadline (ADR-0181). The space hierarchy takes the slot at the first
   child room it must ask another server for, holds it for the whole walk, and bounds the walk to
-  16 remote requests and 3 servers per room.
+  16 remote requests and 3 servers per room. `timestamp_to_event` (authenticated) waits for a
+  refused slot, within its own deadline and with the runtime mutex released (ADR-0306), and so
+  does a remote invite offer, which queues the invite when no slot comes (ADR-0307); the
+  unauthenticated proxies keep the immediate refusal. A waiter counts toward the global cap with
+  the calls in flight (`try_reserve_wait`, ADR-0310), so waiting can never hold more than half
+  the request pool.
   Source: `src/homeserver/AGENTS.md`.
 
 - **Nothing may put a TLS client socket back into blocking mode after the handshake, and
@@ -1222,7 +1249,10 @@ media-fetch-pool task.
   Why: the spec judges visibility from the state at each event, and a path that re-derives a
   rule, or checks only "is a member", discloses history the room's owner restricted and lets a
   banned or departed user read on (audit CSAZ-2, CSAZ-3). The filter fails closed: no recorded
-  state at an event means not visible, never a fallback to current state.
+  state at an event means not visible, never a fallback to current state. Rule 3 (`shared`)
+  orders the user's join and the event by depth, never by stream ordering (ADR-0308); because
+  depth is chosen by the event's creator (a join's by the resident), a former member is never
+  shown an event that descends from their leave (`may_descend_from_departure`, ADR-0311).
   Source: `src/sync/AGENTS.md`, `src/homeserver/AGENTS.md`.
 
 - **A sliding-sync sort key is computed once per room before the sort, never inside the

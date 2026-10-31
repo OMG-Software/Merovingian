@@ -45,8 +45,10 @@ using merovingian::sync::RoomReadKind;
 constexpr auto room = std::string_view{"!room:example.org"};
 constexpr auto bob = std::string_view{"@bob:example.org"};
 
-auto add_event(PersistentStore& store, std::string_view event_id, std::string_view json, std::uint64_t ordering,
-               std::string_view status = "accepted") -> void
+// An event stored at `ordering` whose place in the room's history is `depth`: one fetched as history
+// (backfill, a timestamp lookup) is stored after events that come later in the room.
+auto add_event_at_depth(PersistentStore& store, std::string_view event_id, std::string_view json,
+                        std::uint64_t ordering, std::uint64_t depth, std::string_view status = "accepted") -> void
 {
     auto event = PersistentEvent{};
     event.event_id = std::string{event_id};
@@ -54,8 +56,16 @@ auto add_event(PersistentStore& store, std::string_view event_id, std::string_vi
     event.sender_user_id = "@alice:example.org";
     event.json = std::string{json};
     event.stream_ordering = ordering;
+    event.depth = depth;
     event.status = std::string{status};
     store.events.push_back(std::move(event));
+}
+
+// An event received live: its place in the room's history (depth) follows the order it was stored in.
+auto add_event(PersistentStore& store, std::string_view event_id, std::string_view json, std::uint64_t ordering,
+               std::string_view status = "accepted") -> void
+{
+    add_event_at_depth(store, event_id, json, ordering, ordering, status);
 }
 
 [[nodiscard]] auto visibility_json(std::string_view value) -> std::string
@@ -751,6 +761,201 @@ SCENARIO("HistoryVisibility judges an event with no state group by the user's ow
             {
                 REQUIRE_FALSE(filter.can_see_event_id("$msg")); // group says membership leave, visibility joined
                 REQUIRE(filter.can_see_event_id("$nogroup"));   // no group: joined at that point
+            }
+        }
+    }
+}
+
+// Spec: Client-Server API v1.19, "Room History Visibility" and "Joining rooms"/invites: an invitee is sent
+// their invite (the `invite` section of /sync), so the content of their own m.room.member event is
+// theirs to see. An invite this server received for a room it holds no state for is kept as an outlier
+// with no state group (ADR-0294 does the same for the leave that rejects one), so the state at the
+// event cannot be read. The user's own outlier membership event is visible to that user; nothing else
+// about such an event changes (ADR-0304). ClientEvent `unsigned.prev_content` depends on it after a
+// federated join replaces the invite.
+SCENARIO("HistoryVisibility shows a user their own outlier membership event with no state group",
+         "[sync][history-visibility][prev-content][security]")
+{
+    GIVEN("outlier invites for bob and for carol, and an outlier message, none with a state group, bob never joined")
+    {
+        auto store = PersistentStore{};
+        add_event(store, "$bob_invite", member_json(bob, "invite"), 5U, "outlier");
+        add_event(store, "$carol_invite", member_json("@carol:example.org", "invite"), 6U, "outlier");
+        add_event(store, "$outlier_msg", R"({"type":"m.room.message","content":{}})", 7U, "outlier");
+
+        WHEN("bob asks about each")
+        {
+            auto filter = HistoryVisibility{store, bob};
+
+            THEN("he sees his own invite, and neither carol's invite nor the message")
+            {
+                REQUIRE(filter.can_see_event_id("$bob_invite"));
+                REQUIRE_FALSE(filter.can_see_event_id("$carol_invite"));
+                REQUIRE_FALSE(filter.can_see_event_id("$outlier_msg"));
+            }
+        }
+
+        WHEN("carol asks about bob's invite")
+        {
+            auto filter = HistoryVisibility{store, "@carol:example.org"};
+
+            THEN("it is not hers, so she does not see it")
+            {
+                REQUIRE_FALSE(filter.can_see_event_id("$bob_invite"));
+                REQUIRE(filter.can_see_event_id("$carol_invite"));
+            }
+        }
+    }
+}
+
+// Spec: Client-Server API v1.19, "History visibility", rule 3: "If `history_visibility` was set to `shared`,
+// and the user joined the room at any point after the event was sent, allow." ADR-0308: "after the event was
+// sent" is judged by the room's history, the depth of the user's join against the event's, never by the order
+// this server stored them in: an event fetched as history is stored after the join it precedes.
+SCENARIO("HistoryVisibility judges a shared room's history by depth, not by when this server stored it",
+         "[sync][history-visibility][adr-0308]")
+{
+    GIVEN("a shared room bob joined at depth 5 and left at depth 8, and two events stored after both")
+    {
+        auto store = PersistentStore{};
+        add_event(store, "$vis", visibility_json("shared"), 1U);
+        add_group(store, "g1", std::nullopt,
+                  {
+                      {{"m.room.history_visibility", ""}, "$vis"}
+        });
+        add_event(store, "$join", member_json(bob, "join"), 5U);
+        add_group(store, "g2", "g1",
+                  {
+                      {{"m.room.member", std::string{bob}}, "$join"}
+        });
+        map_event(store, "$join", "g2");
+        add_event(store, "$leave", member_json(bob, "leave"), 8U);
+        add_group(store, "g3", "g2",
+                  {
+                      {{"m.room.member", std::string{bob}}, "$leave"}
+        });
+        map_event(store, "$leave", "g3");
+        // Sent at depth 3, before bob joined, but fetched (and stored) only now.
+        add_event_at_depth(store, "$before", R"({"type":"m.room.message","content":{"body":"x"}})", 30U, 3U);
+        map_event(store, "$before", "g1");
+        // Sent at depth 9, after bob left; stored now too.
+        add_event_at_depth(store, "$after_leave", R"({"type":"m.room.message","content":{"body":"y"}})", 31U, 9U);
+        map_event(store, "$after_leave", "g3");
+
+        WHEN("bob asks about both")
+        {
+            auto filter = HistoryVisibility{store, bob};
+
+            THEN("he sees the one sent before his join, and not the one sent after he left")
+            {
+                REQUIRE(filter.can_see_event_id("$before"));
+                REQUIRE_FALSE(filter.can_see_event_id("$after_leave"));
+            }
+        }
+    }
+}
+
+namespace
+{
+
+// An event stored at `ordering` with `depth` and the given prev_events, mapped to `group`.
+auto add_linked_event(PersistentStore& store, std::string_view event_id, std::string_view json, std::uint64_t ordering,
+                      std::uint64_t depth, std::vector<std::string> prev_event_ids, std::string_view group) -> void
+{
+    auto event = PersistentEvent{};
+    event.event_id = std::string{event_id};
+    event.room_id = std::string{room};
+    event.sender_user_id = "@alice:example.org";
+    event.json = std::string{json};
+    event.stream_ordering = ordering;
+    event.depth = depth;
+    event.prev_event_ids = std::move(prev_event_ids);
+    store.events.push_back(std::move(event));
+    map_event(store, event_id, group);
+}
+
+[[nodiscard]] auto message_json() -> std::string
+{
+    return R"({"type":"m.room.message","content":{"body":"x"}})";
+}
+
+} // namespace
+
+// ADR-0311: depth is chosen by whoever creates an event, and a federated join's depth by the resident's
+// make_join template, so the depth rule alone could show a former member events sent after they left (a
+// join given a huge depth, or a post-leave event a tiny one). For a user who left, an event that descends
+// from their leave is hidden, found by a bounded walk back through its held prev_events that stops at events
+// stored before the leave (they cannot descend from it) and at events not held.
+SCENARIO("A former member does not see events sent after their leave, whatever their depths",
+         "[sync][history-visibility][adr-0311]")
+{
+    GIVEN("a shared room bob joined with an inflated depth and then left, and events stored before and after")
+    {
+        auto store = PersistentStore{};
+        add_event(store, "$vis", visibility_json("shared"), 1U);
+        add_group(store, "g1", std::nullopt,
+                  {
+                      {{"m.room.history_visibility", ""}, "$vis"}
+        });
+        add_linked_event(store, "$old", message_json(), 2U, 2U, {"$vis"}, "g1");
+        add_group(store, "g2", "g1",
+                  {
+                      {{"m.room.member", std::string{bob}}, "$join"}
+        });
+        add_linked_event(store, "$join", member_json(bob, "join"), 5U, 1000U, {"$unheld-resident-tip"}, "g2");
+        add_group(store, "g3", "g2",
+                  {
+                      {{"m.room.member", std::string{bob}}, "$leave"}
+        });
+        add_linked_event(store, "$leave", member_json(bob, "leave"), 8U, 1001U, {"$join"}, "g3");
+        store.state.push_back({std::string{room}, "m.room.member", std::string{bob}, "$leave"});
+        store.memberships.push_back({std::string{room}, std::string{bob}, "leave", 8U});
+        // Built on bob's leave, with a depth chosen to look older than his join.
+        add_linked_event(store, "$after", message_json(), 20U, 10U, {"$leave"}, "g3");
+        add_linked_event(store, "$after_child", message_json(), 21U, 11U, {"$after"}, "g3");
+        // Pre-join history fetched after bob left: its predecessor is not held.
+        add_linked_event(store, "$fetched", message_json(), 30U, 3U, {"$unheld-history"}, "g1");
+
+        WHEN("bob asks about each")
+        {
+            auto filter = HistoryVisibility{store, bob};
+
+            THEN("events that descend from his leave are hidden, and history from before it is not")
+            {
+                REQUIRE_FALSE(filter.can_see_event_id("$after"));
+                REQUIRE_FALSE(filter.can_see_event_id("$after_child"));
+                REQUIRE(filter.can_see_event_id("$fetched"));
+                REQUIRE(filter.can_see_event_id("$old"));
+            }
+        }
+    }
+
+    GIVEN("a shared room bob left through a federated leave, known only from his membership row")
+    {
+        auto store = PersistentStore{};
+        add_event(store, "$vis", visibility_json("shared"), 1U);
+        add_group(store, "g1", std::nullopt,
+                  {
+                      {{"m.room.history_visibility", ""}, "$vis"}
+        });
+        add_linked_event(store, "$old", message_json(), 2U, 2U, {"$vis"}, "g1");
+        add_group(store, "g2", "g1",
+                  {
+                      {{"m.room.member", std::string{bob}}, "$join"}
+        });
+        add_linked_event(store, "$join", member_json(bob, "join"), 5U, 1000U, {"$unheld-resident-tip"}, "g2");
+        store.state.push_back({std::string{room}, "m.room.member", std::string{bob}, "$join"});
+        store.memberships.push_back({std::string{room}, std::string{bob}, "leave", 8U});
+        add_linked_event(store, "$later", message_json(), 20U, 10U, {"$unheld-after"}, "g1");
+
+        WHEN("bob asks about an event stored before his leave and one stored after it")
+        {
+            auto filter = HistoryVisibility{store, bob};
+
+            THEN("with no leave event to walk to, the one stored after it is hidden (fail closed)")
+            {
+                REQUIRE(filter.can_see_event_id("$old"));
+                REQUIRE_FALSE(filter.can_see_event_id("$later"));
             }
         }
     }

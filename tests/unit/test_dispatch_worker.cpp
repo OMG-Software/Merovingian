@@ -16,6 +16,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <thread>
 
 namespace
 {
@@ -313,11 +314,14 @@ SCENARIO("Dispatch worker respects shutdown after drain", "[federation][dispatch
             worker.request_shutdown();
             worker.join();
 
-            THEN("the worker exits cleanly and the summary records the dropped transaction")
+            THEN("the worker exits, and the transaction was attempted and either dropped or kept for replay")
             {
+                // How many attempts run before the thread sees the shutdown is a race; the drain then
+                // tries what was due once and keeps a failure for replay (ADR-0309), so it ends.
                 auto const summary = worker.summary();
                 REQUIRE(summary.enqueued >= 1U);
-                REQUIRE(summary.dropped >= 1U);
+                REQUIRE(summary.failed >= 1U);
+                REQUIRE(summary.dropped + summary.pending == 1U);
             }
         }
     }
@@ -573,6 +577,134 @@ SCENARIO("Dispatch worker replays durable rows within each destination's share",
                 REQUIRE(store.federation_transactions.size() == 4U);
                 REQUIRE_FALSE(worker.enqueue(sample_transaction("dead.example.org")));
                 REQUIRE(worker.enqueue(sample_transaction("live.example.org")));
+            }
+        }
+    }
+}
+
+// ADR-0309: a retry's delay runs from the end of the failed attempt. Counted from its start, an attempt
+// slower than the delay (a connection timeout) was due again the moment it failed, so a peer that was
+// down for half a minute used up the doubling and was next tried long after it came back.
+SCENARIO("A failed attempt is retried only once its backoff has passed after the attempt ended",
+         "[federation][dispatch-worker][retry][adr-0309]")
+{
+    GIVEN("a worker whose destination takes ten seconds to fail")
+    {
+        auto client = merovingian::http::OutboundClient{};
+        auto fake_now = std::make_shared<std::atomic<std::uint64_t>>(0U);
+        auto resolver = merovingian::federation::DispatchResolver{[fake_now](std::string_view) {
+            fake_now->fetch_add(10000U);
+            return std::optional<merovingian::federation::ServerDiscoveryResult>{};
+        }};
+        auto now_ms = merovingian::federation::DispatchClock{[fake_now] {
+            return fake_now->load();
+        }};
+        auto config = worker_config();
+        config.max_retries = 8U;
+        auto worker = merovingian::federation::DispatchWorker{
+            std::move(config), client, std::move(resolver), std::move(now_ms), {}};
+        REQUIRE(worker.enqueue(sample_transaction("remote.example.org")));
+
+        WHEN("the first attempt fails at ten seconds")
+        {
+            REQUIRE(worker.run_once());
+
+            THEN("the retry waits for the first backoff after the failure, not after the start")
+            {
+                fake_now->store(12000U);
+                REQUIRE_FALSE(worker.run_once());
+                fake_now->store(14000U);
+                REQUIRE(worker.run_once());
+            }
+        }
+    }
+}
+
+// ADR-0309: shutdown must end. The drain finishes what was due when it was asked to stop and keeps the
+// rest for replay; a transaction that fails during the drain is not tried again, or a peer that is down
+// keeps the process alive until it is killed.
+SCENARIO("After shutdown is requested each transaction is attempted at most once",
+         "[federation][dispatch-worker][shutdown][adr-0309]")
+{
+    GIVEN("a worker whose destination always fails, on a clock that makes every retry due at once")
+    {
+        auto client = merovingian::http::OutboundClient{};
+        auto resolver = merovingian::federation::DispatchResolver{[](std::string_view) {
+            return std::optional<merovingian::federation::ServerDiscoveryResult>{};
+        }};
+        auto fake_now = std::make_shared<std::atomic<std::uint64_t>>(0U);
+        auto now_ms = merovingian::federation::DispatchClock{[fake_now] {
+            return fake_now->fetch_add(600000ULL) + 600000ULL;
+        }};
+        auto config = worker_config();
+        config.max_retries = 5U;
+        auto worker = merovingian::federation::DispatchWorker{
+            std::move(config), client, std::move(resolver), std::move(now_ms), {}};
+
+        WHEN("a transaction is queued and the worker is started already asked to stop")
+        {
+            REQUIRE(worker.enqueue(sample_transaction("remote.example.org")));
+            worker.request_shutdown();
+            worker.start();
+            worker.join();
+
+            THEN("it was tried once and is kept for replay, not retried until dropped")
+            {
+                auto const summary = worker.summary();
+                REQUIRE(summary.failed == 1U);
+                REQUIRE(summary.dropped == 0U);
+                REQUIRE(summary.pending == 1U);
+            }
+        }
+    }
+}
+
+// A queue holding only transactions still in backoff gives the worker nothing to do: it waits for the
+// next due one or new work, and does not spin on the queue.
+SCENARIO("The worker waits rather than spins while every queued transaction is in backoff",
+         "[federation][dispatch-worker][idle][adr-0309]")
+{
+    GIVEN("a running worker whose only transaction failed and waits out its backoff on a stopped clock")
+    {
+        auto client = merovingian::http::OutboundClient{};
+        auto resolver = merovingian::federation::DispatchResolver{[](std::string_view) {
+            return std::optional<merovingian::federation::ServerDiscoveryResult>{};
+        }};
+        auto clock_reads = std::make_shared<std::atomic<std::uint64_t>>(0U);
+        auto now_ms = merovingian::federation::DispatchClock{[clock_reads] {
+            clock_reads->fetch_add(1U);
+            return std::uint64_t{1000U};
+        }};
+        auto config = worker_config();
+        config.max_retries = 8U;
+        config.idle_poll = std::chrono::milliseconds{5};
+        auto worker = merovingian::federation::DispatchWorker{
+            std::move(config), client, std::move(resolver), std::move(now_ms), {}};
+        REQUIRE(worker.enqueue(sample_transaction("remote.example.org")));
+
+        WHEN("its first attempt has failed and it idles for 200 ms")
+        {
+            worker.start();
+            // Wait (bounded) until the attempt has failed and the transaction is back in the queue, so the
+            // measurement covers the backoff wait and not the time before the first attempt.
+            auto const give_up = std::chrono::steady_clock::now() + std::chrono::seconds{5};
+            while (std::chrono::steady_clock::now() < give_up &&
+                   (worker.summary().failed != 1U || worker.summary().pending != 1U))
+            {
+                std::this_thread::sleep_for(std::chrono::milliseconds{1});
+            }
+            auto const attempted = worker.summary().failed == 1U && worker.summary().pending == 1U;
+            auto const reads_before = clock_reads->load();
+            std::this_thread::sleep_for(std::chrono::milliseconds{200});
+            auto const idle_reads = clock_reads->load() - reads_before;
+            worker.request_shutdown();
+            worker.join();
+
+            THEN("it looked at the clock about once per idle poll, not millions of times")
+            {
+                REQUIRE(attempted);
+                CAPTURE(idle_reads);
+                REQUIRE(idle_reads < 1000U);
             }
         }
     }

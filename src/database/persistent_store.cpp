@@ -1407,6 +1407,40 @@ auto reconstruct_event_relations(PersistentStore& store) -> void
         return stale_event_ids.contains(e.event_id);
     });
 
+    // The room's state groups (ADR-0064): the groups keyed to room_id, the entries of those groups,
+    // and the room's events' group mappings. Federation reads judge an event on its recorded group
+    // and fail closed without one, so a worker that reloaded the events but not the groups would
+    // treat every event created after it started as invisible. Only this room's rows are touched.
+    auto stale_group_ids = std::unordered_set<std::string>{};
+    for (auto const& group : store.state_groups)
+    {
+        if (group.room_id == room_id)
+        {
+            stale_group_ids.insert(group.state_group_id);
+        }
+    }
+    for (auto const& group : snapshot->state_groups)
+    {
+        stale_group_ids.insert(group.state_group_id);
+    }
+    std::erase_if(store.state_groups, [&](PersistentStateGroup const& g) {
+        return stale_group_ids.contains(g.state_group_id);
+    });
+    std::erase_if(store.state_group_state, [&](PersistentStateGroupStateEntry const& e) {
+        return stale_group_ids.contains(e.state_group_id);
+    });
+    std::erase_if(store.event_state_groups, [&](PersistentEventStateGroup const& m) {
+        return stale_event_ids.contains(m.event_id);
+    });
+    store.state_groups.insert(store.state_groups.end(), std::make_move_iterator(snapshot->state_groups.begin()),
+                              std::make_move_iterator(snapshot->state_groups.end()));
+    store.state_group_state.insert(store.state_group_state.end(),
+                                   std::make_move_iterator(snapshot->state_group_state.begin()),
+                                   std::make_move_iterator(snapshot->state_group_state.end()));
+    store.event_state_groups.insert(store.event_state_groups.end(),
+                                    std::make_move_iterator(snapshot->event_state_groups.begin()),
+                                    std::make_move_iterator(snapshot->event_state_groups.end()));
+
     if (snapshot->room.has_value())
     {
         store.rooms.push_back(std::move(*snapshot->room));

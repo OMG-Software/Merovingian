@@ -25,6 +25,7 @@
 #include <algorithm>
 #include <array>
 #include <cctype>
+#include <charconv>
 #include <chrono>
 #include <cstdint>
 #include <limits>
@@ -1849,6 +1850,39 @@ namespace
                                   "Room not found", "get_missing_events body is malformed");
     }
 
+    // Spec: GET /_matrix/federation/v1/timestamp_to_event/{roomId}
+    // ../../docs/matrix-v1.19-spec/server-server-api.md#get_matrixfederationv1timestamp_to_eventroomid
+    // Both query parameters are required; `ts` is an integer, `dir` is `f` or `b`.
+    [[nodiscard]] auto handle_timestamp_to_event(FederationRuntimeState& runtime,
+                                                 SignedFederationRequest const& request) -> FederationResponse
+    {
+        if (!runtime.timestamp_to_event_query_provider)
+        {
+            return {501U, "timestamp_to_event not implemented"};
+        }
+        auto const room_id = extract_path_segment(request.target, "/_matrix/federation/v1/timestamp_to_event/");
+        if (room_id.empty())
+        {
+            return {400U, homeserver::matrix_error("M_INVALID_PARAM", "timestamp_to_event path is malformed")};
+        }
+        auto const ts_text = query_param_value(request.target, "ts");
+        auto const dir_text = query_param_value(request.target, "dir");
+        auto ts = std::int64_t{0};
+        auto const parsed = std::from_chars(ts_text.data(), ts_text.data() + ts_text.size(), ts);
+        if (ts_text.empty() || parsed.ec != std::errc{} || parsed.ptr != ts_text.data() + ts_text.size())
+        {
+            return {400U, homeserver::matrix_error("M_INVALID_PARAM", "ts must be an integer number of milliseconds")};
+        }
+        if (dir_text != "f" && dir_text != "b")
+        {
+            return {400U, homeserver::matrix_error("M_INVALID_PARAM", "dir must be f or b")};
+        }
+        auto const direction = dir_text == "f" ? database::TimeDirection::forwards : database::TimeDirection::backwards;
+        // FED-2: the provider decides from the authenticated origin whether it may read the room.
+        return room_read_response(runtime.timestamp_to_event_query_provider(room_id, ts, direction, request.origin),
+                                  "Unable to find an event near the timestamp", "timestamp_to_event is malformed");
+    }
+
     [[nodiscard]] auto handle_space_hierarchy(FederationRuntimeState& runtime, SignedFederationRequest const& request)
         -> FederationResponse
     {
@@ -2064,6 +2098,8 @@ namespace
             return handle_get_missing_events(runtime, request);
         case FederationEndpoint::space_hierarchy:
             return handle_space_hierarchy(runtime, request);
+        case FederationEndpoint::timestamp_to_event:
+            return handle_timestamp_to_event(runtime, request);
         case FederationEndpoint::media_download:
             return handle_media_download(runtime, request);
         case FederationEndpoint::media_thumbnail:
@@ -3258,6 +3294,8 @@ namespace
             return extract_path_segment(target, "/_matrix/federation/v1/get_missing_events/");
         case FederationEndpoint::space_hierarchy:
             return extract_path_segment(target, "/_matrix/federation/v1/hierarchy/");
+        case FederationEndpoint::timestamp_to_event:
+            return extract_path_segment(target, "/_matrix/federation/v1/timestamp_to_event/");
         default:
             return std::nullopt;
         }
@@ -3613,6 +3651,13 @@ namespace
                 {
                     continue;
                 }
+                // ADR-0285: a PDU already stored is answered as handled without being verified,
+                // so its sender's key is not fetched ahead either.
+                if (runtime.pdu_already_stored && !pdu.event_id.empty() && !pdu.room_id.empty() &&
+                    runtime.pdu_already_stored(pdu.room_id, pdu.event_id))
+                {
+                    continue;
+                }
                 // Only the first listed key is fetched ahead: it is the one a
                 // server signs with. Any further candidate (R05) is looked up only
                 // if that one does not verify, through the same admitted path.
@@ -3687,6 +3732,26 @@ namespace
                                           canonicaljson::make_member("error", canonicaljson::Value{reason})}}));
                     continue;
                 }
+            }
+
+            // A PDU this server already stored (in any status) was handled when it first
+            // arrived, so a re-send in another transaction is answered as handled. Spec:
+            // server-server-api.md "PDU Processing Result" -- no `error` means the PDU "can
+            // be considered successfully handled". It is not verified, authorised or stored
+            // again and has no side effect (ADR-0285). The probe comes after the ACL check
+            // (a denied server is still refused) and before signature verification, which
+            // would otherwise cost a key lookup for an event whose verdict is already in.
+            // A forged copy of a stored event ID gains nothing: nothing happens for it.
+            if (runtime.pdu_already_stored && !pdu.event_id.empty() && !pdu.room_id.empty() &&
+                runtime.pdu_already_stored(pdu.room_id, pdu.event_id))
+            {
+                log_diagnostic("pdu.already_stored", {
+                                                         {"origin",         request.origin,             false},
+                                                         {"transaction_id", transaction.transaction_id, false},
+                                                         {"event_id",       pdu.event_id,               false},
+                                                         {"room_id",        pdu.room_id,                false}
+                });
+                continue;
             }
 
             // Signature verification (Ed25519 + key validity) against every key ID
@@ -3786,7 +3851,22 @@ namespace
                 ++pdus_rejected;
                 audit_federation(runtime, "federation.pdu_rejected", request.origin, request.target, ingestion.reason);
                 break;
+            case PduIngestionStatus::already_stored:
+                // Stored by an earlier delivery (ADR-0285): handled, so no error entry, and
+                // not counted as appended, rejected or deferred -- nothing happened.
+                log_diagnostic("pdu.already_stored", {
+                                                         {"origin",         request.origin,             false},
+                                                         {"transaction_id", transaction.transaction_id, false},
+                                                         {"event_id",       envelope->event_id,         false},
+                                                         {"room_id",        envelope->room_id,          false}
+                });
+                break;
             case PduIngestionStatus::internal_error:
+                // WARNING, not only an audit entry: the sender is told this PDU failed, and an
+                // operator must be able to see why at the default log level (Complement run 12).
+                LOG_WARNING("Inbound PDU could not be processed (internal error); event_id=" + envelope->event_id +
+                            " room_id=" + envelope->room_id + " origin=" + request.origin +
+                            " reason=" + ingestion.reason);
                 audit_federation(runtime, "federation.pdu_internal_error", request.origin, request.target,
                                  ingestion.reason);
                 // Not handled, and not kept for a retry: the sender must hear that, as for

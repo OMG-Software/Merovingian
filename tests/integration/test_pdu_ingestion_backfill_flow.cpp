@@ -703,10 +703,11 @@ auto exercise_sticky_backfill_denial(bool capacity_full, bool partial_progress) 
     requests.clear();
     observation.cache_attempts.clear();
     auto const duplicate = ingest_with_bounded_backfill_peer(runtime, pdu, acceptor, tls_context, response, requests);
-    // This low-level persistence sink has no transaction replay dedup: an
-    // already stored event fails its pre-check. Row/state idempotency, not a
-    // second accepted result from that sink, is the regression contract here.
-    CHECK(duplicate.status == PduIngestionStatus::internal_error);
+    // A PDU whose event ID is already stored was handled when it first arrived, so a
+    // re-send is answered as handled (ADR-0285; spec "PDU Processing Result": no error
+    // means successfully handled) before anything is fetched, verified or stored.
+    // Row/state idempotency, not a second accepted result, is the regression contract here.
+    CHECK(duplicate.status == PduIngestionStatus::already_stored);
     CHECK(requests.empty());
     CHECK(observation.cache_attempts.empty());
     CHECK(observation.raw_calls == 1U);

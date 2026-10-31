@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+#include "../support/joining_threads.hpp"
 #include "../support/master_key.hpp"
 #include "../support/remote_room_fixture.hpp"
 #include "merovingian/canonicaljson/serializer.hpp"
@@ -21,6 +22,7 @@
 #include <filesystem>
 #include <optional>
 #include <string>
+#include <thread>
 #include <vector>
 
 namespace
@@ -164,8 +166,8 @@ struct Genesis final
     std::string admin_member_id{};
 };
 
-[[nodiscard]] auto seed_room_genesis(HomeserverRuntime& runtime, std::string const& room_id, std::string const& admin)
-    -> Genesis
+[[nodiscard]] auto seed_room_genesis(HomeserverRuntime& runtime, std::string const& room_id, std::string const& admin,
+                                     std::string const& create_id_override = {}) -> Genesis
 {
     using namespace merovingian;
 
@@ -173,7 +175,7 @@ struct Genesis final
     store.rooms.push_back({room_id, admin});
     runtime.database.rooms.push_back({room_id, admin, {}, {}, false});
 
-    auto const create_id = room_id + ":create";
+    auto const create_id = create_id_override.empty() ? room_id + ":create" : create_id_override;
     auto create_content = canonicaljson::Object{};
     create_content.push_back(canonicaljson::make_member("room_version", canonicaljson::Value{std::string{"12"}}));
     auto const create_json =
@@ -397,6 +399,244 @@ SCENARIO("Membership templates name m.room.join_rules for join and knock but not
                 REQUIRE(join);
                 REQUIRE(knock);
                 REQUIRE_FALSE(leave);
+            }
+        }
+
+        std::filesystem::remove(path);
+    }
+}
+
+// Spec: Matrix Server-Server API v1.19
+// Endpoint / Section: PUT /_matrix/federation/v1/send/{txnId}, "PDU Processing Result"
+// URL: ../../docs/matrix-v1.19-spec/server-server-api.md#put_matrixfederationv1sendtxnid
+//
+// "If no error is present, the PDU can be considered successfully handled." A PDU this server
+// stored when it first arrived was handled, so a re-send (a second transaction, or the same PDU
+// twice in one) is answered as handled. It is neither stored again nor given a stream position.
+SCENARIO("A PDU this server already stored is answered as handled and is not stored again",
+         "[conformance][federation][pdu_ingestion][pdu_duplicate]")
+{
+    GIVEN("a room and an accepted PDU from a member")
+    {
+        auto const path = unique_sqlite_path();
+        std::filesystem::remove(path);
+        auto started = merovingian::homeserver::start_runtime(config_with_sqlite(path));
+        REQUIRE(started.started);
+        merovingian::homeserver::wire_federation_callbacks(started.runtime);
+        auto& runtime = started.runtime;
+
+        auto const room_id = std::string{"!dupe:local.example.org"};
+        auto const genesis = seed_room_genesis(runtime, room_id, "@admin:local.example.org");
+        auto content = merovingian::canonicaljson::Object{};
+        content.push_back(
+            merovingian::canonicaljson::make_member("body", merovingian::canonicaljson::Value{std::string{"hi"}}));
+        auto const json =
+            build_event_json(room_id, "m.room.message", std::nullopt, "@admin:local.example.org", std::move(content),
+                             {genesis.admin_member_id}, {genesis.pl_id, genesis.admin_member_id}, 3, 4);
+        auto const event_id = std::string{"$dupe:local.example.org"};
+        auto const envelope =
+            make_envelope(room_id, event_id, "m.room.message", std::nullopt, "@admin:local.example.org",
+                          {genesis.admin_member_id}, {genesis.pl_id, genesis.admin_member_id}, 3, json);
+        auto const first = merovingian::homeserver::ingest_pdu_event(runtime, envelope);
+        REQUIRE(first.status == PduIngestionStatus::accepted);
+
+        auto const stored_count = [&](std::string const& id) {
+            return std::ranges::count_if(runtime.database.persistent_store.events,
+                                         [&](merovingian::database::PersistentEvent const& e) {
+                                             return e.event_id == id;
+                                         });
+        };
+        REQUIRE(stored_count(event_id) == 1);
+        auto const ordering_before = runtime.database.next_stream_ordering;
+        auto const sync_id_before = runtime.database.persistent_store.next_sync_stream_id;
+        auto const visible_before = merovingian::homeserver::visible_stream_position(runtime.database);
+
+        WHEN("the same PDU arrives again")
+        {
+            auto const second = merovingian::homeserver::ingest_pdu_event(runtime, envelope);
+
+            THEN("it is answered as already handled, not as an internal error")
+            {
+                // Spec MUST: a PDU with no error "can be considered successfully handled".
+                REQUIRE(second.status == PduIngestionStatus::already_stored);
+            }
+
+            THEN("the event is still stored exactly once")
+            {
+                REQUIRE(stored_count(event_id) == 1);
+            }
+
+            THEN("no stream position is allocated or advanced")
+            {
+                REQUIRE(runtime.database.next_stream_ordering == ordering_before);
+                REQUIRE(runtime.database.persistent_store.next_sync_stream_id == sync_id_before);
+                REQUIRE(merovingian::homeserver::visible_stream_position(runtime.database) == visible_before);
+            }
+
+            THEN("the probe the /send handler uses reports it stored, for its own room only")
+            {
+                REQUIRE(merovingian::homeserver::pdu_event_already_stored(runtime, room_id, event_id));
+                REQUIRE_FALSE(merovingian::homeserver::pdu_event_already_stored(runtime, room_id, "$unknown:x"));
+                REQUIRE_FALSE(merovingian::homeserver::pdu_event_already_stored(runtime, "!other:x", event_id));
+            }
+        }
+
+        WHEN("the same new PDU is ingested by four threads at once")
+        {
+            auto results = std::vector<merovingian::federation::PduIngestionResult>(4);
+            auto const race_event_id = std::string{"$race:local.example.org"};
+            auto race_content = merovingian::canonicaljson::Object{};
+            race_content.push_back(merovingian::canonicaljson::make_member(
+                "body", merovingian::canonicaljson::Value{std::string{"race"}}));
+            auto const race_json = build_event_json(room_id, "m.room.message", std::nullopt, "@admin:local.example.org",
+                                                    std::move(race_content), {genesis.admin_member_id},
+                                                    {genesis.pl_id, genesis.admin_member_id}, 3, 5);
+            auto const race_envelope =
+                make_envelope(room_id, race_event_id, "m.room.message", std::nullopt, "@admin:local.example.org",
+                              {genesis.admin_member_id}, {genesis.pl_id, genesis.admin_member_id}, 3, race_json);
+            {
+                // JoiningThreads, not std::jthread: FreeBSD and OpenBSD libc++ lack jthread.
+                auto threads = merovingian::tests::JoiningThreads{};
+                for (auto& slot : results)
+                {
+                    threads.emplace_back([&runtime, &race_envelope, &slot] {
+                        slot = merovingian::homeserver::ingest_pdu_event(runtime, race_envelope);
+                    });
+                }
+            }
+
+            THEN("exactly one is accepted, the rest are handled, and the event is stored once")
+            {
+                // Statuses are asserted on this thread: Catch2 assertions are not thread-safe.
+                auto const accepted = std::ranges::count_if(results, [](auto const& r) {
+                    return r.status == PduIngestionStatus::accepted;
+                });
+                auto const handled = std::ranges::count_if(results, [](auto const& r) {
+                    return r.status == PduIngestionStatus::already_stored;
+                });
+                REQUIRE(accepted == 1);
+                REQUIRE(handled == 3);
+                REQUIRE(stored_count(race_event_id) == 1);
+            }
+        }
+
+        std::filesystem::remove(path);
+    }
+}
+
+// Spec: Matrix Server-Server API v1.19
+// Section: "Rejection" (Checks performed on receipt of a PDU) and "PDU Processing Result"
+// URL: ../../docs/matrix-v1.19-spec/server-server-api.md#checks-performed-on-receipt-of-a-pdu
+//
+// A rejected event is stored (so later events can still be authorised against it) and does not
+// cause an error response. A re-send of it is handled the same way: it is not judged again, so it
+// stays rejected and never reaches state.
+SCENARIO("A re-sent PDU that was rejected stays rejected and is not an error",
+         "[conformance][federation][pdu_ingestion][pdu_duplicate]")
+{
+    GIVEN("a PDU that fails auth against its own auth_events and was stored as rejected")
+    {
+        auto const path = unique_sqlite_path();
+        std::filesystem::remove(path);
+        auto started = merovingian::homeserver::start_runtime(config_with_sqlite(path));
+        REQUIRE(started.started);
+        merovingian::homeserver::wire_federation_callbacks(started.runtime);
+        auto& runtime = started.runtime;
+
+        auto const room_id = std::string{"!duperej:local.example.org"};
+        auto const genesis = seed_room_genesis(runtime, room_id, "@admin:local.example.org");
+        auto content = merovingian::canonicaljson::Object{};
+        content.push_back(
+            merovingian::canonicaljson::make_member("body", merovingian::canonicaljson::Value{std::string{"hi"}}));
+        // Names m.room.create in auth_events, which room v12 forbids: rejected_auth.
+        auto const json = build_event_json(room_id, "m.room.message", std::nullopt, "@admin:local.example.org",
+                                           std::move(content), {genesis.admin_member_id},
+                                           {genesis.create_id, genesis.pl_id, genesis.admin_member_id}, 3, 4);
+        auto const event_id = std::string{"$duperej:local.example.org"};
+        auto const envelope = make_envelope(room_id, event_id, "m.room.message", std::nullopt,
+                                            "@admin:local.example.org", {genesis.admin_member_id},
+                                            {genesis.create_id, genesis.pl_id, genesis.admin_member_id}, 3, json);
+        REQUIRE(merovingian::homeserver::ingest_pdu_event(runtime, envelope).status ==
+                PduIngestionStatus::rejected_auth);
+        auto const ordering_before = runtime.database.next_stream_ordering;
+
+        WHEN("the rejected PDU arrives again")
+        {
+            auto const second = merovingian::homeserver::ingest_pdu_event(runtime, envelope);
+
+            THEN("it is answered as already handled")
+            {
+                // Spec MUST: a rejected PDU in a transaction does not cause an error response.
+                REQUIRE(second.status == PduIngestionStatus::already_stored);
+            }
+
+            THEN("the stored copy is still rejected, and no stream ordering was taken")
+            {
+                REQUIRE(merovingian::database::find_event_status(runtime.database.persistent_store, event_id) ==
+                        std::optional<std::string>{"rejected"});
+                REQUIRE(runtime.database.next_stream_ordering == ordering_before);
+            }
+        }
+
+        std::filesystem::remove(path);
+    }
+}
+
+// Spec: Matrix Server-Server API v1.19, PUT /_matrix/federation/v2/send_join/{roomId}/{eventId}
+// URL: ../../docs/matrix-v1.19-spec/server-server-api.md#put_matrixfederationv2send_joinroomideventid
+// Spec: Room Version 12, "Auth rules"
+// URL: ../../docs/matrix-v1.19-spec/rooms/v12.md
+//
+// `auth_chain`: "All events in the auth chain for the new join event, as well as those in the auth chains
+// for any events returned in `state`." In a room whose ID implies its create event (v12.md: "The `room_id`
+// ... implies this instead") that event is part of the chain the resident serves, once (ADR-0286).
+SCENARIO("send_join in a room version 12 room answers an auth_chain holding the create event once",
+         "[conformance][federation][send_join][create-implied]")
+{
+    GIVEN("a room version 12 room, whose create event ID is its room ID, with public join rules")
+    {
+        auto const path = unique_sqlite_path();
+        std::filesystem::remove(path);
+        auto started = merovingian::homeserver::start_runtime(config_with_sqlite(path));
+        REQUIRE(started.started);
+        merovingian::homeserver::wire_federation_callbacks(started.runtime);
+        REQUIRE(started.runtime.federation.membership_acceptor != nullptr);
+
+        auto const room_id = std::string{"!implied12hash"};
+        auto const genesis = seed_room_genesis(started.runtime, room_id, "@admin:local.example.org", "$implied12hash");
+
+        auto join_rules_content = merovingian::canonicaljson::Object{};
+        join_rules_content.push_back(merovingian::canonicaljson::make_member(
+            "join_rule", merovingian::canonicaljson::Value{std::string{"public"}}));
+        auto const join_rules_id = std::string{"$implied12:join-rules"};
+        auto const join_rules_json = build_event_json(
+            room_id, "m.room.join_rules", std::string{}, "@admin:local.example.org", std::move(join_rules_content),
+            {genesis.admin_member_id}, {genesis.pl_id, genesis.admin_member_id}, 3, 4);
+        seed_accepted_event(started.runtime, room_id, join_rules_id, "m.room.join_rules", std::string{},
+                            "@admin:local.example.org", join_rules_json, {genesis.admin_member_id}, 3U);
+
+        auto content = merovingian::canonicaljson::Object{};
+        content.push_back(merovingian::canonicaljson::make_member(
+            "membership", merovingian::canonicaljson::Value{std::string{"join"}}));
+        auto const join_json = build_event_json(room_id, "m.room.member", std::string{"@bob:remote.example.org"},
+                                                "@bob:remote.example.org", std::move(content), {join_rules_id},
+                                                {genesis.pl_id, join_rules_id}, 4, 5);
+        auto const envelope = make_envelope(room_id, "$implied12join:remote.example.org", "m.room.member",
+                                            std::string{"@bob:remote.example.org"}, "@bob:remote.example.org",
+                                            {join_rules_id}, {genesis.pl_id, join_rules_id}, 4, join_json);
+
+        WHEN("a remote user's send_join is accepted")
+        {
+            auto const result = started.runtime.federation.membership_acceptor(
+                merovingian::federation::FederationEndpoint::send_join, room_id, envelope.event_id, envelope);
+
+            THEN("the auth_chain holds the create event exactly once")
+            {
+                REQUIRE(result.accepted);
+                auto const creates = std::ranges::count_if(result.auth_chain_json, [](std::string const& pdu) {
+                    return pdu.find("\"type\":\"m.room.create\"") != std::string::npos;
+                });
+                REQUIRE(creates == 1);
             }
         }
 

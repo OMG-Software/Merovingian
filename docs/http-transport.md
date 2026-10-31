@@ -518,6 +518,15 @@ Default request limits are intentionally conservative:
 
 The parser rejects oversized or malformed request heads before any endpoint handling.
 
+### Access token location (ADR-0295)
+
+`build_local_request` takes the access token from `Authorization: Bearer`. With no
+`Authorization` header, a request to `/_matrix/client/...` or `/_matrix/media/...` may carry it as
+the percent-encoded `access_token` query parameter (Matrix v1.19, "Using access tokens":
+"Homeservers MUST support both methods"). A request with both uses the header and ignores the query
+value. Federation targets never read the query parameter as a client credential. The value is
+redacted from logged targets (`sanitized_http_target`).
+
 ## Structured errors
 
 Request parser failures use stable error names and HTTP statuses. Oversized start lines, headers, header counts, and bodies map to `413`. Malformed request lines, invalid methods, invalid targets, and invalid content lengths map to `400`. Unsupported transfer encoding maps to `501` until streaming support exists.
@@ -1075,6 +1084,8 @@ The paths under the budget:
 | `GET /_matrix/client/v3/directory/room/{alias}` for a remote alias | federation `GET /query/directory` |
 | `GET /_matrix/client/v3/profile/{userId}[/{keyName}]` for a user of another server | federation `GET /query/profile`, 10 s directory deadline |
 | `GET /_matrix/client/v1/rooms/{roomId}/hierarchy`, once a child room is not held locally | federation `GET /hierarchy/{roomId}` to the link's `via` servers: one slot and one 10 s deadline for the whole walk, at most 3 servers per room and 16 requests per walk; the slot is taken at the first such request and `429 M_LIMIT_EXCEEDED` answers the whole walk when it is refused |
+| `GET /_matrix/client/v1/rooms/{roomId}/timestamp_to_event`, when the local answer is missing or sits at a gap (ADR-0299) | federation `GET /timestamp_to_event` and `GET /event` to at most 3 servers with joined members: one slot and one 10 s deadline; the request waits for the slot within that deadline (ADR-0306) |
+| `POST /_matrix/client/v3/rooms/{roomId}/invite` and createRoom's `invite` list, for a user of another server | federation `PUT /v2/invite`: one slot per request, one deadline (30 s, or `remote_timeout`) for all offers (ADR-0307) |
 | `GET /_matrix/client/v3/thirdparty/*`, when an appservice will be called | appservice `GET /_matrix/app/v1/thirdparty/*` (ADR-0181) |
 | `GET /_matrix/media/v3/download` and `/thumbnail` for remote media, without a media fetch pool | discovery, federation media, legacy fallback, redirect follow |
 | `GET /_matrix/client/v1/media/download` and `/thumbnail` for remote media, without a media fetch pool | as above |
@@ -1095,8 +1106,19 @@ Rules:
   count too. Local `publicRooms`, local aliases and local media never take a slot.
 - **Refusal.** Over either cap the answer is `429 M_LIMIT_EXCEEDED` with
   `retry_after_ms` 1000 and a `Retry-After: 1` header, immediately, before any
-  discovery or outbound call. Nothing queues.
-- **Deadline.** 10 s for directory lookups, 30 s for remote media, in total:
+  discovery or outbound call. Nothing queues, with two exceptions, both
+  authenticated: `timestamp_to_event` waits for a slot, polling every 25 ms with
+  the runtime lock released, until its deadline runs out (ADR-0306), then answers
+  `429` or its local answer; a remote invite offer (`POST /invite`, createRoom's
+  invites) waits the same way and, with no slot, tries to queue the invite for
+  retry (ADR-0307). If the queue refuses it, `POST /invite` answers `503` and
+  stores nothing; createRoom keeps the room and logs
+  `room.create.invite_not_queued`. A request waits only from a place reserved
+  under the same global cap as the calls in flight (`try_reserve_wait`,
+  ADR-0310): waiting holds a thread, so calls and waiters together never pass
+  half the pool, and with that population full the request is refused at once.
+- **Deadline.** 10 s for directory lookups (`timestamp_to_event` included), 30 s
+  for remote media and for offering remote invites (one for all of a createRoom's), in total:
   server discovery and the request(s) that follow draw from one
   `OutboundDeadline`. Never longer than the operator's
   `security.federation.remote_timeout` when that is set. The federation-worker

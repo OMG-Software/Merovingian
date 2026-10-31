@@ -11694,31 +11694,262 @@ SCENARIO("POST /rooms/{roomId}/upgrade creates a replacement room", "[conformanc
 
 // --- GET /_matrix/client/v1/rooms/{roomId}/timestamp_to_event ----------------
 // Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#get_matrixclientv1roomsroomidtimestamp_to_event
-// IMPLEMENTATION GAP: timestamp-to-event lookup not yet implemented.
-SCENARIO("GET /rooms/{roomId}/timestamp_to_event returns 404 M_UNRECOGNIZED (implementation gap)",
-         "[conformance][client-server][room-participation]")
+// "Get the ID of the event closest to the given timestamp, in the direction specified by the `dir`
+// parameter." 200 {event_id, origin_server_ts}; 404 when no event was found; 429 when rate-limited.
+//
+// The spec leaves two things open that the project fixes (ADR-0299): the boundary is inclusive
+// (forwards origin_server_ts >= ts, backwards <= ts), and events sharing a timestamp are ordered by
+// (origin_server_ts, depth, stream_ordering).
+namespace
 {
-    GIVEN("a running client-server and a logged-in user with a room")
+
+// The status and, on 200, the event_id and origin_server_ts of one timestamp_to_event call.
+struct TimestampToEventReply final
+{
+    std::uint16_t status{0U};
+    std::string event_id{};
+    std::int64_t origin_server_ts{0};
+    std::string errcode{};
+};
+
+[[nodiscard]] auto timestamp_to_event(merovingian::homeserver::ClientServerRuntime& runtime, std::string const& token,
+                                      std::string const& room_id, std::string const& query) -> TimestampToEventReply
+{
+    auto const response = merovingian::homeserver::handle_client_server_request(
+        runtime, {"GET", "/_matrix/client/v1/rooms/" + room_id + "/timestamp_to_event?" + query, token, {}});
+    auto reply = TimestampToEventReply{static_cast<std::uint16_t>(response.response.status), {}, 0, {}};
+    auto const body = parse_object(response.response.body);
+    if (auto const* errcode = string_member(body, "errcode"); errcode != nullptr)
+    {
+        reply.errcode = *errcode;
+    }
+    if (auto const* event_id = string_member(body, "event_id"); event_id != nullptr)
+    {
+        reply.event_id = *event_id;
+    }
+    for (auto const& member : body)
+    {
+        if (member.key == "origin_server_ts")
+        {
+            if (auto const* ts = std::get_if<std::int64_t>(&member.value->storage()); ts != nullptr)
+            {
+                reply.origin_server_ts = *ts;
+            }
+        }
+    }
+    return reply;
+}
+
+} // namespace
+
+// Spec: Matrix Client-Server API v1.19
+// Endpoint / Section: GET /_matrix/client/v1/rooms/{roomId}/timestamp_to_event
+// URL: ../../docs/matrix-v1.19-spec/client-server-api.md#get_matrixclientv1roomsroomidtimestamp_to_event
+//
+// "Get the ID of the event closest to the given timestamp, in the direction specified by the dir
+// parameter"; 404 when no event is found. The boundary is inclusive (ADR-0299).
+SCENARIO("GET /rooms/{roomId}/timestamp_to_event finds the event nearest the timestamp in either direction",
+         "[conformance][client-server][room-participation][timestamp-to-event]")
+{
+    GIVEN("a room whose events were all sent at known times: creation at 100, then messages at 1000, 2000 and 3000")
     {
         auto started = merovingian::homeserver::start_client_server(conformance_config());
         REQUIRE(started.started);
-        auto const token = logged_in_token(started.runtime);
-        auto const room_id = create_room(started.runtime, token);
+        auto& runtime = started.runtime;
+        runtime.homeserver.test_frozen_event_clock_ms = 100;
+        auto const token = logged_in_token(runtime);
+        auto const room_id = create_room(runtime, token);
+        runtime.homeserver.test_frozen_event_clock_ms = 1000;
+        auto const first = send_text(runtime, token, room_id, "t1", "first");
+        runtime.homeserver.test_frozen_event_clock_ms = 2000;
+        auto const second = send_text(runtime, token, room_id, "t2", "second");
+        runtime.homeserver.test_frozen_event_clock_ms = 3000;
+        auto const third = send_text(runtime, token, room_id, "t3", "third");
 
-        WHEN("GET /rooms/{roomId}/timestamp_to_event?ts=0&dir=f is called")
+        WHEN("the timestamp falls between two messages")
+        {
+            auto const forwards = timestamp_to_event(runtime, token, room_id, "ts=1500&dir=f");
+            auto const backwards = timestamp_to_event(runtime, token, room_id, "ts=2500&dir=b");
+
+            THEN("forwards names the next later message and backwards the previous earlier one, with its timestamp")
+            {
+                REQUIRE(forwards.status == 200U);
+                REQUIRE(forwards.event_id == second);
+                REQUIRE(forwards.origin_server_ts == 2000);
+                REQUIRE(backwards.status == 200U);
+                REQUIRE(backwards.event_id == second);
+                REQUIRE(backwards.origin_server_ts == 2000);
+            }
+        }
+
+        WHEN("the timestamp is exactly that of a message")
+        {
+            auto const forwards = timestamp_to_event(runtime, token, room_id, "ts=1000&dir=f");
+            auto const backwards = timestamp_to_event(runtime, token, room_id, "ts=3000&dir=b");
+
+            THEN("the boundary is inclusive in both directions")
+            {
+                REQUIRE(forwards.event_id == first);
+                REQUIRE(backwards.event_id == third);
+            }
+        }
+
+        WHEN("the timestamp is later than every event looking forwards")
+        {
+            auto const reply = timestamp_to_event(runtime, token, room_id, "ts=3001&dir=f");
+
+            THEN("the answer is 404 M_NOT_FOUND")
+            {
+                // Spec: "404 - No event was found."
+                REQUIRE(reply.status == 404U);
+                REQUIRE(reply.errcode == "M_NOT_FOUND");
+            }
+        }
+
+        WHEN("the timestamp is earlier than every event looking backwards")
+        {
+            auto const reply = timestamp_to_event(runtime, token, room_id, "ts=99&dir=b");
+
+            THEN("the answer is 404 M_NOT_FOUND")
+            {
+                REQUIRE(reply.status == 404U);
+                REQUIRE(reply.errcode == "M_NOT_FOUND");
+            }
+        }
+    }
+}
+
+// Spec: Matrix Client-Server API v1.19
+// Endpoint / Section: GET /_matrix/client/v1/rooms/{roomId}/timestamp_to_event
+// URL: ../../docs/matrix-v1.19-spec/client-server-api.md#get_matrixclientv1roomsroomidtimestamp_to_event
+//
+// The spec names no order among events with the same origin_server_ts; ADR-0299 orders them by
+// depth, then arrival, so dir=f gives the first and dir=b the last.
+SCENARIO("GET /rooms/{roomId}/timestamp_to_event orders events that share a timestamp by their place in the room",
+         "[conformance][client-server][room-participation][timestamp-to-event]")
+{
+    GIVEN("a room with three messages sent in the same millisecond")
+    {
+        auto started = merovingian::homeserver::start_client_server(conformance_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        runtime.homeserver.test_frozen_event_clock_ms = 100;
+        auto const token = logged_in_token(runtime);
+        auto const room_id = create_room(runtime, token);
+        runtime.homeserver.test_frozen_event_clock_ms = 5000;
+        auto const first = send_text(runtime, token, room_id, "s1", "one");
+        std::ignore = send_text(runtime, token, room_id, "s2", "two");
+        auto const last = send_text(runtime, token, room_id, "s3", "three");
+
+        WHEN("the lookup is made at that millisecond in each direction")
+        {
+            auto const forwards = timestamp_to_event(runtime, token, room_id, "ts=5000&dir=f");
+            auto const backwards = timestamp_to_event(runtime, token, room_id, "ts=5000&dir=b");
+
+            THEN("forwards finds the first of them and backwards the last, as a client paginating either way expects")
+            {
+                REQUIRE(forwards.event_id == first);
+                REQUIRE(backwards.event_id == last);
+            }
+        }
+    }
+}
+
+// Spec: Matrix Client-Server API v1.19
+// Endpoint / Section: GET /_matrix/client/v1/rooms/{roomId}/timestamp_to_event; Room History Visibility
+// URL: ../../docs/matrix-v1.19-spec/client-server-api.md#get_matrixclientv1roomsroomidtimestamp_to_event
+//
+// "Requires authentication: Yes". The endpoint lists no 403; a user who may not read the room is
+// refused 403 M_FORBIDDEN as on /messages and /context (owner decision, ADR-0299).
+SCENARIO("GET /rooms/{roomId}/timestamp_to_event refuses a user who cannot read the room",
+         "[conformance][client-server][room-participation][timestamp-to-event]")
+{
+    GIVEN("a private room and a public room, and a user who is in neither")
+    {
+        auto started = merovingian::homeserver::start_client_server(conformance_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        auto const alice = logged_in_token(runtime);
+        auto const bob = register_and_login(runtime, "bob");
+        auto const private_room = create_room(runtime, alice);
+        auto const public_room = create_public_room(runtime, alice);
+
+        WHEN("the outsider asks for an event in either room")
+        {
+            auto const private_reply = timestamp_to_event(runtime, bob, private_room, "ts=0&dir=f");
+            auto const public_reply = timestamp_to_event(runtime, bob, public_room, "ts=0&dir=f");
+
+            THEN("both are 403 M_FORBIDDEN and name no event")
+            {
+                REQUIRE(private_reply.status == 403U);
+                REQUIRE(private_reply.errcode == "M_FORBIDDEN");
+                REQUIRE(private_reply.event_id.empty());
+                REQUIRE(public_reply.status == 403U);
+                REQUIRE(public_reply.errcode == "M_FORBIDDEN");
+                REQUIRE(public_reply.event_id.empty());
+            }
+        }
+
+        WHEN("a member of the room asks for the same")
+        {
+            auto const reply = timestamp_to_event(runtime, alice, private_room, "ts=0&dir=f");
+
+            THEN("an event is found")
+            {
+                REQUIRE(reply.status == 200U);
+                REQUIRE_FALSE(reply.event_id.empty());
+            }
+        }
+
+        WHEN("a request carries no access token")
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
-                started.runtime,
-                {"GET", "/_matrix/client/v1/rooms/" + room_id + "/timestamp_to_event?ts=0&dir=f", token, {}});
+                runtime,
+                {"GET", "/_matrix/client/v1/rooms/" + private_room + "/timestamp_to_event?ts=0&dir=f", {}, {}});
 
-            THEN("the server returns 404 M_UNRECOGNIZED until the endpoint is implemented")
+            THEN("it is refused as unauthenticated: the endpoint requires authentication")
             {
-                // IMPLEMENTATION GAP: timestamp_to_event not supported.
-                REQUIRE(response.response.status == 404U);
-                auto const body = parse_object(response.response.body);
-                auto const* errcode = string_member(body, "errcode");
-                REQUIRE(errcode != nullptr);
-                REQUIRE(*errcode == "M_UNRECOGNIZED");
+                REQUIRE(response.response.status == 401U);
+            }
+        }
+    }
+}
+
+// Spec: Matrix Client-Server API v1.19
+// Endpoint / Section: GET /_matrix/client/v1/rooms/{roomId}/timestamp_to_event
+// URL: ../../docs/matrix-v1.19-spec/client-server-api.md#get_matrixclientv1roomsroomidtimestamp_to_event
+//
+// `ts` and `dir` are both "Required". A missing one is 400 M_MISSING_PARAM, a malformed one
+// 400 M_INVALID_PARAM (Common error codes).
+SCENARIO("GET /rooms/{roomId}/timestamp_to_event requires a timestamp and a direction",
+         "[conformance][client-server][room-participation][timestamp-to-event]")
+{
+    GIVEN("a room and its creator")
+    {
+        auto started = merovingian::homeserver::start_client_server(conformance_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        auto const token = logged_in_token(runtime);
+        auto const room_id = create_room(runtime, token);
+
+        WHEN("ts or dir is missing, or either is not valid")
+        {
+            auto const no_ts = timestamp_to_event(runtime, token, room_id, "dir=f");
+            auto const no_dir = timestamp_to_event(runtime, token, room_id, "ts=0");
+            auto const bad_ts = timestamp_to_event(runtime, token, room_id, "ts=yesterday&dir=f");
+            auto const bad_dir = timestamp_to_event(runtime, token, room_id, "ts=0&dir=sideways");
+
+            THEN("each is a 400 with the Matrix errcode for a missing or invalid parameter")
+            {
+                // Spec: both query parameters are "Required".
+                REQUIRE(no_ts.status == 400U);
+                REQUIRE(no_ts.errcode == "M_MISSING_PARAM");
+                REQUIRE(no_dir.status == 400U);
+                REQUIRE(no_dir.errcode == "M_MISSING_PARAM");
+                REQUIRE(bad_ts.status == 400U);
+                REQUIRE(bad_ts.errcode == "M_INVALID_PARAM");
+                REQUIRE(bad_dir.status == 400U);
+                REQUIRE(bad_dir.errcode == "M_INVALID_PARAM");
             }
         }
     }
@@ -15067,33 +15298,6 @@ SCENARIO("GET /events/{eventId} conformance")
     }
 }
 
-SCENARIO("GET /rooms/{roomId}/timestamp_to_event conformance")
-{
-    GIVEN("a started homeserver with an authenticated user and a room")
-    {
-        auto started = merovingian::homeserver::start_client_server(conformance_config());
-        REQUIRE(started.started);
-        auto const token = logged_in_token(started.runtime);
-        auto const room_id = create_room(started.runtime, token);
-
-        WHEN("GET /rooms/{roomId}/timestamp_to_event is called")
-        {
-            auto const response = merovingian::homeserver::handle_client_server_request(
-                started.runtime,
-                {"GET", "/_matrix/client/v1/rooms/" + room_id + "/timestamp_to_event?ts=0&dir=f", token, {}});
-
-            THEN("the server returns 404 M_UNRECOGNIZED")
-            {
-                REQUIRE(response.response.status == 404);
-                auto const body = parse_object(response.response.body);
-                auto const* err = string_member(body, "errcode");
-                REQUIRE(err != nullptr);
-                REQUIRE(*err == "M_UNRECOGNIZED");
-            }
-        }
-    }
-}
-
 SCENARIO("GET /rooms/{roomId}/state/{eventType} returns 404 for absent state events",
          "[conformance][client-server][room-participation]")
 {
@@ -16333,11 +16537,11 @@ SCENARIO("POST /receipt/{type}/{eventId} MUST reject non-members with 403",
 // Endpoint / Section: Typing Notifications
 // URL: ../../docs/matrix-v1.19-spec/client-server-api.md#typing-notifications
 //
-// "The server MUST send stop typing events to remove typing notifications if a
-// user sends a message."  Sending a message while typing=true MUST result in
-// the server clearing (typing=false) the in-room typing state for that user so
-// that remote and local clients no longer show a stale typing indicator.
-SCENARIO("sending a message implicitly clears the sender's typing state per spec",
+// "When the user stops typing, the state change of the `boolean` to `false` should trigger another
+// HTTP request to inform the server that the user has stopped typing." The spec asks the client, not the
+// server, to end typing: sending a message does not end it. (An earlier version of this test cited a
+// "MUST send stop typing events ... if a user sends a message" that v1.19 does not contain.)
+SCENARIO("sending a message leaves the sender's typing state to the client and the timeout",
          "[homeserver][client-server][typing][conformance]")
 {
     GIVEN("alice registered in a room with an active typing indicator")
@@ -16382,7 +16586,7 @@ SCENARIO("sending a message implicitly clears the sender's typing state per spec
                 rt, {"PUT", "/_matrix/client/v3/rooms/" + id + "/send/m.room.message/txn-conformance-typing",
                      alice_token, R"({"msgtype":"m.text","body":"Hello"})"});
 
-            THEN("the send returns 200 and alice's typing state is cleared to false")
+            THEN("the send returns 200 and alice is still typing until the client says otherwise")
             {
                 // Spec MUST: successful message send → 200
                 REQUIRE(send_resp.response.status == 200U);
@@ -16395,9 +16599,9 @@ SCENARIO("sending a message implicitly clears the sender's typing state per spec
                     }
                     return nullptr;
                 }();
-                // Spec MUST: server clears typing indicator when user sends a message
+                // Spec: only the client's `typing: false` (or the timeout) ends typing.
                 REQUIRE(after != nullptr);
-                REQUIRE_FALSE(after->typing); // typing=false after send
+                REQUIRE(after->typing);
             }
         }
     }

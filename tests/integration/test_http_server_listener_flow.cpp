@@ -959,6 +959,173 @@ SCENARIO("merovingian-server routes client listener traffic through the Matrix J
     }
 }
 
+// Spec v1.19 client-server-api.md "Using access tokens": "Clients may
+// alternatively provide the access token via a query string parameter:
+// `access_token=TheTokenHere`. [...] Homeservers MUST support both methods."
+// Complement's blueprint runner sends every token that way, so a server that
+// reads only the Authorization header cannot build any blueprint with users.
+SCENARIO("merovingian-server accepts an access token in the query string as well as in the Authorization header",
+         "[http][listener][client-server][access-token-query][integration]")
+{
+    GIVEN("a runtime with a logged-in user and a stranger's token that no session holds")
+    {
+        auto const config = registration_enabled_config();
+        auto started = merovingian::homeserver::start_client_server(config);
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        auto const alice = merovingian::homeserver::register_local_user(
+            runtime.homeserver, "query_token_user", "CorrectHorse7!", merovingian::tests::registration_token);
+        REQUIRE(alice.ok);
+        auto const login = merovingian::homeserver::login_local_user_by_id(runtime.homeserver, alice.value, "QUERY");
+        REQUIRE(login.ok);
+        auto stats = merovingian::homeserver::HttpServeStats{};
+
+        // Serves one request on a socketpair and returns the whole response.
+        auto const serve = [&](std::string const& request_line, std::string const& extra_headers,
+                               std::string const& body = {}) -> std::string {
+            auto sockets = std::array<int, 2>{-1, -1};
+            REQUIRE(::socketpair(AF_UNIX, SOCK_STREAM, 0, sockets.data()) == 0);
+            auto server = merovingian::core::FileDescriptor{sockets[0]};
+            auto client = merovingian::core::FileDescriptor{sockets[1]};
+            REQUIRE(send_all(client.get(), request_line + " HTTP/1.1\r\nHost: localhost\r\n" + extra_headers +
+                                               "Connection: close\r\n\r\n" + body));
+            REQUIRE_FALSE(merovingian::homeserver::serve_one_http_connection(
+                server.get(), runtime, stats, merovingian::homeserver::HttpDispatchMode::client_server));
+            server.reset();
+            return receive_until_close(client.get());
+        };
+        auto const whoami = std::string{"GET /_matrix/client/v3/account/whoami"};
+        auto const user_member = std::string{R"("user_id":")"} + alice.value + R"(")";
+
+        WHEN("the token is sent as the access_token query parameter and no header")
+        {
+            auto const response = serve(whoami + "?access_token=" + login.value, "");
+
+            THEN("the request is authenticated as that session's user")
+            {
+                INFO(response.substr(0U, 300U));
+                REQUIRE(response.starts_with("HTTP/1.1 200"));
+                REQUIRE(response.find(user_member) != std::string::npos);
+            }
+        }
+
+        WHEN("the token is the query parameter among other parameters, percent-encoded")
+        {
+            auto encoded = std::string{};
+            for (auto const ch : login.value)
+            {
+                // Every byte as %XX: the server must decode before it looks the token up.
+                constexpr auto hex = std::string_view{"0123456789ABCDEF"};
+                encoded.push_back('%');
+                encoded.push_back(hex[(static_cast<unsigned char>(ch) >> 4U) & 0x0FU]);
+                encoded.push_back(hex[static_cast<unsigned char>(ch) & 0x0FU]);
+            }
+            auto const response = serve(whoami + "?foo=bar&access_token=" + encoded + "&baz=1", "");
+
+            THEN("the decoded token authenticates the request")
+            {
+                INFO(response.substr(0U, 300U));
+                REQUIRE(response.starts_with("HTTP/1.1 200"));
+                REQUIRE(response.find(user_member) != std::string::npos);
+            }
+        }
+
+        WHEN("the parameter name itself is percent-encoded")
+        {
+            // `access%5Ftoken` decodes to `access_token`: the same parameter, so it is read, and
+            // removed from the target with the plain spelling.
+            auto const response = serve(whoami + "?access%5Ftoken=" + login.value, "");
+
+            THEN("the request is authenticated as that session's user")
+            {
+                INFO(response.substr(0U, 300U));
+                REQUIRE(response.starts_with("HTTP/1.1 200"));
+                REQUIRE(response.find(user_member) != std::string::npos);
+            }
+        }
+
+        WHEN("the query token is unknown to the server")
+        {
+            auto const response = serve(whoami + "?access_token=not-a-real-token", "");
+
+            THEN("the request is refused as an unknown token, not as a missing one")
+            {
+                REQUIRE(response.starts_with("HTTP/1.1 401"));
+                REQUIRE(response.find("M_UNKNOWN_TOKEN") != std::string::npos);
+            }
+        }
+
+        WHEN("the request carries no token anywhere")
+        {
+            auto const response = serve(whoami + "?foo=bar", "");
+
+            THEN("the request is refused as a missing token")
+            {
+                REQUIRE(response.starts_with("HTTP/1.1 401"));
+                REQUIRE(response.find("M_MISSING_TOKEN") != std::string::npos);
+            }
+        }
+
+        WHEN("a valid Authorization header and an unknown query token are both sent")
+        {
+            auto const response =
+                serve(whoami + "?access_token=not-a-real-token", "Authorization: Bearer " + login.value + "\r\n");
+
+            THEN("the header is the credential used")
+            {
+                INFO(response.substr(0U, 300U));
+                REQUIRE(response.starts_with("HTTP/1.1 200"));
+                REQUIRE(response.find(user_member) != std::string::npos);
+            }
+        }
+
+        WHEN("routes matched by their exact path are called with the token in the query")
+        {
+            // createRoom and logout compare the whole target with a fixed path, so the
+            // parameter must not still be on the target when they are routed (ADR-0295).
+            auto const created = serve("POST /_matrix/client/v3/createRoom?access_token=" + login.value,
+                                       "Content-Type: application/json\r\nContent-Length: 2\r\n", "{}");
+            auto const room_at = created.find(R"("room_id":")");
+            auto const room_id =
+                room_at == std::string::npos
+                    ? std::string{}
+                    : created.substr(room_at + 11U, created.find('"', room_at + 11U) - (room_at + 11U));
+            auto const messages = serve("GET /_matrix/client/v3/rooms/" + room_id +
+                                            "/messages?dir=b&access_token=" + login.value + "&limit=1",
+                                        "");
+            auto const logged_out =
+                serve("POST /_matrix/client/v3/logout?access_token=" + login.value, "Content-Length: 0\r\n");
+            auto const after_logout = serve(whoami + "?access_token=" + login.value, "");
+
+            THEN("each reaches its handler, and the other query parameters are kept")
+            {
+                INFO(created.substr(0U, 300U));
+                REQUIRE(created.starts_with("HTTP/1.1 200"));
+                REQUIRE_FALSE(room_id.empty());
+                INFO(messages.substr(0U, 300U));
+                // `dir` is required: a 200 shows it survived the token's removal.
+                REQUIRE(messages.starts_with("HTTP/1.1 200"));
+                INFO(logged_out.substr(0U, 300U));
+                REQUIRE(logged_out.starts_with("HTTP/1.1 200"));
+                REQUIRE(after_logout.starts_with("HTTP/1.1 401"));
+            }
+        }
+
+        WHEN("a federation route is given an access_token query parameter")
+        {
+            auto const response = serve("GET /_matrix/federation/v1/version?access_token=" + login.value, "");
+
+            THEN("the client token is not read as a credential there")
+            {
+                // The federation surface is not served in client_server mode, so
+                // the request is refused or unknown, and in no case does the
+                // response name the logged-in user.
+                REQUIRE(response.find(alice.value) == std::string::npos);
+            }
+        }
+    }
+}
+
 // M-03 (security audit 2026-09). Spec v1.19 §10.5 requires the client-server
 // API to "supply Cross-Origin Resource Sharing (CORS) headers on all requests".
 // Errors answered by the transport layer — before routing, and in the parser

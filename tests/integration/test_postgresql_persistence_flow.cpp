@@ -1129,6 +1129,16 @@ SCENARIO("PostgreSQL reload_room picks up a room committed by a different store 
                  {create_event_id},
                  {}},
                 merovingian::database::PersistentStateEvent{room_id, "m.room.member", user_id, member_event_id}));
+            // ADR-0064: the room's state group and the event's mapping to it, which a reload must bring too.
+            auto const group_id = "sg:pg-reload-" + suffix;
+            REQUIRE(merovingian::database::create_or_reuse_state_group(
+                        opened_b.store, room_id, group_id, std::nullopt,
+                        {
+                            {group_id, "m.room.create", "",      create_event_id},
+                            {group_id, "m.room.member", user_id, member_event_id}
+            }) ==
+                    std::optional<std::string>{group_id});
+            REQUIRE(merovingian::database::set_event_state_group(opened_b.store, member_event_id, group_id));
 
             THEN("handle A, which never saw any of this, has no knowledge of the room before reloading")
             {
@@ -1171,6 +1181,35 @@ SCENARIO("PostgreSQL reload_room picks up a room committed by a different store 
                     REQUIRE(member_event_it != opened_a.store.events.end());
                     REQUIRE(member_event_it->prev_event_ids == std::vector<std::string>{create_event_id});
                     REQUIRE(member_event_it->auth_event_ids == std::vector<std::string>{create_event_id});
+
+                    // The state group, its entries and the event's mapping come with the room (ADR-0064).
+                    REQUIRE(merovingian::database::find_event_state_group(opened_a.store, member_event_id) ==
+                            std::optional<std::string>{group_id});
+                    auto const full_state =
+                        merovingian::database::read_state_group_full_state(opened_a.store, group_id);
+                    REQUIRE(full_state.has_value());
+                    REQUIRE(full_state->size() == 2U);
+                }
+
+                AND_WHEN("reload_room is called on handle A again")
+                {
+                    REQUIRE(merovingian::database::reload_room(opened_a.store, room_id));
+
+                    THEN("the group, its entries and the mapping are not duplicated")
+                    {
+                        auto const group_count =
+                            std::ranges::count_if(opened_a.store.state_groups,
+                                                  [&room_id](merovingian::database::PersistentStateGroup const& g) {
+                                                      return g.room_id == room_id;
+                                                  });
+                        REQUIRE(group_count == 1);
+                        auto const mapping_count = std::ranges::count_if(
+                            opened_a.store.event_state_groups,
+                            [&member_event_id](merovingian::database::PersistentEventStateGroup const& m) {
+                                return m.event_id == member_event_id;
+                            });
+                        REQUIRE(mapping_count == 1);
+                    }
                 }
             }
         }

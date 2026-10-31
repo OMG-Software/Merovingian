@@ -36,6 +36,7 @@ enum class FederationEndpoint
     event_auth,
     get_missing_events,
     space_hierarchy,
+    timestamp_to_event,
     media_download,
     media_thumbnail,
 };

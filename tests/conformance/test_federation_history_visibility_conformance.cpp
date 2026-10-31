@@ -789,3 +789,146 @@ SCENARIO("State and auth chain answers are never redacted by history visibility"
         }
     }
 }
+
+namespace
+{
+
+[[nodiscard]] auto timestamp_answer(db::PersistentStore const& store, std::string_view origin, std::int64_t ts,
+                                    db::TimeDirection direction, std::string_view room = room_id)
+    -> std::pair<fed::RoomReadStatus, std::string>
+{
+    auto const result = fed::build_timestamp_to_event_response(store, room, ts, direction, origin);
+    if (result.status != fed::RoomReadStatus::ok)
+    {
+        return {result.status, {}};
+    }
+    return {result.status, string_of(parse_object(result.body), "event_id")};
+}
+
+} // namespace
+
+// Spec: Matrix Server-Server API v1.19, GET /_matrix/federation/v1/timestamp_to_event/{roomId}.
+// URL: ../../docs/matrix-v1.19-spec/server-server-api.md#get_matrixfederationv1timestamp_to_eventroomid
+//
+// "Get the ID of the event closest to the given timestamp, in the direction specified by the `dir`
+// parameter." The response is `{event_id, origin_server_ts}`; 404 when no event was found. The
+// history of the fixture carries origin_server_ts 1000 + its position: $create 1001, $alice_join
+// 1002, $hv 1003, $m_before 1004, $bob_invite 1005, $m_invited 1006, $bob_join 1007, $m_joined 1008.
+SCENARIO("The timestamp_to_event answer is the event nearest the timestamp in the direction asked",
+         "[federation][conformance][timestamp-to-event]")
+{
+    GIVEN("a shared-visibility room and a server that is in it")
+    {
+        auto history = standard_history("shared");
+        auto const& store = history.finish();
+
+        WHEN("the server asks forwards from between two events, and backwards from between two events")
+        {
+            auto const forwards = timestamp_answer(store, remote_server, 1004, db::TimeDirection::forwards);
+            auto const backwards = timestamp_answer(store, remote_server, 1006, db::TimeDirection::backwards);
+
+            THEN("it is told the first event at or after, and the last event at or before, the timestamp")
+            {
+                REQUIRE(forwards.first == fed::RoomReadStatus::ok);
+                REQUIRE(forwards.second == "$m_before");
+                REQUIRE(backwards.first == fed::RoomReadStatus::ok);
+                REQUIRE(backwards.second == "$m_invited");
+            }
+        }
+
+        WHEN("the response body is read")
+        {
+            auto const result = fed::build_timestamp_to_event_response(store, room_id, 1005,
+                                                                       db::TimeDirection::forwards, remote_server);
+
+            THEN("it carries the event_id and the origin_server_ts of the event")
+            {
+                auto const body = ok_body(result);
+                REQUIRE(string_of(body, "event_id") == "$bob_invite");
+                auto const* ts = member_of(body, "origin_server_ts");
+                REQUIRE(ts != nullptr);
+                REQUIRE(std::get<std::int64_t>(ts->storage()) == 1005);
+            }
+        }
+
+        WHEN("the timestamp lies after the last event looking forwards, or before the first looking backwards")
+        {
+            auto const after = timestamp_answer(store, remote_server, 1009, db::TimeDirection::forwards);
+            auto const before = timestamp_answer(store, remote_server, 1000, db::TimeDirection::backwards);
+
+            THEN("no event is found")
+            {
+                // Spec: "404 - No event was found."
+                REQUIRE(after.first == fed::RoomReadStatus::not_found);
+                REQUIRE(before.first == fed::RoomReadStatus::not_found);
+            }
+        }
+    }
+}
+
+// Spec: Matrix Server-Server API v1.19
+// Endpoint / Section: GET /_matrix/federation/v1/timestamp_to_event/{roomId}; Authentication
+// URL: ../../docs/matrix-v1.19-spec/server-server-api.md#get_matrixfederationv1timestamp_to_eventroomid
+//
+// A request is judged for the authenticated origin. The spec gives this endpoint no ACL of its own; the project applies
+// the rule of the other room reads (a server with no joined user in the room is refused, FED-2) and the history
+// visibility of the requesting server (owner decision 2026-10-29), stepping over events its users could not see.
+SCENARIO("The timestamp_to_event answer is refused to a stranger and skips events the server could not see",
+         "[federation][conformance][timestamp-to-event][history-visibility][server-visibility]")
+{
+    GIVEN("a joined-visibility room in which the remote server's user joined part-way through")
+    {
+        auto history = standard_history("joined");
+        auto const& store = history.finish();
+
+        WHEN("a server with no user in the room asks, and so does one about a room that does not exist")
+        {
+            auto const stranger = timestamp_answer(store, "stranger.example", 1004, db::TimeDirection::forwards);
+            auto const unknown =
+                timestamp_answer(store, remote_server, 1004, db::TimeDirection::forwards, "!nowhere:local.example");
+
+            THEN("both are forbidden, so the room's existence is not given away")
+            {
+                REQUIRE(stranger.first == fed::RoomReadStatus::forbidden);
+                REQUIRE(unknown.first == fed::RoomReadStatus::forbidden);
+            }
+        }
+
+        WHEN("the remote server asks forwards from an event sent before its user joined")
+        {
+            auto const forwards = timestamp_answer(store, remote_server, 1004, db::TimeDirection::forwards);
+
+            THEN("the events it could not see are stepped over, and the first it could see is named")
+            {
+                // $m_before, $bob_invite and $m_invited were sent before bob joined: invisible under
+                // `joined`. $bob_join (the first event after which bob is joined) is the first visible.
+                REQUIRE(forwards.first == fed::RoomReadStatus::ok);
+                REQUIRE(forwards.second == "$bob_join");
+            }
+        }
+
+        WHEN("the remote server asks backwards from a timestamp before its user joined")
+        {
+            auto const backwards = timestamp_answer(store, remote_server, 1006, db::TimeDirection::backwards);
+
+            THEN("the events from the history_visibility change on are stepped over, down to one sent while it was "
+                 "shared")
+            {
+                // $m_invited, $bob_invite, $m_before and the $hv event itself are judged under `joined`
+                // and bob was not joined; $alice_join precedes the setting, so the default (shared) holds.
+                REQUIRE(backwards.first == fed::RoomReadStatus::ok);
+                REQUIRE(backwards.second == "$alice_join");
+            }
+        }
+
+        WHEN("the local server, which was in the room throughout, asks the same question")
+        {
+            auto const forwards = timestamp_answer(store, "local.example", 1004, db::TimeDirection::forwards);
+
+            THEN("it is told the nearest event")
+            {
+                REQUIRE(forwards.second == "$m_before");
+            }
+        }
+    }
+}
