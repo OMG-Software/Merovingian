@@ -46,8 +46,7 @@ jobs:
             m4 \
             perl \
             pkg-config
-          python -m pip install --upgrade pip
-          python -m pip install --upgrade meson ninja
+          python -m pip install --require-hashes --only-binary :all: --requirement requirements-build.txt
 
       - name: Build hardened Linux package
         run: sh scripts/build-linux.sh --builddir build-linux-release --profile hardened

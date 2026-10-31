@@ -652,9 +652,13 @@ leave the process seeing only the paths before it (ADR-0162). The calls are:
    `/usr`, `/etc/merovingian`).
 2. `unveil(path, "rwc")` for every path in `filesystem.writable_paths` (e.g.
    `/var/lib/merovingian`, `/var/run/merovingian`, `/tmp`). `/tmp` is included
-   because the test harness and runtime scratch utilities create temporary files
-   via `std::filesystem::temp_directory_path()`, which resolves to `/tmp` on
-   OpenBSD.
+   because SQLite writes its temporary files (large sorts, temporary tables,
+   `VACUUM`) to the first usable directory of: `sqlite3_temp_directory` (never
+   set by the server), `$SQLITE_TMPDIR`, `$TMPDIR`, `/var/tmp`, `/usr/tmp`,
+   `/tmp` and the working directory. Unveil hides every directory not listed
+   above, so SQLite skips them, and `/tmp` is listed so one is always usable. SQLite opens each one `O_EXCL|O_NOFOLLOW` under a
+   random name and unlinks it at once. Nothing else in the server writes to
+   `/tmp`; thumbnails pass through pipes.
 3. `unveil("/etc/ssl", "r")` — LibreSSL CA bundle for outbound TLS.
 4. `unveil(NULL, NULL)` — locks the vnode allowlist.
 5. `pledge("stdio rpath wpath cpath flock inet unix dns proc exec", NULL)` — the

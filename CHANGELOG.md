@@ -1,3 +1,40 @@
+## 0.12.66
+
+Triage of the 200 open SonarQube Cloud issues on main at 0.12.64. PR #547 (0.12.65) fixes the two
+newest. The 41 workflow findings are fixed here. The other 154 are false positives, each to be closed
+in SonarQube Cloud with its reason as a comment.
+
+### CI
+
+- Every workflow installs Meson and Ninja with
+  `pip install --require-hashes --only-binary :all: --requirement requirements-build.txt`, as the
+  SonarQube Cloud job already did (ADR-0313). Until now `ci.yml`, `sanitizers.yml`, `fuzz.yml`,
+  `release.yml`, `postgres-integration.yml`, `coverage.yml`, `codeql.yml` and `static-analysis.yml`
+  ran `pip install --upgrade pip` and `pip install --upgrade meson ninja`. That is whatever PyPI
+  served that day, sdists included, and `release.yml` builds the packages it publishes with it
+  (githubactions:S8541, githubactions:S8544).
+- `pages.yml` installs the documentation tools wheel-only too, and `requirements-docs.txt` is
+  compiled with `--only-binary :all:`. The lock is unchanged: every pinned package already ships a
+  wheel. The install is a block scalar (`run: |`): `:all:` followed by a space in a plain scalar is a
+  YAML mapping, and the workflow would not load. `docs/dev-environment.md` says how to install the
+  docs tools locally on a BSD host, where PyYAML, MarkupSafe and watchdog have no wheels.
+- `workflow-pip-locking-tooling` (`tests/tooling/test_workflow_pip_locking.py`) fails on any
+  workflow `pip install` (`.yml` or `.yaml`, with or without pip options before `install`, and
+  across shell line continuations) that is not hash-locked, wheel-only and read from a requirements
+  file, or that sits on a plain `run:` value containing a colon followed by a space.
+
+### Platform
+
+- The comments on `/tmp` in the OpenBSD unveil profile (`default_bsd_hardening_profile`, and
+  `docs/hardening.md`) now give the real reason it is there: SQLite's temporary files. They used to
+  name media thumbnail scratch files, but thumbnails pass through pipes. No behaviour changes
+  (cpp:S5443 reviewed as safe).
+
+### Documentation
+
+- The README badges are regrouped: build, analysis and documentation status first, then coverage
+  and review, then the project facts.
+
 ## 0.12.65
 
 The two open SonarQube Cloud findings.

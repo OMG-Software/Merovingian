@@ -6,18 +6,18 @@
 
 [![Build](https://github.com/OMG-Software/Merovingian/actions/workflows/ci.yml/badge.svg)](https://github.com/OMG-Software/Merovingian/actions/workflows/ci.yml)
 [![Static analysis](https://github.com/OMG-Software/Merovingian/actions/workflows/static-analysis.yml/badge.svg)](https://github.com/OMG-Software/Merovingian/actions/workflows/static-analysis.yml)
-[![Coverage](https://codecov.io/gh/OMG-Software/Merovingian/graph/badge.svg)](https://codecov.io/gh/OMG-Software/Merovingian)
 [![Sanitizers](https://github.com/OMG-Software/Merovingian/actions/workflows/sanitizers.yml/badge.svg)](https://github.com/OMG-Software/Merovingian/actions/workflows/sanitizers.yml)
 [![Documentation](https://github.com/OMG-Software/Merovingian/actions/workflows/pages.yml/badge.svg)](https://omg-software.github.io/Merovingian/)
-
-[![Quality Gate Status](https://sonarcloud.io/api/project_badges/measure?project=OMG-Software_Merovingian&metric=alert_status)](https://sonarcloud.io/dashboard?id=OMG-Software_Merovingian)
-[![CodeRabbit Pull Request Reviews](https://img.shields.io/coderabbit/prs/github/OMG-Software/Merovingian?utm_source=oss&utm_medium=github&utm_campaign=OMG-Software%2FMerovingian&labelColor=171717&color=FF570A&link=https%3A%2F%2Fcoderabbit.ai&label=CodeRabbit+Reviews)](https://coderabbit.ai)
-[![Code scanning](https://img.shields.io/badge/code%20scanning-CodeQL-blue)](https://github.com/OMG-Software/Merovingian/security/code-scanning)
 [![CodeQL](https://github.com/OMG-Software/Merovingian/actions/workflows/codeql.yml/badge.svg)](https://github.com/OMG-Software/Merovingian/actions/workflows/codeql.yml)
+[![Quality Gate Status](https://sonarcloud.io/api/project_badges/measure?project=OMG-Software_Merovingian&metric=alert_status)](https://sonarcloud.io/dashboard?id=OMG-Software_Merovingian)
+
+[![Coverage](https://codecov.io/gh/OMG-Software/Merovingian/graph/badge.svg)](https://codecov.io/gh/OMG-Software/Merovingian)
+[![CodeRabbit Pull Request Reviews](https://img.shields.io/coderabbit/prs/github/OMG-Software/Merovingian?utm_source=oss&utm_medium=github&utm_campaign=OMG-Software%2FMerovingian&labelColor=171717&color=FF570A&link=https%3A%2F%2Fcoderabbit.ai&label=CodeRabbit+Reviews)](https://coderabbit.ai)
 
 [![License: GPL-3.0-or-later](https://img.shields.io/badge/license-GPL--3.0--or--later-blue.svg)](LICENSE)
 [![C++26](https://img.shields.io/badge/C%2B%2B-26-blue.svg)]()
 [![Meson](https://img.shields.io/badge/build-Meson-blue.svg)]()
+[![Code scanning](https://img.shields.io/badge/code%20scanning-CodeQL-blue)](https://github.com/OMG-Software/Merovingian/security/code-scanning)
 
 ## Table of contents
 

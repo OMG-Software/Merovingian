@@ -73,6 +73,12 @@ shell = find_program('sh')
   )
 
   test(
+    'workflow-pip-locking-tooling',
+    python,
+    args: [meson.project_source_root() / 'tests' / 'tooling' / 'test_workflow_pip_locking.py'],
+  )
+
+  test(
     'line-endings-tooling',
     python,
     args: [meson.project_source_root() / 'tests' / 'tooling' / 'test_line_endings.py'],

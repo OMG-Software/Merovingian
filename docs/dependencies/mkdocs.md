@@ -22,7 +22,8 @@ search, admonitions and Mermaid diagram rendering.
 - Direct dependencies are listed in `requirements-docs.in`. The lock file
   `requirements-docs.txt` pins every package, direct and transitive, to an
   exact version with SHA-256 hashes, and CI installs it with
-  `pip --require-hashes`.
+  `pip --require-hashes --only-binary :all:`, so no package's setup script runs
+  (ADR-0313).
 - `tests/tooling/test_docs_site.py` fails if any locked requirement lacks an
   exact pin or a hash, if `mkdocs-material` is pinned below 9.7.7, the first
   release fixing the search-suggestion DOM XSS GHSA-xvg9-69gf-fjrf, or if
@@ -44,7 +45,7 @@ search, admonitions and Mermaid diagram rendering.
 To upgrade, edit `requirements-docs.in` and regenerate the lock:
 
 ```bash
-uv pip compile requirements-docs.in --universal --python-version 3.13 --generate-hashes -o requirements-docs.txt
+uv pip compile requirements-docs.in --universal --python-version 3.13 --generate-hashes --only-binary :all: -o requirements-docs.txt
 ```
 
 Then build the site locally with `mkdocs build --strict` (see

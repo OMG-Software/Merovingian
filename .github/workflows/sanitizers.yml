@@ -39,8 +39,7 @@ jobs:
             m4 \
             perl \
             pkg-config
-          python -m pip install --upgrade pip
-          python -m pip install --upgrade meson ninja
+          python -m pip install --require-hashes --only-binary :all: --requirement requirements-build.txt
 
       - name: Build and test with sanitizers
         run: sh scripts/build-linux.sh --builddir build --buildtype debug --sanitize address,undefined
@@ -91,8 +90,7 @@ jobs:
             m4 \
             perl \
             pkg-config
-          python -m pip install --upgrade pip
-          python -m pip install --upgrade meson ninja
+          python -m pip install --require-hashes --only-binary :all: --requirement requirements-build.txt
 
       - name: Build and test with ThreadSanitizer
         run: sh scripts/build-linux.sh --builddir build-tsan --buildtype debug --sanitize thread 2>&1 | tee tsan-ci-log.txt

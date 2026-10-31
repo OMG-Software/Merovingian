@@ -340,10 +340,15 @@ To build and preview it locally with the same pinned dependencies CI uses:
 
 ```bash
 python3 -m venv .venv-docs
-.venv-docs/bin/pip install --require-hashes -r requirements-docs.txt
+.venv-docs/bin/pip install --require-hashes --only-binary :all: -r requirements-docs.txt
 .venv-docs/bin/mkdocs build --strict
 .venv-docs/bin/mkdocs serve
 ```
+
+PyPI has no FreeBSD, OpenBSD or NetBSD wheels for PyYAML, MarkupSafe or watchdog, so on a BSD
+host `--only-binary :all:` refuses them. Drop that option there: `--require-hashes` still pins
+the exact sdist, whose hash is in the lock, but its build script runs during installation, which
+CI never allows (ADR-0313).
 
 What the site expects of each branch:
 
