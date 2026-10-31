@@ -16,7 +16,6 @@ WORKFLOWS = REPO_ROOT / ".github" / "workflows"
 # pip's global options (`--disable-pip-version-check`, `-q`, ...) may stand between `pip` and
 # `install`, so anything up to the first `install` word counts.
 PIP_INSTALL = re.compile(r"\bpip3?\b(?:\s+\S+)*?\s+install\b(?P<arguments>.*)$")
-REQUIREMENT = re.compile(r"(?:--requirement|-r)\s+(?P<path>\S+)")
 HASH_LINE = re.compile(r"--hash=sha256:[0-9a-f]{64}")
 # A `run:` value on the key's own line that is not a block scalar or quoted is a YAML plain scalar.
 PLAIN_RUN = re.compile(r"""^\s*(?:-\s+)?run:\s+(?P<value>[^\s|>"'].*)$""")
@@ -43,15 +42,45 @@ def logical_lines(lines: list[str]) -> list[tuple[int, str]]:
     for number, line in enumerate(lines, start=1):
         if not pending:
             start = number
+            if line.lstrip().startswith("#"):
+                # A comment runs to the end of its line; a trailing backslash continues nothing.
+                joined.append((start, line))
+                continue
         stripped = line.rstrip()
         if stripped.endswith("\\"):
-            pending += stripped[:-1] + " "
+            # The shell removes only the backslash-newline pair; option checks split on whitespace.
+            pending += stripped[:-1]
             continue
-        joined.append((start, pending + (line.lstrip() if pending else line)))
+        joined.append((start, pending + line))
         pending = ""
     if pending:
         joined.append((start, pending))
     return joined
+
+
+def install_options(arguments: str) -> tuple[set[str], list[str], list[str]]:
+    """The locking options, the requirements files, and every other word of a `pip install`'s
+    arguments, read as whitespace-separated shell words."""
+    words = arguments.split()
+    options, requirements, others = set(), [], []
+    index = 0
+    while index < len(words):
+        word = words[index]
+        following = words[index + 1] if index + 1 < len(words) else None
+        if word == "--require-hashes":
+            options.add(word)
+        elif word == "--only-binary=:all:" or (word == "--only-binary" and following == ":all:"):
+            options.add("--only-binary :all:")
+            index += 0 if "=" in word else 1
+        elif word in ("-r", "--requirement") and following is not None:
+            requirements.append(following)
+            index += 1
+        elif word.startswith("--requirement="):
+            requirements.append(word.split("=", 1)[1])
+        else:
+            others.append(word)
+        index += 1
+    return options, requirements, others
 
 
 def pip_install_lines() -> list[tuple[str, int, str, str]]:
@@ -86,6 +115,19 @@ class WorkflowPipLockingTests(unittest.TestCase):
         self.assertEqual([(number, install_arguments(line)) for number, line in lines],
                          [(1, " meson"), (3, None)])
 
+    def test_given_a_comment_ending_in_a_backslash_when_read_then_the_next_install_is_still_found(self) -> None:
+        # A shell comment runs to the end of its line; its backslash continues nothing.
+        lines = logical_lines(["          # build tools \\", "          python -m pip install meson"])
+        self.assertEqual([(number, install_arguments(line)) for number, line in lines],
+                         [(1, None), (2, " meson")])
+
+    def test_given_options_split_across_a_continuation_when_parsed_then_they_still_lock_the_install(self) -> None:
+        # The shell drops only the backslash-newline, so the next line's indentation stays.
+        (_, line), = logical_lines(["          python -m pip install --require-hashes --only-binary \\",
+                                    "            :all: --requirement requirements-build.txt"])
+        self.assertEqual(install_options(install_arguments(line)),
+                         ({"--require-hashes", "--only-binary :all:"}, ["requirements-build.txt"], []))
+
     def test_given_lines_that_install_nothing_when_parsed_then_none_is_found(self) -> None:
         self.assertIsNone(install_arguments("# python -m pip install meson"))
         self.assertIsNone(install_arguments("python -m pip list"))
@@ -104,34 +146,32 @@ class WorkflowPipLockingTests(unittest.TestCase):
     def test_given_any_workflow_pip_install_when_read_then_it_requires_hashes(self) -> None:
         for workflow, number, arguments in pip_installs():
             with self.subTest(workflow=workflow, line=number):
-                self.assertIn("--require-hashes", arguments)
+                self.assertIn("--require-hashes", install_options(arguments)[0])
 
     def test_given_any_workflow_pip_install_when_read_then_it_installs_wheels_only(self) -> None:
         for workflow, number, arguments in pip_installs():
             with self.subTest(workflow=workflow, line=number):
-                self.assertIn("--only-binary :all:", arguments)
+                self.assertIn("--only-binary :all:", install_options(arguments)[0])
 
     def test_given_any_workflow_pip_install_when_read_then_it_reads_a_locked_requirements_file(self) -> None:
         for workflow, number, arguments in pip_installs():
             with self.subTest(workflow=workflow, line=number):
-                requirement = REQUIREMENT.search(arguments)
-                self.assertIsNotNone(requirement, "installs named packages instead of a requirements file")
-                # Nothing else may be named on the line: a bare package beside the file is unlocked.
-                self.assertEqual(REQUIREMENT.sub("", arguments).replace("--require-hashes", "")
-                                 .replace("--only-binary :all:", "").strip(), "")
-                locked = REPO_ROOT / requirement.group("path")
-                self.assertTrue(locked.is_file(), f"{locked} is missing")
-                self.assertRegex(locked.read_text(encoding="utf-8"), HASH_LINE)
+                _, requirements, others = install_options(arguments)
+                self.assertTrue(requirements, "installs named packages instead of a requirements file")
+                # Nothing else may be named: a bare package beside the file is unlocked.
+                self.assertEqual(others, [])
+                for requirement in requirements:
+                    locked = REPO_ROOT / requirement
+                    self.assertTrue(locked.is_file(), f"{locked} is missing")
+                    self.assertRegex(locked.read_text(encoding="utf-8"), HASH_LINE)
 
     def test_given_a_locked_requirements_file_when_read_then_its_regeneration_command_is_wheel_only(self) -> None:
         # A lock regenerated without --only-binary could take an sdist that the install then refuses.
         for workflow, number, arguments in pip_installs():
-            requirement = REQUIREMENT.search(arguments)
-            if requirement is None:
-                continue
-            locked = REPO_ROOT / requirement.group("path")
-            with self.subTest(requirements=locked.name):
-                self.assertIn("--only-binary :all:", locked.read_text(encoding="utf-8").splitlines()[1])
+            for requirement in install_options(arguments)[1]:
+                locked = REPO_ROOT / requirement
+                with self.subTest(requirements=locked.name):
+                    self.assertIn("--only-binary :all:", locked.read_text(encoding="utf-8").splitlines()[1])
 
 
 if __name__ == "__main__":
