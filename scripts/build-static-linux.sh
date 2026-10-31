@@ -3,7 +3,7 @@
 # Build a portable Linux fallback tarball with musl-linked static PIE binaries.
 set -eu
 
-VERSION="${MEROVINGIAN_VERSION:-0.12.64}"
+VERSION="${MEROVINGIAN_VERSION:-0.12.65}"
 BUILD_DIR="${BUILD_DIR:-build-static-linux}"
 STAGING="staging-static-linux"
 PACKAGE_ROOT="merovingian-${VERSION}-linux-static-x86_64"

@@ -106,7 +106,7 @@ auto DispatchWorker::enqueue(OutboundTransaction transaction) -> bool
     }
     {
         auto lock = std::lock_guard{mutex_};
-        if (shutdown_requested_.load(std::memory_order_acquire))
+        if (shutdown_requested_.load())
         {
             log_diagnostic("enqueue.rejected", {
                                                    {"transaction_id", transaction.transaction_id, false},
@@ -220,7 +220,12 @@ auto DispatchWorker::start() -> void
 
 auto DispatchWorker::request_shutdown() noexcept -> void
 {
-    shutdown_requested_.store(true, std::memory_order_release);
+    {
+        // Set under mutex_: the idle wait reads the flag under it and then blocks, so a store
+        // without the lock can land between the two and its notify wakes nobody (ADR-0312).
+        auto lock = std::lock_guard{mutex_};
+        shutdown_requested_.store(true);
+    }
     cv_.notify_all();
 }
 
@@ -562,7 +567,7 @@ auto DispatchWorker::replay_pending() -> std::size_t
 
 auto DispatchWorker::loop() -> void
 {
-    while (!shutdown_requested_.load(std::memory_order_acquire))
+    while (!shutdown_requested_.load())
     {
         if (!run_once())
         {
@@ -571,7 +576,7 @@ auto DispatchWorker::loop() -> void
             // thread for the whole backoff (ADR-0309).
             auto lock = std::unique_lock{mutex_};
             cv_.wait_for(lock, config_.idle_poll, [this] {
-                return shutdown_requested_.load(std::memory_order_acquire) || has_due_locked(now_ms_());
+                return shutdown_requested_.load() || has_due_locked(now_ms_());
             });
         }
     }

@@ -1,3 +1,27 @@
+## 0.12.65
+
+The two open SonarQube Cloud findings.
+
+### Federation
+
+- **FIXED:** a shutdown request could miss an idle federation dispatch worker. The worker's idle
+  wait checks "shutdown requested, or a transaction is due" and then blocks. `request_shutdown()`
+  set its flag and notified without the worker's mutex, so a request that landed between that check
+  and the block woke nobody, and the worker slept for the whole `idle_poll` (50 ms by default).
+  The flag is now set under the mutex, and every access to it uses the default sequentially
+  consistent memory order instead of `release`/`acquire` (Sonar: "Use
+  `std::memory_order::seq_cst` ... to ensure sequential consistency"; ADR-0312). A scenario requests shutdown from inside the wait check,
+  the window that lost it.
+
+### Internal
+
+- The SQLite room snapshot read (`load_room_snapshot_impl`) reads each table through one helper and
+  returns at the first table it cannot read, as the PostgreSQL read already does, instead of chaining
+  every read and its hook call through `ok = ok && ... && ...` (Sonar: "Remove any side effects from
+  right hand operands of logical && operator"). Behaviour is unchanged; a scenario pins it: the hook
+  sees every table once, in read order, and each of the eleven tables in turn, when it cannot be
+  read, ends the snapshot with no later table read.
+
 ## 0.12.64
 
 Fixes for the failures Complement run 12 found against main at 0.12.63.
