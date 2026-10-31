@@ -8,9 +8,12 @@
 #include "merovingian/platform/landlock_hardening.hpp"
 
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/generators/catch_generators.hpp>
+#include <catch2/generators/catch_generators_range.hpp>
 
 #include <algorithm>
 #include <chrono>
+#include <cstddef>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -580,22 +583,36 @@ SCENARIO("A room snapshot reads its tables in order and stops at the first one i
             }
         }
 
-        WHEN("one table in the middle of the read cannot be read")
+        WHEN("one of its tables cannot be read")
         {
+            auto const all_tables = std::vector<std::string>{"rooms",
+                                                             "membership",
+                                                             "invites",
+                                                             "events",
+                                                             "current_state",
+                                                             "state_groups",
+                                                             "state_group_state",
+                                                             "event_state_groups",
+                                                             "event_edges",
+                                                             "event_auth",
+                                                             "event_signatures"};
+            auto const failed = GENERATE(range(std::size_t{0U}, std::size_t{11U}));
             {
                 auto writer = RawSqlite{path};
                 REQUIRE(writer.handle != nullptr);
-                REQUIRE(sqlite3_exec(writer.handle.get(), "DROP TABLE state_group_state", nullptr, nullptr, nullptr) ==
-                        SQLITE_OK);
+                auto const drop = "DROP TABLE " + all_tables[failed];
+                REQUIRE(sqlite3_exec(writer.handle.get(), drop.c_str(), nullptr, nullptr, nullptr) == SQLITE_OK);
             }
             auto const snapshot =
                 merovingian::database::detail::load_room_snapshot_from_sqlite(path.string(), room_id, record_table);
 
-            THEN("no snapshot is returned and no table after the failed one was read")
+            THEN("no snapshot is returned and the hook saw only the tables read before it")
             {
+                INFO("failed table: " << all_tables[failed]);
                 CHECK_FALSE(snapshot.has_value());
-                CHECK(tables_read == std::vector<std::string>{"rooms", "membership", "invites", "events",
-                                                              "current_state", "state_groups"});
+                CHECK(tables_read ==
+                      std::vector<std::string>{all_tables.begin(),
+                                               all_tables.begin() + static_cast<std::ptrdiff_t>(failed)});
             }
         }
     }

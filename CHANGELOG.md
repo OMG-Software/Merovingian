@@ -19,8 +19,8 @@ The two open SonarQube Cloud findings.
   returns at the first table it cannot read, as the PostgreSQL read already does, instead of chaining
   every read and its hook call through `ok = ok && ... && ...` (Sonar: "Remove any side effects from
   right hand operands of logical && operator"). Behaviour is unchanged; a scenario pins it: the hook
-  sees every table once, in read order, and a table that cannot be read ends the snapshot with no
-  later table read.
+  sees every table once, in read order, and each of the eleven tables in turn, when it cannot be
+  read, ends the snapshot with no later table read.
 
 ## 0.12.64
 

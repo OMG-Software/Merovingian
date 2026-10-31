@@ -15,6 +15,7 @@
 #include <chrono>
 #include <cstdint>
 #include <filesystem>
+#include <functional>
 #include <limits>
 #include <memory>
 #include <new>
@@ -1219,9 +1220,11 @@ namespace
     {
         auto const room_id_str = std::string{room_id};
         // Reads one table's rows of this room, then tells the hook. False when the read failed: the
-        // caller then returns no snapshot, so no later table is read.
+        // caller then returns no snapshot, so no later table is read. Not generic, so the eleven
+        // reads share one instantiation.
         auto const read_table = [&connection, &room_id_str, &after_table](std::string_view table,
-                                                                          std::string const& sql, auto load_row) {
+                                                                          std::string const& sql,
+                                                                          std::function<void(sqlite3_stmt&)> load_row) {
             if (!load_rows_bound(connection, sql, {room_id_str}, std::move(load_row)))
             {
                 return false;
