@@ -40,6 +40,10 @@ and capping it compresses the room's scale until fetched pre-join history is hid
 
 * A former member whose leave event is not held does not see history fetched after they left.
 * A walk can cost up to 500 lookups for an event a former member asks about after leaving.
+* The walk finds only events built on the leave. A server can still send, after the leave, an event on a
+  branch whose `prev_events` all predate it; that event does not descend from the leave, so if its depth is
+  below the user's newest join the shared rule keeps it visible. This is what remains of trusting depth
+  (ADR-0308), and only a sender in the room can make it.
 
 ## Links
 
