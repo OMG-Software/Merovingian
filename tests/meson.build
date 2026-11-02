@@ -515,7 +515,10 @@ shell = find_program('sh')
     link_with: [appservice_lib, auth_lib, canonicaljson_lib, core_lib, config_lib, crypto_lib, database_lib, email_lib, events_lib, federation_lib, homeserver_lib, http_lib, identity_lib, ipc_lib, media_lib, net_lib, observability_lib, platform_lib, push_lib, rooms_lib, sync_lib, trust_safety_lib],
   )
 
-  test('conformance-tests', conformance_tests, timeout: 600)
+  # Most scenarios start a server and log a user in, so this binary grows with every scenario. It reached
+  # 600 seconds on a healthy Debian runner, still passing, with about five cases left; same headroom as
+  # the integration tests.
+  test('conformance-tests', conformance_tests, timeout: 900)
 
 #The thumbnail integration test spawns the real sandboxed worker; pass its
 #build - tree path when it was built(system image codecs available).

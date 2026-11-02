@@ -33,6 +33,12 @@ The five high findings of security audit run 2 (ref 5e67d4e8).
   through the ADR-0225 fallback. Such an event is now rejected (`rooms/v11.md` rule 2.2), on `/send`, `send_join` and
   backfill. The fallback itself is unchanged; the audit tracks it separately.
 
+### CI
+
+- **The conformance suite's time limit is 900 seconds, up from 600.** Green runs had grown from 434 to 565 seconds on
+  Debian, and one run was stopped at 600 with every finished case passing and about five left. It was not hung: the
+  same commit passed on RHEL in 510 seconds.
+
 ## 0.12.66
 
 Triage of the 200 open SonarQube Cloud issues on main at 0.12.64. PR #547 (0.12.65) fixes the two
