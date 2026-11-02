@@ -47,6 +47,8 @@ Many paths store something and then allocate, some inside helpers, and the two w
 * Event, room and membership writes are refused by the store once the counter is within `sync_stream_write_reserve`
   (2^20) of the ceiling. They already report failure to every caller, so each path answers with its existing error.
   Reordering every path was rejected: it is scattered, and the next path written would have to know.
+  Knocks, joins, leaves and invites check the reserve before they contact another server, which would keep what this
+  server then failed to store.
 * Key, signature and device-name uploads check the same reserve before they store, because a client can retry them.
   A check for one remaining position was rejected: handlers do not hold the runtime lock across it, so it can race,
   and a second threshold buys nothing 2^63 positions from the first.

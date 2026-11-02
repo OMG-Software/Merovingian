@@ -960,3 +960,77 @@ SCENARIO("A former member does not see events sent after their leave, whatever t
         }
     }
 }
+
+// ADR-0320: depth stops at 2^53-1, so an event and the join built on it can share a depth. The spec's rule is
+// whether the user joined after the event, which ancestry answers; a concurrent event stays hidden.
+SCENARIO("HistoryVisibility shows a shared room's event that a join of the same depth descends from",
+         "[sync][history-visibility][adr-0320]")
+{
+    GIVEN("a shared room at the depth limit, where bob's join cites two events in a chain and another is concurrent")
+    {
+        constexpr auto limit = (std::uint64_t{1U} << 53U) - 1U;
+        auto store = PersistentStore{};
+        add_event(store, "$vis", visibility_json("shared"), 1U);
+        add_group(store, "g1", std::nullopt,
+                  {
+                      {{"m.room.history_visibility", ""}, "$vis"}
+        });
+        map_event(store, "$vis", "g1");
+        add_linked_event(store, "$older", message_json(), 2U, limit, {"$vis"}, "g1");
+        add_linked_event(store, "$newer", message_json(), 3U, limit, {"$older"}, "g1");
+        add_linked_event(store, "$concurrent", message_json(), 4U, limit, {"$vis"}, "g1");
+        add_group(store, "g2", "g1",
+                  {
+                      {{"m.room.member", std::string{bob}}, "$join"}
+        });
+        add_linked_event(store, "$join", member_json(bob, "join"), 5U, limit, {"$newer"}, "g2");
+
+        WHEN("bob asks about them")
+        {
+            auto filter = HistoryVisibility{store, bob};
+
+            THEN("he sees the events his join descends from, and not the concurrent one")
+            {
+                REQUIRE(filter.can_see_event_id("$newer"));
+                REQUIRE(filter.can_see_event_id("$older"));
+                REQUIRE_FALSE(filter.can_see_event_id("$concurrent"));
+            }
+        }
+    }
+
+    GIVEN("a chain at the depth limit longer than the walk will follow, ending at bob's join")
+    {
+        constexpr auto limit = (std::uint64_t{1U} << 53U) - 1U;
+        constexpr auto chain_length = 600U;
+        auto store = PersistentStore{};
+        add_event(store, "$vis", visibility_json("shared"), 1U);
+        add_group(store, "g1", std::nullopt,
+                  {
+                      {{"m.room.history_visibility", ""}, "$vis"}
+        });
+        map_event(store, "$vis", "g1");
+        auto previous = std::string{"$vis"};
+        for (auto index = 0U; index < chain_length; ++index)
+        {
+            auto const id = "$chain" + std::to_string(index);
+            add_linked_event(store, id, message_json(), 2U + index, limit, {previous}, "g1");
+            previous = id;
+        }
+        add_group(store, "g2", "g1",
+                  {
+                      {{"m.room.member", std::string{bob}}, "$join"}
+        });
+        add_linked_event(store, "$join", member_json(bob, "join"), 2U + chain_length, limit, {previous}, "g2");
+
+        WHEN("bob asks about both ends of it")
+        {
+            auto filter = HistoryVisibility{store, bob};
+
+            THEN("he sees what the walk reached, and the rest stays hidden")
+            {
+                REQUIRE(filter.can_see_event_id(previous));
+                REQUIRE_FALSE(filter.can_see_event_id("$chain0"));
+            }
+        }
+    }
+}

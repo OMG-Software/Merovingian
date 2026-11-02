@@ -9,6 +9,7 @@
 #include <string>
 #include <string_view>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 namespace merovingian::sync
@@ -126,6 +127,10 @@ private:
     [[nodiscard]] auto content_string(std::string_view event_id, std::string_view key) -> std::optional<std::string>;
     // The depth of the user's newest accepted join in the room (ADR-0308): its place in the room's history.
     [[nodiscard]] auto max_join_depth(std::string_view room_id) -> std::optional<std::uint64_t>;
+    // ADR-0320: the events the user's newest joins descend from at those joins' own depth, found by a bounded
+    // walk. An event left out is one the walk could not place, and it stays hidden.
+    [[nodiscard]] auto ancestors_of_newest_joins(std::string_view room_id)
+        -> std::unordered_set<std::string_view> const&;
     // ADR-0311: the user's departure from a room they are no longer in: the stream ordering of their current
     // `leave` or `ban` membership row, and that leave's event when it is held as their current member state.
     struct Departure final
@@ -173,6 +178,8 @@ private:
     std::unordered_map<std::string, GroupView> group_views_{};
     std::unordered_map<std::string, std::optional<std::string>> content_cache_{};
     std::unordered_map<std::string, std::optional<std::uint64_t>> join_depths_{};
+    std::unordered_map<std::string, std::vector<std::string_view>> newest_join_ids_{};
+    std::unordered_map<std::string, std::unordered_set<std::string_view>> join_ancestors_{};
     std::unordered_map<std::string, std::optional<Departure>> departures_{};
     std::unordered_map<std::string, std::optional<std::vector<MembershipStep>>> membership_timelines_{};
 };

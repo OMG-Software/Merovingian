@@ -289,7 +289,7 @@
 * [0305 - A worker's room reload carries the room's state groups](0305-a-worker-room-reload-carries-the-rooms-state-groups.md)
 * [0306 - timestamp_to_event waits for a client-outbound slot within its deadline](0306-timestamp-to-event-waits-for-a-client-outbound-slot.md)
 * [0307 - An invite for an unreachable server is queued before it is stored](0307-an-invite-for-an-unreachable-server-is-queued-before-it-is-stored.md)
-* [0308 - Shared history visibility orders the join and the event by depth](0308-shared-history-visibility-orders-the-join-and-the-event-by-depth.md)
+* [0308 - Shared history visibility orders the join and the event by depth](0308-shared-history-visibility-orders-the-join-and-the-event-by-depth.md) — Refined by ADR-0320: an event of equal depth that the join descends from comes before it.
 * [0309 - A federation retry waits from the end of the failed attempt](0309-a-federation-retry-waits-from-the-end-of-the-failed-attempt.md)
 * [0310 - Waiting requests and outbound calls share the global cap](0310-waiting-requests-and-outbound-calls-share-the-global-cap.md)
 * [0311 - A former member never sees events that descend from their leave](0311-a-former-member-never-sees-events-that-descend-from-their-leave.md)
@@ -301,6 +301,7 @@
 * [0317 - Client device changes record one batch for local observers](0317-client-device-changes-record-one-batch-for-local-observers.md)
 * [0318 - A membership template offers the room's stored forward extremities, and none is offered without them](0318-a-membership-template-offers-the-rooms-stored-forward-extremities.md)
 * [0319 - Report a failed device-list write where the client can retry, and finish where access is being revoked](0319-report-a-failed-device-list-write-where-the-client-can-retry.md)
+* [0320 - A join comes after the ancestors that share its depth](0320-a-join-comes-after-the-ancestors-that-share-its-depth.md)
 
 ## Proposed Records
 

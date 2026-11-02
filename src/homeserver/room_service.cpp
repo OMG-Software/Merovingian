@@ -1180,9 +1180,24 @@ namespace
 
     // 429 while a membership exchange for this user and room is in flight; called
     // with runtime.mutex held, before anything is read or written.
+    // ADR-0315: a remote server keeps a knock or an invite once it has them, so a change this server would
+    // refuse to store is refused before it leaves.
+    [[nodiscard]] auto sync_stream_refusal(HomeserverRuntime const& runtime) -> std::optional<OperationResult>
+    {
+        if (database::sync_stream_has_write_reserve(runtime.database.persistent_store))
+        {
+            return std::nullopt;
+        }
+        return make_operation_result(false, {}, "sync stream counter exhausted", 500U);
+    }
+
     [[nodiscard]] auto membership_exchange_refusal(HomeserverRuntime const& runtime, std::string_view room_id,
                                                    std::string_view user_id) -> std::optional<OperationResult>
     {
+        if (auto refused = sync_stream_refusal(runtime); refused.has_value())
+        {
+            return refused;
+        }
         if (!runtime.membership_exchanges.contains(std::pair{std::string{room_id}, std::string{user_id}}))
         {
             return std::nullopt;
@@ -6923,6 +6938,10 @@ auto queue_remote_invite(HomeserverRuntime& runtime, std::string_view room_id, s
     {
         return make_operation_result(false, {}, "user is not joined", 403U);
     }
+    if (auto refused = sync_stream_refusal(runtime); refused.has_value())
+    {
+        return *refused;
+    }
 
     auto const invitee_server = std::string{auth::user_id_server_name(target_user_id)};
     if (invitee_server.empty() || invitee_server == runtime.config.server().server_name)
@@ -7055,6 +7074,10 @@ namespace
     if (!user_id.has_value())
     {
         return make_operation_result(false, {}, "unauthenticated", 401U);
+    }
+    if (auto refused = sync_stream_refusal(runtime); refused.has_value())
+    {
+        return *refused;
     }
     auto* room = find_room(runtime.database, room_id);
     if (room == nullptr)

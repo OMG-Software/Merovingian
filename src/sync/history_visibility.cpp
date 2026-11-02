@@ -312,6 +312,7 @@ auto HistoryVisibility::max_join_depth(std::string_view room_id) -> std::optiona
         }
     }
     auto newest = std::optional<std::uint64_t>{};
+    auto newest_ids = std::vector<std::string_view>{};
     for (auto const candidate : candidates)
     {
         auto const* event = find_event(candidate);
@@ -319,13 +320,22 @@ auto HistoryVisibility::max_join_depth(std::string_view room_id) -> std::optiona
         {
             continue;
         }
-        if (content_string(candidate, "membership") == std::optional<std::string>{"join"} &&
-            (!newest.has_value() || event->depth > *newest))
+        if (content_string(candidate, "membership") != std::optional<std::string>{"join"})
+        {
+            continue;
+        }
+        if (!newest.has_value() || event->depth > *newest)
         {
             newest = event->depth;
+            newest_ids.clear();
+        }
+        if (event->depth == *newest)
+        {
+            newest_ids.push_back(candidate);
         }
     }
     join_depths_.emplace(key, newest);
+    newest_join_ids_.emplace(key, std::move(newest_ids));
     return newest;
 }
 
@@ -447,9 +457,14 @@ auto HistoryVisibility::allows(HistoryVisibilityValue visibility, std::string_vi
         // Rule 3: the user joined the room at any point after the event was sent. "After" is the room's
         // history, not this server's: a join deeper than the event comes after it (ADR-0308). The order
         // events were stored in is not it, since an event fetched as history is stored after the join it
-        // precedes. A concurrent event of equal depth is not before the join (fails closed).
+        // precedes. Depth stops at 2^53-1, so a join can share a depth with an event it descends from
+        // (ADR-0320); a concurrent event of equal depth is not before the join (fails closed).
         auto const joined = max_join_depth(event.room_id);
-        if (!joined.has_value() || *joined <= event.depth)
+        if (!joined.has_value() || *joined < event.depth)
+        {
+            return false;
+        }
+        if (*joined == event.depth && !ancestors_of_newest_joins(event.room_id).contains(event.event_id))
         {
             return false;
         }
@@ -469,7 +484,46 @@ namespace
     // The most held events one departure walk visits (ADR-0311) before it gives up and hides the event.
     constexpr auto max_departure_walk = std::size_t{500U};
 
+    // The most held events one walk back from a join visits (ADR-0320) before it stops, leaving the rest hidden.
+    constexpr auto max_join_ancestor_walk = std::size_t{500U};
+
 } // namespace
+
+auto HistoryVisibility::ancestors_of_newest_joins(std::string_view room_id)
+    -> std::unordered_set<std::string_view> const&
+{
+    auto const key = std::string{room_id};
+    if (auto const cached = join_ancestors_.find(key); cached != join_ancestors_.end())
+    {
+        return cached->second;
+    }
+    auto const join_depth = max_join_depth(room_id).value_or(0U);
+    auto pending = std::vector<std::string_view>{};
+    for (auto const join_id : newest_join_ids_[key])
+    {
+        if (auto const* join = find_event(join_id); join != nullptr)
+        {
+            pending.insert(pending.end(), join->prev_event_ids.begin(), join->prev_event_ids.end());
+        }
+    }
+    auto ancestors = std::unordered_set<std::string_view>{};
+    auto walked = std::size_t{0U};
+    while (!pending.empty() && walked < max_join_ancestor_walk)
+    {
+        auto const id = pending.back();
+        pending.pop_back();
+        auto const* ancestor = find_event(id);
+        // Below the join's depth the comparison already decides it, so the walk need not go further.
+        if (ancestor == nullptr || ancestor->room_id != room_id || ancestor->depth < join_depth ||
+            !ancestors.insert(ancestor->event_id).second)
+        {
+            continue;
+        }
+        ++walked;
+        pending.insert(pending.end(), ancestor->prev_event_ids.begin(), ancestor->prev_event_ids.end());
+    }
+    return join_ancestors_.emplace(key, std::move(ancestors)).first->second;
+}
 
 auto HistoryVisibility::departure_of(std::string_view room_id) -> std::optional<Departure> const&
 {

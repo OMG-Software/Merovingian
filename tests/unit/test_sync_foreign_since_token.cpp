@@ -10,6 +10,7 @@
 #include "merovingian/sync/stream_token.hpp"
 
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/generators/catch_generators.hpp>
 
 #include <cstdint>
 #include <limits>
@@ -486,6 +487,58 @@ SCENARIO("A client request that finds the sync stream counter exhausted is answe
             THEN("the request is answered with an error")
             {
                 REQUIRE(written.response.status == 500U);
+            }
+        }
+    }
+}
+
+// ADR-0315: a remote server would keep a knock or an invite that this server then failed to store, so these
+// are refused before they leave. Nothing listens at elsewhere.example.org, so reaching the exchange would
+// answer some other error.
+SCENARIO(
+    "Membership changes that need another server are refused before the exchange when the counter is near its limit",
+    "[database][sync-stream][security]")
+{
+    GIVEN("a user in a room, and a counter inside the reserve below its ceiling")
+    {
+        auto started = merovingian::homeserver::start_client_server(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        auto const user = register_user(runtime, "alice");
+        auto const room = merovingian::homeserver::handle_client_server_request(
+            runtime, {"POST", "/_matrix/client/v3/createRoom", user.token, R"({"preset":"private_chat"})"});
+        REQUIRE(room.response.status == 200U);
+        auto const room_path = "/_matrix/client/v3/rooms/" + json_string_after(room.response.body, "room_id");
+        auto& store = runtime.homeserver.database.persistent_store;
+        constexpr auto ceiling = static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max());
+        store.next_sync_stream_id = ceiling - merovingian::database::sync_stream_write_reserve;
+        auto const events_before = store.events.size();
+
+        // Generated once, across every run of this GIVEN, so nothing here can name this run's room.
+        struct Trigger final
+        {
+            std::string remote_path{};
+            std::string body{};
+        };
+        auto const trigger = GENERATE(
+            Trigger{"/_matrix/client/v3/knock/!remote:elsewhere.example.org", "{}"},
+            Trigger{"/_matrix/client/v3/join/!remote:elsewhere.example.org", "{}"},
+            Trigger{{}, R"({"user_id":"@bob:elsewhere.example.org"})"},
+            Trigger{
+                {},
+                R"({"id_server":"id.elsewhere.example.org","id_access_token":"t","medium":"email","address":"bob@example.org"})"});
+        auto const path = trigger.remote_path.empty() ? room_path + "/invite" : trigger.remote_path;
+
+        WHEN("the user asks for it: " + path + " " + trigger.body)
+        {
+            auto const answered = merovingian::homeserver::handle_client_server_request(
+                runtime, {"POST", path, user.token, trigger.body});
+
+            THEN("the counter is the reason it is refused, and nothing was stored")
+            {
+                REQUIRE(answered.response.status == 500U);
+                REQUIRE(answered.response.body.find("sync stream counter exhausted") != std::string::npos);
+                REQUIRE(store.events.size() == events_before);
             }
         }
     }

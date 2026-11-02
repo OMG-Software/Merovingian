@@ -4,6 +4,9 @@ The five high findings of security audit run 2 (ref 5e67d4e8).
 
 ### Security
 
+- **A user joining a `shared` room at the depth limit sees the history behind their join.** Capping depth let a join
+  and the events it builds on share a depth, and those events were hidden as concurrent. They are now found by a
+  bounded walk back from the join, and a concurrent event stays hidden (ADR-0320).
 - **A failed device-list write is no longer silent.** Key, signature and device-name changes were committed and then
   answered 200 even if the write telling other local users failed, so those users never learned of the change. The
   client now gets a 500 saying the change was stored, and a retry records the notification. Logout and device deletion

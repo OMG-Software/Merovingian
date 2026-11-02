@@ -4074,11 +4074,13 @@ namespace
         }
         if (!recorded)
         {
-            log_diagnostic("device_list.change_undelivered",
-                           {
-                               {"user_id", std::string{user_id},                  false},
-                               {"reason",  "observer rows could not be recorded", false}
-            });
+            log_diagnostic(
+                "device_list.change_undelivered",
+                {
+                    {"user_id", std::string{user_id},                  false},
+                    {"reason",  "observer rows could not be recorded", false}
+            },
+                observability::LogEventSeverity::warning);
         }
         return recorded;
     }

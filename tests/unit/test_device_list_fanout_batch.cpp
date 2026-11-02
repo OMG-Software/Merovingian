@@ -203,6 +203,37 @@ SCENARIO("A device or key change records one batch for local observers only", "[
     }
 }
 
+namespace
+{
+
+enum class UploadedChange
+{
+    signature,
+    device_name,
+    cross_signing_key,
+    device_key,
+};
+
+[[nodiscard]] auto change_is_stored(merovingian::database::PersistentStore const& store, UploadedChange change) -> bool
+{
+    switch (change)
+    {
+    case UploadedChange::signature:
+        return !store.key_signatures.empty();
+    case UploadedChange::device_name:
+        return std::ranges::any_of(store.devices, [](auto const& device) {
+            return device.display_name == "renamed";
+        });
+    case UploadedChange::cross_signing_key:
+        return !store.cross_signing_keys.empty();
+    case UploadedChange::device_key:
+        return !store.device_keys.empty();
+    }
+    return false;
+}
+
+} // namespace
+
 // ADR-0319: the change is committed before its notification is written, so a failed write cannot be undone.
 // The client is told so and can retry, and every one of these uploads overwrites what it stored.
 SCENARIO("A failed device-list write is reported to a client that can retry the change",
@@ -223,20 +254,26 @@ SCENARIO("A failed device-list write is reported to a client that can retry the 
             std::string method{};
             std::string path{};
             std::string body{};
+            UploadedChange change{};
         };
         auto const trigger = GENERATE_COPY(
-            Trigger{"POST", "/_matrix/client/v3/keys/signatures/upload", "{}"},
-            Trigger{"PUT", "/_matrix/client/v3/devices/" + alice.device_id, R"({"display_name":"renamed"})"},
+            Trigger{"POST", "/_matrix/client/v3/keys/signatures/upload",
+                    R"({"@alice:example.org":{")" + alice.device_id + R"(":{"signatures":{}}}})",
+                    UploadedChange::signature},
+            Trigger{"PUT", "/_matrix/client/v3/devices/" + alice.device_id, R"({"display_name":"renamed"})",
+                    UploadedChange::device_name},
             Trigger{
                 "POST", "/_matrix/client/v3/keys/device_signing/upload",
                 R"({"auth":{"type":"m.login.password","user":"@alice:example.org","password":"CorrectHorse7!"},)"
-                R"("master_key":{"user_id":"@alice:example.org","usage":["master"],"keys":{"ed25519:MASTER":"abc"}}})"},
+                R"("master_key":{"user_id":"@alice:example.org","usage":["master"],"keys":{"ed25519:MASTER":"abc"}}})",
+                UploadedChange::cross_signing_key},
             Trigger{
                 "POST", "/_matrix/client/v3/keys/upload",
                 R"({"device_keys":{"user_id":"@alice:example.org","device_id":")" + alice.device_id +
                     R"(","algorithms":["m.olm.v1.curve25519-aes-sha2","m.megolm.v1.aes-sha2"],"keys":{"curve25519:)" +
                     alice.device_id + R"(":"curve25519-public","ed25519:)" + alice.device_id +
-                    R"(":"ed25519-public"},"signatures":{}},"one_time_keys":{}})"});
+                    R"(":"ed25519-public"},"signatures":{}},"one_time_keys":{}})",
+                UploadedChange::device_key});
         store.device_list_changes.clear();
         merovingian::database::force_persist_failure_for_statement(store, "insert_device_list_change");
 
@@ -249,6 +286,7 @@ SCENARIO("A failed device-list write is reported to a client that can retry the 
             {
                 REQUIRE(answered.response.status == 500U);
                 REQUIRE(answered.response.body.find("was stored") != std::string::npos);
+                REQUIRE(change_is_stored(store, trigger.change));
                 REQUIRE(rows_about(runtime, "@alice:example.org").empty());
             }
 
