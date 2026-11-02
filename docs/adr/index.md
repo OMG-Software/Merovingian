@@ -300,6 +300,7 @@
 * [0316 - createRoom caps its invite and initial_state entries](0316-createroom-caps-its-invite-and-initial-state-entries.md)
 * [0317 - Client device changes record one batch for local observers](0317-client-device-changes-record-one-batch-for-local-observers.md)
 * [0318 - A membership template offers the room's stored forward extremities, and none is offered without them](0318-a-membership-template-offers-the-rooms-stored-forward-extremities.md)
+* [0319 - Report a failed device-list write where the client can retry, and finish where access is being revoked](0319-report-a-failed-device-list-write-where-the-client-can-retry.md)
 
 ## Proposed Records
 

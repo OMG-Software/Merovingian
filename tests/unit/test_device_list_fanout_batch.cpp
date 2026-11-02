@@ -202,3 +202,102 @@ SCENARIO("A device or key change records one batch for local observers only", "[
         }
     }
 }
+
+// ADR-0319: the change is committed before its notification is written, so a failed write cannot be undone.
+// The client is told so and can retry, and every one of these uploads overwrites what it stored.
+SCENARIO("A failed device-list write is reported to a client that can retry the change",
+         "[device-lists][security][key-api]")
+{
+    GIVEN("alice and bob sharing a room, and the next device-list write failing")
+    {
+        auto started = merovingian::homeserver::start_client_server(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        auto const alice = register_user(runtime, "alice");
+        auto const bob = register_user(runtime, "bob");
+        std::ignore = join_room_with(runtime, bob.token, alice.token, "@alice:example.org");
+        auto& store = runtime.homeserver.database.persistent_store;
+
+        struct Trigger final
+        {
+            std::string method{};
+            std::string path{};
+            std::string body{};
+        };
+        auto const trigger = GENERATE_COPY(
+            Trigger{"POST", "/_matrix/client/v3/keys/signatures/upload", "{}"},
+            Trigger{"PUT", "/_matrix/client/v3/devices/" + alice.device_id, R"({"display_name":"renamed"})"},
+            Trigger{
+                "POST", "/_matrix/client/v3/keys/device_signing/upload",
+                R"({"auth":{"type":"m.login.password","user":"@alice:example.org","password":"CorrectHorse7!"},)"
+                R"("master_key":{"user_id":"@alice:example.org","usage":["master"],"keys":{"ed25519:MASTER":"abc"}}})"},
+            Trigger{
+                "POST", "/_matrix/client/v3/keys/upload",
+                R"({"device_keys":{"user_id":"@alice:example.org","device_id":")" + alice.device_id +
+                    R"(","algorithms":["m.olm.v1.curve25519-aes-sha2","m.megolm.v1.aes-sha2"],"keys":{"curve25519:)" +
+                    alice.device_id + R"(":"curve25519-public","ed25519:)" + alice.device_id +
+                    R"(":"ed25519-public"},"signatures":{}},"one_time_keys":{}})"});
+        store.device_list_changes.clear();
+        merovingian::database::force_persist_failure_for_statement(store, "insert_device_list_change");
+
+        WHEN("alice makes the change: " + trigger.method + " " + trigger.path)
+        {
+            auto const answered = merovingian::homeserver::handle_client_server_request(
+                runtime, {trigger.method, trigger.path, alice.token, trigger.body});
+
+            THEN("she is told it failed, without being told it was undone, and bob has no row")
+            {
+                REQUIRE(answered.response.status == 500U);
+                REQUIRE(answered.response.body.find("was stored") != std::string::npos);
+                REQUIRE(rows_about(runtime, "@alice:example.org").empty());
+            }
+
+            AND_WHEN("she retries it")
+            {
+                auto const retried = merovingian::homeserver::handle_client_server_request(
+                    runtime, {trigger.method, trigger.path, alice.token, trigger.body});
+
+                THEN("it succeeds and bob is told")
+                {
+                    REQUIRE(retried.response.status == 200U);
+                    auto const rows = rows_about(runtime, "@alice:example.org");
+                    REQUIRE(std::ranges::count_if(rows, [](auto const& row) {
+                                return row.observer_user_id == "@bob:example.org";
+                            }) == 1);
+                }
+            }
+        }
+    }
+}
+
+// ADR-0319: signing out revokes access. It finishes however the notification fares.
+SCENARIO("A failed device-list write does not stop a logout", "[device-lists][security][key-api]")
+{
+    GIVEN("alice and bob sharing a room, and the next device-list write failing")
+    {
+        auto started = merovingian::homeserver::start_client_server(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        auto const alice = register_user(runtime, "alice");
+        auto const bob = register_user(runtime, "bob");
+        std::ignore = join_room_with(runtime, bob.token, alice.token, "@alice:example.org");
+        merovingian::database::force_persist_failure_for_statement(runtime.homeserver.database.persistent_store,
+                                                                   "insert_device_list_change");
+        auto const path =
+            GENERATE(std::string{"/_matrix/client/v3/logout"}, std::string{"/_matrix/client/v3/logout/all"});
+
+        WHEN("alice calls " + path)
+        {
+            auto const answered =
+                merovingian::homeserver::handle_client_server_request(runtime, {"POST", path, alice.token, "{}"});
+
+            THEN("the logout succeeds and her token no longer works")
+            {
+                REQUIRE(answered.response.status == 200U);
+                auto const whoami = merovingian::homeserver::handle_client_server_request(
+                    runtime, {"GET", "/_matrix/client/v3/account/whoami", alice.token, {}});
+                REQUIRE(whoami.response.status == 401U);
+            }
+        }
+    }
+}

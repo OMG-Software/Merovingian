@@ -4,6 +4,10 @@ The five high findings of security audit run 2 (ref 5e67d4e8).
 
 ### Security
 
+- **A failed device-list write is no longer silent.** Key, signature and device-name changes were committed and then
+  answered 200 even if the write telling other local users failed, so those users never learned of the change. The
+  client now gets a 500 saying the change was stored, and a retry records the notification. Logout and device deletion
+  still complete, and log what they could not deliver (ADR-0319).
 - **One signed PDU no longer stops a room's local events (F-01, ADR-0314).** A locally composed event's depth was
   one more than the deepest row stored for the room, rejected rows included, so a rejected PDU at depth 2^53-1 from
   any server made every later local event unparseable, across restarts. Depth now comes from the event's own

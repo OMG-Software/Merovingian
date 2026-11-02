@@ -4018,13 +4018,17 @@ namespace
         yes,
     };
 
+    // Says plainly that the change stands: it was committed before the write that failed (ADR-0319).
+    constexpr auto device_list_change_unrecorded =
+        std::string_view{"the change was stored, but other devices could not be told; retry the request"};
+
     // ADR-0317. Spec ("Tracking the device list for a user"): `device_lists.changed` tells a client
     // about the users it shares a room with. Only a local user has a client here; a remote user's
     // server learns through m.device_list_update. One batch, so one stream position and two commits
     // (the watermark, then the rows) under the runtime lock, however large a room's roster is (a
     // remote server chooses it).
-    auto record_shared_room_device_changes(ClientServerRuntime& rt, std::string_view user_id,
-                                           NotifyOwnDevices notify_own_devices) -> void
+    [[nodiscard]] auto record_shared_room_device_changes(ClientServerRuntime& rt, std::string_view user_id,
+                                                         NotifyOwnDevices notify_own_devices) -> bool
     {
         auto const local_users = local_user_ids(rt.homeserver.database);
         auto observers = std::set<std::string_view>{};
@@ -4055,20 +4059,28 @@ namespace
         {
             changes.push_back({0U, std::string{observer}, std::string{user_id}, "changed"});
         }
-        // ADR-0315: at the counter's ceiling no position is left to carry the change. What it reports is
-        // committed, and a logout or device deletion must finish, because revoking access outweighs the
-        // notification. Uploads a client can retry are refused before they get here.
+        // What this reports is already committed, so a failure here cannot undo it (ADR-0319). A caller the
+        // client can retry reports the failure; a logout or device deletion finishes regardless, because
+        // revoking access outweighs a notification. At the counter's ceiling no position is left at all
+        // (ADR-0315), and uploads are refused before they get here.
+        auto recorded = false;
         try
         {
-            std::ignore = record_device_list_changes(rt, std::move(changes));
+            recorded = record_device_list_changes(rt, std::move(changes));
         }
         catch (std::overflow_error const&)
         {
-            log_diagnostic("device_list.change_undelivered", {
-                                                                 {"user_id", std::string{user_id},            false},
-                                                                 {"reason",  "sync stream counter exhausted", false}
+            recorded = false;
+        }
+        if (!recorded)
+        {
+            log_diagnostic("device_list.change_undelivered",
+                           {
+                               {"user_id", std::string{user_id},                  false},
+                               {"reason",  "observer rows could not be recorded", false}
             });
         }
+        return recorded;
     }
 
     auto erase_runtime_device(ClientServerRuntime& rt, std::string_view user_id, std::string_view device_id) -> void
@@ -7700,11 +7712,15 @@ namespace
         // /keys/query.
         if (device_keys_object != nullptr)
         {
-            record_shared_room_device_changes(rt, user, NotifyOwnDevices::yes);
+            auto const recorded = record_shared_room_device_changes(rt, user, NotifyOwnDevices::yes);
 
             // Notify remote servers so they can fetch the updated keys and
             // deliver room keys to this device (spec v1.19 SS4.1).
             broadcast_device_list_updates(rt, user, remote_servers_for_user(rt.homeserver, user));
+            if (!recorded)
+            {
+                return err(500U, "M_UNKNOWN", device_list_change_unrecorded);
+            }
         }
         // Reject any one-time / fallback key that is not signed by the
         // device's own ed25519 identity. The Matrix v1.19 spec requires
@@ -11294,7 +11310,7 @@ namespace
             // for verification to complete). Also fan out to room-sharing local users and
             // remote servers.
             {
-                record_shared_room_device_changes(rt, user, NotifyOwnDevices::yes);
+                auto const recorded = record_shared_room_device_changes(rt, user, NotifyOwnDevices::yes);
                 auto const destinations = remote_servers_for_user(rt.homeserver, user);
                 broadcast_device_list_updates(rt, user, destinations);
                 // Spec v1.19 §m.signing_key_update: remote servers learn of a
@@ -11304,6 +11320,10 @@ namespace
                     object_member(*cs_body, "self_signing_key") != nullptr)
                 {
                     broadcast_signing_key_update(rt, user, destinations);
+                }
+                if (!recorded)
+                {
+                    return err(500U, "M_UNKNOWN", device_list_change_unrecorded);
                 }
             }
             return resp(200U, key_api_success_body(route.endpoint));
@@ -11322,9 +11342,15 @@ namespace
             }
             // Spec §11.11.1: signature upload changes the verified key graph; MUST propagate
             // device_lists.changed so other devices discover the self-signed state.
-            record_shared_room_device_changes(rt, user, NotifyOwnDevices::yes);
-            broadcast_device_list_updates(rt, user, remote_servers_for_user(rt.homeserver, user));
-            return resp(200U, key_api_success_body(route.endpoint));
+            {
+                auto const recorded = record_shared_room_device_changes(rt, user, NotifyOwnDevices::yes);
+                broadcast_device_list_updates(rt, user, remote_servers_for_user(rt.homeserver, user));
+                if (!recorded)
+                {
+                    return err(500U, "M_UNKNOWN", device_list_change_unrecorded);
+                }
+                return resp(200U, key_api_success_body(route.endpoint));
+            }
         case auth::KeyApiEndpoint::create_key_backup_version: {
             // Generate a unique version for this new backup.
             auto const new_ver = key_backup_next_version(rt.homeserver.database.persistent_store, user);
@@ -11412,7 +11438,7 @@ namespace
             device->display_name = body->display_name;
             // Record a device list change for every local user who shares a
             // room with the updated user so their /sync streams surface it.
-            record_shared_room_device_changes(rt, user, NotifyOwnDevices::no);
+            auto const recorded = record_shared_room_device_changes(rt, user, NotifyOwnDevices::no);
             // Spec (SS API, "Device Management"): m.device_list_update EDUs go to every server that
             // shares a room with the user "whenever that user's device list changes ... or changes
             // in device information such as the device's human-readable name".
@@ -11420,6 +11446,10 @@ namespace
                                           std::string_view{device->device_id});
             append_local_audit(rt.homeserver.database, observability::AuditCategory::auth, "device.updated", user,
                                device->device_id, "display_name_updated");
+            if (!recorded)
+            {
+                return err(500U, "M_UNKNOWN", device_list_change_unrecorded);
+            }
             return resp(200U, "{}");
         }
         }
@@ -13189,7 +13219,7 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
         if (r.status == 200U && logged_out_session.has_value())
         {
             erase_runtime_device(rt, logged_out_session->user_id, logged_out_session->device_id);
-            record_shared_room_device_changes(rt, logged_out_session->user_id, NotifyOwnDevices::no);
+            std::ignore = record_shared_room_device_changes(rt, logged_out_session->user_id, NotifyOwnDevices::no);
         }
         // actor is not yet resolved here (pre-auth gate); log token presence only
         log_diagnostic(r.status == 200U ? "account.logout.accepted" : "account.logout.rejected",
@@ -14012,7 +14042,7 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             std::erase_if(rt.devices, [&user](ClientDevice const& device) {
                 return device.user_id == *user;
             });
-            record_shared_room_device_changes(rt, *user, NotifyOwnDevices::no);
+            std::ignore = record_shared_room_device_changes(rt, *user, NotifyOwnDevices::no);
         }
         log_diagnostic(r.ok ? "account.logout_all.accepted" : "account.logout_all.rejected",
                        {
@@ -15769,7 +15799,7 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                                 result.reason);
         }
         erase_runtime_device(rt, *user, device_id);
-        record_shared_room_device_changes(rt, *user, NotifyOwnDevices::no);
+        std::ignore = record_shared_room_device_changes(rt, *user, NotifyOwnDevices::no);
         return dispatch_resp(req, rt, 200U, "{}");
     }
     if (req.method == "POST" && req.target == "/_matrix/client/v3/delete_devices")
@@ -15838,7 +15868,7 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
         }
         if (deleted_any)
         {
-            record_shared_room_device_changes(rt, *user, NotifyOwnDevices::no);
+            std::ignore = record_shared_room_device_changes(rt, *user, NotifyOwnDevices::no);
         }
         return dispatch_resp(req, rt, 200U, "{}");
     }
