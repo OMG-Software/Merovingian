@@ -40,12 +40,14 @@
 #include <chrono>
 #include <cstdint>
 #include <functional>
+#include <limits>
 #include <memory>
 #include <mutex>
 #include <optional>
 #include <string>
 #include <string_view>
 #include <thread>
+#include <tuple>
 #include <utility>
 #include <variant>
 #include <vector>
@@ -1891,6 +1893,63 @@ SCENARIO("A join that replaces an invite carries the invite's content as unsigne
             {
                 REQUIRE(synced.response.body.find(R"("prev_content":{"is_direct":true,"membership":"invite"})") !=
                         std::string::npos);
+            }
+        }
+    }
+}
+
+// ADR-0315: at its ceiling the sync stream counter throws. The invite handler answers a worker waiting on
+// an IPC reply, and a throw leaves that worker to time out, so the handler reserves its sync position
+// before anything commits and answers with an error. A failed invite must not leave the invite stored.
+SCENARIO("An invite that cannot get a sync position is refused and leaves nothing stored",
+         "[integration][federation][invite][sync-stream][security]")
+{
+    GIVEN("a server whose sync stream counter is at its ceiling, and a remote server's invite for a local user")
+    {
+        REQUIRE(sodium_init() >= 0);
+        auto started = merovingian::homeserver::start_client_server(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        merovingian::homeserver::wire_federation_callbacks(runtime.homeserver);
+        std::ignore = register_user(runtime, "carol");
+        auto const carol_id = "@carol:" + std::string{runtime.homeserver.config.server().server_name};
+        auto const bob = std::string{"@bob:"} + std::string{remote_server};
+        auto const room_id = std::string{bare_room_id};
+        auto invite = merovingian::federation::InviteRequest{};
+        invite.room_id = room_id;
+        invite.event_id = "$invite-at-ceiling:" + std::string{remote_server};
+        invite.room_version = "12";
+        invite.origin = std::string{remote_server};
+        invite.invite_event_json =
+            R"({"auth_events":[],"content":{"membership":"invite"},"depth":3,"origin_server_ts":1,"prev_events":[],)"
+            R"("room_id":")" +
+            room_id + R"(","sender":")" + bob + R"(","state_key":")" + carol_id + R"(","type":"m.room.member"})";
+        auto& store = runtime.homeserver.database.persistent_store;
+        constexpr auto ceiling = static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max());
+        store.next_sync_stream_id = ceiling;
+
+        WHEN("the invite arrives")
+        {
+            auto const result = runtime.homeserver.federation.invite_handler(invite);
+
+            THEN("the remote server is told it failed")
+            {
+                REQUIRE_FALSE(result.accepted);
+                REQUIRE(result.status == 500U);
+            }
+
+            THEN("no membership, invite or event was stored")
+            {
+                REQUIRE(std::ranges::none_of(store.memberships, [&](auto const& row) {
+                    return row.room_id == room_id;
+                }));
+                REQUIRE_FALSE(merovingian::database::find_invite(store, room_id, carol_id).has_value());
+                REQUIRE_FALSE(store.events.contains(invite.event_id));
+            }
+
+            THEN("the counter stayed where it was")
+            {
+                REQUIRE(store.next_sync_stream_id == ceiling);
             }
         }
     }

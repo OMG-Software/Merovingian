@@ -17,11 +17,15 @@ The five high findings of security audit run 2 (ref 5e67d4e8).
   raise the server-wide counter, so any user could set it to 2^64-1. It then wrapped, and other users' to-device
   messages, E2EE room keys among them, were deleted undelivered, and their receipts and account data dropped. A token
   ahead of any stream is now served as an initial sync with the counter untouched, `ensure_sync_stream_id_ahead_of` is
-  removed, and `allocate_sync_stream_id` throws at `INT64_MAX` rather than wrap.
+  removed, and `allocate_sync_stream_id` throws at `INT64_MAX` rather than wrap. A federated invite, or the leave that
+  withdraws one, takes its position before anything is stored, so at the ceiling nothing is left half done; the invite
+  answers 500 to the worker waiting on it. A client offline from a database restore until the counter passes its token
+  can still lose to-device messages (ADR-0315, user manual).
 - **Device and key changes write one batch for local observers (F-04, ADR-0317).** `/keys/upload`,
   `/keys/device_signing/upload`, `/keys/signatures/upload`, `PUT` and `DELETE /devices/{deviceId}`, `/delete_devices`,
   `/logout` and `/logout/all` committed once per room member, remote members included, under the global lock. They now
-  share `record_shared_room_device_changes`: one stream position and one commit, however large the room's roster. No
+  share `record_shared_room_device_changes`: one stream position and two commits (the watermark, then the rows), however large the room's
+  roster. No
   row names a remote observer; those were never read.
 - **A non-state event cannot be named in `auth_events` (F-05).** An entry with no `state_key` passed selection as if its
   `state_key` were empty, so a power-level-0 remote member could put a non-state `m.room.join_rules` in a join's auth

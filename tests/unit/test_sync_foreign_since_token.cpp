@@ -177,6 +177,62 @@ SCENARIO("A /sync token ahead of the server's streams does not move server-wide 
 
 // The counter's rows are BIGINT on PostgreSQL, and ids are only ever skipped, never reused: a reused
 // id falls at or below clients' tokens, which is what deleted their to-device messages.
+// ADR-0315: a restored database can put the counter below tokens clients still hold. Any sync in that
+// window is served as an initial sync and hands back a token from the restored stream, so a client that
+// syncs is off the old token before the counter can reach it, and to-device rows numbered below the old
+// token are delivered rather than purged as acknowledged.
+SCENARIO("Clients holding tokens from before a database restore still get their to-device messages",
+         "[sync][security][sync-stream][restore]")
+{
+    GIVEN("two clients holding tokens ahead of a counter set back by a restore")
+    {
+        auto started = merovingian::homeserver::start_client_server(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        auto const alice = register_user(runtime, "alice");
+        auto const bob = register_user(runtime, "bob");
+        auto& store = runtime.homeserver.database.persistent_store;
+        auto const counter_at_backup = store.next_sync_stream_id;
+        for (auto allocated = 0; allocated < 64; ++allocated)
+        {
+            std::ignore = merovingian::database::allocate_sync_stream_id(store);
+        }
+        auto const alice_since = json_string_after(sync_since(runtime, alice.token, {}).response.body, "next_batch");
+        auto const bob_since = json_string_after(sync_since(runtime, bob.token, {}).response.body, "next_batch");
+        store.next_sync_stream_id = counter_at_backup;
+
+        WHEN("each is sent a to-device message numbered below their token, and they sync")
+        {
+            auto const send_to = [&](std::string const& user, std::string const& device, std::string const& txn) {
+                auto const body = R"({"messages":{"@)" + user + R"(:example.org":{")" + device +
+                                  R"(":{"secret":"room-key-for-)" + user + R"("}}}})";
+                auto const sent = merovingian::homeserver::handle_client_server_request(
+                    runtime, {"PUT", "/_matrix/client/v3/sendToDevice/m.room_key/" + txn, alice.token, body});
+                REQUIRE(sent.response.status == 200U);
+            };
+            send_to("alice", alice.device_id, "txn-restore-alice");
+            send_to("bob", bob.device_id, "txn-restore-bob");
+            auto const alice_token_position = merovingian::sync::decode_stream_token(alice_since)->sync_stream_id;
+            REQUIRE(store.next_sync_stream_id < alice_token_position);
+
+            auto const alice_sync = sync_since(runtime, alice.token, alice_since);
+            auto const bob_sync = sync_since(runtime, bob.token, bob_since);
+
+            THEN("each client receives their own message")
+            {
+                REQUIRE(alice_sync.response.body.find("room-key-for-alice") != std::string::npos);
+                REQUIRE(bob_sync.response.body.find("room-key-for-bob") != std::string::npos);
+            }
+
+            THEN("each is handed a token from the restored stream, replacing the old one")
+            {
+                REQUIRE(next_batch_of(alice_sync).sync_stream_id < alice_token_position);
+                REQUIRE(next_batch_of(bob_sync).sync_stream_id < alice_token_position);
+            }
+        }
+    }
+}
+
 SCENARIO("The sync stream counter refuses to pass its ceiling rather than wrap", "[database][sync-stream][security]")
 {
     GIVEN("a store whose counter is at the ceiling")

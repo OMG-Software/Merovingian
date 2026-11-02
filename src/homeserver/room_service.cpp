@@ -1547,7 +1547,8 @@ namespace
 
     // Spec (client-server-api.md, "Tracking the device list for a user"): a user who starts sharing a
     // room with a local user is added to that user's `device_lists.changed`. Called once the joiner is
-    // on the room's roster. One batch, so one stream position and one commit however large the room is
+    // on the room's roster. One batch, so one stream position and two commits (the watermark, then the
+    // rows) however large the room is
     // (the roster of a federated room is chosen by a remote server).
     [[nodiscard]] auto record_room_share_started_device_changes(HomeserverRuntime& runtime, std::string_view room_id,
                                                                 std::string_view joining_user_id) -> bool

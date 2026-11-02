@@ -2117,7 +2117,7 @@ membership. No whole-finding or release acceptance is claimed. See proposed
   with no de-duplication or pruning, one synchronous commit per row under the runtime mutex.
   Mitigation: a change is recorded only for local active users who share a joined room with
   the subject; nothing is written if none does. All rows for one EDU are written as one
-  batch (one stream position, one transaction), and `device_list_changes` holds at most one
+  batch (one stream position, a watermark write and one row transaction), and `device_list_changes` holds at most one
   row per (observer, subject): a repeat replaces the earlier row at the newest stream
   position, which is what `/sync` needs because it reports only the latest change per
   subject. The table is thereby bounded by observers x subjects that share a room, so no

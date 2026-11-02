@@ -59,6 +59,7 @@
 #include <limits>
 #include <mutex>
 #include <optional>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <system_error>
@@ -2123,7 +2124,8 @@ namespace
                     // with the subject has any reason to re-fetch their keys.
                     // Recording a row for every local user let one peer write
                     // (local users) rows per EDU. All rows for this EDU go to
-                    // the store as one batch: one stream position, one commit.
+                    // the store as one batch: one stream position, two commits
+                    // (the watermark, then the rows).
                     // A repeat replaces the pair's earlier row, so the table is
                     // bounded by observers x subjects that share a room.
                     auto changes = std::vector<database::PersistentDeviceListChange>{};
@@ -2939,6 +2941,19 @@ namespace
                     return {true, 200U, {}, std::move(*signed_event)};
                 }
             }
+            // Reserve the sync position before anything commits. At its ceiling the allocator throws
+            // (ADR-0315): the invite is then refused whole, and the worker waiting on this answer is
+            // told so rather than timing out over an invite that was stored anyway.
+            auto sync_stream_id = std::uint64_t{0U};
+            try
+            {
+                sync_stream_id = database::allocate_sync_stream_id(rt->database.persistent_store);
+            }
+            catch (std::overflow_error const&)
+            {
+                LOG_WARNING("Invite refused: the sync stream counter is at its ceiling; event_id=" + invite.event_id);
+                return {false, 500U, "sync stream counter exhausted", {}};
+            }
             auto const stream_ordering = allocate_stream_ordering(rt->database);
             // DB-4: the membership row and the invite metadata commit together,
             // and with the invite event itself when it is stored below.
@@ -2995,7 +3010,6 @@ namespace
                 enqueue_appservice_delivery(*rt, invite.room_id, {}, invite.event_id, stream_ordering, *sender,
                                             *target_user);
             }
-            auto const sync_stream_id = database::allocate_sync_stream_id(rt->database.persistent_store);
             if (rt->sync_notifier != nullptr)
             {
                 rt->sync_notifier->publish(visible_stream_position(rt->database), sync_stream_id);
@@ -4964,6 +4978,8 @@ namespace
             return std::nullopt;
         }
 
+        // Before anything commits: the allocator throws at its ceiling (ADR-0315).
+        auto const sync_stream_id = database::allocate_sync_stream_id(store);
         auto const stream_ordering = allocate_stream_ordering(runtime.database);
         auto leave = database::PersistentEvent{};
         leave.event_id = envelope.event_id;
@@ -4984,7 +5000,6 @@ namespace
             return federation::PduIngestionResult{federation::PduIngestionStatus::internal_error,
                                                   "invite rescission persistence failed"};
         }
-        auto const sync_stream_id = database::allocate_sync_stream_id(store);
         if (runtime.sync_notifier != nullptr)
         {
             runtime.sync_notifier->publish(visible_stream_position(runtime.database), sync_stream_id);

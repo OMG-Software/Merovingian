@@ -23,7 +23,7 @@ to local users, and remote servers learn through `m.device_list_update`.
 
 ## Decision Outcome
 
-Chosen option: "One helper", because it gives one stream position and one commit whatever the roster holds, and
+Chosen option: "One helper", because it gives one stream position and two commits (the watermark, then the rows) whatever the roster holds, and
 stores nothing that is never read. Keeping remote rows would leave the batch's size and the table's growth in a
 remote server's hands. A background job adds a queue and a delay between a key upload and the observer's next
 sync for work that is now small. Each call site says whether the caller's own devices get a row, as they did

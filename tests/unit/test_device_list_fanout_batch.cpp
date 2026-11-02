@@ -21,7 +21,8 @@
 // Audit run-2 F-04. Spec: Matrix Client-Server API v1.19, "Tracking the device list for a user":
 // `device_lists.changed` is how a client learns of a change, so only a local user has anything to be
 // told; a remote user's server learns through m.device_list_update. One request records one batch:
-// one stream position and one commit, however large a remote server has made the room's roster.
+// one stream position and two commits (the watermark, then the rows), however large a remote server
+// has made the room's roster.
 
 namespace
 {
@@ -188,7 +189,7 @@ SCENARIO("A device or key change records one batch for local observers only", "[
                 REQUIRE(self_rows == (trigger.notifies_self ? 1 : 0));
             }
 
-            THEN("every row carries one stream position, so the batch was one commit")
+            THEN("every row carries one stream position, so the commits do not grow with the roster")
             {
                 auto positions = std::set<std::uint64_t>{};
                 for (auto const& row : rows_about(runtime, "@alice:example.org"))

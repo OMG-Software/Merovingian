@@ -314,6 +314,7 @@ SCENARIO("An event naming a non-state event in auth_events is rejected",
             auto const accepted = merovingian::homeserver::ingest_pdu_event(
                 started.runtime,
                 make_envelope(room_id, event_id, type, std::nullopt, admin, prev, auth_ids, depth, json));
+            // Fixture: no auth rule forbids this non-state event from a sender with the power to send it.
             REQUIRE(accepted.status == PduIngestionStatus::accepted);
         };
         auto const send_self_join = [&](std::string const& event_id, std::vector<std::string> const& prev,
@@ -339,8 +340,12 @@ SCENARIO("An event naming a non-state event in auth_events is rejected",
 
             THEN("the join is rejected and enters no state")
             {
+                // Spec MUST: reject entries whose `type` and `state_key` "don’t match those specified by the auth
+                // events selection" (rule 2.2).
                 REQUIRE(result.status == PduIngestionStatus::rejected_auth);
                 auto const& state = started.runtime.database.persistent_store.state;
+                // Spec MUST: state is calculated "except not updating with the rejected event where it is a state
+                // event".
                 REQUIRE(std::ranges::none_of(state, [](merovingian::database::PersistentStateEvent const& row) {
                     return row.event_id == "$poisoned-join:local.example.org";
                 }));
@@ -354,6 +359,7 @@ SCENARIO("An event naming a non-state event in auth_events is rejected",
 
             THEN("it is accepted, so the rejection above is about the named event")
             {
+                // Spec MUST: entries that are the selected subset of room state pass rule 2.2.
                 REQUIRE(result.status == PduIngestionStatus::accepted);
             }
         }
@@ -380,6 +386,7 @@ SCENARIO("An event naming a non-state event in auth_events is rejected",
         auto const fake = merovingian::homeserver::ingest_pdu_event(
             started.runtime, make_envelope(room_id, "$fake-pl:local.example.org", "m.room.power_levels", std::nullopt,
                                            admin, {genesis.admin_member_id}, auth_ids, 3, fake_json));
+        // Fixture: no auth rule forbids this non-state event from a sender with the power to send it.
         REQUIRE(fake.status == PduIngestionStatus::accepted);
 
         WHEN("a message names it in auth_events in place of the real power levels")
@@ -394,6 +401,8 @@ SCENARIO("An event naming a non-state event in auth_events is rejected",
 
             THEN("it is rejected")
             {
+                // Spec MUST: reject entries whose `type` and `state_key` "don’t match those specified by the auth
+                // events selection" (rule 2.2).
                 REQUIRE(result.status == PduIngestionStatus::rejected_auth);
             }
         }

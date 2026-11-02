@@ -40,7 +40,9 @@ No client input moves server-wide stream state, and `ensure_sync_stream_id_ahead
 `allocate_sync_stream_id` throws `std::overflow_error` at `INT64_MAX`, the largest value its BIGINT rows can hold,
 leaving the counter where it was. Saturating was rejected because it reuses an id, and reused ids are what deleted
 messages. Returning an error through its 25 callers was rejected because, with the ratchet gone, the ceiling needs
-2^63 allocations or a database edited by hand; a request that hits it fails rather than corrupts.
+2^63 allocations or a database edited by hand; a request that hits it fails rather than corrupts. Paths that commit
+and then allocate reserve the id first, so failing leaves nothing half done. The federated invite handler also
+catches the throw and answers 500, because its caller is a worker waiting on an IPC reply.
 
 ### Positive Consequences
 
@@ -50,5 +52,11 @@ messages. Returning an error through its 25 callers was rejected because, with t
 ### Negative Consequences
 
 * A client whose token is ahead after a database restore gets a full initial sync.
+* A client that stays offline from a restore until the counter has passed its token cannot be told apart from a
+  current one. Rows numbered after the restore at or below that token count as seen, and device-targeted to-device
+  rows among them are purged undelivered. Any sync before then replaces the token, so only a client offline
+  throughout is affected. `ensure_sync_stream_id_ahead_of` did not cover this client either, as it acted only on a
+  presented token. Telling such a token apart needs something the restore does not bring back, so it is left open;
+  the user manual warns operators.
 * A database already holding a poisoned watermark refuses every sync-stream write until an operator repairs it.
   It is not repaired automatically: lowering the counter would reuse ids that clients may have seen.

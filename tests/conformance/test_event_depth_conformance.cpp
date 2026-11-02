@@ -166,10 +166,12 @@ SCENARIO("A locally composed event's depth comes from its prev_events and stops 
         {
             auto const tips = merovingian::homeserver::forward_extremities_for_new_event(
                 runtime.database.persistent_store, ctx.room_id);
+            // Fixture: one forward extremity, so this event has a single prev_event to take its depth from.
             REQUIRE(tips.size() == 1U);
             auto const tip_depth = stored_depth(runtime, tips.front());
 
             auto const sent = merovingian::homeserver::send_event(runtime, ctx.alice_token, ctx.room_id, message);
+            // Spec MUST: `depth` is required on every PDU, so the send has to produce one.
             REQUIRE(sent.ok);
 
             THEN("its depth is the depth of its prev_event plus one")
@@ -186,6 +188,7 @@ SCENARIO("A locally composed event's depth comes from its prev_events and stops 
             auto const at_limit = make_message_pdu(ctx.room_id, "$at-limit:example.org", "@alice:example.org", tips,
                                                    alice_auth_event_ids(runtime, ctx.room_id), depth_limit);
             auto const ingested = merovingian::homeserver::ingest_pdu_event(runtime, at_limit);
+            // Spec MUST: 2^53 - 1 is a valid depth, the limit a room’s depth can reach.
             REQUIRE(ingested.status == merovingian::federation::PduIngestionStatus::accepted);
 
             auto const first = merovingian::homeserver::send_event(runtime, ctx.alice_token, ctx.room_id, message);
@@ -193,7 +196,9 @@ SCENARIO("A locally composed event's depth comes from its prev_events and stops 
 
             THEN("each is stored at the limit and none goes above it")
             {
+                // Spec MUST: "If the room’s depth is already at the limit, the depth must be set to the limit."
                 REQUIRE(first.ok);
+                // Spec MUST: "If the room’s depth is already at the limit, the depth must be set to the limit."
                 REQUIRE(second.ok);
                 // Spec MUST: "If the room's depth is already at the limit, the depth must be set to the limit."
                 REQUIRE(stored_depth(runtime, first.value) == static_cast<std::uint64_t>(depth_limit));
@@ -223,6 +228,7 @@ SCENARIO("A rejected PDU claiming the largest depth does not affect local events
         auto const ctx = make_alice_room(runtime);
         auto const tips =
             merovingian::homeserver::forward_extremities_for_new_event(runtime.database.persistent_store, ctx.room_id);
+        // Fixture: one forward extremity, the tip the local events below must build on.
         REQUIRE(tips.size() == 1U);
         auto const tip_depth = stored_depth(runtime, tips.front());
 
@@ -230,7 +236,9 @@ SCENARIO("A rejected PDU claiming the largest depth does not affect local events
             make_message_pdu(ctx.room_id, "$hostile:evil.example", "@mallory:evil.example", {}, {}, depth_limit);
         std::ignore = merovingian::homeserver::ingest_pdu_event(runtime, hostile);
         auto const rejected = runtime.database.persistent_store.events.find("$hostile:evil.example");
+        // Fixture: the event reached this server, so a later check on it means something.
         REQUIRE(rejected != runtime.database.persistent_store.events.end());
+        // Spec MUST: an event that fails the authorisation rules "is rejected"; the sender is not in the room.
         REQUIRE(rejected->status == "rejected");
 
         WHEN("a local user sends a message, then sets the room's topic")
@@ -244,9 +252,13 @@ SCENARIO("A rejected PDU claiming the largest depth does not affect local events
 
             THEN("both are stored, built on the room's real tip and not on the rejected event")
             {
+                // Spec SHOULD: a rejected event is not "included as a prev event", so it cannot stop a local send.
                 REQUIRE(sent.ok);
+                // Spec SHOULD: a rejected event is not "included as a prev event", so it cannot stop a local send.
                 REQUIRE(topic.ok);
+                // Spec MUST: "The maximum depth of the `prev_events`, plus one"; a rejected event is not one of them.
                 REQUIRE(stored_depth(runtime, sent.value) == tip_depth + 1U);
+                // Spec MUST: "The maximum depth of the `prev_events`, plus one"; a rejected event is not one of them.
                 REQUIRE(stored_depth(runtime, topic.value) == tip_depth + 2U);
                 // Spec SHOULD: a rejected event should not "be included as a prev event in any new events".
                 auto const stored = runtime.database.persistent_store.events.find(sent.value);
@@ -288,6 +300,7 @@ SCENARIO("A make_join template never offers a depth above the limit", "[conforma
 
                 THEN("its depth is the limit")
                 {
+                    // Spec MUST: make_join answers an allowed joiner with a template event, which carries a `depth`.
                     REQUIRE(tmpl.has_value());
                     // Spec MUST: "Must be less than the maximum value for an integer"; held at the limit.
                     REQUIRE(tmpl->depth == depth_limit);
