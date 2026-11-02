@@ -2237,29 +2237,13 @@ namespace
                     tmpl.auth_events.push_back(s.event_id);
                 }
             }
-            // Compute the forward extremities: events not referenced as
-            // prev_events by any other event in this room. These are the only
-            // valid prev_events for a new join template; sending all room events
-            // inflates the state snapshot and breaks state resolution at the
-            // joining server.
-            auto referenced = std::unordered_set<std::string>{};
-            for (auto const& evt : store.events)
+            // The room's stored tips, as for a local event (ADR-0318). Only accepted events become
+            // tips, and the selection stops at the room version's limit. A room with none has nothing
+            // a joiner can build on, and an empty prev_events would detach the join from the room's graph.
+            tmpl.prev_events = forward_extremities_for_new_event(store, room_id);
+            if (tmpl.prev_events.empty())
             {
-                if (evt.room_id == room_id)
-                {
-                    for (auto const& prev_id : evt.prev_event_ids)
-                    {
-                        referenced.insert(prev_id);
-                    }
-                }
-            }
-            for (auto const& evt : store.events)
-            {
-                if (evt.room_id == room_id && !evt.event_id.empty() &&
-                    referenced.find(evt.event_id) == referenced.end())
-                {
-                    tmpl.prev_events.push_back(evt.event_id);
-                }
+                return std::nullopt;
             }
             tmpl.depth = static_cast<std::int64_t>(depth_after_prev_events(store, tmpl.prev_events));
             auto content_obj = canonicaljson::Object{};
@@ -5517,7 +5501,18 @@ auto pdu_event_already_stored(HomeserverRuntime& runtime, std::string_view room_
 auto ingest_pdu_event(HomeserverRuntime& runtime, federation::InboundPduEnvelope const& envelope)
     -> federation::PduIngestionResult
 {
-    auto result = ingest_pdu_event_locked(runtime, envelope);
+    auto result = federation::PduIngestionResult{};
+    try
+    {
+        result = ingest_pdu_event_locked(runtime, envelope);
+    }
+    catch (std::overflow_error const&)
+    {
+        // The sync stream counter is at its ceiling (ADR-0315). Answer, so that a worker relaying this
+        // PDU is told at once rather than waiting out its IPC timeout.
+        LOG_WARNING("PDU refused: the sync stream counter is at its ceiling; event_id=" + envelope.event_id);
+        return {federation::PduIngestionStatus::internal_error, "sync stream counter exhausted"};
+    }
     // R03: every status below stored the event, so a retained PDU that names it
     // may now be placeable. ingest_pdu_event_locked has returned, so its room
     // stripe and runtime lock are released: waking the retry job here holds no

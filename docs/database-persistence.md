@@ -1076,7 +1076,7 @@ Two independent mechanisms close this, together:
    | `state_groups` | ADR-0064 phase A (0.12.13): the worker serves federation `/state` and `/state_ids` locally today from `current_state`/event relations; a later phase moves that to state groups, granted now so that phase needs no further role change |
    | `state_group_state` | same ADR-0064 phase-A reasoning, for a group's own delta/snapshot rows |
    | `event_state_groups` | same ADR-0064 phase-A reasoning, for the event → state group mapping |
-   | `forward_extremities` | same ADR-0064 phase-A reasoning: the worker's membership-template forward-extremity read (currently derived from `events`) becomes sourced from here in a later phase |
+   | `forward_extremities` | same ADR-0064 phase-A reasoning: the worker's membership-template forward-extremity read comes from here (ADR-0318) |
    | `schema_migrations` | needed for ANY store to open (schema-version check via `load_schema_state`), not gated by `TableLoadProfile` at all |
 
    `server_signing_keys` needs a genuine caveat: the worker's remote-key

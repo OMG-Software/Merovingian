@@ -2707,8 +2707,10 @@ later point. A client that syncs soon after the restore is given a full initial
 sync and carries on. A client that stays offline while the server issues as many
 stream positions as the backup lost presents a token that looks current, and
 skips what was numbered below it, to-device messages included. E2EE room keys
-sent to that device in that window are lost, so have such a client sign in
-again (ADR-0315).
+sent to that device in that window are gone from the server. Signing in again
+resets the client's sync state but does not bring them back. Recover the keys
+from the user's key backup, or have them shared again, where that is available;
+messages whose keys cannot be recovered stay unreadable (ADR-0315).
 The commands below assume a root shell, `backup` pointing at the recovered
 set, and no existing destination database/file; they deliberately do not drop
 or overwrite a live database. Start a fresh root shell with fail-fast handling;

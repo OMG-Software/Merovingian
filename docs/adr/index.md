@@ -299,6 +299,7 @@
 * [0315 - A /sync token ahead of the streams is an initial sync, and the sync stream counter never wraps](0315-a-sync-token-ahead-of-the-streams-is-an-initial-sync-and-the-counter-never-wraps.md)
 * [0316 - createRoom caps its invite and initial_state entries](0316-createroom-caps-its-invite-and-initial-state-entries.md)
 * [0317 - Client device changes record one batch for local observers](0317-client-device-changes-record-one-batch-for-local-observers.md)
+* [0318 - A membership template offers the room's stored forward extremities, and none is offered without them](0318-a-membership-template-offers-the-rooms-stored-forward-extremities.md)
 
 ## Proposed Records
 

@@ -9,6 +9,10 @@ The five high findings of security audit run 2 (ref 5e67d4e8).
   any server made every later local event unparseable, across restarts. Depth now comes from the event's own
   `prev_events` and stays at 2^53-1 once there, as `rooms/v11.md` requires. Membership templates (`make_join`,
   `make_leave`, `make_knock`) use the same function, so they offer no depth above the limit.
+- **A membership template offers only accepted tips (F-06, ADR-0318).** `make_join`, `make_leave` and `make_knock` listed
+  every row no other row cites, so 21 rejected PDUs from a server outside the room pushed the template past the 20
+  `prev_events` limit and blocked joins through this server, and a rejected PDU citing the tip removed the tip. They now
+  use the selection local events use. A room with no tips gets 404 `M_NOT_FOUND`.
 - **`createRoom` caps its entries (F-02, ADR-0316).** `invite` and `initial_state` stop at
   `server.client_api.max_create_room_invites` and `max_create_room_initial_state`, 100 each by default, with
   `400 M_TOO_LARGE` before anything is stored. Each entry stored one event while the server held its global lock, and
@@ -19,7 +23,7 @@ The five high findings of security audit run 2 (ref 5e67d4e8).
   ahead of any stream is now served as an initial sync with the counter untouched, `ensure_sync_stream_id_ahead_of` is
   removed, and `allocate_sync_stream_id` throws at `INT64_MAX` rather than wrap. A federated invite, or the leave that
   withdraws one, takes its position before anything is stored, so at the ceiling nothing is left half done; the invite
-  answers 500 to the worker waiting on it. A client offline from a database restore until the counter passes its token
+  answers 500 to the worker waiting on it, and PDU ingest answers `internal_error`. A client offline from a database restore until the counter passes its token
   can still lose to-device messages (ADR-0315, user manual).
 - **Device and key changes write one batch for local observers (F-04, ADR-0317).** `/keys/upload`,
   `/keys/device_signing/upload`, `/keys/signatures/upload`, `PUT` and `DELETE /devices/{deviceId}`, `/delete_devices`,

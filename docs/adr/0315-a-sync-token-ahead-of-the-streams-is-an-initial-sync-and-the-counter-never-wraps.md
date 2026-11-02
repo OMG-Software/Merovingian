@@ -42,7 +42,8 @@ leaving the counter where it was. Saturating was rejected because it reuses an i
 messages. Returning an error through its 25 callers was rejected because, with the ratchet gone, the ceiling needs
 2^63 allocations or a database edited by hand; a request that hits it fails rather than corrupts. Paths that commit
 and then allocate reserve the id first, so failing leaves nothing half done. The federated invite handler also
-catches the throw and answers 500, because its caller is a worker waiting on an IPC reply.
+catches the throw and answers 500, and PDU ingest answers `internal_error`, because their callers can be a worker
+waiting on an IPC reply.
 
 ### Positive Consequences
 

@@ -1954,3 +1954,64 @@ SCENARIO("An invite that cannot get a sync position is refused and leaves nothin
         }
     }
 }
+
+// ADR-0315: PDU ingest answers an error at the sync stream counter's ceiling. Nothing may be stored, and
+// a worker relaying the PDU has to hear so rather than wait out its IPC timeout.
+SCENARIO("A withdrawn invite that cannot get a sync position is refused and leaves the invite in place",
+         "[integration][federation][invite][sync-stream][security]")
+{
+    GIVEN("carol invited from another server, and a sync stream counter at its ceiling")
+    {
+        REQUIRE(sodium_init() >= 0);
+        auto started = merovingian::homeserver::start_client_server(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        merovingian::homeserver::wire_federation_callbacks(runtime.homeserver);
+        std::ignore = register_user(runtime, "carol");
+        auto const carol_id = "@carol:" + std::string{runtime.homeserver.config.server().server_name};
+        auto const bob = std::string{"@bob:"} + std::string{remote_server};
+        auto const room_id = std::string{bare_room_id};
+        auto invite = merovingian::federation::InviteRequest{};
+        invite.room_id = room_id;
+        invite.event_id = "$invite-before-ceiling:" + std::string{remote_server};
+        invite.room_version = "12";
+        invite.origin = std::string{remote_server};
+        invite.invite_event_json =
+            R"({"auth_events":[],"content":{"membership":"invite"},"depth":3,"origin_server_ts":1,"prev_events":[],)"
+            R"("room_id":")" +
+            room_id + R"(","sender":")" + bob + R"(","state_key":")" + carol_id + R"(","type":"m.room.member"})";
+        REQUIRE(runtime.homeserver.federation.invite_handler(invite).accepted);
+        auto& store = runtime.homeserver.database.persistent_store;
+        store.next_sync_stream_id = static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max());
+
+        WHEN("the inviter's server sends the leave that withdraws the invite")
+        {
+            auto envelope = merovingian::federation::InboundPduEnvelope{};
+            envelope.event_id = "$rescind-at-ceiling:" + std::string{remote_server};
+            envelope.room_id = room_id;
+            envelope.sender = bob;
+            envelope.event_type = "m.room.member";
+            envelope.state_key = carol_id;
+            envelope.depth = 4U;
+            envelope.origin = std::string{remote_server};
+            envelope.room_version = "12";
+            envelope.prev_event_ids = {invite.event_id};
+            envelope.json = R"({"auth_events":[],"content":{"membership":"leave"},"depth":4,"origin_server_ts":2,)"
+                            R"("prev_events":[")" +
+                            invite.event_id + R"("],"room_id":")" + room_id + R"(","sender":")" + bob +
+                            R"(","state_key":")" + carol_id + R"(","type":"m.room.member"})";
+            auto const result = runtime.homeserver.federation.pdu_sink(envelope);
+
+            THEN("the server reports an internal error")
+            {
+                REQUIRE(result.status == merovingian::federation::PduIngestionStatus::internal_error);
+            }
+
+            THEN("carol is still invited and the leave was not stored")
+            {
+                REQUIRE(merovingian::database::find_invite(store, room_id, carol_id).has_value());
+                REQUIRE_FALSE(store.events.contains(envelope.event_id));
+            }
+        }
+    }
+}
