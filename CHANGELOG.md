@@ -21,9 +21,9 @@ The five high findings of security audit run 2 (ref 5e67d4e8).
   raise the server-wide counter, so any user could set it to 2^64-1. It then wrapped, and other users' to-device
   messages, E2EE room keys among them, were deleted undelivered, and their receipts and account data dropped. A token
   ahead of any stream is now served as an initial sync with the counter untouched, `ensure_sync_stream_id_ahead_of` is
-  removed, and `allocate_sync_stream_id` throws at `INT64_MAX` rather than wrap. A federated invite, or the leave that
-  withdraws one, takes its position before anything is stored, so at the ceiling nothing is left half done; the invite
-  answers 500 to the worker waiting on it, and PDU ingest answers `internal_error`. A client offline from a database restore until the counter passes its token
+  removed, and `allocate_sync_stream_id` throws at `INT64_MAX` rather than wrap. Event, room and membership writes stop
+  2^20 positions below that, so a request stores nothing or can finish; `send_join`, invites and client requests answer
+  an error, and PDU ingest answers `internal_error`. A client offline from a database restore until the counter passes its token
   can still lose to-device messages (ADR-0315, user manual).
 - **Device and key changes write one batch for local observers (F-04, ADR-0317).** `/keys/upload`,
   `/keys/device_signing/upload`, `/keys/signatures/upload`, `PUT` and `DELETE /devices/{deviceId}`, `/delete_devices`,

@@ -285,3 +285,85 @@ SCENARIO("The sync stream counter refuses to pass its ceiling rather than wrap",
         }
     }
 }
+
+// ADR-0315: one request takes several sync positions after it stores an event. Refusing the event while
+// positions remain means a request either stores nothing or can finish.
+SCENARIO("Local events stop being stored before the sync stream counter runs out", "[database][sync-stream][security]")
+{
+    GIVEN("a registered user, and a counter inside the reserve below its ceiling")
+    {
+        auto started = merovingian::homeserver::start_client_server(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        auto const user = register_user(runtime, "alice");
+        auto& store = runtime.homeserver.database.persistent_store;
+        auto const events_before = store.events.size();
+        auto const rooms_before = store.rooms.size();
+        constexpr auto ceiling = static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max());
+        store.next_sync_stream_id = ceiling - merovingian::database::sync_stream_event_write_reserve;
+
+        WHEN("the user creates a room")
+        {
+            auto const created = merovingian::homeserver::handle_client_server_request(
+                runtime, {"POST", "/_matrix/client/v3/createRoom", user.token, R"({"preset":"private_chat"})"});
+
+            THEN("it fails and leaves no room or event behind")
+            {
+                REQUIRE(created.response.status >= 400U);
+                REQUIRE(store.rooms.size() == rooms_before);
+                REQUIRE(store.events.size() == events_before);
+            }
+        }
+
+        WHEN("another stream id is requested for a request already under way")
+        {
+            auto const issued = merovingian::database::allocate_sync_stream_id(store);
+
+            THEN("one is still issued")
+            {
+                REQUIRE(issued == ceiling - merovingian::database::sync_stream_event_write_reserve + 1U);
+            }
+        }
+    }
+}
+
+// ADR-0315: forgetting deletes, so the store's reserve does not cover it. It takes its position first.
+SCENARIO("Forgetting a room at the sync stream counter's limit keeps the membership",
+         "[database][sync-stream][security]")
+{
+    GIVEN("a user who has left a room, and a counter at its ceiling")
+    {
+        auto started = merovingian::homeserver::start_client_server(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        auto const user = register_user(runtime, "alice");
+        auto const room = merovingian::homeserver::handle_client_server_request(
+            runtime, {"POST", "/_matrix/client/v3/createRoom", user.token, R"({"preset":"private_chat"})"});
+        REQUIRE(room.response.status == 200U);
+        auto const room_path = "/_matrix/client/v3/rooms/" + json_string_after(room.response.body, "room_id");
+        auto const left = merovingian::homeserver::handle_client_server_request(
+            runtime, {"POST", room_path + "/leave", user.token, "{}"});
+        REQUIRE(left.response.status == 200U);
+        auto& store = runtime.homeserver.database.persistent_store;
+        auto const memberships_before = store.memberships.size();
+        store.next_sync_stream_id = static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max());
+
+        WHEN("the user forgets the room")
+        {
+            try
+            {
+                std::ignore = merovingian::homeserver::handle_client_server_request(
+                    runtime, {"POST", room_path + "/forget", user.token, "{}"});
+            }
+            catch (std::overflow_error const&)
+            {
+                // The HTTP layer answers this with a 500. What matters here is what was left behind.
+            }
+
+            THEN("the membership is still there")
+            {
+                REQUIRE(store.memberships.size() == memberships_before);
+            }
+        }
+    }
+}

@@ -1479,9 +1479,34 @@ auto reconstruct_event_relations(PersistentStore& store) -> void
     return true;
 }
 
+namespace
+{
+
+    // ADR-0315: the largest value a BIGINT row holds.
+    constexpr auto max_sync_stream_id = static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max());
+
+    // Requests take sync positions after they store an event or a membership, some of them inside helpers
+    // that throw at the ceiling. Refusing the write while positions remain means those requests never
+    // reach the throw with the write already committed.
+    [[nodiscard]] auto sync_stream_has_write_reserve(PersistentStore const& store, std::string_view room_id) -> bool
+    {
+        if (store.next_sync_stream_id < max_sync_stream_id - sync_stream_event_write_reserve)
+        {
+            return true;
+        }
+        log_diagnostic("sync_stream.write_refused",
+                       {
+                           {"room_id", std::string{room_id},          false},
+                           {"reason",  "counter is near its ceiling", false}
+        });
+        return false;
+    }
+
+} // namespace
+
 [[nodiscard]] auto store_room(PersistentStore& store, PersistentRoom room) -> bool
 {
-    if (room_exists(store, room.room_id))
+    if (!sync_stream_has_write_reserve(store, room.room_id) || room_exists(store, room.room_id))
     {
         return false;
     }
@@ -1675,7 +1700,8 @@ namespace
                                                MembershipProjection projection) -> bool
 {
     auto statements = std::vector<PreparedStatement>{};
-    if (room_id.empty() || !membership_projection_is_valid(projection) ||
+    if (!sync_stream_has_write_reserve(store, room_id) || room_id.empty() ||
+        !membership_projection_is_valid(projection) ||
         !append_membership_projection_statements(statements, room_id, projection) ||
         !commit_persistent_transaction(store, statements))
     {
@@ -1782,6 +1808,10 @@ namespace
 
 [[nodiscard]] auto store_membership(PersistentStore& store, PersistentMembership membership) -> MembershipStoreResult
 {
+    if (!sync_stream_has_write_reserve(store, membership.room_id))
+    {
+        return MembershipStoreResult::error;
+    }
     if (membership_exists(store, membership))
     {
         log_diagnostic("membership.rejected", {
@@ -1822,6 +1852,10 @@ namespace
 [[nodiscard]] auto update_membership(PersistentStore& store, std::string_view room_id, std::string_view user_id,
                                      std::string_view new_membership, std::uint64_t stream_ordering) -> bool
 {
+    if (!sync_stream_has_write_reserve(store, room_id))
+    {
+        return false;
+    }
     auto const it = std::ranges::find_if(store.memberships, [&](PersistentMembership const& m) {
         return m.room_id == room_id && m.user_id == user_id;
     });
@@ -2020,6 +2054,10 @@ namespace
 [[nodiscard]] auto store_room_with_membership(PersistentStore& store, PersistentRoom room,
                                               PersistentMembership membership) -> bool
 {
+    if (!sync_stream_has_write_reserve(store, room.room_id))
+    {
+        return false;
+    }
     if (room.room_id != membership.room_id || room_exists(store, room.room_id) || membership_exists(store, membership))
     {
         log_diagnostic("room_membership.rejected",
@@ -2345,6 +2383,10 @@ auto apply_current_state(PersistentStore& store, PreparedCurrentState const& pre
                                                   std::optional<MembershipProjection> membership)
     -> std::optional<PreparedStateUpdate>
 {
+    if (!sync_stream_has_write_reserve(store, event.room_id))
+    {
+        return std::nullopt;
+    }
     // DB-4: a projection belongs to the member event it is stored with.
     if (membership.has_value() &&
         (!state.has_value() || state->event_type != "m.room.member" || state->state_key != membership->user_id ||
@@ -4752,9 +4794,8 @@ auto restore_sync_stream_id(PersistentStore& store) -> void
 
 [[nodiscard]] auto allocate_sync_stream_id(PersistentStore& store) -> std::uint64_t
 {
-    // ADR-0315: the largest value a BIGINT row holds. An id is never reused, because a row below a
-    // client's since token is not delivered and a to-device row there is deleted as acknowledged.
-    constexpr auto max_sync_stream_id = static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max());
+    // ADR-0315: an id is never reused, because a row below a client's since token is not delivered and
+    // a to-device row there is deleted as acknowledged.
     if (store.next_sync_stream_id >= max_sync_stream_id)
     {
         throw std::overflow_error{"the sync stream counter is at its ceiling"};

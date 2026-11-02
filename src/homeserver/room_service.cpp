@@ -7356,6 +7356,8 @@ namespace
     {
         return make_operation_result(false, {}, "user must leave room before forgetting", 400U);
     }
+    // ADR-0315: before the delete, so a counter at its ceiling leaves the membership in place.
+    auto const sync_stream_id = database::allocate_sync_stream_id(runtime.database.persistent_store);
     if (!database::delete_membership(runtime.database.persistent_store, room_id, *user_id))
     {
         return make_operation_result(false, {}, "membership delete failed", 500U);
@@ -7365,7 +7367,6 @@ namespace
         return make_operation_result(false, {}, "invite metadata cleanup failed", 500U);
     }
 
-    auto const sync_stream_id = database::allocate_sync_stream_id(runtime.database.persistent_store);
     if (runtime.sync_notifier != nullptr)
     {
         runtime.sync_notifier->publish(visible_stream_position(runtime.database), sync_stream_id);

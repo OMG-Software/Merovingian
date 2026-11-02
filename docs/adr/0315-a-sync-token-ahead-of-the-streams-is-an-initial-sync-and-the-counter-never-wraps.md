@@ -40,10 +40,15 @@ No client input moves server-wide stream state, and `ensure_sync_stream_id_ahead
 `allocate_sync_stream_id` throws `std::overflow_error` at `INT64_MAX`, the largest value its BIGINT rows can hold,
 leaving the counter where it was. Saturating was rejected because it reuses an id, and reused ids are what deleted
 messages. Returning an error through its 25 callers was rejected because, with the ratchet gone, the ceiling needs
-2^63 allocations or a database edited by hand; a request that hits it fails rather than corrupts. Paths that commit
-and then allocate reserve the id first, so failing leaves nothing half done. The federated invite handler also
-catches the throw and answers 500, and PDU ingest answers `internal_error`, because their callers can be a worker
-waiting on an IPC reply.
+2^63 allocations or a database edited by hand; a request that hits it fails rather than corrupts.
+
+Many paths store an event or a membership and then allocate, some inside helpers, so the store refuses event, room and
+membership writes once the counter is within `sync_stream_event_write_reserve` (2^20) of the ceiling. Those writes
+already report failure to every caller, so each path answers with its existing error and nothing is left half done.
+Reordering every path was rejected: it is scattered, and the next path written would have to know. Other writes
+(receipts, presence, to-device, account data, typing, forgetting a room) allocate before they commit, so at the ceiling
+they fail with nothing changed. The federated invite handler and PDU ingest also catch the throw and answer an error,
+because their callers can be a worker waiting on an IPC reply.
 
 ### Positive Consequences
 

@@ -2062,6 +2062,10 @@ auto restore_sync_stream_id(PersistentStore& store) -> void;
 // std::overflow_error, leaving the counter unchanged, rather than pass
 // INT64_MAX (ADR-0315). Nothing else moves the counter upward, client input
 // least of all.
+// ADR-0315: events stop being stored this far below the counter's ceiling. Far more positions than one
+// request takes after storing an event, so a request either stores nothing or can finish.
+inline constexpr auto sync_stream_event_write_reserve = std::uint64_t{1U} << 20U;
+
 [[nodiscard]] auto allocate_sync_stream_id(PersistentStore& store) -> std::uint64_t;
 // Persists `watermark` (the highest allocated timeline stream_ordering) to
 // the `event_stream_watermark` singleton and mirrors it into

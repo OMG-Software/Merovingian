@@ -33,7 +33,9 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cstdint>
 #include <filesystem>
+#include <limits>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -775,6 +777,57 @@ SCENARIO("send_join: the event returned for a hash-mismatched join is the redact
             }
         }
 
+        std::filesystem::remove(path);
+    }
+}
+
+// ADR-0315: the acceptor stores the event and then takes sync positions for it, the roster and the
+// notification. Past the counter's limit it must refuse before storing, or the peer gets no answer about
+// an event this server has kept.
+SCENARIO("send_join at the sync stream counter's limit is refused and stores nothing",
+         "[pdu_ingestion][sync-stream][security]")
+{
+    GIVEN("a seeded room, a server whose sync stream counter is at its ceiling, and a valid send_join")
+    {
+        auto const path = unique_sqlite_path();
+        std::filesystem::remove(path);
+        auto started = merovingian::homeserver::start_runtime(config_with_sqlite(path));
+        REQUIRE(started.started);
+        merovingian::homeserver::wire_federation_callbacks(started.runtime);
+        auto const room_id = std::string{"!sjceiling:local.example.org"};
+        auto const genesis = seed_room_genesis(started.runtime, room_id, "@admin:local.example.org");
+        auto content = merovingian::canonicaljson::Object{};
+        content.push_back(merovingian::canonicaljson::make_member(
+            "membership", merovingian::canonicaljson::Value{std::string{"join"}}));
+        auto const auth_ids = std::vector<std::string>{genesis.create_id, genesis.pl_id, genesis.join_rules_id};
+        auto const json =
+            build_event_json(room_id, "m.room.member", std::string{"@bob:remote.example.org"},
+                             "@bob:remote.example.org", std::move(content), {genesis.join_rules_id}, auth_ids, 4, 5);
+        auto const envelope = make_envelope(room_id, "$sjceiling:remote.example.org", "m.room.member",
+                                            std::string{"@bob:remote.example.org"}, "@bob:remote.example.org",
+                                            {genesis.join_rules_id}, auth_ids, 4, json);
+        auto& store = started.runtime.database.persistent_store;
+        store.next_sync_stream_id = static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max());
+
+        WHEN("the send_join arrives")
+        {
+            auto const result = started.runtime.federation.membership_acceptor(
+                merovingian::federation::FederationEndpoint::send_join, room_id, envelope.event_id, envelope);
+
+            THEN("the peer is told it failed")
+            {
+                REQUIRE_FALSE(result.accepted);
+                REQUIRE(result.status == 500U);
+            }
+
+            THEN("the event and the membership were not stored")
+            {
+                REQUIRE_FALSE(store.events.contains(envelope.event_id));
+                REQUIRE(std::ranges::none_of(store.memberships, [](auto const& row) {
+                    return row.user_id == "@bob:remote.example.org";
+                }));
+            }
+        }
         std::filesystem::remove(path);
     }
 }
