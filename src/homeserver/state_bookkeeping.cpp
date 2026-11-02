@@ -466,6 +466,20 @@ auto forward_extremities_for_new_event(database::PersistentStore const& store, s
     return result;
 }
 
+auto depth_after_prev_events(database::PersistentStore const& store, std::vector<std::string> const& prev_event_ids)
+    -> std::uint64_t
+{
+    auto deepest = std::uint64_t{0U};
+    for (auto const& prev_event_id : prev_event_ids)
+    {
+        if (auto const prev_event = store.events.find(prev_event_id); prev_event != store.events.end())
+        {
+            deepest = std::max(deepest, prev_event->depth);
+        }
+    }
+    return deepest >= events::max_event_depth ? events::max_event_depth : deepest + 1U;
+}
+
 auto basis_for_new_event(database::PersistentStore const& store, std::string_view room_id,
                          rooms::RoomVersionPolicy const& policy, events::StateResolutionLimits const& limits)
     -> NewEventBasis

@@ -423,6 +423,14 @@ client, sender or remote server controls, and per-user rows that requests scan m
   is written only for a room the user holds a membership row in, and refuses a new type past
   `max_room_account_data_per_room` per room the same way (ADR-0197). Server-written rows (`m.tag`,
   `m.fully_read`) go through `set_account_data` and are never refused.
+- `POST /createRoom` refuses past `max_create_room_invites` or `max_create_room_initial_state` with
+  `400 M_TOO_LARGE` before `create_room` is called (ADR-0316): `create_room` stores one event per entry under
+  the lock.
+- A client's device or key change goes through `record_shared_room_device_changes`: local observers only,
+  deduplicated across rooms, one batch (ADR-0317). Never loop over a roster calling `record_device_list_change`;
+  a federated room's roster is chosen by a remote server.
+- A local event's depth comes from `depth_after_prev_events` over the `prev_events` it was built on (ADR-0314).
+  Never derive it from every row of a room: rejected rows keep the depth their sender chose.
 - `GET /rooms/{roomId}/timestamp_to_event` and the federation `timestamp_to_event` provider seek the per-room
   time index of `EventTable` (`nearest_by_time`, ADR-0300) and offer at most `database::max_time_search_examined`
   (1000) events to the visibility filter; never replace the seek with a walk of the room's events. The federation

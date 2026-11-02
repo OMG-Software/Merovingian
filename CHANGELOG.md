@@ -1,3 +1,34 @@
+## 0.12.67
+
+The five high findings of security audit run 2 (ref 5e67d4e8).
+
+### Security
+
+- **One signed PDU no longer stops a room's local events (F-01, ADR-0314).** A locally composed event's depth was
+  one more than the deepest row stored for the room, rejected rows included, so a rejected PDU at depth 2^53-1 from
+  any server made every later local event unparseable, across restarts. Depth now comes from the event's own
+  `prev_events` and stays at 2^53-1 once there, as `rooms/v11.md` requires. Membership templates (`make_join`,
+  `make_leave`, `make_knock`) use the same function, so they offer no depth above the limit.
+- **`createRoom` caps its entries (F-02, ADR-0316).** `invite` and `initial_state` stop at
+  `server.client_api.max_create_room_invites` and `max_create_room_initial_state`, 100 each by default, with
+  `400 M_TOO_LARGE` before anything is stored. Each entry stored one event while the server held its global lock, and
+  the only bound was the 1 MiB body. A user listed twice in `invite` is invited once.
+- **A `/sync` token no longer moves server-wide state (F-03, ADR-0315).** A `since` token's sync component was used to
+  raise the server-wide counter, so any user could set it to 2^64-1. It then wrapped, and other users' to-device
+  messages, E2EE room keys among them, were deleted undelivered, and their receipts and account data dropped. A token
+  ahead of any stream is now served as an initial sync with the counter untouched, `ensure_sync_stream_id_ahead_of` is
+  removed, and `allocate_sync_stream_id` throws at `INT64_MAX` rather than wrap.
+- **Device and key changes write one batch for local observers (F-04, ADR-0317).** `/keys/upload`,
+  `/keys/device_signing/upload`, `/keys/signatures/upload`, `PUT` and `DELETE /devices/{deviceId}`, `/delete_devices`,
+  `/logout` and `/logout/all` committed once per room member, remote members included, under the global lock. They now
+  share `record_shared_room_device_changes`: one stream position and one commit, however large the room's roster. No
+  row names a remote observer; those were never read.
+- **A non-state event cannot be named in `auth_events` (F-05).** An entry with no `state_key` passed selection as if its
+  `state_key` were empty, so a power-level-0 remote member could put a non-state `m.room.join_rules` in a join's auth
+  chain. State resolution then failed for any conflict reaching it, and with a second account a ban could be undone
+  through the ADR-0225 fallback. Such an event is now rejected (`rooms/v11.md` rule 2.2), on `/send`, `send_join` and
+  backfill. The fallback itself is unchanged; the audit tracks it separately.
+
 ## 0.12.66
 
 Triage of the 200 open SonarQube Cloud issues on main at 0.12.64. PR #547 (0.12.65) fixes the two

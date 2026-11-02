@@ -109,6 +109,9 @@ struct ClientApiLimits final
     std::uint32_t max_room_account_data_per_room{100U};
     // User-defined push rules per user across all five kinds; over -> M_TOO_LARGE.
     std::uint32_t max_push_rules_per_user{200U};
+    // Security audit run-2 (ADR-0316): entries of one POST /createRoom; over -> M_TOO_LARGE.
+    std::uint32_t max_create_room_invites{100U};
+    std::uint32_t max_create_room_initial_state{100U};
     sync::SlidingSyncLimits sliding_sync{500U, 1024U, 1024U};
     std::uint32_t sliding_sync_connections_per_device{16U};
 };
@@ -214,6 +217,8 @@ auto install_test_per_user_rate_limit_engine(ClientServerRuntime& runtime) -> vo
 // Returns true on success, false if the store rejected the row.
 [[nodiscard]] auto push_to_device_message(ClientServerRuntime& runtime, database::PersistentToDeviceMessage message)
     -> bool;
+[[nodiscard]] auto record_device_list_changes(ClientServerRuntime& runtime,
+                                              std::vector<database::PersistentDeviceListChange> changes) -> bool;
 [[nodiscard]] auto record_device_list_change(ClientServerRuntime& runtime, database::PersistentDeviceListChange change)
     -> bool;
 [[nodiscard]] auto set_presence(ClientServerRuntime& runtime, database::PersistentPresence state) -> bool;

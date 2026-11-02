@@ -288,6 +288,8 @@ Implementation note (Complement run 10):
   only (the SHOULD would need a federation call); aliases already listed or being removed are not validated. The check
   runs only for a sender who may send the event, so anyone else gets the 403. `createRoom` `initial_state` is not
   validated this way.
+- `createRoom` refuses more than `server.client_api.max_create_room_invites` `invite` entries or `max_create_room_initial_state` `initial_state` entries (100 each by default) with `400 M_TOO_LARGE`, storing nothing, and invites a user listed twice once (ADR-0316).
+- `GET /sync` serves a `since` token ahead of any of the server's streams as an initial sync, the same as a token it cannot decode, and hands back a token from its own streams (ADR-0315).
 - `createRoom` `topic` writes `m.room.topic` with both `topic` and `m.topic` = `{"m.text":[{"body":..,"mimetype":"text/plain"}]}`,
   after `initial_state`, so it overwrites a topic given there. A `room_version` that is not a JSON string is
   `400 M_BAD_JSON`.

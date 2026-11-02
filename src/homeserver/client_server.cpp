@@ -4011,8 +4011,21 @@ namespace
         }));
     }
 
-    auto record_shared_room_device_change(ClientServerRuntime& rt, std::string_view user_id) -> void
+    enum class NotifyOwnDevices : std::uint8_t
     {
+        no,
+        yes,
+    };
+
+    // ADR-0317. Spec ("Tracking the device list for a user"): `device_lists.changed` tells a client
+    // about the users it shares a room with. Only a local user has a client here; a remote user's
+    // server learns through m.device_list_update. One batch, so one stream position and one commit
+    // under the runtime lock however large a room's roster is (a remote server chooses it).
+    auto record_shared_room_device_changes(ClientServerRuntime& rt, std::string_view user_id,
+                                           NotifyOwnDevices notify_own_devices) -> void
+    {
+        auto const local_users = local_user_ids(rt.homeserver.database);
+        auto observers = std::set<std::string_view>{};
         for (auto const& room : rt.homeserver.database.rooms)
         {
             auto const is_member = std::ranges::any_of(room.members, [user_id](auto const& member) {
@@ -4024,14 +4037,23 @@ namespace
             }
             for (auto const& member : room.members)
             {
-                if (member == user_id)
+                if (member != user_id && local_users.contains(member))
                 {
-                    continue;
+                    observers.insert(member);
                 }
-                auto const change = database::PersistentDeviceListChange{0U, member, std::string{user_id}, "changed"};
-                std::ignore = record_device_list_change(rt, change);
             }
         }
+        auto changes = std::vector<database::PersistentDeviceListChange>{};
+        changes.reserve(observers.size() + 1U);
+        if (notify_own_devices == NotifyOwnDevices::yes)
+        {
+            changes.push_back({0U, std::string{user_id}, std::string{user_id}, "changed"});
+        }
+        for (auto const observer : observers)
+        {
+            changes.push_back({0U, std::string{observer}, std::string{user_id}, "changed"});
+        }
+        std::ignore = record_device_list_changes(rt, std::move(changes));
     }
 
     auto erase_runtime_device(ClientServerRuntime& rt, std::string_view user_id, std::string_view device_id) -> void
@@ -5459,24 +5481,36 @@ namespace
     [[nodiscard]] auto sync_json(ClientServerRuntime& rt, std::string_view user, std::string_view device_id,
                                  core::SyncRequest const& request, bool can_wait = true) -> DispatchResult
     {
-        auto const since_token =
+        auto since_token =
             request.since.has_value() ? sync::decode_stream_token(*request.since) : std::optional<sync::StreamToken>{};
+        auto& store = rt.homeserver.database.persistent_store;
+
+        // ADR-0315: spec (GET /sync, `since`): "This should be the next_batch token returned by an
+        // earlier call". A component ahead of this server's streams was not issued here (a forged
+        // token, or a database restored from a backup), and the token is unauthenticated client
+        // input, so it never moves server-wide state. It is served like a token that does not decode.
+        if (since_token.has_value())
+        {
+            auto const event_watermark = visible_stream_position(rt.homeserver.database);
+            auto const sync_watermark = store.next_sync_stream_id;
+            if (since_token->event_ordering > event_watermark || since_token->membership_ordering > event_watermark ||
+                since_token->sync_stream_id > sync_watermark)
+            {
+                log_diagnostic("sync.foreign_since",
+                               {
+                                   {"actor",           std::string{user},                       false},
+                                   {"device_id",       std::string{device_id},                  false},
+                                   {"requested_since", sync::encode_stream_token(*since_token), false},
+                                   {"event_watermark", std::to_string(event_watermark),         false},
+                                   {"sync_watermark",  std::to_string(sync_watermark),          false}
+                });
+                since_token.reset();
+            }
+        }
         auto const since_ordering = since_token.has_value() ? since_token->event_ordering : std::uint64_t{0U};
         auto const since_sync_stream_id = since_token.has_value() ? since_token->sync_stream_id : std::uint64_t{0U};
         auto const filter =
             request.filter.has_value() ? sync::parse_filter_argument(*request.filter) : sync::SyncFilter{};
-        auto& store = rt.homeserver.database.persistent_store;
-
-        // Recover from a counter rollback: if the client's since-token is
-        // ahead of the server's sync_stream_id (for example because typing/
-        // receipts advanced the in-memory counter before the watermark table
-        // existed), advance the counter to the client's position so that future
-        // ephemeral events get IDs the client will accept.
-        if (since_sync_stream_id > 0U && !database::ensure_sync_stream_id_ahead_of(store, since_sync_stream_id))
-        {
-            return DispatchResult{
-                DispatchResult::Status::complete, err(500U, "M_UNKNOWN", "unable to advance sync stream counter"), {}};
-        }
 
         // Long-poll: when the caller passes `timeout` and there's nothing
         // new to deliver, block until the SyncNotifier fires or the timeout
@@ -7642,36 +7676,15 @@ namespace
             }
         }
         // Device key uploads change the device identity that other users
-        // track; notify every user who shares a room with this user.
+        // track; notify every local user who shares a room with this user.
+        // Also notify the uploading user's own devices. Cross-device
+        // verification (e.g. Element X verifying a new login from an
+        // existing device) relies on each device learning about new or
+        // updated devices via device_lists.changed and then querying
+        // /keys/query.
         if (device_keys_object != nullptr)
         {
-            for (auto const& room : rt.homeserver.database.rooms)
-            {
-                auto const is_member = std::ranges::any_of(room.members, [user](auto const& m) {
-                    return m == user;
-                });
-                if (!is_member)
-                {
-                    continue;
-                }
-                for (auto const& member : room.members)
-                {
-                    if (member == user)
-                    {
-                        continue;
-                    }
-                    auto const change = database::PersistentDeviceListChange{0U, member, std::string{user}, "changed"};
-                    std::ignore = record_device_list_change(rt, change);
-                }
-            }
-            // Also notify the uploading user's own devices. Cross-device
-            // verification (e.g. Element X verifying a new login from an
-            // existing device) relies on each device learning about new or
-            // updated devices via device_lists.changed and then querying
-            // /keys/query.
-            auto const self_change =
-                database::PersistentDeviceListChange{0U, std::string{user}, std::string{user}, "changed"};
-            std::ignore = record_device_list_change(rt, self_change);
+            record_shared_room_device_changes(rt, user, NotifyOwnDevices::yes);
 
             // Notify remote servers so they can fetch the updated keys and
             // deliver room keys to this device (spec v1.19 SS4.1).
@@ -11264,24 +11277,7 @@ namespace
             // for verification to complete). Also fan out to room-sharing local users and
             // remote servers.
             {
-                std::ignore = record_device_list_change(rt, {0U, std::string{user}, std::string{user}, "changed"});
-                for (auto const& room : rt.homeserver.database.rooms)
-                {
-                    if (!std::ranges::any_of(room.members, [user](auto const& m) {
-                            return m == user;
-                        }))
-                    {
-                        continue;
-                    }
-                    for (auto const& member : room.members)
-                    {
-                        if (member == user)
-                        {
-                            continue;
-                        }
-                        std::ignore = record_device_list_change(rt, {0U, member, std::string{user}, "changed"});
-                    }
-                }
+                record_shared_room_device_changes(rt, user, NotifyOwnDevices::yes);
                 auto const destinations = remote_servers_for_user(rt.homeserver, user);
                 broadcast_device_list_updates(rt, user, destinations);
                 // Spec v1.19 §m.signing_key_update: remote servers learn of a
@@ -11308,27 +11304,8 @@ namespace
             }
             // Spec §11.11.1: signature upload changes the verified key graph; MUST propagate
             // device_lists.changed so other devices discover the self-signed state.
-            {
-                std::ignore = record_device_list_change(rt, {0U, std::string{user}, std::string{user}, "changed"});
-                for (auto const& room : rt.homeserver.database.rooms)
-                {
-                    if (!std::ranges::any_of(room.members, [user](auto const& m) {
-                            return m == user;
-                        }))
-                    {
-                        continue;
-                    }
-                    for (auto const& member : room.members)
-                    {
-                        if (member == user)
-                        {
-                            continue;
-                        }
-                        std::ignore = record_device_list_change(rt, {0U, member, std::string{user}, "changed"});
-                    }
-                }
-                broadcast_device_list_updates(rt, user, remote_servers_for_user(rt.homeserver, user));
-            }
+            record_shared_room_device_changes(rt, user, NotifyOwnDevices::yes);
+            broadcast_device_list_updates(rt, user, remote_servers_for_user(rt.homeserver, user));
             return resp(200U, key_api_success_body(route.endpoint));
         case auth::KeyApiEndpoint::create_key_backup_version: {
             // Generate a unique version for this new backup.
@@ -11416,25 +11393,7 @@ namespace
             device->display_name = body->display_name;
             // Record a device list change for every local user who shares a
             // room with the updated user so their /sync streams surface it.
-            for (auto const& room : rt.homeserver.database.rooms)
-            {
-                auto const is_member = std::ranges::any_of(room.members, [user](auto const& m) {
-                    return m == user;
-                });
-                if (!is_member)
-                {
-                    continue;
-                }
-                for (auto const& member : room.members)
-                {
-                    if (member == user)
-                    {
-                        continue;
-                    }
-                    auto const change = database::PersistentDeviceListChange{0U, member, std::string{user}, "changed"};
-                    std::ignore = record_device_list_change(rt, change);
-                }
-            }
+            record_shared_room_device_changes(rt, user, NotifyOwnDevices::no);
             // Spec (SS API, "Device Management"): m.device_list_update EDUs go to every server that
             // shares a room with the user "whenever that user's device list changes ... or changes
             // in device information such as the device's human-readable name".
@@ -11828,6 +11787,8 @@ auto start_client_server(config::Config const& config, ClientServerStartOptions 
     rt.limits.max_filters_per_user = client_api.max_filters_per_user;
     rt.limits.max_global_account_data_per_user = client_api.max_global_account_data_per_user;
     rt.limits.max_room_account_data_per_room = client_api.max_room_account_data_per_room;
+    rt.limits.max_create_room_invites = client_api.max_create_room_invites;
+    rt.limits.max_create_room_initial_state = client_api.max_create_room_initial_state;
     rt.limits.max_push_rules_per_user = client_api.max_push_rules_per_user;
     rt.limits.sliding_sync = {client_api.sliding_sync_max_timeline_limit,
                               client_api.sliding_sync_max_room_subscriptions,
@@ -13209,7 +13170,7 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
         if (r.status == 200U && logged_out_session.has_value())
         {
             erase_runtime_device(rt, logged_out_session->user_id, logged_out_session->device_id);
-            record_shared_room_device_change(rt, logged_out_session->user_id);
+            record_shared_room_device_changes(rt, logged_out_session->user_id, NotifyOwnDevices::no);
         }
         // actor is not yet resolved here (pre-auth gate); log token presence only
         log_diagnostic(r.status == 200U ? "account.logout.accepted" : "account.logout.rejected",
@@ -14032,7 +13993,7 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             std::erase_if(rt.devices, [&user](ClientDevice const& device) {
                 return device.user_id == *user;
             });
-            record_shared_room_device_change(rt, *user);
+            record_shared_room_device_changes(rt, *user, NotifyOwnDevices::no);
         }
         log_diagnostic(r.ok ? "account.logout_all.accepted" : "account.logout_all.rejected",
                        {
@@ -15789,7 +15750,7 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                                 result.reason);
         }
         erase_runtime_device(rt, *user, device_id);
-        record_shared_room_device_change(rt, *user);
+        record_shared_room_device_changes(rt, *user, NotifyOwnDevices::no);
         return dispatch_resp(req, rt, 200U, "{}");
     }
     if (req.method == "POST" && req.target == "/_matrix/client/v3/delete_devices")
@@ -15858,7 +15819,7 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
         }
         if (deleted_any)
         {
-            record_shared_room_device_change(rt, *user);
+            record_shared_room_device_changes(rt, *user, NotifyOwnDevices::no);
         }
         return dispatch_resp(req, rt, 200U, "{}");
     }
@@ -15922,7 +15883,30 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             }
             return "private_chat";
         }();
-        auto const invitees = string_array_member(body, "invite");
+        // ADR-0316: create_room stores one event per entry under the runtime lock, and the spec sets
+        // no number of entries a server must accept. The raw length is counted, before anything is stored.
+        auto const entries_in = [&body](std::string_view key) -> std::size_t {
+            auto const* value = object_member(body, key);
+            auto const* array = value == nullptr ? nullptr : std::get_if<canonicaljson::Array>(&value->storage());
+            return array == nullptr ? 0U : array->size();
+        };
+        if (entries_in("invite") > rt.limits.max_create_room_invites ||
+            entries_in("initial_state") > rt.limits.max_create_room_initial_state)
+        {
+            return dispatch_err(req, rt, 400U, "M_TOO_LARGE", "too many invite or initial_state entries");
+        }
+        // A repeated invitee means nothing, and would store a second invite event.
+        auto invitees = std::vector<std::string>{};
+        {
+            auto seen = std::set<std::string>{};
+            for (auto& invitee : string_array_member(body, "invite"))
+            {
+                if (seen.insert(invitee).second)
+                {
+                    invitees.push_back(std::move(invitee));
+                }
+            }
+        }
         // Spec (createRoom): `room_version` is a `string`. A number, boolean, null, array or object
         // is a malformed body, not an unsupported version.
         if (object_member(body, "room_version") != nullptr && string_member(body, "room_version") == nullptr)
@@ -18876,6 +18860,19 @@ auto push_to_device_message(ClientServerRuntime& runtime, database::PersistentTo
     auto guard = std::unique_lock<RuntimeMutex>{runtime.homeserver.mutex};
     auto const stored =
         database::enqueue_to_device_message(runtime.homeserver.database.persistent_store, std::move(message));
+    if (stored)
+    {
+        std::ignore = ensure_sync_notifier(runtime);
+    }
+    return stored;
+}
+
+auto record_device_list_changes(ClientServerRuntime& runtime, std::vector<database::PersistentDeviceListChange> changes)
+    -> bool
+{
+    auto guard = std::unique_lock<RuntimeMutex>{runtime.homeserver.mutex};
+    auto const stored =
+        database::record_device_list_changes(runtime.homeserver.database.persistent_store, std::move(changes));
     if (stored)
     {
         std::ignore = ensure_sync_notifier(runtime);

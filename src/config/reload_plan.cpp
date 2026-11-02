@@ -1052,6 +1052,15 @@ auto build_reload_plan(Config const& current, Config const& next) -> ReloadPlan
     {
         add_change(plan, "server.client_api.max_relations_page_size");
     }
+    if (current.server().client_api.max_create_room_invites != next.server().client_api.max_create_room_invites)
+    {
+        add_change(plan, "server.client_api.max_create_room_invites");
+    }
+    if (current.server().client_api.max_create_room_initial_state !=
+        next.server().client_api.max_create_room_initial_state)
+    {
+        add_change(plan, "server.client_api.max_create_room_initial_state");
+    }
     if (current.server().client_api.max_public_rooms_page_size != next.server().client_api.max_public_rooms_page_size)
     {
         add_change(plan, "server.client_api.max_public_rooms_page_size");

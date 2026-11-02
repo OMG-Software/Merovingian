@@ -1,0 +1,54 @@
+# A /sync token ahead of the streams is an initial sync, and the sync stream counter never wraps
+
+* Status: accepted
+* Date: 2026-11-02
+
+Technical Story: security audit run-2 F-03, `GET /sync?since=0_0_ffffffffffffffff` poisoned the server-wide counter
+
+## Context and Problem Statement
+
+`sync_json` passed the `since` token's sync component to `ensure_sync_stream_id_ahead_of`, which raised the
+server-wide counter to it and persisted the result. The path dated from before the watermark table existed, when
+a restart could lose ephemeral positions. The token is client input and carries no signature, so any user could
+set the counter to 2^64-1. The next allocation wrapped to 0, and every row after that sat at or below other
+users' tokens: not delivered, and for device-targeted to-device messages (E2EE room keys among them) deleted as
+acknowledged.
+
+The watermark is now written on every allocation and the counter is restored from it and from durable rows, so
+the rollback the path recovered from no longer happens. A token ahead of the server means a forged token or a
+database restored from a backup.
+
+`GET /sync` lists no error for a token the server cannot serve, and `since` is only a "should" for an earlier
+`next_batch`. `M_UNKNOWN_POS` belongs to MSC4186, not v1.19.
+
+## Considered Options
+
+* Serve a token ahead of any stream as an initial sync, the same as an undecodable token
+* Answer 400 `M_UNKNOWN_POS`, as sliding sync does
+* Clamp the token to the current position and serve an incremental sync
+
+## Decision Outcome
+
+Chosen option: "Serve as an initial sync", because it conforms to the spec's error list, it matches what this
+endpoint already does with a token it cannot decode, and a client recovers from it without knowing anything
+happened. A 400 is outside the endpoint's contract, and classic clients retry a failing sync indefinitely rather
+than dropping their token. Clamping silently treats everything between the clamp and the token as seen, which is
+the bug the sliding sync handler's comment records. Sliding sync keeps `M_UNKNOWN_POS`, which MSC4186 defines.
+
+No client input moves server-wide stream state, and `ensure_sync_stream_id_ahead_of` is removed so nothing can.
+
+`allocate_sync_stream_id` throws `std::overflow_error` at `INT64_MAX`, the largest value its BIGINT rows can hold,
+leaving the counter where it was. Saturating was rejected because it reuses an id, and reused ids are what deleted
+messages. Returning an error through its 25 callers was rejected because, with the ratchet gone, the ceiling needs
+2^63 allocations or a database edited by hand; a request that hits it fails rather than corrupts.
+
+### Positive Consequences
+
+* One user's token cannot affect another user's stream.
+* Stream ids are only ever skipped, never reused.
+
+### Negative Consequences
+
+* A client whose token is ahead after a database restore gets a full initial sync.
+* A database already holding a poisoned watermark refuses every sync-stream write until an operator repairs it.
+  It is not repaired automatically: lowering the counter would reuse ids that clients may have seen.

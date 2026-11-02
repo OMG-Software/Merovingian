@@ -231,6 +231,20 @@ namespace
                 add_parse_finding(findings, std::string{key}, "expected unsigned integer");
             }
         }
+        else if (key == "server.client_api.max_create_room_invites")
+        {
+            if (!parse_u32_value(value, server.client_api.max_create_room_invites))
+            {
+                add_parse_finding(findings, std::string{key}, "expected unsigned integer");
+            }
+        }
+        else if (key == "server.client_api.max_create_room_initial_state")
+        {
+            if (!parse_u32_value(value, server.client_api.max_create_room_initial_state))
+            {
+                add_parse_finding(findings, std::string{key}, "expected unsigned integer");
+            }
+        }
         else if (key == "server.client_api.max_public_rooms_page_size")
         {
             if (!parse_u32_value(value, server.client_api.max_public_rooms_page_size))

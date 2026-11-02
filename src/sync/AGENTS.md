@@ -36,6 +36,11 @@ Spec authority:
 For `/messages` and timeline `prev_batch`, the token is a plain stream-ordering integer.
 Use `stream_token.hpp` — never parse or construct tokens manually.
 
+A token is unauthenticated client input: decoding it proves nothing about who issued it. It never moves
+server-wide state. A classic `/sync` token ahead of any stream is served as an initial sync; a sliding sync
+`pos` ahead of one gets `400 M_UNKNOWN_POS`. `allocate_sync_stream_id` is the only thing that raises the
+counter, and it throws rather than pass `INT64_MAX` (ADR-0315).
+
 ## Joined-room timelines and holes in the event graph (ADR-0289)
 
 A classic `/sync` joined room's `timeline` is the newest `timeline_cap` events after `since` that pass

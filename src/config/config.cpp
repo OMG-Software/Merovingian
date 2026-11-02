@@ -942,6 +942,10 @@ auto validate(Config const& config) -> std::vector<ConfigValidationFinding>
     validate_count("server.client_api.max_threads_page_size", config.server().client_api.max_threads_page_size, 1000U);
     validate_count("server.client_api.max_relations_page_size", config.server().client_api.max_relations_page_size,
                    1000U);
+    validate_count("server.client_api.max_create_room_invites", config.server().client_api.max_create_room_invites,
+                   10000U);
+    validate_count("server.client_api.max_create_room_initial_state",
+                   config.server().client_api.max_create_room_initial_state, 10000U);
     validate_count("server.client_api.max_public_rooms_page_size",
                    config.server().client_api.max_public_rooms_page_size, 10000U);
     validate_count("server.client_api.max_hierarchy_rooms", config.server().client_api.max_hierarchy_rooms, 10000U);

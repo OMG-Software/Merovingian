@@ -307,8 +307,13 @@ namespace
             {
                 continue;
             }
+            // An event with no state_key is not room state, so it fills no slot of the auth map.
             auto const* state_key = string_member(*obj, "state_key");
-            entries.push_back({{}, *type, state_key != nullptr ? *state_key : std::string{}, id});
+            if (state_key == nullptr)
+            {
+                continue;
+            }
+            entries.push_back({{}, *type, *state_key, id});
         }
         return entries;
     }
@@ -480,8 +485,16 @@ namespace
             {
                 return AuthEventsSelectionCheck::disallowed;
             }
-            auto const* named_state_key = obj != nullptr ? string_member(*obj, "state_key") : nullptr;
-            auto const key = std::make_pair(*type, named_state_key != nullptr ? *named_state_key : std::string{});
+            // rooms/v11.md rule 2.2 rejects entries that do not match auth events selection, and
+            // selection (server-server-api.md) names "a subset of the room state". An event with no
+            // state_key is not room state, whatever its type says, and the state resolution walk
+            // cannot follow it, so naming one would stop resolution over every chain reaching it.
+            auto const* named_state_key = string_member(*obj, "state_key");
+            if (named_state_key == nullptr)
+            {
+                return AuthEventsSelectionCheck::disallowed;
+            }
+            auto const key = std::make_pair(*type, *named_state_key);
             if (std::ranges::find(seen, key) != seen.end())
             {
                 return AuthEventsSelectionCheck::disallowed; // duplicate (type, state_key)
@@ -2238,20 +2251,15 @@ namespace
                     }
                 }
             }
-            auto max_depth = std::int64_t{0};
             for (auto const& evt : store.events)
             {
                 if (evt.room_id == room_id && !evt.event_id.empty() &&
                     referenced.find(evt.event_id) == referenced.end())
                 {
                     tmpl.prev_events.push_back(evt.event_id);
-                    if (static_cast<std::int64_t>(evt.depth) > max_depth)
-                    {
-                        max_depth = static_cast<std::int64_t>(evt.depth);
-                    }
                 }
             }
-            tmpl.depth = max_depth + 1;
+            tmpl.depth = static_cast<std::int64_t>(depth_after_prev_events(store, tmpl.prev_events));
             auto content_obj = canonicaljson::Object{};
             // Audit R04 (ADR-0185). server-server-api.md "Restricted rooms": "A
             // resident server processing a request to join a restricted room

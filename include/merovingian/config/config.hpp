@@ -306,6 +306,10 @@ struct ClientApiConfig final
     std::uint32_t max_push_rules_per_user{200U};
     std::uint32_t max_public_rooms_page_size{1000U};
     std::uint32_t max_hierarchy_rooms{1000U};
+    // Security audit run-2 (ADR-0316): entries of one POST /createRoom. Each stores one
+    // event under the runtime lock; a request past either is refused before anything is stored.
+    std::uint32_t max_create_room_invites{100U};
+    std::uint32_t max_create_room_initial_state{100U};
 };
 
 struct ServerConfig final

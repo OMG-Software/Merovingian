@@ -952,6 +952,12 @@ media-fetch-pool task.
   for most of an hour on an unauthenticated 50 MiB upload (audit HTTP-1, HTTP-6; ADR-0077).
   Source: `src/homeserver/AGENTS.md`, `src/http/AGENTS.md`.
 
+- **A sync token never moves server-wide state.** A `/sync` `since` or sliding sync `pos` ahead of the
+  server's streams is treated as foreign, and only `allocate_sync_stream_id` raises the sync stream counter,
+  refusing to pass `INT64_MAX` (ADR-0315).
+  Why: any user could raise the counter to 2^64-1 with one request. It wrapped, and other users' to-device
+  messages were deleted undelivered (CWE-190; security audit run-2).
+  Source: `src/sync/AGENTS.md`.
 - **Rows a user can add, and that requests scan under the runtime lock, are capped per user.**
   A new global account-data type past `server.client_api.max_global_account_data_per_user` is
   refused with `400 M_TOO_LARGE`; an update to a type the user holds is always allowed. Room
@@ -960,6 +966,8 @@ media-fetch-pool task.
   `m.tag` and `m.fully_read` rows the tags and read-marker APIs write count towards that cap but
   are never refused by it, so tagging and read markers keep working at the cap (ADR-0197).
   Caps refuse, never evict (ADR-0118).
+  `POST /createRoom` stops at `server.client_api.max_create_room_invites` and
+  `max_create_room_initial_state` entries the same way, before the room is made (ADR-0316).
   Why: account-data reads scan every row under the lock, so one user adding types without bound
   slowed every request that reads them (CWE-770; security audit run-1, ADR-0173). Room rows
   multiply by rooms, so they need both bounds (conformance audit R10, ADR-0197).

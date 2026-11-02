@@ -295,6 +295,10 @@
 * [0311 - A former member never sees events that descend from their leave](0311-a-former-member-never-sees-events-that-descend-from-their-leave.md)
 * [0312 - The dispatch worker sets its shutdown flag under its mutex](0312-the-dispatch-worker-sets-its-shutdown-flag-under-its-mutex.md)
 * [0313 - Every workflow installs Python tools from hash-locked wheels](0313-every-workflow-installs-python-tools-from-hash-locked-wheels.md)
+* [0314 - A local event's depth comes from its prev_events and stops at the limit](0314-a-local-events-depth-comes-from-its-prev-events-and-stops-at-the-limit.md)
+* [0315 - A /sync token ahead of the streams is an initial sync, and the sync stream counter never wraps](0315-a-sync-token-ahead-of-the-streams-is-an-initial-sync-and-the-counter-never-wraps.md)
+* [0316 - createRoom caps its invite and initial_state entries](0316-createroom-caps-its-invite-and-initial-state-entries.md)
+* [0317 - Client device changes record one batch for local observers](0317-client-device-changes-record-one-batch-for-local-observers.md)
 
 ## Proposed Records
 

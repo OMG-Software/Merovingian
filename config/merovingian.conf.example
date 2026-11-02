@@ -684,6 +684,10 @@ server.client_api.max_safety_report_rows=1000
 server.client_api.max_notifications_page_size=1000
 server.client_api.max_relations_page_size=500
 server.client_api.max_public_rooms_page_size=1000
+# Most invite and initial_state entries one POST /createRoom may carry (ADR-0316). Each entry stores one event
+# while the server holds its global lock. A request past either cap is refused with 400 M_TOO_LARGE. 1..10000.
+server.client_api.max_create_room_invites=100
+server.client_api.max_create_room_initial_state=100
 server.client_api.max_hierarchy_rooms=1000
 server.client_api.max_threads_page_size=500
 server.client_api.max_notifications_retained_per_user=1000

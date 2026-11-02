@@ -1,5 +1,5 @@
 Name:           merovingian
-Version:        0.12.66
+Version:        0.12.67
 Release:        1%{?dist}
 Summary:        Secure Matrix Protocol homeserver
 
@@ -112,6 +112,10 @@ fi
 %{_sysconfdir}/merovingian/merovingian.conf.example
 
 %changelog
+* Mon Nov 02 2026 James Chapman <claude@ping.me.uk> - 0.12.67-1
+- Fixes the five high findings of security audit run 2: event depth, sync token
+  counter poisoning, createRoom entry caps, device-list fan-out, non-state auth events.
+
 * Sat Oct 31 2026 James Chapman <claude@ping.me.uk> - 0.12.66-1
 - Every CI workflow installs its Python build tools from hash-locked wheels
   (SonarQube Cloud findings).

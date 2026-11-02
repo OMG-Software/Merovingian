@@ -1528,20 +1528,6 @@ namespace
         return event_ids;
     }
 
-    [[nodiscard]] auto next_depth_for_room(database::PersistentStore const& store, std::string_view room_id) noexcept
-        -> std::uint64_t
-    {
-        auto depth = std::uint64_t{0U};
-        for (auto const& event : store.events)
-        {
-            if (event.room_id == room_id && event.depth > depth)
-            {
-                depth = event.depth;
-            }
-        }
-        return depth + 1U;
-    }
-
     auto append_unique_member(std::vector<std::string>& members, std::string_view user_id) -> void
     {
         if (!std::ranges::any_of(members, [&](std::string const& member) {
@@ -1557,18 +1543,6 @@ namespace
         return std::ranges::any_of(database.users, [user_id](LocalUser const& user) {
             return user.user_id == user_id;
         });
-    }
-
-    // The accounts on this server, as a set, so a roster of any size is classified in one pass.
-    [[nodiscard]] auto local_user_ids(LocalDatabase const& database) -> std::unordered_set<std::string_view>
-    {
-        auto ids = std::unordered_set<std::string_view>{};
-        ids.reserve(database.users.size());
-        for (auto const& user : database.users)
-        {
-            ids.insert(user.user_id);
-        }
-        return ids;
     }
 
     // Spec (client-server-api.md, "Tracking the device list for a user"): a user who starts sharing a
@@ -1936,7 +1910,7 @@ namespace
                 }
             }
         }
-        auto const depth = next_depth_for_room(runtime.database.persistent_store, room_id);
+        auto const depth = depth_after_prev_events(runtime.database.persistent_store, prev_events);
         auto const now_ms = origin_server_ts.value_or(event_clock_now_ms(runtime));
         auto event = canonicaljson::Object{};
         event.push_back(canonicaljson::make_member("type", canonicaljson::Value{event_type}));

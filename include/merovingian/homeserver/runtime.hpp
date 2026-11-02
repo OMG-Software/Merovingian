@@ -51,6 +51,7 @@
 #include <string>
 #include <string_view>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -796,6 +797,8 @@ private:
 // sliding-sync pos may name: just below the oldest pending ordering, or the
 // newest allocated one when none is pending. Read with runtime.mutex held.
 [[nodiscard]] auto visible_stream_position(LocalDatabase const& database) noexcept -> std::uint64_t;
+// The accounts on this server, as a set, so a roster of any size is classified in one pass.
+[[nodiscard]] auto local_user_ids(LocalDatabase const& database) -> std::unordered_set<std::string_view>;
 [[nodiscard]] auto start_runtime(config::Config const& config) -> RuntimeStartResult;
 [[nodiscard]] auto start_runtime(config::Config const& config, database::SchemaState existing_state)
     -> RuntimeStartResult;

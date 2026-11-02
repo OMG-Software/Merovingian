@@ -19,11 +19,13 @@
 #include <deque>
 #include <functional>
 #include <iterator>
+#include <limits>
 #include <map>
 #include <mutex>
 #include <optional>
 #include <set>
 #include <span>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <tuple>
@@ -4750,6 +4752,13 @@ auto restore_sync_stream_id(PersistentStore& store) -> void
 
 [[nodiscard]] auto allocate_sync_stream_id(PersistentStore& store) -> std::uint64_t
 {
+    // ADR-0315: the largest value a BIGINT row holds. An id is never reused, because a row below a
+    // client's since token is not delivered and a to-device row there is deleted as acknowledged.
+    constexpr auto max_sync_stream_id = static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max());
+    if (store.next_sync_stream_id >= max_sync_stream_id)
+    {
+        throw std::overflow_error{"the sync stream counter is at its ceiling"};
+    }
     store.next_sync_stream_id += 1U;
     auto const new_id = store.next_sync_stream_id;
     // Persist the new high-water mark immediately so ephemeral sync surfaces
@@ -4768,21 +4777,6 @@ auto restore_sync_stream_id(PersistentStore& store) -> void
                                 {
                                     {std::to_string(watermark), false}
     }));
-}
-
-[[nodiscard]] auto ensure_sync_stream_id_ahead_of(PersistentStore& store, std::uint64_t since_sync_stream_id) -> bool
-{
-    if (since_sync_stream_id <= store.next_sync_stream_id)
-    {
-        return true;
-    }
-    // The client presents a since-token whose sync_stream_id exceeds our
-    // current counter. This can happen when previously-ephemeral surfaces
-    // (typing, receipts) advanced the in-memory counter before the watermark
-    // table existed. Advance the counter to the client's position so the next
-    // ephemeral event gets an ID strictly greater than the since token.
-    store.next_sync_stream_id = since_sync_stream_id;
-    return persist_sync_stream_watermark(store, store.next_sync_stream_id);
 }
 
 [[nodiscard]] auto store_filter(PersistentStore& store, PersistentFilter filter) -> bool
