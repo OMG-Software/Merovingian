@@ -4020,8 +4020,8 @@ namespace
     // ADR-0317. Spec ("Tracking the device list for a user"): `device_lists.changed` tells a client
     // about the users it shares a room with. Only a local user has a client here; a remote user's
     // server learns through m.device_list_update. One batch, so one stream position and two commits
-    // (the watermark, then the rows) under the runtime lock however large a room's roster is (a remote server chooses
-    // it).
+    // (the watermark, then the rows) under the runtime lock, however large a room's roster is (a
+    // remote server chooses it).
     auto record_shared_room_device_changes(ClientServerRuntime& rt, std::string_view user_id,
                                            NotifyOwnDevices notify_own_devices) -> void
     {

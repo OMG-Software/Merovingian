@@ -161,6 +161,23 @@ SCENARIO("A /sync token ahead of the server's streams does not move server-wide 
             }
         }
 
+        WHEN("a user's token is ahead of this server only in its membership position")
+        {
+            auto const room = merovingian::homeserver::handle_client_server_request(
+                runtime, {"POST", "/_matrix/client/v3/createRoom", attacker.token, R"({"preset":"private_chat"})"});
+            REQUIRE(room.response.status == 200U);
+            auto const room_id = json_string_after(room.response.body, "room_id");
+
+            auto const forged = sync_since(runtime, attacker.token, "0_7fffffffffffffff_0");
+
+            THEN("they are given the room, as in an initial sync, and a token from this server's stream")
+            {
+                REQUIRE(forged.response.status == 200U);
+                REQUIRE(forged.response.body.find(room_id) != std::string::npos);
+                REQUIRE(next_batch_of(forged).membership_ordering < std::uint64_t{0x7fffffffffffffffULL});
+            }
+        }
+
         WHEN("a user syncs with the server's own current token")
         {
             auto const current = json_string_after(sync_since(runtime, attacker.token, {}).response.body, "next_batch");

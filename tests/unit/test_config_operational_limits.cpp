@@ -298,7 +298,9 @@ SCENARIO("E2EE key and filter caps reject zero, malformed and excessive values",
             "server.client_api.max_push_rules_per_user=0\n", "server.client_api.max_push_rules_per_user=10001\n",
             "server.client_api.max_create_room_invites=0\n", "server.client_api.max_create_room_invites=10001\n",
             "server.client_api.max_create_room_initial_state=0\n",
-            "server.client_api.max_create_room_initial_state=10001\n");
+            "server.client_api.max_create_room_initial_state=10001\n",
+            "server.client_api.max_create_room_invites=many\n",
+            "server.client_api.max_create_room_initial_state=many\n");
 
         WHEN("the configuration is parsed and validated")
         {

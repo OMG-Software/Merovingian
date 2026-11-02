@@ -117,6 +117,16 @@ SCENARIO("createRoom refuses more invite or initial_state entries than the cap, 
             }
         }
 
+        WHEN("invite and initial_state are present but are not lists")
+        {
+            auto const answered = create(R"({"preset":"private_chat","invite":"@bob:example.org","initial_state":{}})");
+
+            THEN("they count as no entries, so the caps do not refuse the request")
+            {
+                REQUIRE(answered.response.body.find("M_TOO_LARGE") == std::string::npos);
+            }
+        }
+
         WHEN("the initial_state list is one past the cap")
         {
             auto const answered = create(R"({"preset":"private_chat","initial_state":)" +

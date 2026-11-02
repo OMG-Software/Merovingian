@@ -42,6 +42,9 @@ The five high findings of security audit run 2 (ref 5e67d4e8).
 - **The conformance suite's time limit is 900 seconds, up from 600.** Green runs had grown from 434 to 565 seconds on
   Debian, and one run was stopped at 600 with every finished case passing and about five left. It was not hung: the
   same commit passed on RHEL in 510 seconds.
+- **More of this release's error paths are tested.** A `createRoom` cap that is not an integer, a `/sync` token ahead
+  only in its membership position, `createRoom` entries that are not lists, and a backfilled event naming a non-state
+  event in `auth_events`.
 
 ## 0.12.66
 
