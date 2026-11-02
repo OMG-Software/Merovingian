@@ -1485,28 +1485,26 @@ namespace
     // ADR-0315: the largest value a BIGINT row holds.
     constexpr auto max_sync_stream_id = static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max());
 
-    // Requests take sync positions after they store an event or a membership, some of them inside helpers
-    // that throw at the ceiling. Refusing the write while positions remain means those requests never
-    // reach the throw with the write already committed.
-    [[nodiscard]] auto sync_stream_has_write_reserve(PersistentStore const& store, std::string_view room_id) -> bool
-    {
-        if (store.next_sync_stream_id < max_sync_stream_id - sync_stream_event_write_reserve)
-        {
-            return true;
-        }
-        log_diagnostic("sync_stream.write_refused",
-                       {
-                           {"room_id", std::string{room_id},          false},
-                           {"reason",  "counter is near its ceiling", false}
-        });
-        return false;
-    }
-
 } // namespace
+
+// Requests take sync positions after they store an event or a membership, some of them inside helpers
+// that throw at the ceiling. Refusing the write while positions remain means those requests never reach
+// the throw with the write already committed.
+[[nodiscard]] auto sync_stream_has_write_reserve(PersistentStore const& store) -> bool
+{
+    if (store.next_sync_stream_id < max_sync_stream_id - sync_stream_write_reserve)
+    {
+        return true;
+    }
+    log_diagnostic("sync_stream.write_refused", {
+                                                    {"reason", "counter is near its ceiling", false}
+    });
+    return false;
+}
 
 [[nodiscard]] auto store_room(PersistentStore& store, PersistentRoom room) -> bool
 {
-    if (!sync_stream_has_write_reserve(store, room.room_id) || room_exists(store, room.room_id))
+    if (!sync_stream_has_write_reserve(store) || room_exists(store, room.room_id))
     {
         return false;
     }
@@ -1700,8 +1698,7 @@ namespace
                                                MembershipProjection projection) -> bool
 {
     auto statements = std::vector<PreparedStatement>{};
-    if (!sync_stream_has_write_reserve(store, room_id) || room_id.empty() ||
-        !membership_projection_is_valid(projection) ||
+    if (!sync_stream_has_write_reserve(store) || room_id.empty() || !membership_projection_is_valid(projection) ||
         !append_membership_projection_statements(statements, room_id, projection) ||
         !commit_persistent_transaction(store, statements))
     {
@@ -1808,7 +1805,7 @@ namespace
 
 [[nodiscard]] auto store_membership(PersistentStore& store, PersistentMembership membership) -> MembershipStoreResult
 {
-    if (!sync_stream_has_write_reserve(store, membership.room_id))
+    if (!sync_stream_has_write_reserve(store))
     {
         return MembershipStoreResult::error;
     }
@@ -1852,7 +1849,7 @@ namespace
 [[nodiscard]] auto update_membership(PersistentStore& store, std::string_view room_id, std::string_view user_id,
                                      std::string_view new_membership, std::uint64_t stream_ordering) -> bool
 {
-    if (!sync_stream_has_write_reserve(store, room_id))
+    if (!sync_stream_has_write_reserve(store))
     {
         return false;
     }
@@ -2054,7 +2051,7 @@ namespace
 [[nodiscard]] auto store_room_with_membership(PersistentStore& store, PersistentRoom room,
                                               PersistentMembership membership) -> bool
 {
-    if (!sync_stream_has_write_reserve(store, room.room_id))
+    if (!sync_stream_has_write_reserve(store))
     {
         return false;
     }
@@ -2383,7 +2380,7 @@ auto apply_current_state(PersistentStore& store, PreparedCurrentState const& pre
                                                   std::optional<MembershipProjection> membership)
     -> std::optional<PreparedStateUpdate>
 {
-    if (!sync_stream_has_write_reserve(store, event.room_id))
+    if (!sync_stream_has_write_reserve(store))
     {
         return std::nullopt;
     }

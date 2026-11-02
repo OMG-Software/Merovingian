@@ -99,6 +99,7 @@
 #include <ranges>
 #include <set>
 #include <span>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <thread>
@@ -4054,7 +4055,20 @@ namespace
         {
             changes.push_back({0U, std::string{observer}, std::string{user_id}, "changed"});
         }
-        std::ignore = record_device_list_changes(rt, std::move(changes));
+        // ADR-0315: at the counter's ceiling no position is left to carry the change. What it reports is
+        // committed, and a logout or device deletion must finish, because revoking access outweighs the
+        // notification. Uploads a client can retry are refused before they get here.
+        try
+        {
+            std::ignore = record_device_list_changes(rt, std::move(changes));
+        }
+        catch (std::overflow_error const&)
+        {
+            log_diagnostic("device_list.change_undelivered", {
+                                                                 {"user_id", std::string{user_id},            false},
+                                                                 {"reason",  "sync stream counter exhausted", false}
+            });
+        }
     }
 
     auto erase_runtime_device(ClientServerRuntime& rt, std::string_view user_id, std::string_view device_id) -> void
@@ -7671,6 +7685,7 @@ namespace
             auto const serialized =
                 canonicaljson::serialize_canonical(canonicaljson::Value{std::move(normalized_device_keys)});
             if (serialized.error != canonicaljson::CanonicalJsonError::none ||
+                !database::sync_stream_has_write_reserve(store) ||
                 !database::store_device_key(store, {std::string{user}, std::string{device_id}, serialized.output}))
             {
                 return err(500U, "M_UNKNOWN", "device key persistence failed");
@@ -11269,7 +11284,8 @@ namespace
                 }
                 return resp(401U, uia_password_failure_body(json_serialize(cs_uia)));
             }
-            if (!store_key_api_payload(rt, route.endpoint, user, device_id, req, {}))
+            if (!database::sync_stream_has_write_reserve(rt.homeserver.database.persistent_store) ||
+                !store_key_api_payload(rt, route.endpoint, user, device_id, req, {}))
             {
                 return err(500U, "M_UNKNOWN", "key API persistence failed");
             }
@@ -11299,7 +11315,8 @@ namespace
                            "signature upload would exceed the per-user limit of " +
                                std::to_string(rt.limits.max_key_signatures_per_user));
             }
-            if (!store_key_api_payload(rt, route.endpoint, user, device_id, req, {}))
+            if (!database::sync_stream_has_write_reserve(rt.homeserver.database.persistent_store) ||
+                !store_key_api_payload(rt, route.endpoint, user, device_id, req, {}))
             {
                 return err(500U, "M_UNKNOWN", "key API persistence failed");
             }
@@ -11386,7 +11403,8 @@ namespace
             {
                 return err(400U, "M_BAD_JSON", "device update body must be Matrix JSON");
             }
-            if (!database::update_device_display_name(rt.homeserver.database.persistent_store, user,
+            if (!database::sync_stream_has_write_reserve(rt.homeserver.database.persistent_store) ||
+                !database::update_device_display_name(rt.homeserver.database.persistent_store, user,
                                                       device_id_from_path, body->display_name))
             {
                 return err(500U, "M_UNKNOWN", "device update persistence failed");
@@ -18811,7 +18829,20 @@ auto handle_client_server_request(ClientServerRuntime& rt, LocalHttpRequest cons
     // its placeholder response is discarded here and the transport hands the
     // request to the media fetch pool.
     auto const fetch_scope = RemoteMediaFetchScope{options.remote_media};
-    auto result = handle_client_server_request_impl(rt, req, options);
+    auto result = DispatchResult{};
+    try
+    {
+        result = handle_client_server_request_impl(rt, req, options);
+    }
+    catch (std::overflow_error const&)
+    {
+        // ADR-0315: what takes a sync position first fails here with nothing stored. Without this the
+        // client's connection is dropped rather than answered.
+        auto const guard = std::lock_guard<RuntimeMutex>{rt.homeserver.mutex};
+        result = dispatch_err(req, rt, 500U, "M_UNKNOWN", "sync stream counter exhausted");
+        apply_cors_headers(req, result.response, rt.cors);
+        return result;
+    }
     if (fetch_scope.deferred())
     {
         return DispatchResult{DispatchResult::Status::needs_media_fetch, {}, {}};

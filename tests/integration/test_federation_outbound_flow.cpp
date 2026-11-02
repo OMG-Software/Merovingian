@@ -94,6 +94,14 @@ struct X509Deleter final
     }
 };
 
+struct X509NameDeleter final
+{
+    auto operator()(X509_NAME* name) const noexcept -> void
+    {
+        X509_NAME_free(name);
+    }
+};
+
 struct FileDeleter final
 {
     auto operator()(std::FILE* file) const noexcept -> void
@@ -154,12 +162,15 @@ struct FileDeleter final
     REQUIRE(X509_gmtime_adj(X509_getm_notAfter(certificate.get()), 3600L) != nullptr);
     REQUIRE(X509_set_pubkey(certificate.get(), key.get()) == 1);
 
-    auto* subject = X509_get_subject_name(certificate.get());
+    // Built apart from the certificate: OpenSSL 4 returns its subject name as const, and OpenSSL 3 takes a
+    // const name here too, so this one form builds on both.
+    auto const subject = std::unique_ptr<X509_NAME, X509NameDeleter>{X509_NAME_new()};
     REQUIRE(subject != nullptr);
     // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast)
     auto const* common_name = reinterpret_cast<unsigned char const*>("localhost");
-    REQUIRE(X509_NAME_add_entry_by_txt(subject, "CN", MBSTRING_ASC, common_name, -1, -1, 0) == 1);
-    REQUIRE(X509_set_issuer_name(certificate.get(), subject) == 1);
+    REQUIRE(X509_NAME_add_entry_by_txt(subject.get(), "CN", MBSTRING_ASC, common_name, -1, -1, 0) == 1);
+    REQUIRE(X509_set_subject_name(certificate.get(), subject.get()) == 1);
+    REQUIRE(X509_set_issuer_name(certificate.get(), subject.get()) == 1);
     REQUIRE(X509_sign(certificate.get(), key.get(), EVP_sha256()) > 0);
 
     auto output = TlsTestCertificate{};

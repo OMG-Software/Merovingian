@@ -84,6 +84,7 @@
 #include <ranges>
 #include <set>
 #include <span>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <system_error>
@@ -7357,7 +7358,15 @@ namespace
         return make_operation_result(false, {}, "user must leave room before forgetting", 400U);
     }
     // ADR-0315: before the delete, so a counter at its ceiling leaves the membership in place.
-    auto const sync_stream_id = database::allocate_sync_stream_id(runtime.database.persistent_store);
+    auto sync_stream_id = std::uint64_t{0U};
+    try
+    {
+        sync_stream_id = database::allocate_sync_stream_id(runtime.database.persistent_store);
+    }
+    catch (std::overflow_error const&)
+    {
+        return make_operation_result(false, {}, "sync stream counter exhausted", 500U);
+    }
     if (!database::delete_membership(runtime.database.persistent_store, room_id, *user_id))
     {
         return make_operation_result(false, {}, "membership delete failed", 500U);

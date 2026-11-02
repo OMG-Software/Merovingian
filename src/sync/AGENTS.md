@@ -40,8 +40,9 @@ A token is unauthenticated client input: decoding it proves nothing about who is
 server-wide state. A classic `/sync` token ahead of any stream is served as an initial sync; a sliding sync
 `pos` ahead of one gets `400 M_UNKNOWN_POS`. `allocate_sync_stream_id` is the only thing that raises the
 counter, and it throws rather than pass `INT64_MAX`. Event, room and membership writes stop
-`sync_stream_event_write_reserve` below that, so code that stores one and then allocates never reaches the throw with
-it committed; code that deletes must allocate first (ADR-0315).
+`sync_stream_write_reserve` below that, so code that stores one and then allocates never reaches the throw with it
+committed. Other writes followed by a position check `sync_stream_has_write_reserve` first, unless they revoke access
+(ADR-0315).
 
 ## Joined-room timelines and holes in the event graph (ADR-0289)
 

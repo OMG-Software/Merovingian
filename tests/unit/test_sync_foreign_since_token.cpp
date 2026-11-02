@@ -300,7 +300,7 @@ SCENARIO("Local events stop being stored before the sync stream counter runs out
         auto const events_before = store.events.size();
         auto const rooms_before = store.rooms.size();
         constexpr auto ceiling = static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max());
-        store.next_sync_stream_id = ceiling - merovingian::database::sync_stream_event_write_reserve;
+        store.next_sync_stream_id = ceiling - merovingian::database::sync_stream_write_reserve;
 
         WHEN("the user creates a room")
         {
@@ -321,7 +321,7 @@ SCENARIO("Local events stop being stored before the sync stream counter runs out
 
             THEN("one is still issued")
             {
-                REQUIRE(issued == ceiling - merovingian::database::sync_stream_event_write_reserve + 1U);
+                REQUIRE(issued == ceiling - merovingian::database::sync_stream_write_reserve + 1U);
             }
         }
     }
@@ -350,19 +350,142 @@ SCENARIO("Forgetting a room at the sync stream counter's limit keeps the members
 
         WHEN("the user forgets the room")
         {
-            try
+            auto const forgotten = merovingian::homeserver::handle_client_server_request(
+                runtime, {"POST", room_path + "/forget", user.token, "{}"});
+
+            THEN("the request is answered with an error")
             {
-                std::ignore = merovingian::homeserver::handle_client_server_request(
-                    runtime, {"POST", room_path + "/forget", user.token, "{}"});
-            }
-            catch (std::overflow_error const&)
-            {
-                // The HTTP layer answers this with a 500. What matters here is what was left behind.
+                REQUIRE(forgotten.response.status == 500U);
             }
 
             THEN("the membership is still there")
             {
                 REQUIRE(store.memberships.size() == memberships_before);
+            }
+        }
+    }
+}
+
+// ADR-0315: other devices learn of a key change through a sync position taken after the key is stored, so
+// a key upload is refused while the client can still retry it, not after it can no longer be announced.
+SCENARIO("Key and device uploads are refused before they are stored when the sync stream counter is near its limit",
+         "[database][sync-stream][security]")
+{
+    GIVEN("a logged-in user and a valid device key upload")
+    {
+        auto started = merovingian::homeserver::start_client_server(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        auto const user = register_user(runtime, "alice");
+        auto const device = user.device_id;
+        auto const body = R"({"device_keys":{"user_id":"@alice:example.org","device_id":")" + device +
+                          R"(","algorithms":["m.olm.v1.curve25519-aes-sha2"],"keys":{"curve25519:)" + device +
+                          R"(":"curve25519-public","ed25519:)" + device + R"(":"ed25519-public"},"signatures":{}}})";
+        auto& store = runtime.homeserver.database.persistent_store;
+        auto const device_path = "/_matrix/client/v3/devices/" + device;
+        constexpr auto ceiling = static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max());
+
+        WHEN("the counter is well below its limit")
+        {
+            auto const uploaded = merovingian::homeserver::handle_client_server_request(
+                runtime, {"POST", "/_matrix/client/v3/keys/upload", user.token, body});
+            auto const signatures = merovingian::homeserver::handle_client_server_request(
+                runtime, {"POST", "/_matrix/client/v3/keys/signatures/upload", user.token, "{}"});
+            auto const renamed = merovingian::homeserver::handle_client_server_request(
+                runtime, {"PUT", device_path, user.token, R"({"display_name":"renamed"})"});
+
+            THEN("all of them are accepted")
+            {
+                REQUIRE(uploaded.response.status == 200U);
+                REQUIRE(store.device_keys.size() == 1U);
+                REQUIRE(signatures.response.status == 200U);
+                REQUIRE(renamed.response.status == 200U);
+            }
+        }
+
+        WHEN("the counter is at its limit")
+        {
+            store.next_sync_stream_id = ceiling;
+            auto const uploaded = merovingian::homeserver::handle_client_server_request(
+                runtime, {"POST", "/_matrix/client/v3/keys/upload", user.token, body});
+            auto const signatures = merovingian::homeserver::handle_client_server_request(
+                runtime, {"POST", "/_matrix/client/v3/keys/signatures/upload", user.token, "{}"});
+            auto const renamed = merovingian::homeserver::handle_client_server_request(
+                runtime, {"PUT", device_path, user.token, R"({"display_name":"renamed"})"});
+            auto const read_back =
+                merovingian::homeserver::handle_client_server_request(runtime, {"GET", device_path, user.token, {}});
+
+            THEN("each is refused and nothing was stored")
+            {
+                REQUIRE(uploaded.response.status == 500U);
+                REQUIRE(store.device_keys.empty());
+                REQUIRE(signatures.response.status == 500U);
+                REQUIRE(renamed.response.status == 500U);
+                REQUIRE(read_back.response.body.find("renamed") == std::string::npos);
+            }
+        }
+    }
+}
+
+// ADR-0315: signing out revokes access. It must not depend on a position to announce it.
+SCENARIO("Logging out at the sync stream counter's limit still revokes the session",
+         "[database][sync-stream][security]")
+{
+    GIVEN("two users sharing a room, and a counter at its ceiling")
+    {
+        auto started = merovingian::homeserver::start_client_server(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        auto const alice = register_user(runtime, "alice");
+        auto const bob = register_user(runtime, "bob");
+        auto const room = merovingian::homeserver::handle_client_server_request(
+            runtime, {"POST", "/_matrix/client/v3/createRoom", alice.token, R"({"preset":"public_chat"})"});
+        REQUIRE(room.response.status == 200U);
+        auto const joined = merovingian::homeserver::handle_client_server_request(
+            runtime,
+            {"POST", "/_matrix/client/v3/join/" + json_string_after(room.response.body, "room_id"), bob.token, "{}"});
+        REQUIRE(joined.response.status == 200U);
+        auto& store = runtime.homeserver.database.persistent_store;
+        store.next_sync_stream_id = static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max());
+
+        WHEN("one of them logs out")
+        {
+            auto const logged_out = merovingian::homeserver::handle_client_server_request(
+                runtime, {"POST", "/_matrix/client/v3/logout", bob.token, "{}"});
+
+            THEN("the logout succeeds and the token no longer works")
+            {
+                REQUIRE(logged_out.response.status == 200U);
+                auto const whoami = merovingian::homeserver::handle_client_server_request(
+                    runtime, {"GET", "/_matrix/client/v3/account/whoami", bob.token, {}});
+                REQUIRE(whoami.response.status == 401U);
+            }
+        }
+    }
+}
+
+// ADR-0315: writes that take their position first fail with nothing stored; the client still gets an answer.
+SCENARIO("A client request that finds the sync stream counter exhausted is answered",
+         "[database][sync-stream][security]")
+{
+    GIVEN("a logged-in user and a counter at its ceiling")
+    {
+        auto started = merovingian::homeserver::start_client_server(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        auto const user = register_user(runtime, "alice");
+        auto& store = runtime.homeserver.database.persistent_store;
+        store.next_sync_stream_id = static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max());
+
+        WHEN("the user writes account data")
+        {
+            auto const written = merovingian::homeserver::handle_client_server_request(
+                runtime, {"PUT", "/_matrix/client/v3/user/@alice:example.org/account_data/org.example.ceiling",
+                          user.token, R"({"a":1})"});
+
+            THEN("the request is answered with an error")
+            {
+                REQUIRE(written.response.status == 500U);
             }
         }
     }

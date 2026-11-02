@@ -42,12 +42,21 @@ leaving the counter where it was. Saturating was rejected because it reuses an i
 messages. Returning an error through its 25 callers was rejected because, with the ratchet gone, the ceiling needs
 2^63 allocations or a database edited by hand; a request that hits it fails rather than corrupts.
 
-Many paths store an event or a membership and then allocate, some inside helpers, so the store refuses event, room and
-membership writes once the counter is within `sync_stream_event_write_reserve` (2^20) of the ceiling. Those writes
-already report failure to every caller, so each path answers with its existing error and nothing is left half done.
-Reordering every path was rejected: it is scattered, and the next path written would have to know. Other writes
-(receipts, presence, to-device, account data, typing, forgetting a room) allocate before they commit, so at the ceiling
-they fail with nothing changed. The federated invite handler and PDU ingest also catch the throw and answer an error,
+Many paths store something and then allocate, some inside helpers, and the two ways out at the ceiling are not equal:
+
+* Event, room and membership writes are refused by the store once the counter is within `sync_stream_write_reserve`
+  (2^20) of the ceiling. They already report failure to every caller, so each path answers with its existing error.
+  Reordering every path was rejected: it is scattered, and the next path written would have to know.
+* Key, signature and device-name uploads check the same reserve before they store, because a client can retry them.
+  A check for one remaining position was rejected: handlers do not hold the runtime lock across it, so it can race,
+  and a second threshold buys nothing 2^63 positions from the first.
+* Logout and device deletion finish, with the undelivered device-list change logged. A check there was rejected: it
+  would stop a user revoking access on a server already in trouble, and revoking access outweighs a notification.
+  Local observers miss that change, so their copy of the device list stays stale until the next one.
+
+Writes that allocate first (receipts, presence, to-device, account data, typing) fail with nothing stored, and the
+exception is caught at `handle_client_server_request`, which answers 500. Without that catch the connection is dropped
+without an answer. The federated invite handler, `forget_room` and PDU ingest catch it themselves, the first and last
 because their callers can be a worker waiting on an IPC reply.
 
 ### Positive Consequences
