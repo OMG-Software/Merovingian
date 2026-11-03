@@ -204,6 +204,16 @@ IPC. Do **not** pass a nonexistent binary path — the constructor calls
 `posix_spawn()` directly and throws `std::runtime_error` when the binary is
 absent, crashing the GIVEN block before any assertion runs.
 
+### Playing a compromised worker (F-43, ADR-0349)
+
+To test what main does with a worker's reply, without a worker process, set
+`runtime.homeserver.test_worker_outbound_route`: it answers every `OutboundAnswerTrust::signature_verified`
+call in place of the `FederationProxy`, and an `unverified` call never reaches it. A scenario that expects a
+call to stay off the tunnel counts the hook's calls and points the remote server at a closed port, so a forged
+body can appear only if main believed the hook (`[f-43]` in
+`tests/integration/test_client_outbound_proxy_flow.cpp`). The reply checks themselves
+(`validate_worker_outbound_reply`) are pure and tested in `tests/unit/test_federation_proxy.cpp`.
+
 ### Test-only environment variables
 
 * `MEROVINGIAN_TEST_FEDERATION_WORKER` — absolute path to the

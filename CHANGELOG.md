@@ -16,6 +16,25 @@ The medium findings of security audit run 2 (ref 5e67d4e8).
   whole room state before their leave (roster, power levels, topic, custom state) that `GET /state` refuses them. Their
   entry now holds only their own leave or ban, in the timeline or, when the filter excludes it, in `state`. A user who
   joined and then left keeps the state they had; one who left and was then banned is capped at the state when they left.
+- **The federation worker can no longer forge an answer main acts on (F-43, ADR-0349).** Main sent every outbound
+  federation call through the sandboxed federation worker and took its reply as the remote server's. A compromised worker
+  could therefore forge device, cross-signing and one-time keys for a `/keys/query` or `/keys/claim`, alias, public-room
+  and profile answers (and so the room `POST /join/{alias}` joined), a `make_leave` 403 that ended an invite, and
+  `send_leave`, `send_knock` and `send_join` outcomes. Each call now names what main can check it against
+  (`OutboundAnswerTrust`): only the four backfill fetches, whose PDUs are each verified before they are stored, may still
+  use the worker; every other call, including `make_*`, `send_*`, invites, `state_ids`, `hierarchy` and
+  `timestamp_to_event`, goes over main's own pinned, TLS-verified client with the same size caps and deadlines.
+  `WorkerPool::send_outbound_request` also refuses a reply whose status is outside 100 to 599 or whose body exceeds the
+  request's cap, and cuts `error_detail` to 256 printable bytes. The other direction, inbound `fed_response` frames
+  reaching remote peers from the worker, is unchanged and recorded as a residual in `docs/threat-model.md`.
+- **A key query, a key claim and a join by remote alias can no longer pin the request pool (F-17, ADR-0350).**
+  `POST /keys/query` and `/keys/claim` called each named remote server in turn with the full 60 s `remote_timeout`, no
+  in-flight slot and no limit on the number of servers, and `POST /join/{#alias}` made one unslotted 60 s lookup. A key
+  request now takes one ADR-0079 slot for all its remote calls, draws them from one 30 s deadline, and asks at most 16
+  distinct servers; a server it does not ask (no slot, deadline spent, over the cap) is reported in `failures` with
+  `M_LIMIT_EXCEEDED` or "deadline exceeded", and the local part of the answer, including one-time keys already claimed
+  here, is still returned. A join by remote alias takes a slot (`429 M_LIMIT_EXCEEDED` when none is free) and runs under
+  the 10 s directory deadline.
 - **One user can no longer use up the local media record cap (F-46, ADR-0340).** `security.media.max_records` was one
   budget for the whole server, and distinct tiny files or deduplicated re-uploads cost the per-user byte quota almost
   nothing, so one account could fill it and every user's upload was then refused until an operator raised it. New key

@@ -163,8 +163,9 @@ auto acquire_closer_timestamp_event(HomeserverRuntime& runtime, std::unique_lock
         auto const tx = federation::make_outbound_transaction(server, "GET", target, our_server, {});
         auto const [ok, body] = [&] {
             auto const released = RuntimeLockRelease{guard};
-            return perform_bounded_outbound_call(runtime, room_id, tx, signing_key->key_id, std::move(secret),
-                                                 "timestamp_to_event.ask", deadline.remaining_seconds());
+            return perform_bounded_outbound_call(runtime, OutboundAnswerTrust::unverified, room_id, tx,
+                                                 signing_key->key_id, std::move(secret), "timestamp_to_event.ask",
+                                                 deadline.remaining_seconds());
         }();
         if (!ok)
         {

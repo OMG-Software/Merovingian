@@ -227,8 +227,25 @@ auto claim_membership_event_template(canonicaljson::Object& event, std::string_v
                                      std::int64_t now_ms) -> void;
 [[nodiscard]] auto validate_make_leave_response(std::string_view requested_room_id, std::string_view requested_user_id,
                                                 std::string_view body) -> ValidatedMakeLeaveResponse;
-// Synchronous outbound federation call — signs in-process then routes via
-// federation proxy (worker thread pool) if available, else direct outbound client.
+// What main can check an outbound federation answer against (F-43, ADR-0349). It decides the route:
+// the federation worker is the process most exposed to hostile traffic, so what it relays is input,
+// not a fact. An answer main uses without a signature check must be fetched over main's own
+// OutboundClient, or a compromised worker could speak as any remote server.
+enum class OutboundAnswerTrust : std::uint8_t
+{
+    // Main acts on the answer as given: its status, its fields or its choice of content. Direct
+    // route only. This includes an answer whose body is signed but whose status, or whose choice of
+    // which signed objects to send, main also acts on. A caller that cannot say it is
+    // signature_verified is this.
+    unverified,
+    // Every use main makes of a success body is a signature check on the whole of it (backfilled
+    // PDUs are verified one by one before they are stored), and a failure only means "no data".
+    // The worker may carry the call: the most it can do is withhold or replay what servers signed.
+    signature_verified,
+};
+
+// Synchronous outbound federation call — signs in-process then routes by `trust`: direct outbound
+// client, or, for a signature_verified answer with a federation proxy wired, the worker thread pool.
 // Returns {true, body} on HTTP 2xx, {false, reason} otherwise.
 // room_id is used only for worker shard routing; pass {} for non-room requests.
 // `secret_key` is an owned 64-byte Ed25519 secret key in a mlocked
@@ -239,7 +256,8 @@ auto claim_membership_event_template(canonicaljson::Object& event, std::string_v
 // OutboundCall default of 16 MiB); send_join passes
 // runtime.federation.config.join_response_max_bytes since a large room's
 // full state routinely exceeds the default.
-[[nodiscard]] auto perform_sync_outbound_call(HomeserverRuntime& runtime, std::string_view room_id,
+[[nodiscard]] auto perform_sync_outbound_call(HomeserverRuntime& runtime, OutboundAnswerTrust trust,
+                                              std::string_view room_id,
                                               federation::OutboundTransaction const& transaction,
                                               std::string_view key_id, core::SecretBuffer secret_key,
                                               std::string_view diagnostic_event, std::uint32_t timeout_seconds,
@@ -252,7 +270,8 @@ auto claim_membership_event_template(canonicaljson::Object& event, std::string_v
 // usual 10 s. A budget already used up is reported as "deadline exceeded" without
 // touching the network. Callers hold a client-outbound budget slot around it
 // (ADR-0079, `admit_client_outbound_proxy`).
-[[nodiscard]] auto perform_bounded_outbound_call(HomeserverRuntime& runtime, std::string_view room_id,
+[[nodiscard]] auto perform_bounded_outbound_call(HomeserverRuntime& runtime, OutboundAnswerTrust trust,
+                                                 std::string_view room_id,
                                                  federation::OutboundTransaction const& transaction,
                                                  std::string_view key_id, core::SecretBuffer secret_key,
                                                  std::string_view diagnostic_event, std::uint32_t deadline_seconds)
@@ -279,7 +298,8 @@ struct OutboundCallResult final
 
 // perform_bounded_outbound_call, keeping the remote's HTTP status for a caller whose answer depends on
 // it (a remote profile lookup relays the remote's 404 as its own). Same slot and deadline rules apply.
-[[nodiscard]] auto perform_bounded_outbound_call_with_status(HomeserverRuntime& runtime, std::string_view room_id,
+[[nodiscard]] auto perform_bounded_outbound_call_with_status(HomeserverRuntime& runtime, OutboundAnswerTrust trust,
+                                                             std::string_view room_id,
                                                              federation::OutboundTransaction const& transaction,
                                                              std::string_view key_id, core::SecretBuffer secret_key,
                                                              std::string_view diagnostic_event,
@@ -288,10 +308,11 @@ struct OutboundCallResult final
 // The shared implementation of perform_sync_outbound_call (bounded == nullopt)
 // and perform_bounded_outbound_call. Call it directly only when the remote's
 // status decides the answer, as a membership call refused with 403 does.
-[[nodiscard]] auto perform_outbound_call(HomeserverRuntime& runtime, std::string_view room_id,
-                                         federation::OutboundTransaction const& transaction, std::string_view key_id,
-                                         core::SecretBuffer secret_key, std::string_view diagnostic_event,
-                                         std::uint32_t timeout_seconds, std::uint64_t max_response_bytes,
+[[nodiscard]] auto perform_outbound_call(HomeserverRuntime& runtime, OutboundAnswerTrust trust,
+                                         std::string_view room_id, federation::OutboundTransaction const& transaction,
+                                         std::string_view key_id, core::SecretBuffer secret_key,
+                                         std::string_view diagnostic_event, std::uint32_t timeout_seconds,
+                                         std::uint64_t max_response_bytes,
                                          std::optional<BoundedOutboundLimits> const& bounded) -> OutboundCallResult;
 
 // ADR-0064 phase B1: joined_members is what callers used before (the user

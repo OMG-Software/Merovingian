@@ -1589,6 +1589,40 @@ auto WorkerPool::record_room_sync_result(std::string_view room_id, std::string_v
     // generation remains until its own result arrives or the room is re-synced.
 }
 
+auto validate_worker_outbound_reply(http::OutboundRequest const& request, http::OutboundResult reply)
+    -> http::OutboundResult
+{
+    auto detail = std::string{};
+    detail.reserve(std::min(reply.error_detail.size(), max_worker_outbound_error_detail_bytes));
+    for (auto const byte : reply.error_detail)
+    {
+        if (detail.size() >= max_worker_outbound_error_detail_bytes)
+        {
+            break;
+        }
+        auto const code = static_cast<unsigned char>(byte);
+        detail += (code >= 0x20U && code < 0x7fU) ? byte : '?';
+    }
+    reply.error_detail = std::move(detail);
+
+    if (reply.ok)
+    {
+        auto const status_in_range = reply.response.status >= 100U && reply.response.status <= 599U;
+        if (!status_in_range || reply.response.body.size() > request.max_response_body_bytes)
+        {
+            return {false,
+                    {},
+                    http::OutboundError::network_error,
+                    status_in_range ? "federation worker reply exceeds the response cap"
+                                    : "federation worker reply has no valid HTTP status"};
+        }
+        return reply;
+    }
+    // A failure carries no answer: whatever status or body the worker attached is not the remote's.
+    reply.response = {};
+    return reply;
+}
+
 auto WorkerPool::send_outbound_request(http::OutboundRequest const& request, std::string_view room_id,
                                        std::chrono::seconds ipc_margin) -> http::OutboundResult
 {
@@ -1616,7 +1650,7 @@ auto WorkerPool::send_outbound_request(http::OutboundRequest const& request, std
         return {false, {}, http::OutboundError::timeout, "IPC timeout waiting for outbound HTTP result"};
     }
 
-    return ipc::deserialize_outbound_http_response(*reply);
+    return validate_worker_outbound_reply(request, ipc::deserialize_outbound_http_response(*reply));
 }
 
 } // namespace merovingian::homeserver

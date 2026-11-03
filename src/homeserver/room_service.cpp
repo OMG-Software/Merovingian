@@ -2496,20 +2496,24 @@ auto apply_membership_to_roster(HomeserverRuntime& runtime, std::string_view roo
 
 // Perform a single synchronous outbound federation call. Returns the raw
 // response body on success (HTTP 2xx), or an error description on failure.
-// The request is signed in-process; if a federation proxy is wired the actual
-// HTTP call runs in the worker's thread pool, freeing this handler thread.
-[[nodiscard]] auto perform_sync_outbound_call(HomeserverRuntime& runtime, std::string_view room_id,
+// The request is signed in-process. An answer main checks by signature
+// (OutboundAnswerTrust::signature_verified) may run in the federation worker's
+// thread pool when a proxy is wired; every other answer runs on main's own
+// OutboundClient (F-43, ADR-0349).
+[[nodiscard]] auto perform_sync_outbound_call(HomeserverRuntime& runtime, OutboundAnswerTrust trust,
+                                              std::string_view room_id,
                                               federation::OutboundTransaction const& transaction,
                                               std::string_view key_id, core::SecretBuffer secret_key,
                                               std::string_view diagnostic_event, std::uint32_t timeout_seconds,
                                               std::uint64_t max_response_bytes) -> std::pair<bool, std::string>
 {
-    auto result = perform_outbound_call(runtime, room_id, transaction, key_id, std::move(secret_key), diagnostic_event,
-                                        timeout_seconds, max_response_bytes, std::nullopt);
+    auto result = perform_outbound_call(runtime, trust, room_id, transaction, key_id, std::move(secret_key),
+                                        diagnostic_event, timeout_seconds, max_response_bytes, std::nullopt);
     return {result.ok, std::move(result.body)};
 }
 
-[[nodiscard]] auto perform_bounded_outbound_call_with_status(HomeserverRuntime& runtime, std::string_view room_id,
+[[nodiscard]] auto perform_bounded_outbound_call_with_status(HomeserverRuntime& runtime, OutboundAnswerTrust trust,
+                                                             std::string_view room_id,
                                                              federation::OutboundTransaction const& transaction,
                                                              std::string_view key_id, core::SecretBuffer secret_key,
                                                              std::string_view diagnostic_event,
@@ -2519,25 +2523,27 @@ auto apply_membership_to_roster(HomeserverRuntime& runtime, std::string_view roo
         BoundedOutboundLimits{OutboundDeadline{deadline_seconds},
                               std::chrono::seconds{runtime.client_outbound_proxy_policy.worker_margin_seconds}}
     };
-    return perform_outbound_call(runtime, room_id, transaction, key_id, std::move(secret_key), diagnostic_event,
+    return perform_outbound_call(runtime, trust, room_id, transaction, key_id, std::move(secret_key), diagnostic_event,
                                  deadline_seconds, 0U, bounded);
 }
 
-[[nodiscard]] auto perform_bounded_outbound_call(HomeserverRuntime& runtime, std::string_view room_id,
+[[nodiscard]] auto perform_bounded_outbound_call(HomeserverRuntime& runtime, OutboundAnswerTrust trust,
+                                                 std::string_view room_id,
                                                  federation::OutboundTransaction const& transaction,
                                                  std::string_view key_id, core::SecretBuffer secret_key,
                                                  std::string_view diagnostic_event, std::uint32_t deadline_seconds)
     -> std::pair<bool, std::string>
 {
-    auto result = perform_bounded_outbound_call_with_status(runtime, room_id, transaction, key_id,
+    auto result = perform_bounded_outbound_call_with_status(runtime, trust, room_id, transaction, key_id,
                                                             std::move(secret_key), diagnostic_event, deadline_seconds);
     return {result.ok, std::move(result.body)};
 }
 
-[[nodiscard]] auto perform_outbound_call(HomeserverRuntime& runtime, std::string_view room_id,
-                                         federation::OutboundTransaction const& transaction, std::string_view key_id,
-                                         core::SecretBuffer secret_key, std::string_view diagnostic_event,
-                                         std::uint32_t timeout_seconds, std::uint64_t max_response_bytes,
+[[nodiscard]] auto perform_outbound_call(HomeserverRuntime& runtime, OutboundAnswerTrust trust,
+                                         std::string_view room_id, federation::OutboundTransaction const& transaction,
+                                         std::string_view key_id, core::SecretBuffer secret_key,
+                                         std::string_view diagnostic_event, std::uint32_t timeout_seconds,
+                                         std::uint64_t max_response_bytes,
                                          std::optional<BoundedOutboundLimits> const& bounded) -> OutboundCallResult
 {
     if (bounded.has_value() && bounded->deadline.expired())
@@ -2664,13 +2670,21 @@ auto apply_membership_to_roster(HomeserverRuntime& runtime, std::string_view roo
     // Sign the request in-process — the Ed25519 secret never crosses the IPC boundary.
     auto const request = federation::build_outbound_request(call);
 
-    // Route via worker if available; fall back to direct outbound client. The
-    // request is fully built and signed above, so nothing inside this block
-    // reads runtime state that the lock protects — which is what makes it safe
-    // to run with runtime.mutex released. `call.secret_key` owns the key, so the
-    // span used for signing stays valid even if runtime.mutex is released.
+    // Route by what main can check the answer against (F-43, ADR-0349). Only an answer main
+    // verifies by signature may be carried by the federation worker; every other answer comes over
+    // main's own pinned, TLS-verified client, so a compromised worker cannot make main believe what
+    // only the remote server could say. The request is fully built and signed above, so nothing
+    // inside this block reads runtime state that the lock protects — which is what makes it safe
+    // to run with runtime.mutex released. `call.secret_key` owns the key, so the span used for
+    // signing stays valid even if runtime.mutex is released.
     auto outcome = http::OutboundResult{};
-    if (runtime.federation_proxy)
+    auto const via_worker = trust == OutboundAnswerTrust::signature_verified;
+    if (via_worker && runtime.test_worker_outbound_route)
+    {
+        auto const unlocked = RuntimeLockRelease{};
+        outcome = runtime.test_worker_outbound_route(request);
+    }
+    else if (via_worker && runtime.federation_proxy)
     {
         auto const unlocked = RuntimeLockRelease{};
         outcome = runtime.federation_proxy->send_outbound_request(
@@ -4960,9 +4974,9 @@ namespace
                     auto tx =
                         federation::make_outbound_make_membership(federation::FederationEndpoint::make_join, cand,
                                                                   our_server_copy, room_id_copy, user_id_copy, sv_copy);
-                    auto call =
-                        perform_outbound_call(runtime, room_id_copy, tx, key_id_copy, std::move(secret_key),
-                                              "room.join.remote.make_join_failed", per_call_timeout, 0U, std::nullopt);
+                    auto call = perform_outbound_call(
+                        runtime, OutboundAnswerTrust::unverified, room_id_copy, tx, key_id_copy, std::move(secret_key),
+                        "room.join.remote.make_join_failed", per_call_timeout, 0U, std::nullopt);
                     auto lk = std::unique_lock{race_state->mtx};
                     if (call.ok && !race_state->winner.has_value())
                     {
@@ -5178,9 +5192,10 @@ namespace
         auto const send_join_timeout = runtime.federation.config.join_timeout_seconds > 0U
                                            ? runtime.federation.config.join_timeout_seconds
                                            : runtime.federation.config.remote_timeout_seconds;
-        auto send_join_call = perform_outbound_call(runtime, room_id, send_join_tx, key_id, std::move(secret_key),
-                                                    "room.join.remote.send_join_failed", send_join_timeout,
-                                                    runtime.federation.config.join_response_max_bytes, std::nullopt);
+        auto send_join_call =
+            perform_outbound_call(runtime, OutboundAnswerTrust::unverified, room_id, send_join_tx, key_id,
+                                  std::move(secret_key), "room.join.remote.send_join_failed", send_join_timeout,
+                                  runtime.federation.config.join_response_max_bytes, std::nullopt);
         auto const& send_body = send_join_call.body;
         if (!send_join_call.ok)
         {
@@ -6436,9 +6451,10 @@ namespace
             // Two outbound calls need the same key; make the second copy before
             // moving the first into the make_leave call.
             auto secret_key_for_send = core::SecretBuffer{secret_key.bytes()};
-            auto const make_leave_call = perform_outbound_call(
-                runtime, room_id, make_leave_tx, key_id, std::move(secret_key), "room.leave.remote.make_leave_failed",
-                runtime.federation.config.remote_timeout_seconds, 0U, std::nullopt);
+            auto const make_leave_call =
+                perform_outbound_call(runtime, OutboundAnswerTrust::unverified, room_id, make_leave_tx, key_id,
+                                      std::move(secret_key), "room.leave.remote.make_leave_failed",
+                                      runtime.federation.config.remote_timeout_seconds, 0U, std::nullopt);
             auto const make_ok = make_leave_call.ok;
             auto const& make_body = make_leave_call.body;
             if (!make_ok && rejecting_invite &&
@@ -6606,9 +6622,10 @@ namespace
                                                                    {"remote_server", remote_server,            false},
                                                                    {"event_id",      event_id_result.event_id, false}
                 });
-                std::tie(send_ok, send_body) = perform_sync_outbound_call(
-                    runtime, room_id, send_leave_tx, key_id, std::move(secret_key_for_send),
-                    "room.leave.remote.send_leave_failed", runtime.federation.config.remote_timeout_seconds);
+                std::tie(send_ok, send_body) =
+                    perform_sync_outbound_call(runtime, OutboundAnswerTrust::unverified, room_id, send_leave_tx, key_id,
+                                               std::move(secret_key_for_send), "room.leave.remote.send_leave_failed",
+                                               runtime.federation.config.remote_timeout_seconds);
             }
         }
 
@@ -6843,8 +6860,9 @@ namespace
         auto const released = RuntimeLockRelease{guard};
         // Bounded: discovery and the request draw from one deadline, so the exchange stays within the offer's
         // budget instead of giving each its own `offer_seconds` (ADR-0307).
-        return perform_bounded_outbound_call_with_status(runtime, room_id, transaction, key_id, std::move(secret_key),
-                                                         "room.invite.remote_failed", offer_seconds);
+        return perform_bounded_outbound_call_with_status(runtime, OutboundAnswerTrust::unverified, room_id, transaction,
+                                                         key_id, std::move(secret_key), "room.invite.remote_failed",
+                                                         offer_seconds);
     }();
 
     if (call.ok)
@@ -7494,9 +7512,9 @@ namespace
             auto const tx =
                 federation::make_outbound_make_membership(federation::FederationEndpoint::make_knock, candidate,
                                                           our_server, room_id, user_id, supported_versions);
-            auto call =
-                perform_outbound_call(runtime, room_id, tx, signing_key.key_id, core::SecretBuffer{secret_key.bytes()},
-                                      "room.knock.remote.make_knock_failed", call_timeout(), 0U, bounds);
+            auto call = perform_outbound_call(runtime, OutboundAnswerTrust::unverified, room_id, tx, signing_key.key_id,
+                                              core::SecretBuffer{secret_key.bytes()},
+                                              "room.knock.remote.make_knock_failed", call_timeout(), 0U, bounds);
             if (call.ok)
             {
                 remote_server = candidate;
@@ -7572,9 +7590,9 @@ namespace
         {
             return federated_knock_failure("knock deadline exceeded before send_knock", 502U);
         }
-        auto send =
-            perform_outbound_call(runtime, room_id, send_tx, signing_key.key_id, core::SecretBuffer{secret_key.bytes()},
-                                  "room.knock.remote.send_knock_failed", call_timeout(), 0U, bounds);
+        auto send = perform_outbound_call(runtime, OutboundAnswerTrust::unverified, room_id, send_tx,
+                                          signing_key.key_id, core::SecretBuffer{secret_key.bytes()},
+                                          "room.knock.remote.send_knock_failed", call_timeout(), 0U, bounds);
         if (!send.ok)
         {
             return federated_knock_failure("send_knock failed: " + send.body, send.remote_status == 403U ? 403U : 502U);

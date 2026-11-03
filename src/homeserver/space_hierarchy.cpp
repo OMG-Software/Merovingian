@@ -1043,8 +1043,9 @@ namespace
             auto const transaction = federation::make_outbound_transaction(server, "GET", target, our_server, {});
             auto const [ok, body] = [&] {
                 auto const released = RuntimeLockRelease{};
-                return perform_bounded_outbound_call(m_runtime, room_id, transaction, key_id, std::move(secret),
-                                                     "space_hierarchy.fetch", m_deadline->remaining_seconds());
+                return perform_bounded_outbound_call(m_runtime, OutboundAnswerTrust::unverified, room_id, transaction,
+                                                     key_id, std::move(secret), "space_hierarchy.fetch",
+                                                     m_deadline->remaining_seconds());
             }();
             if (!ok)
             {

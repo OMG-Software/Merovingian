@@ -124,7 +124,7 @@ blocking network calls".
 
 ## Client requests that call another server
 
-`publicRooms?server=` (GET and POST), a remote room-alias lookup, a remote user's profile (`remote_profile_response`: relays only `displayname`/`avatar_url`), remote media download or
+`publicRooms?server=` (GET and POST), a remote room-alias lookup (`GET /directory/room/{alias}` and `POST /join/{#alias}`), a remote user's profile (`remote_profile_response`: relays only `displayname`/`avatar_url`), remote media download or
 thumbnail, and the `/thirdparty/*` lookups that call an appservice (ADR-0181) make this server
 call a peer it does not control, and the spec lets clients make them
 without authentication. `RuntimeLockRelease` frees the mutex, not the thread, so each holds one of
@@ -140,6 +140,12 @@ the main pool's threads for the round trip. Every such call therefore:
    `remote_timeout`;
 3. for media, is checked against `security.media.remote_fetch_enabled` and `allow_remote` before
    anything else (`remote_media_refusal`): 404 `M_NOT_FOUND`, counted but not audited.
+
+`POST /keys/query` and `POST /keys/claim` are the same kind of request for each remote server they name (F-17, ADR-0350). `RemoteKeyCalls`
+takes one slot for all of them, and every call is `perform_bounded_outbound_call` on the remaining time of one
+`remote_keys_deadline_seconds` (30 s) deadline, for at most `remote_keys_max_servers` (16) distinct servers. A server it does not ask is
+reported in `failures` with `M_LIMIT_EXCEEDED`, never as a 429 for the request: the local half is answered first, and a one-time
+key already claimed here must reach the client. Do not move the slot ahead of the local loop's consumption by failing the request.
 
 `GET /rooms/{roomId}/timestamp_to_event` (`handle_timestamp_to_event`) is the same kind of request, but only when the local answer is
 absent or the event found has a `prev_event` this server does not hold (`event_is_held`, ADR-0289), or, for `dir=b`, the nearest
@@ -163,6 +169,12 @@ asks at most 3 servers per room, and answers `429 M_LIMIT_EXCEEDED` when the slo
 only spec fields are copied, only rooms the requested space's `children_state` names are cached from `children`, local
 state beats the remote answer, and a room is shown to the user only if the user may see it by the remote summary's own
 `join_rule` / `world_readable` / `allowed_room_ids`.
+
+Every caller of `perform_outbound_call` (and its wrappers) names an `OutboundAnswerTrust` (F-43, ADR-0349). `signature_verified` is for a call
+whose every use of a success body is a signature check on the whole of it and whose failure only means "no data": today the four
+backfill fetches, and it alone may use the federation worker's tunnel. Everything else is `unverified` and goes over
+`runtime.outbound_client`: a status you act on, a template you keep, or a choice among signed objects makes a call unverified. Do not
+add a caller as `signature_verified` without a row in ADR-0349's table and in `tests/tooling/test_outbound_answer_trust.py`.
 
 `perform_outbound_call` (every federated join, leave, knock and proxied lookup) resolves its
 destination through `runtime.cached_discovery` with `DiscoveryCachePolicy::successes_only`, never

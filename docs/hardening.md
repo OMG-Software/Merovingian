@@ -418,6 +418,20 @@ separate process on the same host:
   to impersonate or intercept via filesystem access.
 * **SOCK_CLOEXEC**: the socket pair is created `SOCK_CLOEXEC` so it is
   not inherited by any further child processes.
+* **Main fetches the answers it acts on itself; the worker's replies are checked** (F-43, ADR-0349): an
+  outbound federation call whose answer main does not verify by signature (keys, alias, profile,
+  publicRooms, `make_*`, `send_*`, invites, `state_ids`, `hierarchy`, `timestamp_to_event`) goes over
+  main's own `OutboundClient`, not the worker, so a compromised worker cannot make main believe what only
+  a remote server could say. Main therefore parses more remote responses than before. That is accepted:
+  it is the same pinned (`CURLOPT_RESOLVE` after `federation::discover_server`), TLS-verified,
+  size-capped libcurl path main already uses for key fetches, `DispatchWorker`, remote media and push
+  gateways, so the same syscalls and resolver paths are in main's seccomp allowlist and no filter
+  changed. The four backfill fetches, whose PDUs are each verified before storage, stay on the worker
+  so the largest remote bodies are still parsed in the sandbox. What does cross the tunnel is checked in
+  `WorkerPool::send_outbound_request` (`validate_worker_outbound_reply`): status in 100 to 599, body within
+  the request's `max_response_body_bytes`, `error_detail` cut to 256 printable bytes. Inbound
+  `fed_response` frames reaching remote peers from the worker are not covered by this and remain a
+  residual (`docs/threat-model.md`).
 * **Minimal worker environment** (#330): the worker is spawned with an
   explicit minimal environment (`PATH` only) rather than inheriting the parent
   environment, so no parent secret leaked via environment reaches the

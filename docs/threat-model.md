@@ -452,6 +452,38 @@ threat it closes; the controls above are the standing defences these reinforce.
   worker never signs (ADR-0078), so the pre-signed value crossing IPC is the
   design, not a gap to close by giving the worker a signing provider.
 
+  **What main believes of a remote server's answer (F-43, 0.12.68,
+  [ADR-0349](adr/0349-an-outbound-answer-main-does-not-verify-comes-over-mains-own-connection.md)).**
+  The residual above covers requests and relayed PDUs; it did not cover the
+  worker's *replies* to the outbound calls main hands it. Until 0.12.68 a
+  compromised worker could answer any of them as any remote server, and main
+  acted on `ok`, the status, the body and `error_detail` as given: forged
+  device, cross-signing and one-time keys returned to clients, forged alias,
+  public-room and profile answers (and the room `POST /join/{alias}` joined),
+  a forged `make_leave` 403 that ended an invite, and forged `send_leave`,
+  `send_knock` and `send_join` outcomes. Signed objects were never affected:
+  main's key resolver and `DispatchWorker` use main's own `OutboundClient`.
+  The trust model is now explicit, one row per caller in ADR-0349 and pinned by
+  `tests/tooling/test_outbound_answer_trust.py`:
+  * An answer main uses without a signature check on the *whole* of it (keys,
+    alias, profile, publicRooms, `make_*`, `send_*`, invites, `state_ids`,
+    `hierarchy`, `timestamp_to_event`) rests on the TLS peer main itself
+    authenticated: the call goes over main's own pinned, TLS-verified client.
+    A call that uses part of an answer unverified is unverified.
+  * An answer main verifies by signature (the four backfill fetches: each PDU is
+    verified before it is stored) may still be carried by the worker. It can
+    withhold such an answer or replay what a server signed, as before.
+  * Whatever stays on the tunnel is size- and shape-checked on arrival: a
+    status outside 100 to 599 or a body over the request's cap is a failure,
+    and `error_detail` is cut to 256 printable bytes.
+  Accepted cost: main parses more remote responses itself (the libcurl and JSON
+  code it already runs for key fetches, remote media and push gateways), in the
+  unsandboxed process; the worker cannot be trusted with the answers that
+  matter, and the largest bodies (backfill) stay in the worker. Out of scope
+  and still open: inbound `fed_response` frames reach remote peers from the
+  worker unchanged, so a compromised worker can still lie to other servers about
+  this server's users.
+
   **The worker reads public signing-key rows main cached after it started
   (A6, 0.12.60).** The worker's mirror of `server_signing_keys` is a start-up
   snapshot, so it used to fetch again a key main had already verified. Its
@@ -2252,6 +2284,14 @@ membership. No whole-finding or release acceptance is claimed. See proposed
     but no main-pool worker. Concurrent requests for one remote file share one fetch. Tests:
     `[media-fetch-pool]` in `tests/integration/test_remote_media_fetch_pool_flow.cpp` and
     `tests/unit/test_remote_media_fetch.cpp`.
+  - F-17 (ADR-0350): `POST /keys/query`, `POST /keys/claim` and `POST /join/{#remoteAlias}` were the
+    exceptions: each called remote servers one after another with the full 60 s `remote_timeout`, no slot
+    and no cap on the number of servers, so one body naming many stalling servers held a main-pool thread
+    for their summed timeouts. A key request now takes one slot for all its remote calls, draws them from
+    one 30 s deadline and asks at most 16 distinct servers; the rest are reported in `failures` and the
+    local part of the answer is still returned. A join by remote alias takes a slot (`429` when none is
+    free) and runs under the 10 s directory deadline. Tests: `[f-17]` in
+    `tests/integration/test_client_outbound_proxy_flow.cpp`.
 - **Residual risk:** an attacker holding 4 slots costs the pool 4 of 8 threads for up to 10 s
   (30 s for media) at a time, and each address needs to be distinct to hold more than one, so a
   botnet can keep the 4 slots busy and lock legitimate remote lookups out with 429; the other 4

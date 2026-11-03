@@ -91,6 +91,12 @@ shell = find_program('sh')
   )
 
   test(
+    'outbound-answer-trust-tooling',
+    python,
+    args: [meson.project_source_root() / 'tests' / 'tooling' / 'test_outbound_answer_trust.py'],
+  )
+
+  test(
     'startup-hardening-gate-tooling',
     python,
     args: [meson.project_source_root() / 'tests' / 'tooling' / 'test_startup_hardening_gate.py'],

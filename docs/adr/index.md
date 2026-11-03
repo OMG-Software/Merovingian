@@ -322,6 +322,8 @@
 * [0323 - The supervisor restarts a live worker whose main-side channel has failed](0323-the-supervisor-restarts-a-worker-whose-main-side-channel-failed.md)
 * [0325 - The state-group tables own their rows and index them by key](0325-the-state-group-tables-own-their-rows-and-index-them.md)
 * [0326 - Retained PDUs are woken through an in-memory index of the events they are missing](0326-retained-pdus-are-woken-through-an-index-of-the-events-they-are-missing.md)
+* [0349 - An outbound federation answer main does not verify comes over main's own connection](0349-an-outbound-answer-main-does-not-verify-comes-over-mains-own-connection.md)
+* [0350 - A key query or claim takes one slot, one deadline and asks a bounded number of servers](0350-a-key-query-or-claim-takes-one-slot-one-deadline-and-asks-a-bounded-number-of-servers.md)
 
 ## Proposed Records
 
