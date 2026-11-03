@@ -30,8 +30,12 @@ and `merovingian-fed-worker`. There is no filesystem socket path: the fd is inhe
    frame body (`docs/hardening.md`).
 4. **Oversize frames fail the send and are logged, never silently dropped.** `max_frame_bytes`
    (`kIpcMaxFrameBytes`, 24 MiB) is derived identically on both ends from
-   `security.federation.join_response_max_size`; both processes parse the same `--config` rather
-   than negotiating over IPC, so both must restart to pick up a change.
+   `security.federation.join_response_max_size` and the transport caps, by
+   `homeserver::worker_ipc_frame_bytes` (use it, never a copy of the arithmetic); both processes parse the same
+   `--config` rather than negotiating over IPC, so both must restart to pick up a change. A response over the
+   cap is replaced by `{"ipc_error":"response_too_large"}`, which the reader turns into "no response" for the
+   waiter at once (`send_request` returns `nullopt`, as for a timeout), so the requester never waits out its timeout
+   (ADR-0368). `ipc_error` is a reserved frame member.
 5. **Response bodies are base64-encoded, not JSON-string-escaped.** Base64's 4/3 expansion is
    fixed; escaping's is payload-dependent and can push a near-cap response over the frame limit
    (ADR-0043).
@@ -73,5 +77,6 @@ Each `IpcChannel` runs two threads (`docs/architecture.md`, "IPC reader/dispatch
 - `docs/crypto-boundary.md` — IPC key derivation and cipher
 - [ADR-0027](../../docs/adr/0027-bound-the-connection-queue-but-not-the-ipc-queue.md) ·
   [ADR-0043](../../docs/adr/0043-base64-encode-ipc-response-bodies.md) ·
+  [ADR-0368](../../docs/adr/0368-an-ipc-response-that-cannot-be-sent-fails-its-requester-at-once.md) ·
   [ADR-0321](../../docs/adr/0321-every-ipc-frame-is-valid-utf-8-by-construction.md) ·
   [ADR-0322](../../docs/adr/0322-an-authenticated-frame-whose-payload-does-not-parse-fails-one-request.md)

@@ -310,6 +310,21 @@ other servers with joined members; never this server), offering only the room's 
   and the membership is `join`. Any other stored copy leaves the join failed.
 - If no candidate succeeds the client gets the original 403, not an upstream error.
 
+## The answer to a send_join is planned before the join is stored (F-23, ADR-0366)
+
+`send_join_answer.cpp` is the one place the answer's contents and size are decided. The acceptor calls
+`plan_send_join_answer` (event IDs and JSON sizes, from the room's own state entries and one walk of its auth DAG) after
+it has judged the join and before it takes a stream ordering, refuses with 503 and nothing stored when
+`send_join_answer_fits` says no (`join_response_max_size` as the body, `worker_ipc_frame_bytes` with every event at twice
+its size as the frame), and only after the store copies the events out, once, with `collect_send_join_answer`. Never build
+the answer after the join is stored, and never let a path add events to it without adding them to the plan. `omit_members`
+reaches the acceptor as `InboundPduEnvelope::omit_members` (set from the request target by `handle_send_membership`, carried
+from a worker in the `membership_ingest` frame; main takes only that flag from the frame). A join already stored is
+answered again from the state before it (its `prev_events`) and never stored or sent on a second time; a stored `rejected`
+join is refused 403 again. Without `omit_members` the auth chain still repeats the state events; the spec allows the
+deduplication only with the parameter. `send_leave` and `send_knock` carry no state or chain (a knock's stripped state is a
+fixed small list), so they have no size to plan.
+
 ## The resident sends accepted membership events on
 
 As the resident, the `membership_acceptor` stores a `send_join`, `send_leave` or `send_knock` and then
@@ -482,6 +497,12 @@ client, sender or remote server controls, and per-user rows that requests scan m
 - `GET /rooms/{roomId}/threads` aggregates by root ID in a hash map over `EventTable::walk_room_newest_first`, at
   most `max_thread_events_examined` events (ADR-0345); never walk `store.events` for one room.
 - `GET /rooms/{roomId}/members` collects the state-backed members in a set (F-10).
+- `GET /make_join` (the template provider) and `decide_restricted_join` read the create, join rules, power levels and the
+  joiner's member event by `find_current_state_event_id`, a named room's local members by one `for_each_room_state_row`
+  walk of that room, and events by `EventTable::find_in_room` (F-19, ADR-0367); `stored_room_version` reads the create
+  row by the index. `RestrictedJoinDecision::work` counts what a decision read. Never filter `store.state` or walk
+  `store.events` for one room or one key in this path; `[f19]` in `tests/unit/test_send_join_answer.cpp` shows the cost
+  is the same with unrelated rooms present.
 - Push delivery's badge count (`counts.unread`, `count_push_badge`) runs per recipient per event.
   It walks `store.events.in_stream_order()` newest first, stops once every joined room is settled,
   visits at most `push_badge_row_budget` (10000) rows, and saturates at `push_badge_unread_cap`

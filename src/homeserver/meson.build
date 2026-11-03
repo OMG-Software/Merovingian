@@ -34,6 +34,7 @@ homeserver_sources = files(
   'request_lock.cpp',
   'restricted_join.cpp',
   'room_service.cpp',
+  'send_join_answer.cpp',
   'runtime.cpp',
   'runtime_mutex.cpp',
   'runtime_signing_key_store.cpp',
@@ -43,6 +44,7 @@ homeserver_sources = files(
   'library_versions.cpp',
   'tls.cpp',
   'worker_env.cpp',
+  'worker_ipc_limits.cpp',
   'worker_pool.cpp',
   'worker_supervisor.cpp',
 )

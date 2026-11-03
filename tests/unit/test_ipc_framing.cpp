@@ -131,7 +131,7 @@ struct ChannelPair final
     return result;
 }
 
-[[nodiscard]] auto make_channel_pair() -> ChannelPair
+[[nodiscard]] auto make_channel_pair(std::uint32_t max_frame_bytes = 0U) -> ChannelPair
 {
     auto [server_fd, client_fd] = make_socketpair();
 
@@ -146,7 +146,7 @@ struct ChannelPair final
         try
         {
             pair.server = std::make_unique<merovingian::ipc::IpcChannel>(
-                std::move(server_fd), merovingian::ipc::IpcChannel::Role::server, auth_key);
+                std::move(server_fd), merovingian::ipc::IpcChannel::Role::server, auth_key, max_frame_bytes);
         }
         catch (...)
         {
@@ -157,7 +157,7 @@ struct ChannelPair final
         try
         {
             pair.client = std::make_unique<merovingian::ipc::IpcChannel>(
-                std::move(client_fd), merovingian::ipc::IpcChannel::Role::client, auth_key);
+                std::move(client_fd), merovingian::ipc::IpcChannel::Role::client, auth_key, max_frame_bytes);
         }
         catch (...)
         {
@@ -1431,6 +1431,61 @@ SCENARIO("A worker relay frame built with a non-UTF-8 field reaches main and kee
                 CHECK(seen_alias_future.get().find("#a") == 0U);
                 CHECK(pair.server->healthy());
                 CHECK(pair.client->healthy());
+            }
+        }
+
+        pair.server->stop();
+        pair.client->stop();
+    }
+}
+
+// F-23. A response over the frame cap used to be logged and dropped, and the requester waited for
+// its whole timeout (130 s in main, 60 s in a worker) holding a thread. src/ipc/AGENTS.md rule 4:
+// an oversize frame fails the send. The peer is told at once, in a frame that is itself small.
+SCENARIO("A response over the frame cap releases the requester at once and the channel carries on",
+         "[ipc][channel][f23][request_response]")
+{
+    GIVEN("a channel pair with a 64 KiB frame cap whose server answers the first request with 128 KiB")
+    {
+        auto pair = make_channel_pair(64U * 1024U);
+        auto handled = std::atomic<std::size_t>{0U};
+        pair.server->set_request_handler([&pair, &handled](std::uint64_t id, std::string /*json*/) {
+            if (handled.fetch_add(1U) == 0U)
+            {
+                pair.server->send_response(id, R"({"type":"big","pad":")" + std::string(128U * 1024U, 'x') + R"("})");
+            }
+            else
+            {
+                pair.server->send_response(id, R"({"type":"reply","ok":true})");
+            }
+        });
+        pair.server->start();
+        pair.client->start();
+
+        WHEN("the client sends the first request with a long timeout")
+        {
+            auto first = std::async(std::launch::async, [&] {
+                return pair.client->send_request(R"({"type":"ping"})", std::chrono::seconds{120});
+            });
+            auto const released = first.wait_for(std::chrono::seconds{30}) == std::future_status::ready;
+
+            THEN("the waiter is released without a response, long before its timeout")
+            {
+                REQUIRE(released);
+                CHECK_FALSE(first.get().has_value());
+            }
+            AND_THEN("both ends of the channel are still healthy")
+            {
+                REQUIRE(released);
+                CHECK(pair.client->healthy());
+                CHECK(pair.server->healthy());
+            }
+            AND_THEN("the next request on the same channel is answered normally")
+            {
+                REQUIRE(released);
+                auto const second = pair.client->send_request(R"({"type":"ping"})", std::chrono::seconds{10});
+                REQUIRE(second.has_value());
+                CHECK(second->find("\"ok\":true") != std::string::npos);
             }
         }
 

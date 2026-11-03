@@ -18,6 +18,7 @@
 #include "merovingian/homeserver/local_http_router.hpp"
 #include "merovingian/homeserver/request_lock.hpp"
 #include "merovingian/homeserver/runtime.hpp"
+#include "merovingian/homeserver/worker_ipc_limits.hpp"
 #include "merovingian/ipc/channel.hpp"
 #include "merovingian/ipc/federation_ipc_frames.hpp"
 #include "merovingian/net/thread_pool.hpp"
@@ -237,6 +238,10 @@ namespace
         {
             env.state_key = *value;
         }
+        if (auto const* value = integer_member(*root, "omit_members"); value != nullptr)
+        {
+            env.omit_members = *value == 1;
+        }
 
         env.auth_event_ids = string_array_from_json(array_member(*root, "auth_event_ids"));
         env.prev_event_ids = string_array_from_json(array_member(*root, "prev_event_ids"));
@@ -372,6 +377,10 @@ namespace
         body += json_str_array_literal(result.state_json);
         body += R"(,"knock_room_state_json":)";
         body += json_str_array_literal(result.knock_room_state_json);
+        body += R"(,"members_omitted":)";
+        body += result.members_omitted ? "true" : "false";
+        body += R"(,"servers_in_room":)";
+        body += json_str_array_literal(result.servers_in_room);
         body += '}';
         return body;
     }
@@ -873,9 +882,13 @@ auto handle_membership_ingest_request(HomeserverRuntime& runtime, std::string_vi
         result.reason = relayed.refusal;
         return serialize_membership_ingest_result(result);
     }
+    // The worker's own copy of the request's omit_members is a hint about what the joining server
+    // accepts, not a fact about the event: the verified envelope takes only that from the frame.
+    auto envelope = *relayed.envelope;
+    envelope.omit_members = frame.omit_members;
     {
         auto guard = std::unique_lock{runtime.mutex};
-        result = runtime.federation.membership_acceptor(endpoint, relayed.envelope->room_id, {}, *relayed.envelope);
+        result = runtime.federation.membership_acceptor(endpoint, envelope.room_id, {}, envelope);
     }
     return serialize_membership_ingest_result(result);
 }
@@ -1181,24 +1194,8 @@ WorkerPool::WorkerPool(config::FederationWorkerConfig const& cfg, HomeserverRunt
     , config_path_{std::move(config_path)}
 {
     // Both sides derive one frame cap from the same response and request budgets
-    // in --config. Request bodies cross as JSON strings and may expand more than
-    // response bodies, which use fixed base64 encoding.
-    auto const join_response_max_size =
-        config::parse_size_limit(runtime_.config.security().federation.join_response_max_size);
-    auto const backfill_response_max_size =
-        config::parse_size_limit(runtime_.config.security().federation.backfill.response_max_size);
-    auto const federation_request_body_size =
-        config::parse_size_limit(runtime_.config.security().federation.max_transaction_size);
-    auto const http_body_size = config::parse_size_limit(runtime_.config.server().http.max_body_size);
-    auto const client_api_body_size = config::parse_size_limit(runtime_.config.server().client_api.max_body_size);
-    auto const http_config = runtime_.config.server().http;
-    auto const max_frame_bytes = ipc::frame_bytes_for_transport_caps(
-        std::max(join_response_max_size.valid ? join_response_max_size.bytes : 0U,
-                 backfill_response_max_size.valid ? backfill_response_max_size.bytes : 0U),
-        federation_request_body_size.valid ? federation_request_body_size.bytes : 0U,
-        std::max(http_body_size.valid ? http_body_size.bytes : 0U,
-                 client_api_body_size.valid ? client_api_body_size.bytes : 0U),
-        http_config.max_header_bytes, http_config.max_start_line_bytes);
+    // in --config (worker_ipc_frame_bytes).
+    auto const max_frame_bytes = worker_ipc_frame_bytes(runtime_.config);
 
     // Derive the worker IPC auth key ONCE, here, from the operator master-key
     // file — instead of letting each WorkerSupervisor independently open that

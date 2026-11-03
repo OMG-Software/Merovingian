@@ -41,6 +41,7 @@
 #include "merovingian/homeserver/room_service.hpp"
 #include "merovingian/homeserver/runtime.hpp"
 #include "merovingian/homeserver/runtime_signing_key_store.hpp"
+#include "merovingian/homeserver/send_join_answer.hpp"
 #include "merovingian/homeserver/space_hierarchy.hpp"
 #include "merovingian/homeserver/state_bookkeeping.hpp"
 #include "merovingian/homeserver/stored_room_version.hpp"
@@ -2241,20 +2242,26 @@ namespace
             // auth_events — Synapse asserts this and crashes with 500 if it does.
             auto const* version_policy = rooms::find_room_version_policy(room_version);
             auto const include_create_in_auth = version_policy == nullptr || !version_policy->create_event_is_room_id;
-            for (auto const& s : store.state)
+            // Four lookups by key in the state index (ADR-0344, F-19), each costing one hash probe:
+            // never a pass over the state of every room, which this request would pay for under
+            // runtime.mutex whatever the room is.
+            auto const add_auth_event = [&](std::string_view type, std::string_view state_key) {
+                auto id = database::find_current_state_event_id(store, room_id, type, state_key);
+                if (id.has_value() && !id->empty())
+                {
+                    tmpl.auth_events.push_back(std::move(*id));
+                }
+            };
+            if (include_create_in_auth)
             {
-                if (s.room_id != room_id || s.event_id.empty())
-                {
-                    continue;
-                }
-                if ((include_create_in_auth && s.event_type == "m.room.create") ||
-                    (s.event_type == "m.room.join_rules" && tmpl.membership != "leave") ||
-                    s.event_type == "m.room.power_levels" ||
-                    (s.event_type == "m.room.member" && s.state_key == user_id))
-                {
-                    tmpl.auth_events.push_back(s.event_id);
-                }
+                add_auth_event("m.room.create", {});
             }
+            if (tmpl.membership != "leave")
+            {
+                add_auth_event("m.room.join_rules", {});
+            }
+            add_auth_event("m.room.power_levels", {});
+            add_auth_event("m.room.member", user_id);
             // The room's stored tips, as for a local event (ADR-0318). Only accepted events become
             // tips, and the selection stops at the room version's limit. A room with none has nothing
             // a joiner can build on, and an empty prev_events would detach the join from the room's graph.
@@ -2336,6 +2343,52 @@ namespace
             if (room_it == store.rooms.end())
             {
                 return {false, 404U, "room not found", {}, {}};
+            }
+            // A join this server already stored is answered again, not refused (F-23): the server
+            // that sent it may not have received the first answer (a lost response, a retry). The
+            // event is not judged, stored or sent on a second time; the answer is the state before
+            // it, which its prev_events give. A join rejected on receipt is refused again.
+            if (endpoint == federation::FederationEndpoint::send_join)
+            {
+                auto const stored_join = store.events.find_in_room(room_id, envelope.event_id);
+                if (stored_join != store.events.end())
+                {
+                    if (stored_join->status == "rejected")
+                    {
+                        return {
+                            false, 403U, "event auth denied: the join was rejected when it was first received", {}, {}};
+                    }
+                    auto const resent_version = room_version_from_store(store, room_id);
+                    auto const* const resent_policy = rooms::find_room_version_policy(resent_version);
+                    if (resent_policy == nullptr)
+                    {
+                        return {false, 400U, "unknown room version", {}, {}};
+                    }
+                    auto const state_before_join = compute_state_before(
+                        store, room_id, *resent_policy, stored_join->prev_event_ids,
+                        state_resolution_limits(rt->config.security().federation.state_resolution));
+                    if (!state_before_join.ok)
+                    {
+                        return {false, 503U, "the state before the join is not available here; retry", {}, {}};
+                    }
+                    auto resent_plan = plan_send_join_answer(*rt, room_id, envelope.sender, state_before_join.state,
+                                                             stored_join->auth_event_ids, envelope.omit_members);
+                    if (!send_join_answer_fits(resent_plan, send_join_answer_limits(rt->config)))
+                    {
+                        return {false, 503U, std::string{send_join_answer_too_large_reason}, {}, {}};
+                    }
+                    auto answer = collect_send_join_answer(store, room_id, resent_plan);
+                    return {true,
+                            200U,
+                            {},
+                            std::move(answer.auth_chain_json),
+                            std::move(answer.state_json),
+                            resent_version,
+                            stored_join->json,
+                            {},
+                            resent_plan.members_omitted,
+                            std::move(resent_plan.servers_in_room)};
+                }
             }
             // M-01: evaluate the room's authorization rules before any part of
             // this event reaches the store. The Ed25519 signature and
@@ -2593,6 +2646,30 @@ namespace
                 }
             }
 
+            // What the answer to a send_join will hold, and whether it can be delivered, are
+            // settled BEFORE the join is stored (F-23): a join stored and sent on to the room's
+            // servers whose answer is then too big for the worker channel is committed but lost
+            // to the server that sent it. Refused here the join is retryable (503) with nothing
+            // stored, nothing sent on and no stream ordering taken. The state is the room's
+            // current state, which does not yet hold the join. A rejected join is answered 403 and
+            // needs no answer.
+            auto answer_plan = SendJoinAnswerPlan{};
+            if (endpoint == federation::FederationEndpoint::send_join && outcome != MembershipReceiptOutcome::rejected)
+            {
+                answer_plan =
+                    plan_send_join_answer(*rt, room_id, envelope.sender, current_room_state_entries(store, room_id),
+                                          envelope.auth_event_ids, envelope.omit_members);
+                if (!send_join_answer_fits(answer_plan, send_join_answer_limits(rt->config)))
+                {
+                    LOG_WARNING("send_join refused: the answer cannot be delivered; room_id=" + std::string{room_id} +
+                                " event_id=" + envelope.event_id +
+                                " projected_body_bytes=" + std::to_string(answer_plan.projected_body_bytes) +
+                                " projected_frame_bytes=" + std::to_string(answer_plan.projected_frame_bytes) +
+                                " omit_members=" + (envelope.omit_members ? "true" : "false"));
+                    return {false, 503U, std::string{send_join_answer_too_large_reason}, {}, {}};
+                }
+            }
+
             auto event = database::PersistentEvent{};
             event.event_id = envelope.event_id;
             event.room_id = envelope.room_id;
@@ -2615,21 +2692,6 @@ namespace
                 // the stored state consistent with the stored event.
                 state = database::PersistentStateEvent{envelope.room_id, envelope.event_type, *envelope.state_key,
                                                        envelope.event_id};
-            }
-            // Snapshot pre-join state IDs before persistence. The Matrix spec
-            // requires the send_join response state to reflect the room *prior
-            // to* the new join event. After store_event_with_state the store
-            // already contains the join, so we must capture the snapshot first.
-            auto pre_join_state_ids = std::vector<std::string>{};
-            if (endpoint == federation::FederationEndpoint::send_join)
-            {
-                for (auto const& s : store.state)
-                {
-                    if (s.room_id == room_id && !s.event_id.empty())
-                    {
-                        pre_join_state_ids.push_back(s.event_id);
-                    }
-                }
             }
             auto const accepted_event_id = event.event_id;
             auto const accepted_prev_event_ids = event.prev_event_ids;
@@ -2734,83 +2796,33 @@ namespace
                                                    server_name_from_user_id(envelope.sender));
             }
 
-            auto auth_chain = std::vector<std::string>{};
-            auto state_events = std::vector<std::string>{};
-            if (endpoint == federation::FederationEndpoint::send_join)
-            {
-                // Build auth_chain by walking auth_events from PRE-JOIN state.
-                // Per Matrix spec §11.5.1 the state in the response must be the
-                // room state prior to the join event. We captured pre_join_state_ids
-                // before persisting, so the join event itself is never seeded here,
-                // preventing the circular auth_events reference Synapse warns about.
-                // All auth_chain events must be state events (have state_key);
-                // including non-state events crashes Synapse.
-                auto visited = std::unordered_set<std::string>{};
-                auto queue = std::vector<std::string>{};
-                for (auto const& eid : pre_join_state_ids)
-                {
-                    if (visited.insert(eid).second)
-                    {
-                        queue.push_back(eid);
-                    }
-                }
-                // BFS: follow auth_event_ids from each discovered event in this room
-                auto cursor = std::size_t{0U};
-                while (cursor < queue.size())
-                {
-                    auto const& eid = queue[cursor];
-                    ++cursor;
-                    auto const it = store.events.find_in_room(room_id, eid);
-                    if (it == store.events.end())
-                    {
-                        continue;
-                    }
-                    for (auto const& auth_id : it->auth_event_ids)
-                    {
-                        if (!auth_id.empty() && visited.insert(auth_id).second)
-                        {
-                            queue.push_back(auth_id);
-                        }
-                    }
-                }
-                // Collect JSON for every event in the auth chain
-                for (auto const& eid : queue)
-                {
-                    auto const it = store.events.find_in_room(room_id, eid);
-                    if (it != store.events.end() && !it->json.empty())
-                    {
-                        auth_chain.push_back(it->json);
-                    }
-                }
-                // State events: pre-join snapshot, resolved the same way.
-                for (auto const& eid : pre_join_state_ids)
-                {
-                    auto const it = store.events.find_in_room(room_id, eid);
-                    if (it != store.events.end() && !it->json.empty())
-                    {
-                        state_events.push_back(it->json);
-                    }
-                }
-            }
-            // The send_join v2 "event" field is "the membership event sent to
-            // other servers by the resident server": the copy this server
-            // accepted and stored — redacted after a hash mismatch (R06) and
-            // carrying this server's signature when it authorised a
-            // restricted join (R04) — never the raw request body.
+            // The answer's events are copied out once, now that the join is accepted. Per Matrix
+            // spec PUT /send_join the state is the room's state prior to the join event, which the
+            // plan captured before the join was stored; the join itself is never in it.
+            auto answer = endpoint == federation::FederationEndpoint::send_join
+                              ? collect_send_join_answer(store, room_id, answer_plan)
+                              : SendJoinAnswerEvents{};
             // Spec v1.19 PUT /send_knock: `knock_room_state` MUST contain the room's m.room.create, and
             // "all events listed MUST additionally be formatted according to the room version
             // specification": the stored signed PDUs of the stripped-state types, not stripped events.
             auto knock_room_state = endpoint == federation::FederationEndpoint::send_knock
                                         ? stripped_state_pdus(store, room_id)
                                         : std::vector<std::string>{};
+            // The send_join v2 "event" field is "the membership event sent to
+            // other servers by the resident server": the copy this server
+            // accepted and stored — redacted after a hash mismatch (R06) and
+            // carrying this server's signature when it authorised a
+            // restricted join (R04) — never the raw request body.
             return {true,
                     200U,
                     {},
-                    std::move(auth_chain),
-                    std::move(state_events),
+                    std::move(answer.auth_chain_json),
+                    std::move(answer.state_json),
                     room_version_from_store(store, room_id),
                     stored_json,
-                    std::move(knock_room_state)};
+                    std::move(knock_room_state),
+                    answer_plan.members_omitted,
+                    std::move(answer_plan.servers_in_room)};
         };
 
         runtime.federation.invite_handler =

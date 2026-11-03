@@ -2638,6 +2638,25 @@ Security audit run-1 (2026-10-20) found six LOW issues, all fixed in 0.12.34.
   **Residual risk:** past those bounds a very large space or busy room is answered from its first rooms or newest
   events, and `/members` still walks the server-wide `memberships` vector once. Tests: `[f10]`, `[f32]`, `[f33]`,
   `[f39]`.
+- **A join could be committed and sent on, then its answer lost; an oversized answer pinned threads (audit run-2 F-23).**
+  The resident stored and fanned out a `send_join` before it built the answer, and the answer (the room's state and auth
+  closure, each state event twice) was unbounded, so about 700 padded joins from one federating server pushed it past the
+  worker channel's frame cap. The frame was dropped with a log line, the waiter held a relay thread for 60 s and a main
+  worker for up to 130 s, the joining server got 503 for a join that was already stored and sent to the room's other
+  servers, and its retry got 500. **Mitigation:** the answer is planned from IDs and sizes after the join is judged and
+  before it is stored, and one that cannot fit `join_response_max_size` as a body or the frame cap (events counted at
+  twice their size) is refused 503 with nothing stored or sent on; `omit_members` gives honest servers a reduced answer;
+  a re-sent join is answered again; and a response over the cap releases its requester at once (ADR-0366, ADR-0368).
+  **Residual risk:** a room whose state is above about half the frame cap needs `omit_members` from the joining server,
+  which a server that never sends it (this one) cannot join until the operator raises `join_response_max_size`. The
+  joiner's hold on the resident's thread for the duration of the planning pass is bounded by the room's state, not by the
+  answer. Tests: `tests/unit/test_send_join_answer.cpp` `[f23]`, `tests/conformance/test_send_join_omit_members_conformance.cpp`.
+- **`make_join` cost followed the size of the server (audit run-2 F-19).** The template's auth events and the restricted-join
+  decision, run for every make_join by any authenticated federating server, passed over every room's state rows and every
+  stored event under the runtime lock. **Mitigation:** they read by key through the state index and by room through the
+  event table (ADR-0367, ADR-0344), and the template's `prev_events` are the room's stored tips, at most 20 (ADR-0318).
+  **Residual risk:** the room existence check and the forward-extremity lookup are still one pass each over flat vectors
+  that grow with the number of rooms. Tests: `[f19]`.
 - **One request could hold the runtime lock for work a user or remote server chose (audit run-2 F-02, F-04).**
   **Mitigation:** `createRoom` caps its entries (ADR-0316), and device and key changes write one batch for local
   observers (ADR-0317).
