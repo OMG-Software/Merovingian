@@ -449,6 +449,16 @@ quickly finding everything a given `AGENTS.md` file contributed.
   decays after a 5-minute quiet period. See ADR-0081.
   Source: `src/federation/AGENTS.md`, `docs/adr/0081-failed-inbound-signatures-are-never-charged-to-the-claimed-origin.md`.
 
+- **Charge a peer's trust record only for what the peer is responsible for, and only from a transaction.**
+  Why: a PDU the peer merely relays from a third server verifies or not according to that
+  server's keys, so charging it let the third server put an honest relay into the
+  five-minute backoff (F-22). Charge a failed PDU only when its sender domain is the
+  X-Matrix origin or cannot be read, and let a transaction in which any PDU failed
+  verification leave the count alone. A non-transaction answer (a read, `send_join`,
+  an invite) never writes the record, so a worker's synthetic remote cannot overwrite it
+  and a peer cannot clear its own backoff with a read (F-59). See ADR-0346 and ADR-0347.
+  Source: `src/federation/AGENTS.md`.
+
 - **Verify every inbound PDU's signature against the sending server's published key before
   it enters the event graph. Unverified events must be silently dropped, not persisted.**
   Why: without this, any peer (or a relay forwarding on another server's behalf) could

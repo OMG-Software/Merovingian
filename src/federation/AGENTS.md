@@ -59,6 +59,14 @@ Federation is the highest-risk surface: **all input comes from untrusted remote 
    `record_remote_trust_failure()` and only after the signature has verified; the backoff
    it feeds decays after `remote_backoff_decay_window` (5 minutes).
 
+   A failed PDU in a `/send` transaction is charged to the transport peer only when its sender
+   domain is the X-Matrix origin or cannot be read: a PDU relayed from a third server verifies
+   according to that server's keys, which the relay does not control, so it is dropped with its
+   per-PDU error and costs the relay nothing (F-22, ADR-0346). A transaction in which any PDU
+   failed verification does not reset the count. Only the transaction path writes the peer's
+   trust record: a 2xx answer on any other endpoint never resets or persists it, and a worker's
+   synthetic remote (ADR-0110) is never written back (F-59, ADR-0347).
+
 3. **Fetch remote server keys via `remote_key_cache.hpp`** — never trust a key the remote server
    supplies inline. The key cache fetches from `/_matrix/key/v2/server` and trusts a key for at
    most 7 days after the fetch (`min(valid_until_ts, fetched_at + 7 days)`). From room v5 an event's

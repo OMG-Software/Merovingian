@@ -1805,9 +1805,26 @@ threats they represent, and the mitigations now in place:
   failures were zeroed at transaction completion, so the backoff and circuit
   breaker never fired. Mitigation: the consecutive-failure count survives any
   transaction in which a PDU failed a trust check; only a clean transaction
-  resets it. Room-ACL denials are excluded, being local policy rather than peer
-  misbehaviour. These failures follow a verified signature; the resulting backoff
-  decays after 5 quiet minutes (see the FED-4 entry below).
+  resets it, and only a transaction writes the count (a successful read, a
+  `send_join` or an invite never resets it, and a worker's synthetic remote is
+  never written back: F-59, ADR-0347). Room-ACL denials are excluded, being local
+  policy rather than peer misbehaviour. These failures follow a verified
+  signature; the resulting backoff decays after 5 quiet minutes (see the FED-4
+  entry below).
+- **A third server could put an honest relay into backoff (F-22).** A resident
+  server relays the PDUs of the servers that join its rooms, and whether such a
+  PDU verifies here depends on its author's keys, which the author controls. Three
+  PDUs whose author served a key to the relay but an error or another key to this
+  server were charged to the relay, which was then refused for five minutes per
+  worker shard. Mitigation: a failed PDU is charged to the transport peer only
+  when its sender domain is the X-Matrix origin (or cannot be read); a relayed
+  third-party PDU is dropped with its per-PDU error and costs the relay nothing
+  (ADR-0346, superseding the relayed-PDU part of ADR-0081 and the failed-lookup
+  penalty of ADR-0133). A transaction in which any PDU failed verification does
+  not reset the count either. Residual risk: a peer can name a third server as the
+  sender of its own forged PDUs and so avoid the charge; the per-origin
+  transaction and PDU rate limits and the key-resolution budgets bound that
+  stream.
 - **Forged X-Matrix requests locked a real peer out of federation until restart
   (FED-4).** The H-04 fix charged a failed signature to the *claimed*
   origin's `consecutive_failures`. The origin in an `X-Matrix` header is
@@ -1819,8 +1836,9 @@ threats they represent, and the mitigations now in place:
   answered 429 `M_LIMIT_EXCEEDED` for that address only, before any signature
   work; capped, FIFO-evicted, pre-authentication container). The per-origin
   `consecutive_failures` is now written only by failures that follow a verified
-  signature (malformed or oversize transactions, forged relayed PDUs), and the
-  resulting backoff lapses after `remote_backoff_decay_window` (5 minutes of
+  signature (malformed or oversize transactions, and PDUs the peer itself
+  authored that fail verification; a relayed third-party PDU is not charged to
+  the relay, ADR-0346), and the resulting backoff lapses after `remote_backoff_decay_window` (5 minutes of
   quiet) instead of persisting until restart. Residual risk: an attacker
   sharing a source address with a real peer (CGNAT, or a reverse proxy with
   `trusted_proxies` unset) throttles that address, not the named origin.

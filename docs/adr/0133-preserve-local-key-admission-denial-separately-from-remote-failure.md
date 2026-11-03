@@ -1,6 +1,6 @@
 # Preserve local key-admission denial separately from remote failure
 
-* Status: accepted
+* Status: accepted; the penalty for a failed relayed lookup superseded by [ADR-0346](0346-a-relayed-pdu-that-fails-verification-is-not-charged-to-the-relaying-peer.md) (2026-11-03)
 * Date: 2026-10-11
 
 ## Context and Problem Statement
