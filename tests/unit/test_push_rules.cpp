@@ -1140,3 +1140,132 @@ SCENARIO("A glob '*' stays a wildcard when the value itself contains '*'", "[pus
         }
     }
 }
+
+// Security audit run-2 (F-39, ADR-0343): one recipient's evaluation of one event spends a bounded
+// number of matcher steps on content.body across ALL rules, and searches a bounded prefix of the
+// body. The spec states neither bound (it says a pattern matches "any substring ... which starts and
+// ends at a word boundary"); the bound is the server's, so a match inside the prefix stays exact.
+// Past the budget a glob does not match (fail closed) and the result says so.
+SCENARIO("A recipient's content rules share one step budget per event", "[push][security][f39]")
+{
+    GIVEN("200 content rules with 512-byte non-matching patterns, and a 64 KiB message body")
+    {
+        auto pattern = std::string(511U, '*');
+        pattern += 'z';
+        auto rules = Array{};
+        for (auto i = 0; i < 200; ++i)
+        {
+            rules.push_back(make_content_rule("r" + std::to_string(i), true, pattern, Array{action_notify()}));
+        }
+        auto ruleset_object = Object{};
+        ruleset_object.push_back(make_member("content", Value{std::move(rules)}));
+        auto const ruleset = merovingian::push::parse_push_ruleset(ruleset_object);
+        auto body = std::string{};
+        while (body.size() < 64U * 1024U)
+        {
+            body += "a ";
+        }
+        auto const event =
+            make_event("m.room.message", "@sender:example.org", "!room:example.org", Object{str_member("body", body)});
+
+        WHEN("it is evaluated for one recipient")
+        {
+            auto const result = merovingian::push::evaluate_push_rules(
+                ruleset, event, merovingian::push::PushEvaluationContext{"@receiver:example.org"});
+
+            THEN("the matcher spent no more than the budget, said it ran out, and no rule matched")
+            {
+                REQUIRE(result.glob_steps_used <= merovingian::push::max_push_glob_steps_per_evaluation);
+                REQUIRE(result.glob_budget_exhausted);
+                REQUIRE_FALSE(result.notify);
+            }
+        }
+    }
+
+    GIVEN("a content rule for 'needle' and an ordinary short message that contains it")
+    {
+        auto ruleset_object = Object{};
+        ruleset_object.push_back(
+            make_member("content", Value{Array{make_content_rule("keyword", true, "needle", Array{action_notify()})}}));
+        auto const ruleset = merovingian::push::parse_push_ruleset(ruleset_object);
+        auto const event = make_event("m.room.message", "@sender:example.org", "!room:example.org",
+                                      Object{str_member("body", "please find the needle in this haystack")});
+
+        WHEN("it is evaluated")
+        {
+            auto const result = merovingian::push::evaluate_push_rules(
+                ruleset, event, merovingian::push::PushEvaluationContext{"@receiver:example.org"});
+
+            THEN("the rule matches and the budget is barely touched")
+            {
+                REQUIRE(result.notify);
+                REQUIRE(result.matched_rule_id == "keyword");
+                REQUIRE_FALSE(result.glob_budget_exhausted);
+                REQUIRE(result.glob_steps_used < merovingian::push::max_push_glob_steps_per_evaluation / 100U);
+            }
+        }
+    }
+}
+
+SCENARIO("Only the first part of a long content.body is searched for a keyword", "[push][security][f39]")
+{
+    GIVEN("a content rule for 'needle'")
+    {
+        auto ruleset_object = Object{};
+        ruleset_object.push_back(
+            make_member("content", Value{Array{make_content_rule("keyword", true, "needle", Array{action_notify()})}}));
+        auto const ruleset = merovingian::push::parse_push_ruleset(ruleset_object);
+        auto const context = merovingian::push::PushEvaluationContext{"@receiver:example.org"};
+        auto const padding = std::string(merovingian::push::max_push_glob_body_bytes * 2U, 'x');
+
+        WHEN("the keyword is near the start of a body twice the cap")
+        {
+            auto const event = make_event("m.room.message", "@sender:example.org", "!room:example.org",
+                                          Object{str_member("body", "a needle " + padding)});
+
+            THEN("it still matches")
+            {
+                REQUIRE(merovingian::push::evaluate_push_rules(ruleset, event, context).notify);
+            }
+        }
+
+        WHEN("the keyword follows the cap")
+        {
+            auto const event = make_event("m.room.message", "@sender:example.org", "!room:example.org",
+                                          Object{str_member("body", padding + " needle")});
+            auto const result = merovingian::push::evaluate_push_rules(ruleset, event, context);
+
+            THEN("it does not match, and the evaluation stays within the budget")
+            {
+                REQUIRE_FALSE(result.notify);
+                REQUIRE(result.glob_steps_used <= merovingian::push::max_push_glob_steps_per_evaluation);
+            }
+        }
+
+        WHEN("the keyword ends exactly at the cap but its word carries on past it")
+        {
+            auto body = std::string(merovingian::push::max_push_glob_body_bytes - 6U, ' ');
+            body += "needles and more";
+            auto const event = make_event("m.room.message", "@sender:example.org", "!room:example.org",
+                                          Object{str_member("body", body)});
+
+            THEN("the cut is not taken for a word boundary, so it does not match")
+            {
+                REQUIRE_FALSE(merovingian::push::evaluate_push_rules(ruleset, event, context).notify);
+            }
+        }
+
+        WHEN("the keyword ends exactly at the cap and a space follows")
+        {
+            auto body = std::string(merovingian::push::max_push_glob_body_bytes - 6U, ' ');
+            body += "needle and more";
+            auto const event = make_event("m.room.message", "@sender:example.org", "!room:example.org",
+                                          Object{str_member("body", body)});
+
+            THEN("it matches at the real boundary")
+            {
+                REQUIRE(merovingian::push::evaluate_push_rules(ruleset, event, context).notify);
+            }
+        }
+    }
+}

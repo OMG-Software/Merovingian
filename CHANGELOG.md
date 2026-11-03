@@ -4,6 +4,20 @@ The medium findings of security audit run 2 (ref 5e67d4e8).
 
 ### Security
 
+- **One event can no longer cost a recipient seconds of push matching (F-39, ADR-0343).** Content rules and
+  `event_match` conditions on `content.body` now draw from one budget of 2^21 matcher steps for each recipient and
+  event, and search only the first 4096 bytes of the body; a glob that runs out does not match, the result says so and
+  delivery logs `push.glob_budget.exhausted`. Unread counting uses the same function and so the same bound. A keyword
+  after the first 4 KiB of a message is no longer found.
+- **`GET /hierarchy` walks only as far as its page (F-32, ADR-0344, ADR-0345).** State is read through a
+  (room, type, state key) index instead of scanning every room's state three times for each child, each child event is
+  parsed once, and a page stops walking at its own end. A tree is walked for at most 4096 rooms.
+- **`GET /rooms/{roomId}/threads` reads the room's newest events only (F-33, ADR-0345).** Roots are aggregated in a hash
+  map from the room's own events (at most the newest 10000), not by two scans of every event on the server. A
+  `m.thread` relation that does not name a well-formed event ID is ignored, and rejected, soft-failed and outlier
+  events no longer count towards a thread.
+- **`GET /rooms/{roomId}/members` builds the roster in linear time (F-10, ADR-0344).** The state-backed members are a
+  hash set and only the room's own state rows are read; the answer is unchanged.
 ## 0.12.67
 
 The five high findings of security audit run 2 (ref 5e67d4e8).

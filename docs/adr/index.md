@@ -302,6 +302,9 @@
 * [0318 - A membership template offers the room's stored forward extremities, and none is offered without them](0318-a-membership-template-offers-the-rooms-stored-forward-extremities.md)
 * [0319 - Report a failed device-list write where the client can retry, and finish where access is being revoked](0319-report-a-failed-device-list-write-where-the-client-can-retry.md)
 * [0320 - A join comes after the ancestors that share its depth](0320-a-join-comes-after-the-ancestors-that-share-its-depth.md)
+* [0343 - Push glob matching spends a bounded budget per recipient and event](0343-push-glob-matching-spends-a-bounded-budget-per-event.md)
+* [0344 - Index current state by room, type and key, and trust the index only while it is in step](0344-index-current-state-by-room-type-and-key-and-trust-it-only-while-in-step.md)
+* [0345 - Hierarchy and threads reads are bounded by the page and by a budget of rooms or rows](0345-hierarchy-and-threads-reads-are-bounded-by-the-page-and-a-visit-budget.md)
 
 ## Proposed Records
 

@@ -2625,6 +2625,15 @@ Security audit run-1 (2026-10-20) found six LOW issues, all fixed in 0.12.34.
 - **A `/sync` token could rewrite the server-wide stream counter (audit run-2 F-03).** Raising it to 2^64-1 made it wrap,
   and other users' to-device messages were deleted undelivered. **Mitigation:** no client input moves the counter, a
   token ahead of the streams is an initial sync, and the allocator refuses to wrap (ADR-0315).
+- **Reads that scaled with a room or space a user controls held the runtime lock (audit run-2 F-10, F-32, F-33, F-39).**
+  `/members` probed a vector once per member, `/hierarchy` scanned all state three times per child and walked the whole
+  tree for every page, `/threads` parsed every event on the server and looked roots up linearly, and one long message
+  multiplied body length, pattern length and rule count in push matching. **Mitigation:** a state index and a set
+  (ADR-0344); a page-bounded walk of at most 4096 rooms and a 10000-event, per-room, hash-keyed thread scan
+  (ADR-0345); a 2^21-step budget per recipient and event over the first 4096 bytes of the body (ADR-0343).
+  **Residual risk:** past those bounds a very large space or busy room is answered from its first rooms or newest
+  events, and `/members` still walks the server-wide `memberships` vector once. Tests: `[f10]`, `[f32]`, `[f33]`,
+  `[f39]`.
 - **One request could hold the runtime lock for work a user or remote server chose (audit run-2 F-02, F-04).**
   **Mitigation:** `createRoom` caps its entries (ADR-0316), and device and key changes write one batch for local
   observers (ADR-0317).

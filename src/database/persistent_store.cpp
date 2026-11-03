@@ -1459,6 +1459,8 @@ auto reconstruct_event_relations(PersistentStore& store) -> void
     {
         store.state.push_back(std::move(state));
     }
+    // The erase above shifted every later row; a pushed row alone would not repair the indexes.
+    rebuild_state_index(store);
     for (auto& event : snapshot->events)
     {
         for (auto const& prev_id : event.prev_event_ids)
@@ -2132,6 +2134,121 @@ auto rebuild_state_transition_index(PersistentStore& store) -> void
 namespace
 {
 
+    // The key of `state_position_index`: the same NUL-separated form as the transition index. A
+    // collision (an ID holding a NUL) only makes a lookup disagree with the row it reaches, which
+    // is checked, so it costs a scan and never a wrong answer.
+    [[nodiscard]] auto state_position_key(std::string_view room_id, std::string_view event_type,
+                                          std::string_view state_key) -> std::string
+    {
+        auto key = std::string{};
+        key.reserve(room_id.size() + event_type.size() + state_key.size() + 2U);
+        key.append(room_id);
+        key.push_back('\0');
+        key.append(event_type);
+        key.push_back('\0');
+        key.append(state_key);
+        return key;
+    }
+
+    [[nodiscard]] auto state_row_is(PersistentStateEvent const& row, std::string_view room_id,
+                                    std::string_view event_type, std::string_view state_key) -> bool
+    {
+        return row.room_id == room_id && row.event_type == event_type && row.state_key == state_key;
+    }
+
+    // Adds the row just appended to `state` to the indexes, if they were in step before it. If they
+    // were not (something edited the vector behind the store's back) they stay out of step, so
+    // lookups scan, until the next rebuild.
+    auto note_state_row_appended(PersistentStore& store) -> void
+    {
+        if (store.state.empty() || store.state_indexed_rows + 1U != store.state.size())
+        {
+            return;
+        }
+        auto const position = store.state.size() - 1U;
+        auto const& row = store.state[position];
+        store.state_position_index.emplace(state_position_key(row.room_id, row.event_type, row.state_key), position);
+        store.state_room_index[row.room_id].push_back(position);
+        store.state_indexed_rows = store.state.size();
+    }
+
+} // namespace
+
+auto rebuild_state_index(PersistentStore& store) -> void
+{
+    store.state_position_index.clear();
+    store.state_room_index.clear();
+    store.state_position_index.reserve(store.state.size());
+    for (auto position = std::size_t{0U}; position < store.state.size(); ++position)
+    {
+        auto const& row = store.state[position];
+        store.state_position_index.emplace(state_position_key(row.room_id, row.event_type, row.state_key), position);
+        store.state_room_index[row.room_id].push_back(position);
+    }
+    store.state_indexed_rows = store.state.size();
+}
+
+[[nodiscard]] auto find_current_state_event_id(PersistentStore const& store, std::string_view room_id,
+                                               std::string_view event_type, std::string_view state_key)
+    -> std::optional<std::string>
+{
+    if (store.state_indexed_rows == store.state.size())
+    {
+        auto const entry = store.state_position_index.find(state_position_key(room_id, event_type, state_key));
+        if (entry == store.state_position_index.end())
+        {
+            return std::nullopt;
+        }
+        if (entry->second < store.state.size() &&
+            state_row_is(store.state[entry->second], room_id, event_type, state_key))
+        {
+            return store.state[entry->second].event_id;
+        }
+    }
+    for (auto const& row : store.state)
+    {
+        if (state_row_is(row, room_id, event_type, state_key))
+        {
+            return row.event_id;
+        }
+    }
+    return std::nullopt;
+}
+
+auto for_each_room_state_row(PersistentStore const& store, std::string_view room_id,
+                             std::function<void(PersistentStateEvent const&)> const& visit) -> void
+{
+    if (store.state_indexed_rows == store.state.size())
+    {
+        auto const entry = store.state_room_index.find(std::string{room_id});
+        if (entry == store.state_room_index.end())
+        {
+            return;
+        }
+        auto const names_the_room = [&](std::size_t position) {
+            return position < store.state.size() && store.state[position].room_id == room_id;
+        };
+        if (std::ranges::all_of(entry->second, names_the_room))
+        {
+            for (auto const position : entry->second)
+            {
+                visit(store.state[position]);
+            }
+            return;
+        }
+    }
+    for (auto const& row : store.state)
+    {
+        if (row.room_id == room_id)
+        {
+            visit(row);
+        }
+    }
+}
+
+namespace
+{
+
     struct RedactionShape final
     {
         bool is_redaction{false};
@@ -2354,6 +2471,7 @@ auto apply_current_state(PersistentStore& store, PreparedCurrentState const& pre
     else
     {
         store.state.push_back(state);
+        note_state_row_appended(store);
     }
     // Mirror the same upsert semantics into the in-memory index: update the
     // existing row in place when this (room, type, key, event_id) tuple was
@@ -2522,6 +2640,7 @@ auto apply_store_event_with_state(PersistentStore& store, PreparedStateUpdate co
         else
         {
             store.state.push_back(*update.state);
+            note_state_row_appended(store);
         }
         store.state_transitions.push_back({update.state->room_id, update.state->event_type, update.state->state_key,
                                            update.state->event_id, update.previous_event_id});

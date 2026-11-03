@@ -458,7 +458,17 @@ struct FetchThreadsRequest final
     std::optional<std::string> include{};
     std::optional<std::string> from{};
     std::optional<std::uint64_t> limit{};
+    // The most of the room's events the request may examine; `max_thread_events_examined` when
+    // unset. For a test to reach the bound without storing thousands of events.
+    std::optional<std::size_t> max_events_examined{};
 };
+
+// The most of a room's events one GET /threads request examines, newest first (ADR-0345). The
+// spec says to bound the request ("Servers should ... impose a maximum value to avoid resource
+// exhaustion"); this bounds the work, not only the page. In a room with more events, a thread whose
+// children are all older than the newest `max_thread_events_examined` events is not listed, and the
+// count of one with older children is of the children examined.
+inline constexpr std::size_t max_thread_events_examined = 10000U;
 
 // Lists the thread roots in a room, most recently active first, each carrying its
 // bundled `m.thread` aggregation (latest_event / count / current_user_participated).

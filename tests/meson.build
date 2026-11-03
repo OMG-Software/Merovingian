@@ -245,6 +245,7 @@ shell = find_program('sh')
       'unit/test_observability_bounded_text.cpp',
       'unit/test_database_persistence.cpp',
       'unit/test_event_table.cpp',
+      'unit/test_state_index.cpp',
       'unit/test_state_groups.cpp',
       'unit/test_reload_room_state_groups.cpp',
       'unit/test_state_bookkeeping.cpp',

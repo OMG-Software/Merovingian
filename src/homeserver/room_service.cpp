@@ -7938,6 +7938,18 @@ namespace
             auto const context = push_evaluation_context(room_facts, member,
                                                          room_member_display_name(store, room.room_id, member), sender);
             auto const result = push::evaluate_push_rules(ruleset, event_parsed.value, context);
+            if (result.glob_budget_exhausted)
+            {
+                // The recipient's content globs met a body too costly to match in full (ADR-0343):
+                // the ones that could not finish did not match.
+                log_diagnostic("push.glob_budget.exhausted",
+                               {
+                                   {"user_id",  std::string{member},                    false},
+                                   {"event_id", composed.event_id,                      false},
+                                   {"steps",    std::to_string(result.glob_steps_used), false}
+                },
+                               observability::LogEventSeverity::warning);
+            }
             if (!result.notify)
             {
                 continue;
@@ -9133,9 +9145,11 @@ namespace
     // a thread, and a root they may not see is not listed.
     auto visibility = sync::HistoryVisibility{store, *user_id};
 
-    // One pass over the room's events collects, for every thread root, the number
-    // of m.thread children, the most recent child, and whether the caller
-    // participated.
+    // One walk over the room's newest events collects, for every thread root, the number of
+    // m.thread children, the most recent child, and whether the caller participated. The walk
+    // reads the room's own events through the per-room time index and offers at most
+    // `max_events_examined` of them (F-33, ADR-0345); aggregation is keyed by root ID, so the cost
+    // is linear in the rows offered.
     struct ThreadAggregate final
     {
         database::PersistentEvent const* root{nullptr};
@@ -9143,98 +9157,91 @@ namespace
         std::int64_t count{0};
         bool participated{false};
     };
-    auto aggregates = std::vector<std::pair<std::string, ThreadAggregate>>{};
-    auto const find_aggregate = [&aggregates](std::string_view root_id) -> ThreadAggregate* {
-        auto const found = std::ranges::find(aggregates, root_id, &std::pair<std::string, ThreadAggregate>::first);
-        return found == aggregates.end() ? nullptr : &found->second;
-    };
+    auto aggregates = std::unordered_map<std::string, ThreadAggregate>{};
+    auto const max_events_examined = request.max_events_examined.value_or(max_thread_events_examined);
 
-    for (auto const& event : store.events)
-    {
-        if (event.room_id != request.room_id)
-        {
-            continue;
-        }
-        // Spec: "Servers must additionally ensure they do not consider child events
-        // from ignored users when preparing an aggregation for the client."
-        if (trust_safety::is_delivery_suppressed(ignored_senders, event.sender_user_id, false))
-        {
-            continue;
-        }
-        auto const parsed = canonicaljson::parse_lossless(event.json);
-        if (parsed.error != canonicaljson::ParseError::none)
-        {
-            continue;
-        }
-        auto const* event_obj = std::get_if<canonicaljson::Object>(&parsed.value.storage());
-        if (event_obj == nullptr)
-        {
-            continue;
-        }
-        auto const* content_value = object_member(*event_obj, "content");
-        auto const* content_obj =
-            content_value == nullptr ? nullptr : std::get_if<canonicaljson::Object>(&content_value->storage());
-        if (content_obj == nullptr)
-        {
-            continue;
-        }
-        auto const* relates_value = object_member(*content_obj, "m.relates_to");
-        auto const* relates_obj =
-            relates_value == nullptr ? nullptr : std::get_if<canonicaljson::Object>(&relates_value->storage());
-        if (relates_obj == nullptr)
-        {
-            continue;
-        }
-        auto const* rel_type = string_member(*relates_obj, "rel_type");
-        auto const* root_id = string_member(*relates_obj, "event_id");
-        if (rel_type == nullptr || *rel_type != "m.thread" || root_id == nullptr || root_id->empty())
-        {
-            continue;
-        }
+    std::ignore = store.events.walk_room_newest_first(
+        request.room_id,
+        [&](database::PersistentEvent const& event) {
+            // Spec: "Servers must additionally ensure they do not consider child events
+            // from ignored users when preparing an aggregation for the client."
+            if (trust_safety::is_delivery_suppressed(ignored_senders, event.sender_user_id, false))
+            {
+                return;
+            }
+            auto const parsed = canonicaljson::parse_lossless(event.json);
+            if (parsed.error != canonicaljson::ParseError::none)
+            {
+                return;
+            }
+            auto const* event_obj = std::get_if<canonicaljson::Object>(&parsed.value.storage());
+            if (event_obj == nullptr)
+            {
+                return;
+            }
+            auto const* content_value = object_member(*event_obj, "content");
+            auto const* content_obj =
+                content_value == nullptr ? nullptr : std::get_if<canonicaljson::Object>(&content_value->storage());
+            if (content_obj == nullptr)
+            {
+                return;
+            }
+            auto const* relates_value = object_member(*content_obj, "m.relates_to");
+            auto const* relates_obj =
+                relates_value == nullptr ? nullptr : std::get_if<canonicaljson::Object>(&relates_value->storage());
+            if (relates_obj == nullptr)
+            {
+                return;
+            }
+            auto const* rel_type = string_member(*relates_obj, "rel_type");
+            auto const* root_id = string_member(*relates_obj, "event_id");
+            if (rel_type == nullptr || *rel_type != "m.thread" || root_id == nullptr)
+            {
+                return;
+            }
+            // The relation's target is client-chosen text: one that is not a well-formed event ID
+            // (appendices, "Event IDs": at most 255 bytes) names no event, and would only cost
+            // memory as a key.
+            if (root_id->size() > events::max_id_length_bytes || !events::event_id_is_valid(*root_id))
+            {
+                return;
+            }
 
-        if (!visibility.can_see(event))
-        {
-            continue;
-        }
+            if (!visibility.can_see(event))
+            {
+                return;
+            }
 
-        auto* aggregate = find_aggregate(*root_id);
-        if (aggregate == nullptr)
-        {
-            aggregates.emplace_back(*root_id, ThreadAggregate{});
-            aggregate = &aggregates.back().second;
-        }
-        ++aggregate->count;
-        if (aggregate->latest_child == nullptr || event.stream_ordering > aggregate->latest_child->stream_ordering)
-        {
-            aggregate->latest_child = &event;
-        }
-        // Spec: participated when the caller is "the sender of an event which
-        // references the thread root with a rel_type of m.thread".
-        if (event.sender_user_id == *user_id)
-        {
-            aggregate->participated = true;
-        }
-    }
+            auto& aggregate = aggregates[*root_id];
+            ++aggregate.count;
+            if (aggregate.latest_child == nullptr || event.stream_ordering > aggregate.latest_child->stream_ordering)
+            {
+                aggregate.latest_child = &event;
+            }
+            // Spec: participated when the caller is "the sender of an event which
+            // references the thread root with a rel_type of m.thread".
+            if (event.sender_user_id == *user_id)
+            {
+                aggregate.participated = true;
+            }
+        },
+        max_events_examined);
 
     // Attach each root event. A relation naming an event this server does not
     // hold (or one in another room) is not a thread we can list.
-    for (auto const& event : store.events)
+    for (auto& [root_id, aggregate] : aggregates)
     {
-        if (event.room_id != request.room_id)
+        auto const root = store.events.find_in_room(request.room_id, root_id);
+        if (root == store.events.end() || !visibility.can_see(*root))
         {
             continue;
         }
-        auto* aggregate = find_aggregate(event.event_id);
-        if (aggregate == nullptr || !visibility.can_see(event))
-        {
-            continue;
-        }
-        aggregate->root = &event;
+        aggregate.root = &*root;
         // Spec: participated is also true when the caller is "the sender of the
         // thread root event".
-        if (event.sender_user_id == *user_id)
+        if (root->sender_user_id == *user_id)
         {
-            aggregate->participated = true;
+            aggregate.participated = true;
         }
     }
 

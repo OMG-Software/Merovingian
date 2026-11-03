@@ -25,12 +25,16 @@
 #include "../support/registration_token.hpp"
 #include "merovingian/canonicaljson/value.hpp"
 #include "merovingian/config/config.hpp"
+#include "merovingian/database/persistent_store.hpp"
 #include "merovingian/homeserver/client_server.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/generators/catch_generators.hpp>
 
+#include <algorithm>
+#include <cstddef>
 #include <cstdint>
+#include <map>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -355,6 +359,106 @@ SCENARIO("/messages and /members answer 403 for a room the user cannot be a memb
                 auto const body = parse_object(reply.body);
                 REQUIRE(string_member(body, "errcode") != nullptr);
                 REQUIRE(*string_member(body, "errcode") == "M_FORBIDDEN");
+            }
+        }
+    }
+}
+
+// Spec: Matrix Client-Server API v1.19, GET /rooms/{roomId}/members
+// URL:  ../../docs/matrix-v1.19-spec/client-server-api.md#get_matrixclientv3roomsroomidmembers
+//
+// Security audit run-2 (F-10, ADR-0344): the current roster is built from the room's member state
+// and the membership rows in time linear in the members. The answer is as the spec says: for a
+// joined user, "the current members of the room", each as an m.room.member event, once; the
+// `membership` and `not_membership` filters pick which.
+SCENARIO("/members lists every current member once, whatever the room's size and the filters",
+         "[conformance][client-server][members][f10]")
+{
+    GIVEN("a room whose roster holds hundreds of members with state and hundreds with only a membership row")
+    {
+        auto started = merovingian::homeserver::start_client_server(pagination_config());
+        REQUIRE(started.started);
+        auto& rt = started.runtime;
+        auto const token = register_and_login(rt, "alice");
+        auto const room_id = create_room(rt, token);
+        auto& store = rt.homeserver.database.persistent_store;
+
+        auto const state_backed = std::size_t{300U};
+        auto const row_only = std::size_t{300U};
+        for (auto index = std::size_t{0U}; index < state_backed; ++index)
+        {
+            auto const user = "@sb" + std::to_string(index) + ":remote.example";
+            auto const event_id = "$member_sb" + std::to_string(index);
+            REQUIRE(merovingian::database::store_membership(store, {room_id, user}) ==
+                    merovingian::database::MembershipStoreResult::stored);
+            REQUIRE(merovingian::database::store_event(
+                store,
+                {event_id, room_id, user,
+                 R"({"type":"m.room.member","state_key":")" + user + R"(","sender":")" + user + R"(","room_id":")" +
+                     room_id + R"(","origin_server_ts":1,"content":{"membership":"join"}})"}));
+            REQUIRE(merovingian::database::store_state(store, {room_id, "m.room.member", user, event_id}));
+        }
+        for (auto index = std::size_t{0U}; index < row_only; ++index)
+        {
+            REQUIRE(merovingian::database::store_membership(
+                        store, {room_id, "@ro" + std::to_string(index) + ":remote.example"}) ==
+                    merovingian::database::MembershipStoreResult::stored);
+        }
+
+        // The state key of each chunk entry, with how often it appears.
+        auto const state_keys_of = [](Reply const& reply) {
+            REQUIRE(reply.status == 200U);
+            auto const body = parse_object(reply.body);
+            auto const* chunk = object_member_as_array(body, "chunk");
+            REQUIRE(chunk != nullptr);
+            auto counts = std::map<std::string, std::size_t>{};
+            for (auto const& entry : *chunk)
+            {
+                auto const* object = std::get_if<merovingian::canonicaljson::Object>(&entry.storage());
+                REQUIRE(object != nullptr);
+                // Spec: each chunk entry is an m.room.member event.
+                REQUIRE(*string_member(*object, "type") == "m.room.member");
+                ++counts[*string_member(*object, "state_key")];
+            }
+            return counts;
+        };
+
+        WHEN("the joined creator lists the members")
+        {
+            auto const counts =
+                state_keys_of(call(rt, "GET", "/_matrix/client/v3/rooms/" + room_id + "/members", token));
+
+            THEN("each member appears exactly once: the creator, the state-backed ones, the row-only ones")
+            {
+                REQUIRE(counts.size() == 1U + state_backed + row_only);
+                REQUIRE(std::ranges::all_of(counts, [](auto const& entry) {
+                    return entry.second == 1U;
+                }));
+                REQUIRE(counts.contains("@sb7:remote.example"));
+                REQUIRE(counts.contains("@ro7:remote.example"));
+            }
+        }
+
+        WHEN("the members are listed with not_membership=join")
+        {
+            auto const counts = state_keys_of(
+                call(rt, "GET", "/_matrix/client/v3/rooms/" + room_id + "/members?not_membership=join", token));
+
+            THEN("no joined member is listed")
+            {
+                // Spec: not_membership - "The kind of membership to exclude from the results."
+                REQUIRE(counts.empty());
+            }
+        }
+
+        WHEN("the members are listed with membership=join")
+        {
+            auto const counts = state_keys_of(
+                call(rt, "GET", "/_matrix/client/v3/rooms/" + room_id + "/members?membership=join", token));
+
+            THEN("every joined member is listed once")
+            {
+                REQUIRE(counts.size() == 1U + state_backed + row_only);
             }
         }
     }
