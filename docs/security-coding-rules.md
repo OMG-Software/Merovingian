@@ -1023,6 +1023,8 @@ media-fetch-pool task.
   `max_to_device_bytes_per_user_device`, and one `PUT /sendToDevice` names at most 1,000 local devices
   (ADR-0335, ADR-0336). A one-time or fallback key is a string of at most 256 bytes or a key object of at most 4 KiB
   (400 `M_BAD_JSON`), and `device_keys`, a cross-signing key or a signed key is at most 16 KiB (ADR-0338).
+  The `eventType` and `txnId` of `/send`, `/redact` and `/sendToDevice` are at most 255 bytes (400 `M_INVALID_PARAM`),
+  and the to-device transaction records they leave are deleted after 7 days (ADR-0381).
   Why: account-data reads scan every row under the lock, so one user adding types without bound
   slowed every request that reads them (CWE-770; security audit run-1, ADR-0173). Room rows
   multiply by rooms, so they need both bounds (conformance audit R10, ADR-0197).

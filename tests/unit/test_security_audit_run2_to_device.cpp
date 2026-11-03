@@ -238,10 +238,10 @@ SCENARIO("a client's sendToDevice names a bounded number of deliveries and bound
                 REQUIRE(response.status == 413U);
                 REQUIRE(response.body.find("M_TOO_LARGE") != std::string::npos);
                 REQUIRE(runtime.homeserver.database.persistent_store.to_device_messages.empty());
-                REQUIRE_FALSE(
-                    merovingian::database::find_client_txn_event_id(runtime.homeserver.database.persistent_store,
-                                                                    "@alice:example.org", "", "m.test.message", "wide")
-                        .has_value());
+                REQUIRE_FALSE(merovingian::database::find_client_txn_event_id(
+                                  runtime.homeserver.database.persistent_store, "@alice:example.org", "DEVICE1", "",
+                                  "m.test.message", "wide")
+                                  .has_value());
             }
         }
 

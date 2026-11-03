@@ -14,6 +14,7 @@
 
 #include <algorithm>
 #include <cerrno>
+#include <charconv>
 #include <chrono>
 #include <cstdlib>
 #include <deque>
@@ -3428,6 +3429,57 @@ auto rebuild_key_signature_index(PersistentStore& store) -> void
     return true;
 }
 
+[[nodiscard]] auto create_key_backup_version(PersistentStore& store, std::string_view user_id, std::string json)
+    -> std::optional<std::string>
+{
+    if (user_id.empty() || !key_payload_is_valid(json))
+    {
+        return std::nullopt;
+    }
+    // One past the highest number ever issued to the user, and past every numeric version still held (a row
+    // written by an update of a version nobody created is held too), so a deleted version's number is never
+    // issued again and cannot inherit what was uploaded under it (F-60, ADR-0384).
+    auto highest = std::uint64_t{0U};
+    if (auto const issued = store.key_backup_version_high_water.find(std::string{user_id});
+        issued != store.key_backup_version_high_water.end())
+    {
+        highest = issued->second;
+    }
+    for (auto const& held : store.key_backup_versions)
+    {
+        if (held.user_id != user_id)
+        {
+            continue;
+        }
+        auto number = std::uint64_t{0U};
+        auto const* const end = held.version.data() + held.version.size();
+        if (auto const parsed = std::from_chars(held.version.data(), end, number);
+            parsed.ec == std::errc{} && parsed.ptr == end)
+        {
+            highest = std::max(highest, number);
+        }
+    }
+    if (highest == std::numeric_limits<std::uint64_t>::max())
+    {
+        return std::nullopt;
+    }
+    auto const next = std::to_string(highest + 1U);
+    auto const statements = std::vector<PreparedStatement>{
+        record_statement("upsert_key_backup_version_counter",
+                         "INSERT INTO key_backup_version_counters (user_id, last_version) VALUES ($1, $2) ON CONFLICT "
+                         "(user_id) DO UPDATE SET last_version = $2",
+                         {public_value(user_id), public_value(next)}),
+        record_statement("insert_key_backup_version", "INSERT INTO key_backup_versions VALUES ($1, $2, $3)",
+                         {public_value(user_id), public_value(next), sensitive_value(json)})};
+    if (!commit_persistent_transaction(store, statements))
+    {
+        return std::nullopt;
+    }
+    store.key_backup_version_high_water[std::string{user_id}] = highest + 1U;
+    store.key_backup_versions.push_back({std::string{user_id}, next, std::move(json)});
+    return next;
+}
+
 [[nodiscard]] auto delete_key_backup_version(PersistentStore& store, std::string_view user_id, std::string_view version)
     -> bool
 {
@@ -3439,13 +3491,23 @@ auto rebuild_key_signature_index(PersistentStore& store) -> void
     {
         return true; // Already absent — treat as idempotent success.
     }
-    if (!record_and_persist(store,
-                            record_statement("delete_key_backup_version",
-                                             "DELETE FROM key_backup_versions WHERE user_id = $1 AND version = $2",
-                                             {public_value(user_id), public_value(version)})))
+    // The spec deletes "all key data related to the backup" with the backup: the sessions go in the same
+    // transaction as the version row (the table's ON DELETE CASCADE is the second line of defence), and the
+    // in-memory mirror follows only once both are durable (F-60).
+    auto const statements = std::vector<PreparedStatement>{
+        record_statement("delete_key_backup_version_sessions",
+                         "DELETE FROM key_backup_sessions WHERE user_id = $1 AND version = $2",
+                         {public_value(user_id), public_value(version)}),
+        record_statement("delete_key_backup_version",
+                         "DELETE FROM key_backup_versions WHERE user_id = $1 AND version = $2",
+                         {public_value(user_id), public_value(version)})};
+    if (!commit_persistent_transaction(store, statements))
     {
         return false;
     }
+    std::erase_if(store.key_backup_sessions, [user_id, version](PersistentKeyBackupSession const& session) {
+        return session.user_id == user_id && session.version == version;
+    });
     store.key_backup_versions.erase(existing);
     return true;
 }
@@ -4585,18 +4647,20 @@ namespace
     {
         return record_statement(
             "insert_client_txn_id",
-            "INSERT INTO client_txn_ids (user_id, room_id, event_type, txn_id, event_id, device_id) "
-            "VALUES ($1, $2, $3, $4, $5, $6) ON CONFLICT DO NOTHING",
+            "INSERT INTO client_txn_ids (user_id, room_id, event_type, txn_id, event_id, device_id, created_at_ms) "
+            "VALUES ($1, $2, $3, $4, $5, $6, $7) ON CONFLICT DO NOTHING",
             {public_value(record.user_id), public_value(record.room_id), public_value(record.event_type),
-             public_value(record.txn_id), public_value(record.event_id), public_value(record.device_id)});
+             public_value(record.txn_id), public_value(record.event_id), public_value(record.device_id),
+             public_value(std::to_string(record.created_at_ms))});
     }
 
-    // The idempotency key of a record: each part length-prefixed, so no part can run into the next.
-    [[nodiscard]] auto client_txn_key(std::string_view user_id, std::string_view room_id, std::string_view event_type,
-                                      std::string_view txn_id) -> std::string
+    // The idempotency key of a record: each part length-prefixed, so no part can run into the next. The
+    // device is part of it: a transaction ID is scoped to one device (F-52, ADR-0380).
+    [[nodiscard]] auto client_txn_key(std::string_view user_id, std::string_view device_id, std::string_view room_id,
+                                      std::string_view event_type, std::string_view txn_id) -> std::string
     {
         auto key = std::string{};
-        for (auto const part : {user_id, room_id, event_type, txn_id})
+        for (auto const part : {user_id, device_id, room_id, event_type, txn_id})
         {
             key += std::to_string(part.size());
             key.push_back(':');
@@ -4609,10 +4673,20 @@ namespace
     {
         auto const& record = store.client_txn_ids[position];
         store.client_txn_key_index.emplace(
-            client_txn_key(record.user_id, record.room_id, record.event_type, record.txn_id), position);
+            client_txn_key(record.user_id, record.device_id, record.room_id, record.event_type, record.txn_id),
+            position);
         if (!record.event_id.empty())
         {
             store.client_txn_event_index.emplace(record.event_id, position);
+        }
+    }
+
+    // Gives a record that carries no time the time it is made.
+    auto stamp_client_txn(PersistentClientTxnRecord& record) -> void
+    {
+        if (record.created_at_ms == 0U)
+        {
+            record.created_at_ms = current_epoch_ms();
         }
     }
 
@@ -4678,10 +4752,13 @@ namespace
     // Already recorded (a concurrent retry that got in first): the request that
     // recorded it committed its messages in the same transaction, so there is
     // nothing left to deliver.
-    if (find_client_txn_event_id(store, record.user_id, record.room_id, record.event_type, record.txn_id).has_value())
+    if (find_client_txn_event_id(store, record.user_id, record.device_id, record.room_id, record.event_type,
+                                 record.txn_id)
+            .has_value())
     {
         return true;
     }
+    stamp_client_txn(record);
 
     auto batch = ToDeviceBatch{};
     index_to_device_recipients(store, messages, batch);
@@ -6094,15 +6171,18 @@ auto rebuild_deferred_pdu_awaits(PersistentStore& store) -> void
 }
 
 [[nodiscard]] auto find_client_txn_event_id(PersistentStore const& store, std::string_view user_id,
-                                            std::string_view room_id, std::string_view event_type,
-                                            std::string_view txn_id) -> std::optional<std::string>
+                                            std::string_view device_id, std::string_view room_id,
+                                            std::string_view event_type, std::string_view txn_id)
+    -> std::optional<std::string>
 {
     auto const matches = [&](PersistentClientTxnRecord const& r) {
-        return r.user_id == user_id && r.room_id == room_id && r.event_type == event_type && r.txn_id == txn_id;
+        return r.user_id == user_id && r.device_id == device_id && r.room_id == room_id && r.event_type == event_type &&
+               r.txn_id == txn_id;
     };
     if (store.client_txn_indexed_rows == store.client_txn_ids.size())
     {
-        auto const entry = store.client_txn_key_index.find(client_txn_key(user_id, room_id, event_type, txn_id));
+        auto const entry =
+            store.client_txn_key_index.find(client_txn_key(user_id, device_id, room_id, event_type, txn_id));
         if (entry == store.client_txn_key_index.end())
         {
             return std::nullopt;
@@ -6119,6 +6199,29 @@ auto rebuild_deferred_pdu_awaits(PersistentStore& store) -> void
         return std::nullopt;
     }
     return it->event_id;
+}
+
+[[nodiscard]] auto prune_to_device_client_txns(PersistentStore& store, std::uint64_t cutoff_ms) -> std::size_t
+{
+    auto const expired = [cutoff_ms](PersistentClientTxnRecord const& record) {
+        return record.room_id.empty() && record.created_at_ms < cutoff_ms;
+    };
+    if (!std::ranges::any_of(store.client_txn_ids, expired))
+    {
+        return 0U;
+    }
+    // The column is text, so the comparison is numeric on both sides. The database goes first: a failed write
+    // leaves memory as it was, and the next sweep tries again.
+    if (!record_and_persist(store, record_statement("delete_expired_to_device_client_txns",
+                                                    "DELETE FROM client_txn_ids WHERE room_id = '' AND "
+                                                    "CAST(created_at_ms AS BIGINT) < CAST($1 AS BIGINT)",
+                                                    {public_value(std::to_string(cutoff_ms))})))
+    {
+        return 0U;
+    }
+    auto const removed = std::erase_if(store.client_txn_ids, expired);
+    rebuild_client_txn_index(store);
+    return removed;
 }
 
 auto rebuild_client_txn_index(PersistentStore& store) -> void
@@ -6167,10 +6270,13 @@ auto rebuild_client_txn_index(PersistentStore& store) -> void
         return false;
     }
     // If already recorded (concurrent retry), the original wins — do not overwrite.
-    if (find_client_txn_event_id(store, record.user_id, record.room_id, record.event_type, record.txn_id).has_value())
+    if (find_client_txn_event_id(store, record.user_id, record.device_id, record.room_id, record.event_type,
+                                 record.txn_id)
+            .has_value())
     {
         return true;
     }
+    stamp_client_txn(record);
     if (!record_and_persist(store, insert_client_txn_statement(record)))
     {
         return false;

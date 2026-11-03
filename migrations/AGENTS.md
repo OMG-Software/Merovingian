@@ -6,7 +6,7 @@ after they have been applied to any environment**.
 ## The v1 schema (ADR-0224)
 
 In 0.12.47 every pre-1.0 migration was collapsed into one: `001_initial_schema.sql`,
-schema version `1`. It creates all 62 tables in their final shape and the four
+schema version `1`. It creates all 63 tables in their final shape and the four
 secondary indexes (`event_edges_prev_event_id`, `idx_to_device_messages_recipient_age`,
 `idx_deferred_pdus_room_id`, `idx_media_pending_uploads_owner`). There are no upgrades
 from before it: a database whose `schema_migrations` ledger holds a row this build does

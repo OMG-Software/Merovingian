@@ -4,6 +4,7 @@ homeserver_sources = files(
   'auth_service.cpp',
   'client_outbound_proxy.cpp',
   'client_server.cpp',
+  'client_txn_prune.cpp',
   'default_push_ruleset.cpp',
   'deferred_pdu_retry.cpp',
   'email_push.cpp',

@@ -87,7 +87,8 @@ auto direct_to_device_message_id_is_valid(std::string_view message_id) noexcept 
     return codepoints <= max_message_id_codepoints;
 }
 
-auto derive_direct_to_device_message_id(std::string_view sender, std::string_view event_type, std::string_view txn_id)
+auto derive_direct_to_device_message_id(std::string_view sender, std::string_view sender_device,
+                                        std::string_view event_type, std::string_view txn_id)
     -> std::optional<std::string>
 {
     // generic_hash_bytes separates its pieces with a NUL, which a transaction ID
@@ -97,9 +98,11 @@ auto derive_direct_to_device_message_id(std::string_view sender, std::string_vie
         return std::to_string(input.size()) + ":" + std::string{input};
     };
     auto const sender_piece = prefixed(sender);
+    auto const device_piece = prefixed(sender_device);
     auto const type_piece = prefixed(event_type);
     auto const txn_piece = prefixed(txn_id);
-    auto const pieces = std::array<std::string_view, 4U>{message_id_domain, sender_piece, type_piece, txn_piece};
+    auto const pieces =
+        std::array<std::string_view, 5U>{message_id_domain, sender_piece, device_piece, type_piece, txn_piece};
 
     auto const digest = crypto::generic_hash_bytes(pieces);
     if (!digest.has_value() || digest->size() < message_id_digest_bytes)

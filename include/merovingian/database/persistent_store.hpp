@@ -665,8 +665,12 @@ struct PersistentClientTxnRecord final
     std::string event_id{};
     // The device that made the request, empty for a request with none. Spec (client-server-api.md,
     // ClientEvent `unsigned.transaction_id`): the sending client is given the transaction ID, and a
-    // transaction ID is scoped to a device.
+    // transaction ID is scoped to a device. The idempotency key is (user_id, device_id, room_id,
+    // event_type, txn_id): the same txnId from another device is another request (F-52, ADR-0380).
     std::string device_id{};
+    // When the record was made, in milliseconds since the epoch; the store stamps it when it is 0.
+    // Only a to-device record (room_id empty) is ever aged out (F-54, ADR-0381).
+    std::uint64_t created_at_ms{0U};
 };
 
 // A push notification pusher registered via `POST
@@ -955,6 +959,7 @@ struct PersistentStore final
         , key_signature_indexed_rows{other.key_signature_indexed_rows}
         , key_backup_versions{other.key_backup_versions}
         , key_backup_sessions{other.key_backup_sessions}
+        , key_backup_version_high_water{other.key_backup_version_high_water}
         , local_media{other.local_media}
         , remote_media{other.remote_media}
         , media_blobs{other.media_blobs}
@@ -1050,6 +1055,7 @@ struct PersistentStore final
         key_signature_indexed_rows = other.key_signature_indexed_rows;
         key_backup_versions = other.key_backup_versions;
         key_backup_sessions = other.key_backup_sessions;
+        key_backup_version_high_water = other.key_backup_version_high_water;
         local_media = other.local_media;
         remote_media = other.remote_media;
         media_blobs = other.media_blobs;
@@ -1164,6 +1170,9 @@ struct PersistentStore final
     std::size_t key_signature_indexed_rows{0U};
     std::vector<PersistentKeyBackupVersion> key_backup_versions{};
     std::vector<PersistentKeyBackupSession> key_backup_sessions{};
+    // The highest backup version number ever issued to each user, so a deleted version's number is
+    // never issued again (F-60, ADR-0384). Persisted in `key_backup_version_counters`.
+    std::unordered_map<std::string, std::uint64_t> key_backup_version_high_water{};
     std::vector<PersistentLocalMedia> local_media{};
     std::vector<PersistentRemoteMedia> remote_media{};
     std::vector<PersistentMediaBlob> media_blobs{};
@@ -1196,11 +1205,13 @@ struct PersistentStore final
     // Positions in `client_txn_ids`, so a request reads the records it needs without scanning every
     // record the server has ever stored (work under runtime.mutex is bounded by the request):
     // `client_txn_event_index` by event_id, for the transaction ID a sending device is given;
-    // `client_txn_key_index` by (user_id, room_id, event_type, txn_id), for idempotency. Maintained
-    // by store_client_txn and enqueue_to_device_messages_with_client_txn, rebuilt after hydration. They
-    // are trusted only while `client_txn_indexed_rows == client_txn_ids.size()`; a caller that pushes
-    // rows directly leaves the counts unequal and lookups fall back to a scan until the next rebuild.
-    // Nothing prunes `client_txn_ids`.
+    // `client_txn_key_index` by (user_id, device_id, room_id, event_type, txn_id), for idempotency.
+    // Maintained by store_client_txn and enqueue_to_device_messages_with_client_txn, rebuilt after
+    // hydration and after a prune. They are trusted only while
+    // `client_txn_indexed_rows == client_txn_ids.size()`; a caller that pushes rows directly leaves
+    // the counts unequal and lookups fall back to a scan until the next rebuild. Only to-device rows
+    // (room_id empty) are pruned, by prune_to_device_client_txns (ADR-0381); a room-send row stays,
+    // because `unsigned.transaction_id` is served from it (ADR-0258).
     std::unordered_map<std::string, std::size_t> client_txn_event_index{};
     std::unordered_map<std::string, std::size_t> client_txn_key_index{};
     std::size_t client_txn_indexed_rows{0U};
@@ -1670,6 +1681,17 @@ auto rebuild_state_index(PersistentStore& store) -> void;
 // SQLite/PostgreSQL hydration.
 auto rebuild_client_txn_index(PersistentStore& store) -> void;
 
+// Deletes the to-device transaction records (room_id empty) made before `cutoff_ms`, from the database in
+// one statement and then from `client_txn_ids`, and rebuilds both indexes (they hold positions in the
+// vector). Room-send and redact records are never touched. Returns the number removed; on a failed
+// write nothing is removed and it returns 0. One pass over the vector, so a caller that holds
+// runtime.mutex runs it from a periodic job, not from a request (F-54, ADR-0381). A request retried
+// after its record is gone is processed again, which is accepted.
+[[nodiscard]] auto prune_to_device_client_txns(PersistentStore& store, std::uint64_t cutoff_ms) -> std::size_t;
+
+// How long a to-device transaction record is kept: 7 days (ADR-0381).
+inline constexpr std::uint64_t to_device_client_txn_retention_ms = 7ULL * 24ULL * 60ULL * 60ULL * 1000ULL;
+
 // The record of the room send that produced `event_id`, or nullptr (also for an empty ID). An
 // index lookup; the sender, device and transaction ID are the record's.
 [[nodiscard]] auto find_client_txn_by_event_id(PersistentStore const& store, std::string_view event_id)
@@ -1759,6 +1781,15 @@ auto apply_store_event_with_state(PersistentStore& store, PreparedStateUpdate co
 // PostgreSQL hydration and after any direct fill of the vector.
 auto rebuild_key_signature_index(PersistentStore& store) -> void;
 [[nodiscard]] auto store_key_backup_version(PersistentStore& store, PersistentKeyBackupVersion version) -> bool;
+// Creates a new backup version for `user_id` and returns its number (decimal, 1 for the first). The number
+// is one past the highest ever issued to the user (`key_backup_version_high_water`) and past every numeric
+// version still held, so a number is never issued twice, even after the version holding it was deleted. The
+// counter and the version row are written in ONE transaction. nullopt for an invalid payload or a failed
+// write, with nothing changed (F-60, ADR-0384).
+[[nodiscard]] auto create_key_backup_version(PersistentStore& store, std::string_view user_id, std::string json)
+    -> std::optional<std::string>;
+// Deletes the version and every session uploaded to it in ONE transaction, then both from memory (F-60).
+// A version that is not held succeeds without touching anything.
 [[nodiscard]] auto delete_key_backup_version(PersistentStore& store, std::string_view user_id, std::string_view version)
     -> bool;
 [[nodiscard]] auto store_key_backup_session(PersistentStore& store, PersistentKeyBackupSession session) -> bool;
@@ -2118,11 +2149,14 @@ auto rebuild_deferred_pdu_awaits(PersistentStore& store) -> void;
 [[nodiscard]] auto deferred_pdus_for_room(PersistentStore const& store, std::string_view room_id)
     -> std::vector<PersistentDeferredPdu>;
 // Look up a previous idempotent send result. Returns the stored event_id
-// (or empty string for to-device sends) if the (user_id, room_id,
-// event_type, txn_id) tuple was already committed; nullopt otherwise.
+// (or empty string for to-device sends) if the (user_id, device_id, room_id,
+// event_type, txn_id) tuple was already committed; nullopt otherwise. A transaction ID is scoped to one
+// device (client-server-api.md, "Transaction identifiers"), so the device is part of the key; a request
+// with no device (an appservice token without a device) uses the empty device ID, which is its own scope.
 [[nodiscard]] auto find_client_txn_event_id(PersistentStore const& store, std::string_view user_id,
-                                            std::string_view room_id, std::string_view event_type,
-                                            std::string_view txn_id) -> std::optional<std::string>;
+                                            std::string_view device_id, std::string_view room_id,
+                                            std::string_view event_type, std::string_view txn_id)
+    -> std::optional<std::string>;
 // Record an idempotent send result. Silently succeeds if the key already
 // exists (the original store wins — the client may retry while still in-flight).
 [[nodiscard]] auto store_client_txn(PersistentStore& store, PersistentClientTxnRecord record) -> bool;

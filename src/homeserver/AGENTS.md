@@ -20,6 +20,7 @@ This is the largest and most complex module — read this file carefully before 
 | `url_preview_service.cpp` | `GET .../preview_url` (ADR-0213): the SSRF gate (`gated_fetch`: resolve, check, pin, follow redirects itself) and the preview cache. Every fetch of a client-named URL goes through it |
 | `room_service.cpp` | Room operations, event persistence, signing-key lifecycle, appservice and push delivery |
 | `appservice_delivery.cpp` | Application Service API outbound queue (ADR-0163): `enqueue_appservice_delivery` (request path, no network) and `drain_appservice_queues` (the one drainer thread, run by a `PeriodicJob` from `main.cpp`) |
+| `client_txn_prune.cpp` | `prune_client_transactions`: the sweep the `client-txn-prune` `PeriodicJob` runs every hour, deleting to-device `client_txn_ids` records older than 7 days (F-54, ADR-0381) |
 | `deferred_pdu_retry.cpp` | Retains federation PDUs that could not yet be placed (`deferred_pdus`) and retries them: `retry_deferred_pdus`, `DeferredPduRetryJob` (R03, ADR-0165). A retry holds no lock across `ingest_pdu_event`; `ingest_pdu_event` writes rows only after signature verification |
 | `redaction_service.cpp` | Applies redactions (judge, overwrite the target's stored JSON, withhold unapplied redactions from clients) and checks a local client's redaction |
 | `room_power.cpp` | `may_send_state_event()`: whether a user may send a state event of a type in a room's current state, judged as the auth rules judge it (CSAZ-12) |
@@ -486,6 +487,14 @@ client, sender or remote server controls, and per-user rows that requests scan m
   `M_TOO_LARGE` with nothing queued (ADR-0335, ADR-0336). The devices of the named users come from one pass over
   `store.devices`; never scan the device table per entry. The database layer gathers a batch's recipient queues in
   one pass (`index_to_device_recipients`) and never walks the queue per message.
+- A client transaction ID is part of an idempotency key with the request's device (`authenticated_request_device_id`),
+  never the user alone, on `/send`, `/redact` and `/sendToDevice` (ADR-0380); an `eventType` or `txnId` over 255 bytes
+  is `400 M_INVALID_PARAM` before the lookup (`client_txn_part_is_too_long`). Only the to-device `client_txn_ids`
+  rows are pruned, by the `client-txn-prune` job (ADR-0381); a new path that records a transaction takes the
+  device and gets the bound.
+- `POST /room_keys/version` takes its number from `database::create_key_backup_version` (never from a scan of the
+  versions held), and `DELETE /room_keys/version/{version}` deletes the version's sessions in the same transaction
+  (ADR-0384).
 - `POST /keys/upload` checks the shape and size of every one-time and fallback key before storing anything
   (`uploaded_key_shape_refusal`, 400 `M_BAD_JSON`), and `device_keys`, each cross-signing key and each signed key of
   a signature upload are at most `max_uploaded_key_document_bytes` (400 `M_TOO_LARGE`, ADR-0338). A new key upload

@@ -211,3 +211,62 @@ SCENARIO("A key upload for a session the server holds keeps the better key",
         }
     }
 }
+
+// Spec: Matrix Client-Server API v1.19
+// Endpoint / Section: DELETE /_matrix/client/v3/room_keys/version/{version}
+// URL: ../../docs/matrix-v1.19-spec/client-server-api.md#delete_matrixclientv3room_keysversionversion
+//
+// "Delete an existing key backup. Both the information about the backup, as well as all key data related to the
+// backup will be deleted."
+SCENARIO("Deleting a key backup version deletes the keys uploaded to it, and a new backup starts empty",
+         "[conformance][key-backup][run2][f60]")
+{
+    GIVEN("alice with a backup version holding a session key")
+    {
+        auto started = merovingian::homeserver::start_client_server(backup_config());
+        REQUIRE(started.started);
+        auto& rt = started.runtime;
+        auto const token = register_and_login(rt, "alice");
+        create_backup(rt, token);
+        REQUIRE(call(rt, "PUT", session_path, token, session_json(10, 0, true, "old")).status == 200U);
+
+        WHEN("she deletes the version and creates a new backup")
+        {
+            REQUIRE(call(rt, "DELETE", "/_matrix/client/v3/room_keys/version/1", token).status == 200U);
+            auto const created = call(
+                rt, "POST", "/_matrix/client/v3/room_keys/version", token,
+                R"({"algorithm":"m.megolm_backup.v1.curve25519-aes-sha2","auth_data":{"public_key":"def","signatures":{}}})");
+            REQUIRE(created.status == 200U);
+            auto const created_body = parse_object(created.body);
+            auto const* new_version = string_member(created_body, "version");
+            REQUIRE(new_version != nullptr);
+
+            THEN("the new backup holds no keys, and its version is not the deleted one")
+            {
+                // Spec MUST: all key data related to the deleted backup is deleted.
+                REQUIRE(*new_version != "1");
+                auto const info = call(rt, "GET", "/_matrix/client/v3/room_keys/version/" + *new_version, token);
+                REQUIRE(info.status == 200U);
+                REQUIRE(info.body.find(R"("count":0)") != std::string::npos);
+                auto const keys = call(rt, "GET", "/_matrix/client/v3/room_keys/keys?version=" + *new_version, token);
+                REQUIRE(keys.status == 200U);
+                REQUIRE(keys.body.find("session1") == std::string::npos);
+                REQUIRE(keys.body.find("old") == std::string::npos);
+            }
+
+            THEN("a key uploaded to the new backup is the one kept, not a leftover of the deleted one")
+            {
+                REQUIRE(
+                    call(rt, "PUT",
+                         "/_matrix/client/v3/room_keys/keys/%21room1%3Aexample.org/session1?version=" + *new_version,
+                         token, session_json(50, 0, false, "fresh"))
+                        .status == 200U);
+                auto const reply = call(
+                    rt, "GET",
+                    "/_matrix/client/v3/room_keys/keys/%21room1%3Aexample.org/session1?version=" + *new_version, token);
+                REQUIRE(reply.status == 200U);
+                REQUIRE(reply.body.find("fresh") != std::string::npos);
+            }
+        }
+    }
+}

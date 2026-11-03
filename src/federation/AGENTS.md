@@ -147,7 +147,7 @@ Federation is the highest-risk surface: **all input comes from untrusted remote 
    and filled with `record` only after the EDU's messages have committed in one transaction
    (`database::enqueue_to_device_messages`), so a failed store never makes the resend look like
    a replay (ADR-0166). Our own outbound `message_id` is `derive_direct_to_device_message_id`
-   (sender, event type, txn id), never the raw client txn id. One EDU queues at most
+   (sender, sender device, event type, txn id), never the raw client txn id (ADR-0380). One EDU queues at most
    `max_inbound_direct_to_device_deliveries` messages, and a message whose content is over `max_to_device_message_bytes`
    is dropped alone, not the EDU (ADR-0335). A `m.device_list_update` /
    `m.signing_key_update` writes a `device_list_changes` row only for local users who share a

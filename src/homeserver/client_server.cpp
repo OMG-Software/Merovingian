@@ -7210,33 +7210,6 @@ namespace
     }
 
     // Compute the next unique version string for a user's key backup.
-    // Finds the highest existing numeric version for this user and returns
-    // (max + 1) as a decimal string.  Starts at "1" when none exist.
-    [[nodiscard]] auto key_backup_next_version(database::PersistentStore const& store, std::string_view user_id)
-        -> std::string
-    {
-        std::uint64_t max_ver = 0U;
-        for (auto const& v : store.key_backup_versions)
-        {
-            if (v.user_id != user_id)
-            {
-                continue;
-            }
-            try
-            {
-                auto const n = static_cast<std::uint64_t>(std::stoull(v.version));
-                if (n > max_ver)
-                {
-                    max_ver = n;
-                }
-            }
-            catch (...)
-            { /* non-numeric version — skip */
-            }
-        }
-        return std::to_string(max_ver + 1U);
-    }
-
     // Extract the value of the `version` query parameter from a request target.
     // Returns an empty string_view if the parameter is absent.
     [[nodiscard]] auto extract_key_backup_version_param(std::string_view target) noexcept -> std::string_view
@@ -8354,6 +8327,15 @@ namespace
         return resp(200U, *claim_response);
     }
 
+    // The most bytes a client-chosen event type or transaction ID may have where it is part of an idempotency
+    // key: the Matrix identifier limit (F-54, ADR-0381).
+    inline constexpr std::size_t max_client_txn_part_bytes = 255U;
+
+    [[nodiscard]] auto client_txn_part_is_too_long(std::string_view part) noexcept -> bool
+    {
+        return part.size() > max_client_txn_part_bytes;
+    }
+
     // PUT /_matrix/client/v3/sendToDevice/{eventType}/{txnId}
     // Parses the event type and client txnId from the path. The txnId is not
     // sent over federation as is: the EDU's message_id is derived from it, the
@@ -8392,12 +8374,19 @@ namespace
     // so a retry with the same transaction ID is processed, not replayed (R02,
     // ADR-0164).
     [[nodiscard]] auto handle_send_to_device(ClientServerRuntime& rt, std::string_view event_type,
-                                             std::string_view txn_id, std::string_view sender, std::string_view body)
-        -> LocalHttpResponse
+                                             std::string_view txn_id, std::string_view sender,
+                                             std::string_view sender_device, std::string_view body) -> LocalHttpResponse
     {
-        // CS API §10.5.1: idempotent send — replay {} for a seen txn_id.
+        // The two client-chosen parts of the idempotency key are bounded, or a client could make this server
+        // keep arbitrarily long keys for 7 days (F-54, ADR-0381).
+        if (client_txn_part_is_too_long(event_type) || client_txn_part_is_too_long(txn_id))
+        {
+            return err(400U, "M_INVALID_PARAM", "the event type and the transaction ID are at most 255 bytes each");
+        }
+        // CS API §10.5.1: idempotent send — replay {} for a seen txn_id, from the same device (F-52, ADR-0380).
         // room_id is empty ("") as sentinel for to-device entries.
-        if (database::find_client_txn_event_id(rt.homeserver.database.persistent_store, sender, "", event_type, txn_id)
+        if (database::find_client_txn_event_id(rt.homeserver.database.persistent_store, sender, sender_device, "",
+                                               event_type, txn_id)
                 .has_value())
         {
             return resp(200U, "{}");
@@ -8539,7 +8528,9 @@ namespace
         // derivation is deterministic, so a retry still carries the same id.
         if (!remote_messages.empty())
         {
-            auto const message_id = federation::derive_direct_to_device_message_id(sender, event_type, txn_id);
+            // Per sender and device: two devices of one user may reuse a txnId (F-52, ADR-0380).
+            auto const message_id =
+                federation::derive_direct_to_device_message_id(sender, sender_device, event_type, txn_id);
             if (!message_id.has_value())
             {
                 return err(500U, "M_UNKNOWN", "The to-device message could not be queued for a remote server");
@@ -8577,7 +8568,8 @@ namespace
         auto const queued_locally = !local_messages.empty();
         if (!database::enqueue_to_device_messages_with_client_txn(
                 rt.homeserver.database.persistent_store, std::move(local_messages),
-                {std::string{sender}, "", std::string{event_type}, std::string{txn_id}, ""}))
+                {std::string{sender}, "", std::string{event_type}, std::string{txn_id}, "",
+                 std::string{sender_device}}))
         {
             return err(500U, "M_UNKNOWN", "The to-device message could not be stored");
         }
@@ -11305,6 +11297,9 @@ namespace
             return stored;
         }
         case auth::KeyApiEndpoint::create_key_backup_version:
+            // A new version's number is chosen by database::create_key_backup_version, in one transaction with
+            // its counter (F-60, ADR-0384); the route handler calls it directly.
+            return false;
         case auth::KeyApiEndpoint::update_key_backup_version:
             return database::store_key_backup_version(store, {std::string{user}, std::string{version}, req.body});
         case auth::KeyApiEndpoint::put_room_key_backup: {
@@ -11696,13 +11691,14 @@ namespace
                 return resp(200U, key_api_success_body(route.endpoint));
             }
         case auth::KeyApiEndpoint::create_key_backup_version: {
-            // Generate a unique version for this new backup.
-            auto const new_ver = key_backup_next_version(rt.homeserver.database.persistent_store, user);
-            if (!store_key_api_payload(rt, route.endpoint, user, device_id, req, new_ver))
+            // A number is never issued twice to a user, even after its version was deleted (F-60, ADR-0384).
+            auto const new_ver =
+                database::create_key_backup_version(rt.homeserver.database.persistent_store, user, req.body);
+            if (!new_ver.has_value())
             {
                 return err(500U, "M_UNKNOWN", "key API persistence failed");
             }
-            return resp(200U, json_serialize(json_obj({json_member("version", json_str(new_ver))})));
+            return resp(200U, json_serialize(json_obj({json_member("version", json_str(*new_ver))})));
         }
         case auth::KeyApiEndpoint::update_key_backup_version: {
             // Version comes from the path: PUT /room_keys/version/{version}
@@ -16242,7 +16238,8 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
     {
         if (auto const path = send_to_device_path_parts(req.target); path.has_value())
         {
-            return complete(handle_send_to_device(rt, path->event_type, path->txn_id, *user, req.body));
+            return complete(handle_send_to_device(rt, path->event_type, path->txn_id, *user,
+                                                  authenticated_request_device_id(rt, req.access_token), req.body));
         }
     }
     // GET /_matrix/client/v3/keys/changes[?from=...&to=...]
@@ -16749,8 +16746,15 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                 // The transaction ID is scoped to this endpoint and target, so the same txnId used
                 // on /send, or to redact another event, is a different request.
                 auto const txn_scope = std::string{"redact/"} + redact->event_id;
-                if (auto const cached = database::find_client_txn_event_id(
-                        rt.homeserver.database.persistent_store, *user, redact->room_id, txn_scope, redact->txn_id);
+                if (client_txn_part_is_too_long(redact->txn_id))
+                {
+                    return dispatch_err(req, rt, 400U, "M_INVALID_PARAM", "the transaction ID is at most 255 bytes");
+                }
+                // The device is part of the key: another device's txnId is another request (F-52, ADR-0380).
+                auto const request_device = authenticated_request_device_id(rt, req.access_token);
+                if (auto const cached =
+                        database::find_client_txn_event_id(rt.homeserver.database.persistent_store, *user,
+                                                           request_device, redact->room_id, txn_scope, redact->txn_id);
                     cached.has_value())
                 {
                     return complete({200U, json_serialize(json_obj({json_member("event_id", json_str(*cached))}))});
@@ -16804,10 +16808,9 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                         {
                             if (auto const* s = std::get_if<std::string>(&eid_it->value->storage()))
                             {
-                                std::ignore =
-                                    database::store_client_txn(rt.homeserver.database.persistent_store,
-                                                               {*user, redact->room_id, txn_scope, redact->txn_id, *s,
-                                                                authenticated_request_device_id(rt, req.access_token)});
+                                std::ignore = database::store_client_txn(
+                                    rt.homeserver.database.persistent_store,
+                                    {*user, redact->room_id, txn_scope, redact->txn_id, *s, request_device});
                             }
                         }
                     }
@@ -16822,9 +16825,17 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                     return dispatch_err(req, rt, 400U, "M_INVALID_PARAM",
                                         "ts must be an integer origin_server_ts in milliseconds");
                 }
-                // CS API §10.5.1: idempotent send — replay the original response.
-                if (auto const cached = database::find_client_txn_event_id(
-                        rt.homeserver.database.persistent_store, *user, path->room_id, path->event_type, path->txn_id);
+                if (client_txn_part_is_too_long(path->event_type) || client_txn_part_is_too_long(path->txn_id))
+                {
+                    return dispatch_err(req, rt, 400U, "M_INVALID_PARAM",
+                                        "the event type and the transaction ID are at most 255 bytes each");
+                }
+                // CS API §10.5.1: idempotent send — replay the original response to the same device (F-52,
+                // ADR-0380): a transaction ID is scoped to a device, so another device's is another request.
+                auto const request_device = authenticated_request_device_id(rt, req.access_token);
+                if (auto const cached = database::find_client_txn_event_id(rt.homeserver.database.persistent_store,
+                                                                           *user, request_device, path->room_id,
+                                                                           path->event_type, path->txn_id);
                     cached.has_value())
                 {
                     return complete({200U, json_serialize(json_obj({json_member("event_id", json_str(*cached))}))});
@@ -16877,8 +16888,7 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                             {
                                 std::ignore = database::store_client_txn(
                                     rt.homeserver.database.persistent_store,
-                                    {*user, path->room_id, path->event_type, path->txn_id, *s,
-                                     authenticated_request_device_id(rt, req.access_token)});
+                                    {*user, path->room_id, path->event_type, path->txn_id, *s, request_device});
                             }
                         }
                     }

@@ -500,6 +500,7 @@ shell = find_program('sh')
       'conformance/test_sync_state_conformance.cpp',
       'conformance/test_identifier_grammar.cpp',
       'conformance/test_ignoring_users_conformance.cpp',
+      'conformance/test_client_txn_scope_conformance.cpp',
       'conformance/test_key_backup_conformance.cpp',
       'conformance/test_key_publication_conformance.cpp',
       'conformance/test_membership_projection_conformance.cpp',

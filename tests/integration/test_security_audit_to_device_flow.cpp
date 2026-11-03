@@ -13,6 +13,7 @@
 #include "merovingian/federation/edu_idempotence.hpp"
 #include "merovingian/federation/server_discovery.hpp"
 #include "merovingian/homeserver/client_server.hpp"
+#include "merovingian/homeserver/client_txn_prune.hpp"
 #include "merovingian/homeserver/runtime.hpp"
 #include "merovingian/http/outbound_client.hpp"
 
@@ -159,10 +160,11 @@ struct DeviceSession final
 }
 
 [[nodiscard]] auto txn_recorded(merovingian::homeserver::ClientServerRuntime const& runtime,
-                                std::string_view sender_user_id, std::string_view txn_id) -> bool
+                                std::string_view sender_user_id, std::string_view sender_device_id,
+                                std::string_view txn_id) -> bool
 {
     return merovingian::database::find_client_txn_event_id(runtime.homeserver.database.persistent_store, sender_user_id,
-                                                           "", "m.test.message", txn_id)
+                                                           sender_device_id, "", "m.test.message", txn_id)
         .has_value();
 }
 
@@ -181,12 +183,14 @@ struct DurableToDeviceState final
 };
 
 [[nodiscard]] auto durable_to_device_state(std::filesystem::path const& path, std::string_view sender_user_id,
-                                           std::string_view txn_id) -> DurableToDeviceState
+                                           std::string_view sender_device_id, std::string_view txn_id)
+    -> DurableToDeviceState
 {
     auto opened = merovingian::database::open_sqlite_persistent_store(path.string());
     REQUIRE(opened.ok);
     return {opened.store.to_device_messages.size(),
-            merovingian::database::find_client_txn_event_id(opened.store, sender_user_id, "", "m.test.message", txn_id)
+            merovingian::database::find_client_txn_event_id(opened.store, sender_user_id, sender_device_id, "",
+                                                            "m.test.message", txn_id)
                 .has_value()};
 }
 
@@ -224,10 +228,11 @@ struct DurableToDeviceState final
 
 // The message_id the server must put on the EDU for `sender`'s request with `txn_id`: derived per sender, so
 // the same request always gets the same one and two senders never share one.
-[[nodiscard]] auto expected_message_id(std::string_view sender_user_id, std::string_view txn_id) -> std::string
+[[nodiscard]] auto expected_message_id(std::string_view sender_user_id, std::string_view sender_device_id,
+                                       std::string_view txn_id) -> std::string
 {
-    auto const derived =
-        merovingian::federation::derive_direct_to_device_message_id(sender_user_id, "m.test.message", txn_id);
+    auto const derived = merovingian::federation::derive_direct_to_device_message_id(sender_user_id, sender_device_id,
+                                                                                     "m.test.message", txn_id);
     REQUIRE(derived.has_value());
     return *derived;
 }
@@ -410,8 +415,9 @@ SCENARIO("sendToDevice reports a failed enqueue and delivers once on retry",
                 REQUIRE(error_code_of(response) == "M_UNKNOWN");
                 REQUIRE(queued_for(runtime, bob.user_id, bob.device_id) == 0);
                 REQUIRE(sync_to_device_count(runtime, bob.access_token) == 0U);
-                REQUIRE_FALSE(txn_recorded(runtime, alice.user_id, "r02-named"));
-                auto const durable = durable_to_device_state(sqlite.database_path(), alice.user_id, "r02-named");
+                REQUIRE_FALSE(txn_recorded(runtime, alice.user_id, alice.device_id, "r02-named"));
+                auto const durable =
+                    durable_to_device_state(sqlite.database_path(), alice.user_id, alice.device_id, "r02-named");
                 REQUIRE(durable.to_device_rows == 0U);
                 REQUIRE_FALSE(durable.txn_recorded);
             }
@@ -426,7 +432,7 @@ SCENARIO("sendToDevice reports a failed enqueue and delivers once on retry",
                     REQUIRE(retried.status == 200U);
                     REQUIRE(queued_for(runtime, bob.user_id, bob.device_id) == 1);
                     REQUIRE(sync_to_device_count(runtime, bob.access_token) == 1U);
-                    REQUIRE(txn_recorded(runtime, alice.user_id, "r02-named"));
+                    REQUIRE(txn_recorded(runtime, alice.user_id, alice.device_id, "r02-named"));
                 }
             }
         }
@@ -460,7 +466,7 @@ SCENARIO("sendToDevice wildcard delivers to every device or to none when the enq
                 REQUIRE(queued_for(runtime, bob_second.user_id, bob_second.device_id) == 0);
                 REQUIRE(sync_to_device_count(runtime, bob_first.access_token) == 0U);
                 REQUIRE(sync_to_device_count(runtime, bob_second.access_token) == 0U);
-                REQUIRE_FALSE(txn_recorded(runtime, alice.user_id, "r02-wildcard"));
+                REQUIRE_FALSE(txn_recorded(runtime, alice.user_id, alice.device_id, "r02-wildcard"));
             }
 
             AND_WHEN("the fault clears and Alice retries with the same transaction ID")
@@ -505,7 +511,8 @@ SCENARIO("sendToDevice commits its messages and its transaction record together"
                 REQUIRE(response.status != 200U);
                 REQUIRE(runtime.homeserver.database.persistent_store.to_device_messages.empty());
                 REQUIRE(sync_to_device_count(runtime, bob_first.access_token) == 0U);
-                auto const durable = durable_to_device_state(sqlite.database_path(), alice.user_id, "r02-atomic");
+                auto const durable =
+                    durable_to_device_state(sqlite.database_path(), alice.user_id, alice.device_id, "r02-atomic");
                 REQUIRE(durable.to_device_rows == 0U);
                 REQUIRE_FALSE(durable.txn_recorded);
             }
@@ -552,7 +559,7 @@ SCENARIO("sendToDevice to local and remote recipients is not recorded when the l
             {
                 REQUIRE(response.status != 200U);
                 REQUIRE(queued_for(runtime, bob.user_id, bob.device_id) == 0);
-                REQUIRE_FALSE(txn_recorded(runtime, alice.user_id, "r02-mixed"));
+                REQUIRE_FALSE(txn_recorded(runtime, alice.user_id, alice.device_id, "r02-mixed"));
             }
 
             AND_WHEN("the fault clears and Alice retries with the same transaction ID")
@@ -565,9 +572,10 @@ SCENARIO("sendToDevice to local and remote recipients is not recorded when the l
                 {
                     REQUIRE(retried.status == 200U);
                     REQUIRE(queued_for(runtime, bob.user_id, bob.device_id) == 1);
-                    REQUIRE(txn_recorded(runtime, alice.user_id, "r02-mixed"));
-                    REQUIRE(direct_to_device_edus_carrying(runtime.homeserver.database.persistent_store,
-                                                           expected_message_id(alice.user_id, "r02-mixed")) == 2);
+                    REQUIRE(txn_recorded(runtime, alice.user_id, alice.device_id, "r02-mixed"));
+                    REQUIRE(direct_to_device_edus_carrying(
+                                runtime.homeserver.database.persistent_store,
+                                expected_message_id(alice.user_id, alice.device_id, "r02-mixed")) == 2);
                 }
             }
         }
@@ -602,7 +610,7 @@ SCENARIO("sendToDevice commits nothing locally when a remote EDU cannot be queue
                 REQUIRE(response.status != 200U);
                 REQUIRE(error_code_of(response) == "M_UNKNOWN");
                 REQUIRE(queued_for(runtime, bob.user_id, bob.device_id) == 0);
-                REQUIRE_FALSE(txn_recorded(runtime, alice.user_id, "r02-remote"));
+                REQUIRE_FALSE(txn_recorded(runtime, alice.user_id, alice.device_id, "r02-remote"));
             }
 
             AND_WHEN("the fault clears and Alice retries with the same transaction ID")
@@ -614,8 +622,9 @@ SCENARIO("sendToDevice commits nothing locally when a remote EDU cannot be queue
                 {
                     REQUIRE(retried.status == 200U);
                     REQUIRE(queued_for(runtime, bob.user_id, bob.device_id) == 1);
-                    REQUIRE(direct_to_device_edus_carrying(runtime.homeserver.database.persistent_store,
-                                                           expected_message_id(alice.user_id, "r02-remote")) == 1);
+                    REQUIRE(direct_to_device_edus_carrying(
+                                runtime.homeserver.database.persistent_store,
+                                expected_message_id(alice.user_id, alice.device_id, "r02-remote")) == 1);
                 }
             }
         }
@@ -652,7 +661,8 @@ SCENARIO("sendToDevice replays a recorded transaction without delivering again",
 
         WHEN("the database file is read back by a fresh store")
         {
-            auto const durable = durable_to_device_state(sqlite.database_path(), alice.user_id, "r02-replay");
+            auto const durable =
+                durable_to_device_state(sqlite.database_path(), alice.user_id, alice.device_id, "r02-replay");
 
             THEN("both the message and the transaction record are present")
             {
@@ -688,7 +698,7 @@ SCENARIO("sendToDevice discards remote recipients when federation is disabled",
             {
                 REQUIRE(response.status == 200U);
                 REQUIRE(queued_for(runtime, bob.user_id, bob.device_id) == 1);
-                REQUIRE(txn_recorded(runtime, alice.user_id, "r02-no-federation"));
+                REQUIRE(txn_recorded(runtime, alice.user_id, alice.device_id, "r02-no-federation"));
             }
         }
     }
@@ -715,8 +725,72 @@ SCENARIO("sendToDevice with no local recipient still records its transaction",
             {
                 REQUIRE(response.status == 200U);
                 REQUIRE(runtime.homeserver.database.persistent_store.to_device_messages.empty());
-                REQUIRE(txn_recorded(runtime, alice.user_id, "r02-empty"));
-                REQUIRE(durable_to_device_state(sqlite.database_path(), alice.user_id, "r02-empty").txn_recorded);
+                REQUIRE(txn_recorded(runtime, alice.user_id, alice.device_id, "r02-empty"));
+                REQUIRE(durable_to_device_state(sqlite.database_path(), alice.user_id, alice.device_id, "r02-empty")
+                            .txn_recorded);
+            }
+        }
+    }
+}
+
+// F-54, ADR-0381: the to-device transaction records a request leaves are aged out after 7 days by the
+// "client-txn-prune" job; the room-send records are not.
+SCENARIO("The prune sweep removes to-device transaction records after seven days and keeps room sends",
+         "[security_audit_to_device][client-txn][run2][f54][integration][sqlite]")
+{
+    GIVEN("a SQLite-backed homeserver where alice has sent to-device messages and a room message")
+    {
+        auto const sqlite = ToDeviceSqliteFixture{};
+        auto started = merovingian::homeserver::start_client_server(to_device_config(sqlite.database_path()));
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        auto const alice = register_device(runtime, "alice", "CorrectHorse7!");
+        REQUIRE(send_to_device(runtime, alice.access_token, "prune-1", R"({"messages":{}})").status == 200U);
+        auto const created = merovingian::homeserver::handle_client_server_request(
+            runtime, {"POST", "/_matrix/client/v3/createRoom", alice.access_token, "{}"});
+        REQUIRE(created.response.status == 200U);
+        auto const room_body = merovingian::tests::parse_object(created.response.body);
+        auto const* room_id = merovingian::tests::string_member(room_body, "room_id");
+        REQUIRE(room_id != nullptr);
+        REQUIRE(merovingian::homeserver::handle_client_server_request(
+                    runtime, {"PUT", "/_matrix/client/v3/rooms/" + *room_id + "/send/m.room.message/prune-room",
+                              alice.access_token, R"({"msgtype":"m.text","body":"hi"})"})
+                    .response.status == 200U);
+        auto const now = std::chrono::system_clock::now();
+        auto const& rows = runtime.homeserver.database.persistent_store.client_txn_ids;
+        REQUIRE(rows.size() == 2U);
+
+        WHEN("a sweep runs six days later")
+        {
+            std::ignore = merovingian::homeserver::prune_client_transactions(runtime.homeserver,
+                                                                             now + std::chrono::hours{6 * 24});
+
+            THEN("both records are still held")
+            {
+                REQUIRE(rows.size() == 2U);
+                REQUIRE(txn_recorded(runtime, alice.user_id, alice.device_id, "prune-1"));
+            }
+        }
+
+        WHEN("a sweep runs eight days later")
+        {
+            auto const next = merovingian::homeserver::prune_client_transactions(runtime.homeserver,
+                                                                                 now + std::chrono::hours{8 * 24});
+
+            THEN("the to-device record is gone, in memory and on disk, and the room send is kept")
+            {
+                REQUIRE(rows.size() == 1U);
+                REQUIRE_FALSE(txn_recorded(runtime, alice.user_id, alice.device_id, "prune-1"));
+                REQUIRE(rows.front().txn_id == "prune-room");
+                REQUIRE_FALSE(durable_to_device_state(sqlite.database_path(), alice.user_id, alice.device_id, "prune-1")
+                                  .txn_recorded);
+                REQUIRE(next == merovingian::homeserver::client_txn_prune_interval);
+            }
+
+            THEN("a retransmission after the record is gone is processed again")
+            {
+                REQUIRE(send_to_device(runtime, alice.access_token, "prune-1", R"({"messages":{}})").status == 200U);
+                REQUIRE(txn_recorded(runtime, alice.user_id, alice.device_id, "prune-1"));
             }
         }
     }

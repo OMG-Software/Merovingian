@@ -15,6 +15,7 @@
 #include "merovingian/homeserver/auth_service.hpp"
 #include "merovingian/homeserver/client_outbound_proxy.hpp"
 #include "merovingian/homeserver/client_server.hpp"
+#include "merovingian/homeserver/client_txn_prune.hpp"
 #include "merovingian/homeserver/deferred_pdu_retry.hpp"
 #include "merovingian/homeserver/email_push.hpp"
 #include "merovingian/homeserver/federation_proxy.hpp"
@@ -895,6 +896,23 @@ struct ListenerBinding final
     if (!profile_propagation_job.start())
     {
         LOG_CRITICAL("Profile propagation thread failed to start; refusing to serve");
+        dispatcher.request_stop();
+        pool.request_stop();
+        media_fetch_pool.request_stop();
+        sync_pool.request_stop();
+        return std::nullopt;
+    }
+    // Ages out the to-device transaction records kept for idempotency (F-54, ADR-0381), once an hour (and
+    // at start), taking the runtime lock for one pass. It only ever touches `runtime`, which outlives this
+    // function. Declared after the pools so it is stopped and joined before them.
+    auto client_txn_prune_job =
+        merovingian::homeserver::PeriodicJob{"client-txn-prune", [&runtime](merovingian::homeserver::StopFlag const&) {
+                                                 return merovingian::homeserver::prune_client_transactions(
+                                                     runtime.homeserver, std::chrono::system_clock::now());
+                                             }};
+    if (!client_txn_prune_job.start())
+    {
+        LOG_CRITICAL("Client transaction prune thread failed to start; refusing to serve");
         dispatcher.request_stop();
         pool.request_stop();
         media_fetch_pool.request_stop();

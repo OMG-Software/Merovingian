@@ -157,8 +157,8 @@ SCENARIO("A derived to-device message_id is stable per request, distinct per sen
     // transaction IDs are only unique per user, so the ID is derived from the sender as well.
     GIVEN("two senders who use the same client transaction ID")
     {
-        auto const alice = derive_direct_to_device_message_id("@alice:a.example", "m.room.encrypted", "1");
-        auto const bob = derive_direct_to_device_message_id("@bob:a.example", "m.room.encrypted", "1");
+        auto const alice = derive_direct_to_device_message_id("@alice:a.example", "DEVICE", "m.room.encrypted", "1");
+        auto const bob = derive_direct_to_device_message_id("@bob:a.example", "DEVICE", "m.room.encrypted", "1");
 
         THEN("their message IDs differ")
         {
@@ -168,10 +168,29 @@ SCENARIO("A derived to-device message_id is stable per request, distinct per sen
         }
     }
 
+    GIVEN("two devices of one sender that use the same client transaction ID")
+    {
+        // Spec (client-server-api.md, "Transaction identifiers"): a transaction ID is scoped to a device.
+        auto const phone = derive_direct_to_device_message_id("@alice:a.example", "PHONE", "m.room.encrypted", "1");
+        auto const laptop = derive_direct_to_device_message_id("@alice:a.example", "LAPTOP", "m.room.encrypted", "1");
+        auto const no_device = derive_direct_to_device_message_id("@alice:a.example", "", "m.room.encrypted", "1");
+
+        THEN("their message IDs differ, so the receiver does not drop one as a replay of the other")
+        {
+            REQUIRE(phone.has_value());
+            REQUIRE(laptop.has_value());
+            REQUIRE(no_device.has_value());
+            REQUIRE(*phone != *laptop);
+            REQUIRE(*phone != *no_device);
+        }
+    }
+
     GIVEN("one sender repeating the same request")
     {
-        auto const first = derive_direct_to_device_message_id("@alice:a.example", "m.room.encrypted", "txn-7");
-        auto const second = derive_direct_to_device_message_id("@alice:a.example", "m.room.encrypted", "txn-7");
+        auto const first =
+            derive_direct_to_device_message_id("@alice:a.example", "DEVICE", "m.room.encrypted", "txn-7");
+        auto const second =
+            derive_direct_to_device_message_id("@alice:a.example", "DEVICE", "m.room.encrypted", "txn-7");
 
         THEN("the message ID is the same, so a resend is recognised as a replay")
         {
@@ -182,9 +201,11 @@ SCENARIO("A derived to-device message_id is stable per request, distinct per sen
 
     GIVEN("requests that differ in event type or transaction ID only")
     {
-        auto const base = derive_direct_to_device_message_id("@alice:a.example", "m.room.encrypted", "txn-7");
-        auto const other_type = derive_direct_to_device_message_id("@alice:a.example", "m.room_key_request", "txn-7");
-        auto const other_txn = derive_direct_to_device_message_id("@alice:a.example", "m.room.encrypted", "txn-8");
+        auto const base = derive_direct_to_device_message_id("@alice:a.example", "DEVICE", "m.room.encrypted", "txn-7");
+        auto const other_type =
+            derive_direct_to_device_message_id("@alice:a.example", "DEVICE", "m.room_key_request", "txn-7");
+        auto const other_txn =
+            derive_direct_to_device_message_id("@alice:a.example", "DEVICE", "m.room.encrypted", "txn-8");
 
         THEN("each gets its own message ID")
         {
@@ -198,9 +219,9 @@ SCENARIO("A derived to-device message_id is stable per request, distinct per sen
 
     GIVEN("inputs whose boundaries are shifted")
     {
-        auto const first = derive_direct_to_device_message_id("ab", "c", "d");
-        auto const second = derive_direct_to_device_message_id("a", "bc", "d");
-        auto const third = derive_direct_to_device_message_id("ab", "cd", "");
+        auto const first = derive_direct_to_device_message_id("ab", "DEVICE", "c", "d");
+        auto const second = derive_direct_to_device_message_id("a", "DEVICE", "bc", "d");
+        auto const third = derive_direct_to_device_message_id("ab", "DEVICE", "cd", "");
 
         THEN("they cannot collide")
         {
@@ -215,11 +236,13 @@ SCENARIO("A derived to-device message_id is stable per request, distinct per sen
 
     GIVEN("transaction IDs of awkward shapes")
     {
-        auto const long_txn = derive_direct_to_device_message_id("@alice:a.example", "m.test", std::string(200U, 'x'));
+        auto const long_txn =
+            derive_direct_to_device_message_id("@alice:a.example", "DEVICE", "m.test", std::string(200U, 'x'));
         auto const multibyte_txn =
-            derive_direct_to_device_message_id("@alice:a.example", "m.test", "\xC3\xA9\xE2\x82\xAC");
-        auto const nul_txn = derive_direct_to_device_message_id("@alice:a.example", "m.test", std::string{"a\0b", 3U});
-        auto const plain_txn = derive_direct_to_device_message_id("@alice:a.example", "m.test", "a");
+            derive_direct_to_device_message_id("@alice:a.example", "DEVICE", "m.test", "\xC3\xA9\xE2\x82\xAC");
+        auto const nul_txn =
+            derive_direct_to_device_message_id("@alice:a.example", "DEVICE", "m.test", std::string{"a\0b", 3U});
+        auto const plain_txn = derive_direct_to_device_message_id("@alice:a.example", "DEVICE", "m.test", "a");
 
         THEN("every derived ID is non-empty, at most 32 codepoints and passes the validity check")
         {

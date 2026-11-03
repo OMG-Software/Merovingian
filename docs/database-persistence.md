@@ -30,7 +30,7 @@ value. Test fixtures that do not exercise persistence select it through
   `001_initial_schema.sql`. Every pre-1.0 migration (versions 2 to 26 as of
   0.12.46) was collapsed into it in 0.12.47
   ([ADR-0224](adr/0224-pre-1-0-migrations-collapse-into-one-frozen-v1-schema.md)),
-  so v1 creates all 62 tables in their final shape, every column that an
+  so v1 creates all 63 tables in their final shape, every column that an
   earlier migration used to `ALTER` on now being part of the table's `CREATE`,
   plus four indexes: `event_edges_prev_event_id`,
   `idx_to_device_messages_recipient_age`, `idx_deferred_pdus_room_id` and
@@ -803,16 +803,22 @@ value. Test fixtures that do not exercise persistence select it through
   future caller passing a non-core or attacker-influenced name.
 
 - Client transaction-idempotency dedup via the version-1 `client_txn_ids` table.
-  Keyed on `(user_id, room_id, event_type, txn_id)`; `room_id` is empty string
-  for to-device sends. `device_id` records the device that made the room-send
-  request (empty when it had none) so the sending device is given
-  `unsigned.transaction_id`; it is not part of the key. The in-memory rows are
+  Keyed on `(user_id, device_id, room_id, event_type, txn_id)`: a transaction ID is
+  scoped to one device (F-52, ADR-0380). `room_id` is empty string for to-device
+  sends. `device_id` is the device that made the request (empty when it had
+  none, which is a scope of its own); it also gives the sending device its
+  `unsigned.transaction_id`. `created_at_ms` is when the record was made (the store
+  stamps it). The in-memory rows are
   indexed by event ID and by the key (`client_txn_event_index`,
   `client_txn_key_index`), rebuilt after hydration and extended on every store,
   so the idempotency check and the per-event transaction-ID lookup are hash
   lookups. The indexes are trusted only while `client_txn_indexed_rows` equals
   the row count; a caller that pushes rows directly falls back to a scan until
-  the next rebuild. Nothing prunes the table. `event_id` stores the assigned event ID for room sends and
+  the next rebuild. Only the to-device rows (`room_id` empty) are pruned: the
+  `client-txn-prune` job deletes those older than 7 days
+  (`database::prune_to_device_client_txns`, ADR-0381) from the table and the mirror and
+  rebuilds both indexes; room-send rows stay, because `unsigned.transaction_id` is served
+  from them (ADR-0258). `event_id` stores the assigned event ID for room sends and
   is empty for to-device entries. Both SQLite and PostgreSQL hydrate rows on
   startup. Handlers check the table before processing and store the result after
   a successful send, allowing clients to safely retry `PUT /rooms/{roomId}/send`
@@ -1187,12 +1193,12 @@ migration's table cannot go unclassified:
   `event_state_groups`, `forward_extremities` (the last four added in
   0.12.13 by ADR-0064 phase A — `state_groups` was vestigial before this and
   is now moved out of the never-reads list below).
-- **Worker never reads** (47 tables): `users`, `devices`, `access_tokens`,
+- **Worker never reads** (48 tables): `users`, `devices`, `access_tokens`,
   `refresh_tokens`, `federation_destinations`, `federation_transactions`,
   `invites`, `state_transitions`, `sync_stream_watermark`,
   `event_stream_watermark`, `device_keys`, `one_time_keys`, `fallback_keys`,
   `cross_signing_keys`, `key_signatures`, `key_backup_versions`,
-  `key_backup_sessions`, `media`, `media_blobs`, `remote_media`,
+  `key_backup_version_counters`, `key_backup_sessions`, `media`, `media_blobs`, `remote_media`,
   `audit_log`, `admin_actions`, `policy_rules`, `account_data`,
   `room_account_data`, `to_device_messages`, `device_list_changes`,
   `presence_state`, `filters`, `profiles`, `account_threepids`,

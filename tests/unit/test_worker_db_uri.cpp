@@ -243,6 +243,7 @@ auto parse(std::vector<char const*> const& args) -> merovingian::federation_work
         "cross_signing_keys",
         "key_signatures",
         "key_backup_versions",
+        "key_backup_version_counters",
         "key_backup_sessions",
         "media",
         "media_blobs",

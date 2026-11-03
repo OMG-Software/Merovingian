@@ -317,7 +317,7 @@ SCENARIO("Unrelated query values never become room operation path components",
                     {
                         auto const cached =
                             db::find_client_txn_event_id(runtime.homeserver.database.persistent_store, owner.value,
-                                                         room.value, "m.room.message", txn);
+                                                         "DB6", room.value, "m.room.message", txn);
                         CHECK(cached.has_value());
                         auto const count = runtime.homeserver.database.persistent_store.events.size();
                         auto const replay =
@@ -371,7 +371,7 @@ SCENARIO("Unrelated query values never become room operation path components",
                     if (redacted.has_value() && redacted->status == 200U)
                     {
                         CHECK(db::find_client_txn_event_id(runtime.homeserver.database.persistent_store, owner.value,
-                                                           room.value, "redact/" + event.value, redact_txn)
+                                                           "DB6", room.value, "redact/" + event.value, redact_txn)
                                   .has_value());
                         auto const replay = dispatch("PUT", redact_path, "{}");
                         if (replay.has_value())
@@ -476,7 +476,7 @@ SCENARIO("To-device, user metadata and knock path identities ignore unrelated qu
                     if (delivered.has_value() && delivered->status == 200U)
                     {
                         CHECK(db::find_client_txn_event_id(runtime.homeserver.database.persistent_store, owner.value,
-                                                           "", "org.example.db6", txn)
+                                                           "DB6", "", "org.example.db6", txn)
                                   .has_value());
                         CHECK(runtime.homeserver.database.persistent_store.to_device_messages.size() > queued_before);
                         auto const queued_after =
