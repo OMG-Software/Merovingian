@@ -2817,3 +2817,12 @@ nothing, all from trusting the worker's view or the hook's transport.
   join were verified under a guess of version 12 and replayed unchanged. The drain now verifies each afresh under the
   version the stored create declares, and ingestion refuses an envelope naming any other. **Residual risk:** a PDU in
   flight when the join commits is refused and needs the ordinary gap fill. Tests: `[f44]`.
+
+### Ban evasion through an event fetched to fill a gap (0.12.68, F-16)
+
+- **A banned user's message could be delivered by having it fetched (F-16, ADR-0371).** Fetched events stopped at the check
+  against the state before them, and read paths withhold by status. A fetched event that fails against current state is now
+  `soft_failed`, keeping its state group, and an outlier gaining a state group gets the same check. **Residual risk:** an event
+  with no known state-before gets no such check; it has no state group, so read paths do not show it, but one that gains a
+  group later is checked only then. Honest history from a sender who can no longer send is withheld too, as in `/send`. Tests:
+  `[f16]`.

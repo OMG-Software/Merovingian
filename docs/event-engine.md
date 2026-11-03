@@ -161,6 +161,8 @@ Implemented now:
   dependency order from the answer's own events, dropping what fails and refusing a join the rest does not authorise;
 - a PDU parked during a join is verified afresh and rebuilt under the version the stored create declares, and ingestion
   refuses an envelope naming any other version (0.12.68, F-44, ADR-0370);
+- an event fetched to fill a gap is also checked against the current state and stored `soft_failed` on failure, with its
+  state group (0.12.68, F-16, ADR-0371);
 - membership endpoint/content agreement (0.12.16, FED-6): `send_join`,
   `send_leave`, and `send_knock` validate the membership value, event type,
   authenticated-origin/sender relationship, sender/state-key equality, and

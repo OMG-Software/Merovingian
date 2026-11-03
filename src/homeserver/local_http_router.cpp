@@ -207,13 +207,9 @@ namespace
         -> std::vector<database::PersistentStateGroupStateEntry>
     {
         auto entries = std::vector<database::PersistentStateGroupStateEntry>{};
-        for (auto const& state : store.state)
-        {
-            if (state.room_id == room_id)
-            {
-                entries.push_back({{}, state.event_type, state.state_key, state.event_id});
-            }
-        }
+        database::for_each_room_state_row(store, room_id, [&entries](database::PersistentStateEvent const& state) {
+            entries.push_back({{}, state.event_type, state.state_key, state.event_id});
+        });
         return entries;
     }
 
@@ -4013,6 +4009,28 @@ namespace
             }
         }
 
+        // Spec "Soft failure" (F-16, ADR-0371): an event fetched to fill a gap is newly received like any other, so it
+        // is also checked against the current state. Read paths withhold by status, and an event with a state group
+        // would otherwise reach clients however it evaded a ban. It keeps its state group and takes part in state
+        // resolution; a backfilled event never becomes a forward extremity. With no state-before there is no group
+        // either, and nothing shows such an event to a client.
+        auto soft_failed = false;
+        if (state_before_known && outcome == BackfillOutcome::accepted)
+        {
+            auto current_state_map = build_pdu_auth_event_map(
+                runtime.database.persistent_store, room_id, envelope.sender, envelope.state_key.value_or(std::string{}),
+                envelope.event_type, third_party_invite_token, events::join_authorising_user(effective_pdu));
+            fill_create_from_room_state(current_state_map, runtime.database.persistent_store, room_id);
+            auto const current_state_decision =
+                events::authorize_event_against_auth_events(effective_pdu, policy, current_state_map);
+            if (!current_state_decision.allowed)
+            {
+                soft_failed = true;
+                LOG_INFO("Fetched event soft failed against current state; event_id=" + envelope.event_id +
+                         " room_id=" + std::string{room_id} + " reason=" + current_state_decision.reason);
+            }
+        }
+
         // ADR-0070: with no known state-before there is no after-state to
         // record. Deriving one from the event's own auth_events would hand any
         // descendant a thin, origin-chosen state-before instead of the room's
@@ -4086,6 +4104,15 @@ namespace
                 return false;
             }
             record_state_group(*state_after);
+            // A state group makes an outlier visible to read paths, so the outcome of the check above is recorded
+            // now. Any other status was decided when the event was received.
+            if (soft_failed && existing->status == "outlier" &&
+                !database::set_event_status(runtime.database.persistent_store, envelope.event_id, "soft_failed"))
+            {
+                LOG_WARNING("Could not mark a fetched event soft failed; event_id=" + envelope.event_id +
+                            " room_id=" + std::string{room_id});
+                return false;
+            }
             return true;
         }
 
@@ -4108,7 +4135,7 @@ namespace
         event.prev_event_ids = envelope.prev_event_ids;
         event.auth_event_ids = envelope.auth_event_ids;
         event.signatures = envelope.signatures;
-        event.status = outcome == BackfillOutcome::rejected ? "rejected" : "outlier";
+        event.status = outcome == BackfillOutcome::rejected ? "rejected" : soft_failed ? "soft_failed" : "outlier";
 
         if (outcome == BackfillOutcome::rejected)
         {

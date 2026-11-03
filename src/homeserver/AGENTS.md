@@ -423,6 +423,9 @@ only endpoints the spec requires and the origin may be asked for:
 - `verify_and_store_backfilled_event` stores an event with resolvable but disallowed, rejected or denied `auth_events`
   as `rejected` (after-state equal to its state-before), never drops it; only an unresolvable auth event is a gap.
   Dropping it left every event that named it unplaced.
+- It also authorises an event against the current state and stores a failure `soft_failed`, with its state group (F-16,
+  ADR-0371); so does an `outlier` gaining a state group, because the group is what makes it visible to read paths. Do not
+  store a fetched event with a state group and status `outlier` without that check.
 
 ## Read paths that return room events or state
 
