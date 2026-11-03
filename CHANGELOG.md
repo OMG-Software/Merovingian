@@ -1,3 +1,9 @@
+## 0.12.68
+
+The medium findings of security audit run 2 (ref 5e67d4e8).
+
+### Security
+
 ## 0.12.67
 
 The five high findings of security audit run 2 (ref 5e67d4e8).
