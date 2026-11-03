@@ -317,6 +317,7 @@
 * [0366 - A send_join is refused before it is stored when its answer cannot be delivered, and omit_members shrinks it](0366-a-send-join-is-refused-before-it-is-stored-when-its-answer-cannot-be-delivered.md)
 * [0367 - A make_join template and a restricted-join decision read the state by key and by room](0367-a-make-join-template-and-a-restricted-join-decision-read-by-key.md)
 * [0368 - An IPC response that cannot be sent fails its requester at once](0368-an-ipc-response-that-cannot-be-sent-fails-its-requester-at-once.md)
+* [0369 - A send_join answer is judged by the receipt checks, from its own events](0369-a-send-join-answer-is-judged-by-the-receipt-checks-from-its-own-events.md)
 * [0358 - Main applies the admin's federation policy to every verified request, and again to what a worker relays](0358-main-applies-the-admin-federation-policy-to-every-verified-request.md)
 * [0359 - Main judges relayed events against its own room server ACL](0359-main-judges-relayed-events-against-its-own-server-acl.md)
 * [0360 - The worker guards its store with a reader-writer lock that a reload takes only for the in-memory swap](0360-the-worker-guards-its-store-with-a-reader-writer-lock-taken-only-for-the-swap.md)

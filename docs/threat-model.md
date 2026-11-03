@@ -2803,3 +2803,13 @@ nothing, all from trusting the worker's view or the hook's transport.
   The auth chain of `/state` and `/state_ids` is bounded at 65536 events and refused with 502 `M_TOO_LARGE`, never cut
   (ADR-0364). **Residual risk:** a request still costs the size of the room's state (and, for `/state`, parsing every
   state and auth event); there is no per-origin concurrency share on `local_pool` reads. Tests: `[state-at-event]`.
+
+### What a joining server takes from a resident's answer (0.12.68, F-45, F-44)
+
+- **A resident could store any content it liked in the joining server's copy of a room (F-45, ADR-0369).** A signature and
+  an event ID cover only the redacted form, so an event with content changed after signing passed every check that ran,
+  and a later genuine copy was answered `already_stored`. The answer now passes the receipt checks: a hash mismatch is
+  redacted, and an event the auth rules refuse, or that names one the answer lacks, is dropped. **Residual risk:** a
+  resident can still omit events or offer an older event for a state slot, since individually valid events do not prove
+  current state. An event whose sender's key cannot be fetched now takes its dependents with it, so a join into a room
+  with a long-dead administrator can lose state or be refused. Tests: `[f45]`.

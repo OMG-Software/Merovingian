@@ -1965,6 +1965,61 @@ SCENARIO("filter_verified_send_join_events keeps an event with a valid signature
     }
 }
 
+// Spec: Server-Server API v1.19, "Checks performed on receipt of a PDU": "3. Passes hash checks, otherwise it is
+// redacted before being processed further." The signature and the event ID cover only the redacted form, so a resident
+// can change what redaction removes and keep both (F-45).
+SCENARIO("filter_verified_send_join_events redacts an event whose content hash does not match",
+         "[f45][homeserver][federation][send_join][security]")
+{
+    GIVEN("a member event validly signed by its sender's server, carrying a content its hash does not cover")
+    {
+        REQUIRE(sodium_init() >= 0);
+        auto started = merovingian::homeserver::start_runtime(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        runtime.federation.remote_key_resolver =
+            [](std::string_view server_name,
+               std::string_view key_id) -> std::optional<merovingian::federation::FederationRemoteRuntime> {
+            if (server_name != remote_origin || key_id != remote_key_id)
+            {
+                return std::nullopt;
+            }
+            return remote_for_test();
+        };
+        auto const policy = *merovingian::rooms::find_room_version_policy("10");
+        auto const room_id = std::string{"!room:matrix.example.org"};
+        auto const bob = std::string{"@bob:"} + remote_origin;
+        auto const signed_event =
+            signed_member_event(room_id, bob, remote_origin, remote_key_id, remote_key_seed, policy);
+        auto json = merovingian::canonicaljson::serialize_canonical(signed_event).output;
+        auto const membership = std::string{R"("membership":"join")"};
+        auto const position = json.find(membership);
+        REQUIRE(position != std::string::npos);
+        json.replace(position, membership.size(), R"("displayname":"Added after signing","membership":"join")");
+        auto const tampered = merovingian::canonicaljson::parse_lossless(json);
+        REQUIRE(tampered.error == merovingian::canonicaljson::ParseError::none);
+        auto array = merovingian::canonicaljson::Array{};
+        array.push_back(tampered.value);
+
+        WHEN("filter_verified_send_join_events is called")
+        {
+            auto const filtered =
+                merovingian::homeserver::filter_verified_send_join_events(runtime, array, policy, local_server);
+
+            THEN("the event is kept in its redacted form, under the same event ID")
+            {
+                REQUIRE(filtered.size() == 1U);
+                auto const out = merovingian::canonicaljson::serialize_canonical(filtered.front()).output;
+                REQUIRE(out.find("Added after signing") == std::string::npos);
+                REQUIRE(out.find(membership) != std::string::npos);
+                auto const before = merovingian::events::make_reference_hash_event_id(tampered.value, policy);
+                auto const after = merovingian::events::make_reference_hash_event_id(filtered.front(), policy);
+                REQUIRE(before.event_id == after.event_id);
+            }
+        }
+    }
+}
+
 SCENARIO("filter_verified_send_join_events drops an event with an invalid signature",
          "[homeserver][federation][send_join][security]")
 {

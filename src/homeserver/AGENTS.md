@@ -26,6 +26,7 @@ This is the largest and most complex module — read this file carefully before 
 | `search_room_index.cpp` | `SearchRoomIndex`: the timelines of the rooms a `POST /search` page's matches are in, from one pass over the events, for `event_context` (F-31, ADR-0333) |
 | `user_directory_search.cpp` | `matching_directory_profiles`: the profiles `POST /user_directory/search` matches, deactivated accounts read in one pass (F-50, ADR-0334) |
 | `room_residency.cpp` | `room_state_is_current()`: whether held room state is current, i.e. the create event is stored and a user of this server is joined (ADR-0301) |
+| `send_join_answer_authorization.cpp` | `authorize_send_join_answer`: the auth rules over a resident's `send_join` answer, in dependency order, from the answer's own events, with `runtime.mutex` released (F-45, ADR-0369) |
 | `restricted_join.cpp` | `decide_restricted_join()`: as the resident, whether a user meets a restricted room's allow conditions and which local user authorises the join (R04, ADR-0185) |
 | `remote_timestamp_event.cpp` | Asking other servers for `GET /rooms/{roomId}/timestamp_to_event` (ADR-0299): `timestamp_to_event_candidate_servers`, `parse_timestamp_to_event_answer`, `timestamp_is_closer`, `acquire_closer_timestamp_event` (the loop over at most 3 servers; releases `runtime.mutex` for each exchange and for the verified fetch, `fetch_remote_event_into_store` in `local_http_router.cpp`) |
 | `space_hierarchy.cpp` | `GET /_matrix/client/v1/rooms/{roomId}/hierarchy` (a child room this server holds no state for is asked for over federation, see "Client requests that call another server") and the answer to `GET /_matrix/federation/v1/hierarchy/{roomId}`, judged for the authenticated requesting server; also `handle_client_room_summary` (`GET /_matrix/client/v1/room_summary/{roomIdOrAlias}`, local rooms only; a request with no token is answered before the auth gate in `client_server.cpp` and may see only a public, knock or world-readable room) |
@@ -334,6 +335,14 @@ other servers with joined members; never this server), offering only the room's 
   success only if `join_event_made_member` holds: that event is accepted, is the user's current member state,
   and the membership is `join`. Any other stored copy leaves the join failed.
 - If no candidate succeeds the client gets the original 403, not an upstream error.
+
+## A resident's answer to our send_join is a receipt (F-45, ADR-0369)
+
+`perform_federated_join` runs the answer through `filter_verified_send_join_events` (room, signatures, then the content
+hash: a mismatch is redacted) and `authorize_send_join_answer` (auth rules, dependency order) before anything reaches
+`ingest_send_join_state` or the auth-chain writer. Both run with `runtime.mutex` released. An event that fails is dropped,
+never stored `rejected`. Do not consult the store in the check, and do not recurse over `auth_events`: the resident
+chooses the depth. A join through another resident (ADR-0287) never feeds the answer to these writers, so it skips this.
 
 ## The answer to a send_join is planned before the join is stored (F-23, ADR-0366)
 

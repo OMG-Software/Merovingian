@@ -49,6 +49,7 @@
 #include "merovingian/homeserver/restricted_join.hpp"
 #include "merovingian/homeserver/runtime.hpp"
 #include "merovingian/homeserver/runtime_signing_key_store.hpp"
+#include "merovingian/homeserver/send_join_answer_authorization.hpp"
 #include "merovingian/homeserver/state_bookkeeping.hpp"
 #include "merovingian/homeserver/stored_push_rules.hpp"
 #include "merovingian/homeserver/stored_room_version.hpp"
@@ -4719,7 +4720,26 @@ auto filter_verified_send_join_events(HomeserverRuntime& runtime, canonicaljson:
                            observability::LogEventSeverity::warning);
             continue;
         }
-        verified.push_back(entry);
+        // Spec, "Checks performed on receipt of a PDU", step 3: a hash mismatch redacts the event before it is
+        // processed further. The signature and the event ID cover only the redacted form, so a resident can change
+        // what redaction removes and keep both (F-45, ADR-0369). The redacted form is what goes on.
+        if (events::verify_pdu_content_hash(entry))
+        {
+            verified.push_back(entry);
+            continue;
+        }
+        auto redacted = events::redact_event(entry, policy);
+        if (!redacted.error.empty())
+        {
+            log_diagnostic("room.join.state_event_rejected",
+                           {
+                               {"sender_domain", std::string{dom},                             false},
+                               {"reason",        "content hash mismatch and redaction failed", false}
+            },
+                           observability::LogEventSeverity::warning);
+            continue;
+        }
+        verified.push_back(std::move(redacted.event));
     }
     return verified;
 }
@@ -5383,6 +5403,27 @@ namespace
                 ? filter_verified_send_join_events(
                       runtime, filter_send_join_events_for_room(*auth_arr, room_id, *policy), *policy, our_server)
                 : canonicaljson::Array{};
+        // Step 4 of the receipt checks, with runtime.mutex still released (F-45, ADR-0369).
+        auto authorized_answer =
+            authorize_send_join_answer(verified_state, verified_auth_chain, signed_value.value, *policy, room_id);
+        if (authorized_answer.dropped > 0U || !authorized_answer.refusal.empty())
+        {
+            log_diagnostic("room.join.answer_checked",
+                           {
+                               {"actor",         user_id,                                   false},
+                               {"room_id",       std::string{room_id},                      false},
+                               {"remote_server", remote_server,                             false},
+                               {"dropped",       std::to_string(authorized_answer.dropped), false},
+                               {"refusal",       authorized_answer.refusal,                 false}
+            },
+                           observability::LogEventSeverity::warning);
+        }
+        if (!authorized_answer.refusal.empty())
+        {
+            return federated_join_failure(authorized_answer.refusal, 502U);
+        }
+        verified_state = std::move(authorized_answer.state);
+        verified_auth_chain = std::move(authorized_answer.auth_chain);
 
         auto outcome = FederatedJoinOutcome{};
         outcome.policy = *policy;

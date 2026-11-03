@@ -153,63 +153,13 @@ namespace
         };
 
         auto result = events::AuthEventMap{};
+        auto const slots =
+            events::AuthEventSlots{sender, target_state_key, event_type, third_party_invite_token, authorising_user};
         for (auto const& entry : entries)
         {
-            if (entry.event_type == "m.room.create" && entry.state_key.empty())
-            {
-                result.create = load(entry.event_id);
-                result.create_event_id = entry.event_id;
-            }
-            else if (entry.event_type == "m.room.power_levels" && entry.state_key.empty())
-            {
-                result.power_levels = load(entry.event_id);
-            }
-            else if (entry.event_type == "m.room.join_rules" && entry.state_key.empty())
-            {
-                result.join_rules = load(entry.event_id);
-            }
-            else if (entry.event_type == "m.room.member" && entry.state_key == sender)
-            {
-                result.sender_member = load(entry.event_id);
-            }
-            else if (entry.event_type == "m.room.member" && event_type == "m.room.member" &&
-                     entry.state_key == target_state_key)
-            {
-                result.target_member = load(entry.event_id);
-            }
-            else if (entry.event_type == "m.room.third_party_invite" && !third_party_invite_token.empty() &&
-                     entry.state_key == third_party_invite_token)
-            {
-                result.third_party_invite = load(entry.event_id);
-            }
-            // Not part of the chain above: the authorising user may also be the
-            // sender or target, and each slot must still be filled.
-            if (!authorising_user.empty() && entry.event_type == "m.room.member" && entry.state_key == authorising_user)
-            {
-                result.authorising_user_member = load(entry.event_id);
-            }
+            events::fill_auth_event_slot(result, slots, entry.event_type, entry.state_key, entry.event_id, load);
         }
         return result;
-    }
-
-    // A join's content.join_authorised_via_users_server, or empty. Spec "Auth
-    // events selection": "If membership is join,
-    // content.join_authorised_via_users_server is present, and the room version
-    // supports restricted rooms, then the m.room.member event with state_key
-    // matching content.join_authorised_via_users_server". No room-version gate
-    // here, as in state resolution: only the restricted join branch reads the
-    // member event, and no pre-v8 room reaches it.
-    [[nodiscard]] auto join_authorising_user(canonicaljson::Value const& pdu) -> std::string
-    {
-        if (events::extract_content_membership(pdu) != "join")
-        {
-            return {};
-        }
-        auto const* obj = std::get_if<canonicaljson::Object>(&pdu.storage());
-        auto const* content = obj != nullptr ? object_member_as_object(*obj, "content") : nullptr;
-        auto const* authorised =
-            content != nullptr ? string_member(*content, "join_authorised_via_users_server") : nullptr;
-        return authorised != nullptr ? *authorised : std::string{};
     }
 
     // `event` without any signature filed under `server_name`. Before this
@@ -337,67 +287,6 @@ namespace
         disallowed,
     };
 
-    // The (type, state_key) pairs a PDU's auth_events MAY name, per spec
-    // "Auth events selection" (server-server-api.md, ~line 1792).
-    [[nodiscard]] auto permitted_auth_event_keys(canonicaljson::Value const& pdu,
-                                                 rooms::RoomVersionPolicy const& policy, std::string_view event_type,
-                                                 std::string_view sender, std::optional<std::string> const& state_key,
-                                                 std::string_view third_party_invite_token)
-        -> std::vector<std::pair<std::string, std::string>>
-    {
-        auto permitted = std::vector<std::pair<std::string, std::string>>{};
-        // "The auth_events for the m.room.create event in a room is empty."
-        if (event_type == "m.room.create")
-        {
-            return permitted;
-        }
-        // v12 (MSC4291): the create event is implicit in the room ID and
-        // MUST NOT be selected for auth_events.
-        // Spec: docs/matrix-v1.19-spec/rooms/v12.md — "The m.room.create
-        // event MUST NOT be selected for auth_events on events. The
-        // room_id (being the m.room.create event's ID) implies this
-        // instead." and rule 3.2: "In this room version, m.room.create
-        // MUST NOT be selected" (reject if it is). An inbound v12 event
-        // that names it is therefore a rejection, not a tolerated
-        // redundancy — do not relax this to "always permitted" again
-        // without re-reading rooms/v12.md rule 3.2 first.
-        if (!policy.create_event_is_room_id)
-        {
-            permitted.emplace_back("m.room.create", std::string{});
-        }
-        // "The current m.room.power_levels event, if any" — unconditional.
-        permitted.emplace_back("m.room.power_levels", std::string{});
-        // "The sender's current m.room.member event, if any" — unconditional.
-        permitted.emplace_back("m.room.member", std::string{sender});
-
-        if (event_type == "m.room.member" && state_key.has_value())
-        {
-            // "The target's current m.room.member event, if any."
-            permitted.emplace_back("m.room.member", *state_key);
-            auto const membership = events::extract_content_membership(pdu);
-            if (membership == "join" || membership == "invite" || membership == "knock")
-            {
-                permitted.emplace_back("m.room.join_rules", std::string{});
-            }
-            if (membership == "invite" && !third_party_invite_token.empty())
-            {
-                permitted.emplace_back("m.room.third_party_invite", std::string{third_party_invite_token});
-            }
-            if (membership == "join")
-            {
-                auto const* obj = std::get_if<canonicaljson::Object>(&pdu.storage());
-                auto const* content = obj != nullptr ? object_member_as_object(*obj, "content") : nullptr;
-                auto const* authorised =
-                    content != nullptr ? string_member(*content, "join_authorised_via_users_server") : nullptr;
-                if (authorised != nullptr && !authorised->empty())
-                {
-                    permitted.emplace_back("m.room.member", *authorised);
-                }
-            }
-        }
-        return permitted;
-    }
-
     // Spec: server-server-api.md — "Auth events selection". Validates that
     // every event `auth_event_ids` names is a permitted selection for this
     // PDU: the correct (type, state_key), no duplicates, and from the same
@@ -458,7 +347,7 @@ namespace
         std::vector<std::string> const& auth_event_ids) -> AuthEventsSelectionCheck
     {
         auto const permitted =
-            permitted_auth_event_keys(pdu, policy, event_type, sender, state_key, third_party_invite_token);
+            events::permitted_auth_event_keys(pdu, policy, event_type, sender, state_key, third_party_invite_token);
         auto seen = std::vector<std::pair<std::string, std::string>>{};
         seen.reserve(auth_event_ids.size());
         for (auto const& id : auth_event_ids)
@@ -2517,7 +2406,7 @@ namespace
                 if (endpoint == federation::FederationEndpoint::send_join)
                 {
                     auto const our_server = std::string{rt->config.server().server_name};
-                    auto const authoriser = join_authorising_user(effective_pdu);
+                    auto const authoriser = events::join_authorising_user(effective_pdu);
                     if (!authoriser.empty() && server_name_from_user_id(authoriser) == our_server)
                     {
                         auto const decision =
@@ -2573,7 +2462,7 @@ namespace
                     auto auth_events_map = build_auth_event_map_from_entries(
                         store, state_entries_from_named_events(store, envelope.auth_event_ids), envelope.sender,
                         envelope.state_key.value_or(std::string{}), envelope.event_type, third_party_invite_token,
-                        join_authorising_user(effective_pdu));
+                        events::join_authorising_user(effective_pdu));
                     // v12 (MSC4291): the create event is implicit in the room
                     // ID and MUST NOT be named in auth_events, so fill it from
                     // the room's recorded state — same as ingest_pdu_event.
@@ -2612,7 +2501,8 @@ namespace
             {
                 auto state_before_map = build_auth_event_map_from_entries(
                     store, state_before.state, envelope.sender, envelope.state_key.value_or(std::string{}),
-                    envelope.event_type, membership_third_party_token, join_authorising_user(membership_effective_pdu));
+                    envelope.event_type, membership_third_party_token,
+                    events::join_authorising_user(membership_effective_pdu));
                 fill_create_from_room_state(state_before_map, store, room_id);
                 auto const state_before_decision = events::authorize_event_against_auth_events(
                     membership_effective_pdu, *room_policy, state_before_map);
@@ -2634,7 +2524,7 @@ namespace
             {
                 auto current_state_map = build_pdu_auth_event_map(
                     store, room_id, envelope.sender, envelope.state_key.value_or(std::string{}), envelope.event_type,
-                    membership_third_party_token, join_authorising_user(membership_effective_pdu));
+                    membership_third_party_token, events::join_authorising_user(membership_effective_pdu));
                 fill_create_from_room_state(current_state_map, store, room_id);
                 auto const current_state_decision = events::authorize_event_against_auth_events(
                     membership_effective_pdu, *room_policy, current_state_map);
@@ -4057,7 +3947,7 @@ namespace
             runtime.database.persistent_store,
             state_entries_from_named_events(runtime.database.persistent_store, envelope.auth_event_ids),
             envelope.sender, envelope.state_key.value_or(std::string{}), envelope.event_type, third_party_invite_token,
-            join_authorising_user(effective_pdu));
+            events::join_authorising_user(effective_pdu));
         if (policy.create_event_is_room_id && std::holds_alternative<std::nullptr_t>(auth_events_map.create.storage()))
         {
             auth_events_map.create = create_event_json_for_room(runtime.database.persistent_store, room_id);
@@ -4109,10 +3999,10 @@ namespace
         // that can run. An event already rejected there needs no second verdict.
         if (state_before_known && outcome == BackfillOutcome::accepted)
         {
-            auto state_before_map =
-                build_auth_event_map_from_entries(runtime.database.persistent_store, state_before, envelope.sender,
-                                                  envelope.state_key.value_or(std::string{}), envelope.event_type,
-                                                  third_party_invite_token, join_authorising_user(effective_pdu));
+            auto state_before_map = build_auth_event_map_from_entries(
+                runtime.database.persistent_store, state_before, envelope.sender,
+                envelope.state_key.value_or(std::string{}), envelope.event_type, third_party_invite_token,
+                events::join_authorising_user(effective_pdu));
             fill_create_from_room_state(state_before_map, runtime.database.persistent_store, room_id);
             auto const state_before_decision =
                 events::authorize_event_against_auth_events(effective_pdu, policy, state_before_map);
@@ -5292,7 +5182,7 @@ namespace
             runtime.database.persistent_store,
             state_entries_from_named_events(runtime.database.persistent_store, envelope.auth_event_ids),
             envelope.sender, envelope.state_key.value_or(std::string{}), envelope.event_type, third_party_invite_token,
-            join_authorising_user(effective_pdu));
+            events::join_authorising_user(effective_pdu));
         // v12 (MSC4291): the create event is implicit in the room ID and
         // MUST NOT be listed in auth_events (validate_auth_events_selection
         // rejects a PDU that names it), so it can never come from the named
@@ -5338,7 +5228,7 @@ namespace
         auto state_before_map =
             build_auth_event_map_from_entries(runtime.database.persistent_store, state_before.state, envelope.sender,
                                               envelope.state_key.value_or(std::string{}), envelope.event_type,
-                                              third_party_invite_token, join_authorising_user(effective_pdu));
+                                              third_party_invite_token, events::join_authorising_user(effective_pdu));
         fill_create_from_room_state(state_before_map, runtime.database.persistent_store, room_id);
         auto const state_before_decision =
             events::authorize_event_against_auth_events(effective_pdu, *room_policy, state_before_map);
@@ -5355,7 +5245,7 @@ namespace
     {
         auto current_state_map = build_pdu_auth_event_map(
             runtime.database.persistent_store, room_id, envelope.sender, envelope.state_key.value_or(std::string{}),
-            envelope.event_type, third_party_invite_token, join_authorising_user(effective_pdu));
+            envelope.event_type, third_party_invite_token, events::join_authorising_user(effective_pdu));
         fill_create_from_room_state(current_state_map, runtime.database.persistent_store, room_id);
         auto const current_state_decision =
             events::authorize_event_against_auth_events(effective_pdu, *room_policy, current_state_map);

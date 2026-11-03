@@ -19,6 +19,7 @@
 #include <string>
 #include <string_view>
 #include <system_error>
+#include <utility>
 #include <variant>
 #include <vector>
 
@@ -956,6 +957,82 @@ auto domain_of(std::string_view matrix_id) noexcept -> std::string_view
         return {};
     }
     return matrix_id.substr(colon + 1);
+}
+
+auto join_authorising_user(canonicaljson::Value const& event) -> std::string
+{
+    if (extract_content_membership(event) != "join")
+    {
+        return {};
+    }
+    auto const* obj = value_is_object(event);
+    auto const* content = obj != nullptr ? object_member_as_object(*obj, "content") : nullptr;
+    auto const* authorised = content != nullptr ? string_member(*content, "join_authorised_via_users_server") : nullptr;
+    return authorised != nullptr ? *authorised : std::string{};
+}
+
+auto third_party_invite_token(canonicaljson::Value const& event) -> std::string
+{
+    auto const* obj = value_is_object(event);
+    auto const* content = obj != nullptr ? object_member_as_object(*obj, "content") : nullptr;
+    auto const* invite = content != nullptr ? object_member_as_object(*content, "third_party_invite") : nullptr;
+    auto const* signed_obj = invite != nullptr ? object_member_as_object(*invite, "signed") : nullptr;
+    auto const* token = signed_obj != nullptr ? string_member(*signed_obj, "token") : nullptr;
+    return token != nullptr ? *token : std::string{};
+}
+
+auto permitted_auth_event_keys(canonicaljson::Value const& pdu, rooms::RoomVersionPolicy const& policy,
+                               std::string_view event_type, std::string_view sender,
+                               std::optional<std::string> const& state_key, std::string_view third_party_invite_token)
+    -> std::vector<std::pair<std::string, std::string>>
+{
+    auto permitted = std::vector<std::pair<std::string, std::string>>{};
+    // "The auth_events for the m.room.create event in a room is empty."
+    if (event_type == "m.room.create")
+    {
+        return permitted;
+    }
+    // v12 (MSC4291): the create event is implicit in the room ID and
+    // MUST NOT be selected for auth_events.
+    // Spec: docs/matrix-v1.19-spec/rooms/v12.md — "The m.room.create
+    // event MUST NOT be selected for auth_events on events. The
+    // room_id (being the m.room.create event's ID) implies this
+    // instead." and rule 3.2: "In this room version, m.room.create
+    // MUST NOT be selected" (reject if it is). An inbound v12 event
+    // that names it is therefore a rejection, not a tolerated
+    // redundancy — do not relax this to "always permitted" again
+    // without re-reading rooms/v12.md rule 3.2 first.
+    if (!policy.create_event_is_room_id)
+    {
+        permitted.emplace_back("m.room.create", std::string{});
+    }
+    // "The current m.room.power_levels event, if any" — unconditional.
+    permitted.emplace_back("m.room.power_levels", std::string{});
+    // "The sender's current m.room.member event, if any" — unconditional.
+    permitted.emplace_back("m.room.member", std::string{sender});
+
+    if (event_type == "m.room.member" && state_key.has_value())
+    {
+        // "The target's current m.room.member event, if any."
+        permitted.emplace_back("m.room.member", *state_key);
+        auto const membership = extract_content_membership(pdu);
+        if (membership == "join" || membership == "invite" || membership == "knock")
+        {
+            permitted.emplace_back("m.room.join_rules", std::string{});
+        }
+        if (membership == "invite" && !third_party_invite_token.empty())
+        {
+            permitted.emplace_back("m.room.third_party_invite", std::string{third_party_invite_token});
+        }
+        if (membership == "join")
+        {
+            if (auto authorised = join_authorising_user(pdu); !authorised.empty())
+            {
+                permitted.emplace_back("m.room.member", std::move(authorised));
+            }
+        }
+    }
+    return permitted;
 }
 
 auto extract_content_membership(canonicaljson::Value const& event) noexcept -> std::string
