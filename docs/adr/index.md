@@ -41,7 +41,7 @@
 * [0038 - Degrade third party lookups instead of failing them](0038-degrade-third-party-lookups-instead-of-failing-them.md)
 * [0039 - Populate the full device list on an initial sync](0039-populate-the-full-device-list-on-an-initial-sync.md)
 * [0040 - Transfer PostgreSQL ownership with a scoped statement](0040-transfer-postgresql-ownership-with-a-scoped-statement.md)
-* [0041 - Refuse to start the federation worker unsandboxed](0041-refuse-to-start-the-federation-worker-unsandboxed.md)
+* [0041 - Refuse to start the federation worker unsandboxed](0041-refuse-to-start-the-federation-worker-unsandboxed.md) — Refined by ADR-0377: the server exits at startup rather than degrading federation to 503.
 * [0042 - Spawn the federation worker with a minimal environment](0042-spawn-the-federation-worker-with-a-minimal-environment.md)
 * [0043 - Base64 encode IPC response bodies](0043-base64-encode-ipc-response-bodies.md)
 * [0044 - Wipe secrets with an optimisation barrier](0044-wipe-secrets-with-an-optimisation-barrier.md)
@@ -303,6 +303,7 @@
 * [0319 - Report a failed device-list write where the client can retry, and finish where access is being revoked](0319-report-a-failed-device-list-write-where-the-client-can-retry.md)
 * [0320 - A join comes after the ancestors that share its depth](0320-a-join-comes-after-the-ancestors-that-share-its-depth.md)
 * [0376 - Build an RPM for Fedora 44 and for fedora:latest](0376-build-an-rpm-for-fedora-44-and-for-fedora-latest.md)
+* [0377 - The server exits when its federation worker cannot start](0377-the-server-exits-when-its-federation-worker-cannot-start.md)
 
 ## Proposed Records
 

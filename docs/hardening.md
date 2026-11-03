@@ -538,7 +538,7 @@ separate process on the same host:
   risk can still run the worker there by setting
   `federation.worker.apply_hardening=false` explicitly, or run a
   non-federating server, which starts no worker, with
-  `security.federation.enabled=false`.
+  `security.federation.enabled=false` (ADR-0377).
 * **ASan exit-time leak check disabled in the worker (#319):** the worker
   filter denies `ptrace` — an escalation primitive a compromised worker must
   never possess. AddressSanitizer's exit-time LeakSanitizer suspends all
