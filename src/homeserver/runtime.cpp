@@ -926,6 +926,17 @@ auto visible_stream_position(LocalDatabase const& database) noexcept -> std::uin
     return oldest_pending == 0U ? 0U : std::min(newest, oldest_pending - 1U);
 }
 
+auto local_user_ids(LocalDatabase const& database) -> std::unordered_set<std::string_view>
+{
+    auto ids = std::unordered_set<std::string_view>{};
+    ids.reserve(database.users.size());
+    for (auto const& user : database.users)
+    {
+        ids.insert(user.user_id);
+    }
+    return ids;
+}
+
 auto allocate_stream_orderings(LocalDatabase& database, std::size_t count) -> std::uint64_t
 {
     auto const first = database.next_stream_ordering;

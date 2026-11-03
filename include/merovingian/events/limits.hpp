@@ -3,6 +3,7 @@
 #pragma once
 
 #include <cstddef>
+#include <cstdint>
 
 namespace merovingian::events
 {
@@ -87,6 +88,10 @@ inline constexpr std::size_t max_state_group_delta_depth = 100U;
 // (ADR-0064 phase B1); when there are more than this many, the highest-
 // depth ones are kept.
 inline constexpr std::size_t max_prev_events_per_event = 20U;
+
+// The largest depth an event can carry, canonical JSON's largest integer. Spec (rooms/v11.md,
+// `depth`): "If the room's depth is already at the limit, the depth must be set to the limit."
+inline constexpr std::uint64_t max_event_depth = 9'007'199'254'740'991U;
 
 // Maximum number of auth_events a single event may declare. Spec (every
 // room version's event format): "Must contain less than or equal to 10 events."

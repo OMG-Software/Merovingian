@@ -2058,14 +2058,18 @@ auto restore_sync_stream_id(PersistentStore& store) -> void;
 // Atomically increments `store.next_sync_stream_id`, persists the new
 // value to the `sync_stream_watermark` singleton, and returns it. Every
 // sync-surface ID allocation must flow through this helper so a restart
-// cannot roll the counter backward behind a client's since-token.
+// cannot roll the counter backward behind a client's since-token. Throws
+// std::overflow_error, leaving the counter unchanged, rather than pass
+// INT64_MAX (ADR-0315). Nothing else moves the counter upward, client input
+// least of all.
+// ADR-0315: writes that a sync position must follow stop this far below the counter's ceiling. Far more
+// positions than one request takes, and the margin covers requests between this check and their allocation.
+inline constexpr auto sync_stream_write_reserve = std::uint64_t{1U} << 20U;
+
+// False, and logged, once the counter is inside that reserve. Changes nothing.
+[[nodiscard]] auto sync_stream_has_write_reserve(PersistentStore const& store) -> bool;
+
 [[nodiscard]] auto allocate_sync_stream_id(PersistentStore& store) -> std::uint64_t;
-// If `since_sync_stream_id` is greater than the server's current counter,
-// advance the counter to that value and persist it. This recovers live
-// deployments where the in-memory counter reached a higher value than the
-// persisted watermark (for example, after adding the watermark table to a
-// database whose typing/receipt surfaces advanced the counter).
-[[nodiscard]] auto ensure_sync_stream_id_ahead_of(PersistentStore& store, std::uint64_t since_sync_stream_id) -> bool;
 // Persists `watermark` (the highest allocated timeline stream_ordering) to
 // the `event_stream_watermark` singleton and mirrors it into
 // `store.event_stream_watermark`. Every stream_ordering allocation must

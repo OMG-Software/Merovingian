@@ -2117,7 +2117,7 @@ membership. No whole-finding or release acceptance is claimed. See proposed
   with no de-duplication or pruning, one synchronous commit per row under the runtime mutex.
   Mitigation: a change is recorded only for local active users who share a joined room with
   the subject; nothing is written if none does. All rows for one EDU are written as one
-  batch (one stream position, one transaction), and `device_list_changes` holds at most one
+  batch (one stream position, a watermark write and one row transaction), and `device_list_changes` holds at most one
   row per (observer, subject): a repeat replaces the earlier row at the newest stream
   position, which is what `/sync` needs because it reports only the latest change per
   subject. The table is thereby bounded by observers x subjects that share a room, so no
@@ -2613,3 +2613,18 @@ Security audit run-1 (2026-10-20) found six LOW issues, all fixed in 0.12.34.
 - **Residual risk:** a snapshot of N unknown events costs N `/event` calls, bounded by
   `max_snapshot_outbound_calls` (256 by default); a larger gap is left unplaced. Tests: `[a8_*]` in
   `tests/integration/test_pdu_ingestion_backfill_flow.cpp`.
+- **One signed PDU could stop a room's local events (audit run-2 F-01).** A rejected PDU at depth 2^53-1 raised the
+  depth of every later local event past what canonical JSON carries, so composition failed, across restarts.
+  **Mitigation:** depth comes from the event's own `prev_events` and stays at the limit (ADR-0314). Tests:
+  `tests/conformance/test_event_depth_conformance.cpp`.
+- **A non-state event in `auth_events` could stop state resolution (audit run-2 F-05).** A remote member could name
+  one where selection expects room state; the auth-chain walk then failed for any conflict reaching it.
+  **Mitigation:** such an entry is a disallowed selection and the naming event is rejected. **Residual risk:** the
+  ADR-0225 fallback still replaces current state with one fork whenever resolution fails another way, such as the
+  state budget; audit run-2 tracks this as `state.new-event-fallback-rewrites-current-state-from-attacker-chosen-fork`.
+- **A `/sync` token could rewrite the server-wide stream counter (audit run-2 F-03).** Raising it to 2^64-1 made it wrap,
+  and other users' to-device messages were deleted undelivered. **Mitigation:** no client input moves the counter, a
+  token ahead of the streams is an initial sync, and the allocator refuses to wrap (ADR-0315).
+- **One request could hold the runtime lock for work a user or remote server chose (audit run-2 F-02, F-04).**
+  **Mitigation:** `createRoom` caps its entries (ADR-0316), and device and key changes write one batch for local
+  observers (ADR-0317).

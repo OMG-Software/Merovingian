@@ -487,6 +487,8 @@ Client traffic has generic/media/sync/federation defaults of 600/120/3000/3000 r
 
 Notification history retains the newest `max_notifications_retained_per_user` rows per user (default 1,000), including when push delivery is disabled. Raising retention preserves future rows; it cannot restore entries already pruned.
 
+`max_create_room_invites` and `max_create_room_initial_state` limit the entries of one `POST /createRoom` (ADR-0316). Each entry stores one event while the server holds its global lock, so a request past either cap is refused with HTTP 400 `M_TOO_LARGE` before anything is stored. A user listed twice in `invite` is invited once, and the raw list length is what is counted.
+
 Six per-user caps bound end-to-end key material, filters, account data and push rules. A request that would take a user over a cap is refused with HTTP 400 `M_TOO_LARGE` and stores nothing from that request; stored rows are never evicted to make room, so a client at its cap must delete or consume entries first. `max_one_time_keys_per_device` limits the one-time keys held for one device on `/keys/upload` (key IDs the device already holds are not counted twice, and a refused upload stores no device, one-time or fallback keys). `max_key_signatures_per_user` limits the distinct (target user, target key) pairs a user has signed through `/keys/signatures/upload`. `max_filters_per_user` limits the filters stored through `POST /user/{userId}/filter`; a filter identical to one the user already stores (compared in canonical JSON form; new filters are stored in that form) returns the existing `filter_id` instead of storing a duplicate, even at the cap. `max_global_account_data_per_user` limits the global (non-room) account-data types a user stores through `PUT /user/{userId}/account_data/{type}`; updating a type the user already holds always succeeds, and room account data is not counted. `max_room_account_data_per_room` limits the account-data types a user stores for one room through `PUT /user/{userId}/rooms/{roomId}/account_data/{type}`; updating a held type always succeeds, the tags and read-marker APIs are never refused (their `m.tag` and `m.fully_read` rows still count), and the room must be one the user is or was a member of. The Matrix specification has no way to delete account data, so a user at either cap cannot make room: every new type is refused with `M_TOO_LARGE` until an operator raises the cap. `max_push_rules_per_user` limits the user-defined push rules (created through `PUT /pushrules/global/{kind}/{ruleId}`, counted across all five kinds) a user holds; a `PUT` that would create one more is refused with `M_TOO_LARGE`, updating an existing rule always succeeds, server-default rules are not counted, and deleting a rule makes room. Each device keeps one fallback key per algorithm, as the Matrix specification requires; a new fallback key replaces the previous one.
 
 The HTTP generic body cap and the client API body cap both apply to ordinary client JSON requests; raise both if necessary. Federation `/send` instead uses `security.federation.max_transaction_size`. Media uploads retain authenticated admission and their media-specific cap. Head byte/count limits remain enforced before bodies. Sync admission is clamped to the configured sync worker count; the per-device and per-user caps cannot exceed global admission.
@@ -522,6 +524,8 @@ Pending-join limits apply per room, except `pending_join_max_rooms`, which is pr
 | `max_notifications_page_size` | `1000` | 1..10,000 |
 | `max_relations_page_size` | `500` | 1..1,000 |
 | `max_public_rooms_page_size` | `1000` | 1..10,000 |
+| `max_create_room_invites` | `100` | 1..10,000 |
+| `max_create_room_initial_state` | `100` | 1..10,000 |
 | `max_hierarchy_rooms` | `1000` | 1..10,000 |
 | `max_threads_page_size` | `500` | 1..1,000 |
 | `max_notifications_retained_per_user` | `1000` | 1..100,000 |
@@ -2697,6 +2701,16 @@ perform an upgrade separately after recovery. Keep the original instance
 stopped. Never run two publicly reachable servers with the same server name
 and signing identity. Keep client/federation exposure and outbound federation
 blocked during validation, while allowing any database connection required.
+
+A restore sets the server's sync streams back, so clients hold tokens from a
+later point. A client that syncs soon after the restore is given a full initial
+sync and carries on. A client that stays offline while the server issues as many
+stream positions as the backup lost presents a token that looks current, and
+skips what was numbered below it, to-device messages included. E2EE room keys
+sent to that device in that window are gone from the server. Signing in again
+resets the client's sync state but does not bring them back. Recover the keys
+from the user's key backup, or have them shared again, where that is available;
+messages whose keys cannot be recovered stay unreadable (ADR-0315).
 The commands below assume a root shell, `backup` pointing at the recovered
 set, and no existing destination database/file; they deliberately do not drop
 or overwrite a live database. Start a fresh root shell with fail-fast handling;

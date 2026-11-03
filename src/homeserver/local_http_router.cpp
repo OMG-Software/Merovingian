@@ -59,6 +59,7 @@
 #include <limits>
 #include <mutex>
 #include <optional>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <system_error>
@@ -307,8 +308,13 @@ namespace
             {
                 continue;
             }
+            // An event with no state_key is not room state, so it fills no slot of the auth map.
             auto const* state_key = string_member(*obj, "state_key");
-            entries.push_back({{}, *type, state_key != nullptr ? *state_key : std::string{}, id});
+            if (state_key == nullptr)
+            {
+                continue;
+            }
+            entries.push_back({{}, *type, *state_key, id});
         }
         return entries;
     }
@@ -480,8 +486,16 @@ namespace
             {
                 return AuthEventsSelectionCheck::disallowed;
             }
-            auto const* named_state_key = obj != nullptr ? string_member(*obj, "state_key") : nullptr;
-            auto const key = std::make_pair(*type, named_state_key != nullptr ? *named_state_key : std::string{});
+            // rooms/v11.md rule 2.2 rejects entries that do not match auth events selection, and
+            // selection (server-server-api.md) names "a subset of the room state". An event with no
+            // state_key is not room state, whatever its type says, and the state resolution walk
+            // cannot follow it, so naming one would stop resolution over every chain reaching it.
+            auto const* named_state_key = string_member(*obj, "state_key");
+            if (named_state_key == nullptr)
+            {
+                return AuthEventsSelectionCheck::disallowed;
+            }
+            auto const key = std::make_pair(*type, *named_state_key);
             if (std::ranges::find(seen, key) != seen.end())
             {
                 return AuthEventsSelectionCheck::disallowed; // duplicate (type, state_key)
@@ -2110,7 +2124,8 @@ namespace
                     // with the subject has any reason to re-fetch their keys.
                     // Recording a row for every local user let one peer write
                     // (local users) rows per EDU. All rows for this EDU go to
-                    // the store as one batch: one stream position, one commit.
+                    // the store as one batch: one stream position, two commits
+                    // (the watermark, then the rows).
                     // A repeat replaces the pair's earlier row, so the table is
                     // bounded by observers x subjects that share a room.
                     auto changes = std::vector<database::PersistentDeviceListChange>{};
@@ -2222,36 +2237,15 @@ namespace
                     tmpl.auth_events.push_back(s.event_id);
                 }
             }
-            // Compute the forward extremities: events not referenced as
-            // prev_events by any other event in this room. These are the only
-            // valid prev_events for a new join template; sending all room events
-            // inflates the state snapshot and breaks state resolution at the
-            // joining server.
-            auto referenced = std::unordered_set<std::string>{};
-            for (auto const& evt : store.events)
+            // The room's stored tips, as for a local event (ADR-0318). Only accepted events become
+            // tips, and the selection stops at the room version's limit. A room with none has nothing
+            // a joiner can build on, and an empty prev_events would detach the join from the room's graph.
+            tmpl.prev_events = forward_extremities_for_new_event(store, room_id);
+            if (tmpl.prev_events.empty())
             {
-                if (evt.room_id == room_id)
-                {
-                    for (auto const& prev_id : evt.prev_event_ids)
-                    {
-                        referenced.insert(prev_id);
-                    }
-                }
+                return std::nullopt;
             }
-            auto max_depth = std::int64_t{0};
-            for (auto const& evt : store.events)
-            {
-                if (evt.room_id == room_id && !evt.event_id.empty() &&
-                    referenced.find(evt.event_id) == referenced.end())
-                {
-                    tmpl.prev_events.push_back(evt.event_id);
-                    if (static_cast<std::int64_t>(evt.depth) > max_depth)
-                    {
-                        max_depth = static_cast<std::int64_t>(evt.depth);
-                    }
-                }
-            }
-            tmpl.depth = max_depth + 1;
+            tmpl.depth = static_cast<std::int64_t>(depth_after_prev_events(store, tmpl.prev_events));
             auto content_obj = canonicaljson::Object{};
             // Audit R04 (ADR-0185). server-server-api.md "Restricted rooms": "A
             // resident server processing a request to join a restricted room
@@ -2931,6 +2925,19 @@ namespace
                     return {true, 200U, {}, std::move(*signed_event)};
                 }
             }
+            // Reserve the sync position before anything commits. At its ceiling the allocator throws
+            // (ADR-0315): the invite is then refused whole, and the worker waiting on this answer is
+            // told so rather than timing out over an invite that was stored anyway.
+            auto sync_stream_id = std::uint64_t{0U};
+            try
+            {
+                sync_stream_id = database::allocate_sync_stream_id(rt->database.persistent_store);
+            }
+            catch (std::overflow_error const&)
+            {
+                LOG_WARNING("Invite refused: the sync stream counter is at its ceiling; event_id=" + invite.event_id);
+                return {false, 500U, "sync stream counter exhausted", {}};
+            }
             auto const stream_ordering = allocate_stream_ordering(rt->database);
             // DB-4: the membership row and the invite metadata commit together,
             // and with the invite event itself when it is stored below.
@@ -2987,7 +2994,6 @@ namespace
                 enqueue_appservice_delivery(*rt, invite.room_id, {}, invite.event_id, stream_ordering, *sender,
                                             *target_user);
             }
-            auto const sync_stream_id = database::allocate_sync_stream_id(rt->database.persistent_store);
             if (rt->sync_notifier != nullptr)
             {
                 rt->sync_notifier->publish(visible_stream_position(rt->database), sync_stream_id);
@@ -4956,6 +4962,8 @@ namespace
             return std::nullopt;
         }
 
+        // Before anything commits: the allocator throws at its ceiling (ADR-0315).
+        auto const sync_stream_id = database::allocate_sync_stream_id(store);
         auto const stream_ordering = allocate_stream_ordering(runtime.database);
         auto leave = database::PersistentEvent{};
         leave.event_id = envelope.event_id;
@@ -4976,7 +4984,6 @@ namespace
             return federation::PduIngestionResult{federation::PduIngestionStatus::internal_error,
                                                   "invite rescission persistence failed"};
         }
-        auto const sync_stream_id = database::allocate_sync_stream_id(store);
         if (runtime.sync_notifier != nullptr)
         {
             runtime.sync_notifier->publish(visible_stream_position(runtime.database), sync_stream_id);
@@ -5494,7 +5501,18 @@ auto pdu_event_already_stored(HomeserverRuntime& runtime, std::string_view room_
 auto ingest_pdu_event(HomeserverRuntime& runtime, federation::InboundPduEnvelope const& envelope)
     -> federation::PduIngestionResult
 {
-    auto result = ingest_pdu_event_locked(runtime, envelope);
+    auto result = federation::PduIngestionResult{};
+    try
+    {
+        result = ingest_pdu_event_locked(runtime, envelope);
+    }
+    catch (std::overflow_error const&)
+    {
+        // The sync stream counter is at its ceiling (ADR-0315). Answer, so that a worker relaying this
+        // PDU is told at once rather than waiting out its IPC timeout.
+        LOG_WARNING("PDU refused: the sync stream counter is at its ceiling; event_id=" + envelope.event_id);
+        return {federation::PduIngestionStatus::internal_error, "sync stream counter exhausted"};
+    }
     // R03: every status below stored the event, so a retained PDU that names it
     // may now be placeable. ingest_pdu_event_locked has returned, so its room
     // stripe and runtime lock are released: waking the retry job here holds no

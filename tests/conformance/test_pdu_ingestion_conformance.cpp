@@ -280,6 +280,137 @@ SCENARIO("A room v12 PDU naming m.room.create in auth_events is rejected, not to
     }
 }
 
+// Spec: Matrix Room Version 11, authorization rule 2.2; Server-Server API v1.19, "Auth events
+// selection"
+// URL: ../../docs/matrix-v1.19-spec/rooms/v11.md
+// URL: ../../docs/matrix-v1.19-spec/server-server-api.md#auth-events-selection
+//
+// Rule 2.2 rejects an event whose auth_events have "entries whose type and state_key don't match
+// those specified by the auth events selection algorithm", and selection names "a subset of the room
+// state". An event with no state_key is not room state, however its type reads. Audit run-2 F-05:
+// such an event once passed as the empty state_key, entered a state group's auth chain, and made
+// every later resolution over that chain fail, because the auth-chain walk only accepts state events.
+SCENARIO("An event naming a non-state event in auth_events is rejected",
+         "[conformance][federation][auth][auth_events_selection]")
+{
+    GIVEN("a room, and a stored non-state event of type m.room.join_rules from a joined user")
+    {
+        auto const path = unique_sqlite_path();
+        std::filesystem::remove(path);
+        auto started = merovingian::homeserver::start_runtime(config_with_sqlite(path));
+        REQUIRE(started.started);
+        merovingian::homeserver::wire_federation_callbacks(started.runtime);
+
+        auto const room_id = std::string{"!nonstate:local.example.org"};
+        auto const admin = std::string{"@admin:local.example.org"};
+        auto const genesis = seed_room_genesis(started.runtime, room_id, admin);
+        auto const auth_ids = std::vector<std::string>{genesis.pl_id, genesis.admin_member_id};
+
+        auto const send_non_state = [&](std::string const& event_id, std::string const& type,
+                                        std::vector<std::string> const& prev, std::int64_t depth) {
+            auto content = merovingian::canonicaljson::Object{};
+            auto const json = build_event_json(room_id, type, std::nullopt, admin, std::move(content), prev, auth_ids,
+                                               depth, depth + 1);
+            auto const accepted = merovingian::homeserver::ingest_pdu_event(
+                started.runtime,
+                make_envelope(room_id, event_id, type, std::nullopt, admin, prev, auth_ids, depth, json));
+            // Fixture: no auth rule forbids this non-state event from a sender with the power to send it.
+            REQUIRE(accepted.status == PduIngestionStatus::accepted);
+        };
+        auto const send_self_join = [&](std::string const& event_id, std::vector<std::string> const& prev,
+                                        std::vector<std::string> const& auth, std::int64_t depth) {
+            auto content = merovingian::canonicaljson::Object{};
+            content.push_back(merovingian::canonicaljson::make_member(
+                "membership", merovingian::canonicaljson::Value{std::string{"join"}}));
+            auto const json = build_event_json(room_id, "m.room.member", admin, admin, std::move(content), prev, auth,
+                                               depth, depth + 1);
+            return merovingian::homeserver::ingest_pdu_event(
+                started.runtime,
+                make_envelope(room_id, event_id, "m.room.member", admin, admin, prev, auth, depth, json));
+        };
+
+        send_non_state("$fake-join-rules:local.example.org", "m.room.join_rules", {genesis.admin_member_id}, 3);
+
+        WHEN("a self-join names that event in auth_events")
+        {
+            auto auth = auth_ids;
+            auth.push_back("$fake-join-rules:local.example.org");
+            auto const result =
+                send_self_join("$poisoned-join:local.example.org", {"$fake-join-rules:local.example.org"}, auth, 4);
+
+            THEN("the join is rejected and enters no state")
+            {
+                // Spec MUST: reject entries whose `type` and `state_key` "don’t match those specified by the auth
+                // events selection" (rule 2.2).
+                REQUIRE(result.status == PduIngestionStatus::rejected_auth);
+                auto const& state = started.runtime.database.persistent_store.state;
+                // Spec MUST: state is calculated "except not updating with the rejected event where it is a state
+                // event".
+                REQUIRE(std::ranges::none_of(state, [](merovingian::database::PersistentStateEvent const& row) {
+                    return row.event_id == "$poisoned-join:local.example.org";
+                }));
+            }
+        }
+
+        WHEN("the same self-join names only real state")
+        {
+            auto const result =
+                send_self_join("$clean-join:local.example.org", {"$fake-join-rules:local.example.org"}, auth_ids, 4);
+
+            THEN("it is accepted, so the rejection above is about the named event")
+            {
+                // Spec MUST: entries that are the selected subset of room state pass rule 2.2.
+                REQUIRE(result.status == PduIngestionStatus::accepted);
+            }
+        }
+
+        std::filesystem::remove(path);
+    }
+
+    GIVEN("a room, and a stored non-state event of type m.room.power_levels")
+    {
+        auto const path = unique_sqlite_path();
+        std::filesystem::remove(path);
+        auto started = merovingian::homeserver::start_runtime(config_with_sqlite(path));
+        REQUIRE(started.started);
+        merovingian::homeserver::wire_federation_callbacks(started.runtime);
+
+        auto const room_id = std::string{"!nonstatepl:local.example.org"};
+        auto const admin = std::string{"@admin:local.example.org"};
+        auto const genesis = seed_room_genesis(started.runtime, room_id, admin);
+        auto const auth_ids = std::vector<std::string>{genesis.pl_id, genesis.admin_member_id};
+
+        auto fake_content = merovingian::canonicaljson::Object{};
+        auto const fake_json = build_event_json(room_id, "m.room.power_levels", std::nullopt, admin,
+                                                std::move(fake_content), {genesis.admin_member_id}, auth_ids, 3, 4);
+        auto const fake = merovingian::homeserver::ingest_pdu_event(
+            started.runtime, make_envelope(room_id, "$fake-pl:local.example.org", "m.room.power_levels", std::nullopt,
+                                           admin, {genesis.admin_member_id}, auth_ids, 3, fake_json));
+        // Fixture: no auth rule forbids this non-state event from a sender with the power to send it.
+        REQUIRE(fake.status == PduIngestionStatus::accepted);
+
+        WHEN("a message names it in auth_events in place of the real power levels")
+        {
+            auto const auth = std::vector<std::string>{"$fake-pl:local.example.org", genesis.admin_member_id};
+            auto content = merovingian::canonicaljson::Object{};
+            auto const json = build_event_json(room_id, "m.room.message", std::nullopt, admin, std::move(content),
+                                               {"$fake-pl:local.example.org"}, auth, 4, 5);
+            auto const result = merovingian::homeserver::ingest_pdu_event(
+                started.runtime, make_envelope(room_id, "$names-fake-pl:local.example.org", "m.room.message",
+                                               std::nullopt, admin, {"$fake-pl:local.example.org"}, auth, 4, json));
+
+            THEN("it is rejected")
+            {
+                // Spec MUST: reject entries whose `type` and `state_key` "don’t match those specified by the auth
+                // events selection" (rule 2.2).
+                REQUIRE(result.status == PduIngestionStatus::rejected_auth);
+            }
+        }
+
+        std::filesystem::remove(path);
+    }
+}
+
 // Spec: Matrix Server-Server API v1.19
 // Endpoint / Section: Checks performed on receipt of a PDU, step 3 (hash);
 // Joining rooms (PUT /_matrix/federation/v2/send_join/{roomId}/{eventId})

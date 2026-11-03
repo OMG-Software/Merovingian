@@ -224,6 +224,7 @@ shell = find_program('sh')
       'unit/test_config_password_hashing.cpp',
       'unit/test_sync_stream_position.cpp',
       'unit/test_sync_dag_gap.cpp',
+      'unit/test_sync_foreign_since_token.cpp',
       'unit/test_send_join_snapshot_store.cpp',
       'unit/test_config_client_rate_limits.cpp',
       'unit/test_config_log_modules.cpp',
@@ -335,6 +336,7 @@ shell = find_program('sh')
       'unit/test_remote_key_resolver_worker_store.cpp',
       'unit/test_room_upgrade_predecessor.cpp',
       'unit/test_create_room_power_level_override.cpp',
+      'unit/test_create_room_entry_caps.cpp',
       'unit/test_review_regressions.cpp',
       'unit/test_room_encryption_policy.cpp',
       'unit/test_runtime_config.cpp',
@@ -361,6 +363,7 @@ shell = find_program('sh')
       'unit/test_space_hierarchy_access.cpp',
       'unit/test_server_signing_key_lifecycle.cpp',
       'unit/test_device_list_delta.cpp',
+      'unit/test_device_list_fanout_batch.cpp',
       'unit/test_sync_filter.cpp',
       'unit/test_sync_handler.cpp',
       'unit/test_sync_history_visibility.cpp',
@@ -449,6 +452,7 @@ shell = find_program('sh')
       'conformance/test_typing_conformance.cpp',
       'conformance/test_3pid_invite_conformance.cpp',
       'conformance/test_event_auth_rules.cpp',
+      'conformance/test_event_depth_conformance.cpp',
       'conformance/test_event_auth_legacy_boundaries.cpp',
       'conformance/test_security_audit_evt_7.cpp',
       'conformance/test_security_audit_state_resolution.cpp',
@@ -511,7 +515,10 @@ shell = find_program('sh')
     link_with: [appservice_lib, auth_lib, canonicaljson_lib, core_lib, config_lib, crypto_lib, database_lib, email_lib, events_lib, federation_lib, homeserver_lib, http_lib, identity_lib, ipc_lib, media_lib, net_lib, observability_lib, platform_lib, push_lib, rooms_lib, sync_lib, trust_safety_lib],
   )
 
-  test('conformance-tests', conformance_tests, timeout: 600)
+  # Most scenarios start a server and log a user in, so this binary grows with every scenario. It reached
+  # 600 seconds on a healthy Debian runner, still passing, with about five cases left; same headroom as
+  # the integration tests.
+  test('conformance-tests', conformance_tests, timeout: 900)
 
 #The thumbnail integration test spawns the real sandboxed worker; pass its
 #build - tree path when it was built(system image codecs available).

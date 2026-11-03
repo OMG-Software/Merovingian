@@ -84,6 +84,7 @@
 #include <ranges>
 #include <set>
 #include <span>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <system_error>
@@ -1179,9 +1180,24 @@ namespace
 
     // 429 while a membership exchange for this user and room is in flight; called
     // with runtime.mutex held, before anything is read or written.
+    // ADR-0315: a remote server keeps a knock or an invite once it has them, so a change this server would
+    // refuse to store is refused before it leaves.
+    [[nodiscard]] auto sync_stream_refusal(HomeserverRuntime const& runtime) -> std::optional<OperationResult>
+    {
+        if (database::sync_stream_has_write_reserve(runtime.database.persistent_store))
+        {
+            return std::nullopt;
+        }
+        return make_operation_result(false, {}, "sync stream counter exhausted", 500U);
+    }
+
     [[nodiscard]] auto membership_exchange_refusal(HomeserverRuntime const& runtime, std::string_view room_id,
                                                    std::string_view user_id) -> std::optional<OperationResult>
     {
+        if (auto refused = sync_stream_refusal(runtime); refused.has_value())
+        {
+            return refused;
+        }
         if (!runtime.membership_exchanges.contains(std::pair{std::string{room_id}, std::string{user_id}}))
         {
             return std::nullopt;
@@ -1528,20 +1544,6 @@ namespace
         return event_ids;
     }
 
-    [[nodiscard]] auto next_depth_for_room(database::PersistentStore const& store, std::string_view room_id) noexcept
-        -> std::uint64_t
-    {
-        auto depth = std::uint64_t{0U};
-        for (auto const& event : store.events)
-        {
-            if (event.room_id == room_id && event.depth > depth)
-            {
-                depth = event.depth;
-            }
-        }
-        return depth + 1U;
-    }
-
     auto append_unique_member(std::vector<std::string>& members, std::string_view user_id) -> void
     {
         if (!std::ranges::any_of(members, [&](std::string const& member) {
@@ -1559,21 +1561,10 @@ namespace
         });
     }
 
-    // The accounts on this server, as a set, so a roster of any size is classified in one pass.
-    [[nodiscard]] auto local_user_ids(LocalDatabase const& database) -> std::unordered_set<std::string_view>
-    {
-        auto ids = std::unordered_set<std::string_view>{};
-        ids.reserve(database.users.size());
-        for (auto const& user : database.users)
-        {
-            ids.insert(user.user_id);
-        }
-        return ids;
-    }
-
     // Spec (client-server-api.md, "Tracking the device list for a user"): a user who starts sharing a
     // room with a local user is added to that user's `device_lists.changed`. Called once the joiner is
-    // on the room's roster. One batch, so one stream position and one commit however large the room is
+    // on the room's roster. One batch, so one stream position and two commits (the watermark, then the
+    // rows) however large the room is
     // (the roster of a federated room is chosen by a remote server).
     [[nodiscard]] auto record_room_share_started_device_changes(HomeserverRuntime& runtime, std::string_view room_id,
                                                                 std::string_view joining_user_id) -> bool
@@ -1936,7 +1927,7 @@ namespace
                 }
             }
         }
-        auto const depth = next_depth_for_room(runtime.database.persistent_store, room_id);
+        auto const depth = depth_after_prev_events(runtime.database.persistent_store, prev_events);
         auto const now_ms = origin_server_ts.value_or(event_clock_now_ms(runtime));
         auto event = canonicaljson::Object{};
         event.push_back(canonicaljson::make_member("type", canonicaljson::Value{event_type}));
@@ -6947,6 +6938,10 @@ auto queue_remote_invite(HomeserverRuntime& runtime, std::string_view room_id, s
     {
         return make_operation_result(false, {}, "user is not joined", 403U);
     }
+    if (auto refused = sync_stream_refusal(runtime); refused.has_value())
+    {
+        return *refused;
+    }
 
     auto const invitee_server = std::string{auth::user_id_server_name(target_user_id)};
     if (invitee_server.empty() || invitee_server == runtime.config.server().server_name)
@@ -7079,6 +7074,10 @@ namespace
     if (!user_id.has_value())
     {
         return make_operation_result(false, {}, "unauthenticated", 401U);
+    }
+    if (auto refused = sync_stream_refusal(runtime); refused.has_value())
+    {
+        return *refused;
     }
     auto* room = find_room(runtime.database, room_id);
     if (room == nullptr)
@@ -7381,6 +7380,16 @@ namespace
     {
         return make_operation_result(false, {}, "user must leave room before forgetting", 400U);
     }
+    // ADR-0315: before the delete, so a counter at its ceiling leaves the membership in place.
+    auto sync_stream_id = std::uint64_t{0U};
+    try
+    {
+        sync_stream_id = database::allocate_sync_stream_id(runtime.database.persistent_store);
+    }
+    catch (std::overflow_error const&)
+    {
+        return make_operation_result(false, {}, "sync stream counter exhausted", 500U);
+    }
     if (!database::delete_membership(runtime.database.persistent_store, room_id, *user_id))
     {
         return make_operation_result(false, {}, "membership delete failed", 500U);
@@ -7390,7 +7399,6 @@ namespace
         return make_operation_result(false, {}, "invite metadata cleanup failed", 500U);
     }
 
-    auto const sync_stream_id = database::allocate_sync_stream_id(runtime.database.persistent_store);
     if (runtime.sync_notifier != nullptr)
     {
         runtime.sync_notifier->publish(visible_stream_position(runtime.database), sync_stream_id);

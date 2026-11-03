@@ -166,6 +166,13 @@ struct StateBeforeResult final
 [[nodiscard]] auto forward_extremities_for_new_event(database::PersistentStore const& store, std::string_view room_id)
     -> std::vector<std::string>;
 
+// The depth of an event built on `prev_event_ids`. Spec (rooms/v11.md, `depth`): "The maximum depth
+// of the prev_events, plus one", and "If the room's depth is already at the limit, the depth must be
+// set to the limit." ADR-0314: only the events it is built on count, never every row of the room,
+// because a rejected row keeps whatever depth its sender chose.
+[[nodiscard]] auto depth_after_prev_events(database::PersistentStore const& store,
+                                           std::vector<std::string> const& prev_event_ids) -> std::uint64_t;
+
 // What a new local event is built on: the prev_events it declares and the
 // state before it, resolved once, before the event is signed.
 struct NewEventBasis final

@@ -605,6 +605,15 @@ existing `max_auth_chain_walk_events` cap. Focused verification is pending.
 Event depth is persisted alongside the event row so ordering metadata survives
 a server restart.
 
+A locally composed event's depth is the largest depth of the `prev_events` it was
+built on, plus one, and stays at 2^53 - 1 once there (`depth_after_prev_events`,
+ADR-0314). Rejected and other rows it does not build on have no say. Membership
+templates use the same function.
+
+An `auth_events` entry with no `state_key` is a disallowed selection, whatever its
+`type` (`validate_auth_events_selection`, rooms/v11.md rule 2.2): selection names room
+state, and a non-state event in an auth chain makes the state resolution walk fail.
+
 ### Unsolicited-room admission and pending outbound joins (ADR-0089)
 
 As of 0.12.16 (FED-11), common PDU ingestion checks current local

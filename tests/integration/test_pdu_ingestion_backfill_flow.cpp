@@ -1271,6 +1271,96 @@ SCENARIO("A backfilled event passing its auth_events but failing state-before is
     }
 }
 
+// Room version 11, authorization rule 2.2, and "Auth events selection": selection names a subset of the
+// room state, and an event with no state_key is not room state. Audit run-2 F-05: this holds for an
+// event fetched as a missing prev_event as it does for one received directly.
+SCENARIO("A backfilled event naming a non-state event in auth_events is stored rejected",
+         "[pdu_ingestion][backfill][conformance][auth_events_selection]")
+{
+    GIVEN("a room holding a non-state event of type m.room.power_levels from a joined user")
+    {
+        auto const path = unique_sqlite_path();
+        std::filesystem::remove(path);
+        auto started = merovingian::homeserver::start_runtime(config_with_sqlite(path));
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        merovingian::homeserver::wire_federation_callbacks(runtime);
+        auto const room_id = std::string{"!backfill-non-state:local.example.org"};
+        seed_room_with_genesis_state_group(runtime, room_id);
+        auto const create_id = room_id + ":create";
+        auto const pl_id = room_id + ":pl";
+        auto const member_bob_id = room_id + ":member:bob";
+        runtime.federation.remote_key_resolver =
+            [](std::string_view server_name,
+               std::string_view key_id) -> std::optional<merovingian::federation::FederationRemoteRuntime> {
+            if (server_name != remote_server || key_id != remote_key_id)
+            {
+                return std::nullopt;
+            }
+            return remote_runtime();
+        };
+
+        // Stored directly: what matters is that the row is here, not how a sender got the power to send it.
+        auto const non_state_pdu =
+            make_remote_event_pdu(room_id, "m.room.power_levels", std::nullopt, "@bob:remote.example.org",
+                                  canonicaljson::Object{}, {member_bob_id}, {create_id, pl_id, member_bob_id}, 4, 5);
+        auto non_state_event = merovingian::database::PersistentEvent{};
+        non_state_event.event_id = non_state_pdu.event_id;
+        non_state_event.room_id = room_id;
+        non_state_event.sender_user_id = "@bob:remote.example.org";
+        non_state_event.json = non_state_pdu.json;
+        non_state_event.depth = 4U;
+        REQUIRE(merovingian::database::store_event(runtime.database.persistent_store, non_state_event));
+
+        // The missing event names it where the power levels belong. The PDU that arrives cites that
+        // event, so this server fetches it.
+        auto const named_pdu = make_remote_event_pdu(room_id, "m.room.message", std::nullopt, "@bob:remote.example.org",
+                                                     canonicaljson::Object{}, {member_bob_id},
+                                                     {create_id, non_state_pdu.event_id, member_bob_id}, 5, 10);
+        auto const followup_pdu =
+            make_remote_message_pdu(room_id, {named_pdu.event_id}, {create_id, pl_id, member_bob_id}, 6, 20);
+
+        AND_GIVEN("a mock sending server that returns that event on /get_missing_events")
+        {
+            auto certificate = merovingian::tests::tls_mock::write_test_tls_certificate("localhost");
+            auto tls_context_result = merovingian::homeserver::make_tls_server_context(certificate.certificate_file,
+                                                                                       certificate.private_key_file);
+            REQUIRE(tls_context_result.ok());
+            auto tls_context = std::move(*tls_context_result.context);
+            auto acceptor = merovingian::net::TcpAcceptor{};
+            REQUIRE(acceptor.bind("127.0.0.1", 0U).ok);
+            auto const port = acceptor.bound_port();
+            REQUIRE(port > 0U);
+
+            runtime.test_forced_outbound_resolution[remote_server] =
+                merovingian::homeserver::TestOnlyForcedOutboundResolution{
+                    "localhost", port, {"127.0.0.1"}, certificate.certificate_pem};
+
+            auto const response_body = get_missing_events_response(named_pdu.json);
+            auto const http_response = merovingian::tests::tls_mock::json_http_response("200 OK", response_body);
+            auto server_thread = std::thread{[&]() {
+                run_body_aware_tls_server(acceptor, tls_context, http_response, nullptr);
+            }};
+            auto const join_server = merovingian::tests::tls_mock::ScopedThreadJoin{server_thread};
+            std::ignore = join_server;
+
+            WHEN("the PDU citing the missing event is ingested")
+            {
+                std::ignore = merovingian::homeserver::ingest_pdu_event(runtime, followup_pdu);
+                auto const named = runtime.database.persistent_store.events.find(named_pdu.event_id);
+
+                THEN("the fetched event is stored rejected")
+                {
+                    REQUIRE(named != runtime.database.persistent_store.events.end());
+                    REQUIRE(named->status == "rejected");
+                }
+            }
+
+            std::filesystem::remove(path);
+        }
+    }
+}
+
 // Spec: Matrix Server-Server API v1.19
 // Endpoint / Section: Checks performed on receipt of a PDU, steps 4 and 5
 // URL: ../../docs/matrix-v1.19-spec/server-server-api.md#checks-performed-on-receipt-of-a-pdu

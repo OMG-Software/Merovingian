@@ -1,3 +1,61 @@
+## 0.12.67
+
+The five high findings of security audit run 2 (ref 5e67d4e8).
+
+### Security
+
+- **A user joining a `shared` room at the depth limit sees the history behind their join.** Capping depth let a join
+  and the events it builds on share a depth, and those events were hidden as concurrent. They are now found by a
+  bounded walk back from the join, and a concurrent event stays hidden (ADR-0320).
+- **A failed device-list write is no longer silent.** Key, signature and device-name changes were committed and then
+  answered 200 even if the write telling other local users failed, so those users never learned of the change. The
+  client now gets a 500 saying the change was stored, and a retry records the notification. Logout and device deletion
+  still complete, and log what they could not deliver (ADR-0319).
+- **One signed PDU no longer stops a room's local events (F-01, ADR-0314).** A locally composed event's depth was
+  one more than the deepest row stored for the room, rejected rows included, so a rejected PDU at depth 2^53-1 from
+  any server made every later local event unparseable, across restarts. Depth now comes from the event's own
+  `prev_events` and stays at 2^53-1 once there, as `rooms/v11.md` requires. Membership templates (`make_join`,
+  `make_leave`, `make_knock`) use the same function, so they offer no depth above the limit.
+- **A membership template offers only accepted tips (F-06, ADR-0318).** `make_join`, `make_leave` and `make_knock` listed
+  every row no other row cites, so 21 rejected PDUs from a server outside the room pushed the template past the 20
+  `prev_events` limit and blocked joins through this server, and a rejected PDU citing the tip removed the tip. They now
+  use the selection local events use. A room with no tips gets 404 `M_NOT_FOUND`.
+- **`createRoom` caps its entries (F-02, ADR-0316).** `invite` and `initial_state` stop at
+  `server.client_api.max_create_room_invites` and `max_create_room_initial_state`, 100 each by default, with
+  `400 M_TOO_LARGE` before anything is stored. Each entry stored one event while the server held its global lock, and
+  the only bound was the 1 MiB body. A user listed twice in `invite` is invited once.
+- **A `/sync` token no longer moves server-wide state (F-03, ADR-0315).** A `since` token's sync component was used to
+  raise the server-wide counter, so any user could set it to 2^64-1. It then wrapped, and other users' to-device
+  messages, E2EE room keys among them, were deleted undelivered, and their receipts and account data dropped. A token
+  ahead of any stream is now served as an initial sync with the counter untouched, `ensure_sync_stream_id_ahead_of` is
+  removed, and `allocate_sync_stream_id` throws at `INT64_MAX` rather than wrap. Event, room and membership writes, and key
+  and device uploads, stop 2^20 positions below that, so a request stores nothing or can finish. Logout and device
+  deletion still complete, logging the device-list change they could not deliver. `send_join`, invites and client
+  requests answer an error, and PDU ingest answers `internal_error`. A client offline from a database restore until the counter passes its token
+  can still lose to-device messages (ADR-0315, user manual).
+- **Device and key changes write one batch for local observers (F-04, ADR-0317).** `/keys/upload`,
+  `/keys/device_signing/upload`, `/keys/signatures/upload`, `PUT` and `DELETE /devices/{deviceId}`, `/delete_devices`,
+  `/logout` and `/logout/all` committed once per room member, remote members included, under the global lock. They now
+  share `record_shared_room_device_changes`: one stream position and two commits (the watermark, then the rows), however large the room's
+  roster. No
+  row names a remote observer; those were never read.
+- **A non-state event cannot be named in `auth_events` (F-05).** An entry with no `state_key` passed selection as if its
+  `state_key` were empty, so a power-level-0 remote member could put a non-state `m.room.join_rules` in a join's auth
+  chain. State resolution then failed for any conflict reaching it, and with a second account a ban could be undone
+  through the ADR-0225 fallback. Such an event is now rejected (`rooms/v11.md` rule 2.2), on `/send`, `send_join` and
+  backfill. The fallback itself is unchanged; the audit tracks it separately.
+
+### CI
+
+- The test certificates build under OpenSSL 4, which `fedora:latest` now ships and which returns a certificate's
+  subject name as const. They build the name separately, which OpenSSL 3 accepts too.
+- **The conformance suite's time limit is 900 seconds, up from 600.** Green runs had grown from 434 to 565 seconds on
+  Debian, and one run was stopped at 600 with every finished case passing and about five left. It was not hung: the
+  same commit passed on RHEL in 510 seconds.
+- **More of this release's error paths are tested.** A `createRoom` cap that is not an integer, a `/sync` token ahead
+  only in its membership position, `createRoom` entries that are not lists, and a backfilled event naming a non-state
+  event in `auth_events`.
+
 ## 0.12.66
 
 Triage of the 200 open SonarQube Cloud issues on main at 0.12.64. PR #547 (0.12.65) fixes the two

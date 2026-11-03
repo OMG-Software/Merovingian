@@ -693,12 +693,12 @@ value. Test fixtures that do not exercise persistence select it through
   routes ignore it and serve the media. Adding a column to the `media` table
   does not affect the federation worker table classification: `media` remains
   in `worker_never_reads_tables`, so the worker allowlist needs no change.
-- `/sync` calls `database::ensure_sync_stream_id_ahead_of()` when the client's
-  `since` token is ahead of the server's counter. This recovers live deployments
-  whose counter rolled back below a stored token (for example, when the watermark
-  table did not yet exist and ephemeral typing/receipt events advanced the
-  in-memory counter), ensuring the next ephemeral event gets an ID the client
-  will accept.
+- No client input moves the sync stream counter. A `/sync` `since` token ahead of
+  the server's streams is served as an initial sync and leaves the counter alone
+  (ADR-0315). `database::allocate_sync_stream_id()` throws `std::overflow_error`
+  at `INT64_MAX` with the counter unchanged, so an ID is never reused. A database
+  holding a watermark at that ceiling refuses sync-stream writes until an operator
+  repairs it.
 - Offline `merovingian-db-migrate` planning scaffold.
 - Database `runtime` and `migration` role separation.
 - Runtime hydration for users, sessions, rooms, memberships, events, client
@@ -1076,7 +1076,7 @@ Two independent mechanisms close this, together:
    | `state_groups` | ADR-0064 phase A (0.12.13): the worker serves federation `/state` and `/state_ids` locally today from `current_state`/event relations; a later phase moves that to state groups, granted now so that phase needs no further role change |
    | `state_group_state` | same ADR-0064 phase-A reasoning, for a group's own delta/snapshot rows |
    | `event_state_groups` | same ADR-0064 phase-A reasoning, for the event → state group mapping |
-   | `forward_extremities` | same ADR-0064 phase-A reasoning: the worker's membership-template forward-extremity read (currently derived from `events`) becomes sourced from here in a later phase |
+   | `forward_extremities` | same ADR-0064 phase-A reasoning: the worker's membership-template forward-extremity read comes from here (ADR-0318) |
    | `schema_migrations` | needed for ANY store to open (schema-version check via `load_schema_state`), not gated by `TableLoadProfile` at all |
 
    `server_signing_keys` needs a genuine caveat: the worker's remote-key

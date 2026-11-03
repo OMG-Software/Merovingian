@@ -492,6 +492,9 @@ class DependencyWrapTests(unittest.TestCase):
         # THEN the Meson test timeout is explicit and large enough for slow QEMU VMs
         # (OpenBSD/NetBSD) that need several minutes for the full conformance suite.
         self.assertIn("test('unit-tests', unit_tests, timeout: 600)", tests_meson)
+        # The conformance binary is slower than the unit binary: it reached 600 seconds on a
+        # healthy Debian runner, still passing, with about five cases left.
+        self.assertIn("test('conformance-tests', conformance_tests, timeout: 900)", tests_meson)
 
     def test_phase1_config_validation_uses_wrapped_runtime_libraries(self) -> None:
         # GIVEN the Phase 1 config validation script runs built executables directly.
