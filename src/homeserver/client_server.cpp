@@ -11710,6 +11710,40 @@ namespace
             {
                 return err(400U, "M_UNRECOGNIZED", "missing version in path");
             }
+            // Spec (PUT /room_keys/version/{version}): 404 when the backup does not exist, so an update never
+            // creates a version; 400 when the algorithm is not the backup's current one or a `version` in the
+            // body is not the path's.
+            auto const* const held =
+                key_backup_version_for_user(rt.homeserver.database.persistent_store, user, clean_ver);
+            if (held == nullptr)
+            {
+                return resp(404U, matrix_error("M_NOT_FOUND", "key backup version not found"));
+            }
+            auto const update = parsed_json_object(req.body);
+            if (!update.has_value())
+            {
+                return err(400U, "M_BAD_JSON", "the request body must be a JSON object");
+            }
+            auto const* const algorithm = string_member(*update, "algorithm");
+            auto const held_object = parsed_json_object(held->json);
+            auto const* const held_algorithm =
+                held_object.has_value() ? string_member(*held_object, "algorithm") : nullptr;
+            if (algorithm == nullptr || (held_algorithm != nullptr && *algorithm != *held_algorithm))
+            {
+                return err(400U, "M_INVALID_PARAM", "algorithm must be the algorithm the backup already uses");
+            }
+            if (object_member_as_object(*update, "auth_data") == nullptr)
+            {
+                return err(400U, "M_INVALID_PARAM", "auth_data must be an object");
+            }
+            if (object_member(*update, "version") != nullptr)
+            {
+                auto const* const body_version = string_member(*update, "version");
+                if (body_version == nullptr || *body_version != clean_ver)
+                {
+                    return err(400U, "M_INVALID_PARAM", "version in the body must be the version in the path");
+                }
+            }
             if (!store_key_api_payload(rt, route.endpoint, user, device_id, req, clean_ver))
             {
                 return err(500U, "M_UNKNOWN", "key API persistence failed");

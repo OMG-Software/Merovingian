@@ -3436,9 +3436,10 @@ auto rebuild_key_signature_index(PersistentStore& store) -> void
     {
         return std::nullopt;
     }
-    // One past the highest number ever issued to the user, and past every numeric version still held (a row
-    // written by an update of a version nobody created is held too), so a deleted version's number is never
-    // issued again and cannot inherit what was uploaded under it (F-60, ADR-0384).
+    // One past the highest number ever issued to the user, so a deleted version's number is never issued again
+    // and cannot inherit what was uploaded under it (F-60, ADR-0384). The versions still held are checked too:
+    // the HTTP routes only create versions here, but store_key_backup_version can still write a row with any
+    // number (a restored or edited database, a direct caller), and a number must not be issued twice for it.
     auto highest = std::uint64_t{0U};
     if (auto const issued = store.key_backup_version_high_water.find(std::string{user_id});
         issued != store.key_backup_version_high_water.end())

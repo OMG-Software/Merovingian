@@ -270,3 +270,93 @@ SCENARIO("Deleting a key backup version deletes the keys uploaded to it, and a n
         }
     }
 }
+
+// Spec: Matrix Client-Server API v1.19
+// Endpoint / Section: PUT /_matrix/client/v3/room_keys/version/{version}
+// URL: ../../docs/matrix-v1.19-spec/client-server-api.md#put_matrixclientv3room_keysversionversion
+//
+// "404: The backup specified does not exist." and "400: A parameter was incorrect. For example, the `algorithm`
+// does not match the current backup algorithm, or the `version` in the body does not match the `version` in the
+// path."
+SCENARIO("Updating a key backup version that does not exist is 404 and creates nothing",
+         "[conformance][key-backup][run2][f60]")
+{
+    GIVEN("alice with no backup")
+    {
+        auto started = merovingian::homeserver::start_client_server(backup_config());
+        REQUIRE(started.started);
+        auto& rt = started.runtime;
+        auto const token = register_and_login(rt, "alice");
+
+        WHEN("she updates version 7")
+        {
+            auto const reply = call(
+                rt, "PUT", "/_matrix/client/v3/room_keys/version/7", token,
+                R"({"algorithm":"m.megolm_backup.v1.curve25519-aes-sha2","auth_data":{"public_key":"abc","signatures":{}}})");
+
+            THEN("the answer is 404 M_NOT_FOUND and no version exists afterwards")
+            {
+                // Spec MUST: 404 when the backup specified does not exist.
+                REQUIRE(reply.status == 404U);
+                REQUIRE(reply.body.find("M_NOT_FOUND") != std::string::npos);
+                REQUIRE(rt.homeserver.database.persistent_store.key_backup_versions.empty());
+                REQUIRE(call(rt, "GET", "/_matrix/client/v3/room_keys/version/7", token).status == 404U);
+            }
+        }
+    }
+}
+
+// Spec: see above (PUT /room_keys/version/{version}, 400).
+SCENARIO("Updating a key backup version with a parameter that does not match is 400",
+         "[conformance][key-backup][run2][f60]")
+{
+    GIVEN("alice with backup version 1")
+    {
+        auto started = merovingian::homeserver::start_client_server(backup_config());
+        REQUIRE(started.started);
+        auto& rt = started.runtime;
+        auto const token = register_and_login(rt, "alice");
+        create_backup(rt, token);
+
+        WHEN("the body names another version than the path")
+        {
+            auto const reply = call(
+                rt, "PUT", "/_matrix/client/v3/room_keys/version/1", token,
+                R"({"algorithm":"m.megolm_backup.v1.curve25519-aes-sha2","auth_data":{"public_key":"xyz","signatures":{}},"version":"2"})");
+
+            THEN("the answer is 400 and the backup is unchanged")
+            {
+                // Spec MUST: 400 when the version in the body does not match the version in the path.
+                REQUIRE(reply.status == 400U);
+                REQUIRE(call(rt, "GET", "/_matrix/client/v3/room_keys/version/1", token).body.find("abc") !=
+                        std::string::npos);
+            }
+        }
+
+        WHEN("the body names the algorithm of another backup")
+        {
+            auto const reply = call(rt, "PUT", "/_matrix/client/v3/room_keys/version/1", token,
+                                    R"({"algorithm":"m.other","auth_data":{"public_key":"xyz","signatures":{}}})");
+
+            THEN("the answer is 400")
+            {
+                // Spec MUST: 400 when the algorithm does not match the current backup algorithm.
+                REQUIRE(reply.status == 400U);
+            }
+        }
+
+        WHEN("the body names the version of the path")
+        {
+            auto const reply = call(
+                rt, "PUT", "/_matrix/client/v3/room_keys/version/1", token,
+                R"({"algorithm":"m.megolm_backup.v1.curve25519-aes-sha2","auth_data":{"public_key":"xyz","signatures":{}},"version":"1"})");
+
+            THEN("the update succeeds")
+            {
+                REQUIRE(reply.status == 200U);
+                REQUIRE(call(rt, "GET", "/_matrix/client/v3/room_keys/version/1", token).body.find("xyz") !=
+                        std::string::npos);
+            }
+        }
+    }
+}
