@@ -5375,6 +5375,9 @@ namespace
         std::optional<std::uint64_t> since_ordering{};
         std::uint64_t sync_position{0U};
         std::size_t timeline_cap{0U};
+        // What room state the user may read (ADR-0357). `none` for a user who never joined: a retracted
+        // knock, a declined invite, a ban before any join.
+        sync::RoomReadAccess access{};
     };
 
     [[nodiscard]] auto build_left_room(database::PersistentStore const& store, sync::SyncFilter const& filter,
@@ -5441,31 +5444,49 @@ namespace
                                                               : std::to_string(since_ordering);
 
         auto state_events = canonicaljson::Array{};
-        if (!request.since_ordering.has_value())
+        // ADR-0357: a user who never joined (`none`) was never entitled to any of the room's state, so an
+        // initial sync tells them only what an incremental one does: their own leave or ban, when the
+        // timeline does not carry it.
+        auto const reads_room_state = request.access.kind != sync::RoomReadKind::none;
+        if (!request.since_ordering.has_value() && reads_room_state)
         {
             // An initial sync: all state up to the start of the timeline, or, with no timeline
-            // events, all state up to the leave itself.
-            auto at_start =
-                window_begin != matched.end()
-                    ? build_state_events_at_timeline_start(store, filter.room.state, request.room_id, **window_begin)
-                    : std::optional<canonicaljson::Array>{};
-            if (at_start.has_value())
+            // events, all state up to the leave itself. A user who left and was banned since reads
+            // the room only as of the leave, so an anchor after it is answered from the boundary.
+            auto const anchor_ordering =
+                window_begin != matched.end() ? (*window_begin)->stream_ordering : leave_ordering;
+            if (request.access.kind == sync::RoomReadKind::as_of && anchor_ordering > request.access.boundary_ordering)
             {
-                state_events = std::move(*at_start);
-            }
-            else if (window_begin == matched.end() && leave_event != store.events.end())
-            {
-                if (auto const group = database::find_event_state_group(store, leave_event->event_id);
-                    group.has_value())
+                if (auto const ids = sync::room_state_event_ids(store, request.room_id, request.access, std::nullopt);
+                    ids.has_value())
                 {
-                    if (auto const full = database::read_state_group_full_state(store, *group); full.has_value())
+                    state_events = build_state_events_array_for_ids(store, filter.room.state, *ids);
+                }
+            }
+            else
+            {
+                auto at_start = window_begin != matched.end()
+                                    ? build_state_events_at_timeline_start(store, filter.room.state, request.room_id,
+                                                                           **window_begin)
+                                    : std::optional<canonicaljson::Array>{};
+                if (at_start.has_value())
+                {
+                    state_events = std::move(*at_start);
+                }
+                else if (window_begin == matched.end() && leave_event != store.events.end())
+                {
+                    if (auto const group = database::find_event_state_group(store, leave_event->event_id);
+                        group.has_value())
                     {
-                        auto ids = std::vector<std::string>{};
-                        for (auto const& entry : *full)
+                        if (auto const full = database::read_state_group_full_state(store, *group); full.has_value())
                         {
-                            ids.push_back(entry.event_id);
+                            auto ids = std::vector<std::string>{};
+                            for (auto const& entry : *full)
+                            {
+                                ids.push_back(entry.event_id);
+                            }
+                            state_events = build_state_events_array_for_ids(store, filter.room.state, ids);
                         }
-                        state_events = build_state_events_array_for_ids(store, filter.room.state, ids);
                     }
                 }
             }
@@ -5893,7 +5914,7 @@ namespace
                         store, filter, history_visibility, viewer_unsigned, ignored_senders,
                         {membership.room_id, user, membership.stream_ordering,
                          since_token.has_value() ? std::optional<std::uint64_t>{since_ordering} : std::nullopt,
-                         sync_position, timeline_cap});
+                         sync_position, timeline_cap, sync::room_read_access_for(store, membership.room_id, user)});
                     leave_members.push_back(json_member(membership.room_id, left_room));
                     ++leave_count;
                 }

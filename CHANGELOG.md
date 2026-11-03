@@ -4,6 +4,18 @@ The medium findings of security audit run 2 (ref 5e67d4e8).
 
 ### Security
 
+- **A member event in a room of version 3 to 7 is no longer refused for naming an authorising server (F-38, ADR-0356).**
+  `verify_join_authorising_server_signature` applied rooms/v8.md's rule 4.2.1 to every room version, so a member of a
+  legacy room could send an ordinary member event with `join_authorised_via_users_server` naming a third server, which
+  other servers accept and this one refused on `/send`, worker relay, backfill and `send_join` state, leaving every
+  descendant without its `prev_event`. The helper now accepts when the room version has no restricted joins, so all four
+  paths are fixed together, and the authorising-key prefetch is skipped for those versions. Version 8 and later still
+  refuse the event.
+- **`GET /sync` `rooms.leave` no longer gives a user who never joined the room's state (F-41, ADR-0357).** With
+  `include_leave` set, a user who knocked and retracted, declined an invite, or was banned before joining was sent the
+  whole room state before their leave (roster, power levels, topic, custom state) that `GET /state` refuses them. Their
+  entry now holds only their own leave or ban, in the timeline or, when the filter excludes it, in `state`. A user who
+  joined and then left keeps the state they had; one who left and was then banned is capped at the state when they left.
 - **One user can no longer use up the local media record cap (F-46, ADR-0340).** `security.media.max_records` was one
   budget for the whole server, and distinct tiny files or deduplicated re-uploads cost the per-user byte quota almost
   nothing, so one account could fill it and every user's upload was then refused until an operator raised it. New key
