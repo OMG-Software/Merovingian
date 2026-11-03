@@ -57,6 +57,14 @@ Manages schema migrations and provides a dual-backend (SQLite / PostgreSQL) pers
     carries the room's state groups, their entries and its events' group mappings too: federation reads fail closed on an
     event with no group, so a new table a worker-served read depends on must be added to the snapshot and `reload_room`.
 
+11. **The to-device queue is bounded in rows, age and bytes, and a batch is prepared in one pass** (ADR-0335,
+    ADR-0336). `index_to_device_recipients` gathers the queue of every recipient a batch names with one pass over
+    `to_device_messages`; `prepare_to_device_enqueue` then evicts expired, then oldest rows (count, then bytes) from that
+    recipient's queue only. The byte total of a queue is never stored: it is summed from the rows when the batch is
+    prepared, so it cannot drift from them. Remove in-memory rows with `erase_to_device_rows` (a hash of stream ids),
+    never `remove_if` over the victims. `store_account_data` and the capped writers refuse content over
+    `max_account_data_row_bytes` (ADR-0339).
+
 ## The state index (ADR-0344)
 
 `PersistentStore::state` has two position indexes (`state_position_index`, `state_room_index`) behind

@@ -660,6 +660,18 @@ namespace
         return result.output;
     }
 
+    // As json_serialize, but a serialiser error is returned, not hidden behind an empty body: a response
+    // that may hold members a remote server chose (F-36, ADR-0337) must never go out as a 200 with no body.
+    [[nodiscard]] auto json_serialize_checked(canonicaljson::Value const& value) -> std::optional<std::string>
+    {
+        auto result = canonicaljson::serialize_canonical(value);
+        if (result.error != canonicaljson::CanonicalJsonError::none)
+        {
+            return std::nullopt;
+        }
+        return std::move(result.output);
+    }
+
     // 401 with soft_logout=true: token was found-but-expired so the client should
     // use its refresh token rather than clearing its session (spec §5.7.2).
     [[nodiscard]] auto dispatch_err_soft_logout(LocalHttpRequest const& req, ClientServerRuntime const& rt,
@@ -7508,6 +7520,79 @@ namespace
         return result.valid;
     }
 
+    // F-37, ADR-0338: what an uploaded key may be, before anything about it is stored. The spec's value is
+    // `string|KeyObject` (`{key, signatures, fallback?}`); a curve25519 key is 43 characters and a signed key
+    // object about 200 bytes, so the bounds below leave every real client alone and stop a row from growing
+    // to the size of the request body.
+    auto constexpr max_uploaded_key_id_bytes = std::size_t{255U};
+    auto constexpr max_uploaded_key_string_bytes = std::size_t{256U};
+    auto constexpr max_uploaded_key_object_bytes = std::size_t{4096U};
+    // device_keys, a cross-signing key, or one signed key of a signature upload, as serialised for storage.
+    auto constexpr max_uploaded_key_document_bytes = std::size_t{16384U};
+
+    // Empty when every member of an `one_time_keys` or `fallback_keys` object has an acceptable key ID and
+    // value, else a short reason for the first that does not. A null member is left to
+    // validate_key_object_members, which reports it.
+    [[nodiscard]] auto uploaded_key_shape_refusal(canonicaljson::Object const& keys) -> std::string
+    {
+        for (auto const& member : keys)
+        {
+            if (member.key.size() > max_uploaded_key_id_bytes)
+            {
+                return "a key ID is longer than " + std::to_string(max_uploaded_key_id_bytes) + " bytes";
+            }
+            if (member.value == nullptr)
+            {
+                continue;
+            }
+            if (auto const* text = std::get_if<std::string>(&member.value->storage()); text != nullptr)
+            {
+                if (text->empty() || text->size() > max_uploaded_key_string_bytes)
+                {
+                    return member.key + ": a key must be a string of 1 to " +
+                           std::to_string(max_uploaded_key_string_bytes) + " bytes";
+                }
+                continue;
+            }
+            auto const* object = std::get_if<canonicaljson::Object>(&member.value->storage());
+            if (object == nullptr)
+            {
+                return member.key + ": a key must be a string or a key object";
+            }
+            auto const* key = string_member(*object, "key");
+            if (key == nullptr || key->empty() || key->size() > max_uploaded_key_string_bytes)
+            {
+                return member.key + ": a key object needs a key string of 1 to " +
+                       std::to_string(max_uploaded_key_string_bytes) + " bytes";
+            }
+            if (auto const* signatures = object_member(*object, "signatures");
+                signatures != nullptr && std::get_if<canonicaljson::Object>(&signatures->storage()) == nullptr)
+            {
+                return member.key + ": signatures must be an object";
+            }
+            if (auto const* fallback = object_member(*object, "fallback");
+                fallback != nullptr && std::get_if<bool>(&fallback->storage()) == nullptr)
+            {
+                return member.key + ": fallback must be a boolean";
+            }
+            auto const serialized = serialized_value(*member.value);
+            if (!serialized.has_value() || serialized->size() > max_uploaded_key_object_bytes)
+            {
+                return member.key + ": a key object may be at most " + std::to_string(max_uploaded_key_object_bytes) +
+                       " bytes";
+            }
+        }
+        return {};
+    }
+
+    // True when `value`, serialised, is over the bound on one uploaded key document.
+    [[nodiscard]] auto key_document_too_large(canonicaljson::Value const& value) -> bool
+    {
+        auto const serialized = canonicaljson::serialize_canonical(value);
+        return serialized.error == canonicaljson::CanonicalJsonError::none &&
+               serialized.output.size() > max_uploaded_key_document_bytes;
+    }
+
     // Validate that every member of an OTK or fallback-key object is a
     // SignedKey carrying a cryptographically valid signature from the device's
     // own ed25519 identity key.
@@ -7671,6 +7756,17 @@ namespace
             return err(400U, "M_BAD_JSON", "key upload body must be Matrix JSON");
         }
         auto& store = rt.homeserver.database.persistent_store;
+        // F-37, ADR-0338: the shape and size of every key, before anything is stored.
+        for (auto const* member_name : {"one_time_keys", "fallback_keys"})
+        {
+            if (auto const* keys = object_member_object(*object, member_name); keys != nullptr)
+            {
+                if (auto const reason = uploaded_key_shape_refusal(*keys); !reason.empty())
+                {
+                    return err(400U, "M_BAD_JSON", std::string{member_name} + ": " + reason);
+                }
+            }
+        }
         // CSAZ-10: refuse before anything (device keys, one-time keys, fallback
         // keys) is stored, so an over-cap request leaves no partial state.
         if (auto const* one_time_keys = object_member_object(*object, "one_time_keys");
@@ -7697,6 +7793,12 @@ namespace
             normalize_device_key_object_for_client(rt, normalized_device_keys, user, device_id);
             auto const serialized =
                 canonicaljson::serialize_canonical(canonicaljson::Value{std::move(normalized_device_keys)});
+            if (serialized.error == canonicaljson::CanonicalJsonError::none &&
+                serialized.output.size() > max_uploaded_key_document_bytes)
+            {
+                return err(400U, "M_TOO_LARGE",
+                           "device_keys may be at most " + std::to_string(max_uploaded_key_document_bytes) + " bytes");
+            }
             if (serialized.error != canonicaljson::CanonicalJsonError::none ||
                 !database::sync_stream_has_write_reserve(store) ||
                 !database::store_device_key(store, {std::string{user}, std::string{device_id}, serialized.output}))
@@ -8089,6 +8191,23 @@ namespace
             auto const signing_secret = core::SecretBuffer{rt.homeserver.database.signing_secret_key.bytes()};
             for (auto& [server, user_claims] : remote_by_server)
             {
+                // What this server is asked for: the answer is kept only for these users and devices.
+                auto requested = std::vector<std::pair<std::string, std::vector<std::string>>>{};
+                for (auto const& claim : user_claims)
+                {
+                    auto devices = std::vector<std::string>{};
+                    if (auto const* device_map = claim.value == nullptr
+                                                     ? nullptr
+                                                     : std::get_if<canonicaljson::Object>(&claim.value->storage());
+                        device_map != nullptr)
+                    {
+                        for (auto const& device : *device_map)
+                        {
+                            devices.push_back(device.key);
+                        }
+                    }
+                    requested.emplace_back(claim.key, std::move(devices));
+                }
                 auto claim_body_obj = canonicaljson::Object{};
                 claim_body_obj.push_back(json_member("one_time_keys", json_obj(std::move(user_claims))));
                 auto const claim_body = json_serialize(json_obj(std::move(claim_body_obj)));
@@ -8102,21 +8221,26 @@ namespace
                     rt.homeserver.federation.config.remote_timeout_seconds);
                 if (ok)
                 {
-                    auto const parsed = canonicaljson::parse_lossless(resp_body);
-                    if (parsed.error == canonicaljson::ParseError::none)
+                    auto accepted = federation::accept_remote_key_claim_response(server, resp_body, requested);
+                    if (!accepted.has_value())
                     {
-                        auto const* robj = std::get_if<canonicaljson::Object>(&parsed.value.storage());
-                        if (robj != nullptr)
+                        failures.push_back(json_member(
+                            server, json_obj({
+                                        json_member("errcode", json_str("M_UNKNOWN")),
+                                        json_member("error", json_str("remote server returned an unusable answer")),
+                                    })));
+                    }
+                    else
+                    {
+                        for (auto& entry : accepted->one_time_keys)
                         {
-                            if (auto const* rotk = object_member_as_object(*robj, "one_time_keys"))
+                            // A user this response already holds (a local answer) is never overwritten or
+                            // repeated: the serialiser refuses a duplicate member.
+                            if (std::ranges::none_of(users, [&entry](canonicaljson::ObjectMember const& held) {
+                                    return held.key == entry.key;
+                                }))
                             {
-                                for (auto const& ue : *rotk)
-                                {
-                                    if (auto const* dm = std::get_if<canonicaljson::Object>(&ue.value->storage()))
-                                    {
-                                        users.push_back(json_member(ue.key, json_obj(*dm)));
-                                    }
-                                }
+                                users.push_back(std::move(entry));
                             }
                         }
                     }
@@ -8131,10 +8255,15 @@ namespace
             }
         }
 
-        return resp(200U, json_serialize(json_obj({
-                              json_member("one_time_keys", json_obj(std::move(users))),
-                              json_member("failures", json_obj(std::move(failures))),
-                          })));
+        auto const claim_response = json_serialize_checked(json_obj({
+            json_member("one_time_keys", json_obj(std::move(users))),
+            json_member("failures", json_obj(std::move(failures))),
+        }));
+        if (!claim_response.has_value())
+        {
+            return err(500U, "M_UNKNOWN", "the key claim response could not be serialised");
+        }
+        return resp(200U, *claim_response);
     }
 
     // PUT /_matrix/client/v3/sendToDevice/{eventType}/{txnId}
@@ -8197,6 +8326,27 @@ namespace
         }
 
         auto const& local_server = rt.homeserver.config.server().server_name;
+        auto const& device_store = rt.homeserver.database.persistent_store;
+
+        // The devices of every user the request names, from one pass over the device table: a scan per entry
+        // made the request cost entries x devices under runtime.mutex (F-13, ADR-0336).
+        auto devices_by_user = std::map<std::string_view, std::set<std::string_view>>{};
+        for (auto const& user_entry : *messages)
+        {
+            devices_by_user.try_emplace(user_entry.key);
+        }
+        for (auto const& device : device_store.devices)
+        {
+            if (auto const named = devices_by_user.find(device.user_id); named != devices_by_user.end())
+            {
+                named->second.insert(device.device_id);
+            }
+        }
+        auto const too_many_deliveries = [&rt] {
+            return err(413U, "M_TOO_LARGE",
+                       "a sendToDevice request may address at most " +
+                           std::to_string(rt.limits.max_send_to_device_deliveries) + " devices");
+        };
 
         // remote_messages: server → { user_id → { device_id → content_json } }
         auto remote_messages = std::map<std::string, std::map<std::string, std::map<std::string, std::string>>>{};
@@ -8225,6 +8375,14 @@ namespace
                 {
                     continue;
                 }
+                // F-14, ADR-0335: refuse the whole request, whichever server the message is for, so the client
+                // learns its message was too big instead of having it dropped on the way.
+                if (!database::to_device_content_fits(device_store, *content))
+                {
+                    return err(413U, "M_TOO_LARGE",
+                               "a to-device message may be at most " +
+                                   std::to_string(device_store.max_to_device_message_bytes) + " bytes");
+                }
                 if (is_local)
                 {
                     // Silently discard local deliveries to unknown users or to
@@ -8237,30 +8395,32 @@ namespace
                         continue;
                     }
 
+                    auto const& user_devices = devices_by_user[user_entry.key];
                     if (device_entry.key == "*")
                     {
-                        // Spec §10.5: "*" delivers to all devices of the target user.
-                        for (auto const& dev : rt.homeserver.database.persistent_store.devices)
+                        // Spec §10.5: "*" delivers to all devices of the target user. Each device is one
+                        // delivery against the request's cap (F-13, ADR-0336).
+                        for (auto const& device_id : user_devices)
                         {
-                            if (dev.user_id == user_entry.key)
+                            if (local_messages.size() >= rt.limits.max_send_to_device_deliveries)
                             {
-                                local_messages.push_back({0U, std::string{sender}, user_entry.key, dev.device_id,
-                                                          std::string{event_type}, *content});
+                                return too_many_deliveries();
                             }
+                            local_messages.push_back({0U, std::string{sender}, user_entry.key, std::string{device_id},
+                                                      std::string{event_type}, *content});
                         }
                     }
                     else
                     {
                         // Enqueue only when the named device really belongs to
                         // the target local user.
-                        auto const device_known = std::ranges::any_of(
-                            rt.homeserver.database.persistent_store.devices,
-                            [&user_entry, &device_entry](database::PersistentDevice const& device) {
-                                return device.user_id == user_entry.key && device.device_id == device_entry.key;
-                            });
-                        if (!device_known)
+                        if (!user_devices.contains(device_entry.key))
                         {
                             continue;
+                        }
+                        if (local_messages.size() >= rt.limits.max_send_to_device_deliveries)
+                        {
+                            return too_many_deliveries();
                         }
                         local_messages.push_back({0U, std::string{sender}, user_entry.key, device_entry.key,
                                                   std::string{event_type}, *content});
@@ -10905,6 +11065,35 @@ namespace
         return json_serialize(json_obj({json_member("policy_rules", json_arr(std::move(rules)))}));
     }
 
+    // F-37, ADR-0338: true when any key of a /keys/signatures/upload body is over the bound on one key document.
+    // A body that does not parse is left for the store step to reject.
+    [[nodiscard]] auto signature_upload_has_oversized_key(std::string_view body) -> bool
+    {
+        auto const parsed = parsed_json_object(body);
+        if (!parsed.has_value())
+        {
+            return false;
+        }
+        for (auto const& user_member : *parsed)
+        {
+            auto const* signed_keys = user_member.value == nullptr
+                                          ? nullptr
+                                          : std::get_if<canonicaljson::Object>(&user_member.value->storage());
+            if (signed_keys == nullptr)
+            {
+                continue;
+            }
+            for (auto const& key_member : *signed_keys)
+            {
+                if (key_member.value != nullptr && key_document_too_large(*key_member.value))
+                {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
     // CSAZ-10: true when storing the signatures in a /keys/signatures/upload
     // body would leave `signer` holding more than `max_key_signatures_per_user`
     // distinct (target user, target key) signatures. A pair the signer already
@@ -11352,6 +11541,15 @@ namespace
                 }
                 return resp(401U, uia_password_failure_body(json_serialize(cs_uia)));
             }
+            for (auto const* key_type : {"master_key", "self_signing_key", "user_signing_key"})
+            {
+                if (auto const* key = object_member(*cs_body, key_type); key != nullptr && key_document_too_large(*key))
+                {
+                    return err(400U, "M_TOO_LARGE",
+                               std::string{key_type} + " may be at most " +
+                                   std::to_string(max_uploaded_key_document_bytes) + " bytes");
+                }
+            }
             if (!database::sync_stream_has_write_reserve(rt.homeserver.database.persistent_store) ||
                 !store_key_api_payload(rt, route.endpoint, user, device_id, req, {}))
             {
@@ -11381,6 +11579,11 @@ namespace
             return resp(200U, key_api_success_body(route.endpoint));
         }
         case auth::KeyApiEndpoint::upload_signatures:
+            if (signature_upload_has_oversized_key(req.body))
+            {
+                return err(400U, "M_TOO_LARGE",
+                           "a signed key may be at most " + std::to_string(max_uploaded_key_document_bytes) + " bytes");
+            }
             if (signature_upload_exceeds_cap(rt, user, req.body))
             {
                 return err(400U, "M_TOO_LARGE",
@@ -18562,6 +18765,17 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                         return dispatch_err(req, rt, 400U, "M_TOO_LARGE",
                                             "account data limit of " + std::to_string(cap) + " types reached");
                     }
+                    if (outcome == database::CappedAccountDataStore::too_large)
+                    {
+                        log_diagnostic("account_data.rejected", {
+                                                                    {"actor",  *user,                        false},
+                                                                    {"type",   type,                         false},
+                                                                    {"reason", "account data row too large", false}
+                        });
+                        return dispatch_err(req, rt, 400U, "M_TOO_LARGE",
+                                            "account data content exceeds " +
+                                                std::to_string(database::max_account_data_row_bytes) + " bytes");
+                    }
                     if (outcome != database::CappedAccountDataStore::stored)
                     {
                         log_diagnostic("account_data.rejected",
@@ -18659,6 +18873,17 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                     {
                         return dispatch_err(req, rt, 400U, "M_INVALID_PARAM", "tag must not be empty");
                     }
+                    // Spec (Room Tagging): "The name of a tag MUST NOT exceed 255 bytes."
+                    if (tag.size() > max_tag_name_bytes)
+                    {
+                        return dispatch_err(req, rt, 400U, "M_INVALID_PARAM", "tag name must not exceed 255 bytes");
+                    }
+                    if (req.body.size() > max_tag_value_bytes)
+                    {
+                        return dispatch_err(req, rt, 400U, "M_TOO_LARGE",
+                                            "tag value must not exceed " + std::to_string(max_tag_value_bytes) +
+                                                " bytes");
+                    }
                     if (req.body.empty())
                     {
                         return dispatch_err(req, rt, 400U, "M_BAD_JSON", "tag body must not be empty");
@@ -18670,6 +18895,15 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                         return dispatch_err(req, rt, 400U, "M_BAD_JSON", "tag body must be a JSON object");
                     }
                     auto tags = room_tag_content(rt.homeserver.database.persistent_store, path_user, path_room);
+                    // A tag the user already has can always be changed; only an added one counts (ADR-0339).
+                    if (tags.size() >= max_tags_per_room &&
+                        std::ranges::none_of(tags, [&tag](canonicaljson::ObjectMember const& member) {
+                            return member.key == tag;
+                        }))
+                    {
+                        return dispatch_err(req, rt, 400U, "M_TOO_LARGE",
+                                            "a room can hold at most " + std::to_string(max_tags_per_room) + " tags");
+                    }
                     set_object_member(tags, tag, std::move(parsed.value));
                     if (!store_room_tag_content(rt, path_user, path_room, std::move(tags)))
                     {

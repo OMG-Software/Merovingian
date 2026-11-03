@@ -2648,3 +2648,13 @@ Security audit run-1 (2026-10-20) found six LOW issues, all fixed in 0.12.34.
   run-2 F-30, F-31, F-50).** **Mitigation:** the filter and `keys` lists are resolved to hash sets and a bit mask once
   per request (ADR-0332), result context is built only when `event_context` is sent and from one pass over the events
   (ADR-0333), and the directory reads the accounts once and returns at most 100 users (ADR-0334).
+- **Stored per-user data grew by count but not by size, and one request could cost queue x devices squared (audit
+  run-2 F-12, F-13, F-14, F-37).** A room's `m.tag` row, a to-device queue, and uploaded keys were bounded by rows
+  or not at all, so one row could be as large as a request body and a `*` send walked the shared queue per message.
+  **Mitigation:** account-data rows are capped at 256 KiB and a room holds at most 100 tags of 1 KiB (ADR-0339); the
+  to-device queue is bounded in bytes per message and per recipient, a batch is prepared in one pass and one request
+  names at most 1,000 local devices (ADR-0335, ADR-0336); uploaded keys have a shape and a size (ADR-0338).
+  **Residual risk:** the number of devices a user may create is not capped, so total bytes per user are bounded per
+  device, not per account.
+- **A remote server could blank a client's key claim (audit run-2 F-36).** **Mitigation:** the answer is kept only
+  for the users and devices asked of that server and a response that cannot be serialised is a 500 (ADR-0337).

@@ -278,6 +278,13 @@ struct ClientApiConfig final
     // time, so the queue stays bounded even for recipients that never sync.
     std::uint32_t max_to_device_messages_per_user_device{10000U};
     std::uint32_t to_device_message_ttl_seconds{604800U};
+    // Security audit run-2 F-14 (ADR-0335): the queue is bounded in bytes as well. A to-device
+    // message whose content is over max_to_device_message_bytes is refused (413 M_TOO_LARGE for a
+    // client; one message of an inbound m.direct_to_device EDU is dropped, the rest are kept). A
+    // recipient (user, device) whose queued bytes would pass max_to_device_bytes_per_user_device
+    // loses its oldest rows to make room, as the row-count cap does.
+    std::uint32_t max_to_device_message_bytes{65536U};
+    std::uint32_t max_to_device_bytes_per_user_device{16777216U};
     // CSAZ-10: bound the end-to-end key material and filters one user can
     // store.  An upload that would take the user over a cap is refused with
     // M_TOO_LARGE and stores nothing; stored rows are never evicted to make

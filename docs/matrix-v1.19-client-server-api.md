@@ -289,6 +289,10 @@ Implementation note (Complement run 10):
   runs only for a sender who may send the event, so anyone else gets the 403. `createRoom` `initial_state` is not
   validated this way.
 - `createRoom` refuses more than `server.client_api.max_create_room_invites` `invite` entries or `max_create_room_initial_state` `initial_state` entries (100 each by default) with `400 M_TOO_LARGE`, storing nothing, and invites a user listed twice once (ADR-0316).
+- `PUT /user/{userId}/rooms/{roomId}/tags/{tag}` refuses a tag name over 255 bytes (the spec's limit) with `400 M_INVALID_PARAM`, and a value over 1 KiB or a new tag beyond 100 on the room with `400 M_TOO_LARGE`; any account-data row over 256 KiB is `400 M_TOO_LARGE` (ADR-0339).
+- `PUT /sendToDevice/{eventType}/{txnId}` refuses a message over `server.client_api.max_to_device_message_bytes` (64 KiB) or a request addressing more than 1,000 local devices with `413 M_TOO_LARGE`, queueing nothing (ADR-0335, ADR-0336). A recipient's oldest queued rows are evicted past `max_to_device_bytes_per_user_device`.
+- `POST /keys/upload` refuses a one-time or fallback key that is not a string of 1 to 256 bytes or a key object (`key`, `signatures`, `fallback`) of at most 4 KiB with `400 M_BAD_JSON`; `device_keys`, each cross-signing key and each signed key of `/keys/signatures/upload` over 16 KiB are `400 M_TOO_LARGE` (ADR-0338).
+- `POST /keys/claim` relays a remote server's answer only for the users and devices asked of it; an unusable answer is that server's entry in `failures` (ADR-0337).
 - `GET /sync` serves a `since` token ahead of any of the server's streams as an initial sync, the same as a token it cannot decode, and hands back a token from its own streams (ADR-0315).
 - `createRoom` `topic` writes `m.room.topic` with both `topic` and `m.topic` = `{"m.text":[{"body":..,"mimetype":"text/plain"}]}`,
   after `initial_state`, so it overwrites a topic given there. A `room_version` that is not a JSON string is

@@ -312,6 +312,11 @@
 * [0343 - Push glob matching spends a bounded budget per recipient and event](0343-push-glob-matching-spends-a-bounded-budget-per-event.md)
 * [0344 - Index current state by room, type and key, and trust the index only while it is in step](0344-index-current-state-by-room-type-and-key-and-trust-it-only-while-in-step.md)
 * [0345 - Hierarchy and threads reads are bounded by the page and by a budget of rooms or rows](0345-hierarchy-and-threads-reads-are-bounded-by-the-page-and-a-visit-budget.md)
+* [0335 - Bound the to-device queue in bytes per recipient](0335-bound-the-to-device-queue-in-bytes-per-recipient.md)
+* [0336 - Enqueue a to-device batch in one pass, and cap a request's deliveries](0336-enqueue-a-to-device-batch-in-one-pass-and-cap-a-requests-deliveries.md)
+* [0337 - Keep only what was asked of a server in a key claim answer](0337-keep-only-what-was-asked-of-a-server-in-a-key-claim-answer.md)
+* [0338 - Bound the shape and size of uploaded keys](0338-bound-the-shape-and-size-of-uploaded-keys.md)
+* [0339 - Bound account-data rows and the tags of a room](0339-bound-account-data-rows-and-the-tags-of-a-room.md)
 
 ## Proposed Records
 

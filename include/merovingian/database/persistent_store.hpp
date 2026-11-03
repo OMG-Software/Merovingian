@@ -1022,6 +1022,9 @@ struct PersistentStore final
         , event_stream_watermark{other.event_stream_watermark}
         , max_to_device_messages_per_user_device{other.max_to_device_messages_per_user_device}
         , to_device_message_ttl_seconds{other.to_device_message_ttl_seconds}
+        , max_to_device_message_bytes{other.max_to_device_message_bytes}
+        , max_to_device_bytes_per_user_device{other.max_to_device_bytes_per_user_device}
+        , to_device_rows_examined{other.to_device_rows_examined}
     {
     }
     PersistentStore(PersistentStore&& other) noexcept = default;
@@ -1109,6 +1112,9 @@ struct PersistentStore final
         next_sync_stream_id = other.next_sync_stream_id;
         event_stream_watermark = other.event_stream_watermark;
         max_to_device_messages_per_user_device = other.max_to_device_messages_per_user_device;
+        max_to_device_message_bytes = other.max_to_device_message_bytes;
+        max_to_device_bytes_per_user_device = other.max_to_device_bytes_per_user_device;
+        to_device_rows_examined = other.to_device_rows_examined;
         to_device_message_ttl_seconds = other.to_device_message_ttl_seconds;
         write_connection_limit = other.write_connection_limit;
         sqlite_write_pool = other.sqlite_write_pool;
@@ -1293,6 +1299,15 @@ struct PersistentStore final
     // bound (not recommended); a TTL of zero disables age-based eviction.
     std::uint32_t max_to_device_messages_per_user_device{10000U};
     std::uint32_t to_device_message_ttl_seconds{604800U};
+    // Security audit run-2 F-14 (ADR-0335): the queue is bounded in bytes as well as rows. A message
+    // whose content is over `max_to_device_message_bytes` is refused (the client path answers 413
+    // M_TOO_LARGE, an inbound EDU drops that one message), and a recipient whose queued bytes would pass
+    // `max_to_device_bytes_per_user_device` loses its oldest rows to make room. Zero disables a bound.
+    std::uint32_t max_to_device_message_bytes{65536U};
+    std::uint32_t max_to_device_bytes_per_user_device{16777216U};
+    // Rows an enqueue or a drain looked at, summed over the store's life. A test reads the difference to
+    // prove that a batch of M messages costs one pass over the queue, not one per message (F-13).
+    std::uint64_t to_device_rows_examined{0U};
 };
 
 struct PersistentStoreOpenResult final
@@ -1831,6 +1846,14 @@ inline constexpr auto max_audit_query_rows = std::size_t{10000U};
 [[nodiscard]] auto append_admin_action(PersistentStore& store, PersistentAdminAction action) -> bool;
 [[nodiscard]] auto store_policy_rule(PersistentStore& store, PersistentPolicyRule rule) -> bool;
 [[nodiscard]] auto delete_policy_rule(PersistentStore& store, std::string_view rule_id) -> bool;
+// Security audit run-2 F-12 (ADR-0339): the most bytes of content one account-data row may hold.
+// store_account_data and both capped forms refuse a row over it, so rows the server writes itself
+// (m.tag) are bounded by the same limit as a client's PUT. Every /sync parses each row into a DOM
+// under runtime.mutex, and a read-modify-write row such as m.tag grows past any one request body.
+inline constexpr std::size_t max_account_data_row_bytes{262144U};
+
+// Returns false, writing nothing, for a missing user or type, content over
+// `max_account_data_row_bytes`, or a failed write.
 [[nodiscard]] auto store_account_data(PersistentStore& store, PersistentAccountData data) -> bool;
 
 // Outcome of store_global_account_data_within_cap and store_room_account_data_within_cap.
@@ -1840,6 +1863,8 @@ enum class CappedAccountDataStore
     // The user already holds the cap's number of other types in the row's scope; nothing was
     // written.
     over_cap,
+    // The row's content is over `max_account_data_row_bytes`; nothing was written.
+    too_large,
     // A row of the wrong scope (room_id set for a global store, empty for a room store), a
     // missing user or type, or the write failed.
     failed,
@@ -1892,6 +1917,13 @@ enum class CappedAccountDataStore
 [[nodiscard]] auto enqueue_to_device_messages_with_client_txn(PersistentStore& store,
                                                               std::vector<PersistentToDeviceMessage> messages,
                                                               PersistentClientTxnRecord record) -> bool;
+// True when `content_json` is within `store.max_to_device_message_bytes` (F-14). The callers that take
+// to-device content from a client or a remote server ask this before queueing it.
+[[nodiscard]] auto to_device_content_fits(PersistentStore const& store, std::string_view content_json) noexcept -> bool;
+// The bytes the queue holds for one (user, device): what the per-device byte bound counts (F-14). Computed
+// from the rows, so it is right after any eviction, acknowledgement or hydration.
+[[nodiscard]] auto to_device_queue_bytes(PersistentStore const& store, std::string_view user_id,
+                                         std::string_view device_id) -> std::uint64_t;
 [[nodiscard]] auto drain_to_device_messages(PersistentStore& store, std::string_view user_id,
                                             std::string_view device_id, std::uint64_t since_stream_id,
                                             std::uint64_t upper_stream_id) -> std::vector<PersistentToDeviceMessage>;

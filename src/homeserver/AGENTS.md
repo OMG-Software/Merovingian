@@ -424,7 +424,23 @@ client, sender or remote server controls, and per-user rows that requests scan m
   type the user already holds (ADR-0173). `PUT /user/{userId}/rooms/{roomId}/account_data/{type}`
   is written only for a room the user holds a membership row in, and refuses a new type past
   `max_room_account_data_per_room` per room the same way (ADR-0197). Server-written rows (`m.tag`,
-  `m.fully_read`) go through `set_account_data` and are never refused.
+  `m.fully_read`) go through `set_account_data` and are never refused by the type cap, but every account-data row,
+  theirs included, is refused past `database::max_account_data_row_bytes` (256 KiB, ADR-0339). `PUT .../tags/{tag}`
+  refuses a tag name over 255 bytes (400 `M_INVALID_PARAM`), a value over `max_tag_value_bytes` and a new tag past
+  `max_tags_per_room` (400 `M_TOO_LARGE`).
+- `PUT /sendToDevice` names at most `ClientApiLimits::max_send_to_device_deliveries` (1000) local devices, a `*`
+  counting one per device, and every message is at most `max_to_device_message_bytes`: over either is 413
+  `M_TOO_LARGE` with nothing queued (ADR-0335, ADR-0336). The devices of the named users come from one pass over
+  `store.devices`; never scan the device table per entry. The database layer gathers a batch's recipient queues in
+  one pass (`index_to_device_recipients`) and never walks the queue per message.
+- `POST /keys/upload` checks the shape and size of every one-time and fallback key before storing anything
+  (`uploaded_key_shape_refusal`, 400 `M_BAD_JSON`), and `device_keys`, each cross-signing key and each signed key of
+  a signature upload are at most `max_uploaded_key_document_bytes` (400 `M_TOO_LARGE`, ADR-0338). A new key upload
+  path does the same.
+- `POST /keys/claim` keeps a remote server's answer only for the users and devices asked of it
+  (`federation::accept_remote_key_claim_response`), never overwrites a user the response already holds, and answers
+  500 if the response cannot be serialised: use `json_serialize_checked` on any response that holds members a remote
+  server chose (ADR-0337).
 - `POST /createRoom` refuses past `max_create_room_invites` or `max_create_room_initial_state` with
   `400 M_TOO_LARGE` before `create_room` is called (ADR-0316): `create_room` stores one event per entry under
   the lock.
