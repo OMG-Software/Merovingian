@@ -2756,7 +2756,8 @@ nothing, all from trusting the worker's view or the hook's transport.
   servers, and its retry got 500. **Mitigation:** the answer is planned from IDs and sizes after the join is judged and
   before it is stored, and one that cannot fit `join_response_max_size` as a body or the frame cap (events counted at
   twice their size) is refused 503 with nothing stored or sent on; `omit_members` gives honest servers a reduced answer;
-  a re-sent join is answered again; and a response over the cap releases its requester at once (ADR-0366, ADR-0368).
+  a re-sent join is answered again from current state, so a lost answer cannot cost the joining server a ban the first
+  answer held (ADR-0372); and a response over the cap releases its requester at once (ADR-0366, ADR-0368).
   **Residual risk:** a room whose state is above about half the frame cap needs `omit_members` from the joining server,
   which a server that never sends it (this one) cannot join until the operator raises `join_response_max_size`. The
   joiner's hold on the resident's thread for the duration of the planning pass is bounded by the room's state, not by the

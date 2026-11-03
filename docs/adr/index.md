@@ -315,6 +315,7 @@
 * [0346 - A relayed PDU that fails verification is not charged to the relaying peer](0346-a-relayed-pdu-that-fails-verification-is-not-charged-to-the-relaying-peer.md) — Supersedes the relayed-PDU part of ADR-0081 and the failed-lookup penalty of ADR-0133
 * [0347 - Only a transaction writes a peer's trust record](0347-only-a-transaction-writes-a-peers-trust-record.md) — Refines ADR-0110: a worker's synthetic remote is never written back
 * [0366 - A send_join is refused before it is stored when its answer cannot be delivered, and omit_members shrinks it](0366-a-send-join-is-refused-before-it-is-stored-when-its-answer-cannot-be-delivered.md)
+* [0372 - A resent send_join is answered from current state](0372-a-resent-send-join-is-answered-from-current-state.md) — Supersedes the resend bullet of ADR-0366
 * [0367 - A make_join template and a restricted-join decision read the state by key and by room](0367-a-make-join-template-and-a-restricted-join-decision-read-by-key.md)
 * [0368 - An IPC response that cannot be sent fails its requester at once](0368-an-ipc-response-that-cannot-be-sent-fails-its-requester-at-once.md)
 * [0369 - A send_join answer is judged by the receipt checks, from its own events](0369-a-send-join-answer-is-judged-by-the-receipt-checks-from-its-own-events.md)

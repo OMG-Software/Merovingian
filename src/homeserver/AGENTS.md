@@ -354,8 +354,9 @@ its size as the frame), and only after the store copies the events out, once, wi
 the answer after the join is stored, and never let a path add events to it without adding them to the plan. `omit_members`
 reaches the acceptor as `InboundPduEnvelope::omit_members` (set from the request target by `handle_send_membership`, carried
 from a worker in the `membership_ingest` frame; main takes only that flag from the frame). A join already stored is
-answered again from the state before it (its `prev_events`) and never stored or sent on a second time; a stored `rejected`
-join is refused 403 again. Without `omit_members` the auth chain still repeats the state events; the spec allows the
+answered again from current state (`resent_send_join_state`, ADR-0372), never from the state at its `prev_events`, which
+date from `make_join` and may predate a ban; it is never stored or sent on a second time, and a stored `rejected` join is
+refused 403 again. `servers_in_room` is "before the join", so it counts the joiner only if the answer's state has them joined. Without `omit_members` the auth chain still repeats the state events; the spec allows the
 deduplication only with the parameter. `send_leave` and `send_knock` carry no state or chain (a knock's stripped state is a
 fixed small list), so they have no size to plan.
 

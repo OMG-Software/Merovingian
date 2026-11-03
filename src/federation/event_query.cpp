@@ -364,16 +364,6 @@ namespace
     // `/event_auth` answers with; a longer walk makes the state "unknown" (404), which the spec allows.
     constexpr auto max_state_read_auth_walk_events = std::size_t{10000U};
 
-    // The limits a read-path resolution of the state before an event runs under. Only the auth-chain
-    // walk is tighter than ingestion's: the per-group and total state caps already bound the rest by the
-    // size of the answer, never by the room's history.
-    [[nodiscard]] auto state_read_resolution_limits() -> events::StateResolutionLimits
-    {
-        auto limits = events::StateResolutionLimits{};
-        limits.max_auth_chain_walk_events = max_state_read_auth_walk_events;
-        return limits;
-    }
-
     // The event IDs a recorded state names, or nullopt when the state cannot be served whole. It fails
     // closed (ADR-0363): an entry that names an event this store lacks, holds under another room, or has
     // no body is not skipped, since a state with a hole in it is not the room's state; and an entry that
@@ -730,6 +720,13 @@ namespace
     };
 
 } // namespace
+
+auto state_read_resolution_limits() -> events::StateResolutionLimits
+{
+    auto limits = events::StateResolutionLimits{};
+    limits.max_auth_chain_walk_events = max_state_read_auth_walk_events;
+    return limits;
+}
 
 auto state_before_event(database::PersistentStore const& store, std::string_view room_id, std::string_view at_event_id)
     -> StateAtEvent

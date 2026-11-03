@@ -4,6 +4,7 @@
 
 #include "merovingian/database/event_table.hpp"
 #include "merovingian/database/persistent_store.hpp"
+#include "merovingian/events/state_resolution.hpp"
 #include "merovingian/federation/membership_endpoints.hpp"
 #include "merovingian/federation/room_read_result.hpp"
 
@@ -92,6 +93,11 @@ struct StateAtEvent final
     std::size_t events_parsed{0U};
     bool resolved{false};
 };
+
+// The limits a read-path resolution of the state before an event runs under. Only the auth-chain
+// walk is tighter than ingestion's: the per-group and total state caps already bound the rest by the
+// size of the answer, never by the room's history.
+[[nodiscard]] auto state_read_resolution_limits() -> events::StateResolutionLimits;
 
 // The state before `at_event_id`: its own recorded group when it is not a state event or was rejected
 // (the state before equals the state after), otherwise the group of its single `prev_event`, otherwise

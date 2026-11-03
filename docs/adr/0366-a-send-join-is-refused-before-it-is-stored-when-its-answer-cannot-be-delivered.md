@@ -1,6 +1,6 @@
 # A send_join is refused before it is stored when its answer cannot be delivered, and omit_members shrinks it
 
-* Status: accepted
+* Status: accepted; the resend bullet below is superseded by [ADR-0372](0372-a-resent-send-join-is-answered-from-current-state.md)
 * Deciders: James Chapman
 * Date: 2026-11-03
 

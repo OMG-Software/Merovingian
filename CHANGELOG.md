@@ -62,8 +62,9 @@ The medium findings of security audit run 2 (ref 5e67d4e8).
   counted twice over) is refused `503` with nothing stored, nothing sent on and no stream ordering taken. With
   `?omit_members=true` the state leaves out membership events except the five heroes' when the room has no name or
   alias, `members_omitted` is true, `servers_in_room` lists the servers with joined members, and the auth chain drops
-  what the state returns and carries the join's own auth events. A join sent twice is answered again (state before
-  it, nothing stored or sent on again; a rejected one is refused 403 again), not `500`.
+  what the state returns and carries the join's own auth events. A join sent twice is answered again (from current
+  state, so never older than the first answer, ADR-0372; nothing stored or sent on again; a rejected one is refused 403
+  again), not `500`.
 - **A response too large for the worker channel fails its requester at once (F-23, ADR-0368).** `send_response` logged
   and dropped it, leaving the requester to wait for its whole timeout. It now sends a small `ipc_error` reply that
   releases the waiter with no response, and the channel carries on.

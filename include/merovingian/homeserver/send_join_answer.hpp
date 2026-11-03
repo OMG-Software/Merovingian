@@ -69,6 +69,15 @@ struct SendJoinAnswerLimits final
 [[nodiscard]] auto current_room_state_entries(database::PersistentStore const& store, std::string_view room_id)
     -> std::vector<database::PersistentStateGroupStateEntry>;
 
+// What a join already stored is answered with when it is sent again (ADR-0372): the room's current
+// state, as the first answer was, so the answer is never older than the first. The joiner's own
+// membership goes back to `state_before_join` only where the join itself is the current row: a row
+// that is not the join (a ban that soft-failed it, a later leave) stays. `runtime.mutex` held.
+[[nodiscard]] auto resent_send_join_state(
+    database::PersistentStore const& store, std::string_view room_id, std::string_view joining_user,
+    std::string_view join_event_id, std::vector<database::PersistentStateGroupStateEntry> const& state_before_join)
+    -> std::vector<database::PersistentStateGroupStateEntry>;
+
 // Plans the answer to a send_join for `joining_user` into `room_id`, from this server's state
 // (`runtime.mutex` held). `state` is the resolved room state before the join. `join_auth_event_ids`
 // are the auth events of the join event, whose chain the answer must carry. With `omit_members`

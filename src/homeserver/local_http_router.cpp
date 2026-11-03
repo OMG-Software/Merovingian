@@ -2231,8 +2231,9 @@ namespace
             }
             // A join this server already stored is answered again, not refused (F-23): the server
             // that sent it may not have received the first answer (a lost response, a retry). The
-            // event is not judged, stored or sent on a second time; the answer is the state before
-            // it, which its prev_events give. A join rejected on receipt is refused again.
+            // event is not judged, stored or sent on a second time. The answer is the room's current
+            // state, as the first answer was, never the state at the join's prev_events, which date
+            // from make_join and may predate a ban (ADR-0372). A join rejected on receipt is refused again.
             if (endpoint == federation::FederationEndpoint::send_join)
             {
                 auto const stored_join = store.events.find_in_room(room_id, envelope.event_id);
@@ -2249,15 +2250,19 @@ namespace
                     {
                         return {false, 400U, "unknown room version", {}, {}};
                     }
-                    auto const state_before_join = compute_state_before(
-                        store, room_id, *resent_policy, stored_join->prev_event_ids,
-                        state_resolution_limits(rt->config.security().federation.state_resolution));
+                    // A read: the sender decides how often it runs (ADR-0365).
+                    auto const state_before_join =
+                        compute_state_before(store, room_id, *resent_policy, stored_join->prev_event_ids,
+                                             federation::state_read_resolution_limits());
                     if (!state_before_join.ok)
                     {
                         return {false, 503U, "the state before the join is not available here; retry", {}, {}};
                     }
-                    auto resent_plan = plan_send_join_answer(*rt, room_id, envelope.sender, state_before_join.state,
-                                                             stored_join->auth_event_ids, envelope.omit_members);
+                    auto resent_plan =
+                        plan_send_join_answer(*rt, room_id, envelope.sender,
+                                              resent_send_join_state(store, room_id, envelope.sender, envelope.event_id,
+                                                                     state_before_join.state),
+                                              stored_join->auth_event_ids, envelope.omit_members);
                     if (!send_join_answer_fits(resent_plan, send_join_answer_limits(rt->config)))
                     {
                         return {false, 503U, std::string{send_join_answer_too_large_reason}, {}, {}};

@@ -12,6 +12,7 @@
 
 #include <algorithm>
 #include <limits>
+#include <optional>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
@@ -39,23 +40,24 @@ namespace
                                                                      : lhs + rhs;
     }
 
-    // Whether the room's current `type` event (state key "") has a non-empty string `key` in its
-    // content: client-server-api.md treats an empty name or alias as unset.
-    [[nodiscard]] auto state_event_sets_text(database::PersistentStore const& store, std::string_view room_id,
-                                             std::vector<database::PersistentStateGroupStateEntry> const& state,
-                                             std::string_view type, std::string_view key) -> bool
+    // The string `key` in the content of the `type` event for `state_key` in `state`, if there is one.
+    [[nodiscard]] auto state_event_text(database::PersistentStore const& store, std::string_view room_id,
+                                        std::vector<database::PersistentStateGroupStateEntry> const& state,
+                                        std::string_view type, std::string_view state_key, std::string_view key)
+        -> std::optional<std::string>
     {
-        auto const entry = std::ranges::find_if(state, [type](database::PersistentStateGroupStateEntry const& current) {
-            return current.event_type == type && current.state_key.empty();
-        });
+        auto const entry =
+            std::ranges::find_if(state, [type, state_key](database::PersistentStateGroupStateEntry const& current) {
+                return current.event_type == type && current.state_key == state_key;
+            });
         if (entry == state.end())
         {
-            return false;
+            return std::nullopt;
         }
         auto const event = store.events.find_in_room(room_id, entry->event_id);
         if (event == store.events.end())
         {
-            return false;
+            return std::nullopt;
         }
         auto const parsed = canonicaljson::parse_lossless(event->json);
         auto const* root = parsed.error == canonicaljson::ParseError::none
@@ -63,7 +65,7 @@ namespace
                                : nullptr;
         if (root == nullptr)
         {
-            return false;
+            return std::nullopt;
         }
         for (auto const& member : *root)
         {
@@ -74,18 +76,28 @@ namespace
             auto const* content = std::get_if<canonicaljson::Object>(&member.value->storage());
             if (content == nullptr)
             {
-                return false;
+                return std::nullopt;
             }
             for (auto const& field : *content)
             {
                 if (field.key == key)
                 {
                     auto const* text = std::get_if<std::string>(&field.value->storage());
-                    return text != nullptr && !text->empty();
+                    return text == nullptr ? std::nullopt : std::optional<std::string>{*text};
                 }
             }
         }
-        return false;
+        return std::nullopt;
+    }
+
+    // Whether the room's current `type` event (state key "") has a non-empty string `key` in its
+    // content: client-server-api.md treats an empty name or alias as unset.
+    [[nodiscard]] auto state_event_sets_text(database::PersistentStore const& store, std::string_view room_id,
+                                             std::vector<database::PersistentStateGroupStateEntry> const& state,
+                                             std::string_view type, std::string_view key) -> bool
+    {
+        auto const text = state_event_text(store, room_id, state, type, {}, key);
+        return text.has_value() && !text->empty();
     }
 
     // The members whose events a reduced state still carries so the joiner can name the room:
@@ -117,12 +129,18 @@ namespace
         return ids;
     }
 
-    [[nodiscard]] auto servers_with_joined_members(LocalRoom const& room) -> std::vector<std::string>
+    // The servers of the roster's members, leaving out `not_counted`.
+    [[nodiscard]] auto servers_with_joined_members(LocalRoom const& room, std::string_view not_counted)
+        -> std::vector<std::string>
     {
         auto seen = std::unordered_set<std::string>{};
         auto servers = std::vector<std::string>{};
         for (auto const& member : room.members)
         {
+            if (member == not_counted)
+            {
+                continue;
+            }
             auto const server = auth::user_id_server_name(member);
             if (!server.empty() && seen.emplace(server).second)
             {
@@ -155,6 +173,29 @@ auto current_room_state_entries(database::PersistentStore const& store, std::str
         }
     });
     return entries;
+}
+
+auto resent_send_join_state(database::PersistentStore const& store, std::string_view room_id,
+                            std::string_view joining_user, std::string_view join_event_id,
+                            std::vector<database::PersistentStateGroupStateEntry> const& state_before_join)
+    -> std::vector<database::PersistentStateGroupStateEntry>
+{
+    auto const is_joiners_membership = [joining_user](database::PersistentStateGroupStateEntry const& entry) {
+        return entry.event_type == "m.room.member" && entry.state_key == joining_user;
+    };
+    auto state = current_room_state_entries(store, room_id);
+    auto const own = std::ranges::find_if(state, is_joiners_membership);
+    if (own == state.end() || own->event_id != join_event_id)
+    {
+        return state;
+    }
+    state.erase(own);
+    auto const before = std::ranges::find_if(state_before_join, is_joiners_membership);
+    if (before != state_before_join.end() && !before->event_id.empty())
+    {
+        state.push_back(*before);
+    }
+    return state;
 }
 
 auto plan_send_join_answer(HomeserverRuntime const& runtime, std::string_view room_id, std::string_view joining_user,
@@ -201,7 +242,12 @@ auto plan_send_join_answer(HomeserverRuntime const& runtime, std::string_view ro
         plan.members_omitted = omitted_members > heroes_returned;
         if (plan.members_omitted && room_it != runtime.database.rooms.end())
         {
-            plan.servers_in_room = servers_with_joined_members(*room_it);
+            // "Before the join": a join already stored has put the joiner on the roster, so the
+            // joiner counts only if `state` has them joined already.
+            auto const joined_before =
+                state_event_text(store, room_id, state, "m.room.member", joining_user, "membership") == "join";
+            plan.servers_in_room =
+                servers_with_joined_members(*room_it, joined_before ? std::string_view{} : joining_user);
         }
     }
 

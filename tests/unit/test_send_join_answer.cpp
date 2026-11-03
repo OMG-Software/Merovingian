@@ -1000,3 +1000,144 @@ SCENARIO("A restricted-join decision reads the rooms it names, not the server",
         }
     }
 }
+
+// Spec: PUT /send_join, `state`: "The resolved current room state prior to the join event";
+// `servers_in_room`: "those with joined members ... before the join". The spec has no separate
+// answer for a repeated request, so a server whose first answer was lost is owed the same thing.
+SCENARIO("A join sent again after the room moved on is not answered with older state",
+         "[homeserver][send_join_answer][f23][resend]")
+{
+    auto const holds_membership = [](std::vector<std::string> const& events, std::string const& membership) {
+        auto const wanted = R"("membership":")" + membership + "\"";
+        return std::ranges::any_of(events, [&wanted](std::string const& json) {
+            return json.find(wanted) != std::string::npos;
+        });
+    };
+
+    GIVEN("a join built on the room's tip, and then carol banned before the join arrives")
+    {
+        auto const path = unique_sqlite_path();
+        std::filesystem::remove(path);
+        auto started = merovingian::homeserver::start_runtime(config_with_sqlite(path, "64MiB"));
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        merovingian::homeserver::wire_federation_callbacks(runtime);
+        install_unstarted_dispatch_worker(runtime);
+        auto room = seed_room(runtime, "!moved:local.example.org", R"({"join_rule":"public"})");
+        auto const carol_user = std::string{carol};
+        seed_state_after(runtime, room, "$carol:local.example.org", "m.room.member", carol_user, carol_user,
+                         R"({"membership":"join"})");
+        add_to_roster(runtime, room.room_id, carol_user);
+        for (auto index = 0; index < 7; ++index)
+        {
+            auto const user = "@u" + std::to_string(index) + ":a.example.org";
+            seed_state_after(runtime, room, "$m" + std::to_string(index) + ":local.example.org", "m.room.member", user,
+                             user, R"({"membership":"join"})");
+            add_to_roster(runtime, room.room_id, user);
+        }
+        auto envelope = join_envelope(room, std::string{bob}, "$bobjoin:remote.example.org", public_join_auth(room));
+        seed_state_after(runtime, room, "$ban:local.example.org", "m.room.member", carol_user, std::string{admin},
+                         R"({"membership":"ban"})");
+
+        WHEN("the join is accepted and sent again")
+        {
+            auto const first = accept(runtime, envelope);
+            REQUIRE(first.accepted);
+            auto const second = accept(runtime, envelope);
+
+            THEN("the second answer holds the ban the first answer held, and is otherwise the same")
+            {
+                REQUIRE(holds_membership(first.state_json, "ban"));
+                REQUIRE(second.accepted);
+                REQUIRE(holds_membership(second.state_json, "ban"));
+                REQUIRE(described(second.state_json) == described(first.state_json));
+            }
+            AND_THEN("the joiner's own join is not in the state before it")
+            {
+                REQUIRE_FALSE(described(second.state_json).contains("m.room.member|" + std::string{bob}));
+            }
+        }
+
+        WHEN("the join asks for omit_members and is sent again")
+        {
+            envelope.omit_members = true;
+            auto const first = accept(runtime, envelope);
+            REQUIRE(first.accepted);
+            REQUIRE(first.members_omitted);
+            auto const second = accept(runtime, envelope);
+
+            THEN("servers_in_room still lists only the servers joined before the join")
+            {
+                REQUIRE(second.accepted);
+                REQUIRE(second.members_omitted);
+                REQUIRE(std::ranges::find(first.servers_in_room, "remote.example.org") == first.servers_in_room.end());
+                REQUIRE(second.servers_in_room == first.servers_in_room);
+            }
+        }
+
+        std::filesystem::remove(path);
+    }
+
+    GIVEN("bob, who left the room, joining it again")
+    {
+        auto const path = unique_sqlite_path();
+        std::filesystem::remove(path);
+        auto started = merovingian::homeserver::start_runtime(config_with_sqlite(path, "64MiB"));
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        merovingian::homeserver::wire_federation_callbacks(runtime);
+        install_unstarted_dispatch_worker(runtime);
+        auto room = seed_room(runtime, "!back:local.example.org", R"({"join_rule":"public"})");
+        auto const bob_user = std::string{bob};
+        seed_state_after(runtime, room, "$bobleft:remote.example.org", "m.room.member", bob_user, bob_user,
+                         R"({"membership":"leave"})");
+        auto const envelope = join_envelope(room, bob_user, "$bobback:remote.example.org", public_join_auth(room));
+
+        WHEN("the join is accepted and sent again")
+        {
+            auto const first = accept(runtime, envelope);
+            REQUIRE(first.accepted);
+            auto const second = accept(runtime, envelope);
+
+            THEN("both answers give bob's membership as it was before the join")
+            {
+                REQUIRE(holds_membership(first.state_json, "leave"));
+                REQUIRE(second.accepted);
+                REQUIRE(holds_membership(second.state_json, "leave"));
+                REQUIRE(described(second.state_json) == described(first.state_json));
+            }
+        }
+
+        std::filesystem::remove(path);
+    }
+
+    GIVEN("bob banned after his join was built, so that his join does not change the room's state")
+    {
+        auto const path = unique_sqlite_path();
+        std::filesystem::remove(path);
+        auto started = merovingian::homeserver::start_runtime(config_with_sqlite(path, "64MiB"));
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        merovingian::homeserver::wire_federation_callbacks(runtime);
+        install_unstarted_dispatch_worker(runtime);
+        auto room = seed_room(runtime, "!barred:local.example.org", R"({"join_rule":"public"})");
+        auto const bob_user = std::string{bob};
+        auto const envelope = join_envelope(room, bob_user, "$bobjoin:remote.example.org", public_join_auth(room));
+        seed_state_after(runtime, room, "$bobban:local.example.org", "m.room.member", bob_user, std::string{admin},
+                         R"({"membership":"ban"})");
+
+        WHEN("the join is answered and sent again")
+        {
+            auto const first = accept(runtime, envelope);
+            auto const second = accept(runtime, envelope);
+
+            THEN("the second answer does not lose his ban")
+            {
+                REQUIRE(second.accepted == first.accepted);
+                REQUIRE(holds_membership(second.state_json, "ban") == holds_membership(first.state_json, "ban"));
+            }
+        }
+
+        std::filesystem::remove(path);
+    }
+}
