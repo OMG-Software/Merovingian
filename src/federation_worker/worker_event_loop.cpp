@@ -15,6 +15,7 @@
 #include "merovingian/federation_worker/ipc_key_fd.hpp"
 #include "merovingian/homeserver/local_http_router.hpp"
 #include "merovingian/homeserver/runtime.hpp"
+#include "merovingian/homeserver/worker_ipc_limits.hpp"
 #include "merovingian/http/outbound_client.hpp"
 #include "merovingian/http/request.hpp"
 #include "merovingian/ipc/channel.hpp"
@@ -184,6 +185,10 @@ namespace
         result += ipc::ipc_json_str(membership_endpoint_to_string(endpoint));
         result += ',';
         append_envelope_fields(result, env);
+        if (env.omit_members)
+        {
+            result += R"(,"omit_members":1)";
+        }
         result += '}';
         return result;
     }
@@ -381,6 +386,8 @@ namespace
         result.auth_chain_json = field_string_array(*obj, "auth_chain_json");
         result.state_json = field_string_array(*obj, "state_json");
         result.knock_room_state_json = field_string_array(*obj, "knock_room_state_json");
+        result.members_omitted = field_bool(*obj, "members_omitted");
+        result.servers_in_room = field_string_array(*obj, "servers_in_room");
         return result;
     }
 
@@ -661,21 +668,7 @@ auto WorkerEventLoop::run() -> void
     // Create the IPC channel first; the blocking key exchange completes here
     // before the runtime starts. Both peers derive the same frame cap from the
     // same configured response and request budgets rather than negotiating it.
-    auto const join_response_max_size = config::parse_size_limit(config_.security().federation.join_response_max_size);
-    auto const backfill_response_max_size =
-        config::parse_size_limit(config_.security().federation.backfill.response_max_size);
-    auto const federation_request_body_size =
-        config::parse_size_limit(config_.security().federation.max_transaction_size);
-    auto const http_body_size = config::parse_size_limit(config_.server().http.max_body_size);
-    auto const client_api_body_size = config::parse_size_limit(config_.server().client_api.max_body_size);
-    auto const http_config = config_.server().http;
-    auto const max_frame_bytes = ipc::frame_bytes_for_transport_caps(
-        std::max(join_response_max_size.valid ? join_response_max_size.bytes : 0U,
-                 backfill_response_max_size.valid ? backfill_response_max_size.bytes : 0U),
-        federation_request_body_size.valid ? federation_request_body_size.bytes : 0U,
-        std::max(http_body_size.valid ? http_body_size.bytes : 0U,
-                 client_api_body_size.valid ? client_api_body_size.bytes : 0U),
-        http_config.max_header_bytes, http_config.max_start_line_bytes);
+    auto const max_frame_bytes = homeserver::worker_ipc_frame_bytes(config_);
     auto channel = std::make_unique<ipc::IpcChannel>(std::move(ipc_fd_), ipc::IpcChannel::Role::client, *auth_key,
                                                      max_frame_bytes);
     auto* channel_ptr = channel.get();

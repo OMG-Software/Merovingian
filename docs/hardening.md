@@ -440,7 +440,9 @@ separate process on the same host:
   (`merovingian::ipc::kIpcMaxFrameBytes`) by default, lowered from a prior
   50 MiB cap to bound memory-exhaustion DoS across concurrent workers;
   oversize frames are logged and propagated as send/request failures rather
-  than silently dropped. Response bodies (`fed_response`/`outbound_http_response`)
+  than silently dropped: a response over the cap is replaced by a small
+  `ipc_error` reply that releases the requester at once instead of leaving it
+  to its timeout (F-23, ADR-0368). Response bodies (`fed_response`/`outbound_http_response`)
   are base64-encoded before framing — a fixed 4/3 expansion — instead of raw
   JSON-string escaping, whose expansion depends on the response content and
   could otherwise push a response already at the response cap over the frame

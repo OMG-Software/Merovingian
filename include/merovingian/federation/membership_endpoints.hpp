@@ -84,6 +84,11 @@ struct MembershipAcceptResult final
     // while waiting for the knock to be answered. Spec MUST be present in
     // the send_knock response body under the "knock_room_state" key.
     std::vector<std::string> knock_room_state_json{};
+    // For send_join v2 (F-23): true when `m.room.member` events were left out of `state_json`
+    // because the request set `omit_members`, and then the servers with joined members before the
+    // join, which the spec requires with it.
+    bool members_omitted{false};
+    std::vector<std::string> servers_in_room{};
 };
 
 // Hook signature for accepting a signed membership event. The implementation

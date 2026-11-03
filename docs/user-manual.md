@@ -1089,7 +1089,7 @@ pool free for requests that never leave this server. Behind a reverse proxy set
 | `security.federation.join_race_deadline` | `45s` | Overall wall-clock budget for the whole candidate race. |
 | `security.federation.join_max_candidates` | `20` | Hard cap on `via` candidates raced. |
 | `security.federation.join_state_key_parallelism` | `100` | Concurrent remote signing-key resolutions while verifying `send_join` state. |
-| `security.federation.join_response_max_size` | `64MiB` | Response body cap specifically for `make_join`/`send_join`. **Requires restart.** |
+| `security.federation.join_response_max_size` | `64MiB` | Response body cap specifically for `make_join`/`send_join`, in both directions: the size of a join response this server accepts when it joins, and the size of the answer it will send as the resident (a join whose answer would be larger, or would not fit the worker channel's frame, is refused `503` before it is stored; see below). **Requires restart.** |
 
 `join_parallelism` bounds *concurrency*, not *total elapsed time*. A room
 with a large `via` candidate list races in batches of `join_parallelism`,
@@ -1124,6 +1124,14 @@ federation call uses. It also sizes the federation-worker IPC channel's
 frame budget, which is fixed for the worker process's lifetime — raising
 this value takes effect only after both the main process and the worker
 restart.
+
+As the resident of a room, this server plans the answer to a `send_join` before it stores the join. If the
+events it would send (the room's state and the auth chain, counted at twice their size for the worker channel) do
+not fit `join_response_max_size` or the channel's frame, it answers `503` with nothing stored and nothing sent to the
+room's other servers, and the reason says to retry with `omit_members=true`. A joining server that sends
+`?omit_members=true` (server-server-api.md) gets a reduced answer: no membership events in `state` except the five
+heroes' when the room has no name or alias, `members_omitted: true` and `servers_in_room`. A join sent twice is
+answered twice. This server never asks for a reduced answer when it joins a room.
 
 #### Federation inbound abuse controls — `security.federation.*`
 
@@ -2822,6 +2830,7 @@ commit.
 | `429 Too Many Requests` for all clients | `server.trusted_proxies` is unset behind a reverse proxy. | Set `server.trusted_proxies` and ensure the proxy overwrites `X-Forwarded-For` with the direct peer IP. |
 | `502 send_join failed: timeout` | Large room join exceeds `security.federation.join_timeout` or the proxy's request timeout. | Raise `join_timeout` and `join_race_deadline`; ensure they fit inside the proxy timeout. |
 | `502 send_join failed: response_too_large` | `send_join` response exceeds `security.federation.join_response_max_size`. | Raise the value and restart both main and worker processes. |
+| A remote server's `send_join` into a room here is refused `503` ("retry with omit_members=true") | The room's state and auth chain are too large to send. | The remote server should retry with `omit_members=true`; raise `join_response_max_size` (restart) for servers that do not. |
 | Federation worker does not start | `merovingian-fed-worker` binary is missing or `federation.worker.binary` points to the wrong path. | Check binary location and permissions. |
 | Encrypted media downloads fail | `application/octet-stream` was removed from `security.media.allowed_mime_types`. | Restore it. |
 

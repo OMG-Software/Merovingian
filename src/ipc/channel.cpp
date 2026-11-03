@@ -35,6 +35,10 @@ namespace
 {
 
     constexpr auto kIpcEnvelopeHeadroom = std::uint64_t{2U * 1024U * 1024U};
+    // The body of a response frame that stands for an answer the sender could not send. The
+    // member name is reserved: no frame body uses it, and the reader treats a reply carrying it
+    // as "no response" for the waiter.
+    constexpr auto failed_response_body = std::string_view{R"({"ipc_error":"response_too_large"})"};
     constexpr auto kIpcRequestEscapeMultiplier = std::uint64_t{6U};
     // The frame prefix stores ciphertext bytes in uint32, and each plaintext
     // frame gains the secretstream's fixed 17-byte authentication overhead.
@@ -81,6 +85,20 @@ namespace
             }
         }
         return std::nullopt;
+    }
+
+    // Whether a parsed reply frame is the notice send_response writes in place of an answer it
+    // could not send.
+    [[nodiscard]] auto reply_is_failure_notice(canonicaljson::Object const& frame) noexcept -> bool
+    {
+        for (auto const& member : frame)
+        {
+            if (member.key == "ipc_error")
+            {
+                return true;
+            }
+        }
+        return false;
     }
 
     // The routing members of a frame whose payload did not parse.
@@ -494,7 +512,9 @@ auto IpcChannel::send_response(std::uint64_t reply_to, std::string_view json_bod
     if (json_body.size() > max_frame_bytes_)
     {
         report_oversize_drop(json_body, "response");
-        return;
+        // The requester is waiting for this answer: tell it there will not be one, in a frame
+        // that cannot itself be over the cap, so it fails now and not at its timeout (F-23).
+        json_body = failed_response_body;
     }
     auto const id = next_id_.fetch_add(1U, std::memory_order_relaxed);
     auto const frame = build_frame(id, reply_to, json_body);
@@ -614,7 +634,12 @@ auto IpcChannel::reader_loop() -> void
                 auto const it = pending_.find(*reply_to);
                 if (it != pending_.end())
                 {
-                    it->second->response = std::move(*frame);
+                    // A reply that says the peer could not send the answer releases the waiter
+                    // with no response, as a timeout would, but now (F-23).
+                    if (!reply_is_failure_notice(*obj))
+                    {
+                        it->second->response = std::move(*frame);
+                    }
                     it->second->ready = true;
                     entry = it->second;
                 }

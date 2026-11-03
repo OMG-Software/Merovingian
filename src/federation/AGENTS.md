@@ -50,6 +50,13 @@ Federation is the highest-risk surface: **all input comes from untrusted remote 
    under this server's name before signing (R04, ADR-0185). No other endpoint
    or server gets that exemption.
 
+   The resident's answer to a `send_join` is bounded before the join is stored (F-23, ADR-0366): the acceptor plans it
+   (`plan_send_join_answer`) and refuses 503 with nothing stored or sent on when it would not fit the body cap or the
+   worker channel's frame. `handle_send_membership` parses the `omit_members` query parameter (only the exact value
+   `true`, only on `send_join`) into `InboundPduEnvelope::omit_members` and writes `members_omitted` and
+   `servers_in_room` from the acceptor's result. This server never sends `omit_members` when it joins a room
+   (ADR-0241), so its own join path needs no handling of a reduced answer.
+
    A content-hash mismatch is never a reason to refuse an event on any path: the event is
    redacted and processed further (spec "Checks performed on receipt of a PDU", step 3). The
    membership acceptor and the invite handler redact; `handle_send_membership` and

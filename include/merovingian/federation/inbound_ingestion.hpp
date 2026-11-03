@@ -38,6 +38,11 @@ struct InboundPduEnvelope final
     // origin when our own copy of the DAG is incomplete. Not present in the
     // PDU JSON itself; set by the transaction handler before invoking pdu_sink.
     std::string origin{};
+    // PUT /send_join only: the request's `omit_members` query parameter (server-server-api.md),
+    // which says the calling server accepts an answer without membership events. Like `origin`, not
+    // part of the PDU: the join handler sets it from the request target, and the worker relay
+    // carries it to main in the membership_ingest frame.
+    bool omit_members{false};
 };
 
 enum class PduIngestionStatus : std::uint8_t

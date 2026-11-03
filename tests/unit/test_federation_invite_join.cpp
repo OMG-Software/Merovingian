@@ -760,12 +760,42 @@ SCENARIO("send_join response body includes the required members_omitted field",
             auto const response = merovingian::federation::handle_inbound_federation_request(
                 runtime.federation, signed_put(target, join.body));
 
-            THEN("the response body contains members_omitted set to false")
+            THEN("the response body contains members_omitted, true as membership events were left out")
             {
                 // Spec MUST: send_join v2 response must include members_omitted.
                 // Synapse raises KeyError on a missing field and returns 500 to
                 // the joining client, which then retries indefinitely.
                 // Do NOT remove — guards the missing members_omitted wire format bug.
+                REQUIRE(response.status == 200U);
+                auto const parsed = merovingian::canonicaljson::parse_lossless(response.body);
+                REQUIRE(parsed.error == merovingian::canonicaljson::ParseError::none);
+                auto const* root = std::get_if<merovingian::canonicaljson::Object>(&parsed.value.storage());
+                REQUIRE(root != nullptr);
+                auto const mo_it = std::ranges::find_if(*root, [](auto const& m) {
+                    return m.key == "members_omitted";
+                });
+                REQUIRE(mo_it != root->end());
+                auto const* mo_val = std::get_if<bool>(&mo_it->value->storage());
+                REQUIRE(mo_val != nullptr);
+                // Spec: "members_omitted: true if m.room.member events have been omitted from state"
+                // and, with omit_members=true, they may be (F-23, ADR-0366). Before that this server never
+                // omitted any, so the value was always false; the invited user's own member event is left
+                // out now, so it is true, and servers_in_room, "Required if members_omitted is true", is there.
+                REQUIRE(*mo_val == true);
+                REQUIRE(std::ranges::any_of(*root, [](auto const& m) {
+                    return m.key == "servers_in_room";
+                }));
+            }
+        }
+
+        WHEN("the remote server calls send_join without omit_members")
+        {
+            auto const target = "/_matrix/federation/v2/send_join/" + room_id + "/" + join.event_id;
+            auto const response = merovingian::federation::handle_inbound_federation_request(
+                runtime.federation, signed_put(target, join.body));
+
+            THEN("the response body contains members_omitted set to false")
+            {
                 REQUIRE(response.status == 200U);
                 auto const parsed = merovingian::canonicaljson::parse_lossless(response.body);
                 REQUIRE(parsed.error == merovingian::canonicaljson::ParseError::none);

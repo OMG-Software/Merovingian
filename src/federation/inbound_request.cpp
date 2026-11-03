@@ -1174,6 +1174,8 @@ namespace
         return {200U, std::move(body)};
     }
 
+    [[nodiscard]] auto query_param_value(std::string_view target, std::string_view name) -> std::string;
+
     [[nodiscard]] auto handle_send_membership(FederationRuntimeState& runtime, SignedFederationRequest const& request,
                                               FederationRoute const& route, FederationRemoteRuntime& remote)
         -> FederationResponse
@@ -1276,6 +1278,10 @@ namespace
             // too, so the rule holds wherever the event is accepted).
         }
         envelope->origin = request.origin;
+        // Spec v1.19 PUT /send_join, query parameter `omit_members`: "If true, indicates that that
+        // calling server can accept a reduced response". Only a send_join has it.
+        envelope->omit_members = route.endpoint == FederationEndpoint::send_join &&
+                                 query_param_value(request.target, "omit_members") == "true";
         auto const acceptance =
             runtime.membership_acceptor(route.endpoint, params->room_id, params->subject, *envelope);
         if (!acceptance.accepted)
@@ -1298,8 +1304,20 @@ namespace
             // Spec §11.5.1 (PUT /send_join): members_omitted is a REQUIRED field.
             // Without it Synapse raises a parse error and returns 500 to its
             // joining client, causing an infinite make_join/send_join retry loop.
-            // We always include full member events so the value is always false.
-            response.push_back(canonicaljson::make_member("members_omitted", canonicaljson::Value{false}));
+            // True only when the request set omit_members and membership events were left out of
+            // `state`; `servers_in_room` is then required (v1.6).
+            response.push_back(
+                canonicaljson::make_member("members_omitted", canonicaljson::Value{acceptance.members_omitted}));
+            if (acceptance.members_omitted)
+            {
+                auto servers = canonicaljson::Array{};
+                for (auto const& server : acceptance.servers_in_room)
+                {
+                    servers.push_back(canonicaljson::Value{server});
+                }
+                response.push_back(
+                    canonicaljson::make_member("servers_in_room", canonicaljson::Value{std::move(servers)}));
+            }
         }
         response.push_back(canonicaljson::make_member("auth_chain", build_array_value(acceptance.auth_chain_json)));
         response.push_back(canonicaljson::make_member("state", build_array_value(acceptance.state_json)));

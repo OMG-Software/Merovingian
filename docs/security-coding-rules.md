@@ -1322,6 +1322,18 @@ media-fetch-pool task.
   ADR-0330, ADR-0332, ADR-0333, ADR-0334).
   Source: `src/core/AGENTS.md`, `src/homeserver/AGENTS.md`, `src/sync/AGENTS.md`.
 
+- **A resident plans the answer to a `send_join` before it stores the join, refuses 503 with nothing stored when the
+  answer would not fit, and reads the state for a `make_join` by key.** `plan_send_join_answer` names the answer's
+  events by ID and size and `send_join_answer_fits` checks them against `join_response_max_size` and the worker frame
+  (events at twice their size); only an accepted join has its events copied out. `omit_members` is the exact value `true`
+  on a `send_join`. The template provider and `decide_restricted_join` use `find_current_state_event_id`,
+  `for_each_room_state_row` and `EventTable::find_in_room`, never a pass over `store.state` or `store.events`. An IPC
+  response over the frame cap is replaced by an `ipc_error` reply, never left to its requester's timeout.
+  Why: a join committed and sent on whose answer is then dropped is lost to its sender, and an answer of attacker-chosen
+  size pinned relay and request threads for 60 to 130 s; a scan of every room's state under the runtime lock follows the
+  size of the server, not the request (CWE-400, CWE-407; security audit run-2 F-19, F-23, ADR-0366, ADR-0367, ADR-0368).
+  Source: `src/homeserver/AGENTS.md`, `src/federation/AGENTS.md`, `src/ipc/AGENTS.md`.
+
 ## Push notifications
 
 - **Glob matching for push rules is linear and never uses `std::regex`.** A pattern without

@@ -48,6 +48,25 @@ The medium findings of security audit run 2 (ref 5e67d4e8).
   `M_LIMIT_EXCEEDED` or "deadline exceeded", and the local part of the answer, including one-time keys already claimed
   here, is still returned. A join by remote alias takes a slot (`429 M_LIMIT_EXCEEDED` when none is free) and runs under
   the 10 s directory deadline.
+- **A join whose answer cannot be delivered is refused before it is stored, and `omit_members` is implemented (F-23,
+  ADR-0366).** The resident stored a `send_join` and sent it on to the room's other servers, then built the answer; one
+  federating server could grow a public room's state past the worker channel's frame cap, after which the join was
+  committed but its answer was dropped with a log line, the joining server waited out a 60 to 130 s timeout holding a
+  thread, got 503, and got 500 on retry. The answer is now planned from event IDs and sizes after the join is judged
+  and before it is stored; one that cannot fit `join_response_max_size` as a body or the worker frame cap (events
+  counted twice over) is refused `503` with nothing stored, nothing sent on and no stream ordering taken. With
+  `?omit_members=true` the state leaves out membership events except the five heroes' when the room has no name or
+  alias, `members_omitted` is true, `servers_in_room` lists the servers with joined members, and the auth chain drops
+  what the state returns and carries the join's own auth events. A join sent twice is answered again (state before
+  it, nothing stored or sent on again; a rejected one is refused 403 again), not `500`.
+- **A response too large for the worker channel fails its requester at once (F-23, ADR-0368).** `send_response` logged
+  and dropped it, leaving the requester to wait for its whole timeout. It now sends a small `ipc_error` reply that
+  releases the waiter with no response, and the channel carries on.
+- **`make_join` and the restricted-join decision no longer scan the server (F-19, ADR-0367).** The template's auth events,
+  `decide_restricted_join` (which runs for every make_join) and `stored_room_version` passed over every room's state rows
+  and every stored event under `runtime.mutex`. They now read by key through the state index and by room through the
+  event table; `RestrictedJoinDecision::work` counts what a decision read. The template's `prev_events` are the room's
+  stored tips, at most 20, with a depth taken from them, and a room with none is refused (PR #549, ADR-0318).
 - **One user can no longer use up the local media record cap (F-46, ADR-0340).** `security.media.max_records` was one
   budget for the whole server, and distinct tiny files or deduplicated re-uploads cost the per-user byte quota almost
   nothing, so one account could fill it and every user's upload was then refused until an operator raised it. New key

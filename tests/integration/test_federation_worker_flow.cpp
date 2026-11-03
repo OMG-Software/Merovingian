@@ -1538,6 +1538,52 @@ SCENARIO("handle_membership_ingest_request persists a worker-relayed federated j
                 REQUIRE(has_membership_row);
             }
         }
+
+        // F-23. The request's `omit_members` query parameter reaches main in the membership_ingest
+        // frame (the verified envelope takes only that flag from the frame), and the reduced answer
+        // comes back with members_omitted and servers_in_room (server-server-api.md PUT /send_join).
+        WHEN("the relayed join asks for omit_members")
+        {
+            auto const sender = std::string{"@remote:matrix.example.org"};
+            auto& store = runtime.database.persistent_store;
+            auto const join_auth_events = merovingian::tests::fixture_auth_event_ids(store, room_id, sender, false);
+            auto const join_prev_events = merovingian::tests::fixture_prev_event_ids(store, room_id);
+            auto const event_json = make_membership_event_json(room_id, sender, sender, "join", join_prev_events,
+                                                               join_auth_events, 5, 1234);
+            auto escaped_event = std::string{'"'};
+            for (auto const ch : event_json)
+            {
+                if (ch == '"' || ch == '\\')
+                {
+                    escaped_event += '\\';
+                }
+                escaped_event += ch;
+            }
+            escaped_event += '"';
+            auto const request_json =
+                std::string{R"({"type":"membership_ingest","endpoint":"send_join","event_id":")"} +
+                event_id_of(event_json) + R"(")" + R"(,"room_id":")" + room_id + R"(","room_version":"10","sender":")" +
+                sender + R"(","event_type":"m.room.member","state_key":")" + sender +
+                R"(","origin_server_ts":1234,"depth":5,"auth_event_ids":)" + json_id_array(join_auth_events) +
+                R"(,"prev_event_ids":)" + json_id_array(join_prev_events) + R"(,"signatures":[],"json":)" +
+                escaped_event + R"(,"omit_members":1})";
+            auto const response_json = merovingian::homeserver::handle_membership_ingest_request(runtime, request_json);
+
+            THEN("the answer says membership events were omitted, and the state holds none of them")
+            {
+                INFO("response: " << response_json);
+                REQUIRE(response_json.find(R"("accepted":true)") != std::string::npos);
+                REQUIRE(response_json.find(R"("members_omitted":true)") != std::string::npos);
+                REQUIRE(response_json.find(R"("servers_in_room":)") != std::string::npos);
+                auto const state_at = response_json.find(R"("state_json":[)");
+                REQUIRE(state_at != std::string::npos);
+                auto const state_end = response_json.find(R"("knock_room_state_json":)", state_at);
+                REQUIRE(state_end != std::string::npos);
+                auto const state_part = response_json.substr(state_at, state_end - state_at);
+                REQUIRE(state_part.find("m.room.create") != std::string::npos);
+                REQUIRE(state_part.find("m.room.member") == std::string::npos);
+            }
+        }
     }
 }
 
