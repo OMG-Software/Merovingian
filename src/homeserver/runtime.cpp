@@ -1428,6 +1428,27 @@ auto find_policy_rule(HomeserverRuntime const& runtime, std::string_view scope, 
 auto resolve_policy_server_hook(HomeserverRuntime& runtime, trust_safety::PolicySurface surface,
                                 std::string_view entity) -> trust_safety::PolicyServerHook
 {
+auto evaluate_inbound_federation_policy(HomeserverRuntime& runtime, std::string_view origin, bool consult_policy_server)
+    -> trust_safety::PolicyDecision
+{
+    auto held_for_review = false;
+    auto blocked_by_local_policy = false;
+    {
+        auto const guard = std::unique_lock<RuntimeMutex>{runtime.mutex};
+        auto const local_rule = find_policy_rule(runtime, "federation", origin);
+        held_for_review = local_rule.has_value() && local_rule->action == "quarantine";
+        blocked_by_local_policy =
+            local_rule.has_value() && local_rule->action != "allow" && local_rule->action != "quarantine";
+    }
+    // The policy server is asked with runtime.mutex released: a slow or unreachable one must not freeze
+    // every consumer of the mutex (#415). resolve_policy_server_hook releases it around its own call.
+    auto hook = consult_policy_server
+                    ? resolve_policy_server_hook(runtime, trust_safety::PolicySurface::federation, origin)
+                    : trust_safety::PolicyServerHook{};
+    return trust_safety::evaluate_federation_policy(
+        {std::string{origin}, held_for_review, blocked_by_local_policy, std::move(hook)});
+}
+
     auto const& trust_safety_config = runtime.config.security().trust_safety;
     if (!trust_safety_config.enabled || trust_safety_config.policy_server_url.empty())
     {

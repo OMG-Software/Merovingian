@@ -3899,6 +3899,18 @@ namespace
                                                          {"room_id",        envelope->room_id,          false}
                 });
                 break;
+            case PduIngestionStatus::rejected_acl:
+                // F-24 (ADR-0359): main's own room ACL denies the origin or the sender's server for a PDU
+                // this process let through (a federation worker's snapshot of the room can be stale). Same
+                // answer as the ACL check above: ignored, with an error for the event ID. No trust penalty.
+                audit_federation(runtime, "federation.acl_rejected", request.origin, request.target, ingestion.reason);
+                pdu_errors.push_back(canonicaljson::make_member(
+                    envelope->event_id,
+                    canonicaljson::Value{canonicaljson::Object{canonicaljson::make_member(
+                        "error",
+                        canonicaljson::Value{ingestion.reason.empty() ? std::string{"server is denied by room ACL"}
+                                                                      : ingestion.reason})}}));
+                break;
             case PduIngestionStatus::internal_error:
                 // WARNING, not only an audit entry: the sender is told this PDU failed, and an
                 // operator must be able to see why at the default log level (Complement run 12).

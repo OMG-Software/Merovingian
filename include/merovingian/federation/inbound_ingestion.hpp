@@ -88,6 +88,12 @@ enum class PduIngestionStatus : std::uint8_t
     // is NOT verified, authorised or stored again: no stream ordering, push, fan-out or membership
     // projection. A stored copy is never re-judged, whatever its status (ADR-0285).
     already_stored,
+    // F-24 (ADR-0359): main judged the PDU against its own room m.room.server_acl and the transport origin
+    // or the sender's server is denied. Spec: server-server-api.md "Server Access Control Lists (ACLs)" --
+    // such a PDU "MUST be ignored with an appropriate error included in the response for the respective
+    // event ID". Nothing is stored, and unlike a rejection (which is stored) the transaction answer carries
+    // an `error` entry for it.
+    rejected_acl,
 };
 
 struct PduIngestionResult final

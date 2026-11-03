@@ -251,6 +251,14 @@ Federation is the highest-risk surface: **all input comes from untrusted remote 
    user ID as above) answer 400 `M_INVALID_PARAM`, as `query/profile` does. The percent-decoder passes any byte, and a
    worker relays these to main, so a new handler that takes an identifier from the path or query does the same.
 
+19. **Main decides the room ACL and the admin's policy for what a worker relays (F-21, F-24, ADR-0358, ADR-0359).**
+   `handle_pdu_ingest_request`, `handle_membership_ingest_request` and `handle_invite_ingest_request` read
+   `room_server_acl_allows` from main's store under `runtime.mutex` for the transport origin (before any key lookup) and,
+   for `pdu_ingest` and `membership_ingest`, for the verified sender's server, and judge the origin's federation policy
+   rule; `edu_ingest` judges the rule for the origin main authenticated. A refused PDU is `PduIngestionStatus::rejected_acl`,
+   which `/send` reports as an `error` entry (a rejection is stored and silent, the opposite of the spec's "ignored with an
+   error"). `load_room_server_acl` reads the ACL through `find_current_state_event_id`. A new relay does the same.
+
 ## Key files
 
 | File | Responsibility |

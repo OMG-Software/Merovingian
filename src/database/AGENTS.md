@@ -66,6 +66,14 @@ Manages schema migrations and provides a dual-backend (SQLite / PostgreSQL) pers
     never `remove_if` over the victims. `store_account_data` and the capped writers refuse content over
     `max_account_data_row_bytes` (ADR-0339).
 
+## Reloading a room (F-27, ADR-0360)
+
+`reload_room` is `load_room_snapshot` (the database read; touches no row of the store, takes no lock) followed by
+`apply_room_snapshot` (the in-memory swap). A caller that shares the store with readers calls the halves itself and takes
+its exclusion only around the second: the federation worker does so through `federation_worker::StoreReadGuard`. A
+change to what a reload rewrites goes in both the snapshot and the swap, and the swap must keep the state index in step
+(`rebuild_state_index`).
+
 ## The state index (ADR-0344)
 
 `PersistentStore::state` has two position indexes (`state_position_index`, `state_room_index`) behind

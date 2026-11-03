@@ -4,6 +4,7 @@ federation_worker_lib = static_library(
     'args.cpp',
     'db_uri_fd.cpp',
     'ipc_key_fd.cpp',
+    'store_read_guard.cpp',
     'worker_event_loop.cpp',
   ),
   include_directories: [inc, include_directories('.')],
