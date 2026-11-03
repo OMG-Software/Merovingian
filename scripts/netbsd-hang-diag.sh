@@ -107,15 +107,106 @@ run_watched() {
 ulimit -c unlimited || true
 diag_log=$(mktemp)
 
-# The scenario alone: it hung by its third run, in under a minute.
+# The libc alone, with none of this project's code: does res_query hang where res_nquery does not?
+repro_dir=$(mktemp -d)
+cat >"$repro_dir/repro.c" <<'REPRO'
+#include <sys/types.h>
+#include <netinet/in.h>
+#include <arpa/nameser.h>
+#include <pthread.h>
+#include <resolv.h>
+#include <stdio.h>
+#include <string.h>
+
+#define THREADS 8
+#define LOOKUPS 40
+
+static void *lookup(void *arg)
+{
+    unsigned char answer[4096];
+    char name[128];
+    long index = (long)arg;
+    for (int i = 0; i < LOOKUPS; i++)
+    {
+        snprintf(name, sizeof name, "_matrix-fed._tcp.t%ld-%d.invalid", index, i);
+#ifdef PER_CALL
+        struct __res_state state;
+        memset(&state, 0, sizeof state);
+        if (res_ninit(&state) == 0)
+        {
+            res_nquery(&state, name, C_IN, T_SRV, answer, sizeof answer);
+            res_ndestroy(&state);
+        }
+#else
+        res_query(name, C_IN, T_SRV, answer, sizeof answer);
+#endif
+    }
+    return NULL;
+}
+
+int main(void)
+{
+    pthread_t threads[THREADS];
+    for (long i = 0; i < THREADS; i++)
+    {
+        pthread_create(&threads[i], NULL, lookup, (void *)i);
+    }
+    for (long i = 0; i < THREADS; i++)
+    {
+        pthread_join(threads[i], NULL);
+    }
+    return 0;
+}
+REPRO
+
+compiler=$(command -v cc || command -v clang)
+"$compiler" -pthread -o "$repro_dir/shared" "$repro_dir/repro.c" 2>&1 | tail -n 20
+"$compiler" -pthread -DPER_CALL -o "$repro_dir/per_call" "$repro_dir/repro.c" 2>&1 | tail -n 20
+
+# Runs program $1 up to five times, for at most 60 s each, and reports the first hang with the kernel's view.
+repro_rounds() {
+    round=0
+    while [ "$round" -lt 5 ]; do
+        round=$((round + 1))
+        "$repro_dir/$1" >/dev/null 2>&1 &
+        repro_pid=$!
+        waited=0
+        while kill -0 "$repro_pid" 2>/dev/null && [ "$waited" -lt 60 ]; do
+            sleep 1
+            waited=$((waited + 1))
+        done
+        if kill -0 "$repro_pid" 2>/dev/null; then
+            echo "[netbsd-diag] repro $1 still running after 60s on round $round"
+            bounded 30 ps -s -o lid,lstate,wchan,lname,time -p "$repro_pid" 2>&1
+            kill -9 "$repro_pid" 2>/dev/null
+            return 0
+        fi
+        wait "$repro_pid"
+        echo "[netbsd-diag] repro $1 round $round finished in ${waited}s with status $?"
+    done
+    echo "[netbsd-diag] repro $1 did not hang in $round rounds"
+}
+
+group "libc alone: res_query from eight threads, then res_nquery on a state per call"
+repro_rounds shared
+repro_rounds per_call
+echo "::endgroup::"
+
+# The fixed binaries. Before the fix the first of these hung on its third and fifth runs.
 runs=0
 started=$(date +%s)
-while [ $(($(date +%s) - started)) -lt 600 ]; do
+while [ $(($(date +%s) - started)) -lt 480 ]; do
     runs=$((runs + 1))
+    binary=build/tests/merovingian-conformance-tests
     if ! run_watched 120 "[omit_members]"; then
-        echo "[netbsd-diag] the scenario alone hung on run $runs"
+        echo "[netbsd-diag] [omit_members] hung on run $runs"
+        exit 1
+    fi
+    binary=build/tests/merovingian-unit-tests
+    if ! run_watched 120 "[system_resolver]"; then
+        echo "[netbsd-diag] [system_resolver] hung on run $runs"
         exit 1
     fi
 done
-echo "[netbsd-diag] the scenario alone did not hang in $runs runs"
+echo "[netbsd-diag] neither hung in $runs runs"
 exit 1
