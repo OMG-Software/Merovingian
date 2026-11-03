@@ -18,6 +18,10 @@ Policy engine for content and user moderation.
   or an operator-supplied policy file.
 - Policy engine decisions must be logged at DEBUG level with the rule that triggered them.
 
+- **The policy-server hook is not decided here.** `policy_server_hook_allows` judges the `PolicyServerHook` it is given;
+  `homeserver::resolve_policy_server_hook` builds it (operator-trusted host resolution, an admission budget, fail-open or
+  fail-closed by `policy_server_allow_without_result`; ADR-0361), and `FederationProxy` asks it for federation, in main.
+
 ## Key doc
 
 - `docs/trust-safety.md` — policy rule format, moderation workflow, operator configuration

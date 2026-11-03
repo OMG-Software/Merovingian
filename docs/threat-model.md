@@ -2536,6 +2536,41 @@ Security audit run-1 (2026-10-20) found six LOW issues, all fixed in 0.12.34.
   address to them and letting a user point it at any public service within the caps; `http`
   previews can be altered in transit (the content is treated as hostile either way).
 
+### Policy and ACL decisions are main's; the worker's store is a stale snapshot (0.12.68, F-21, F-24, F-27, F-42)
+
+Four ways a remote server that an admin or a room had denied could keep federating, or an enabled policy control did
+nothing, all from trusting the worker's view or the hook's transport.
+
+- **Admin federation policy rules not enforced on worker-routed requests (F-21, ADR-0358).** The rule was read in the
+  process that handled the request. A worker's store holds no rules on PostgreSQL and a start-up snapshot on SQLite, so
+  a denied or quarantined origin was served and its PDUs accepted. Mitigated: `FederationProxy::handle` judges the
+  verified origin in main before any branch (403 `M_FORBIDDEN`), the policy server is asked there once, and the main-side
+  relay handlers judge the local rule again for requests in flight when a rule is added. The origin in a
+  `pdu_ingest`, `membership_ingest` or `invite_ingest` frame is the worker's claim; a compromised worker can name an allowed
+  origin, but not change what the signed event says (below).
+- **A /send routed to a shard with a stale snapshot passed the room ACL (F-24, ADR-0359).** The shard is chosen by the
+  first PDU's room ID, which the sender picks; only the owning shard learns of later state. A denied server with a joined
+  user picked a shard whose snapshot lacked the ACL, and main's relay handler did not check. Mitigated: main reads the room's
+  current `m.room.server_acl` for the transport origin and for the verified sender's server on every relayed PDU,
+  membership event and invite; a refused PDU is reported with an `error` entry (`PduIngestionStatus::rejected_acl`). Residual:
+  room-scoped reads (`/state`, `/backfill`, ...) still use the serving shard's snapshot for the ACL, refreshed best-effort
+  by `room_sync`; they return nothing a joined member of a denied server could not already fetch, and are bounded by
+  the origin-in-room gate.
+- **Unlocked reads of the worker's store against `reload_room` (F-27, ADR-0360).** A data race on vectors and hash maps,
+  and a window in which a room had no ACL (`room_server_acl_allows` answers true) while its rows were rewritten. Mitigated:
+  the worker's store readers hold a shared lock for their own call, a reload takes the exclusive lock only for the
+  in-memory swap, and the database read happens before it. Residual: the swap still walks whole tables; readers wait
+  for that. The `StoreReadGuard` concurrency scenario is the ThreadSanitizer target.
+- **The policy server was never contacted (F-42, ADR-0361).** The hook set no pinned addresses, so the transport
+  refused every call: fail-closed deployments refused every guarded workflow, `policy_server_allow_without_result=true`
+  deployments never asked the server. Mitigated: the operator-configured host is resolved in the hook, without the
+  SSRF deny-list (the operator, not a peer, chose it), and calls are admitted through a bounded budget (a quarter of the
+  request pool, half of that per surface), because each now holds a request thread for the round trip, some before
+  authentication. Over the budget is "no usable decision", so the configured fail-open or fail-closed setting decides.
+  The same lengthened lock-release window let two pre-v12 `createRoom` calls take the same `!room<N>` ID (ADR-0362);
+  the ID is now reserved across the hook. Residual: `getaddrinfo` takes as long as the system resolver does; the budget
+  bounds how many threads are in it.
+
 ### Presence (0.12.60)
 
 - **Presence read without sharing a room.** `GET /presence/{userId}/status` answers 403

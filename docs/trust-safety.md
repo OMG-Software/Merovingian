@@ -20,7 +20,14 @@ This capability note describes runtime-wired trust-and-safety behavior.
   full suite (56 OK, all return codes zero, 1,026 unchanged frozen files).
   Live remote-hook responses and strict mid-request policy revocation are not
   claimed, nor is whole-audit or release acceptance.
-- Federation request policy checks in the runtime federation path.
+- Federation request policy checks in the runtime federation path. Main makes the decision, never a worker
+  (F-21, ADR-0358): `FederationProxy::handle` applies the origin's scope-`federation` policy rule after the X-Matrix signature
+  verifies and before any branch, including the forward to a worker (`403 M_FORBIDDEN`), and asks the policy server once,
+  just before the forward, or in `handle_federation_http_request` for what main answers itself. A rule takes effect on the next request on either database backend, because a worker's store holds no
+  rules (PostgreSQL) or a start-up snapshot (SQLite). The main-side relay handlers (`pdu_ingest`, `membership_ingest`,
+  `invite_ingest`, `edu_ingest`) judge the local rule again, without the policy server, for a rule added while a request
+  was in flight. A worker never judges a request
+  (`HomeserverRuntime::federation_policy_decided_upstream`).
 - Authenticated client event reporting through
   `POST /_matrix/client/v3/rooms/{roomId}/report/{eventId}`. The reporter must be
   joined to the room and the event must be in it and visible to them under the
@@ -41,7 +48,19 @@ This capability note describes runtime-wired trust-and-safety behavior.
   also has `accept_report`, used only for event-report decisions.
 - Remote policy-server transport through
   `security.trust_safety.policy_server_url` and the fail-closed
-  `PolicyServerHook` path.
+  `PolicyServerHook` path (F-42, ADR-0361). The operator chose the host, so
+  `resolve_policy_server_hook` resolves it itself, with no SSRF deny-list (a
+  policy server on a private network works), inside the lock-release scope and
+  within what is left of `policy_server_timeout`, and pins the request to the
+  addresses it found. Certificate validation is unchanged. Each call takes a
+  place in `policy_server_budget` first: at most a quarter of
+  `server.http.request_threads` (at least 2) in flight across all surfaces, and
+  half of that for any one surface, so a flood of federation requests leaves
+  registration and room creation a place. A call refused for lack of a place
+  is "no usable decision", exactly like an unreachable server: refused when
+  `policy_server_allow_without_result=false` (the default), allowed when `true`.
+  A transport error is logged at warning level with its error name. The hook
+  runs in main only; federation requests are judged by the proxy.
 - Durable policy audit rows, admin action rows, and persisted `policy_rules`
   for report/review decisions.
 - User-level ignore enforcement (Matrix v1.19 CS API §Ignoring Users):

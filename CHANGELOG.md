@@ -25,7 +25,15 @@ The medium findings of security audit run 2 (ref 5e67d4e8).
   get_missing_events, backfill, timestamp_to_event, hierarchy and make_leave/make_knock providers in a shared lock and
   takes the exclusive lock only for the swap. Main's providers are unchanged. The comment and rule 6 of the worker
   `AGENTS.md` that said a relay transaction holds `runtime.mutex` are corrected.
-
+- **The policy server hook now reaches the policy server (F-42, ADR-0361, ADR-0362).** It never set the request's
+  pinned addresses, so `OutboundClient` refused every call before opening a socket: with the default
+  `policy_server_allow_without_result=false` every guarded workflow was refused, and with `true` the server was never
+  asked. The operator-configured host is now resolved inside the lock-release scope, without the SSRF deny-list (the
+  operator chose it, as for an appservice), with what is left of `policy_server_timeout`, and a transport error is
+  logged at warning level. Calls take a place in a new budget first (a quarter of the request pool across surfaces, half
+  of that per surface); no place counts as no decision, so `policy_server_allow_without_result` decides it as before. A
+  pre-v12 `createRoom` reserves its `!room<N>` ID across the hook and takes the first free number, so two creations
+  overlapping the hook no longer collide (500 "room persistence failed").
 - **One user can no longer use up the local media record cap (F-46, ADR-0340).** `security.media.max_records` was one
   budget for the whole server, and distinct tiny files or deduplicated re-uploads cost the per-user byte quota almost
   nothing, so one account could fill it and every user's upload was then refused until an operator raised it. New key
