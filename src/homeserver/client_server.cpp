@@ -19,6 +19,7 @@
 #include "merovingian/canonicaljson/parser.hpp"
 #include "merovingian/canonicaljson/serializer.hpp"
 #include "merovingian/canonicaljson/value.hpp"
+#include "merovingian/core/folded_substring.hpp"
 #include "merovingian/core/query_params.hpp"
 #include "merovingian/core/secret_buffer.hpp"
 #include "merovingian/crypto/constant_time.hpp"
@@ -51,11 +52,13 @@
 #include "merovingian/homeserver/room_power.hpp"
 #include "merovingian/homeserver/room_service.hpp"
 #include "merovingian/homeserver/runtime.hpp"
+#include "merovingian/homeserver/search_room_index.hpp"
 #include "merovingian/homeserver/space_hierarchy.hpp"
 #include "merovingian/homeserver/state_bookkeeping.hpp"
 #include "merovingian/homeserver/stored_push_rules.hpp"
 #include "merovingian/homeserver/stored_room_version.hpp"
 #include "merovingian/homeserver/url_preview_service.hpp"
+#include "merovingian/homeserver/user_directory_search.hpp"
 #include "merovingian/http/rate_limit.hpp"
 #include "merovingian/http/request.hpp"
 #include "merovingian/identity/identity_client.hpp"
@@ -4394,12 +4397,9 @@ namespace
                                                   std::optional<std::size_t> limit, std::size_t since_offset,
                                                   PublicRoomsScope const& scope = {}) -> std::string
     {
-        auto const icase_contains = [](std::string_view haystack, std::string_view needle) noexcept -> bool {
-            return std::search(haystack.begin(), haystack.end(), needle.begin(), needle.end(),
-                               [](unsigned char a, unsigned char b) noexcept -> bool {
-                                   return std::tolower(a) == std::tolower(b);
-                               }) != haystack.end();
-        };
+        // One linear-time matcher for the request (ADR-0330): std::search was O(text * term) on a room name or
+        // topic of up to 64 KiB, under runtime.mutex (F-28). A term over the cap never reaches here.
+        auto matcher = core::FoldedSubstringMatcher{filter_term};
 
         auto const& store = rt.homeserver.database.persistent_store;
         auto const index = build_state_index(store);
@@ -4434,10 +4434,9 @@ namespace
 
             if (!filter_term.empty())
             {
-                auto const matches = icase_contains(room.room_id, filter_term) ||
-                                     (name.has_value() && icase_contains(*name, filter_term)) ||
-                                     (topic.has_value() && icase_contains(*topic, filter_term)) ||
-                                     (alias.has_value() && icase_contains(*alias, filter_term));
+                auto const matches = matcher.contains(room.room_id) || (name.has_value() && matcher.contains(*name)) ||
+                                     (topic.has_value() && matcher.contains(*topic)) ||
+                                     (alias.has_value() && matcher.contains(*alias));
                 if (!matches)
                     continue;
             }
@@ -9540,52 +9539,64 @@ namespace
         double rank{0.0};
     };
 
-    // Counts non-overlapping occurrences of `needle` in `haystack` (both
-    // already lower-cased by the caller). Used both to decide whether an
-    // event matches at all and as its `rank` -- more hits of the search term
-    // rank higher, a simple monotonic proxy for relevance given this is a
-    // substring scan rather than a real text index.
-    [[nodiscard]] auto count_occurrences(std::string_view haystack, std::string_view needle) noexcept -> std::size_t
+    // The three keys the spec lists for `keys` ("The keys to search. Defaults to all."), resolved once at parse
+    // time to a bit each so that judging an event never scans a client-sized list (F-30, ADR-0332).
+    constexpr std::uint8_t kSearchKeyBody = 1U;  // content.body of m.room.message
+    constexpr std::uint8_t kSearchKeyName = 2U;  // content.name of m.room.name
+    constexpr std::uint8_t kSearchKeyTopic = 4U; // content.topic of m.room.topic
+    constexpr std::uint8_t kSearchKeysAll = kSearchKeyBody | kSearchKeyName | kSearchKeyTopic;
+
+    // The keys a request's `keys` list names: all of them when the list is empty, otherwise those of the
+    // three it lists (any other entry searches nothing, so a list of only unknown keys matches no event).
+    [[nodiscard]] auto search_key_mask(std::vector<std::string> const& keys) -> std::uint8_t
     {
-        if (needle.empty())
+        if (keys.empty())
         {
-            return 0U;
+            return kSearchKeysAll;
         }
-        auto count = std::size_t{0U};
-        auto pos = std::size_t{0U};
-        while ((pos = haystack.find(needle, pos)) != std::string_view::npos)
+        auto resolved = std::uint8_t{0U};
+        for (auto const& key : keys)
         {
-            ++count;
-            pos += needle.size();
+            if (key == "content.body")
+            {
+                resolved |= kSearchKeyBody;
+            }
+            else if (key == "content.name")
+            {
+                resolved |= kSearchKeyName;
+            }
+            else if (key == "content.topic")
+            {
+                resolved |= kSearchKeyTopic;
+            }
         }
-        return count;
+        return resolved;
     }
 
-    // Extracts the searchable texts for one event, filtered to `keys` when
-    // the caller supplied a non-empty subset (spec: "keys ... Defaults to
-    // all"). Only the three spec-listed keys are considered.
+    // Extracts the searchable texts for one event, limited to the keys in `key_mask`. Only the three
+    // spec-listed keys are considered.
     [[nodiscard]] auto search_texts_for_event(std::string_view event_type, canonicaljson::Object const& content,
-                                              std::vector<std::string> const& keys) -> std::vector<std::string const*>
+                                              std::uint8_t key_mask) -> std::vector<std::string const*>
     {
-        auto const wanted = [&](std::string_view key) {
-            return keys.empty() || std::ranges::find(keys, key) != keys.end();
+        auto const wanted = [key_mask](std::uint8_t key) noexcept {
+            return (key_mask & key) != 0U;
         };
         auto out = std::vector<std::string const*>{};
-        if (event_type == "m.room.message" && wanted("content.body"))
+        if (event_type == "m.room.message" && wanted(kSearchKeyBody))
         {
             if (auto const* body = string_member(content, "body"); body != nullptr)
             {
                 out.push_back(body);
             }
         }
-        else if (event_type == "m.room.name" && wanted("content.name"))
+        else if (event_type == "m.room.name" && wanted(kSearchKeyName))
         {
             if (auto const* name = string_member(content, "name"); name != nullptr)
             {
                 out.push_back(name);
             }
         }
-        else if (event_type == "m.room.topic" && wanted("content.topic"))
+        else if (event_type == "m.room.topic" && wanted(kSearchKeyTopic))
         {
             if (auto const* topic = string_member(content, "topic"); topic != nullptr)
             {
@@ -9595,17 +9606,18 @@ namespace
         return out;
     }
 
-    // Returns the event's rank (sum of case-insensitive `term_lower`
-    // occurrences across its searchable, key-filtered text) or nullopt when
-    // it does not match at all.
+    // Returns the event's rank (the sum of the matcher's non-overlapping, case-insensitive occurrences of the
+    // search term across its searchable, key-limited text -- more hits rank higher, a simple monotonic proxy
+    // for relevance given this is a substring scan rather than a real text index) or nullopt when it does
+    // not match at all. The matcher is linear in the text however the term and text are chosen (F-29).
     [[nodiscard]] auto search_event_rank(std::string_view event_type, canonicaljson::Object const& content,
-                                         std::vector<std::string> const& keys, std::string_view term_lower)
+                                         std::uint8_t key_mask, core::FoldedSubstringMatcher& matcher)
         -> std::optional<double>
     {
         auto total = std::size_t{0U};
-        for (auto const* text : search_texts_for_event(event_type, content, keys))
+        for (auto const* text : search_texts_for_event(event_type, content, key_mask))
         {
-            total += count_occurrences(to_lower(*text), term_lower);
+            total += matcher.count_non_overlapping(*text);
         }
         return total > 0U ? std::optional<double>{static_cast<double>(total)} : std::nullopt;
     }
@@ -9619,9 +9631,15 @@ namespace
     struct SearchRequest final
     {
         std::string search_term{};
-        std::vector<std::string> keys{};
+        std::uint8_t key_mask{kSearchKeysAll};
         bool order_recent{false}; // false == "rank", the spec default
         sync::RoomFilter filter{};
+        // `filter`'s lists as hash sets, built once (F-30, ADR-0332); the lists in `filter` are never scanned
+        // per event.
+        sync::PreparedRoomEventFilter prepared_filter{sync::RoomFilter{}};
+        // True when the request carried `event_context`: the spec returns a result's context only "if
+        // requested" (F-31, ADR-0333).
+        bool context_requested{false};
         std::optional<bool> contains_url{};
         std::size_t before_limit{5U};
         std::size_t after_limit{5U};
@@ -9649,7 +9667,7 @@ namespace
         {
             out.search_term = *term;
         }
-        out.keys = string_array_member(room_events, "keys");
+        out.key_mask = search_key_mask(string_array_member(room_events, "keys"));
         if (auto const* order = string_member(room_events, "order_by"); order != nullptr && *order == "recent")
         {
             out.order_recent = true;
@@ -9672,6 +9690,7 @@ namespace
                 return std::nullopt;
             }
             out.filter = *parsed;
+            out.prepared_filter = sync::PreparedRoomEventFilter{out.filter};
             if (auto const* cu = boolean_member(*filter_obj, "contains_url"); cu != nullptr)
             {
                 out.contains_url = *cu;
@@ -9689,6 +9708,7 @@ namespace
             {
                 return std::nullopt;
             }
+            out.context_requested = true;
             if (auto const* bl = integer_member(*ec_obj, "before_limit"); bl != nullptr && *bl >= 0)
             {
                 out.before_limit = std::min<std::size_t>(static_cast<std::size_t>(*bl),
@@ -9745,46 +9765,31 @@ namespace
     // practice each sender's *current* profile, not a point-in-time
     // snapshot -- see capability-gaps.md), and start/end pagination tokens in
     // the same plain stream-ordering format /messages produces.
+    //
+    // `room_index` holds the target's room's timeline, built once for the whole page (SearchRoomIndex, F-31,
+    // ADR-0333): ADR-0064 phase B2 pages search context through the timeline the same as GET /context, so a
+    // rejected or soft-failed event is excluded there. `target` itself is a search match, and the match-scan
+    // loop already excludes those statuses, so it is always present.
     [[nodiscard]] auto build_search_event_context(ClientServerRuntime const& rt,
                                                   database::PersistentEvent const& target, SearchRequest const& request,
+                                                  SearchRoomIndex const& room_index,
                                                   std::unordered_set<std::string> const& ignored_senders,
                                                   sync::HistoryVisibility& visibility) -> canonicaljson::Value
     {
         auto const& store = rt.homeserver.database.persistent_store;
-        auto entries = std::vector<database::PersistentEvent const*>{};
-        for (auto const& event : store.events)
-        {
-            if (event.room_id != target.room_id)
-            {
-                continue;
-            }
-            // ADR-0064 phase B2: search result context pages through the
-            // timeline the same as GET /context, so a rejected or
-            // soft-failed event is excluded. `target` itself is a search
-            // match, and the match-scan loop already excludes those
-            // statuses, so it is always present here.
-            if (event.status == "rejected" || event.status == "soft_failed")
-            {
-                continue;
-            }
-            entries.push_back(&event);
-        }
-        std::ranges::sort(entries, [](auto const* lhs, auto const* rhs) noexcept {
-            return lhs->stream_ordering < rhs->stream_ordering;
-        });
-        auto const target_it = std::ranges::find_if(entries, [&](database::PersistentEvent const* candidate) {
-            return candidate->event_id == target.event_id;
-        });
-        auto const target_index = static_cast<std::size_t>(target_it - entries.begin());
+        auto const entries = room_index.timeline(target.room_id);
+        // A target the index does not hold (it should) has no neighbours: both loops start at their end.
+        auto const target_position = room_index.position_of(target);
+        auto const before_start = target_position.value_or(0U);
+        auto const after_start = target_position.has_value() ? *target_position + 1U : entries.size();
 
         auto events_before = canonicaljson::Array{};
         auto start_token = std::to_string(target.stream_ordering);
         auto senders_in_context = std::unordered_set<std::string>{};
-        for (auto i = target_index; i > 0U && events_before.size() < request.before_limit; --i)
+        for (auto i = before_start; i > 0U && events_before.size() < request.before_limit; --i)
         {
             auto const* candidate = entries[i - 1U];
-            if (!sync::event_passes_filter(request.filter.timeline, stored_event_type(*candidate),
-                                           candidate->sender_user_id))
+            if (!request.prepared_filter.event_passes(stored_event_type(*candidate), candidate->sender_user_id))
             {
                 continue;
             }
@@ -9806,11 +9811,10 @@ namespace
 
         auto events_after = canonicaljson::Array{};
         auto end_token = std::to_string(target.stream_ordering);
-        for (auto i = target_index + 1U; i < entries.size() && events_after.size() < request.after_limit; ++i)
+        for (auto i = after_start; i < entries.size() && events_after.size() < request.after_limit; ++i)
         {
             auto const* candidate = entries[i];
-            if (!sync::event_passes_filter(request.filter.timeline, stored_event_type(*candidate),
-                                           candidate->sender_user_id))
+            if (!request.prepared_filter.event_passes(stored_event_type(*candidate), candidate->sender_user_id))
             {
                 continue;
             }
@@ -9963,7 +9967,7 @@ namespace
             {
                 continue;
             }
-            if (!sync::room_passes_filter(request.filter, event.room_id))
+            if (!request.prepared_filter.room_passes(event.room_id))
             {
                 continue;
             }
@@ -9978,6 +9982,7 @@ namespace
         });
 
         auto const term_lower = to_lower(request.search_term);
+        auto matcher = core::FoldedSubstringMatcher{request.search_term};
 
         auto start_index = std::size_t{0U};
         if (resume_before.has_value())
@@ -10018,7 +10023,7 @@ namespace
             // RoomEventFilter types/not_types/senders/not_senders -- silently
             // ignoring this would return matches the caller explicitly
             // excluded.
-            if (!sync::event_passes_filter(request.filter.timeline, *type, candidate->sender_user_id))
+            if (!request.prepared_filter.event_passes(*type, candidate->sender_user_id))
             {
                 continue;
             }
@@ -10042,7 +10047,7 @@ namespace
                     continue;
                 }
             }
-            auto const rank = search_event_rank(*type, *content_obj, request.keys, term_lower);
+            auto const rank = search_event_rank(*type, *content_obj, request.key_mask, matcher);
             if (!rank.has_value())
             {
                 continue;
@@ -10112,6 +10117,18 @@ namespace
             flush();
         }
 
+        // The rooms of this page's matches, whose timelines context needs: one pass over the events table for
+        // all of them, and none when the request did not ask for context (F-31, ADR-0333).
+        auto context_rooms = std::unordered_set<std::string_view>{};
+        if (request.context_requested)
+        {
+            for (auto const& match : matches)
+            {
+                context_rooms.insert(match.event->room_id);
+            }
+        }
+        auto const room_index = SearchRoomIndex{store, context_rooms};
+
         auto results = canonicaljson::Array{};
         auto rooms_in_page = std::vector<std::string>{};
         auto by_room = std::unordered_map<std::string, std::vector<std::string>>{};   // room_id -> event_ids
@@ -10126,12 +10143,16 @@ namespace
             by_room[event.room_id].push_back(event.event_id);
             by_sender[event.sender_user_id].push_back(event.event_id);
 
-            auto context = build_search_event_context(rt, event, request, ignored_senders, visibility);
-            results.push_back(json_obj({
-                json_member("rank", canonicaljson::Value{match.rank}),
-                json_member("result", client_event_with_id(store, event)),
-                json_member("context", std::move(context)),
-            }));
+            auto result_members = canonicaljson::Object{};
+            result_members.push_back(json_member("rank", canonicaljson::Value{match.rank}));
+            result_members.push_back(json_member("result", client_event_with_id(store, event)));
+            if (request.context_requested)
+            {
+                result_members.push_back(
+                    json_member("context", build_search_event_context(rt, event, request, room_index, ignored_senders,
+                                                                      visibility)));
+            }
+            results.push_back(json_obj(std::move(result_members)));
         }
 
         auto response = canonicaljson::Object{};
@@ -13870,7 +13891,17 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                     filter_obj != nullptr)
                 {
                     if (auto const* term = string_member(*filter_obj, "generic_search_term"); term != nullptr)
+                    {
+                        // Refused, not truncated: a cut term returns the wrong rooms (ADR-0330). Before
+                        // the ?server= proxy below, which would forward it.
+                        if (term->size() > core::max_search_term_bytes)
+                        {
+                            return dispatch_err(req, rt, 400U, "M_TOO_LARGE",
+                                                "generic_search_term is longer than " +
+                                                    std::to_string(core::max_search_term_bytes) + " bytes");
+                        }
                         filter_term = *term;
+                    }
                 }
             }
             // Spec: `include_all_networks` is "Whether or not to include all known networks/protocols from
@@ -17911,33 +17942,30 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
         // by the limit." A negative limit returns nothing.
         auto const* limit_value = (body_obj != nullptr) ? object_member(*body_obj, "limit") : nullptr;
         auto const* limit_int = limit_value != nullptr ? std::get_if<std::int64_t>(&limit_value->storage()) : nullptr;
-        auto const limit =
-            limit_int != nullptr ? static_cast<std::size_t>(std::max<std::int64_t>(*limit_int, 0)) : std::size_t{10U};
+        // The spec sets no maximum for `limit`; a server one keeps the result list bounded and `limited` says
+        // when it cut (ADR-0334).
+        auto const limit = std::min(
+            limit_int != nullptr ? static_cast<std::size_t>(std::max<std::int64_t>(*limit_int, 0)) : std::size_t{10U},
+            max_user_directory_results);
+        // Refused, not truncated: a cut term returns the wrong users (ADR-0330).
+        if (search_term != nullptr && search_term->size() > core::max_search_term_bytes)
+        {
+            return dispatch_err(req, rt, 400U, "M_TOO_LARGE",
+                                "search_term is longer than " + std::to_string(core::max_search_term_bytes) + " bytes");
+        }
         auto results = canonicaljson::Array{};
         auto limited = false;
         if (search_term != nullptr && !search_term->empty())
         {
             auto const& store = rt.homeserver.database.persistent_store;
-            auto const term_lower = to_lower(*search_term);
-            auto matched = std::vector<database::PersistentProfile const*>{};
+            // One linear-time matcher and one pass over the accounts for the request (F-34, F-50, ADR-0334).
+            auto matcher = core::FoldedSubstringMatcher{*search_term};
+            auto search_stats = UserDirectorySearchStats{};
+            auto const matched = matching_directory_profiles(store, matcher, search_stats);
             auto candidates = std::unordered_set<std::string_view>{};
-            for (auto const& profile : store.profiles)
+            for (auto const* profile : matched)
             {
-                if (to_lower(profile.displayname).find(term_lower) == std::string::npos &&
-                    to_lower(profile.user_id).find(term_lower) == std::string::npos)
-                {
-                    continue;
-                }
-                // 0.12.13 audit item 5: a deactivated account can never log in
-                // again, so it is not offered as someone to contact.
-                if (std::ranges::any_of(store.users, [&profile](database::PersistentUser const& account) {
-                        return account.user_id == profile.user_id && account.deactivated;
-                    }))
-                {
-                    continue;
-                }
-                matched.push_back(&profile);
-                candidates.insert(profile.user_id);
+                candidates.insert(profile->user_id);
             }
             // Only users visible to the requester through rooms are searched (see
             // directory_visible_users).
@@ -17998,6 +18026,12 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
         if (parsed_request->search_term.empty())
         {
             return dispatch_err(req, rt, 400U, "M_MISSING_PARAM", "search_term is required");
+        }
+        // Refused, not truncated: a cut term returns the wrong events (ADR-0330).
+        if (parsed_request->search_term.size() > core::max_search_term_bytes)
+        {
+            return dispatch_err(req, rt, 400U, "M_TOO_LARGE",
+                                "search_term is longer than " + std::to_string(core::max_search_term_bytes) + " bytes");
         }
         auto const resume_before = parse_u64(messages_query_value(req.target, "next_batch"));
         return dispatch_resp(req, rt, 200U, search_room_events_json(rt, *user, *parsed_request, resume_before));

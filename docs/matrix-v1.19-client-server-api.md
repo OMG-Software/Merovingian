@@ -345,6 +345,11 @@ server no longer has the room), and `POST /join/{roomId}` with no server named t
 | --- | --- | --- | --- | --- | --- |
 | `POST` | `/_matrix/client/v3/search` | `search` | access token | required application/json | 200, 400, 429 |
 
+A `search_term` over 1024 bytes is refused `400 M_TOO_LARGE` (the spec sets no limit; ADR-0330), as is a
+`generic_search_term` on `POST /publicRooms` and a `search_term` on `POST /user_directory/search`. A result carries
+`context` only when the request has `event_context` (the spec: "if requested"; ADR-0333). `keys` and the filter's
+lists have no server maximum (ADR-0332).
+
 ## Send-to-Device messaging
 
 | Method | Path | Operation ID | Auth | Request body | Responses |
@@ -491,7 +496,7 @@ In each case below the spec leaves the choice to the server; the owner decided t
 - **`GET /rooms/{roomId}/messages` with `lazy_load_members`.** `state` holds only the `m.room.member` events of the senders of the returned `chunk` (no other state). Redundant membership events are not tracked across calls, so a sender's membership is sent on every page (the spec's `include_redundant_members` default permits it). `/context` is unchanged.
 - **Initial `/sync` carries `m.push_rules`.** An initial `/sync` (no usable `since`) always holds a global `m.push_rules` account-data event with the user's effective ruleset (the server defaults plus their changes), if the filter's `account_data` admits it. An incremental `/sync` carries it only after a change.
 - **A hole in the event graph makes a joined room's `/sync` timeline `limited` (ADR-0289).** The spec defines `limited` by the filter `limit` and leaves events the server never received over federation unspecified; an event in the window whose `prev_events` are not all held (no row, or an outlier with no state group; rejected, soft-failed and backfilled events count as held, ADR-0290) starts a limited timeline at that event, with `prev_batch` for `/messages` to reach what lies before. A limited incremental sync carries the state at the start of the timeline. Sliding sync is unchanged.
-- **`POST /user_directory/search` searches visible users only.** A search considers the users who share a joined room with the requester, and users joined to a room whose join rule is `public` or whose history visibility is `world_readable`. The requester is found only through a public or world-readable room. Before, every local profile matched.
+- **`POST /user_directory/search` searches visible users only.** A search considers the users who share a joined room with the requester, and users joined to a room whose join rule is `public` or whose history visibility is `world_readable`. The requester is found only through a public or world-readable room. Before, every local profile matched. The result list is at most 100 users whatever `limit` asks for, and `limited` says when more matched (ADR-0334).
 - **`POST /account/password` deletes pushers of revoked devices.** With `logout_devices` true (the default), the pushers set (`POST /pushers/set`) with the access token of a device whose tokens the change revokes are deleted. The requesting device's pushers, and pushers with no recorded device, stay. A pusher records its device in `pushers.device_id`.
 - **A failed UIA stage carries `errcode` and `error`.** A wrong account password on `POST /account/password`, `/account/deactivate`, `/account/3pid/add`, `/keys/device_signing/upload`, `DELETE /devices/{deviceId}` and `POST /delete_devices` is `401` with the `flows`, `params` and `session` of the challenge plus `errcode: M_FORBIDDEN` and `error`; a request making no attempt gets the bare challenge. `DELETE /devices/{deviceId}` does not compare the user a password `identifier` names with the token's user: the password checked is the token owner's (the spec states no status for a mismatch).
 - **`POST /logout` and `POST /logout/all` delete the device(s).** `GET /devices` no longer lists the logged-out device (all of the user's devices after `/logout/all`). A request with no token is `401 M_MISSING_TOKEN`.

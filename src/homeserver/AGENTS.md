@@ -23,6 +23,8 @@ This is the largest and most complex module — read this file carefully before 
 | `deferred_pdu_retry.cpp` | Retains federation PDUs that could not yet be placed (`deferred_pdus`) and retries them: `retry_deferred_pdus`, `DeferredPduRetryJob` (R03, ADR-0165). A retry holds no lock across `ingest_pdu_event`; `ingest_pdu_event` writes rows only after signature verification |
 | `redaction_service.cpp` | Applies redactions (judge, overwrite the target's stored JSON, withhold unapplied redactions from clients) and checks a local client's redaction |
 | `room_power.cpp` | `may_send_state_event()`: whether a user may send a state event of a type in a room's current state, judged as the auth rules judge it (CSAZ-12) |
+| `search_room_index.cpp` | `SearchRoomIndex`: the timelines of the rooms a `POST /search` page's matches are in, from one pass over the events, for `event_context` (F-31, ADR-0333) |
+| `user_directory_search.cpp` | `matching_directory_profiles`: the profiles `POST /user_directory/search` matches, deactivated accounts read in one pass (F-50, ADR-0334) |
 | `room_residency.cpp` | `room_state_is_current()`: whether held room state is current, i.e. the create event is stored and a user of this server is joined (ADR-0301) |
 | `restricted_join.cpp` | `decide_restricted_join()`: as the resident, whether a user meets a restricted room's allow conditions and which local user authorises the join (R04, ADR-0185) |
 | `remote_timestamp_event.cpp` | Asking other servers for `GET /rooms/{roomId}/timestamp_to_event` (ADR-0299): `timestamp_to_event_candidate_servers`, `parse_timestamp_to_event_answer`, `timestamp_is_closer`, `acquire_closer_timestamp_event` (the loop over at most 3 servers; releases `runtime.mutex` for each exchange and for the verified fetch, `fetch_remote_event_into_store` in `local_http_router.cpp`) |
@@ -438,6 +440,14 @@ client, sender or remote server controls, and per-user rows that requests scan m
   under that mutex.
 - `/search` judges a room the user has left with `room_read_access_for` only when one of its
   events would be returned, so those scans stay bounded by the page (R16).
+- `POST /search`, `POST /publicRooms` and `POST /user_directory/search` match their term with one
+  `core::FoldedSubstringMatcher` built per request (linear in the text; never `std::search`, `find` or `string_view::find`
+  on client text) and refuse a term over `core::max_search_term_bytes` (1024) with `400 M_TOO_LARGE` at parse time, before
+  any work (ADR-0330). `/search` resolves `keys` to a bit mask and builds one `sync::PreparedRoomEventFilter` in
+  `parse_search_request` (ADR-0332): never scan `filter.rooms`, `senders`, `types` or `keys` per event. A result's
+  `context` exists only when the request had `event_context`, and comes from one `SearchRoomIndex` per page (ADR-0333);
+  never walk `store.events` per match. The user directory reads `store.users` once (`matching_directory_profiles`) and
+  returns at most `max_user_directory_results` (100) users (ADR-0334).
 - `expire_typing` groups the typing table by room in a fixed number of passes and hands each
   affected room its new typing list; it never rescans the table per expired room (R13).
 - Sliding sync classifies `room_subscriptions` through one `sync::room_access_index` per request

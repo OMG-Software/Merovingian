@@ -2628,3 +2628,14 @@ Security audit run-1 (2026-10-20) found six LOW issues, all fixed in 0.12.34.
 - **One request could hold the runtime lock for work a user or remote server chose (audit run-2 F-02, F-04).**
   **Mitigation:** `createRoom` caps its entries (ADR-0316), and device and key changes write one batch for local
   observers (ADR-0317).
+- **A search term and a long text could cost text x term under the runtime lock (audit run-2 F-28, F-29, F-34).**
+  `POST /publicRooms`, `POST /search` and `POST /user_directory/search` searched a room name or topic (up to 64 KiB),
+  a message body (up to 64 KiB) or a display name (up to the body cap) with `std::search` / `find` for a term the
+  caller sized. **Mitigation:** one linear-time matcher, at most two steps per byte of text, and a term over 1024
+  bytes refused `400 M_TOO_LARGE` (ADR-0330). **Residual risk:** a request still costs the bytes of text it searches,
+  so an unbounded display name (audit run-2 `profile.put-displayname-avatar-url-unvalidated-unbounded`) is read in
+  full for every directory search until that is bounded.
+- **`POST /search` filter lists, context and the user directory's account scan multiplied client-chosen sizes (audit
+  run-2 F-30, F-31, F-50).** **Mitigation:** the filter and `keys` lists are resolved to hash sets and a bit mask once
+  per request (ADR-0332), result context is built only when `event_context` is sent and from one pass over the events
+  (ADR-0333), and the directory reads the accounts once and returns at most 100 users (ADR-0334).

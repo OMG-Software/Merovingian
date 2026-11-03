@@ -302,6 +302,10 @@
 * [0318 - A membership template offers the room's stored forward extremities, and none is offered without them](0318-a-membership-template-offers-the-rooms-stored-forward-extremities.md)
 * [0319 - Report a failed device-list write where the client can retry, and finish where access is being revoked](0319-report-a-failed-device-list-write-where-the-client-can-retry.md)
 * [0320 - A join comes after the ancestors that share its depth](0320-a-join-comes-after-the-ancestors-that-share-its-depth.md)
+* [0330 - Search terms are matched in linear time and capped at 1024 bytes](0330-search-terms-are-matched-in-linear-time-and-capped-at-1024-bytes.md)
+* [0332 - Search filter lists are prepared once per request](0332-search-filter-lists-are-prepared-once-per-request.md)
+* [0333 - Search result context is built only when requested, from one pass over the events](0333-search-result-context-is-built-only-when-requested-from-one-pass.md)
+* [0334 - The user directory reads the accounts once and caps its results](0334-the-user-directory-reads-the-accounts-once-and-caps-its-results.md)
 
 ## Proposed Records
 
