@@ -565,6 +565,11 @@ create (unknown here) may take a caller-chosen fallback, written as `value_or(..
 site. A federated join is refused unless the verified `m.room.create` declares the make_join
 version.
 
+`InboundPduEnvelope::room_version` is a claim until a create is stored: every receipt path falls back to "12" before then.
+`ingest_pdu_event` takes its policy from `stored_room_version` once a create is stored and refuses an envelope naming another
+version (ADR-0370). A PDU parked during a join is kept as received and verified afresh under the real version at the drain,
+with `runtime.mutex` released (`pending_pdu_under_room_version`); never replay a queued envelope unchanged.
+
 ## Media upload boundary
 
 `client_server.cpp` is responsible for:

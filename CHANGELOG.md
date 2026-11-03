@@ -4,6 +4,7 @@ The medium findings of security audit run 2 (ref 5e67d4e8).
 
 ### Security
 
+- **A PDU parked during a federated join is judged under the room version its create event declares (F-44, ADR-0370).** It was replayed under a guess of version 12, so a creator of an older room could have an event accepted that the room's rules reject, and honest events were refused. Ingestion now also refuses a PDU verified under any other version than the stored create's.
 - **A joining server applies the receipt checks to a resident's `send_join` answer (F-45, ADR-0369).** An event whose content hash does not match is stored redacted. An event the auth rules refuse, or that names an event the answer does not hold or that was refused, is dropped. The join is refused with 502 when the answer's state holds no single valid create event or does not authorise the join.
 - **A fork that predates a ban can no longer restore it through the ADR-0225 fallback (F-40, ADR-0373).** When the
   state across a room's forward extremities cannot be resolved, a local event cites the newest tip and retires the

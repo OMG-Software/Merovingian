@@ -2684,6 +2684,207 @@ SCENARIO("A joining server applies the receipt checks to a resident's send_join 
     }
 }
 
+// Spec: Matrix Server-Server API v1.19, "Checks performed on receipt of a PDU", and rooms/v10.md, authorisation rule
+// 2.4: "If there is no m.room.create event among the entries, reject." A room version comes from the room's create
+// event (client-server-api.md, m.room.create), so a PDU that arrived before the create was stored is judged again
+// under the version the create declares (F-44, ADR-0370).
+SCENARIO("A PDU parked during a federated join is judged under the room version the create event declares",
+         "[f44][security][homeserver][federation][join][integration]")
+{
+    GIVEN("a version 10 room whose resident delivers PDUs before it answers send_join")
+    {
+        REQUIRE(sodium_init() >= 0);
+        auto started = merovingian::homeserver::start_runtime(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+
+        auto const reg = merovingian::homeserver::register_local_user(runtime, "alice", "CorrectHorse7!",
+                                                                      merovingian::tests::registration_token);
+        REQUIRE(reg.ok);
+        auto const login = merovingian::homeserver::login_local_user(runtime, reg.value, "CorrectHorse7!", "DEVICE1");
+        REQUIRE(login.ok);
+        auto const alice = reg.value;
+
+        auto const certificate = write_test_tls_certificate();
+        auto tls_context = merovingian::homeserver::make_tls_server_context(certificate.certificate_file,
+                                                                            certificate.private_key_file);
+        REQUIRE(tls_context.ok());
+        auto acceptor = merovingian::net::TcpAcceptor{};
+        REQUIRE(acceptor.bind("127.0.0.1", 0U).ok);
+        auto const port = acceptor.bound_port();
+        REQUIRE(port > 0U);
+        runtime.test_forced_outbound_resolution[resident_server] =
+            merovingian::homeserver::TestOnlyForcedOutboundResolution{
+                "localhost", port, {"127.0.0.1"}, certificate.certificate_pem};
+        merovingian::homeserver::wire_federation_callbacks(runtime);
+        runtime.federation.remote_key_resolver =
+            [](std::string_view server_name,
+               std::string_view key_id) -> std::optional<merovingian::federation::FederationRemoteRuntime> {
+            if (server_name != resident_server || key_id != resident_key_id)
+            {
+                return std::nullopt;
+            }
+            return resident_remote_runtime();
+        };
+
+        auto const room_id = std::string{"!f44:"} + resident_server;
+        auto const creator = std::string{"@creator:"} + resident_server;
+        auto const bob = std::string{"@bob:"} + resident_server;
+        auto const policy = *merovingian::rooms::find_room_version_policy("10");
+        auto const guessed_policy = *merovingian::rooms::find_room_version_policy("12");
+        auto const room_chain = resident_room_chain(room_id, creator, policy);
+        auto const make_join_event =
+            naming_auth_events(std::string{R"({"type":"m.room.member","state_key":")"} + alice + R"(","room_id":")" +
+                                   room_id + R"(","sender":")" + alice +
+                                   R"(","depth":6,"origin_server_ts":1000,)"
+                                   R"("prev_events":[],"auth_events":[],)"
+                                   R"("content":{"membership":"join"}})",
+                               room_chain.member_auth());
+        auto const bob_join = sign_test_event(
+            naming_auth_events(std::string{R"({"type":"m.room.member","state_key":")"} + bob + R"(","room_id":")" +
+                                   room_id + R"(","sender":")" + bob +
+                                   R"(","depth":5,"origin_server_ts":950,"prev_events":[],"auth_events":[],)"
+                                   R"("content":{"membership":"join"}})",
+                               room_chain.member_auth()),
+            policy, resident_server, resident_key_id, resident_key_seed);
+        auto const bob_join_id = reference_event_id(bob_join, policy);
+        auto state = room_chain.events();
+        state.push_back(bob_join);
+        auto const make_join_response =
+            json_http_response("200 OK", std::string{R"({"room_version":"10","event":)"} + make_join_event + "}");
+        auto const send_join_response = json_http_response(
+            "200 OK", std::string{R"({"state":)"} + canonicaljson_array_to_string(state) + R"(,"auth_chain":[]})");
+
+        auto const quoted = [](std::string const& id) {
+            return "\"" + id + "\"";
+        };
+        // This server holds no create event yet, so every receipt path guesses version 12.
+        auto const received = [&](std::string const& raw, merovingian::rooms::RoomVersionPolicy const& signing_policy) {
+            auto const signed_event =
+                sign_test_event(raw, signing_policy, resident_server, resident_key_id, resident_key_seed);
+            auto const json = merovingian::canonicaljson::serialize_canonical(signed_event).output;
+            auto envelope = merovingian::federation::parse_inbound_pdu_envelope(json, "12");
+            REQUIRE(envelope.has_value());
+            envelope->origin = resident_server;
+            return *envelope;
+        };
+
+        WHEN("the PDUs arrive while the join is in progress")
+        {
+            auto ban_event_id = std::string{};
+            auto honest_event_id = std::string{};
+            auto forged_event_ids = std::vector<std::string>{};
+            auto statuses = std::vector<merovingian::federation::PduIngestionStatus>{};
+            auto captured_requests = std::vector<std::string>{};
+            auto server_thread = merovingian::tests::JoiningThreads{};
+            server_thread.emplace_back([&]() {
+                run_resident_server(
+                    acceptor, *tls_context.context, make_join_response, send_join_response, captured_requests,
+                    [&](std::string const& request) {
+                        auto const join_id = reference_event_id(event_from_send_request(request), policy);
+                        // Valid under version 12, where a creator outranks everyone and the create event is not named.
+                        // Version 10 rejects it: its auth_events hold no m.room.create.
+                        auto const ban =
+                            received(std::string{R"({"type":"m.room.member","state_key":")"} + bob +
+                                         R"(","room_id":")" + room_id + R"(","sender":")" + creator +
+                                         R"(","depth":7,"origin_server_ts":1100,"prev_events":[)" + quoted(join_id) +
+                                         R"(],"auth_events":[)" + quoted(room_chain.power_levels_id) + "," +
+                                         quoted(room_chain.creator_join_id) + "," + quoted(bob_join_id) +
+                                         R"(],"content":{"membership":"ban"}})",
+                                     guessed_policy);
+                        ban_event_id =
+                            reference_event_id(merovingian::canonicaljson::parse_lossless(ban.json).value, policy);
+                        statuses.push_back(runtime.federation.pdu_sink(ban).status);
+                        // Signed over the version 12 redaction, which drops a top-level `origin`. Version 10 keeps it,
+                        // so the signature does not cover what version 10 checks.
+                        auto const forged = received(
+                            std::string{R"({"type":"m.room.message","room_id":")"} + room_id + R"(","sender":")" +
+                                creator +
+                                R"(","origin":"resident.example.org","depth":7,"origin_server_ts":1101,"prev_events":[)" +
+                                quoted(join_id) + R"(],"auth_events":[)" + quoted(room_chain.create_id) + "," +
+                                quoted(room_chain.power_levels_id) + "," + quoted(room_chain.creator_join_id) +
+                                R"(],"content":{"body":"x","msgtype":"m.text"}})",
+                            guessed_policy);
+                        forged_event_ids.push_back(forged.event_id);
+                        forged_event_ids.push_back(
+                            reference_event_id(merovingian::canonicaljson::parse_lossless(forged.json).value, policy));
+                        statuses.push_back(runtime.federation.pdu_sink(forged).status);
+                        // Nothing wrong with this one, under the room's real version.
+                        auto const honest = received(
+                            std::string{R"({"type":"m.room.message","room_id":")"} + room_id + R"(","sender":")" +
+                                creator + R"(","depth":7,"origin_server_ts":1102,"prev_events":[)" + quoted(join_id) +
+                                R"(],"auth_events":[)" + quoted(room_chain.create_id) + "," +
+                                quoted(room_chain.power_levels_id) + "," + quoted(room_chain.creator_join_id) +
+                                R"(],"content":{"body":"hello","msgtype":"m.text"}})",
+                            policy);
+                        honest_event_id = honest.event_id;
+                        statuses.push_back(runtime.federation.pdu_sink(honest).status);
+                    });
+            });
+            auto const result =
+                merovingian::homeserver::join_room(runtime, login.value, room_id, {std::string{resident_server}});
+            server_thread.join();
+
+            auto const lock = std::lock_guard{runtime.mutex};
+            auto const& store = runtime.database.persistent_store;
+            auto const status_of = [&](std::string const& event_id) -> std::string {
+                auto const stored = store.events.find_in_room(room_id, event_id);
+                return stored != store.events.end() ? stored->status : std::string{"absent"};
+            };
+
+            THEN("every one was parked until the join committed")
+            {
+                CAPTURE(result.reason);
+                REQUIRE(result.ok);
+                REQUIRE(statuses.size() == 3U);
+                REQUIRE(std::ranges::all_of(statuses, [](auto const status) {
+                    return status == merovingian::federation::PduIngestionStatus::deferred;
+                }));
+            }
+
+            THEN("the ban that only version 12 allows does not take effect")
+            {
+                CAPTURE(status_of(ban_event_id));
+                REQUIRE(status_of(ban_event_id) != "accepted");
+                REQUIRE(merovingian::database::find_current_state_event_id(store, room_id, "m.room.member", bob) ==
+                        bob_join_id);
+            }
+
+            THEN("the event whose signature holds only under version 12 is not stored under either ID")
+            {
+                for (auto const& event_id : forged_event_ids)
+                {
+                    CAPTURE(event_id);
+                    REQUIRE(status_of(event_id) == "absent");
+                }
+            }
+
+            THEN("the honest event is accepted under the room's real version")
+            {
+                REQUIRE(status_of(honest_event_id) == "accepted");
+            }
+
+            AND_WHEN("a PDU still carrying the guessed version arrives once the create is stored")
+            {
+                auto const late =
+                    received(std::string{R"({"type":"m.room.message","room_id":")"} + room_id + R"(","sender":")" +
+                                 creator + R"(","depth":8,"origin_server_ts":1103,"prev_events":[)" +
+                                 quoted(honest_event_id) + R"(],"auth_events":[)" + quoted(room_chain.create_id) + "," +
+                                 quoted(room_chain.power_levels_id) + "," + quoted(room_chain.creator_join_id) +
+                                 R"(],"content":{"body":"late","msgtype":"m.text"}})",
+                             policy);
+                auto const answer = runtime.federation.pdu_sink(late);
+
+                THEN("it is refused: the version it was verified under is not the room's")
+                {
+                    REQUIRE(answer.status == merovingian::federation::PduIngestionStatus::rejected_invalid);
+                    REQUIRE(status_of(late.event_id) == "absent");
+                }
+            }
+        }
+    }
+}
+
 SCENARIO("leave_room signs remote membership templates with and without existing hashes",
          "[membership-template-hashes][homeserver][federation][integration][make-join]")
 {

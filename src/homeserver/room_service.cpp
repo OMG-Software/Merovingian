@@ -5436,6 +5436,30 @@ namespace
         return outcome;
     }
 
+    // A PDU parked during a join, rebuilt under the room's real version: its event ID is the one that version
+    // derives, and every signature that version covers has been checked. Empty when it fails or no longer parses.
+    // Called with runtime.mutex released: a signature check may fetch a key.
+    [[nodiscard]] auto pending_pdu_under_room_version(HomeserverRuntime& runtime,
+                                                      federation::InboundPduEnvelope const& pending,
+                                                      rooms::RoomVersionPolicy const& policy,
+                                                      std::string_view our_server)
+        -> std::optional<federation::InboundPduEnvelope>
+    {
+        auto const parsed = canonicaljson::parse_lossless(pending.json);
+        if (parsed.error != canonicaljson::ParseError::none ||
+            filter_verified_send_join_events(runtime, canonicaljson::Array{parsed.value}, policy, our_server).empty())
+        {
+            return std::nullopt;
+        }
+        auto envelope = federation::rebuild_inbound_pdu_envelope(pending.json, policy.id, pending.origin);
+        if (!envelope.has_value() || envelope->room_id != pending.room_id)
+        {
+            return std::nullopt;
+        }
+        envelope->room_version = std::string{policy.id};
+        return envelope;
+    }
+
     // The room versions a join advertises to a resident: every one this server implements
     // (rooms::room_version_policy.cpp is the single source of truth, pinned by
     // tests/conformance/test_room_version_table_conformance.cpp).
@@ -6109,6 +6133,9 @@ namespace
         // included, is persisted above (ADR-0241).
         notify_room_changed(runtime, room_id);
         auto const pending_pdus = pending_join.take_committed();
+        // F-44, ADR-0370: each was received before the room's create event was stored, so its event ID and signatures
+        // were checked under a guess at the room version. It is checked afresh under the version the create declares.
+        auto const* const stored_policy = stored_room_version_policy(runtime.database.persistent_store, room_id);
         {
             // The sink takes room stripe then runtime mutex. Drop ALL global
             // recursion levels first, including a dispatcher's outer guard,
@@ -6118,7 +6145,16 @@ namespace
             {
                 try
                 {
-                    std::ignore = runtime.federation.pdu_sink(pdu);
+                    auto const replayed = stored_policy != nullptr
+                                              ? pending_pdu_under_room_version(runtime, pdu, *stored_policy, our_server)
+                                              : std::nullopt;
+                    if (!replayed.has_value())
+                    {
+                        LOG_WARNING("Dropped a PDU parked during a join: not valid under the room's version; room_id=" +
+                                    std::string{room_id} + " received_as=" + pdu.event_id);
+                        continue;
+                    }
+                    std::ignore = runtime.federation.pdu_sink(*replayed);
                 }
                 catch (...)
                 {

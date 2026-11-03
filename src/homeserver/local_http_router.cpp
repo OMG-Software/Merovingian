@@ -4942,16 +4942,25 @@ namespace
     // ordering and no sync stream ID. This check is the cheap path only: a concurrent
     // ingest of the same event can store it after this look, so it is made again below,
     // under the room stripe, where it is decisive.
+    auto stored_version = std::optional<std::string>{};
     {
         auto const guard = std::unique_lock<RuntimeMutex>{runtime.mutex};
         if (auto const stored = answer_for_stored_pdu(runtime, envelope); stored.has_value())
         {
             return *stored;
         }
+        stored_version = stored_room_version(runtime.database.persistent_store, room_id);
     }
 
-    auto const* room_policy =
-        rooms::find_room_version_policy(envelope.room_version.empty() ? "12" : envelope.room_version);
+    // F-44, ADR-0370: a room's version is the one its stored create event declares, never the envelope's. The
+    // envelope's event ID and signatures were checked under the envelope's version, which is a guess while no create
+    // is stored, so one that disagrees proves nothing about the event under the room's real rules.
+    if (stored_version.has_value() && !envelope.room_version.empty() && envelope.room_version != *stored_version)
+    {
+        return {federation::PduIngestionStatus::rejected_invalid, "PDU was verified under another room version"};
+    }
+    auto const* room_policy = rooms::find_room_version_policy(
+        stored_version.value_or(envelope.room_version.empty() ? std::string{"12"} : envelope.room_version));
     if (room_policy == nullptr)
     {
         return {federation::PduIngestionStatus::rejected_invalid, "unknown room version"};
@@ -5029,15 +5038,14 @@ namespace
             auto const max_pdus = static_cast<std::size_t>(runtime.federation.config.pending_join_max_pdus);
             auto const max_bytes = runtime.federation.config.pending_join_max_bytes;
             if (queue.pdus.size() >= max_pdus || queue.json_bytes > max_bytes ||
-                stored_json.size() > max_bytes - queue.json_bytes)
+                envelope.json.size() > max_bytes - queue.json_bytes)
             {
                 return {federation::PduIngestionStatus::main_overloaded, "pending join PDU capacity exhausted"};
             }
-            auto deferred = envelope;
-            deferred.json = std::move(stored_json);
-            auto const bytes = deferred.json.size();
-            queue.pdus.push_back(std::move(deferred));
-            queue.json_bytes += bytes;
+            // As received, never `stored_json`: any redaction so far followed a guess at the room version, and the
+            // drain judges the PDU afresh under the real one (ADR-0370).
+            queue.pdus.push_back(envelope);
+            queue.json_bytes += envelope.json.size();
             return {federation::PduIngestionStatus::deferred, "PDU deferred until outbound join commits"};
         }
         sync_stream_id = database::allocate_sync_stream_id(runtime.database.persistent_store);

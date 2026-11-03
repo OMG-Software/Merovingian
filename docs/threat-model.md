@@ -2813,3 +2813,7 @@ nothing, all from trusting the worker's view or the hook's transport.
   resident can still omit events or offer an older event for a state slot, since individually valid events do not prove
   current state. An event whose sender's key cannot be fetched now takes its dependents with it, so a join into a room
   with a long-dead administrator can lose state or be refused. Tests: `[f45]`.
+- **A creator could have an event judged by version 12's rules in an older room (F-44, ADR-0370).** PDUs parked during a
+  join were verified under a guess of version 12 and replayed unchanged. The drain now verifies each afresh under the
+  version the stored create declares, and ingestion refuses an envelope naming any other. **Residual risk:** a PDU in
+  flight when the join commits is refused and needs the ordinary gap fill. Tests: `[f44]`.

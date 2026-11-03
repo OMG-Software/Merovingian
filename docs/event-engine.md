@@ -159,6 +159,8 @@ Implemented now:
 - a resident's answer to this server's `send_join` passes the receipt checks before anything is stored (0.12.68, F-45,
   ADR-0369): a content hash mismatch is redacted, and `authorize_send_join_answer` judges `state` and `auth_chain` in
   dependency order from the answer's own events, dropping what fails and refusing a join the rest does not authorise;
+- a PDU parked during a join is verified afresh and rebuilt under the version the stored create declares, and ingestion
+  refuses an envelope naming any other version (0.12.68, F-44, ADR-0370);
 - membership endpoint/content agreement (0.12.16, FED-6): `send_join`,
   `send_leave`, and `send_knock` validate the membership value, event type,
   authenticated-origin/sender relationship, sender/state-key equality, and
