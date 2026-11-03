@@ -39,7 +39,7 @@ This is the largest and most complex module — read this file carefully before 
 | `federation_proxy.cpp` | Forwards inbound federation requests to the out-of-process federation worker over encrypted IPC; `GET /_matrix/key/v2/server` stays local |
 | `federation_request_routing.cpp` | Extracts the room ID from an inbound federation request for worker shard routing |
 | `worker_pool.cpp` | Federation worker shard selection (FNV-1a of the room ID) and the main-process side of worker IPC |
-| `worker_supervisor.cpp` | Spawns and monitors the federation worker child; restarts it with exponential back-off |
+| `worker_supervisor.cpp` | Spawns and monitors the federation worker child; restarts it with exponential back-off, whether it exited or its main-side channel failed while it ran (it kills a live worker whose channel is unhealthy, ADR-0323) |
 | `worker_env.cpp` | Minimal environment allowlist for the worker child (ADR-0042) |
 | `tls.cpp` | TLS connection setup, certificate loading, non-blocking read/write retry loop (ADR-0054) |
 | `local_smoke_flow.cpp` | In-process register → login → room → message flow exercised by the vertical-slice integration test |

@@ -1793,6 +1793,83 @@ SCENARIO("GET /query/profile refuses a malformed user_id with 400 M_INVALID_PARA
     }
 }
 
+// --- Identifiers that are not identifiers are refused before they are looked up or relayed ----
+// Spec: Matrix Server-Server API v1.19
+// Endpoints: GET /query/directory, GET /user/devices/{userId}, GET /event/{eventId},
+//            GET /make_join/{roomId}/{userId} (and make_leave / make_knock)
+// URL: ../../docs/matrix-v1.19-spec/appendices.md#room-aliases (and #user-identifiers, #event-ids, #room-ids)
+//
+// Appendices: a room alias is `#localpart:domain`, a user ID is `@localpart:domain`, a room ID starts
+// `!` and an event ID `$`, each valid non-surrogate Unicode and at most 255 bytes. The endpoints take
+// their identifiers from the percent-decoded request, so a remote server can send bytes that are
+// not even UTF-8. Such a request is refused as a bad request, as query/profile does for its
+// user_id, and never reaches the provider: in a federation worker the provider relays to main,
+// and the invalid text used to end the worker's IPC channel (F-08).
+SCENARIO("a federation request naming a malformed identifier is refused with 400 M_INVALID_PARAM and not looked up",
+         "[federation][conformance][fed-endpoints][f08]")
+{
+    GIVEN("a runtime whose lookup providers all count their calls")
+    {
+        auto runtime = merovingian::federation::make_federation_runtime_state(runtime_config());
+        merovingian::federation::upsert_remote(runtime, remote_for(origin, key_id, key_seed));
+        auto lookups = std::make_shared<int>(0);
+        runtime.directory_query_provider = [lookups](std::string_view) -> merovingian::federation::FederationDirectory {
+            ++*lookups;
+            return {true, "!aliased:local.example.org", {"local.example.org"}};
+        };
+        runtime.user_devices_provider = [lookups](std::string_view) -> std::string {
+            ++*lookups;
+            return R"({"devices":[]})";
+        };
+        runtime.event_query_provider = [lookups](std::string_view,
+                                                 std::string_view) -> merovingian::federation::RoomReadResult {
+            ++*lookups;
+            return {merovingian::federation::RoomReadStatus::ok, R"({"type":"m.room.message"})"};
+        };
+        runtime.membership_template_provider =
+            [lookups](
+                merovingian::federation::FederationEndpoint, std::string_view, std::string_view,
+                std::vector<std::string> const&) -> std::optional<merovingian::federation::MembershipEventTemplate> {
+            ++*lookups;
+            return std::nullopt;
+        };
+
+        auto const bad_targets = std::vector<std::string>{
+            "/_matrix/federation/v1/query/directory?room_alias=%FF",
+            "/_matrix/federation/v1/query/directory?room_alias=%23a%FF%3Alocal.example.org",
+            "/_matrix/federation/v1/query/directory?room_alias=general",
+            "/_matrix/federation/v1/query/directory?room_alias=%23nodomain",
+            "/_matrix/federation/v1/user/devices/%FF",
+            "/_matrix/federation/v1/user/devices/%40alice%3Aremote.example.org%3Ahttp",
+            "/_matrix/federation/v1/user/devices/alice",
+            "/_matrix/federation/v1/event/%FF",
+            "/_matrix/federation/v1/event/nodollar",
+            "/_matrix/federation/v1/make_join/" + std::string{room_id} + "/@%FF:" + origin,
+            "/_matrix/federation/v1/make_join/" + std::string{room_id} + "/notauser",
+            "/_matrix/federation/v1/make_join/%21%FF%3Alocal.example.org/@remote:" + origin,
+            "/_matrix/federation/v1/make_join/nobang/@remote:" + origin,
+        };
+
+        for (auto const& target : bad_targets)
+        {
+            WHEN("a signed GET is dispatched for " + target)
+            {
+                auto const response = merovingian::federation::handle_inbound_federation_request(
+                    runtime, signed_get_request(origin, key_id, key_seed, target));
+
+                THEN("the answer is 400 M_INVALID_PARAM and no provider was asked")
+                {
+                    // Spec MUST: an identifier is `<sigil>localpart[:domain]` of valid Unicode, at most 255 bytes.
+                    REQUIRE(response.status == 400U);
+                    REQUIRE(response.body.find("M_INVALID_PARAM") != std::string::npos);
+                    // Spec MUST: errors are a standard {errcode, error} object (SS API "API standards").
+                    REQUIRE(*lookups == 0);
+                }
+            }
+        }
+    }
+}
+
 // --- Error bodies are standard JSON error objects -----------------------------
 // Spec: Matrix Server-Server API v1.19
 // Endpoint: every federation endpoint; "Standard error response" (Client-Server API,

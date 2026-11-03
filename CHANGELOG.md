@@ -4,6 +4,22 @@ The medium findings of security audit run 2 (ref 5e67d4e8).
 
 ### Security
 
+- **A request from a remote server can no longer end a federation worker's IPC channel (F-35, F-08, ADR-0321).** A
+  header value, request target or body that was not UTF-8 went into the `fed_request` frame unchanged, and the worker's
+  parser refused the whole frame, so one signed request took a shard down for up to 30 seconds and could be repeated.
+  `ipc_json_str` now writes only valid UTF-8 (each bad byte becomes U+FFFD), and the `fed_request` frame carries a target,
+  header value or body that is not UTF-8 as `target_b64`, `v_b64` or `body_b64`, which the worker restores byte for byte.
+- **A frame whose payload does not parse fails one request, not the channel (F-09, ADR-0322).** `IpcChannel` ended
+  the channel on any application value its parser refused, such as an integer above 2^53 - 1. A frame that passed
+  authentication but does not parse is now logged and dropped; the waiter of a response is released at once; a failed
+  authentication or broken framing still ends the channel.
+- **`query/directory`, `user/devices`, `event` and `make_join`/`make_leave`/`make_knock` refuse malformed identifiers (F-08).**
+  A room alias, user ID, event ID or room ID that does not meet the identifier grammar (or is not UTF-8) is answered
+  400 `M_INVALID_PARAM` before any lookup, as `query/profile` already did, and is no longer relayed from a worker to main.
+- **A worker whose main-side channel has failed is restarted (F-08, ADR-0323).** The supervisor replaced a worker only
+  when it exited, so a shard whose channel main had given up on answered 503 until main was restarted. It now kills the
+  worker and respawns it after the existing backoff.
+
 ## 0.12.67
 
 The five high findings of security audit run 2 (ref 5e67d4e8).

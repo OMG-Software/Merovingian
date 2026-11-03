@@ -242,6 +242,12 @@ Federation is the highest-risk surface: **all input comes from untrusted remote 
    `auth_chain` already holds it (its walk starts at the pre-join state). State resolution's own auth-chain
    computation and what this server accepts are not changed.
 
+18. **A handler checks the grammar of an identifier a remote server chose before it looks it up or relays it (F-08).**
+   `query/directory` (`room_alias`: `auth::room_alias_is_valid`), `user/devices` (`auth::user_id_is_valid_federated`),
+   `event` (`$`, at most 255 bytes, valid UTF-8) and `make_join`/`make_leave`/`make_knock` (room ID likewise with `!`,
+   user ID as above) answer 400 `M_INVALID_PARAM`, as `query/profile` does. The percent-decoder passes any byte, and a
+   worker relays these to main, so a new handler that takes an identifier from the path or query does the same.
+
 ## Key files
 
 | File | Responsibility |

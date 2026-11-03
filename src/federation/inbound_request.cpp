@@ -186,6 +186,16 @@ namespace
         return {accepted, status, std::move(reason)};
     }
 
+    // Appendices, "Room IDs" and "Event IDs": `!opaque_id` / `$opaque_id`, valid non-surrogate
+    // Unicode code points (the localpart of a room ID may not hold NUL), and at most 255 bytes
+    // including the sigil. The opaque part is room-version specific, so nothing more is checked.
+    // A value that is not even this is refused before it is relayed or looked up (F-08).
+    [[nodiscard]] auto opaque_id_is_well_formed(std::string_view id, char sigil) noexcept -> bool
+    {
+        return id.size() >= 2U && id.size() <= 255U && id.front() == sigil && id.find('\0') == std::string_view::npos &&
+               canonicaljson::utf8_is_valid(id);
+    }
+
     [[nodiscard]] auto sender_domain(std::string_view sender) noexcept -> std::string_view
     {
         // A sender's server name may carry an explicit port (host:port), so
@@ -1095,6 +1105,16 @@ namespace
         {
             return {400U, "membership path is malformed"};
         }
+        // A remote server chose both identifiers. Refuse one that is not an identifier before the
+        // provider sees it: a worker relays it to main (F-08).
+        if (!opaque_id_is_well_formed(params->room_id, '!'))
+        {
+            return {400U, homeserver::matrix_error("M_INVALID_PARAM", "roomId path parameter is not a room ID")};
+        }
+        if (!auth::user_id_is_valid_federated(params->subject))
+        {
+            return {400U, homeserver::matrix_error("M_INVALID_PARAM", "userId path parameter is not a user ID")};
+        }
         if (sender_domain(params->subject) != request.origin)
         {
             audit_federation(runtime, "federation.make_membership_rejected", request.origin, request.target,
@@ -1557,6 +1577,13 @@ namespace
         {
             return {400U, homeserver::matrix_error("M_MISSING_PARAM", "room_alias is required")};
         }
+        // Appendices, "Room Aliases": `#localpart:domain`, at most 255 bytes. A malformed alias is a
+        // bad request, as for query/profile's user_id, and never reaches the provider, which a
+        // worker relays to main (F-08).
+        if (!auth::room_alias_is_valid(alias))
+        {
+            return {400U, homeserver::matrix_error("M_INVALID_PARAM", "room_alias is not a valid room alias")};
+        }
         auto const result = runtime.directory_query_provider(alias);
         if (!result.found)
         {
@@ -1677,6 +1704,12 @@ namespace
             return {400U, "user/devices path is malformed"};
         }
         auto const user_id = core::percent_decode(path.substr(prefix.size()));
+        // As for query/profile: a malformed user ID is a bad request, and is never looked up or
+        // relayed to main by a worker (F-08).
+        if (!auth::user_id_is_valid_federated(user_id))
+        {
+            return {400U, homeserver::matrix_error("M_INVALID_PARAM", "userId is not a valid user ID")};
+        }
         auto body = runtime.user_devices_provider(user_id);
         if (body.empty())
         {
@@ -1737,6 +1770,11 @@ namespace
         if (event_id.empty())
         {
             return {400U, "event path is malformed"};
+        }
+        // Appendices, "Event IDs": `$opaque_id`, at most 255 bytes (F-08).
+        if (!opaque_id_is_well_formed(event_id, '$'))
+        {
+            return {400U, homeserver::matrix_error("M_INVALID_PARAM", "eventId path parameter is not an event ID")};
         }
         return room_read_response(runtime.event_query_provider(event_id, request.origin), "Event not found",
                                   "event request is malformed");

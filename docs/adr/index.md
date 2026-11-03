@@ -304,6 +304,7 @@
 * [0320 - A join comes after the ancestors that share its depth](0320-a-join-comes-after-the-ancestors-that-share-its-depth.md)
 * [0321 - Every IPC frame is valid UTF-8 by construction, and request bytes cross it losslessly](0321-every-ipc-frame-is-valid-utf-8-by-construction.md)
 * [0322 - An authenticated IPC frame whose payload does not parse fails one request, not the channel](0322-an-authenticated-frame-whose-payload-does-not-parse-fails-one-request.md)
+* [0323 - The supervisor restarts a live worker whose main-side channel has failed](0323-the-supervisor-restarts-a-worker-whose-main-side-channel-failed.md)
 
 ## Proposed Records
 
