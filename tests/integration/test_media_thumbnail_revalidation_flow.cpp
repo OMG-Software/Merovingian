@@ -20,6 +20,7 @@
 #include "merovingian/homeserver/auth_service.hpp"
 #include "merovingian/homeserver/client_server.hpp"
 #include "merovingian/homeserver/http_server.hpp"
+#include "merovingian/media/decoder_hardening.hpp"
 #include "merovingian/media/repository.hpp"
 #include "merovingian/net/shutdown_signal.hpp"
 #include "merovingian/net/tcp_acceptor.hpp"
@@ -584,11 +585,47 @@ auto check_not_served(Response const& response, std::string const& original) -> 
     return {result.status == merovingian::homeserver::DispatchResult::Status::complete, result.response.status,
             std::move(content_type), result.response.body};
 }
+
+// ADR-0419 (audit run 2, F-78): a platform with no in-process decoder sandbox (NetBSD) makes the real
+// worker refuse to decode, so none of the scenarios below can see a thumbnail there. Each of them calls
+// this first. Where no sandbox exists it asserts what the platform must do instead (the thumbnail route
+// answers 404 and serves neither a resampled image nor the original, and the server stays up to answer
+// the next request) and the scenario ends. Where a sandbox exists it does nothing.
+[[nodiscard]] auto thumbnail_refused_without_sandbox() -> bool
+{
+    if (merovingian::media::decoder_platform_sandbox_available())
+    {
+        return false;
+    }
+    auto const directory = PrivateDirectory{};
+    auto const path = directory.path() / "media.sqlite3";
+    auto started = merovingian::homeserver::start_client_server(sqlite_config(path));
+    REQUIRE(started.started);
+    auto& runtime = started.runtime;
+    use_worker(runtime, MEROVINGIAN_TEST_THUMBNAIL_WORKER);
+    auto listener = DispatchedListener{runtime};
+    auto const port = listener.port();
+    auto const token = login_admin(runtime, port);
+    auto const image = sample_png();
+    auto const id = upload(port, token, image);
+    check_not_served(transact(port, request("GET", thumbnail_target(id, 4U), token)), image);
+    // A second request gets the same answer: a refusing worker is not a restart loop or a crash.
+    check_not_served(transact(port, request("GET", thumbnail_target(id, 3U), token)), image);
+    auto const versions = transact(port, request("GET", "/_matrix/client/versions"));
+    REQUIRE(versions.complete);
+    REQUIRE(versions.status == 200U);
+    return true;
+}
 } // namespace
 
 SCENARIO("Local thumbnail decoding revalidates the moderated record rather than its shared blob",
          "[med-4-revalidation][media][database][http][concurrency]")
 {
+    if (thumbnail_refused_without_sandbox())
+    {
+        return;
+    }
+
     GIVEN("authenticated local uploads in SQLite and the production loopback HTTP dispatcher")
     {
         WHEN("an administrator moderates one record after its decoder child has entered")
@@ -717,6 +754,11 @@ SCENARIO("Local thumbnail decoding revalidates the moderated record rather than 
 SCENARIO("MED-4 a generated thumbnail is served from the cache only while its record is servable",
          "[med-4-cache][media][database][http]")
 {
+    if (thumbnail_refused_without_sandbox())
+    {
+        return;
+    }
+
     GIVEN("an uploaded image whose 4x4 thumbnail was generated once by the real worker")
     {
         auto const directory = PrivateDirectory{};
@@ -755,6 +797,11 @@ SCENARIO("MED-4 a generated thumbnail is served from the cache only while its re
 SCENARIO("MED-4 a record quarantined while the post-decode policy check is in flight is neither served nor cached",
          "[med-4-policy-order][media][database][http][trust-safety]")
 {
+    if (thumbnail_refused_without_sandbox())
+    {
+        return;
+    }
+
     // PR #509 review: the post-decode check asked whether the record was still
     // servable and only then asked the policy server. The policy round trip
     // releases runtime.mutex, so a quarantine landing during it was missed and
@@ -844,6 +891,11 @@ SCENARIO("MED-4 a record quarantined while the post-decode policy check is in fl
 SCENARIO("MED-4 one requester cannot run more thumbnail decodes at once than the per-user cap",
          "[med-4-concurrency][media][database][concurrency]")
 {
+    if (thumbnail_refused_without_sandbox())
+    {
+        return;
+    }
+
     GIVEN("an uploaded image and two decodes for one user held at the gate")
     {
         auto const directory = PrivateDirectory{};
@@ -899,6 +951,11 @@ SCENARIO("MED-4 one requester cannot run more thumbnail decodes at once than the
 SCENARIO("MED-4 a remote thumbnail decoded while its cached record is quarantined is not served",
          "[med-4-remote][media][remote][concurrency]")
 {
+    if (thumbnail_refused_without_sandbox())
+    {
+        return;
+    }
+
     GIVEN("a remote image admitted into the cache and its thumbnail decode held at the gate")
     {
         auto const directory = PrivateDirectory{};

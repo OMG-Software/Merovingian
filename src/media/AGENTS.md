@@ -12,7 +12,7 @@ Spec authority: ../../docs/matrix-v1.19-spec/client-server-api.md#content-reposi
 | `thumbnailer.cpp` | Generates thumbnails for image media |
 | `thumbnail_cache.cpp` | `ThumbnailCache`: byte-bounded LRU of generated thumbnails, keyed by source record, size and method (MED-4, ADR-0152). A hit authorises nothing: the caller checks the record is servable first |
 | `thumbnail_worker_main.cpp` | Out-of-process thumbnail worker entry point (sandboxed); thin — hardening logic lives in `decoder_hardening.cpp` |
-| `decoder_hardening.cpp` | Fail-closed hardening sequence for the thumbnail decoder worker: resource limits + platform sandbox (seccomp/pledge/cap_enter), behind an injectable `DecoderHardeningOps` function table |
+| `decoder_hardening.cpp` | Fail-closed hardening sequence for the thumbnail decoder worker: resource limits + platform sandbox (seccomp/pledge/cap_enter; refuses on NetBSD), behind an injectable `DecoderHardeningOps` function table |
 | `runtime_media.cpp` | Wires the media service into the runtime |
 | `url_preview.cpp` | URL previews' pure parts (ADR-0213): the bounded, non-recursive `og:*`/`<title>` extractor, `resolve_preview_reference` and the bounded `UrlPreviewCache`. No I/O; fetching lives in `homeserver/url_preview_service.cpp` |
 
@@ -103,6 +103,14 @@ unconfined was a real, shipped bug (0.12.13 audit). The real syscalls sit behind
 `DecoderHardeningOps`, an injectable function table, so `apply_decoder_hardening()`'s
 fail-closed sequencing is unit-testable (`tests/unit/test_media_decoder_hardening.cpp`)
 without actually installing a broken sandbox inside the test binary.
+
+A platform with no in-process sandbox (NetBSD) is refused outright: `apply_decoder_hardening()`
+returns `no platform decoder sandbox` before it applies anything (ADR-0419). Resource limits alone do
+not contain a decoder exploit that can read the server's key and TLS files. Do not "fix" this by
+letting NetBSD fall through with rlimits only; add a NetBSD branch to the platform ladder only when
+confinement comes from privilege separation. `decoder_platform_sandbox_available()` and
+`DecoderHardeningOps::platform_sandbox_available` are the seam; integration tests that expect a
+thumbnail call it first and assert the refusal where it is false.
 
 Every request to the worker goes through `exchange_with_worker` in `thumbnailer.cpp`, including
 the library report the server asks for at startup (`query_thumbnail_worker_libraries`, 0.12.45).

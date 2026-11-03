@@ -134,7 +134,7 @@ runtime behaviour is covered transitively by the matching Tier 1 platform.
 | FreeBSD `.pkg` | `packages.yml` (`freebsd-pkg`) | Tier 1 FreeBSD |
 | OpenBSD `.tgz` (standalone `pkg_create`) | `packages.yml` (`openbsd-pkg`) | Tier 1 OpenBSD |
 | NetBSD `.tgz` (tar-assembled, no `pkg_create`) | `packages.yml` (`netbsd-pkg`) | Tier 1 NetBSD |
-| Portable static Linux tarball (musl) | `packages.yml` (`static-linux-fallback`) | Tier 1 Linux (the sandboxed thumbnail worker is omitted when static image codecs are unavailable; thumbnails then fall back to original bytes) |
+| Portable static Linux tarball (musl) | `packages.yml` (`static-linux-fallback`) | Tier 1 Linux (the sandboxed thumbnail worker is omitted when static image codecs are unavailable; thumbnail requests are then answered `404`) |
 
 The OpenBSD package job builds with standalone `pkg_create(1)` (no ports tree),
 generating a framework-free packing list from the staged install. The NetBSD
@@ -161,8 +161,8 @@ The trade-off is size: because it links the world, the static binary is **much
 larger** than the dynamically linked distro packages, carries no automatic
 security updates for its bundled libraries (the tarball must be rebuilt and
 redeployed to pick up dependency fixes), and omits the sandboxed thumbnail worker
-when static image codecs are unavailable (thumbnails then fall back to original
-bytes). Prefer a native Tier 1/Tier 2 package whenever the platform is new
+when static image codecs are unavailable (thumbnail requests are then answered
+`404`). Prefer a native Tier 1/Tier 2 package whenever the platform is new
 enough; use the static tarball only when it is not.
 
 ## Tier 3 — Best-effort (not in CI)
@@ -195,9 +195,13 @@ the main `merovingian-server` process — see [hardening.md](hardening.md),
 Linux 5.13, or disabled at boot), the worker refuses to start unless
 `federation.worker.allow_without_landlock=true` is set.
 
-The sandboxed thumbnail worker applies its own `setrlimit` clamps and (on Linux)
-the seccomp filter regardless of platform; where those facilities are
-unavailable it still runs with the resource limits that the OS supports.
+The sandboxed thumbnail worker applies its own `setrlimit` clamps and then the
+platform sandbox: the seccomp filter on Linux, `pledge("stdio")` on OpenBSD and
+Capsicum on FreeBSD. It refuses to decode on a platform with none of these
+(NetBSD), so **there are no thumbnails on NetBSD** until privilege separation
+comes from outside the server process; thumbnail requests are answered `404`
+([ADR-0419](adr/0419-the-thumbnail-decoder-refuses-to-run-without-a-platform-sandbox.md)). NetBSD is also refused at server startup
+([ADR-0378](adr/0378-probe-elf-hardening-in-memory-and-keep-netbsd-refused.md)).
 
 ## Changing a platform's tier
 

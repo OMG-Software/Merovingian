@@ -183,6 +183,10 @@ answers 503 until you restart the server
 A NetBSD server refuses to start, because NetBSD has no in-process confinement for
 the thumbnail decoder
 ([ADR-0378](adr/0378-probe-elf-hardening-in-memory-and-keep-netbsd-refused.md)).
+For the same reason the thumbnail worker refuses to decode on NetBSD, so there are no
+thumbnails there (`404`) until the worker can be confined from outside the server
+process
+([ADR-0419](adr/0419-the-thumbnail-decoder-refuses-to-run-without-a-platform-sandbox.md)).
 
 Linux packages create the `merovingian` system user and group, install the systemd
 unit, and stage the example configuration at `/etc/merovingian/
