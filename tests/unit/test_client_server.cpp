@@ -2655,7 +2655,11 @@ SCENARIO("Client-server runtime wires server-blind E2EE key API routes", "[homes
                 REQUIRE(upload.response.body.find("one_time_key_counts") != std::string::npos);
                 REQUIRE(query.response.body.find("device_keys") != std::string::npos);
                 REQUIRE(upload.response.body.find("curve25519-secret") == std::string::npos);
-                REQUIRE(merovingian::homeserver::key_api_record_count(runtime, "@alice:example.org") == 2U);
+                auto const& audit = runtime.homeserver.database.persistent_store.audit_log;
+                auto const key_api_rows = std::ranges::count_if(audit, [](auto const& event) {
+                    return event.actor == "@alice:example.org" && event.event_type.starts_with("key_api.");
+                });
+                REQUIRE(key_api_rows == 2);
             }
         }
     }
@@ -7360,8 +7364,11 @@ SCENARIO("E2EE device_keys round-trip: inviter upload is visible to invitee quer
             }
             AND_THEN("the persistent_store holds exactly one device_key row for the inviter")
             {
-                auto const count = merovingian::homeserver::key_api_record_count(runtime, "@inviter:example.org");
-                REQUIRE(count >= 1U);
+                auto const& audit = runtime.homeserver.database.persistent_store.audit_log;
+                auto const key_api_rows = std::ranges::count_if(audit, [](auto const& event) {
+                    return event.actor == "@inviter:example.org" && event.event_type == "key_api.upload_keys";
+                });
+                REQUIRE(key_api_rows >= 1);
             }
         }
     }

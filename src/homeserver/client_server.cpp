@@ -7357,9 +7357,6 @@ namespace
                                std::string_view device_id, std::string_view payload) -> void
     {
         auto const plan = auth::make_key_api_boundary_plan(route, user, device_id);
-        rt.key_api_records.push_back({std::string{user}, std::string{device_id},
-                                      auth::key_api_endpoint_name(route.endpoint),
-                                      auth::redacted_key_payload_summary(payload), plan.database_statements.size()});
         append_local_audit(rt.homeserver.database, observability::AuditCategory::auth, plan.audit_event_type, user,
                            device_id, auth::redacted_key_payload_summary(payload));
     }
@@ -19298,13 +19295,6 @@ auto joined_room_count(ClientServerRuntime const& rt, std::string_view user) noe
 {
     return static_cast<std::size_t>(std::ranges::count_if(rt.homeserver.database.rooms, [user](LocalRoom const& room) {
         return joined(room, user);
-    }));
-}
-
-auto key_api_record_count(ClientServerRuntime const& rt, std::string_view user) noexcept -> std::size_t
-{
-    return static_cast<std::size_t>(std::ranges::count_if(rt.key_api_records, [user](ClientKeyApiRecord const& record) {
-        return record.user_id == user;
     }));
 }
 
