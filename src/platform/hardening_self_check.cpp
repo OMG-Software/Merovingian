@@ -210,10 +210,7 @@ auto run_startup_hardening_self_check() -> HardeningSelfCheck
     add("compiler hardening", enabled_or_unknown(compile_time_compiler_hardening_enabled(elf_pie_active),
                                                  "Stack protector, FORTIFY_SOURCE, or PIE not confirmed."));
     add("linker hardening", linker_hardening_check_from_probe(elf));
-    add("PIE", elf_pie_active ? HardeningCheck{{}, HardeningStatus::enabled, {}}
-                              : HardeningCheck{{},
-                                               HardeningStatus::unknown,
-                                               "ELF probe: binary is not PIE-linked; rebuild with -pie linker flag."});
+    add("PIE", pie_check_from_probe(elf));
     add("RELRO", relro_check_from_probe(elf));
     add("stack protector", enabled_or_unknown(compile_time_stack_protector_enabled(),
                                               "Compile did not advertise __SSP__/__SSP_STRONG__/__SSP_ALL__."));
@@ -344,6 +341,17 @@ auto linker_hardening_check_from_probe(ElfHardeningResult const& result) -> Hard
         HardeningStatus::unknown,
         "ELF probe: PT_GNU_RELRO, DT_BIND_NOW, or PT_GNU_STACK(noexec) not confirmed; "
         "binary may be statically linked or built without -Wl,-z,relro -Wl,-z,now.",
+    };
+}
+
+auto pie_check_from_probe(ElfHardeningResult const& result) -> HardeningCheck
+{
+    if (result.probed && result.is_pie)
+        return HardeningCheck{{}, HardeningStatus::enabled, {}};
+    return HardeningCheck{
+        {},
+        HardeningStatus::unknown,
+        "ELF probe: binary is not PIE-linked; rebuild with -pie linker flag.",
     };
 }
 

@@ -46,38 +46,44 @@ namespace
     // reads the server's own image and not a shared library's.
     auto read_main_program(dl_phdr_info* info, std::size_t /*size*/, void* data) noexcept -> int
     {
-        auto& result = *static_cast<ElfHardeningResult*>(data);
-        if (info->dlpi_phdr == nullptr || info->dlpi_phnum == 0U)
-            return 1;
-
-        // An ET_EXEC binary runs at its link address, so its load offset is 0,
-        // and a kernel never maps a PIE there. A wrong answer can only be
-        // "not PIE", which refuses startup.
-        result.is_pie = info->dlpi_addr != 0U;
-        result.probed = true;
-
-        for (auto const& ph : std::span<Elf64_Phdr const>{info->dlpi_phdr, info->dlpi_phnum})
-        {
-            switch (ph.p_type)
-            {
-            case PT_GNU_RELRO:
-                result.has_relro = true;
-                break;
-            case k_pt_gnu_stack:
-                // PF_X set means executable stack — the linker flag is -z,noexecstack.
-                result.has_noexec_stack = (ph.p_flags & static_cast<Elf64_Word>(PF_X)) == 0U;
-                break;
-            case PT_DYNAMIC:
-                read_dynamic_section(*info, ph, result);
-                break;
-            default:
-                break;
-            }
-        }
+        *static_cast<ElfHardeningResult*>(data) = read_elf_hardening(*info);
         return 1;
     }
 
 } // namespace
+
+auto read_elf_hardening(::dl_phdr_info const& info) noexcept -> ElfHardeningResult
+{
+    auto result = ElfHardeningResult{};
+    if (info.dlpi_phdr == nullptr || info.dlpi_phnum == 0U)
+        return result;
+
+    // An ET_EXEC binary runs at its link address, so its load offset is 0,
+    // and a kernel never maps a PIE there. A wrong answer can only be
+    // "not PIE", which refuses startup.
+    result.is_pie = info.dlpi_addr != 0U;
+    result.probed = true;
+
+    for (auto const& ph : std::span<Elf64_Phdr const>{info.dlpi_phdr, info.dlpi_phnum})
+    {
+        switch (ph.p_type)
+        {
+        case PT_GNU_RELRO:
+            result.has_relro = true;
+            break;
+        case k_pt_gnu_stack:
+            // PF_X set means executable stack — the linker flag is -z,noexecstack.
+            result.has_noexec_stack = (ph.p_flags & static_cast<Elf64_Word>(PF_X)) == 0U;
+            break;
+        case PT_DYNAMIC:
+            read_dynamic_section(info, ph, result);
+            break;
+        default:
+            break;
+        }
+    }
+    return result;
+}
 
 auto probe_elf_hardening() -> ElfHardeningResult
 {
