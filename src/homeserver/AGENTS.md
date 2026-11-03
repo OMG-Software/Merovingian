@@ -455,6 +455,12 @@ client, sender or remote server controls, and per-user rows that requests scan m
 - A user's push rules are evaluated for every event they receive. `PUT /pushrules/...` refuses a new
   rule past `max_push_rules_per_user` with `400 M_TOO_LARGE` and bounds each rule (ADR-0204);
   `m.push_rules` cannot be set through the account-data API (405).
+- `GET /rooms/{roomId}/hierarchy` reads state through `database::find_current_state_event_id` and
+  `for_each_room_state_row` (ADR-0344), parses each child event once, and stops its walk at the end of the page
+  plus one room, or at `max_hierarchy_walk_visits` (ADR-0345). Never filter `store.state` for one key or one room.
+- `GET /rooms/{roomId}/threads` aggregates by root ID in a hash map over `EventTable::walk_room_newest_first`, at
+  most `max_thread_events_examined` events (ADR-0345); never walk `store.events` for one room.
+- `GET /rooms/{roomId}/members` collects the state-backed members in a set (F-10).
 - Push delivery's badge count (`counts.unread`, `count_push_badge`) runs per recipient per event.
   It walks `store.events.in_stream_order()` newest first, stops once every joined room is settled,
   visits at most `push_badge_row_budget` (10000) rows, and saturates at `push_badge_unread_cap`

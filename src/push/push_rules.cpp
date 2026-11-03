@@ -208,6 +208,29 @@ namespace
                (character >= '0' && character <= '9') || character == '_';
     }
 
+    // The work one recipient's evaluation of one event may spend on matching content.body against
+    // glob patterns, across every rule (ADR-0343). One step is one turn of the matcher's inner
+    // loops. Past the budget a glob does not match and `exhausted` is set, so the caller can log it.
+    struct GlobBudget final
+    {
+        std::uint64_t remaining{max_push_glob_steps_per_evaluation};
+        std::uint64_t spent{0U};
+        bool exhausted{false};
+
+        // Takes `steps` from the budget; false (and exhausted) when it holds fewer.
+        [[nodiscard]] auto charge(std::uint64_t steps) noexcept -> bool
+        {
+            if (steps > remaining)
+            {
+                exhausted = true;
+                return false;
+            }
+            remaining -= steps;
+            spent += steps;
+            return true;
+        }
+    };
+
     // content.body matching per spec: the pattern must match "any substring
     // of the value ... which starts and ends at a word boundary." Tries
     // every boundary-delimited substring rather than assuming word-splitting
@@ -221,11 +244,19 @@ namespace
     // match. O(value × pattern) time and two pattern-sized buffers, where trying
     // every (start, end) pair was quadratic in the value before any matching
     // (security audit run-1).
-    [[nodiscard]] auto glob_matches_word_boundary_substring(std::string_view value, std::string_view pattern) -> bool
+    //
+    // Both factors are bounded (ADR-0343): only the first max_push_glob_body_bytes of the value are
+    // searched (a match must end inside them, at a real word boundary), the pattern loops are skipped
+    // while no candidate is active, and every step is taken from the evaluation's `budget`.
+    [[nodiscard]] auto glob_matches_word_boundary_substring(std::string_view value, std::string_view pattern,
+                                                            GlobBudget& budget) -> bool
     {
-        auto const lowered_value = ascii_lower(value);
+        auto const length = value.size();
+        auto const limit = std::min(length, max_push_glob_body_bytes);
+        // One byte past the limit is kept, so that a candidate ending exactly at the limit is judged
+        // against the real next character and not against the end of the value.
+        auto const lowered_value = ascii_lower(value.substr(0U, std::min(length, limit + 1U)));
         auto const lowered_pattern = ascii_lower(pattern);
-        auto const length = lowered_value.size();
         auto const pattern_length = lowered_pattern.size();
         auto const is_start = [&](std::size_t index) {
             return index == 0U || !is_word_character(lowered_value[index - 1U]);
@@ -236,32 +267,54 @@ namespace
 
         auto active = std::vector<bool>(pattern_length + 1U, false);
         auto next = std::vector<bool>(pattern_length + 1U, false);
+        auto any_active = false;
         for (auto index = std::size_t{0U};; ++index)
         {
+            if (!budget.charge(1U))
+            {
+                return false;
+            }
             if (is_start(index))
             {
                 active[0U] = true;
+                any_active = true;
             }
-            // A '*' may match nothing, so a candidate standing before it also
-            // stands after it.
-            for (auto j = std::size_t{0U}; j < pattern_length; ++j)
+            if (any_active)
             {
-                if (active[j] && lowered_pattern[j] == '*')
+                if (!budget.charge(pattern_length))
                 {
-                    active[j + 1U] = true;
+                    return false;
+                }
+                // A '*' may match nothing, so a candidate standing before it also
+                // stands after it.
+                for (auto j = std::size_t{0U}; j < pattern_length; ++j)
+                {
+                    if (active[j] && lowered_pattern[j] == '*')
+                    {
+                        active[j + 1U] = true;
+                    }
+                }
+                if (active[pattern_length] && is_end(index))
+                {
+                    return true;
                 }
             }
-            if (active[pattern_length] && is_end(index))
+            if (index == limit)
             {
-                return true;
+                return false;
             }
-            if (index == length)
+            if (!any_active)
+            {
+                continue;
+            }
+            if (!budget.charge(pattern_length))
             {
                 return false;
             }
             // Not std::ranges::fill: vector<bool>'s proxy iterator is not an output_range for
             // clang with older libstdc++ (NetBSD), so the ranges form does not compile there.
             next.assign(next.size(), false);
+            any_active = false;
             for (auto j = std::size_t{0U}; j < pattern_length; ++j)
             {
                 if (!active[j])
@@ -271,10 +324,12 @@ namespace
                 if (lowered_pattern[j] == '*')
                 {
                     next[j] = true; // the '*' absorbs this character
+                    any_active = true;
                 }
                 else if (lowered_pattern[j] == '?' || lowered_pattern[j] == lowered_value[index])
                 {
                     next[j + 1U] = true;
+                    any_active = true;
                 }
             }
             std::swap(active, next);
@@ -291,16 +346,25 @@ namespace
     // matching glob_matches_word_boundary_substring's behaviour) against
     // every word-boundary-delimited substring of `value`, with no glob
     // semantics at all.
-    [[nodiscard]] auto contains_literal_word_boundary_substring(std::string_view value, std::string_view literal)
-        -> bool
+    //
+    // Bounded like the glob matcher (ADR-0343): only the first max_push_glob_body_bytes of the value
+    // are searched, and the search is charged to `budget` at its worst case, the prefix times the
+    // literal, since the recipient chooses the literal and the sender the value.
+    [[nodiscard]] auto contains_literal_word_boundary_substring(std::string_view value, std::string_view literal,
+                                                                GlobBudget& budget) -> bool
     {
         if (literal.empty())
         {
             return false;
         }
-        auto const lowered_value = ascii_lower(value);
+        auto const full_length = value.size();
+        auto const limit = std::min(full_length, max_push_glob_body_bytes);
+        if (!budget.charge(static_cast<std::uint64_t>(limit + 1U) * literal.size()))
+        {
+            return false;
+        }
+        auto const lowered_value = ascii_lower(value.substr(0U, std::min(full_length, limit + 1U)));
         auto const lowered_literal = ascii_lower(literal);
-        auto const length = lowered_value.size();
 
         auto search_from = std::size_t{0U};
         while (true)
@@ -311,8 +375,12 @@ namespace
                 return false;
             }
             auto const end = found + lowered_literal.size();
+            if (end > limit)
+            {
+                return false;
+            }
             auto const starts_at_boundary = found == 0U || !is_word_character(lowered_value[found - 1U]);
-            auto const ends_at_boundary = end == length || !is_word_character(lowered_value[end]);
+            auto const ends_at_boundary = end == full_length || !is_word_character(lowered_value[end]);
             if (starts_at_boundary && ends_at_boundary)
             {
                 return true;
@@ -392,7 +460,7 @@ namespace
     }
 
     [[nodiscard]] auto condition_matches(PushCondition const& condition, canonicaljson::Value const& event,
-                                         PushEvaluationContext const& context) -> bool
+                                         PushEvaluationContext const& context, GlobBudget& budget) -> bool
     {
         switch (condition.kind)
         {
@@ -403,7 +471,7 @@ namespace
                 return false;
             }
             return condition.key == "content.body"
-                       ? glob_matches_word_boundary_substring(*value, condition.pattern)
+                       ? glob_matches_word_boundary_substring(*value, condition.pattern, budget)
                        : glob_matches_full(ascii_lower(*value), ascii_lower(condition.pattern));
         }
         case PushConditionKind::contains_display_name: {
@@ -426,7 +494,7 @@ namespace
             // highlight regardless of whether the message actually names
             // that user. contains_literal_word_boundary_substring performs
             // no glob interpretation at all.
-            return contains_literal_word_boundary_substring(*body, context.receiving_user_display_name);
+            return contains_literal_word_boundary_substring(*body, context.receiving_user_display_name, budget);
         }
         case PushConditionKind::room_member_count:
             return room_member_count_matches(condition.is, context.room_member_count);
@@ -467,22 +535,23 @@ namespace
     }
 
     [[nodiscard]] auto rule_conditions_match(PushRule const& rule, canonicaljson::Value const& event,
-                                             PushEvaluationContext const& context) -> bool
+                                             PushEvaluationContext const& context, GlobBudget& budget) -> bool
     {
         // "A rule with no conditions always matches."
         return std::ranges::all_of(rule.conditions, [&](PushCondition const& condition) {
-            return condition_matches(condition, event, context);
+            return condition_matches(condition, event, context, budget);
         });
     }
 
-    [[nodiscard]] auto rule_matches_content(PushRule const& rule, canonicaljson::Value const& event) -> bool
+    [[nodiscard]] auto rule_matches_content(PushRule const& rule, canonicaljson::Value const& event, GlobBudget& budget)
+        -> bool
     {
         if (rule.content_pattern.empty())
         {
             return false;
         }
         auto const body = event_property_as_string(event, "content.body");
-        return body.has_value() && glob_matches_word_boundary_substring(*body, rule.content_pattern);
+        return body.has_value() && glob_matches_word_boundary_substring(*body, rule.content_pattern, budget);
     }
 
     [[nodiscard]] auto parse_condition_kind(std::string_view kind) noexcept -> PushConditionKind
@@ -725,74 +794,91 @@ auto parse_push_ruleset(canonicaljson::Object const& ruleset) -> PushRuleset
     return result;
 }
 
-auto evaluate_push_rules(PushRuleset const& ruleset, canonicaljson::Value const& event,
-                         PushEvaluationContext const& context) -> PushEvaluationResult
+namespace
 {
-    auto const sender = event_property_as_string(event, "sender").value_or(std::string{});
-    // "Homeservers MUST NOT notify the Push Gateway for events that the
-    // user has sent themselves."
-    if (!sender.empty() && sender == context.receiving_user_id)
+
+    // The evaluation proper. `budget` is shared by every rule that matches `content.body`.
+    [[nodiscard]] auto evaluate_within_budget(PushRuleset const& ruleset, canonicaljson::Value const& event,
+                                              PushEvaluationContext const& context, GlobBudget& budget)
+        -> PushEvaluationResult
     {
+        auto const sender = event_property_as_string(event, "sender").value_or(std::string{});
+        // "Homeservers MUST NOT notify the Push Gateway for events that the
+        // user has sent themselves."
+        if (!sender.empty() && sender == context.receiving_user_id)
+        {
+            return {};
+        }
+
+        // .m.rule.master always has the highest priority, "even user defined
+        // ones", regardless of where it sits in the override list.
+        auto const master = std::ranges::find_if(ruleset.override_rules, [](PushRule const& rule) {
+            return rule.rule_id == ".m.rule.master";
+        });
+        if (master != ruleset.override_rules.end() && master->enabled)
+        {
+            return make_result(*master);
+        }
+
+        for (auto const& rule : ruleset.override_rules)
+        {
+            if (rule.rule_id == ".m.rule.master" || !rule.enabled)
+            {
+                continue;
+            }
+            if (rule_conditions_match(rule, event, context, budget))
+            {
+                return make_result(rule);
+            }
+        }
+        for (auto const& rule : ruleset.content_rules)
+        {
+            if (rule.enabled && rule_matches_content(rule, event, budget))
+            {
+                return make_result(rule);
+            }
+        }
+        for (auto const& rule : ruleset.room_rules)
+        {
+            if (!rule.enabled)
+            {
+                continue;
+            }
+            auto const room_id = event_property_as_string(event, "room_id");
+            if (room_id.has_value() && *room_id == rule.rule_id)
+            {
+                return make_result(rule);
+            }
+        }
+        for (auto const& rule : ruleset.sender_rules)
+        {
+            if (rule.enabled && sender == rule.rule_id)
+            {
+                return make_result(rule);
+            }
+        }
+        for (auto const& rule : ruleset.underride_rules)
+        {
+            if (rule.enabled && rule_conditions_match(rule, event, context, budget))
+            {
+                return make_result(rule);
+            }
+        }
+
+        // No rule matched: "the homeserver MUST NOT notify the Push Gateway".
         return {};
     }
 
-    // .m.rule.master always has the highest priority, "even user defined
-    // ones", regardless of where it sits in the override list.
-    auto const master = std::ranges::find_if(ruleset.override_rules, [](PushRule const& rule) {
-        return rule.rule_id == ".m.rule.master";
-    });
-    if (master != ruleset.override_rules.end() && master->enabled)
-    {
-        return make_result(*master);
-    }
+} // namespace
 
-    for (auto const& rule : ruleset.override_rules)
-    {
-        if (rule.rule_id == ".m.rule.master" || !rule.enabled)
-        {
-            continue;
-        }
-        if (rule_conditions_match(rule, event, context))
-        {
-            return make_result(rule);
-        }
-    }
-    for (auto const& rule : ruleset.content_rules)
-    {
-        if (rule.enabled && rule_matches_content(rule, event))
-        {
-            return make_result(rule);
-        }
-    }
-    for (auto const& rule : ruleset.room_rules)
-    {
-        if (!rule.enabled)
-        {
-            continue;
-        }
-        auto const room_id = event_property_as_string(event, "room_id");
-        if (room_id.has_value() && *room_id == rule.rule_id)
-        {
-            return make_result(rule);
-        }
-    }
-    for (auto const& rule : ruleset.sender_rules)
-    {
-        if (rule.enabled && sender == rule.rule_id)
-        {
-            return make_result(rule);
-        }
-    }
-    for (auto const& rule : ruleset.underride_rules)
-    {
-        if (rule.enabled && rule_conditions_match(rule, event, context))
-        {
-            return make_result(rule);
-        }
-    }
-
-    // No rule matched: "the homeserver MUST NOT notify the Push Gateway".
-    return {};
+auto evaluate_push_rules(PushRuleset const& ruleset, canonicaljson::Value const& event,
+                         PushEvaluationContext const& context) -> PushEvaluationResult
+{
+    auto budget = GlobBudget{};
+    auto result = evaluate_within_budget(ruleset, event, context, budget);
+    result.glob_steps_used = budget.spent;
+    result.glob_budget_exhausted = budget.exhausted;
+    return result;
 }
 
 } // namespace merovingian::push

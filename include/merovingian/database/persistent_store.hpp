@@ -961,6 +961,9 @@ struct PersistentStore final
         , redactions{other.redactions}
         , redaction_observer{other.redaction_observer}
         , state{other.state}
+        , state_position_index{other.state_position_index}
+        , state_room_index{other.state_room_index}
+        , state_indexed_rows{other.state_indexed_rows}
         , event_edges{other.event_edges}
         , event_auth{other.event_auth}
         , event_signatures{other.event_signatures}
@@ -1049,6 +1052,9 @@ struct PersistentStore final
         redactions = other.redactions;
         redaction_observer = other.redaction_observer;
         state = other.state;
+        state_position_index = other.state_position_index;
+        state_room_index = other.state_room_index;
+        state_indexed_rows = other.state_indexed_rows;
         event_edges = other.event_edges;
         event_auth = other.event_auth;
         event_signatures = other.event_signatures;
@@ -1140,6 +1146,14 @@ struct PersistentStore final
     RedactionState redactions{};
     RedactionObserver redaction_observer{};
     std::vector<PersistentStateEvent> state{};
+    // Positions in `state` by (room_id, event_type, state_key), and the positions of each room's
+    // rows (ADR-0344). Maintained by every writer in persistent_store.cpp and rebuilt after
+    // hydration and `reload_room`; only trusted while `state_indexed_rows == state.size()` and
+    // each position it names still holds the row asked for, otherwise a lookup scans `state`.
+    // A caller that edits `state` directly (a test) thereby loses speed, never correctness.
+    std::unordered_map<std::string, std::size_t> state_position_index{};
+    std::unordered_map<std::string, std::vector<std::size_t>> state_room_index{};
+    std::size_t state_indexed_rows{0U};
     std::vector<PersistentStateTransition> state_transitions{};
     // In-memory index over state_transitions keyed by (room_id, event_type, state_key, event_id)
     // and mapping to the vector offset. Rebuilt after hydration and updated on every insert so
@@ -1621,6 +1635,21 @@ auto apply_forward_extremities_update(PersistentStore& store, std::string_view r
 // Rebuilds the in-memory state_transitions index from scratch. Called after
 // SQLite/PostgreSQL hydration and after any direct backfill of the vector.
 auto rebuild_state_transition_index(PersistentStore& store) -> void;
+
+// The event ID of the current state event for (room_id, event_type, state_key), or nullopt when the
+// room has none. An index lookup (ADR-0344): no scan of `state` while the index is in step with it.
+[[nodiscard]] auto find_current_state_event_id(PersistentStore const& store, std::string_view room_id,
+                                               std::string_view event_type, std::string_view state_key)
+    -> std::optional<std::string>;
+
+// Calls `visit` with every row of `state` that belongs to `room_id`, in storage order. Walks only
+// that room's rows while the index is in step with `state` (ADR-0344). `visit` must not change `state`.
+auto for_each_room_state_row(PersistentStore const& store, std::string_view room_id,
+                             std::function<void(PersistentStateEvent const&)> const& visit) -> void;
+
+// Rebuilds the in-memory state indexes from `state`. Called after SQLite/PostgreSQL hydration,
+// after `reload_room` and after any direct edit of the vector that should be fast again.
+auto rebuild_state_index(PersistentStore& store) -> void;
 
 // Rebuilds the in-memory client transaction indexes from `client_txn_ids`. Called after
 // SQLite/PostgreSQL hydration.

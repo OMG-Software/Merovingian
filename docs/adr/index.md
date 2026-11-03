@@ -309,6 +309,9 @@
 * [0332 - Search filter lists are prepared once per request](0332-search-filter-lists-are-prepared-once-per-request.md)
 * [0333 - Search result context is built only when requested, from one pass over the events](0333-search-result-context-is-built-only-when-requested-from-one-pass.md)
 * [0334 - The user directory reads the accounts once and caps its results](0334-the-user-directory-reads-the-accounts-once-and-caps-its-results.md)
+* [0343 - Push glob matching spends a bounded budget per recipient and event](0343-push-glob-matching-spends-a-bounded-budget-per-event.md)
+* [0344 - Index current state by room, type and key, and trust the index only while it is in step](0344-index-current-state-by-room-type-and-key-and-trust-it-only-while-in-step.md)
+* [0345 - Hierarchy and threads reads are bounded by the page and by a budget of rooms or rows](0345-hierarchy-and-threads-reads-are-bounded-by-the-page-and-a-visit-budget.md)
 
 ## Proposed Records
 

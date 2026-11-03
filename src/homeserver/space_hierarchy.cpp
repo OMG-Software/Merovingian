@@ -135,20 +135,6 @@ namespace
 
     // ---- Persistent-store state helpers ---------------------------------------
 
-    [[nodiscard]] auto find_state_event(database::PersistentStore const& store, std::string_view room_id,
-                                        std::string_view event_type, std::string_view state_key)
-        -> database::PersistentStateEvent const*
-    {
-        for (auto const& state : store.state)
-        {
-            if (state.room_id == room_id && state.event_type == event_type && state.state_key == state_key)
-            {
-                return &state;
-            }
-        }
-        return nullptr;
-    }
-
     [[nodiscard]] auto find_event(database::PersistentStore const& store, std::string_view event_id)
         -> database::PersistentEvent const*
     {
@@ -160,12 +146,13 @@ namespace
                                         std::string_view event_type, std::string_view state_key = {})
         -> std::optional<std::string>
     {
-        auto const* state = find_state_event(store, room_id, event_type, state_key);
-        if (state == nullptr)
+        // One indexed lookup (ADR-0344), not a scan of every room's state.
+        auto const event_id = database::find_current_state_event_id(store, room_id, event_type, state_key);
+        if (!event_id.has_value())
         {
             return std::nullopt;
         }
-        auto const* event = find_event(store, state->event_id);
+        auto const* event = find_event(store, *event_id);
         if (event == nullptr)
         {
             return std::nullopt;
@@ -200,51 +187,6 @@ namespace
         return *content;
     }
 
-    [[nodiscard]] auto state_event_origin_server_ts(database::PersistentStore const& store, std::string_view room_id,
-                                                    std::string_view event_type, std::string_view state_key = {})
-        -> std::int64_t
-    {
-        auto const json = state_event_json(store, room_id, event_type, state_key);
-        if (!json.has_value())
-        {
-            return 0;
-        }
-        auto const parsed = canonicaljson::parse_lossless(*json);
-        if (parsed.error != canonicaljson::ParseError::none)
-        {
-            return 0;
-        }
-        auto const* object = std::get_if<canonicaljson::Object>(&parsed.value.storage());
-        if (object == nullptr)
-        {
-            return 0;
-        }
-        auto const* ts = int_member(*object, "origin_server_ts");
-        return ts == nullptr ? 0 : *ts;
-    }
-
-    [[nodiscard]] auto state_event_sender(database::PersistentStore const& store, std::string_view room_id,
-                                          std::string_view event_type, std::string_view state_key = {}) -> std::string
-    {
-        auto const json = state_event_json(store, room_id, event_type, state_key);
-        if (!json.has_value())
-        {
-            return {};
-        }
-        auto const parsed = canonicaljson::parse_lossless(*json);
-        if (parsed.error != canonicaljson::ParseError::none)
-        {
-            return {};
-        }
-        auto const* object = std::get_if<canonicaljson::Object>(&parsed.value.storage());
-        if (object == nullptr)
-        {
-            return {};
-        }
-        auto const* sender = string_member(*object, "sender");
-        return sender == nullptr ? std::string{} : *sender;
-    }
-
     // ---- Room metadata --------------------------------------------------------
 
     [[nodiscard]] auto room_exists(database::PersistentStore const& store, std::string_view room_id) noexcept -> bool
@@ -271,11 +213,6 @@ namespace
     [[nodiscard]] auto user_membership(database::PersistentStore const& store, std::string_view room_id,
                                        std::string_view user_id) noexcept -> std::optional<std::string>
     {
-        auto const* state = find_state_event(store, room_id, "m.room.member", user_id);
-        if (state == nullptr)
-        {
-            return std::nullopt;
-        }
         auto const content = state_event_content(store, room_id, "m.room.member", user_id);
         if (!content.has_value())
         {
@@ -569,39 +506,51 @@ namespace
         return result;
     }
 
+    // The room's `m.space.child` links. Each child's event is read once and parsed once (ADR-0344): the
+    // room's own state rows are walked through the state index, and the content, timestamp and sender
+    // all come from that one parse.
     [[nodiscard]] auto space_children(database::PersistentStore const& store, std::string_view room_id)
         -> std::vector<SpaceChild>
     {
         auto children = std::vector<SpaceChild>{};
-        for (auto const& state : store.state)
-        {
-            if (state.room_id != room_id || state.event_type != "m.space.child")
+        database::for_each_room_state_row(store, room_id, [&](database::PersistentStateEvent const& state) {
+            if (state.event_type != "m.space.child")
             {
-                continue;
+                return;
             }
-            auto const content = state_event_content(store, room_id, "m.space.child", state.state_key);
-            if (!content.has_value())
+            auto const* stored = find_event(store, state.event_id);
+            if (stored == nullptr)
             {
-                continue;
+                return;
+            }
+            auto const parsed = canonicaljson::parse_lossless(stored->json);
+            auto const* event = parsed.error == canonicaljson::ParseError::none
+                                    ? std::get_if<canonicaljson::Object>(&parsed.value.storage())
+                                    : nullptr;
+            auto const* content = event == nullptr ? nullptr : object_member_as_object(*event, "content");
+            if (content == nullptr)
+            {
+                return;
             }
             auto const* via = object_member_as_array(*content, "via");
             if (via == nullptr || via->empty())
             {
                 // A missing or empty via list removes the child from the space.
-                continue;
+                return;
             }
             auto const suggested_ptr = bool_member(*content, "suggested");
-            auto const suggested = suggested_ptr != nullptr && *suggested_ptr;
+            auto const* timestamp = int_member(*event, "origin_server_ts");
+            auto const* sender = string_member(*event, "sender");
 
             auto child = SpaceChild{};
-            child.room_id = std::string{state.state_key};
+            child.room_id = state.state_key;
             child.via = string_array_values(*via);
-            child.suggested = suggested;
-            child.origin_server_ts = state_event_origin_server_ts(store, room_id, "m.space.child", state.state_key);
-            child.sender = std::string{state_event_sender(store, room_id, "m.space.child", state.state_key)};
+            child.suggested = suggested_ptr != nullptr && *suggested_ptr;
+            child.origin_server_ts = timestamp == nullptr ? 0 : *timestamp;
+            child.sender = sender == nullptr ? std::string{} : std::string{*sender};
             child.content = *content;
             children.push_back(std::move(child));
-        }
+        });
         return children;
     }
 
@@ -1149,6 +1098,8 @@ namespace
         std::vector<WalkEntry> entries{};
         // The client-outbound budget refused a request the walk needed (ADR-0079).
         bool refused{false};
+        // Rooms looked at, listed or not (ADR-0345).
+        std::size_t visits{0U};
     };
 
     struct WalkFrame final
@@ -1158,9 +1109,12 @@ namespace
         std::size_t depth{0U};
     };
 
+    // The walk stops once it holds `entry_cap` rooms, or has looked at `max_hierarchy_walk_visits`
+    // (ADR-0345): a page needs only the rooms up to the end of that page and one more, to know
+    // whether a `next_batch` is due, so the rest of a large space is not built for every page.
     [[nodiscard]] auto walk_hierarchy_client(HomeserverRuntime& runtime, std::string_view user_id,
                                              std::string_view root_room_id, std::size_t max_depth, bool suggested_only,
-                                             std::string const& client_key) -> WalkResult
+                                             std::string const& client_key, std::size_t entry_cap) -> WalkResult
     {
         auto const& store = runtime.database.persistent_store;
         auto remote = RemoteHierarchy{runtime, client_key, suggested_only};
@@ -1169,7 +1123,7 @@ namespace
         auto stack = std::vector<WalkFrame>{};
         stack.push_back({std::string{root_room_id}, {}, 0U});
 
-        while (!stack.empty())
+        while (!stack.empty() && result.entries.size() < entry_cap && result.visits < max_hierarchy_walk_visits)
         {
             auto frame = std::move(stack.back());
             stack.pop_back();
@@ -1177,6 +1131,7 @@ namespace
             {
                 continue;
             }
+            ++result.visits;
 
             auto entry = WalkEntry{frame.room_id, std::nullopt};
             auto links = std::vector<SpaceChild>{};
@@ -1341,8 +1296,11 @@ auto handle_client_space_hierarchy(HomeserverRuntime& runtime, std::string_view 
         offset = token->offset;
     }
 
-    auto const walk =
-        walk_hierarchy_client(runtime, user_id, request.room_id, max_depth, suggested_only, request.client_key);
+    // The token is client-chosen: an offset past anything the walk can reach lists nothing, as one
+    // past the end always did.
+    offset = std::min(offset, max_hierarchy_walk_visits);
+    auto const walk = walk_hierarchy_client(runtime, user_id, request.room_id, max_depth, suggested_only,
+                                            request.client_key, offset + limit + 1U);
     if (walk.refused)
     {
         auto refusal = SpaceHierarchyResult{
@@ -1383,7 +1341,9 @@ auto handle_client_space_hierarchy(HomeserverRuntime& runtime, std::string_view 
     {
         return {500U, matrix_error("M_UNKNOWN", "failed to serialize hierarchy response")};
     }
-    return {200U, serialized.output};
+    auto answer = SpaceHierarchyResult{200U, serialized.output};
+    answer.rooms_visited = walk.visits;
+    return answer;
 }
 
 auto handle_client_room_summary(HomeserverRuntime const& runtime, std::string_view user_id,

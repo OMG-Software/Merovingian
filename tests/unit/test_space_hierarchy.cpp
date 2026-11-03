@@ -15,10 +15,13 @@
 #include "merovingian/homeserver/space_hierarchy.hpp"
 
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/generators/catch_generators.hpp>
 
+#include <cstddef>
 #include <cstdint>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 namespace canonicaljson = merovingian::canonicaljson;
@@ -371,6 +374,155 @@ SCENARIO("build_federation_space_hierarchy_response returns the room and immedia
                 auto const* children = merovingian::tests::object_member_as_array(response, "children");
                 REQUIRE(children != nullptr);
                 REQUIRE(children->size() == 2U);
+            }
+        }
+    }
+}
+
+namespace
+{
+
+// A public space with `children` public child rooms, each linked by an m.space.child event whose
+// `via` names this server. Rows are pushed straight into the store, so the state index is rebuilt
+// when `index` is set and left behind the rows (lookups scan) when it is not.
+[[nodiscard]] auto setup_wide_space_runtime(std::size_t children, bool index)
+    -> merovingian::homeserver::HomeserverRuntime
+{
+    auto runtime = merovingian::homeserver::HomeserverRuntime{};
+    auto& store = runtime.database.persistent_store;
+    auto constexpr alice = std::string_view{"@alice:example.org"};
+
+    auto const add_room = [&](std::string const& room_id, std::string_view create_content) {
+        store.rooms.push_back({room_id, std::string{alice}});
+        append_event(store, "$create-" + room_id, room_id, alice, 1'000, "m.room.create", create_content);
+        append_state(store, room_id, "m.room.create", "", "$create-" + room_id);
+        append_event(store, "$join-" + room_id, room_id, alice, 1'001, "m.room.member", R"({"membership":"join"})");
+        append_state(store, room_id, "m.room.member", "@alice:example.org", "$join-" + room_id);
+        append_event(store, "$rules-" + room_id, room_id, alice, 1'002, "m.room.join_rules",
+                     R"({"join_rule":"public"})");
+        append_state(store, room_id, "m.room.join_rules", "", "$rules-" + room_id);
+    };
+    add_room("!space:example.org", R"({"type":"m.space"})");
+    for (auto position = std::size_t{0U}; position < children; ++position)
+    {
+        auto const child = "!child" + std::to_string(position) + ":example.org";
+        add_room(child, "{}");
+        append_event(store, "$link-" + child, "!space:example.org", alice, 2'000, "m.space.child",
+                     R"({"via":["example.org"]})");
+        append_state(store, "!space:example.org", "m.space.child", child, "$link-" + child);
+    }
+    if (index)
+    {
+        merovingian::database::rebuild_state_index(store);
+    }
+    return runtime;
+}
+
+[[nodiscard]] auto room_ids_of(merovingian::homeserver::SpaceHierarchyResult const& result) -> std::vector<std::string>
+{
+    auto ids = std::vector<std::string>{};
+    auto const body = merovingian::tests::parse_object(result.body);
+    auto const* rooms = merovingian::tests::object_member_as_array(body, "rooms");
+    REQUIRE(rooms != nullptr);
+    for (auto const& room : *rooms)
+    {
+        auto const* object = std::get_if<canonicaljson::Object>(&room.storage());
+        REQUIRE(object != nullptr);
+        ids.push_back(*merovingian::tests::string_member(*object, "room_id"));
+    }
+    return ids;
+}
+
+} // namespace
+
+// Security audit run-2 (F-32, ADR-0345). Spec: Matrix v1.19 Client-Server API, "GET /hierarchy"
+// (docs/matrix-v1.19-spec/client-server-api.md, "Discovering rooms within spaces"): the walk is
+// depth-first; `limit` is "the maximum number of rooms to include per response"; `from` is "a
+// pagination token from a previous result". A page is built from the rooms up to its end, not from
+// the whole tree.
+SCENARIO("A hierarchy page walks only as far as the page reaches", "[homeserver][space-hierarchy][f32]")
+{
+    GIVEN("a space with 40 child rooms, with and without the state index in step")
+    {
+        {
+            auto const index = GENERATE(true, false);
+            auto runtime = setup_wide_space_runtime(40U, index);
+
+            WHEN("the first page asks for two rooms")
+            {
+                auto request = merovingian::homeserver::SpaceHierarchyRequest{"!space:example.org", {}, 2U};
+                auto const first =
+                    merovingian::homeserver::handle_client_space_hierarchy(runtime, "@alice:example.org", request);
+
+                THEN("two rooms come back with a next_batch, and the walk looked at three rooms, not 41")
+                {
+                    REQUIRE(first.status == 200U);
+                    REQUIRE(room_ids_of(first) ==
+                            std::vector<std::string>{"!space:example.org", "!child0:example.org"});
+                    auto const body = merovingian::tests::parse_object(first.body);
+                    REQUIRE(merovingian::tests::string_member(body, "next_batch") != nullptr);
+                    REQUIRE(first.rooms_visited == 3U);
+                }
+            }
+
+            WHEN("every page of five rooms is followed to the end")
+            {
+                auto collected = std::vector<std::string>{};
+                auto request = merovingian::homeserver::SpaceHierarchyRequest{"!space:example.org", {}, 5U};
+                auto pages = std::size_t{0U};
+                auto bounded = true;
+                while (true)
+                {
+                    auto const page =
+                        merovingian::homeserver::handle_client_space_hierarchy(runtime, "@alice:example.org", request);
+                    REQUIRE(page.status == 200U);
+                    ++pages;
+                    // A page walks to the end of itself and one room more, never the whole tree.
+                    bounded = bounded && page.rooms_visited <= pages * 5U + 1U;
+                    for (auto& id : room_ids_of(page))
+                    {
+                        collected.push_back(std::move(id));
+                    }
+                    auto const body = merovingian::tests::parse_object(page.body);
+                    auto const* next = merovingian::tests::string_member(body, "next_batch");
+                    if (next == nullptr)
+                    {
+                        break;
+                    }
+                    request.from = *next;
+                    REQUIRE(pages < 20U);
+                }
+
+                THEN("the pages hold each of the 41 rooms once, in the order of one whole page")
+                {
+                    auto whole_request = merovingian::homeserver::SpaceHierarchyRequest{"!space:example.org", {}, 100U};
+                    auto const whole = merovingian::homeserver::handle_client_space_hierarchy(
+                        runtime, "@alice:example.org", whole_request);
+                    REQUIRE(collected.size() == 41U);
+                    REQUIRE(collected == room_ids_of(whole));
+                    REQUIRE(bounded);
+                }
+            }
+
+            WHEN("a later page changes max_depth")
+            {
+                auto request = merovingian::homeserver::SpaceHierarchyRequest{"!space:example.org", {}, 2U};
+                request.max_depth = 3U;
+                auto const first =
+                    merovingian::homeserver::handle_client_space_hierarchy(runtime, "@alice:example.org", request);
+                auto const body = merovingian::tests::parse_object(first.body);
+                auto next_request = merovingian::homeserver::SpaceHierarchyRequest{
+                    "!space:example.org", *merovingian::tests::string_member(body, "next_batch"), 2U};
+                next_request.max_depth = 2U;
+                auto const second =
+                    merovingian::homeserver::handle_client_space_hierarchy(runtime, "@alice:example.org", next_request);
+
+                THEN("it is refused with 400 M_INVALID_PARAM")
+                {
+                    // Spec 400: "suggested_only or max_depth changed during pagination."
+                    REQUIRE(second.status == 400U);
+                    REQUIRE(second.body.find("M_INVALID_PARAM") != std::string::npos);
+                }
             }
         }
     }

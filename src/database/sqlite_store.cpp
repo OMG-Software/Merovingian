@@ -1656,6 +1656,7 @@ auto open_sqlite_persistent_store(std::string const& path, TableLoadProfile prof
     sort_appservice_outbox(store);
     reconstruct_event_relations(store);
     rebuild_state_transition_index(store);
+    rebuild_state_index(store);
     rebuild_client_txn_index(store);
     rebuild_redaction_state(store);
     rebuild_key_signature_index(store);

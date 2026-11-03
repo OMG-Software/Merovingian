@@ -57,6 +57,14 @@ Manages schema migrations and provides a dual-backend (SQLite / PostgreSQL) pers
     carries the room's state groups, their entries and its events' group mappings too: federation reads fail closed on an
     event with no group, so a new table a worker-served read depends on must be added to the snapshot and `reload_room`.
 
+## The state index (ADR-0344)
+
+`PersistentStore::state` has two position indexes (`state_position_index`, `state_room_index`) behind
+`find_current_state_event_id` and `for_each_room_state_row`. They are trusted only while `state_indexed_rows ==
+state.size()` and the row a position names still matches. Every code path that appends to or erases from `state`
+calls `note_state_row_appended` or `rebuild_state_index` (the two writers in `persistent_store.cpp`, `reload_room`,
+and both hydration paths); a new one must too. Do not scan `state` for one key or one room in a handler.
+
 ## Backend selection
 
 The backend is chosen at startup from config (`database.engine = sqlite | postgresql`).

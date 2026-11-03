@@ -36,7 +36,14 @@ struct SpaceHierarchyResult final
     std::string body{};
     // Set with status 429: the delay to advertise as `retry_after_ms`.
     std::uint32_t retry_after_ms{0U};
+    // The rooms the walk looked at to answer (ADR-0345): bounded by the page asked for and by
+    // `max_hierarchy_walk_visits`, never by the size of the space.
+    std::size_t rooms_visited{0U};
 };
+
+// The most rooms one GET /hierarchy request looks at, whatever the size of the space and the page
+// asked for (ADR-0345). A room beyond it is not listed and the answer carries no `next_batch` for it.
+inline constexpr std::size_t max_hierarchy_walk_visits = 4096U;
 
 // Client-Server API: GET /_matrix/client/v1/rooms/{roomId}/hierarchy
 // Spec: Matrix v1.19 Client-Server API §Spaces / Discovering rooms within spaces

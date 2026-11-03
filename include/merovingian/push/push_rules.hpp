@@ -4,6 +4,7 @@
 
 #include "merovingian/canonicaljson/value.hpp"
 
+#include <cstddef>
 #include <cstdint>
 #include <optional>
 #include <string>
@@ -136,7 +137,22 @@ struct PushEvaluationResult final
     std::optional<std::string> tweak_sound{};
     bool tweak_highlight{false};
     std::string matched_rule_id{};
+    // The glob-matching steps this evaluation spent on `content.body`, and whether it ran out of
+    // its budget (ADR-0343). When it did, a glob that needed more did not match, so the caller
+    // may want to log it; the result is otherwise as for any evaluation.
+    std::uint64_t glob_steps_used{0U};
+    bool glob_budget_exhausted{false};
 };
+
+// The most `content.body` bytes a word-boundary glob searches (ADR-0343). A match must lie within
+// them and end at a real word boundary; a keyword further into a longer body is not found.
+inline constexpr std::size_t max_push_glob_body_bytes = 4096U;
+
+// The most matcher steps one evaluation (one recipient, one event) spends on `content.body`
+// globs, summed over every rule: content rules and `event_match` conditions on `content.body`.
+// The sender chooses the body and the recipient the patterns, so without it their product, times
+// the rule count, is spent under `runtime.mutex` (ADR-0343).
+inline constexpr std::uint64_t max_push_glob_steps_per_evaluation = std::uint64_t{1U} << 21U;
 
 // Evaluates `event` (a full client-event-shaped JSON object: `type`,
 // `sender`, `room_id`, `content`, and optionally `state_key`) against

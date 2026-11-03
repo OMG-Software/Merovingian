@@ -17122,42 +17122,46 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                 }
                 else
                 {
-                    auto state_backed_members = std::vector<std::string>{};
-                    for (auto const& state_entry : store.state)
-                    {
-                        if (state_entry.room_id != room_id || state_entry.event_type != "m.room.member")
-                        {
-                            continue;
-                        }
-                        auto const event_it = store.events.find(state_entry.event_id);
-                        if (event_it == store.events.end())
-                        {
-                            continue;
-                        }
-                        auto const parsed = canonicaljson::parse_lossless(event_it->json);
-                        auto const* event = parsed.error == canonicaljson::ParseError::none
-                                                ? std::get_if<canonicaljson::Object>(&parsed.value.storage())
-                                                : nullptr;
-                        auto const* content = event == nullptr ? nullptr : object_member_as_object(*event, "content");
-                        auto const* membership = content == nullptr ? nullptr : string_member(*content, "membership");
-                        if (event == nullptr || membership == nullptr)
-                        {
-                            continue;
-                        }
-                        if (!membership_allowed(*membership))
-                        {
-                            continue;
-                        }
-                        chunk.push_back(client_event_with_id(store, *event_it));
-                        state_backed_members.push_back(state_entry.state_key);
-                    }
+                    // The users whose current state holds a member event: a set, probed once per
+                    // membership row below, so the roster costs O(members) (F-10, security audit run-2).
+                    auto state_backed_members = std::unordered_set<std::string>{};
+                    database::for_each_room_state_row(
+                        store, room_id, [&](database::PersistentStateEvent const& state_entry) {
+                            if (state_entry.event_type != "m.room.member")
+                            {
+                                return;
+                            }
+                            auto const event_it = store.events.find(state_entry.event_id);
+                            if (event_it == store.events.end())
+                            {
+                                return;
+                            }
+                            auto const parsed = canonicaljson::parse_lossless(event_it->json);
+                            auto const* event = parsed.error == canonicaljson::ParseError::none
+                                                    ? std::get_if<canonicaljson::Object>(&parsed.value.storage())
+                                                    : nullptr;
+                            auto const* content =
+                                event == nullptr ? nullptr : object_member_as_object(*event, "content");
+                            auto const* membership =
+                                content == nullptr ? nullptr : string_member(*content, "membership");
+                            if (event == nullptr || membership == nullptr)
+                            {
+                                return;
+                            }
+                            if (!membership_allowed(*membership))
+                            {
+                                return;
+                            }
+                            chunk.push_back(client_event_with_id(store, *event_it));
+                            state_backed_members.insert(state_entry.state_key);
+                        });
                     for (auto const& m : store.memberships)
                     {
                         if (m.room_id != room_id)
                             continue;
                         if (!membership_allowed(m.membership))
                             continue;
-                        if (std::ranges::find(state_backed_members, m.user_id) != state_backed_members.end())
+                        if (state_backed_members.contains(m.user_id))
                             continue;
                         // Fallback: construct a synthetic m.room.member event from the
                         // membership record only when current state is missing entirely.

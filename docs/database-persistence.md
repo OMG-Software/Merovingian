@@ -147,6 +147,12 @@ value. Test fixtures that do not exercise persistence select it through
   hydration, copied with the store, and ignored (lookup scans) while its row count
   differs from `key_signatures`, so rows pushed directly never produce a missing
   result. Read signatures through this function, not by scanning the vector.
+- `find_current_state_event_id` and `for_each_room_state_row` read current state through in-memory indexes over
+  `PersistentStore::state` (`state_position_index` by room, type and state key; `state_room_index` by room).
+  Every writer in `persistent_store.cpp` keeps them in step, `reload_room` and both hydration paths rebuild them
+  (`rebuild_state_index`), and a lookup scans while `state_indexed_rows` differs from `state.size()` or a position
+  no longer names the row asked for (ADR-0344). Read state by key or by room through these, not by scanning the
+  vector; a new writer of `state` must call `note_state_row_appended` or `rebuild_state_index`.
 - Physical migration-file loading for SQL files with explicit metadata and
   statement names; the checked-in `migrations/` directory contains only
   `001_initial_schema.sql`, the frozen record of the v1 schema.

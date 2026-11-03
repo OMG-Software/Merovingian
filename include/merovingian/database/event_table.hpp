@@ -173,6 +173,40 @@ public:
         return {rows_.end(), false};
     }
 
+    // How far walk_room_newest_first() got.
+    struct RoomWalk final
+    {
+        std::size_t examined{0U};
+        // True when the walk stopped at `max_examined` with timeline events of the room left.
+        bool truncated{false};
+    };
+    // Offers `visit` the timeline events of room `room_id` newest first, by descending
+    // (origin_server_ts, depth, stream_ordering), at most `max_examined` of them, so a request that
+    // reads a room's events costs O(max_examined) however many events the server holds (ADR-0345).
+    // `visit` is called as visit(PersistentEvent const&) and must not change the table. Valid until
+    // the table is next changed.
+    template <typename Visit>
+    auto walk_room_newest_first(std::string_view room_id, Visit visit, std::size_t max_examined) const -> RoomWalk
+    {
+        auto const room = by_room_time_.find(room_id);
+        if (room == by_room_time_.end())
+        {
+            return {};
+        }
+        auto walk = RoomWalk{};
+        for (auto const& entry : room->second | std::views::reverse)
+        {
+            if (walk.examined == max_examined)
+            {
+                walk.truncated = true;
+                break;
+            }
+            ++walk.examined;
+            std::invoke(visit, rows_[entry.position]);
+        }
+        return walk;
+    }
+
     // Adds `event` unless a row with its event ID is already held; returns whether it was added.
     // Costs a hash insert plus, for an event older than the newest held, a shift of the stream-order
     // positions after it (8 bytes each); the rows themselves never move.
