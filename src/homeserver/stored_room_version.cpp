@@ -73,12 +73,9 @@ auto stored_room_version(database::PersistentStore const& store, std::string_vie
     {
         return std::nullopt;
     }
-    for (auto const& event : store.events.with_id(*create_id))
-    {
-        return stored_create_room_version(event.json);
-    }
+    auto const event = store.events.find(*create_id);
     // The create row names an event that is not stored: nothing usable is declared.
-    return std::string{"1"};
+    return event == store.events.end() ? std::string{"1"} : stored_create_room_version(event->json);
 }
 
 auto stored_room_version_policy(database::PersistentStore const& store, std::string_view room_id)

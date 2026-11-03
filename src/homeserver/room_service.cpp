@@ -2455,18 +2455,26 @@ namespace
     class RoomIdReservation final
     {
     public:
-        // Reserves `room_id`; the caller holds runtime.mutex and has checked that it is free.
-        RoomIdReservation(HomeserverRuntime& runtime, std::string room_id)
+        explicit RoomIdReservation(HomeserverRuntime& runtime)
             : runtime_{runtime}
-            , room_id_{std::move(room_id)}
         {
-            runtime_.rooms_being_created.insert(room_id_);
+        }
+
+        // Reserves `room_id`, once; the caller holds runtime.mutex and has checked that it is free.
+        auto hold(std::string room_id) -> void
+        {
+            runtime_.rooms_being_created.insert(room_id);
+            room_id_ = std::move(room_id);
         }
 
         ~RoomIdReservation()
         {
+            if (!room_id_.has_value())
+            {
+                return;
+            }
             auto const guard = std::unique_lock<RuntimeMutex>{runtime_.mutex};
-            runtime_.rooms_being_created.erase(room_id_);
+            runtime_.rooms_being_created.erase(*room_id_);
         }
 
         RoomIdReservation(RoomIdReservation const&) = delete;
@@ -2476,7 +2484,7 @@ namespace
 
     private:
         HomeserverRuntime& runtime_;
-        std::string room_id_;
+        std::optional<std::string> room_id_{};
     };
 
 } // namespace
@@ -3554,7 +3562,7 @@ auto ensure_crypto_provider_holds_key(HomeserverRuntime& runtime, std::string_vi
         return make_operation_result(false, {}, std::move(reason), 500U);
     };
     auto precomposed_create = std::optional<ComposedEvent>{};
-    auto reservation = std::optional<RoomIdReservation>{};
+    auto reservation = RoomIdReservation{runtime};
     if (create_defines_room_id)
     {
         // MSC4291: compose the create event (which carries no room_id) so the room ID can
@@ -3647,7 +3655,7 @@ auto ensure_crypto_provider_holds_key(HomeserverRuntime& runtime, std::string_vi
         {
             return server_failure("no free room ID");
         }
-        reservation.emplace(runtime, room_id);
+        reservation.hold(room_id);
     }
     auto const local_rule = find_policy_rule(runtime, "room", room_id);
     auto const held_for_review = local_rule.has_value() && local_rule->action == "quarantine";

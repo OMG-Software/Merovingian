@@ -257,27 +257,27 @@ auto load_room_server_acl(database::PersistentStore const& store, std::string_vi
         return std::nullopt;
     }
 
-    for (auto const& event : store.events.with_id(*acl_event_id))
+    auto const event = store.events.find(*acl_event_id);
+    if (event == store.events.end())
     {
-        auto const parsed = canonicaljson::parse_lossless(event.json);
-        if (parsed.error != canonicaljson::ParseError::none)
-        {
-            return std::nullopt;
-        }
-        auto const* object = std::get_if<canonicaljson::Object>(&parsed.value.storage());
-        if (object == nullptr)
-        {
-            return std::nullopt;
-        }
-        auto const* content = object_member(*object, "content");
-        if (content == nullptr)
-        {
-            return std::nullopt;
-        }
-        return parse_server_acl(*content);
+        return std::nullopt;
     }
-
-    return std::nullopt;
+    auto const parsed = canonicaljson::parse_lossless(event->json);
+    if (parsed.error != canonicaljson::ParseError::none)
+    {
+        return std::nullopt;
+    }
+    auto const* object = std::get_if<canonicaljson::Object>(&parsed.value.storage());
+    if (object == nullptr)
+    {
+        return std::nullopt;
+    }
+    auto const* content = object_member(*object, "content");
+    if (content == nullptr)
+    {
+        return std::nullopt;
+    }
+    return parse_server_acl(*content);
 }
 
 auto room_server_acl_allows(database::PersistentStore const& store, std::string_view room_id,
