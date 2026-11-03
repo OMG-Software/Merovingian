@@ -6,6 +6,7 @@ events_sources = files(
   'redaction.cpp',
   'redaction_validity.cpp',
   'state_resolution.cpp',
+  'unsigned_data.cpp',
 )
 
 events_lib = static_library(

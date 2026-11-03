@@ -157,6 +157,13 @@ events after the leave to a left room's timeline.
 
 ## Viewer-dependent `unsigned`
 
+A client's `unsigned` is never the stored one, filtered: `unsigned` is outside every signature, so a remote
+sender can put anything in it (`m.relations`, `redacted_because`, `prev_content`, `age`, `transaction_id`,
+`membership`). `client_event_with_id` and sliding sync's `client_event_json` drop it and build it from what the
+server computes: `replaces_state`, `redacted_because` and the viewer's values below (ADR-0402). A new client-event
+serializer does the same; a new `unsigned` field is added to what the server computes, never passed through.
+Sliding sync applies `ViewerEventUnsigned` too (`build_room_response` takes the request's `device_id`).
+
 `unsigned.membership` and `unsigned.transaction_id` depend on who asks, so they are added per
 request by `ViewerEventUnsigned`, never stored. `transaction_id` is given only to the device
 that sent the event (`client_txn_ids.device_id`; a transaction ID is scoped to a device, and a

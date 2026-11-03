@@ -6743,9 +6743,10 @@ namespace
             room_timeline_limits_built[room_id] = sub.timeline_limit;
             // The floor is the later of the request pos and the room's last send; the room's
             // last send alone decides what counts as resent (`expanded_timeline`).
-            auto room = sync::build_room_response(
-                rt.homeserver, room_id, user, sub, room_since, is_initial, store, lazy_already_sent, ignored_senders,
-                history_visibility, *unread_classifier, expansion, room_last_ordering, visible_event_ordering);
+            auto room =
+                sync::build_room_response(rt.homeserver, room_id, user, sub, room_since, is_initial, store,
+                                          lazy_already_sent, ignored_senders, history_visibility, *unread_classifier,
+                                          expansion, room_last_ordering, visible_event_ordering, device_id);
             if (!room.lazy_members_included.empty())
             {
                 lazy_members_included_by_room[room_id] = room.lazy_members_included;

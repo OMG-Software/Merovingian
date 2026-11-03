@@ -11,6 +11,7 @@
 // Tags: [pdu_ingestion][backfill].
 
 #include "../federation_signing_test_support.hpp"
+#include "../support/forged_unsigned.hpp"
 #include "../support/remote_room_fixture.hpp"
 #include "../support/tls_mock_server.hpp"
 #include "merovingian/canonicaljson/parser.hpp"
@@ -4163,3 +4164,82 @@ SCENARIO("A rejected event stored without a state group gains one when a snapsho
 }
 
 } // namespace
+
+// Spec: Matrix Server-Server API v1.19
+// Endpoint / Section: "Calculating the reference hash for an event", "Signing events" and
+// "Backfilling and retrieving missing events"
+// URL: ../../docs/matrix-v1.19-spec/server-server-api.md#backfilling-and-retrieving-missing-events
+//
+// `unsigned` is covered by no signature or hash, so the server answering /get_missing_events chooses it
+// for every event it returns, third parties' included. A backfilled event is stored without it (ADR-0402)
+// and keeps the event ID, content hash and signatures it is verified by.
+SCENARIO("A backfilled event is stored without the unsigned object the answering server wrote",
+         "[pdu_ingestion][backfill][unsigned-forged][unsigned-ingest]")
+{
+    GIVEN("a room, and a mock sending server whose /get_missing_events answer carries a forged unsigned")
+    {
+        auto const path = unique_sqlite_path();
+        std::filesystem::remove(path);
+        auto started = merovingian::homeserver::start_runtime(config_with_sqlite(path));
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        merovingian::homeserver::wire_federation_callbacks(runtime);
+        auto const room_id = std::string{"!backfill-unsigned:local.example.org"};
+        seed_room_with_genesis_state_group(runtime, room_id);
+
+        auto const auth_event_ids =
+            std::vector<std::string>{room_id + ":create", room_id + ":pl", room_id + ":member:bob"};
+        auto const missing_event = make_remote_message_pdu(room_id, {room_id + ":member"}, auth_event_ids, 3, 10);
+        auto const pdu = make_remote_message_pdu(room_id, {missing_event.event_id}, auth_event_ids, 4, 20);
+
+        auto certificate = merovingian::tests::tls_mock::write_test_tls_certificate("localhost");
+        auto tls_context_result = merovingian::homeserver::make_tls_server_context(certificate.certificate_file,
+                                                                                   certificate.private_key_file);
+        REQUIRE(tls_context_result.ok());
+        auto tls_context = std::move(*tls_context_result.context);
+        auto acceptor = merovingian::net::TcpAcceptor{};
+        REQUIRE(acceptor.bind("127.0.0.1", 0U).ok);
+        auto const port = acceptor.bound_port();
+        REQUIRE(port > 0U);
+        runtime.test_forced_outbound_resolution[remote_server] =
+            merovingian::homeserver::TestOnlyForcedOutboundResolution{
+                "localhost", port, {"127.0.0.1"}, certificate.certificate_pem};
+        runtime.federation.remote_key_resolver =
+            [](std::string_view server_name,
+               std::string_view key_id) -> std::optional<merovingian::federation::FederationRemoteRuntime> {
+            if (server_name != remote_server || key_id != remote_key_id)
+            {
+                return std::nullopt;
+            }
+            return remote_runtime();
+        };
+        auto captured_request = std::string{};
+        auto const forged_json = merovingian::tests::with_forged_unsigned(missing_event.json);
+        REQUIRE(forged_json.find("forged-txn") != std::string::npos);
+        auto const http_response =
+            merovingian::tests::tls_mock::json_http_response("200 OK", get_missing_events_response(forged_json));
+        auto server_thread = std::thread{[&]() {
+            run_body_aware_tls_server(acceptor, tls_context, http_response, &captured_request);
+        }};
+        auto const join_server = merovingian::tests::tls_mock::ScopedThreadJoin{server_thread};
+        std::ignore = join_server;
+
+        WHEN("an event naming the missing one as a prev_event is ingested")
+        {
+            auto const result = merovingian::homeserver::ingest_pdu_event(runtime, pdu);
+
+            THEN("the event is stored under the ID its signed fields give, with no unsigned")
+            {
+                REQUIRE(result.status == PduIngestionStatus::accepted);
+                auto const stored = runtime.database.persistent_store.events.find(missing_event.event_id);
+                REQUIRE(stored != runtime.database.persistent_store.events.end());
+                REQUIRE(stored->json.find("\"unsigned\"") == std::string::npos);
+                REQUIRE(stored->json.find("forged-txn") == std::string::npos);
+                REQUIRE(stored->json.find("\"signatures\"") != std::string::npos);
+                REQUIRE(captured_request.find("POST /_matrix/federation/v1/get_missing_events/") != std::string::npos);
+            }
+        }
+
+        std::filesystem::remove(path);
+    }
+}

@@ -1,8 +1,10 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+#include "../support/forged_unsigned.hpp"
 #include "../support/joining_threads.hpp"
 #include "../support/master_key.hpp"
 #include "../support/remote_room_fixture.hpp"
+#include "merovingian/canonicaljson/parser.hpp"
 #include "merovingian/canonicaljson/serializer.hpp"
 #include "merovingian/canonicaljson/value.hpp"
 #include "merovingian/config/config.hpp"
@@ -11,6 +13,7 @@
 #include "merovingian/federation/inbound_ingestion.hpp"
 #include "merovingian/federation/membership_endpoints.hpp"
 #include "merovingian/homeserver/local_http_router.hpp"
+#include "merovingian/homeserver/room_service.hpp"
 #include "merovingian/homeserver/runtime.hpp"
 #include "merovingian/homeserver/state_bookkeeping.hpp"
 #include "merovingian/rooms/room_version_policy.hpp"
@@ -18,11 +21,14 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <filesystem>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <thread>
+#include <variant>
 #include <vector>
 
 namespace
@@ -768,6 +774,187 @@ SCENARIO("send_join in a room version 12 room answers an auth_chain holding the 
                     return pdu.find("\"type\":\"m.room.create\"") != std::string::npos;
                 });
                 REQUIRE(creates == 1);
+            }
+        }
+
+        std::filesystem::remove(path);
+    }
+}
+
+namespace
+{
+
+[[nodiscard]] auto remote_pdu(std::string const& room_id, std::string const& type, std::optional<std::string> state_key,
+                              merovingian::canonicaljson::Object content, std::vector<std::string> const& prev,
+                              std::int64_t depth, std::int64_t ts, bool forge) -> InboundPduEnvelope
+{
+    namespace rr = merovingian::tests::remote_room;
+    auto const auth = std::vector<std::string>{room_id + ":create", room_id + ":pl", room_id + ":member:bob"};
+    auto json = rr::make_remote_event_json(room_id, type, state_key, rr::remote_member, std::move(content), prev, auth,
+                                           depth, ts);
+    if (forge)
+    {
+        json = merovingian::tests::with_forged_unsigned(json);
+    }
+    auto envelope = merovingian::federation::parse_inbound_pdu_envelope(json, rr::room_version);
+    REQUIRE(envelope.has_value());
+    envelope->origin = rr::remote_server;
+    return *envelope;
+}
+
+[[nodiscard]] auto stored_event(HomeserverRuntime& runtime, std::string const& event_id)
+    -> merovingian::database::PersistentEvent const&
+{
+    auto const found = runtime.database.persistent_store.events.find(event_id);
+    REQUIRE(found != runtime.database.persistent_store.events.end());
+    return *found;
+}
+
+[[nodiscard]] auto member_object(merovingian::canonicaljson::Object const& object, std::string_view key)
+    -> merovingian::canonicaljson::Object const*
+{
+    for (auto const& member : object)
+    {
+        if (member.key == key)
+        {
+            return std::get_if<merovingian::canonicaljson::Object>(&member.value->storage());
+        }
+    }
+    return nullptr;
+}
+
+[[nodiscard]] auto has_member(merovingian::canonicaljson::Object const& object, std::string_view key) -> bool
+{
+    return std::ranges::any_of(object, [key](auto const& member) {
+        return member.key == key;
+    });
+}
+
+// The client-facing form of a stored event, as every client read path builds it before the viewer's
+// own values are added.
+[[nodiscard]] auto client_form(HomeserverRuntime& runtime, std::string const& event_id)
+    -> merovingian::canonicaljson::Object
+{
+    auto const value = merovingian::homeserver::client_event_with_id(runtime.database.persistent_store,
+                                                                     stored_event(runtime, event_id));
+    auto const* object = std::get_if<merovingian::canonicaljson::Object>(&value.storage());
+    REQUIRE(object != nullptr);
+    return *object;
+}
+
+constexpr auto forged_unsigned_keys = std::array<std::string_view, 7>{
+    "age", "forged_extra", "m.relations", "membership", "prev_content", "redacted_because", "transaction_id"};
+
+} // namespace
+
+// Spec: Matrix Server-Server API v1.19
+// Endpoint / Section: "Calculating the reference hash for an event", "Calculating the content hash for
+// an event", "Signing events"; Client-Server API ClientEvent `unsigned`
+// URL: ../../docs/matrix-v1.19-spec/server-server-api.md#calculating-the-reference-hash-for-an-event
+//
+// The `signatures` and `unsigned` properties are removed before an event is hashed or signed, so
+// `unsigned` is whatever the relaying server wrote and nothing here can check it. The Client-Server
+// API gives `unsigned.m.relations`, `redacted_because`, `prev_content`, `age`, `transaction_id` and
+// `membership` to the server that serves the event, so a copy a remote server supplied must never be
+// stored (and so never served) as this server's own.
+SCENARIO("A received PDU is stored without the unsigned object its relaying server wrote",
+         "[conformance][federation][pdu_ingestion][unsigned-forged][unsigned-ingest]")
+{
+    namespace rr = merovingian::tests::remote_room;
+    GIVEN("a room with a remote member and a PDU from them that a hostile relay gave a forged unsigned")
+    {
+        auto const path = unique_sqlite_path();
+        std::filesystem::remove(path);
+        auto started = merovingian::homeserver::start_runtime(config_with_sqlite(path));
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        merovingian::homeserver::wire_federation_callbacks(runtime);
+        runtime.federation.remote_key_resolver = rr::genuine_key_resolver();
+        auto const room_id = std::string{"!unsigned:local.example.org"};
+        rr::seed_room_with_genesis_state_group(runtime, room_id);
+        auto const member_id = room_id + ":member";
+
+        auto message_content = merovingian::canonicaljson::Object{};
+        message_content.push_back(
+            merovingian::canonicaljson::make_member("body", merovingian::canonicaljson::Value{std::string{"hello"}}));
+        auto const clean_message =
+            remote_pdu(room_id, "m.room.message", std::nullopt, message_content, {member_id}, 4, 10, false);
+        auto const forged_message =
+            remote_pdu(room_id, "m.room.message", std::nullopt, message_content, {member_id}, 4, 10, true);
+
+        WHEN("the message is parsed into an envelope")
+        {
+            THEN("the envelope's JSON, which is what every ingestion path stores, holds no unsigned")
+            {
+                auto const reparsed = merovingian::federation::parse_inbound_pdu_envelope(
+                    merovingian::tests::with_forged_unsigned(rr::make_remote_message_json(
+                        room_id, {member_id}, {room_id + ":create", room_id + ":pl", room_id + ":member:bob"}, 4, 10)),
+                    rr::room_version);
+                REQUIRE(reparsed.has_value());
+                REQUIRE(reparsed->json.find("\"unsigned\"") == std::string::npos);
+                REQUIRE(reparsed->json.find("forged-txn") == std::string::npos);
+            }
+        }
+
+        WHEN("the message is ingested")
+        {
+            auto const result = merovingian::homeserver::ingest_pdu_event(runtime, forged_message);
+
+            THEN("it is accepted under the event ID its signed fields give, and its stored copy has no unsigned")
+            {
+                REQUIRE(result.status == PduIngestionStatus::accepted);
+                // Spec: `unsigned` is outside the reference hash, so the forged copy has the clean one's ID.
+                REQUIRE(forged_message.event_id == clean_message.event_id);
+                auto const& stored = stored_event(runtime, forged_message.event_id);
+                REQUIRE(stored.json.find("\"unsigned\"") == std::string::npos);
+                REQUIRE(stored.json.find("forged-txn") == std::string::npos);
+                // The signatures and hashes the event is judged by are still in the stored copy.
+                REQUIRE(stored.json.find("\"signatures\"") != std::string::npos);
+                REQUIRE(stored.json.find("\"hashes\"") != std::string::npos);
+            }
+
+            THEN("the form every client read path starts from carries none of the forged keys")
+            {
+                auto const form = client_form(runtime, forged_message.event_id);
+                if (auto const* unsigned_data = member_object(form, "unsigned"); unsigned_data != nullptr)
+                {
+                    for (auto const key : forged_unsigned_keys)
+                    {
+                        // Spec: these are the serving server's values; a remote server's are not passed on.
+                        REQUIRE_FALSE(has_member(*unsigned_data, key));
+                    }
+                }
+            }
+        }
+
+        WHEN("a state event replacing an earlier one is ingested with a forged unsigned")
+        {
+            auto first_topic = merovingian::canonicaljson::Object{};
+            first_topic.push_back(merovingian::canonicaljson::make_member(
+                "topic", merovingian::canonicaljson::Value{std::string{"one"}}));
+            auto second_topic = merovingian::canonicaljson::Object{};
+            second_topic.push_back(merovingian::canonicaljson::make_member(
+                "topic", merovingian::canonicaljson::Value{std::string{"two"}}));
+            auto const first =
+                remote_pdu(room_id, "m.room.topic", std::string{}, first_topic, {member_id}, 4, 20, false);
+            auto const second =
+                remote_pdu(room_id, "m.room.topic", std::string{}, second_topic, {first.event_id}, 5, 30, true);
+            REQUIRE(merovingian::homeserver::ingest_pdu_event(runtime, first).status == PduIngestionStatus::accepted);
+            auto const result = merovingian::homeserver::ingest_pdu_event(runtime, second);
+
+            THEN("it is accepted, stored without unsigned, and served with the server's own replaces_state alone")
+            {
+                REQUIRE(result.status == PduIngestionStatus::accepted);
+                REQUIRE(stored_event(runtime, second.event_id).json.find("\"unsigned\"") == std::string::npos);
+                auto const form = client_form(runtime, second.event_id);
+                auto const* unsigned_data = member_object(form, "unsigned");
+                REQUIRE(unsigned_data != nullptr);
+                // Spec: `replaces_state` is the previous state event's ID, which this server computed.
+                REQUIRE(has_member(*unsigned_data, "replaces_state"));
+                for (auto const key : forged_unsigned_keys)
+                {
+                    REQUIRE_FALSE(has_member(*unsigned_data, key));
+                }
             }
         }
 

@@ -24,6 +24,7 @@
 #include "merovingian/events/event_signer.hpp"
 #include "merovingian/events/limits.hpp"
 #include "merovingian/events/redaction.hpp"
+#include "merovingian/events/unsigned_data.hpp"
 #include "merovingian/federation/cached_server_discovery.hpp"
 #include "merovingian/federation/inbound_request.hpp"
 #include "merovingian/federation/membership_endpoints.hpp"
@@ -4313,7 +4314,8 @@ namespace
         {
             continue;
         }
-        auto const serialized = canonicaljson::serialize_canonical(state_entry);
+        // The resident's `unsigned` on an entry is covered by no signature (ADR-0402).
+        auto const serialized = canonicaljson::serialize_canonical(events::without_unsigned(state_entry));
         if (serialized.error == canonicaljson::CanonicalJsonError::none)
         {
             auto const parsed = events::parse_event_envelope(state_entry);
@@ -5883,7 +5885,7 @@ namespace
             {
                 continue; // FED-1: already filtered; kept at the writer as well
             }
-            auto const serialized = canonicaljson::serialize_canonical(auth_entry);
+            auto const serialized = canonicaljson::serialize_canonical(events::without_unsigned(auth_entry));
             if (serialized.error == canonicaljson::CanonicalJsonError::none)
             {
                 auto const parsed = events::parse_event_envelope(auth_entry);
@@ -7746,7 +7748,7 @@ namespace
                 runtime, filter_send_join_events_for_room(*knock_state, room_id, *policy), *policy, our_server);
             for (auto const& entry : verified)
             {
-                if (auto serialized = canonicaljson::serialize_canonical(entry);
+                if (auto serialized = canonicaljson::serialize_canonical(events::without_unsigned(entry));
                     serialized.error == canonicaljson::CanonicalJsonError::none)
                 {
                     outcome.knock_state_json.push_back(std::move(serialized.output));
@@ -9034,33 +9036,16 @@ auto deliver_federation_push_notifications(HomeserverRuntime& runtime, federatio
     {
         return canonicaljson::Value{canonicaljson::Object{}};
     }
-    // `unsigned.transaction_id` and `unsigned.membership` describe the client reading the event
-    // (CS API, ClientEvent), and `unsigned` is outside the event's signatures, so a remote sender
-    // can put anything there. This server computes both per viewer (sync::ViewerEventUnsigned) and
-    // never passes on a stored copy of either.
-    auto const viewer_specific = [](std::string_view key) noexcept {
-        return key == "transaction_id" || key == "membership";
-    };
+    // `unsigned` is outside the event's signatures, so whoever relayed the event can put anything in it
+    // (CS API, ClientEvent `unsigned`; SS API "Signing events"). The client's `unsigned` is therefore never
+    // built from the stored copy, with a list of keys to drop: it is built from what this server computes,
+    // which is `replaces_state` below, `redacted_because` (attach_redacted_because), and the viewer's own
+    // `transaction_id`, `membership` and `prev_content` that sync::ViewerEventUnsigned adds per request
+    // (ADR-0402). This server writes no `unsigned` of its own into a stored event.
     auto client_obj = *obj;
-    for (auto& member : client_obj)
-    {
-        if (member.key == "unsigned")
-        {
-            if (auto const* stored_unsigned = std::get_if<canonicaljson::Object>(&member.value->storage());
-                stored_unsigned != nullptr)
-            {
-                auto kept = canonicaljson::Object{};
-                for (auto const& entry : *stored_unsigned)
-                {
-                    if (!viewer_specific(entry.key))
-                    {
-                        kept.push_back(entry);
-                    }
-                }
-                member.value = std::make_unique<canonicaljson::Value>(canonicaljson::Value{std::move(kept)});
-            }
-        }
-    }
+    std::erase_if(client_obj, [](canonicaljson::ObjectMember const& member) {
+        return member.key == "unsigned";
+    });
     client_obj.push_back(canonicaljson::make_member("event_id", canonicaljson::Value{event.event_id}));
     // ClientEvent `room_id` is required everywhere but /sync. Room version 12 omits it from
     // the m.room.create PDU only, so a client still gets the room it belongs to.
@@ -9088,43 +9073,10 @@ auto deliver_federation_push_notifications(HomeserverRuntime& runtime, federatio
         if (transition != nullptr && !transition->previous_event_id.empty())
         {
             auto unsigned_object = canonicaljson::Object{};
-            for (auto const& member : *obj)
-            {
-                if (member.key == "unsigned")
-                {
-                    if (auto const* existing = std::get_if<canonicaljson::Object>(&member.value->storage());
-                        existing != nullptr)
-                    {
-                        for (auto const& unsigned_member : *existing)
-                        {
-                            if (unsigned_member.key != "replaces_state" && !viewer_specific(unsigned_member.key))
-                            {
-                                unsigned_object.push_back(unsigned_member);
-                            }
-                        }
-                    }
-                    break;
-                }
-            }
             unsigned_object.push_back(
                 canonicaljson::make_member("replaces_state", canonicaljson::Value{transition->previous_event_id}));
-
-            auto unsigned_replaced = false;
-            for (auto& member : client_obj)
-            {
-                if (member.key == "unsigned")
-                {
-                    member.value =
-                        std::make_unique<canonicaljson::Value>(canonicaljson::Value{std::move(unsigned_object)});
-                    unsigned_replaced = true;
-                    break;
-                }
-            }
-            if (!unsigned_replaced)
-            {
-                client_obj.push_back(
-                    canonicaljson::make_member("unsigned", canonicaljson::Value{std::move(unsigned_object)}));
-            }
+            client_obj.push_back(
+                canonicaljson::make_member("unsigned", canonicaljson::Value{std::move(unsigned_object)}));
         }
     }
     // CSAZ-11: a redacted event carries unsigned.redacted_because (the stored JSON is already the
@@ -9673,8 +9625,10 @@ auto validate_make_join_response(std::string_view requested_room_id, std::string
 auto claim_membership_event_template(canonicaljson::Object& event, std::string_view our_server_name,
                                      std::int64_t now_ms) -> void
 {
+    // The resident's template is signed and stored as this server's own event, so an `unsigned` it carries
+    // (covered by no signature) is dropped with the `event_id` (ADR-0402).
     std::erase_if(event, [](canonicaljson::ObjectMember const& member) {
-        return member.key == "event_id";
+        return member.key == "event_id" || member.key == "unsigned";
     });
     replace_or_add_member(event, "origin", canonicaljson::Value{std::string{our_server_name}});
     replace_or_add_member(event, "origin_server_ts", canonicaljson::Value{now_ms});
