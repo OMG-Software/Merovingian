@@ -145,10 +145,10 @@ namespace
         {
             return false;
         }
-        for (auto const& event : store.events)
+        for (auto const candidate : candidate_event_ids)
         {
-            if (event.room_id == room_id && candidate_event_ids.contains(event.event_id) &&
-                content_string(event.json, "membership") == "join")
+            auto const* event = find_event(store, candidate);
+            if (event != nullptr && event->room_id == room_id && content_string(event->json, "membership") == "join")
             {
                 return true;
             }
@@ -505,10 +505,12 @@ namespace
     }
 
     // Decides, for one requesting server, which room events it may read in full, and redacts the
-    // rest. One instance serves one request: it builds its indexes over the store once, lazily, and
-    // caches per state group, so a page of events costs one group lookup per event and one
+    // rest. One instance serves one request. It holds no index of its own: the event -> group, group
+    // and group-entries lookups are the store's hash indexes (ADR-0325), so a request costs the rows
+    // of the groups on the chains it reads and never a pass over the server's tables. It caches the
+    // verdict per state group, so a page of events costs one group lookup per event and one
     // membership scan per DISTINCT group, never a walk of the room. Not thread-safe; it must not
-    // outlive the store reference.
+    // outlive the store reference, and the store must not change while it is in use.
     //
     // The rule is the client-server "Room History Visibility" rule applied to the server `origin`
     // (owner decision 2026-10-29), against the state group recorded for the event (ADR-0064): the
@@ -635,37 +637,10 @@ namespace
             std::string_view event_id{};
         };
 
-        [[nodiscard]] auto group_of(std::string_view event_id) -> std::optional<std::string_view>
+        // The state group recorded for the event: one hash lookup in the store's index (ADR-0325).
+        [[nodiscard]] auto group_of(std::string_view event_id) const -> std::optional<std::string_view>
         {
-            if (!event_group_index_built_)
-            {
-                group_by_event_.reserve(store_.event_state_groups.size());
-                for (auto const& mapping : store_.event_state_groups)
-                {
-                    group_by_event_.emplace(mapping.event_id, mapping.state_group_id);
-                }
-                event_group_index_built_ = true;
-            }
-            auto const found = group_by_event_.find(event_id);
-            return found == group_by_event_.end() ? std::nullopt : std::optional<std::string_view>{found->second};
-        }
-
-        auto ensure_group_index() -> void
-        {
-            if (group_index_built_)
-            {
-                return;
-            }
-            groups_by_id_.reserve(store_.state_groups.size());
-            for (auto const& group : store_.state_groups)
-            {
-                groups_by_id_.emplace(group.state_group_id, &group);
-            }
-            for (auto const& entry : store_.state_group_state)
-            {
-                entries_by_group_[entry.state_group_id].push_back(&entry);
-            }
-            group_index_built_ = true;
+            return store_.event_state_groups.state_group_of(event_id);
         }
 
         // Finds the event ID `group_id`'s full state holds for (event_type, state_key), walking the
@@ -674,7 +649,6 @@ namespace
         [[nodiscard]] auto lookup_in_group(std::string_view group_id, std::string_view event_type,
                                            std::string_view state_key) -> LookupResult
         {
-            ensure_group_index();
             auto visited = std::unordered_set<std::string_view>{};
             auto current = group_id;
             for (auto hops = std::size_t{0U};; ++hops)
@@ -683,26 +657,23 @@ namespace
                 {
                     return {Lookup::broken, {}};
                 }
-                auto const group = groups_by_id_.find(current);
-                if (group == groups_by_id_.end())
+                auto const group = store_.state_groups.find(current);
+                if (group == store_.state_groups.end())
                 {
                     return {Lookup::broken, {}};
                 }
-                if (auto const entries = entries_by_group_.find(current); entries != entries_by_group_.end())
+                for (auto const& entry : store_.state_group_state.entries_of(current))
                 {
-                    for (auto const* entry : entries->second)
+                    if (entry.event_type == event_type && entry.state_key == state_key)
                     {
-                        if (entry->event_type == event_type && entry->state_key == state_key)
-                        {
-                            return {Lookup::found, entry->event_id};
-                        }
+                        return {Lookup::found, entry.event_id};
                     }
                 }
-                if (!group->second->parent_state_group_id.has_value())
+                if (!group->parent_state_group_id.has_value())
                 {
                     return {Lookup::absent, {}};
                 }
-                current = *group->second->parent_state_group_id;
+                current = *group->parent_state_group_id;
             }
         }
 
@@ -712,7 +683,6 @@ namespace
         // event the store lacks.
         [[nodiscard]] auto scan_origin_membership(std::string_view group_id, GroupView& view) -> bool
         {
-            ensure_group_index();
             auto visited = std::unordered_set<std::string_view>{};
             auto shadowed = std::unordered_set<std::string_view>{};
             auto current = group_id;
@@ -722,43 +692,40 @@ namespace
                 {
                     return false;
                 }
-                auto const group = groups_by_id_.find(current);
-                if (group == groups_by_id_.end())
+                auto const group = store_.state_groups.find(current);
+                if (group == store_.state_groups.end())
                 {
                     return false;
                 }
-                if (auto const entries = entries_by_group_.find(current); entries != entries_by_group_.end())
+                for (auto const& entry : store_.state_group_state.entries_of(current))
                 {
-                    for (auto const* entry : entries->second)
+                    if (entry.event_type != "m.room.member" || user_id_server_name(entry.state_key) != origin_ ||
+                        !shadowed.insert(entry.state_key).second)
                     {
-                        if (entry->event_type != "m.room.member" || user_id_server_name(entry->state_key) != origin_ ||
-                            !shadowed.insert(entry->state_key).second)
-                        {
-                            continue;
-                        }
-                        auto const* member_event = find_event(store_, entry->event_id);
-                        if (member_event == nullptr)
-                        {
-                            return false;
-                        }
-                        auto const membership = content_string(member_event->json, "membership");
-                        if (membership == std::optional<std::string>{"join"})
-                        {
-                            view.origin_joined = true;
-                            view.origin_invited_or_joined = true;
-                            return true;
-                        }
-                        if (membership == std::optional<std::string>{"invite"})
-                        {
-                            view.origin_invited_or_joined = true;
-                        }
+                        continue;
+                    }
+                    auto const* member_event = find_event(store_, entry.event_id);
+                    if (member_event == nullptr)
+                    {
+                        return false;
+                    }
+                    auto const membership = content_string(member_event->json, "membership");
+                    if (membership == std::optional<std::string>{"join"})
+                    {
+                        view.origin_joined = true;
+                        view.origin_invited_or_joined = true;
+                        return true;
+                    }
+                    if (membership == std::optional<std::string>{"invite"})
+                    {
+                        view.origin_invited_or_joined = true;
                     }
                 }
-                if (!group->second->parent_state_group_id.has_value())
+                if (!group->parent_state_group_id.has_value())
                 {
                     return true;
                 }
-                current = *group->second->parent_state_group_id;
+                current = *group->parent_state_group_id;
             }
         }
 
@@ -808,12 +775,6 @@ namespace
 
         database::PersistentStore const& store_;
         std::string_view origin_;
-        bool event_group_index_built_{false};
-        std::unordered_map<std::string_view, std::string_view> group_by_event_{};
-        bool group_index_built_{false};
-        std::unordered_map<std::string_view, database::PersistentStateGroup const*> groups_by_id_{};
-        std::unordered_map<std::string_view, std::vector<database::PersistentStateGroupStateEntry const*>>
-            entries_by_group_{};
         std::unordered_map<std::string, GroupView> group_views_{};
         std::unordered_map<std::string, rooms::RoomVersionPolicy const*> policies_{};
     };

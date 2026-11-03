@@ -30,6 +30,7 @@
 #include <cstdint>
 #include <optional>
 #include <string>
+#include <tuple>
 #include <vector>
 
 namespace
@@ -448,7 +449,7 @@ SCENARIO("compute_state_before says why it fails closed", "[pdu_ingestion][state
         {
             auto const group = merovingian::database::find_event_state_group(store, "$topic_a");
             REQUIRE(group.has_value());
-            std::erase_if(store.state_groups, [&group](auto const& g) {
+            std::ignore = store.state_groups.erase_if([&group](auto const& g) {
                 return g.state_group_id == *group;
             });
             auto const alone = compute_state_before(store, room_id, *policy, {"$topic_a"});

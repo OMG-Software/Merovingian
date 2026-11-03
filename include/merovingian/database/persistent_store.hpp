@@ -4,6 +4,7 @@
 
 #include "merovingian/database/event_table.hpp"
 #include "merovingian/database/migration.hpp"
+#include "merovingian/database/state_group_tables.hpp"
 #include "merovingian/database/statement.hpp"
 #include "merovingian/events/event.hpp"
 
@@ -859,41 +860,6 @@ inline constexpr std::size_t max_deferred_pdu_json_bytes = std::size_t{16U} * 10
 inline constexpr std::chrono::hours max_deferred_pdu_age{24};
 inline constexpr std::uint32_t max_deferred_pdu_attempts = 10U;
 
-// A state group (ADR-0064, docs/adr/0064-spec-conformant-pdu-ingestion-with-
-// delta-state-groups.md): the room state after some event, stored either as
-// a full snapshot (`parent_state_group_id == nullopt`, `delta_depth == 0`)
-// or as a delta from `parent_state_group_id` (`delta_depth` = parent's
-// depth + 1, capped at `events::max_state_group_delta_depth`). The group's
-// own rows (the full state for a snapshot, or just the changed entries for a
-// delta) live in `state_group_state`/`PersistentStateGroupStateEntry`, keyed
-// by `state_group_id`. See database::create_or_reuse_state_group and
-// database::read_state_group_full_state.
-struct PersistentStateGroup final
-{
-    std::string state_group_id{};
-    std::string room_id{};
-    std::optional<std::string> parent_state_group_id{};
-    std::uint32_t delta_depth{0U};
-};
-
-// One row of a state group's own state: `state_group_id`'s snapshot or delta
-// contains (event_type, state_key) -> event_id. See PersistentStateGroup.
-struct PersistentStateGroupStateEntry final
-{
-    std::string state_group_id{};
-    std::string event_type{};
-    std::string state_key{};
-    std::string event_id{};
-};
-
-// Maps an event to the state group holding the room's state immediately
-// after it (ADR-0064). One row per event that has a known post-state.
-struct PersistentEventStateGroup final
-{
-    std::string event_id{};
-    std::string state_group_id{};
-};
-
 // A room's current forward extremity (ADR-0064): an accepted, non-soft-
 // failed event with no accepted child yet. See
 // database::update_forward_extremities.
@@ -916,6 +882,22 @@ struct RedactionState final
     std::unordered_set<std::string> withheld{};
     // Target event ID -> the redaction event that was applied to it.
     std::unordered_map<std::string, std::string> applied_by_target{};
+};
+
+// Which retained PDUs wait for which events (F-18, ADR-0326). In memory only, derived from
+// `PersistentStore::deferred_pdus` and never persisted: upsert_deferred_pdu and remove_deferred_pdu keep
+// it current, rebuild_deferred_pdu_awaits re-derives it after hydration. A PDU is indexed under the
+// event IDs it is missing (see find_missing_event_references), so waking the PDUs that wait for an event
+// is a lookup, not a search of every retained row's JSON.
+struct DeferredPduAwaits final
+{
+    // Awaited event ID -> (retained event ID -> its room ID).
+    std::unordered_map<std::string, std::unordered_map<std::string, std::string>> rows_by_awaited{};
+    // Retained event ID -> the event IDs it is indexed under.
+    std::unordered_map<std::string, std::vector<std::string>> awaited_by_row{};
+    // `deferred_pdus.size()` when the index was last made to match the rows. A caller that pushed rows
+    // directly leaves it behind, and take_deferred_pdus_awaiting rebuilds first.
+    std::size_t indexed_rows{0U};
 };
 
 struct PersistentStore;
@@ -1002,6 +984,7 @@ struct PersistentStore final
         , appservice_outbox{other.appservice_outbox}
         , appservice_directory{other.appservice_directory}
         , deferred_pdus{other.deferred_pdus}
+        , deferred_pdu_awaits{other.deferred_pdu_awaits}
         , state_groups{other.state_groups}
         , state_group_state{other.state_group_state}
         , event_state_groups{other.event_state_groups}
@@ -1090,6 +1073,7 @@ struct PersistentStore final
         appservice_outbox = other.appservice_outbox;
         appservice_directory = other.appservice_directory;
         deferred_pdus = other.deferred_pdus;
+        deferred_pdu_awaits = other.deferred_pdu_awaits;
         state_groups = other.state_groups;
         state_group_state = other.state_group_state;
         event_state_groups = other.event_state_groups;
@@ -1218,9 +1202,16 @@ struct PersistentStore final
     // max_deferred_pdu* constants; write through upsert_deferred_pdu and
     // remove_deferred_pdu so the bounds and the database row stay in step.
     std::vector<PersistentDeferredPdu> deferred_pdus{};
-    std::vector<PersistentStateGroup> state_groups{};
-    std::vector<PersistentStateGroupStateEntry> state_group_state{};
-    std::vector<PersistentEventStateGroup> event_state_groups{};
+    // What each retained PDU waits for, by awaited event (ADR-0326). Maintained by upsert_deferred_pdu and
+    // remove_deferred_pdu; read through take_deferred_pdus_awaiting.
+    DeferredPduAwaits deferred_pdu_awaits{};
+    // The state-group tables (ADR-0064) with their hash indexes (ADR-0325). Read-only through the
+    // tables; every change goes through them, so a writer cannot leave an index behind. Lookups:
+    // `event_state_groups.state_group_of(event_id)`, `state_groups.find(id)`,
+    // `state_group_state.entries_of(id)`; see state_group_tables.hpp for the reader discipline.
+    StateGroupTable state_groups{};
+    StateGroupEntryTable state_group_state{};
+    EventStateGroupTable event_state_groups{};
     std::vector<PersistentForwardExtremity> forward_extremities{};
     // Test-only capture of committed statements (AUTH-11). Empty and disabled
     // (`statement_capture_capacity == 0`) unless `enable_statement_capture` is
@@ -2032,6 +2023,26 @@ enum class DeferredPduUpsert : std::uint8_t
 // Removes the row for `event_id`. False if there was none or the delete could
 // not be committed.
 [[nodiscard]] auto remove_deferred_pdu(PersistentStore& store, std::string_view event_id) -> bool;
+// The event IDs a PDU names that this store cannot yet use: every `auth_events` ID with no stored event,
+// and every `prev_events` ID that is not stored or has no recorded state group (so no state can be
+// computed before the PDU). The one definition ingestion backfills by and retained PDUs are indexed by.
+struct MissingEventReferences final
+{
+    std::vector<std::string> auth{};
+    std::vector<std::string> prev{};
+};
+[[nodiscard]] auto find_missing_event_references(PersistentStore const& store,
+                                                 std::vector<std::string> const& auth_event_ids,
+                                                 std::vector<std::string> const& prev_event_ids)
+    -> MissingEventReferences;
+// Rebuilds `store.deferred_pdu_awaits` from the retained rows, parsing each row's JSON once. Hydration
+// calls it after every table is loaded.
+auto rebuild_deferred_pdu_awaits(PersistentStore& store) -> void;
+// The IDs of the retained PDUs of `room_id` that are waiting for `event_id`, other than `event_id`
+// itself, found by lookup in the index (no row is searched). They stop waiting for it: a second call
+// with the same ID finds none until a retained PDU is indexed under it again.
+[[nodiscard]] auto take_deferred_pdus_awaiting(PersistentStore& store, std::string_view room_id,
+                                               std::string_view event_id) -> std::vector<std::string>;
 // Copies of the retained PDUs: every one, or one room's.
 [[nodiscard]] auto list_deferred_pdus(PersistentStore const& store) -> std::vector<PersistentDeferredPdu>;
 [[nodiscard]] auto deferred_pdus_for_room(PersistentStore const& store, std::string_view room_id)

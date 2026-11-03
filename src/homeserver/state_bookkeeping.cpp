@@ -141,25 +141,19 @@ namespace
 
 auto make_store_event_lookup(database::PersistentStore const& store) -> events::EventLookupFn
 {
-    // Index once per resolution rather than per lookup: resolve_state_v2's
-    // auth-chain walk can call this many times for one PDU.
-    auto index = std::make_shared<std::unordered_map<std::string, std::size_t>>();
-    index->reserve(store.events.size());
-    for (std::size_t i = 0U; i < store.events.size(); ++i)
-    {
-        (*index)[store.events[i].event_id] = i;
-    }
-    return [&store, index](std::string_view event_id) -> std::optional<events::StateEventReference> {
-        auto const it = index->find(std::string{event_id});
-        if (it == index->end() || it->second >= store.events.size())
+    // EventTable::find is a hash lookup (ADR-0215), so nothing is built per resolution: the lookup
+    // costs the events it is asked for, however many the server stores. It reads `store` on every
+    // call, so the store must outlive it.
+    return [&store](std::string_view event_id) -> std::optional<events::StateEventReference> {
+        auto const found = store.events.find(event_id);
+        if (found == store.events.end())
         {
             return std::nullopt;
         }
-        auto const& evt = store.events[it->second];
-        auto ref = parse_state_event_reference(evt.event_id, evt.json, evt.depth);
+        auto ref = parse_state_event_reference(found->event_id, found->json, found->depth);
         if (ref.has_value())
         {
-            ref->rejected = evt.status == "rejected";
+            ref->rejected = found->status == "rejected";
         }
         return ref;
     };
@@ -330,7 +324,7 @@ namespace
     // cache of. nullopt means leave the cache as it is: no extremity, an
     // extremity with no readable state, the work budget, or a resolution that
     // fails closed. `make_lookup` is called only when there is something to
-    // resolve, since building it indexes every stored event.
+    // resolve.
     [[nodiscard]] auto resolve_extremity_states(std::string_view room_id, rooms::RoomVersionPolicy const& policy,
                                                 events::StateResolutionLimits const& limits,
                                                 std::vector<std::string> const& extremities,
@@ -415,13 +409,20 @@ auto recompute_current_state(database::PersistentStore& store, std::string_view 
         return true; // leave the cached current state untouched
     }
 
+    // The room's current state in one pass over the table, so each resolved entry is a lookup and
+    // not a pass of its own.
+    auto current = std::unordered_map<std::string, std::string>{};
+    for (auto const& row : store.state)
+    {
+        if (row.room_id == room_id)
+        {
+            current[state_entry_key(row.event_type, row.state_key)] = row.event_id;
+        }
+    }
     for (auto const& entry : *resolved)
     {
-        auto const current = std::ranges::find_if(store.state, [&](database::PersistentStateEvent const& state) {
-            return state.room_id == room_id && state.event_type == entry.event_type &&
-                   state.state_key == entry.state_key;
-        });
-        if (current != store.state.end() && current->event_id == entry.event_id)
+        if (auto const held = current.find(state_entry_key(entry.event_type, entry.state_key));
+            held != current.end() && held->second == entry.event_id)
         {
             continue; // unchanged
         }

@@ -1425,23 +1425,18 @@ auto reconstruct_event_relations(PersistentStore& store) -> void
     {
         stale_group_ids.insert(group.state_group_id);
     }
-    std::erase_if(store.state_groups, [&](PersistentStateGroup const& g) {
+    std::ignore = store.state_groups.erase_if([&](PersistentStateGroup const& g) {
         return stale_group_ids.contains(g.state_group_id);
     });
-    std::erase_if(store.state_group_state, [&](PersistentStateGroupStateEntry const& e) {
+    std::ignore = store.state_group_state.erase_if([&](PersistentStateGroupStateEntry const& e) {
         return stale_group_ids.contains(e.state_group_id);
     });
-    std::erase_if(store.event_state_groups, [&](PersistentEventStateGroup const& m) {
+    std::ignore = store.event_state_groups.erase_if([&](PersistentEventStateGroup const& m) {
         return stale_event_ids.contains(m.event_id);
     });
-    store.state_groups.insert(store.state_groups.end(), std::make_move_iterator(snapshot->state_groups.begin()),
-                              std::make_move_iterator(snapshot->state_groups.end()));
-    store.state_group_state.insert(store.state_group_state.end(),
-                                   std::make_move_iterator(snapshot->state_group_state.begin()),
-                                   std::make_move_iterator(snapshot->state_group_state.end()));
-    store.event_state_groups.insert(store.event_state_groups.end(),
-                                    std::make_move_iterator(snapshot->event_state_groups.begin()),
-                                    std::make_move_iterator(snapshot->event_state_groups.end()));
+    std::ignore = store.state_groups.insert_all(std::move(snapshot->state_groups));
+    store.state_group_state.insert_all(std::move(snapshot->state_group_state));
+    store.event_state_groups.insert_all(std::move(snapshot->event_state_groups));
 
     if (snapshot->room.has_value())
     {
@@ -2594,10 +2589,7 @@ namespace
     [[nodiscard]] auto find_persistent_state_group(PersistentStore const& store, std::string_view state_group_id)
         -> PersistentStateGroup const*
     {
-        auto const iterator =
-            std::ranges::find_if(store.state_groups, [state_group_id](PersistentStateGroup const& group) {
-                return group.state_group_id == state_group_id;
-            });
+        auto const iterator = store.state_groups.find(state_group_id);
         return iterator == store.state_groups.end() ? nullptr : &*iterator;
     }
 
@@ -2652,12 +2644,8 @@ namespace
     auto result = std::vector<PersistentStateGroupStateEntry>{};
     for (auto const* group : chain) // newest (target) first, snapshot last
     {
-        for (auto const& entry : store.state_group_state)
+        for (auto const& entry : store.state_group_state.entries_of(group->state_group_id))
         {
-            if (entry.state_group_id != group->state_group_id)
-            {
-                continue;
-            }
             if (seen.insert(state_group_entry_key(entry.event_type, entry.state_key)).second)
             {
                 result.push_back(entry);
@@ -2779,8 +2767,8 @@ auto apply_state_group(PersistentStore& store, PreparedStateGroup const& prepare
     {
         return; // the parent was reused
     }
-    store.state_groups.push_back(*prepared.group);
-    store.state_group_state.insert(store.state_group_state.end(), prepared.rows.begin(), prepared.rows.end());
+    std::ignore = store.state_groups.insert(*prepared.group);
+    store.state_group_state.insert_all(prepared.rows);
 }
 
 [[nodiscard]] auto set_event_state_group(PersistentStore& store, std::string_view event_id,
@@ -2810,29 +2798,14 @@ auto apply_state_group(PersistentStore& store, PreparedStateGroup const& prepare
 
 auto apply_event_state_group(PersistentStore& store, std::string_view event_id, std::string_view state_group_id) -> void
 {
-    auto const existing =
-        std::ranges::find_if(store.event_state_groups, [event_id](PersistentEventStateGroup const& mapping) {
-            return mapping.event_id == event_id;
-        });
-    if (existing != store.event_state_groups.end())
-    {
-        existing->state_group_id = std::string{state_group_id};
-    }
-    else
-    {
-        store.event_state_groups.push_back({std::string{event_id}, std::string{state_group_id}});
-    }
+    store.event_state_groups.assign(event_id, state_group_id);
 }
 
 [[nodiscard]] auto find_event_state_group(PersistentStore const& store, std::string_view event_id)
     -> std::optional<std::string>
 {
-    auto const existing =
-        std::ranges::find_if(store.event_state_groups, [event_id](PersistentEventStateGroup const& mapping) {
-            return mapping.event_id == event_id;
-        });
-    return existing == store.event_state_groups.end() ? std::nullopt
-                                                      : std::optional<std::string>{existing->state_group_id};
+    auto const group_id = store.event_state_groups.state_group_of(event_id);
+    return group_id.has_value() ? std::optional<std::string>{std::string{*group_id}} : std::nullopt;
 }
 
 [[nodiscard]] auto update_forward_extremities(PersistentStore& store, std::string_view room_id,
@@ -5537,6 +5510,175 @@ auto sort_appservice_outbox(PersistentStore& store) -> void
     return true;
 }
 
+namespace
+{
+
+    // The strings of the top-level array member `key` of a PDU's JSON; empty when the member is missing
+    // or not an array. Non-string elements are skipped.
+    [[nodiscard]] auto top_level_string_array(canonicaljson::Value const& pdu, std::string_view key)
+        -> std::vector<std::string>
+    {
+        auto result = std::vector<std::string>{};
+        auto const* object = std::get_if<canonicaljson::Object>(&pdu.storage());
+        if (object == nullptr)
+        {
+            return result;
+        }
+        for (auto const& member : *object)
+        {
+            if (member.key != key)
+            {
+                continue;
+            }
+            auto const* array = std::get_if<canonicaljson::Array>(&member.value->storage());
+            if (array == nullptr)
+            {
+                break;
+            }
+            for (auto const& element : *array)
+            {
+                if (auto const* text = std::get_if<std::string>(&element.storage()); text != nullptr)
+                {
+                    result.push_back(*text);
+                }
+            }
+            break;
+        }
+        return result;
+    }
+
+    // The event IDs a retained PDU is indexed under: the ones it is missing now. A PDU that is
+    // retained although it is missing nothing (its state before it could not be resolved) is
+    // indexed under everything it references, so an event it names arriving still wakes it.
+    [[nodiscard]] auto awaited_event_ids(PersistentStore const& store, std::string_view pdu_json)
+        -> std::vector<std::string>
+    {
+        auto const parsed = canonicaljson::parse_lossless(pdu_json);
+        if (parsed.error != canonicaljson::ParseError::none)
+        {
+            return {};
+        }
+        auto auth = top_level_string_array(parsed.value, "auth_events");
+        auto prev = top_level_string_array(parsed.value, "prev_events");
+        auto missing = find_missing_event_references(store, auth, prev);
+        auto awaited = std::move(missing.auth);
+        awaited.insert(awaited.end(), std::make_move_iterator(missing.prev.begin()),
+                       std::make_move_iterator(missing.prev.end()));
+        if (awaited.empty())
+        {
+            awaited = std::move(auth);
+            awaited.insert(awaited.end(), std::make_move_iterator(prev.begin()), std::make_move_iterator(prev.end()));
+        }
+        std::ranges::sort(awaited);
+        awaited.erase(std::ranges::unique(awaited).begin(), awaited.end());
+        return awaited;
+    }
+
+    auto unindex_deferred_pdu(DeferredPduAwaits& awaits, std::string_view event_id) -> void
+    {
+        auto const row = awaits.awaited_by_row.find(std::string{event_id});
+        if (row == awaits.awaited_by_row.end())
+        {
+            return;
+        }
+        for (auto const& awaited : row->second)
+        {
+            auto const waiting = awaits.rows_by_awaited.find(awaited);
+            if (waiting == awaits.rows_by_awaited.end())
+            {
+                continue;
+            }
+            waiting->second.erase(std::string{event_id});
+            if (waiting->second.empty())
+            {
+                awaits.rows_by_awaited.erase(waiting);
+            }
+        }
+        awaits.awaited_by_row.erase(row);
+    }
+
+    auto index_deferred_pdu(PersistentStore& store, PersistentDeferredPdu const& row) -> void
+    {
+        auto& awaits = store.deferred_pdu_awaits;
+        unindex_deferred_pdu(awaits, row.event_id);
+        auto awaited = awaited_event_ids(store, row.pdu_json);
+        for (auto const& awaited_id : awaited)
+        {
+            awaits.rows_by_awaited[awaited_id].insert_or_assign(row.event_id, row.room_id);
+        }
+        awaits.awaited_by_row.insert_or_assign(row.event_id, std::move(awaited));
+    }
+
+} // namespace
+
+[[nodiscard]] auto find_missing_event_references(PersistentStore const& store,
+                                                 std::vector<std::string> const& auth_event_ids,
+                                                 std::vector<std::string> const& prev_event_ids)
+    -> MissingEventReferences
+{
+    auto missing = MissingEventReferences{};
+    for (auto const& id : auth_event_ids)
+    {
+        if (!store.events.contains(id))
+        {
+            missing.auth.push_back(id);
+        }
+    }
+    for (auto const& id : prev_event_ids)
+    {
+        if (!store.events.contains(id) || !store.event_state_groups.contains(id))
+        {
+            missing.prev.push_back(id);
+        }
+    }
+    return missing;
+}
+
+auto rebuild_deferred_pdu_awaits(PersistentStore& store) -> void
+{
+    store.deferred_pdu_awaits = DeferredPduAwaits{};
+    for (auto const& row : store.deferred_pdus)
+    {
+        index_deferred_pdu(store, row);
+    }
+    store.deferred_pdu_awaits.indexed_rows = store.deferred_pdus.size();
+}
+
+[[nodiscard]] auto take_deferred_pdus_awaiting(PersistentStore& store, std::string_view room_id,
+                                               std::string_view event_id) -> std::vector<std::string>
+{
+    if (store.deferred_pdu_awaits.indexed_rows != store.deferred_pdus.size())
+    {
+        rebuild_deferred_pdu_awaits(store);
+    }
+    auto& awaits = store.deferred_pdu_awaits;
+    auto woken = std::vector<std::string>{};
+    auto const waiting = awaits.rows_by_awaited.find(std::string{event_id});
+    if (waiting == awaits.rows_by_awaited.end())
+    {
+        return woken;
+    }
+    for (auto it = waiting->second.begin(); it != waiting->second.end();)
+    {
+        if (it->second != room_id || it->first == event_id)
+        {
+            ++it;
+            continue;
+        }
+        woken.push_back(it->first);
+        if (auto const row = awaits.awaited_by_row.find(it->first); row != awaits.awaited_by_row.end())
+        {
+            std::erase(row->second, std::string{event_id});
+        }
+        it = waiting->second.erase(it);
+    }
+    if (waiting->second.empty())
+    {
+        awaits.rows_by_awaited.erase(waiting);
+    }
+    return woken;
+}
+
 [[nodiscard]] auto upsert_deferred_pdu(PersistentStore& store, PersistentDeferredPdu pdu) -> DeferredPduUpsert
 {
     if (pdu.event_id.empty() || pdu.room_id.empty())
@@ -5578,13 +5720,33 @@ auto sort_appservice_outbox(PersistentStore& store) -> void
     {
         return DeferredPduUpsert::persistence_failed;
     }
+    // Index the row by what it is missing now (an update re-derives it: some of what it waited for may
+    // have arrived). If a caller left the index behind the rows, rebuild all of it instead.
+    auto const index_was_current = store.deferred_pdu_awaits.indexed_rows == store.deferred_pdus.size();
     if (existing != store.deferred_pdus.end())
     {
         existing->origin = std::move(pdu.origin);
         existing->attempts = pdu.attempts;
+        if (index_was_current)
+        {
+            index_deferred_pdu(store, *existing);
+        }
+        else
+        {
+            rebuild_deferred_pdu_awaits(store);
+        }
         return DeferredPduUpsert::updated;
     }
     store.deferred_pdus.push_back(std::move(pdu));
+    if (index_was_current)
+    {
+        index_deferred_pdu(store, store.deferred_pdus.back());
+        store.deferred_pdu_awaits.indexed_rows = store.deferred_pdus.size();
+    }
+    else
+    {
+        rebuild_deferred_pdu_awaits(store);
+    }
     return DeferredPduUpsert::inserted;
 }
 
@@ -5603,7 +5765,13 @@ auto sort_appservice_outbox(PersistentStore& store) -> void
     {
         return false;
     }
+    auto const index_was_current = store.deferred_pdu_awaits.indexed_rows == store.deferred_pdus.size();
+    unindex_deferred_pdu(store.deferred_pdu_awaits, event_id);
     store.deferred_pdus.erase(existing);
+    if (index_was_current)
+    {
+        store.deferred_pdu_awaits.indexed_rows = store.deferred_pdus.size();
+    }
     return true;
 }
 

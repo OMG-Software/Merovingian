@@ -792,7 +792,7 @@ namespace
                     entry.room_id = row[1];
                     entry.parent_state_group_id = row[2].empty() ? std::nullopt : std::optional<std::string>{row[2]};
                     entry.delta_depth = static_cast<std::uint32_t>(parse_u64(row[3]));
-                    store.state_groups.push_back(std::move(entry));
+                    std::ignore = store.state_groups.insert(std::move(entry));
                 }
             }
         }
@@ -811,7 +811,7 @@ namespace
             {
                 if (row.size() >= 4U)
                 {
-                    store.state_group_state.push_back({row[0], row[1], row[2], row[3]});
+                    store.state_group_state.insert({row[0], row[1], row[2], row[3]});
                 }
             }
         }
@@ -829,7 +829,7 @@ namespace
             {
                 if (row.size() >= 2U)
                 {
-                    store.event_state_groups.push_back({row[0], row[1]});
+                    store.event_state_groups.assign(row[0], row[1]);
                 }
             }
         }
@@ -2315,6 +2315,7 @@ auto open_postgresql_persistent_store(std::string_view conninfo, std::string_vie
     rebuild_state_transition_index(store);
     rebuild_client_txn_index(store);
     rebuild_redaction_state(store);
+    rebuild_deferred_pdu_awaits(store);
     rebuild_key_signature_index(store);
     restore_sync_stream_id(store);
 

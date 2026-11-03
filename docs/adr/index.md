@@ -302,6 +302,8 @@
 * [0318 - A membership template offers the room's stored forward extremities, and none is offered without them](0318-a-membership-template-offers-the-rooms-stored-forward-extremities.md)
 * [0319 - Report a failed device-list write where the client can retry, and finish where access is being revoked](0319-report-a-failed-device-list-write-where-the-client-can-retry.md)
 * [0320 - A join comes after the ancestors that share its depth](0320-a-join-comes-after-the-ancestors-that-share-its-depth.md)
+* [0325 - The state-group tables own their rows and index them by key](0325-the-state-group-tables-own-their-rows-and-index-them.md)
+* [0326 - Retained PDUs are woken through an in-memory index of the events they are missing](0326-retained-pdus-are-woken-through-an-index-of-the-events-they-are-missing.md)
 
 ## Proposed Records
 

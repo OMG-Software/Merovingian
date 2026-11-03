@@ -14,6 +14,7 @@ Manages schema migrations and provides a dual-backend (SQLite / PostgreSQL) pers
 | `connection.cpp` | Connection lifecycle and pool management |
 | `statement.cpp` | Prepared statement wrapper; parameters are always bound, never interpolated |
 | `schema.cpp` | Schema introspection helpers |
+| `state_group_tables.cpp` | `StateGroupTable`, `StateGroupEntryTable`, `EventStateGroupTable`: the state-group tables with their hash indexes (ADR-0325) |
 | `runtime_database.cpp` | Exposes the live store to the rest of the server |
 
 ## Security rules — non-negotiable
@@ -81,3 +82,20 @@ was applied to which target) is derived from `events` and never persisted in a t
 re-derives it after hydration and the homeserver's startup reconciliation re-applies. What is durable is the redacted
 JSON of the target (`replace_event_json`), so no migration. The database module does not judge redactions (it cannot
 link `events`/`rooms`); `PersistentStore::redaction_observer` is how the homeserver does, after each stored event.
+
+## State-group tables (F-07, F-15, ADR-0325)
+
+`PersistentStore::state_groups`, `state_group_state` and `event_state_groups` are table classes, not vectors: they own their
+rows, show them read-only, and keep a hash index over them. Look up with `event_state_groups.state_group_of(event_id)`,
+`state_groups.find(id)` and `state_group_state.entries_of(id)` (or `find_event_state_group`, `find_state_group`,
+`read_state_group_full_state`); never loop over a whole table to find a key. Write only through `insert`, `insert_all`,
+`assign`, `erase_if` and `clear`, which keep the index right; a writer that bypasses them does not compile. Hydration and
+`reload_room` use `insert_all` / `erase_if`. The tables have no lock: a reader needs exclusion from writers (in main,
+`runtime.mutex`), and a view or `string_view` they return is valid only until the next write.
+
+## Retained PDUs (F-18, ADR-0326)
+
+`PersistentStore::deferred_pdu_awaits` indexes each retained PDU under the event IDs it is missing
+(`find_missing_event_references`, also what ingestion backfills by). `upsert_deferred_pdu` and `remove_deferred_pdu` keep it
+current; hydration calls `rebuild_deferred_pdu_awaits`. Find the rows waiting for an event with
+`take_deferred_pdus_awaiting`; never search `pdu_json` for an ID.

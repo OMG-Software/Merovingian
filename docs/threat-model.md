@@ -2055,7 +2055,10 @@ until the refresh).
   retries) frees it, a full set falls back to telling the sender the PDU was not
   kept, and each retry is itself bounded by the backfill budgets. Residual: until
   those rows expire the room cannot retain further unresolved PDUs, and a legitimate
-  sender then sees a per-PDU error for them.
+  sender then sees a per-PDU error for them. Waking the retained PDUs of a room after
+  each stored PDU is a lookup in an in-memory index of the events each row is missing
+  (F-18, ADR-0326), so the lock-held cost no longer grows with the bytes a peer
+  retains; it once searched every retained row's JSON as text.
 
 ### Worker EDU origin substitution (audit FED-12; review/combined pending)
 

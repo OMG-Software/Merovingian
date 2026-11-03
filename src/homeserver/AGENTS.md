@@ -436,6 +436,11 @@ client, sender or remote server controls, and per-user rows that requests scan m
   (1000) events to the visibility filter; never replace the seek with a walk of the room's events. The federation
   provider takes `runtime.mutex` itself (the other federation read providers do not), because the index changes
   under that mutex.
+- State lookups for ingestion and compose are the store's indexes (ADR-0325): `find_event_state_group`,
+  `read_state_group_full_state` and `make_store_event_lookup` cost the rows they return. Never loop over
+  `state_groups`, `state_group_state`, `event_state_groups` or `events` to find a key. A retained PDU is woken through
+  `take_deferred_pdus_awaiting` (ADR-0326), never by searching the retained JSON, and the retry job reads
+  `deferred_pdus` in place rather than copying it.
 - `/search` judges a room the user has left with `room_read_access_for` only when one of its
   events would be returned, so those scans stay bounded by the page (R16).
 - `expire_typing` groups the typing table by room in a fixed number of passes and hands each

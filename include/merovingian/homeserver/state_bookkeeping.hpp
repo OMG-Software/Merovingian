@@ -34,9 +34,10 @@ namespace merovingian::homeserver
 // Builds a store-backed events::EventLookupFn for the state-res v2
 // auth-chain walk (auth difference / v12 conflicted state subgraph):
 // resolves an event_id to a events::StateEventReference by parsing that
-// event's stored JSON. Indexes `store.events` by event_id once per call, so
-// callers that need many lookups (a single resolution) should build one
-// instance and reuse it rather than calling this per lookup.
+// event's stored JSON. Each call is one `EventTable::find` hash lookup
+// (ADR-0215, ADR-0325): building the function costs nothing, and a lookup costs
+// the event asked for, not the number of events the server stores. It reads
+// `store` on every call, so the store must outlive the function.
 //
 // This is the one lookup every state-group-aware code path uses; the
 // separate lookup that used to live in local_http_router.cpp's
