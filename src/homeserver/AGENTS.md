@@ -459,6 +459,15 @@ client, sender or remote server controls, and per-user rows that requests scan m
 - A client's device or key change goes through `record_shared_room_device_changes`: local observers only,
   deduplicated across rooms, one batch (ADR-0317). Never loop over a roster calling `record_device_list_change`;
   a federated room's roster is chosen by a remote server.
+- A fallback local event (ADR-0225) records the room's `current_state` as its state before, never the cited
+  extremity's own state (ADR-0373, F-40): the extremity is picked by stream order and may predate a ban. Do not
+  change `basis_for_new_event` to return the fork's state, or suppress only the diff in `store_event_with_bookkeeping`:
+  the next single-extremity `recompute_current_state` writes the recorded group.
+- `recompute_current_state` returns a `CurrentStateRecompute`, not a bool: `refused` (the extremities could not be
+  resolved) is logged and is not success (ADR-0375, F-49). Extremities in one state group are resolved as one state,
+  and `ingest_pdu_event` does not make an accepted event with no `state_key` a tip once the room holds
+  `max_state_groups` of them (`forward_extremities_stay_bounded`, ADR-0374). A state event is always a tip: a
+  ban or demotion must reach resolution. A new path that adds a tip for an inbound event asks the same question.
 - A local event's depth comes from `depth_after_prev_events` over the `prev_events` it was built on (ADR-0314).
   Never derive it from every row of a room: rejected rows keep the depth their sender chose.
 - `GET /rooms/{roomId}/timestamp_to_event` and the federation `timestamp_to_event` provider seek the per-room

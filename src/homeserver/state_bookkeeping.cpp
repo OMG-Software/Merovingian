@@ -13,6 +13,7 @@
 #include <memory>
 #include <tuple>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 
 namespace merovingian::homeserver
@@ -303,6 +304,8 @@ namespace
         std::vector<database::PersistentStateGroupStateEntry> entries{};
     };
     using ExtremityStateFn = std::function<std::optional<ExtremityState>(std::string const& extremity)>;
+    // The id of the group that holds an extremity's after-state: a lookup, no state read.
+    using ExtremityGroupFn = std::function<std::optional<std::string>(std::string const& extremity)>;
 
     [[nodiscard]] auto recorded_extremity_state(database::PersistentStore const& store, std::string const& extremity)
         -> std::optional<ExtremityState>
@@ -320,50 +323,89 @@ namespace
         return ExtremityState{*group_id, std::move(*full_state)};
     }
 
+    // What resolving a room's forward extremities came to.
+    struct ExtremityResolution final
+    {
+        // The resolved state; empty when there is nothing to resolve or the resolution was refused.
+        std::vector<database::PersistentStateGroupStateEntry> entries{};
+        // Why the extremities could not be resolved (F-49); nullopt when they were, or when there
+        // were none.
+        std::optional<std::string> refusal{};
+    };
+
+    [[nodiscard]] auto refused_resolution(std::string reason) -> ExtremityResolution
+    {
+        return {{}, std::move(reason)};
+    }
+
     // The resolution of the extremities' after-states, which current state is a
-    // cache of. nullopt means leave the cache as it is: no extremity, an
-    // extremity with no readable state, the work budget, or a resolution that
-    // fails closed. `make_lookup` is called only when there is something to
-    // resolve.
+    // cache of. A refusal (F-49) means leave the cache as it is: an extremity with
+    // no readable state, more distinct states than the limit, the work budget, or a
+    // resolution that fails closed. No extremity is not a refusal: nothing to
+    // resolve. `make_lookup` is called only when there is something to resolve.
+    //
+    // Extremities held in one state group are one state (ADR-0374): a message adds
+    // no state, so it shares its prev_event's group, and a thousand forks of
+    // messages resolve as one state, not a thousand.
     [[nodiscard]] auto resolve_extremity_states(std::string_view room_id, rooms::RoomVersionPolicy const& policy,
                                                 events::StateResolutionLimits const& limits,
                                                 std::vector<std::string> const& extremities,
-                                                ExtremityStateFn const& state_of,
+                                                ExtremityGroupFn const& group_of, ExtremityStateFn const& state_of,
                                                 std::function<events::EventLookupFn()> const& make_lookup)
-        -> std::optional<std::vector<database::PersistentStateGroupStateEntry>>
+        -> ExtremityResolution
     {
-        if (extremities.empty())
+        auto distinct = std::vector<std::string>{};
+        auto seen_groups = std::unordered_set<std::string>{};
+        for (auto const& extremity : extremities)
         {
-            return std::nullopt;
+            auto group_id = group_of(extremity);
+            if (!group_id.has_value())
+            {
+                return refused_resolution("extremity " + extremity + " has no readable state");
+            }
+            if (seen_groups.insert(std::move(*group_id)).second)
+            {
+                distinct.push_back(extremity);
+            }
         }
-        if (extremities.size() == 1U)
+        if (distinct.empty())
         {
-            auto state = state_of(extremities.front());
+            return {};
+        }
+        if (distinct.size() == 1U)
+        {
+            auto state = state_of(distinct.front());
             if (!state.has_value())
             {
-                return std::nullopt;
+                return refused_resolution("extremity " + distinct.front() + " has no readable state");
             }
-            return std::move(state->entries);
+            return {std::move(state->entries), std::nullopt};
         }
-        if (extremities.size() > limits.max_state_groups)
+        if (distinct.size() > limits.max_state_groups)
         {
-            return std::nullopt;
+            return refused_resolution(std::to_string(distinct.size()) + " distinct extremity states, more than the " +
+                                      std::to_string(limits.max_state_groups) + " that can be resolved");
         }
         auto const lookup = make_lookup();
         auto total_state_events = std::size_t{0U};
         auto groups = std::vector<events::StateGroup>{};
-        groups.reserve(extremities.size());
-        for (auto const& extremity : extremities)
+        groups.reserve(distinct.size());
+        for (auto const& extremity : distinct)
         {
             auto state = state_of(extremity);
-            if (!state.has_value() || !add_state_group_budget(state->entries.size(), limits, total_state_events))
+            if (!state.has_value())
             {
-                return std::nullopt;
+                return refused_resolution("extremity " + extremity + " has no readable state");
+            }
+            if (!add_state_group_budget(state->entries.size(), limits, total_state_events))
+            {
+                return refused_resolution("the extremities' states exceed the state-resolution budget");
             }
             auto refs = to_state_event_references(state->entries, lookup);
             if (!refs.has_value())
             {
-                return std::nullopt;
+                return refused_resolution("the state of extremity " + extremity +
+                                          " names an event missing from the store");
             }
             groups.push_back(events::StateGroup{state->state_group_id, std::move(*refs)});
         }
@@ -377,9 +419,31 @@ namespace
         auto const result = events::resolve_state_v2(request, policy);
         if (!result.resolved)
         {
-            return std::nullopt;
+            return refused_resolution("state resolution failed: " + result.reason);
         }
-        return to_state_group_entries(result.resolved_state);
+        return {to_state_group_entries(result.resolved_state), std::nullopt};
+    }
+
+    void log_refused_resolution(std::string_view room_id, std::string_view reason)
+    {
+        observability::log_diagnostic(
+            "rooms", "state.current.refused",
+            {
+                {"room_id", std::string{room_id}, false},
+                {"reason",  std::string{reason},  false}
+        },
+            observability::LogEventSeverity::warning);
+    }
+
+    // The room's cached current state as state-group entries, in one pass over the room's rows.
+    [[nodiscard]] auto current_state_entries(database::PersistentStore const& store, std::string_view room_id)
+        -> std::vector<database::PersistentStateGroupStateEntry>
+    {
+        auto entries = std::vector<database::PersistentStateGroupStateEntry>{};
+        database::for_each_room_state_row(store, room_id, [&entries](database::PersistentStateEvent const& row) {
+            entries.push_back({{}, row.event_type, row.state_key, row.event_id});
+        });
+        return entries;
     }
 
     [[nodiscard]] auto state_entry_key(std::string_view event_type, std::string_view state_key) -> std::string
@@ -394,32 +458,33 @@ namespace
 
 auto recompute_current_state(database::PersistentStore& store, std::string_view room_id,
                              rooms::RoomVersionPolicy const& policy, events::StateResolutionLimits const& limits)
-    -> bool
+    -> CurrentStateRecompute
 {
-    auto const resolved = resolve_extremity_states(
+    auto resolution = resolve_extremity_states(
         room_id, policy, limits, database::find_forward_extremities(store, room_id),
+        [&store](std::string const& extremity) {
+            return database::find_event_state_group(store, extremity);
+        },
         [&store](std::string const& extremity) {
             return recorded_extremity_state(store, extremity);
         },
         [&store] {
             return make_store_event_lookup(store);
         });
-    if (!resolved.has_value())
+    if (resolution.refusal.has_value())
     {
-        return true; // leave the cached current state untouched
+        // F-49: leave the cached current state untouched, and say so.
+        log_refused_resolution(room_id, *resolution.refusal);
+        return {CurrentStateRecomputeStatus::refused, std::move(*resolution.refusal)};
     }
 
-    // The room's current state in one pass over the table, so each resolved entry is a lookup and
+    // The room's current state in one pass over the room's rows, so each resolved entry is a lookup and
     // not a pass of its own.
     auto current = std::unordered_map<std::string, std::string>{};
-    for (auto const& row : store.state)
-    {
-        if (row.room_id == room_id)
-        {
-            current[state_entry_key(row.event_type, row.state_key)] = row.event_id;
-        }
-    }
-    for (auto const& entry : *resolved)
+    database::for_each_room_state_row(store, room_id, [&current](database::PersistentStateEvent const& row) {
+        current[state_entry_key(row.event_type, row.state_key)] = row.event_id;
+    });
+    for (auto const& entry : resolution.entries)
     {
         if (auto const held = current.find(state_entry_key(entry.event_type, entry.state_key));
             held != current.end() && held->second == entry.event_id)
@@ -428,10 +493,23 @@ auto recompute_current_state(database::PersistentStore& store, std::string_view 
         }
         if (!database::store_state(store, {std::string{room_id}, entry.event_type, entry.state_key, entry.event_id}))
         {
-            return false;
+            return {CurrentStateRecomputeStatus::write_failed, {}};
         }
     }
-    return true;
+    return {};
+}
+
+auto forward_extremities_stay_bounded(database::PersistentStore const& store, std::string_view room_id,
+                                      std::vector<std::string> const& prev_event_ids,
+                                      events::StateResolutionLimits const& limits) -> bool
+{
+    auto const extremities = database::find_forward_extremities(store, room_id);
+    auto const replaced = static_cast<std::size_t>(
+        std::ranges::count_if(prev_event_ids, [&extremities](std::string const& prev_event_id) {
+            return std::ranges::find(extremities, prev_event_id) != extremities.end();
+        }));
+    // An event that cites a tip takes its place and the set does not grow.
+    return replaced > 0U || extremities.size() < limits.max_state_groups;
 }
 
 auto forward_extremities_for_new_event(database::PersistentStore const& store, std::string_view room_id)
@@ -492,9 +570,16 @@ auto basis_for_new_event(database::PersistentStore const& store, std::string_vie
         return {true, std::move(extremities), std::move(all.state), {}, {}};
     }
 
-    // ADR-0225: the state across every extremity cannot be computed, so build
-    // on one alone, the newest this server stored, and retire the rest. Every
+    // ADR-0225: the state across every extremity cannot be computed, so cite
+    // one alone, the newest this server stored, and retire the rest. Every
     // later local event would otherwise fail on the same resolution.
+    //
+    // ADR-0373 (F-40): the event's state before is the room's cached current
+    // state, not that extremity's own. The extremity is chosen by stream order,
+    // which the sender of a fork influences, and a fork that predates a ban or a
+    // demotion has the old state; the retired tips may hold the revocation, and
+    // current state still does. The state group recorded for the event, and
+    // every recompute of a single extremity after it, then keep the revocation.
     if (extremities.size() > 1U)
     {
         auto newest_first = std::vector<std::pair<std::uint64_t, std::string>>{};
@@ -517,16 +602,26 @@ auto basis_for_new_event(database::PersistentStore const& store, std::string_vie
             }
             auto retired = database::find_forward_extremities(store, room_id);
             std::erase(retired, candidate);
-            observability::log_diagnostic("rooms", "event.prev_events.fallback",
-                                          {
-                                              {"room_id",     std::string{room_id},               false},
-                                              {"extremities", std::to_string(extremities.size()), false},
-                                              {"prev_event",  candidate,                          false},
-                                              {"retired",     std::to_string(retired.size()),     false},
-                                              {"reason",      all.reason,                         false}
+            // A room with no current state row is degenerate (every room has its create event);
+            // the extremity's own state is all there is to build on.
+            auto state_before = current_state_entries(store, room_id);
+            auto const from_current_state = !state_before.empty();
+            if (!from_current_state)
+            {
+                state_before = std::move(alone.state);
+            }
+            observability::log_diagnostic(
+                "rooms", "event.prev_events.fallback",
+                {
+                    {"room_id",      std::string{room_id},                                false},
+                    {"extremities",  std::to_string(extremities.size()),                  false},
+                    {"prev_event",   candidate,                                           false},
+                    {"retired",      std::to_string(retired.size()),                      false},
+                    {"state_before", from_current_state ? "current_state" : "prev_event", false},
+                    {"reason",       all.reason,                                          false}
             },
-                                          observability::LogEventSeverity::warning);
-            return {true, {candidate}, std::move(alone.state), std::move(retired), {}};
+                observability::LogEventSeverity::warning);
+            return {true, {candidate}, std::move(state_before), std::move(retired), {}};
         }
     }
 
@@ -582,8 +677,15 @@ auto store_event_with_bookkeeping(database::PersistentStore& store, rooms::RoomV
         extremities_after.push_back(event_id);
     }
     auto const& pending = prepared_event->event;
-    auto const resolved = resolve_extremity_states(
+    auto const resolution = resolve_extremity_states(
         room_id, policy, limits, extremities_after,
+        [&](std::string const& extremity) -> std::optional<std::string> {
+            if (extremity == event_id)
+            {
+                return prepared_group->state_group_id;
+            }
+            return database::find_event_state_group(store, extremity);
+        },
         [&](std::string const& extremity) -> std::optional<ExtremityState> {
             if (extremity == event_id)
             {
@@ -605,19 +707,15 @@ auto store_event_with_bookkeeping(database::PersistentStore& store, rooms::RoomV
     // Current state as it will be once the event's own row is written, so the
     // diff below writes only what the resolution changes beyond it.
     auto current = std::unordered_map<std::string, std::string>{};
-    for (auto const& row : store.state)
-    {
-        if (row.room_id == room_id)
-        {
-            current[state_entry_key(row.event_type, row.state_key)] = row.event_id;
-        }
-    }
+    database::for_each_room_state_row(store, room_id, [&current](database::PersistentStateEvent const& row) {
+        current[state_entry_key(row.event_type, row.state_key)] = row.event_id;
+    });
     if (prepared_event->state.has_value())
     {
         current[state_entry_key(prepared_event->state->event_type, prepared_event->state->state_key)] = event_id;
     }
     auto current_state_changes = std::vector<database::PreparedCurrentState>{};
-    for (auto const& entry : resolved.value_or(std::vector<database::PersistentStateGroupStateEntry>{}))
+    for (auto const& entry : resolution.entries)
     {
         auto const key = state_entry_key(entry.event_type, entry.state_key);
         auto const existing = current.find(key);
@@ -660,7 +758,13 @@ auto store_event_with_bookkeeping(database::PersistentStore& store, rooms::RoomV
     {
         database::apply_current_state(store, change);
     }
-    return {true, {}, {}};
+    if (resolution.refusal.has_value())
+    {
+        // F-49: the event is stored, and current state holds only its own row beyond what it held.
+        log_refused_resolution(room_id, *resolution.refusal);
+        return {true, {}, {}, true, *resolution.refusal};
+    }
+    return {true, {}, {}, false, {}};
 }
 
 auto store_local_event(database::PersistentStore& store, rooms::RoomVersionPolicy const& policy,

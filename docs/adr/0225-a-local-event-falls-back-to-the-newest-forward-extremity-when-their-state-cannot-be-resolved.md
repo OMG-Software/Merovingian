@@ -1,6 +1,6 @@
 # A local event falls back to the newest forward extremity when their state cannot be resolved
 
-* Status: accepted
+* Status: accepted; the state-before decision and the consequences below are superseded by [ADR-0373](0373-a-fallback-event-records-the-rooms-current-state-as-its-state-before.md)
 * Deciders: James Chapman
 * Date: 2026-10-25
 
@@ -71,6 +71,10 @@ cites only this one. When no extremity has a readable state, it logs
   `event.persist.failed`, `room.leave.failed`, `room.join.failed`).
 
 ### Negative Consequences
+
+Superseded by [ADR-0373](0373-a-fallback-event-records-the-rooms-current-state-as-its-state-before.md) (F-40): the
+second and third points below were wrong. The event's state before is the room's current state, so a
+retired fork's ban is kept, and a remote server could rewrite current state, not only steer the fork.
 
 * The retired forks are not merged by this server's next event. Another server that
   still holds them as tips merges them itself; this server's events stop citing them.

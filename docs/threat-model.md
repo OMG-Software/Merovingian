@@ -2681,9 +2681,26 @@ Security audit run-1 (2026-10-20) found six LOW issues, all fixed in 0.12.34.
   `tests/conformance/test_event_depth_conformance.cpp`.
 - **A non-state event in `auth_events` could stop state resolution (audit run-2 F-05).** A remote member could name
   one where selection expects room state; the auth-chain walk then failed for any conflict reaching it.
-  **Mitigation:** such an entry is a disallowed selection and the naming event is rejected. **Residual risk:** the
-  ADR-0225 fallback still replaces current state with one fork whenever resolution fails another way, such as the
-  state budget; audit run-2 tracks this as `state.new-event-fallback-rewrites-current-state-from-attacker-chosen-fork`.
+  **Mitigation:** such an entry is a disallowed selection and the naming event is rejected. Related: a fallback event no longer
+  replaces current state with one fork (F-40, below).
+- **A resident member could undo a ban through the ADR-0225 fallback (audit run-2 F-40).** When state resolution across a
+  room's forward extremities failed (the state budget, or 20 forks in a room of 6554 state events), the next local event
+  cited the newest tip and retired the rest, and its state before was that one fork's. A fork that predated a ban held the
+  banned user's old join, which was written over the ban in current state and again by the next accepted PDU, so the
+  banned user's next event was accepted. **Mitigation:** the fallback event's state before is the room's current state,
+  so its state group and every later single-extremity recompute keep the revocation (ADR-0373). Tests: `[f40]`.
+  **Residual risk:** the state recorded for a fallback event can differ from what a peer derives from its `prev_events`
+  alone; current state is itself last-accepted-writer-wins while a recomputation is refused (next entry).
+- **A refused recomputation of current state looked like success, and a message flood could force it (audit run-2
+  F-49).** `recompute_current_state` returned true when the forward extremities could not be resolved; with more than
+  `max_state_groups` tips (a member citing one old event from many messages) a state event resolution would have
+  reverted, such as a demoted moderator's, stayed current. **Mitigation:** extremities that share a state group resolve as
+  one, so message floods cost one state; an accepted event with no `state_key` is not made a tip once the room holds
+  `max_state_groups` of them (ADR-0374); a refusal is a distinct status, logged at warning level, and callers handle it
+  (ADR-0375). Tests: `[f49]`. **Residual risk:** more than `max_state_groups` distinct state tips (one accepted state event
+  each, such as profile changes) or a room whose state exceeds `max_total_state_events` still refuses; current state is then
+  the cache plus each accepted event's own row, and a state event resolution would revert can stay current until the tips
+  are back within budget. Freezing current state instead would drop a ban, so it is not done.
 - **A `/sync` token could rewrite the server-wide stream counter (audit run-2 F-03).** Raising it to 2^64-1 made it wrap,
   and other users' to-device messages were deleted undelivered. **Mitigation:** no client input moves the counter, a
   token ahead of the streams is an initial sync, and the allocator refuses to wrap (ADR-0315).

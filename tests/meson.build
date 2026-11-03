@@ -293,6 +293,7 @@ shell = find_program('sh')
       'unit/test_security_audit_m01_membership_auth.cpp',
       'unit/test_security_audit_m03_state_authz.cpp',
       'unit/test_security_audit_fed_6_8_11.cpp',
+      'unit/test_security_audit_state_fallback.cpp',
       'unit/test_security_issues_460_463.cpp',
       'unit/test_file_descriptor.cpp',
       'unit/test_file_metadata.cpp',
