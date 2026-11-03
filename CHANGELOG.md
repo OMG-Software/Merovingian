@@ -9,6 +9,11 @@
   Fedora 45 with OpenSSL 4 the package stopped installing on Fedora 44 (`nothing provides libcrypto.so.4`). An RPM is
   now published for Fedora 44 and for `fedora:latest` (ADR-0376).
 
+- **The refusal to run an unsandboxed federation worker off Linux now gives advice that works.** It suggested
+  `federation.worker.enabled=false`, a key the config parser rejects. It now offers
+  `security.federation.enabled=false`, which runs a non-federating server with no worker. `docs/hardening.md` also said
+  federation degrades to 503 in this case, when the server exits with status 80.
+
 ### CI
 
 - The FreeBSD package job and the Fedora RPM job each install the package they built and boot the installed server

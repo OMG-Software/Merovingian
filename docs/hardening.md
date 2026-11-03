@@ -532,11 +532,13 @@ separate process on the same host:
   the worker logged "runtime hardening applied" and ran fully unsandboxed.
   It now returns a fail-closed rejection
   (`worker_hardening_unavailable_decision()`) naming the unavailable
-  controls, and the worker refuses to start; the `WorkerSupervisor` treats
-  this as a crash-looping child and federation degrades to 503 rather than
+  controls, and the worker refuses to start. The server's first spawn then
+  fails its IPC handshake and the server exits with status 80, rather than
   ever accepting unsandboxed federation traffic. An operator who accepts the
   risk can still run the worker there by setting
-  `federation.worker.apply_hardening=false` explicitly.
+  `federation.worker.apply_hardening=false` explicitly, or run a
+  non-federating server, which starts no worker, with
+  `security.federation.enabled=false`.
 * **ASan exit-time leak check disabled in the worker (#319):** the worker
   filter denies `ptrace` — an escalation primitive a compromised worker must
   never possess. AddressSanitizer's exit-time LeakSanitizer suspends all
@@ -892,9 +894,10 @@ in-process syscalls:
   sequence there. As of 0.12.1 this is a documented, fail-closed gap rather
   than a silent one: `federation.worker.apply_hardening=true` (the
   production default) makes the worker refuse to start on those platforms
-  instead of running unsandboxed. An operator can opt into running an
-  unsandboxed worker there with `federation.worker.apply_hardening=false`,
-  relying solely on service-manager confinement.
+  instead of running unsandboxed, and with federation enabled the server exits
+  too. An operator can opt into running an unsandboxed worker there with
+  `federation.worker.apply_hardening=false`, relying solely on service-manager
+  confinement, or turn federation off with `security.federation.enabled=false`.
 
 OpenBSD `pledge`/`unveil` and FreeBSD `cap_enter()` are fully wired and exercised
 in CI. The startup readiness gate will not pass until every hardening check

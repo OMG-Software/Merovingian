@@ -164,9 +164,12 @@ below or build from source.
 
 On FreeBSD, the federation worker's in-process sandbox is not available, so with
 the default `federation.worker.apply_hardening=true` the worker refuses to start
-and the server exits. Set `federation.worker.apply_hardening=false` to accept a
-worker confined only by the service manager
-([ADR-0041](adr/0041-refuse-to-start-the-federation-worker-unsandboxed.md)).
+and the server exits with status 80. Set
+`federation.worker.apply_hardening=false` to accept a worker confined only by the
+service manager
+([ADR-0041](adr/0041-refuse-to-start-the-federation-worker-unsandboxed.md)), or
+`security.federation.enabled=false` to run a non-federating server, which starts
+no worker.
 
 Packages create the `merovingian` system user and group, install the systemd
 unit, and stage the example configuration at `/etc/merovingian/

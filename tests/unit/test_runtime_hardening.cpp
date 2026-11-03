@@ -1,10 +1,12 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+#include "merovingian/config/config_parser.hpp"
 #include "merovingian/platform/runtime_hardening.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
 #include <algorithm>
+#include <regex>
 #include <string>
 #include <vector>
 
@@ -662,6 +664,26 @@ SCENARIO("Worker hardening's unavailable-platform decision fails closed instead 
                 {
                     REQUIRE(decision.reason.find("Linux") != std::string::npos);
                     REQUIRE(decision.reason.find("federation.worker.apply_hardening") != std::string::npos);
+                }
+
+                AND_THEN("it offers running without federation, which starts no worker, and every setting it "
+                         "names is one the config parser accepts, because the parser rejects an unknown key")
+                {
+                    REQUIRE(decision.reason.find("security.federation.enabled=false") != std::string::npos);
+
+                    auto const setting = std::regex{R"(([a-z_]+(?:\.[a-z_]+)+)=(?:true|false))"};
+                    auto named = std::vector<std::string>{};
+                    for (auto match = std::sregex_iterator{decision.reason.begin(), decision.reason.end(), setting};
+                         match != std::sregex_iterator{}; ++match)
+                    {
+                        named.push_back((*match)[1].str());
+                        auto const parsed = merovingian::config::parse_key_value_config(match->str() + "\n");
+                        auto const is_unknown = [&](auto const& finding) {
+                            return finding.field == named.back() && finding.message.contains("unknown");
+                        };
+                        REQUIRE_FALSE(std::ranges::any_of(parsed.findings, is_unknown));
+                    }
+                    REQUIRE(named.size() >= 2U);
                 }
             }
         }

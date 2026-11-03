@@ -226,9 +226,8 @@ Retained as the record of what was verified and when.
   function anywhere in the suite. Now returns a fail-closed rejection
   (`worker_hardening_unavailable_decision()`) naming the unavailable controls
   and the `federation.worker.apply_hardening=false` escape hatch; the worker
-  process refuses to start rather than run unsandboxed, so the
-  `WorkerSupervisor` sees a failing child and federation degrades to 503
-  instead of ever accepting unsandboxed traffic. `MEROVINGIAN_TEST_DISABLE_HARDENING`
+  process refuses to start rather than run unsandboxed, and the server exits
+  when its first spawn fails, instead of ever accepting unsandboxed traffic. `MEROVINGIAN_TEST_DISABLE_HARDENING`
   is unaffected (a separate escape hatch, unrelated to this function).
 
 - ~~Add signed release artifacts, reproducible builds, dependency pinning policy,
