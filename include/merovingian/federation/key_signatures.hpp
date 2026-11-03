@@ -11,6 +11,7 @@
 #include <string>
 #include <string_view>
 #include <utility>
+#include <vector>
 
 namespace merovingian::federation
 {
@@ -35,6 +36,18 @@ namespace merovingian::federation
 // `keys` property name with the `<algorithm>:` prefix removed. std::nullopt
 // unless `keys` holds exactly one property of that form.
 [[nodiscard]] auto cross_signing_key_id(canonicaljson::Object const& key_object) -> std::optional<std::string>;
+
+// Every key ID a cross-signing key object names: each `keys` property name with
+// the `<algorithm>:` prefix removed. A device ID may not equal any of them
+// (Client-Server API, `POST /login` and `POST /keys/device_signing/upload`).
+// Empty when `keys` is absent or holds no property of that form.
+[[nodiscard]] auto cross_signing_key_ids(canonicaljson::Object const& key_object) -> std::vector<std::string>;
+
+// True when `device_id` is the ID of one of `user_id`'s stored cross-signing
+// keys (master, self-signing or user-signing). One pass over the cross-signing
+// key rows; a user holds at most three.
+[[nodiscard]] auto device_id_names_cross_signing_key(database::PersistentStore const& store, std::string_view user_id,
+                                                     std::string_view device_id) -> bool;
 
 // Merges into `key_object`'s `signatures` every stored signature on
 // (`target_user_id`, `target_key_id`) that `viewer_user_id` may see. Device

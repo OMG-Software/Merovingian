@@ -568,6 +568,117 @@ namespace
         }
     }
 
+    // The members of `before` (device IDs `user_id` owned when a request began) that the device table
+    // no longer holds: the devices a logout or deletion really removed. One pass over the table.
+    [[nodiscard]] auto devices_removed_since(database::PersistentStore const& store, std::string_view user_id,
+                                             std::vector<std::string> const& before) -> std::vector<std::string>
+    {
+        auto remaining = std::set<std::string_view>{};
+        for (auto const& device : store.devices)
+        {
+            if (device.user_id == user_id)
+            {
+                remaining.insert(device.device_id);
+            }
+        }
+        auto removed = std::vector<std::string>{};
+        for (auto const& device_id : before)
+        {
+            if (!remaining.contains(device_id))
+            {
+                removed.push_back(device_id);
+            }
+        }
+        return removed;
+    }
+
+    // The IDs of `user_id`'s devices, in one pass over the device table.
+    [[nodiscard]] auto device_ids_of_user(database::PersistentStore const& store, std::string_view user_id)
+        -> std::vector<std::string>
+    {
+        auto ids = std::vector<std::string>{};
+        for (auto const& device : store.devices)
+        {
+            if (device.user_id == user_id)
+            {
+                ids.push_back(device.device_id);
+            }
+        }
+        return ids;
+    }
+
+    // Tells each server in `destinations` that `device_ids` of `user_id` are gone: one
+    // m.device_list_update EDU per device and server with `deleted: true` and no keys (Matrix spec v1.19
+    // SS API, Device Management: servers "must send `m.device_list_update` EDUs to all the servers who
+    // share a room with a given local user ... whenever that user's device list changes (i.e. for new or
+    // deleted devices ...)"). Every removal path - DELETE /devices/{deviceId}, POST /delete_devices,
+    // POST /logout and POST /logout/all - calls this once with the devices it removed.
+    //
+    // The caller computes `destinations` (remote_servers_for_user) before the removal, and calls this with
+    // runtime.mutex held. It only enqueues: no network I/O. Cost is the devices removed times the servers,
+    // each enqueue bounded by the dispatch queue's per-destination share (ADR-0177).
+    //
+    // Each EDU takes its own stream position from the sync counter that numbers every other device-list
+    // change, so `stream_id` is unique for the user. `prev_id` names the EDU announced just before it in
+    // this call, so a receiver that lost one sees an unknown prev_id and resyncs through
+    // /user/keys/query; the first EDU of a call has no prior EDU to name, as with every other
+    // m.device_list_update this server sends.
+    auto announce_deleted_devices(ClientServerRuntime& rt, std::string_view user_id,
+                                  std::vector<std::string> const& device_ids,
+                                  std::vector<std::string> const& destinations) -> void
+    {
+        if (destinations.empty() || device_ids.empty())
+        {
+            return;
+        }
+        auto& store = rt.homeserver.database.persistent_store;
+        auto previous = std::vector<std::int64_t>{};
+        auto refused = std::size_t{0U};
+        for (auto const& device_id : device_ids)
+        {
+            auto stream_id = std::int64_t{0};
+            try
+            {
+                stream_id = static_cast<std::int64_t>(database::allocate_sync_stream_id(store));
+            }
+            catch (std::overflow_error const&)
+            {
+                // At the counter's ceiling no position is left (ADR-0315). The removal stands.
+                log_diagnostic(
+                    "device_list.deletion_unannounced",
+                    {
+                        {"user_id", std::string{user_id},              false},
+                        {"reason",  "the sync stream counter is full", false}
+                },
+                    observability::LogEventSeverity::warning);
+                return;
+            }
+            auto const content =
+                federation::build_device_deleted_update_content(user_id, device_id, stream_id, previous);
+            previous = {stream_id};
+            if (!content.has_value())
+            {
+                continue;
+            }
+            for (auto const& destination : destinations)
+            {
+                if (!dispatch_edu_to_server(rt.homeserver, destination, "m.device_list_update", *content))
+                {
+                    ++refused;
+                }
+            }
+        }
+        if (refused > 0U)
+        {
+            log_diagnostic("device_list.deletion_refused",
+                           {
+                               {"user_id", std::string{user_id},    false},
+                               {"refused", std::to_string(refused), false}
+            },
+                           observability::LogEventSeverity::warning);
+        }
+    }
+
     // Generate a 32-character lowercase hex filter ID from 16 random bytes.
     // Delegates to the crypto module so libsodium calls stay inside src/crypto.
     [[nodiscard]] auto generate_filter_id() -> std::string
@@ -11228,6 +11339,38 @@ namespace
         return held.size() + added.size() > rt.limits.max_key_signatures_per_user;
     }
 
+    // Spec (POST /keys/device_signing/upload, 403): "The public key of one of the keys is the same as
+    // one of the user's device IDs". True when any uploaded master, self-signing or user-signing key
+    // has a key ID that is the ID of a device `user` owns. One pass over the device table, whatever the
+    // upload holds (at most three keys). Checked before anything is stored, so a refused upload leaves
+    // the user's cross-signing keys as they were.
+    [[nodiscard]] auto cross_signing_upload_names_a_device(ClientServerRuntime const& rt, std::string_view user,
+                                                           canonicaljson::Object const& body) -> bool
+    {
+        auto key_ids = std::set<std::string, std::less<>>{};
+        for (auto const* key_type : {"master_key", "self_signing_key", "user_signing_key"})
+        {
+            auto const* key = object_member(body, key_type);
+            auto const* key_object = key == nullptr ? nullptr : std::get_if<canonicaljson::Object>(&key->storage());
+            if (key_object == nullptr)
+            {
+                continue;
+            }
+            for (auto& key_id : federation::cross_signing_key_ids(*key_object))
+            {
+                key_ids.insert(std::move(key_id));
+            }
+        }
+        if (key_ids.empty())
+        {
+            return false;
+        }
+        return std::ranges::any_of(rt.homeserver.database.persistent_store.devices,
+                                   [&key_ids, user](database::PersistentDevice const& device) {
+                                       return device.user_id == user && key_ids.contains(device.device_id);
+                                   });
+    }
+
     [[nodiscard]] auto store_key_api_payload(ClientServerRuntime& rt, auth::KeyApiEndpoint endpoint,
                                              std::string_view user, std::string_view /*device_id*/,
                                              LocalHttpRequest const& req, std::string_view version) -> bool
@@ -11638,6 +11781,10 @@ namespace
                                std::string{key_type} + " may be at most " +
                                    std::to_string(max_uploaded_key_document_bytes) + " bytes");
                 }
+            }
+            if (cross_signing_upload_names_a_device(rt, user, *cs_body))
+            {
+                return err(403U, "M_FORBIDDEN", "a cross-signing key may not have the ID of one of the user's devices");
             }
             if (!database::sync_stream_has_write_reserve(rt.homeserver.database.persistent_store) ||
                 !store_key_api_payload(rt, route.endpoint, user, device_id, req, {}))
@@ -13559,11 +13706,21 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
         // The device the token belongs to, read before logout revokes the token: logout also deletes
         // the device (spec POST /logout), and the runtime's device list is this layer's to update.
         auto const logged_out_session = authenticated_session(rt.homeserver, req.access_token);
+        // The servers to tell, read before the device is removed.
+        auto const destinations = logged_out_session.has_value()
+                                      ? remote_servers_for_user(rt.homeserver, logged_out_session->user_id)
+                                      : std::vector<std::string>{};
         auto const r = call_local(req);
         if (r.status == 200U && logged_out_session.has_value())
         {
             erase_runtime_device(rt, logged_out_session->user_id, logged_out_session->device_id);
             std::ignore = record_shared_room_device_changes(rt, logged_out_session->user_id, NotifyOwnDevices::no);
+            // logout deletes the device, but only announce it if the row really went.
+            announce_deleted_devices(rt, logged_out_session->user_id,
+                                     devices_removed_since(rt.homeserver.database.persistent_store,
+                                                           logged_out_session->user_id,
+                                                           {logged_out_session->device_id}),
+                                     destinations);
         }
         // actor is not yet resolved here (pre-auth gate); log token presence only
         log_diagnostic(r.status == 200U ? "account.logout.accepted" : "account.logout.rejected",
@@ -14389,6 +14546,9 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
 
     if (req.method == "POST" && target_path(req.target) == "/_matrix/client/v3/logout/all")
     {
+        // The devices and the servers to tell, read before the devices are removed.
+        auto const devices_before = device_ids_of_user(rt.homeserver.database.persistent_store, *user);
+        auto const destinations = remote_servers_for_user(rt.homeserver, *user);
         auto const r = logout_all_local_user(rt.homeserver, req.access_token);
         if (r.ok)
         {
@@ -14397,6 +14557,9 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                 return device.user_id == *user;
             });
             std::ignore = record_shared_room_device_changes(rt, *user, NotifyOwnDevices::no);
+            announce_deleted_devices(
+                rt, *user, devices_removed_since(rt.homeserver.database.persistent_store, *user, devices_before),
+                destinations);
         }
         log_diagnostic(r.ok ? "account.logout_all.accepted" : "account.logout_all.rejected",
                        {
@@ -16146,6 +16309,8 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             return dispatch_resp(req, rt, 401U, uia_password_failure_body(uia_challenge));
         }
         auto const device_id = request_path.substr(dev_prefix.size());
+        // The servers to tell, read before the device is removed.
+        auto const destinations = remote_servers_for_user(rt.homeserver, *user);
         auto const result = delete_local_device(rt.homeserver, *user, device_id);
         if (!result.ok)
         {
@@ -16154,6 +16319,7 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
         }
         erase_runtime_device(rt, *user, device_id);
         std::ignore = record_shared_room_device_changes(rt, *user, NotifyOwnDevices::no);
+        announce_deleted_devices(rt, *user, {std::string{device_id}}, destinations);
         return dispatch_resp(req, rt, 200U, "{}");
     }
     if (req.method == "POST" && req.target == "/_matrix/client/v3/delete_devices")
@@ -16204,7 +16370,10 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             }
             return dispatch_resp(req, rt, 401U, uia_password_failure_body(uia_challenge));
         }
-        auto deleted_any = false;
+        // The servers to tell, read before any device is removed.
+        auto const destinations = remote_servers_for_user(rt.homeserver, *user);
+        auto deleted_ids = std::vector<std::string>{};
+        auto refusal = std::optional<OperationResult>{};
         for (auto const& device_id : devices)
         {
             auto const result = delete_local_device(rt.homeserver, *user, device_id);
@@ -16214,15 +16383,22 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                 {
                     continue;
                 }
-                return dispatch_err(req, rt, result.status, result.status == 400U ? "M_BAD_JSON" : "M_UNKNOWN",
-                                    result.reason);
+                refusal = result;
+                break;
             }
             erase_runtime_device(rt, *user, device_id);
-            deleted_any = true;
+            deleted_ids.push_back(device_id);
         }
-        if (deleted_any)
+        // Devices deleted before a refusal stay deleted, so they are told about too.
+        if (!deleted_ids.empty())
         {
             std::ignore = record_shared_room_device_changes(rt, *user, NotifyOwnDevices::no);
+            announce_deleted_devices(rt, *user, deleted_ids, destinations);
+        }
+        if (refusal.has_value())
+        {
+            return dispatch_err(req, rt, refusal->status, refusal->status == 400U ? "M_BAD_JSON" : "M_UNKNOWN",
+                                refusal->reason);
         }
         return dispatch_resp(req, rt, 200U, "{}");
     }

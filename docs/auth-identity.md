@@ -264,7 +264,13 @@ production-gated.
   /devices/{deviceId}` sends an `m.device_list_update` for the renamed device to every server
   that shares a room with the user, and the EDU and every published copy of the device's keys
   carry its current display name (`unsigned.device_display_name`), not the name it had when the
-  keys were uploaded. Per-algorithm `device_one_time_keys_count` is wired into
+  keys were uploaded. A deleted or logged-out device is announced the same way
+  (`announce_deleted_devices()`): `DELETE /devices/{deviceId}`, `POST /delete_devices`,
+  `POST /logout` and `POST /logout/all` each send one `m.device_list_update` per removed device and
+  server, with `deleted: true`, no keys, a `stream_id` of its own from the sync counter, and the
+  previous EDU of the call in `prev_id`. The servers are read before the removal and the EDUs are
+  only enqueued. Account deactivation deletes no device, so it announces none.
+  Per-algorithm `device_one_time_keys_count` is wired into
   `/sync` as well. A `device_lists.changed` self-notification is recorded at two trigger points
   so a user's own devices discover each other without relying on room co-membership: on
   `POST /_matrix/client/v3/keys/upload` (key upload) and on `POST /_matrix/client/v3/login`
@@ -289,6 +295,12 @@ production-gated.
     cross-signing key by its unpadded base64 public key, with no `ed25519:` prefix
     (`cross_signing_key_id()`). Signatures on master keys used to be looked up with the prefix
     and were never found.
+  - **A device ID is never a cross-signing key ID.** `POST /login` (every path that creates a
+    device: password, `m.login.token`, appservice login, registration) answers `403 M_FORBIDDEN` for
+    a `device_id` equal to a key ID of the account's stored master, self-signing or user-signing key
+    (`device_id_names_cross_signing_key()`), and `POST /keys/device_signing/upload` answers `403`,
+    storing nothing, for a key whose ID is the ID of one of the uploader's devices. A generated device
+    ID is 32 hex characters, a key ID 43 base64 characters, so a generated ID cannot collide.
   - **Remote users' keys are proxied, not cached (ADR-0061).** `/keys/query` for a remote user
     calls the user's server's `/user/keys/query` and returns its `device_keys`, `master_keys`
     and `self_signing_keys`. `accept_remote_key_query_response()` keeps only the users that
