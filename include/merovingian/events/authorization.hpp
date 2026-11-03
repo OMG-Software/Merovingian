@@ -9,6 +9,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 namespace merovingian::events
@@ -57,6 +58,75 @@ struct AuthEventMap final
 [[nodiscard]] auto authorize_event_against_auth_events(canonicaljson::Value const& event,
                                                        rooms::RoomVersionPolicy const& policy,
                                                        AuthEventMap const& auth_events) -> EventAuthorizationDecision;
+
+// A join's content.join_authorised_via_users_server, or empty. Spec "Auth events selection": "If
+// membership is join, content.join_authorised_via_users_server is present, and the room version
+// supports restricted rooms, then the m.room.member event with state_key matching
+// content.join_authorised_via_users_server". No room-version gate here, as in state resolution: only
+// the restricted join branch reads the member event, and no pre-v8 room reaches it.
+[[nodiscard]] auto join_authorising_user(canonicaljson::Value const& event) -> std::string;
+// An invite's content.third_party_invite.signed.token, or empty.
+[[nodiscard]] auto third_party_invite_token(canonicaljson::Value const& event) -> std::string;
+// The (type, state_key) pairs an event's auth_events MAY name, per spec "Auth events selection"
+// (server-server-api.md).
+[[nodiscard]] auto permitted_auth_event_keys(canonicaljson::Value const& pdu, rooms::RoomVersionPolicy const& policy,
+                                             std::string_view event_type, std::string_view sender,
+                                             std::optional<std::string> const& state_key,
+                                             std::string_view third_party_invite_token)
+    -> std::vector<std::pair<std::string, std::string>>;
+
+// What decides which slots of an AuthEventMap a state event fills, for the event being judged.
+struct AuthEventSlots final
+{
+    std::string_view sender{};
+    std::string_view target_state_key{};
+    std::string_view event_type{};
+    std::string_view third_party_invite_token{};
+    // A join's content.join_authorised_via_users_server (join_authorising_user). The authorising
+    // server's signature is verified before any of this, on every ingestion path (ADR-0171); the
+    // map only lets the membership and power checks run.
+    std::string_view authorising_user{};
+};
+
+// Puts one state event into the slots of `map` it fills. `load` returns the event's JSON and is called
+// only for an event that fills a slot, so a caller that must parse it pays nothing for the others.
+template <typename LoadEvent>
+auto fill_auth_event_slot(AuthEventMap& map, AuthEventSlots const& slots, std::string_view type,
+                          std::string_view state_key, std::string_view event_id, LoadEvent const& load) -> void
+{
+    if (type == "m.room.create" && state_key.empty())
+    {
+        map.create = load(event_id);
+        map.create_event_id = std::string{event_id};
+    }
+    else if (type == "m.room.power_levels" && state_key.empty())
+    {
+        map.power_levels = load(event_id);
+    }
+    else if (type == "m.room.join_rules" && state_key.empty())
+    {
+        map.join_rules = load(event_id);
+    }
+    else if (type == "m.room.member" && state_key == slots.sender)
+    {
+        map.sender_member = load(event_id);
+    }
+    else if (type == "m.room.member" && slots.event_type == "m.room.member" && state_key == slots.target_state_key)
+    {
+        map.target_member = load(event_id);
+    }
+    else if (type == "m.room.third_party_invite" && !slots.third_party_invite_token.empty() &&
+             state_key == slots.third_party_invite_token)
+    {
+        map.third_party_invite = load(event_id);
+    }
+    // Not part of the chain above: the authorising user may also be the sender or target, and each
+    // slot must still be filled.
+    if (!slots.authorising_user.empty() && type == "m.room.member" && state_key == slots.authorising_user)
+    {
+        map.authorising_user_member = load(event_id);
+    }
+}
 
 [[nodiscard]] auto parse_membership_state(std::string_view membership) noexcept -> std::optional<MembershipState>;
 // The forms a power level may take in a room version. Room versions 1-9 permit

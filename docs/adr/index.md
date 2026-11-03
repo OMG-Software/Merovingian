@@ -302,6 +302,48 @@
 * [0318 - A membership template offers the room's stored forward extremities, and none is offered without them](0318-a-membership-template-offers-the-rooms-stored-forward-extremities.md)
 * [0319 - Report a failed device-list write where the client can retry, and finish where access is being revoked](0319-report-a-failed-device-list-write-where-the-client-can-retry.md)
 * [0320 - A join comes after the ancestors that share its depth](0320-a-join-comes-after-the-ancestors-that-share-its-depth.md)
+* [0340 - Each user has a share of the local media record cap](0340-each-user-has-a-share-of-the-local-media-record-cap.md)
+* [0341 - Remote media admission sizes cache entries from the entries and drops a few expired ones](0341-remote-media-admission-sizes-cache-entries-from-the-entries.md)
+* [0342 - An upgrade names the old room's last event by its forward extremity](0342-an-upgrade-names-the-old-rooms-last-event-by-its-forward-extremity.md)
+* [0330 - Search terms are matched in linear time and capped at 1024 bytes](0330-search-terms-are-matched-in-linear-time-and-capped-at-1024-bytes.md)
+* [0332 - Search filter lists are prepared once per request](0332-search-filter-lists-are-prepared-once-per-request.md)
+* [0333 - Search result context is built only when requested, from one pass over the events](0333-search-result-context-is-built-only-when-requested-from-one-pass.md)
+* [0334 - The user directory reads the accounts once and caps its results](0334-the-user-directory-reads-the-accounts-once-and-caps-its-results.md)
+* [0343 - Push glob matching spends a bounded budget per recipient and event](0343-push-glob-matching-spends-a-bounded-budget-per-event.md)
+* [0344 - Index current state by room, type and key, and trust the index only while it is in step](0344-index-current-state-by-room-type-and-key-and-trust-it-only-while-in-step.md)
+* [0345 - Hierarchy and threads reads are bounded by the page and by a budget of rooms or rows](0345-hierarchy-and-threads-reads-are-bounded-by-the-page-and-a-visit-budget.md)
+* [0346 - A relayed PDU that fails verification is not charged to the relaying peer](0346-a-relayed-pdu-that-fails-verification-is-not-charged-to-the-relaying-peer.md) — Supersedes the relayed-PDU part of ADR-0081 and the failed-lookup penalty of ADR-0133
+* [0347 - Only a transaction writes a peer's trust record](0347-only-a-transaction-writes-a-peers-trust-record.md) — Refines ADR-0110: a worker's synthetic remote is never written back
+* [0366 - A send_join is refused before it is stored when its answer cannot be delivered, and omit_members shrinks it](0366-a-send-join-is-refused-before-it-is-stored-when-its-answer-cannot-be-delivered.md)
+* [0372 - A resent send_join is answered from current state](0372-a-resent-send-join-is-answered-from-current-state.md) — Supersedes the resend bullet of ADR-0366
+* [0367 - A make_join template and a restricted-join decision read the state by key and by room](0367-a-make-join-template-and-a-restricted-join-decision-read-by-key.md)
+* [0368 - An IPC response that cannot be sent fails its requester at once](0368-an-ipc-response-that-cannot-be-sent-fails-its-requester-at-once.md)
+* [0369 - A send_join answer is judged by the receipt checks, from its own events](0369-a-send-join-answer-is-judged-by-the-receipt-checks-from-its-own-events.md)
+* [0370 - A parked PDU and every later ingest use the room version the create event declares](0370-a-parked-pdu-and-every-later-ingest-use-the-room-version-the-create-event-declares.md) — Refines ADR-0089 and ADR-0179
+* [0371 - An event fetched to fill a gap is checked against the current state](0371-an-event-fetched-to-fill-a-gap-is-checked-against-the-current-state.md) — Refines ADR-0064 and ADR-0070
+* [0358 - Main applies the admin's federation policy to every verified request, and again to what a worker relays](0358-main-applies-the-admin-federation-policy-to-every-verified-request.md)
+* [0359 - Main judges relayed events against its own room server ACL](0359-main-judges-relayed-events-against-its-own-server-acl.md)
+* [0360 - The worker guards its store with a reader-writer lock that a reload takes only for the in-memory swap](0360-the-worker-guards-its-store-with-a-reader-writer-lock-taken-only-for-the-swap.md)
+* [0361 - The policy server is an operator-trusted destination, resolved in the hook and admitted through a budget](0361-the-policy-server-is-an-operator-trusted-destination-resolved-in-the-hook-and-admitted-through-a-budget.md)
+* [0362 - Reserve a pre-v12 room ID across the policy hook, and pick the first free one](0362-reserve-a-pre-v12-room-id-across-the-policy-hook.md)
+* [0363 - The state at an event is read from the recorded state groups, never from a walk of the event graph](0363-state-at-an-event-is-read-from-the-recorded-state-groups.md)
+* [0364 - A /state or /state_ids answer whose auth chain is over the bound is refused](0364-a-state-answer-whose-auth-chain-is-over-the-bound-is-refused.md)
+* [0365 - Resolving the state before an event on a read path has its own budget, and a refusal is a 404](0365-resolving-the-state-before-an-event-on-a-read-path-has-its-own-budget.md)
+* [0335 - Bound the to-device queue in bytes per recipient](0335-bound-the-to-device-queue-in-bytes-per-recipient.md)
+* [0336 - Enqueue a to-device batch in one pass, and cap a request's deliveries](0336-enqueue-a-to-device-batch-in-one-pass-and-cap-a-requests-deliveries.md)
+* [0337 - Keep only what was asked of a server in a key claim answer](0337-keep-only-what-was-asked-of-a-server-in-a-key-claim-answer.md)
+* [0338 - Bound the shape and size of uploaded keys](0338-bound-the-shape-and-size-of-uploaded-keys.md)
+* [0339 - Bound account-data rows and the tags of a room](0339-bound-account-data-rows-and-the-tags-of-a-room.md)
+* [0321 - Every IPC frame is valid UTF-8 by construction, and request bytes cross it losslessly](0321-every-ipc-frame-is-valid-utf-8-by-construction.md)
+* [0322 - An authenticated IPC frame whose payload does not parse fails one request, not the channel](0322-an-authenticated-frame-whose-payload-does-not-parse-fails-one-request.md)
+* [0323 - The supervisor restarts a live worker whose main-side channel has failed](0323-the-supervisor-restarts-a-worker-whose-main-side-channel-failed.md)
+* [0325 - The state-group tables own their rows and index them by key](0325-the-state-group-tables-own-their-rows-and-index-them.md)
+* [0326 - Retained PDUs are woken through an in-memory index of the events they are missing](0326-retained-pdus-are-woken-through-an-index-of-the-events-they-are-missing.md)
+* [0349 - An outbound federation answer main does not verify comes over main's own connection](0349-an-outbound-answer-main-does-not-verify-comes-over-mains-own-connection.md)
+* [0350 - A key query or claim takes one slot, one deadline and asks a bounded number of servers](0350-a-key-query-or-claim-takes-one-slot-one-deadline-and-asks-a-bounded-number-of-servers.md)
+* [0373 - A fallback event records the room's current state as its state before](0373-a-fallback-event-records-the-rooms-current-state-as-its-state-before.md) — Supersedes the state-before and consequence wording of ADR-0225
+* [0374 - Forward extremities are bounded for events that add no state](0374-forward-extremities-are-bounded-for-events-that-add-no-state.md)
+* [0375 - A refused recomputation of current state is a status, not a success](0375-a-refused-recomputation-of-current-state-is-a-status-not-a-success.md)
 * [0376 - Build an RPM for Fedora 44 and for fedora:latest](0376-build-an-rpm-for-fedora-44-and-for-fedora-latest.md)
 * [0377 - The server exits when its federation worker cannot start](0377-the-server-exits-when-its-federation-worker-cannot-start.md)
 * [0378 - Probe ELF hardening in memory, and keep NetBSD refused](0378-probe-elf-hardening-in-memory-and-keep-netbsd-refused.md)
@@ -345,3 +387,9 @@
 * [0238 - The key resolver uses the key it fetched, not a cache read-back](0238-the-key-resolver-uses-the-key-it-fetched-not-a-cache-read-back.md) — Refined by ADR-0263: a worker re-reads public key rows main cached before fetching
 * [0204 - Keep a user's push rules as their m.push_rules account data, applied over the current defaults](0204-keep-a-users-push-rules-as-their-m-push-rules-account-data.md) — Refined by ADR-0264: an initial `/sync` carries the effective ruleset even for a user who never changed a rule
 * [0035 - Parse appservice registrations as a bounded YAML subset](0035-parse-appservice-registrations-as-a-bounded-yaml-subset.md) — Refined by ADR-0273: reverse-DNS namespaced keys and `push_ephemeral` are ignored with a warning; other unknown keys are still parse failures
+* [0353 - A profile change holds the runtime lock for a fixed share of the user's rooms](0353-a-profile-change-holds-the-runtime-lock-for-a-fixed-share-of-the-users-rooms.md) — Refines ADR-0182
+* [0354 - Federation delivery gives each destination at most one thread](0354-federation-delivery-gives-each-destination-at-most-one-thread.md) — Extends ADR-0177
+* [0355 - SRV lookups on NetBSD use a resolver state of their own](0355-srv-lookups-on-netbsd-use-a-resolver-state-of-their-own.md)
+* [0356 - The authorising-signature helper decides by room version itself](0356-the-authorising-signature-helper-decides-by-room-version-itself.md) — Refines ADR-0171: the rule applies from room version 8 only
+* [0357 - A left room's /sync state is gated by room read access](0357-a-left-rooms-sync-state-is-gated-by-room-read-access.md) — Refines ADR-0084: a user who never joined is given only their own leave or ban
+* [0225 - A local event falls back to the newest forward extremity when their state cannot be resolved](0225-a-local-event-falls-back-to-the-newest-forward-extremity-when-their-state-cannot-be-resolved.md) — Partly superseded by ADR-0373: the fallback event's state before is the room's current state, not the cited extremity's, and the consequences about a retired fork's ban no longer hold

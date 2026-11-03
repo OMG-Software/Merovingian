@@ -76,6 +76,7 @@ flowchart TB
 | Media upload attacker | Image decoding | Out-of-process seccomp/rlimit-sandboxed worker, pixel-count decode-bomb guard, MIME sniffing, quarantine |
 | Malicious reverse proxy | Header/transport trust | Production listener rejects test-only credential encodings; response header validation; public listeners require TLS and cannot declare a local reverse proxy, while loopback cleartext requires an explicit `reverse_proxy=true` declaration |
 | Malicious local process | IPC channel sniffing | Master-key-authenticated `crypto_kx` handshake (#318) + AEAD encryption; no filesystem socket path; signing key never loaded in worker and never forwarded over IPC (#317), and the worker holds no signing capability at all — no `sign_request` frame, a refusing provider (ADR-0078); main verifies inbound X-Matrix signatures and forwards only the verified peer identity — the raw peer `access_token`/`Authorization` never crosses IPC (#323) |
+| Malicious federated server | Federation worker IPC channel | Frames are valid UTF-8 by construction and request bytes cross losslessly (ADR-0321); a frame whose payload does not parse fails one request, not the channel (ADR-0322); identifiers are grammar-checked before they are looked up or relayed; the supervisor replaces a worker whose main-side channel died (ADR-0323) (F-35, F-09, F-08) |
 | DB exfiltration attacker | Persistence | Prepared statements only, runtime/migration role separation, audit redaction; at-rest encryption for the server signing secret when a master key is configured; Argon2id hashing for registration tokens |
 | Supply-chain attacker | Dependencies, release | Vendored/pinned subprojects, secret scanning, SBOM; signing/provenance tracked in production milestone |
 | Compromised administrator | Admin surface | Audited admin actions; richer admin authZ tracked as a gap |
@@ -450,6 +451,38 @@ threat it closes; the controls above are the standing defences these reinforce.
   Relocating outbound signing into the worker is deliberately not done: the
   worker never signs (ADR-0078), so the pre-signed value crossing IPC is the
   design, not a gap to close by giving the worker a signing provider.
+
+  **What main believes of a remote server's answer (F-43, 0.12.70,
+  [ADR-0349](adr/0349-an-outbound-answer-main-does-not-verify-comes-over-mains-own-connection.md)).**
+  The residual above covers requests and relayed PDUs; it did not cover the
+  worker's *replies* to the outbound calls main hands it. Until 0.12.70 a
+  compromised worker could answer any of them as any remote server, and main
+  acted on `ok`, the status, the body and `error_detail` as given: forged
+  device, cross-signing and one-time keys returned to clients, forged alias,
+  public-room and profile answers (and the room `POST /join/{alias}` joined),
+  a forged `make_leave` 403 that ended an invite, and forged `send_leave`,
+  `send_knock` and `send_join` outcomes. Signed objects were never affected:
+  main's key resolver and `DispatchWorker` use main's own `OutboundClient`.
+  The trust model is now explicit, one row per caller in ADR-0349 and pinned by
+  `tests/tooling/test_outbound_answer_trust.py`:
+  * An answer main uses without a signature check on the *whole* of it (keys,
+    alias, profile, publicRooms, `make_*`, `send_*`, invites, `state_ids`,
+    `hierarchy`, `timestamp_to_event`) rests on the TLS peer main itself
+    authenticated: the call goes over main's own pinned, TLS-verified client.
+    A call that uses part of an answer unverified is unverified.
+  * An answer main verifies by signature (the four backfill fetches: each PDU is
+    verified before it is stored) may still be carried by the worker. It can
+    withhold such an answer or replay what a server signed, as before.
+  * Whatever stays on the tunnel is size- and shape-checked on arrival: a
+    status outside 100 to 599 or a body over the request's cap is a failure,
+    and `error_detail` is cut to 256 printable bytes.
+  Accepted cost: main parses more remote responses itself (the libcurl and JSON
+  code it already runs for key fetches, remote media and push gateways), in the
+  unsandboxed process; the worker cannot be trusted with the answers that
+  matter, and the largest bodies (backfill) stay in the worker. Out of scope
+  and still open: inbound `fed_response` frames reach remote peers from the
+  worker unchanged, so a compromised worker can still lie to other servers about
+  this server's users.
 
   **The worker reads public signing-key rows main cached after it started
   (A6, 0.12.60).** The worker's mirror of `server_signing_keys` is a start-up
@@ -1804,9 +1837,26 @@ threats they represent, and the mitigations now in place:
   failures were zeroed at transaction completion, so the backoff and circuit
   breaker never fired. Mitigation: the consecutive-failure count survives any
   transaction in which a PDU failed a trust check; only a clean transaction
-  resets it. Room-ACL denials are excluded, being local policy rather than peer
-  misbehaviour. These failures follow a verified signature; the resulting backoff
-  decays after 5 quiet minutes (see the FED-4 entry below).
+  resets it, and only a transaction writes the count (a successful read, a
+  `send_join` or an invite never resets it, and a worker's synthetic remote is
+  never written back: F-59, ADR-0347). Room-ACL denials are excluded, being local
+  policy rather than peer misbehaviour. These failures follow a verified
+  signature; the resulting backoff decays after 5 quiet minutes (see the FED-4
+  entry below).
+- **A third server could put an honest relay into backoff (F-22).** A resident
+  server relays the PDUs of the servers that join its rooms, and whether such a
+  PDU verifies here depends on its author's keys, which the author controls. Three
+  PDUs whose author served a key to the relay but an error or another key to this
+  server were charged to the relay, which was then refused for five minutes per
+  worker shard. Mitigation: a failed PDU is charged to the transport peer only
+  when its sender domain is the X-Matrix origin (or cannot be read); a relayed
+  third-party PDU is dropped with its per-PDU error and costs the relay nothing
+  (ADR-0346, superseding the relayed-PDU part of ADR-0081 and the failed-lookup
+  penalty of ADR-0133). A transaction in which any PDU failed verification does
+  not reset the count either. Residual risk: a peer can name a third server as the
+  sender of its own forged PDUs and so avoid the charge; the per-origin
+  transaction and PDU rate limits and the key-resolution budgets bound that
+  stream.
 - **Forged X-Matrix requests locked a real peer out of federation until restart
   (FED-4).** The H-04 fix charged a failed signature to the *claimed*
   origin's `consecutive_failures`. The origin in an `X-Matrix` header is
@@ -1818,8 +1868,9 @@ threats they represent, and the mitigations now in place:
   answered 429 `M_LIMIT_EXCEEDED` for that address only, before any signature
   work; capped, FIFO-evicted, pre-authentication container). The per-origin
   `consecutive_failures` is now written only by failures that follow a verified
-  signature (malformed or oversize transactions, forged relayed PDUs), and the
-  resulting backoff lapses after `remote_backoff_decay_window` (5 minutes of
+  signature (malformed or oversize transactions, and PDUs the peer itself
+  authored that fail verification; a relayed third-party PDU is not charged to
+  the relay, ADR-0346), and the resulting backoff lapses after `remote_backoff_decay_window` (5 minutes of
   quiet) instead of persisting until restart. Residual risk: an attacker
   sharing a source address with a real peer (CGNAT, or a reverse proxy with
   `trusted_proxies` unset) throttles that address, not the named origin.
@@ -2055,7 +2106,10 @@ until the refresh).
   retries) frees it, a full set falls back to telling the sender the PDU was not
   kept, and each retry is itself bounded by the backfill budgets. Residual: until
   those rows expire the room cannot retain further unresolved PDUs, and a legitimate
-  sender then sees a per-PDU error for them.
+  sender then sees a per-PDU error for them. Waking the retained PDUs of a room after
+  each stored PDU is a lookup in an in-memory index of the events each row is missing
+  (F-18, ADR-0326), so the lock-held cost no longer grows with the bytes a peer
+  retains; it once searched every retained row's JSON as text.
 
 ### Worker EDU origin substitution (audit FED-12; review/combined pending)
 
@@ -2248,6 +2302,14 @@ membership. No whole-finding or release acceptance is claimed. See proposed
     but no main-pool worker. Concurrent requests for one remote file share one fetch. Tests:
     `[media-fetch-pool]` in `tests/integration/test_remote_media_fetch_pool_flow.cpp` and
     `tests/unit/test_remote_media_fetch.cpp`.
+  - F-17 (ADR-0350): `POST /keys/query`, `POST /keys/claim` and `POST /join/{#remoteAlias}` were the
+    exceptions: each called remote servers one after another with the full 60 s `remote_timeout`, no slot
+    and no cap on the number of servers, so one body naming many stalling servers held a main-pool thread
+    for their summed timeouts. A key request now takes one slot for all its remote calls, draws them from
+    one 30 s deadline and asks at most 16 distinct servers; the rest are reported in `failures` and the
+    local part of the answer is still returned. A join by remote alias takes a slot (`429` when none is
+    free) and runs under the 10 s directory deadline. Tests: `[f-17]` in
+    `tests/integration/test_client_outbound_proxy_flow.cpp`.
 - **Residual risk:** an attacker holding 4 slots costs the pool 4 of 8 threads for up to 10 s
   (30 s for media) at a time, and each address needs to be distinct to hold more than one, so a
   botnet can keep the 4 slots busy and lock legitimate remote lookups out with 429; the other 4
@@ -2532,6 +2594,41 @@ Security audit run-1 (2026-10-20) found six LOW issues, all fixed in 0.12.34.
   address to them and letting a user point it at any public service within the caps; `http`
   previews can be altered in transit (the content is treated as hostile either way).
 
+### Policy and ACL decisions are main's; the worker's store is a stale snapshot (0.12.70, F-21, F-24, F-27, F-42)
+
+Four ways a remote server that an admin or a room had denied could keep federating, or an enabled policy control did
+nothing, all from trusting the worker's view or the hook's transport.
+
+- **Admin federation policy rules not enforced on worker-routed requests (F-21, ADR-0358).** The rule was read in the
+  process that handled the request. A worker's store holds no rules on PostgreSQL and a start-up snapshot on SQLite, so
+  a denied or quarantined origin was served and its PDUs accepted. Mitigated: `FederationProxy::handle` judges the
+  verified origin in main before any branch (403 `M_FORBIDDEN`), the policy server is asked there once, and the main-side
+  relay handlers judge the local rule again for requests in flight when a rule is added. The origin in a
+  `pdu_ingest`, `membership_ingest` or `invite_ingest` frame is the worker's claim; a compromised worker can name an allowed
+  origin, but not change what the signed event says (below).
+- **A /send routed to a shard with a stale snapshot passed the room ACL (F-24, ADR-0359).** The shard is chosen by the
+  first PDU's room ID, which the sender picks; only the owning shard learns of later state. A denied server with a joined
+  user picked a shard whose snapshot lacked the ACL, and main's relay handler did not check. Mitigated: main reads the room's
+  current `m.room.server_acl` for the transport origin and for the verified sender's server on every relayed PDU,
+  membership event and invite; a refused PDU is reported with an `error` entry (`PduIngestionStatus::rejected_acl`). Residual:
+  room-scoped reads (`/state`, `/backfill`, ...) still use the serving shard's snapshot for the ACL, refreshed best-effort
+  by `room_sync`; they return nothing a joined member of a denied server could not already fetch, and are bounded by
+  the origin-in-room gate.
+- **Unlocked reads of the worker's store against `reload_room` (F-27, ADR-0360).** A data race on vectors and hash maps,
+  and a window in which a room had no ACL (`room_server_acl_allows` answers true) while its rows were rewritten. Mitigated:
+  the worker's store readers hold a shared lock for their own call, a reload takes the exclusive lock only for the
+  in-memory swap, and the database read happens before it. Residual: the swap still walks whole tables; readers wait
+  for that. The `StoreReadGuard` concurrency scenario is the ThreadSanitizer target.
+- **The policy server was never contacted (F-42, ADR-0361).** The hook set no pinned addresses, so the transport
+  refused every call: fail-closed deployments refused every guarded workflow, `policy_server_allow_without_result=true`
+  deployments never asked the server. Mitigated: the operator-configured host is resolved in the hook, without the
+  SSRF deny-list (the operator, not a peer, chose it), and calls are admitted through a bounded budget (a quarter of the
+  request pool, half of that per surface), because each now holds a request thread for the round trip, some before
+  authentication. Over the budget is "no usable decision", so the configured fail-open or fail-closed setting decides.
+  The same lengthened lock-release window let two pre-v12 `createRoom` calls take the same `!room<N>` ID (ADR-0362);
+  the ID is now reserved across the hook. Residual: `getaddrinfo` takes as long as the system resolver does; the budget
+  bounds how many threads are in it.
+
 ### Presence (0.12.60)
 
 - **Presence read without sharing a room.** `GET /presence/{userId}/status` answers 403
@@ -2619,12 +2716,133 @@ Security audit run-1 (2026-10-20) found six LOW issues, all fixed in 0.12.34.
   `tests/conformance/test_event_depth_conformance.cpp`.
 - **A non-state event in `auth_events` could stop state resolution (audit run-2 F-05).** A remote member could name
   one where selection expects room state; the auth-chain walk then failed for any conflict reaching it.
-  **Mitigation:** such an entry is a disallowed selection and the naming event is rejected. **Residual risk:** the
-  ADR-0225 fallback still replaces current state with one fork whenever resolution fails another way, such as the
-  state budget; audit run-2 tracks this as `state.new-event-fallback-rewrites-current-state-from-attacker-chosen-fork`.
+  **Mitigation:** such an entry is a disallowed selection and the naming event is rejected. Related: a fallback event no longer
+  replaces current state with one fork (F-40, below).
+- **A resident member could undo a ban through the ADR-0225 fallback (audit run-2 F-40).** When state resolution across a
+  room's forward extremities failed (the state budget, or 20 forks in a room of 6554 state events), the next local event
+  cited the newest tip and retired the rest, and its state before was that one fork's. A fork that predated a ban held the
+  banned user's old join, which was written over the ban in current state and again by the next accepted PDU, so the
+  banned user's next event was accepted. **Mitigation:** the fallback event's state before is the room's current state,
+  so its state group and every later single-extremity recompute keep the revocation (ADR-0373). Tests: `[f40]`.
+  `/state` and `/state_ids` at a fallback event answer that recorded state too. **Residual risk:** the state recorded for
+  a fallback event can differ from what a peer derives from its `prev_events` alone, and a peer can reject the event
+  (step 5 of the receipt checks) when the sender's standing exists only on a retired tip, so that peer's users never see
+  it; current state is itself last-accepted-writer-wins while a recomputation is refused (next entry).
+- **A refused recomputation of current state looked like success, and a message flood could force it (audit run-2
+  F-49).** `recompute_current_state` returned true when the forward extremities could not be resolved; with more than
+  `max_state_groups` tips (a member citing one old event from many messages) a state event resolution would have
+  reverted, such as a demoted moderator's, stayed current. **Mitigation:** extremities that share a state group resolve as
+  one, so message floods cost one state; an accepted event with no `state_key` is not made a tip once the room holds
+  `max_state_groups` of them (ADR-0374); a refusal is a distinct status, logged at warning level, and callers handle it
+  (ADR-0375). Tests: `[f49]`. **Residual risk:** more than `max_state_groups` distinct state tips (one accepted state event
+  each, such as profile changes) or a room whose state exceeds `max_total_state_events` still refuses; current state is then
+  the cache plus each accepted event's own row, and a state event resolution would revert can stay current until the tips
+  are back within budget. Freezing current state instead would drop a ban, so it is not done.
 - **A `/sync` token could rewrite the server-wide stream counter (audit run-2 F-03).** Raising it to 2^64-1 made it wrap,
   and other users' to-device messages were deleted undelivered. **Mitigation:** no client input moves the counter, a
   token ahead of the streams is an initial sync, and the allocator refuses to wrap (ADR-0315).
+- **Reads that scaled with a room or space a user controls held the runtime lock (audit run-2 F-10, F-32, F-33, F-39).**
+  `/members` probed a vector once per member, `/hierarchy` scanned all state three times per child and walked the whole
+  tree for every page, `/threads` parsed every event on the server and looked roots up linearly, and one long message
+  multiplied body length, pattern length and rule count in push matching. **Mitigation:** a state index and a set
+  (ADR-0344); a page-bounded walk of at most 4096 rooms and a 10000-event, per-room, hash-keyed thread scan
+  (ADR-0345); a 2^21-step budget per recipient and event over the first 4096 bytes of the body (ADR-0343).
+  **Residual risk:** past those bounds a very large space or busy room is answered from its first rooms or newest
+  events, and `/members` still walks the server-wide `memberships` vector once. Tests: `[f10]`, `[f32]`, `[f33]`,
+  `[f39]`.
+- **A join could be committed and sent on, then its answer lost; an oversized answer pinned threads (audit run-2 F-23).**
+  The resident stored and fanned out a `send_join` before it built the answer, and the answer (the room's state and auth
+  closure, each state event twice) was unbounded, so about 700 padded joins from one federating server pushed it past the
+  worker channel's frame cap. The frame was dropped with a log line, the waiter held a relay thread for 60 s and a main
+  worker for up to 130 s, the joining server got 503 for a join that was already stored and sent to the room's other
+  servers, and its retry got 500. **Mitigation:** the answer is planned from IDs and sizes after the join is judged and
+  before it is stored, and one that cannot fit `join_response_max_size` as a body or the frame cap (events counted at
+  twice their size) is refused 503 with nothing stored or sent on; `omit_members` gives honest servers a reduced answer;
+  a re-sent join is answered again from current state, so a lost answer cannot cost the joining server a ban the first
+  answer held (ADR-0372); and a response over the cap releases its requester at once (ADR-0366, ADR-0368).
+  **Residual risk:** a room whose state is above about half the frame cap needs `omit_members` from the joining server,
+  which a server that never sends it (this one) cannot join until the operator raises `join_response_max_size`. The
+  joiner's hold on the resident's thread for the duration of the planning pass is bounded by the room's state, not by the
+  answer. Tests: `tests/unit/test_send_join_answer.cpp` `[f23]`, `tests/conformance/test_send_join_omit_members_conformance.cpp`.
+- **`make_join` cost followed the size of the server (audit run-2 F-19).** The template's auth events and the restricted-join
+  decision, run for every make_join by any authenticated federating server, passed over every room's state rows and every
+  stored event under the runtime lock. **Mitigation:** they read by key through the state index and by room through the
+  event table (ADR-0367, ADR-0344), and the template's `prev_events` are the room's stored tips, at most 20 (ADR-0318).
+  **Residual risk:** the room existence check and the forward-extremity lookup are still one pass each over flat vectors
+  that grow with the number of rooms. Tests: `[f19]`.
 - **One request could hold the runtime lock for work a user or remote server chose (audit run-2 F-02, F-04).**
   **Mitigation:** `createRoom` caps its entries (ADR-0316), and device and key changes write one batch for local
   observers (ADR-0317).
+- **A search term and a long text could cost text x term under the runtime lock (audit run-2 F-28, F-29, F-34).**
+  `POST /publicRooms`, `POST /search` and `POST /user_directory/search` searched a room name or topic (up to 64 KiB),
+  a message body (up to 64 KiB) or a display name (up to the body cap) with `std::search` / `find` for a term the
+  caller sized. **Mitigation:** one linear-time matcher, at most two steps per byte of text, and a term over 1024
+  bytes refused `400 M_TOO_LARGE` (ADR-0330). **Residual risk:** a request still costs the bytes of text it searches,
+  so an unbounded display name (audit run-2 `profile.put-displayname-avatar-url-unvalidated-unbounded`) is read in
+  full for every directory search until that is bounded.
+- **`POST /search` filter lists, context and the user directory's account scan multiplied client-chosen sizes (audit
+  run-2 F-30, F-31, F-50).** **Mitigation:** the filter and `keys` lists are resolved to hash sets and a bit mask once
+  per request (ADR-0332), result context is built only when `event_context` is sent and from one pass over the events
+  (ADR-0333), and the directory reads the accounts once and returns at most 100 users (ADR-0334).
+- **Stored per-user data grew by count but not by size, and one request could cost queue x devices squared (audit
+  run-2 F-12, F-13, F-14, F-37).** A room's `m.tag` row, a to-device queue, and uploaded keys were bounded by rows
+  or not at all, so one row could be as large as a request body and a `*` send walked the shared queue per message.
+  **Mitigation:** account-data rows are capped at 256 KiB and a room holds at most 100 tags of 1 KiB (ADR-0339); the
+  to-device queue is bounded in bytes per message and per recipient, a batch is prepared in one pass and one request
+  names at most 1,000 local devices (ADR-0335, ADR-0336); uploaded keys have a shape and a size (ADR-0338).
+  **Residual risk:** the number of devices a user may create is not capped, so total bytes per user are bounded per
+  device, not per account.
+- **A remote server could blank a client's key claim (audit run-2 F-36).** **Mitigation:** the answer is kept only
+  for the users and devices asked of that server and a response that cannot be serialised is a 500 (ADR-0337).
+- **The state at an event was picked by sender-chosen depth and cost the whole room history (audit run-2 F-25, F-26).**
+  Federation `/state` and `/state_ids`, and the `state` of a client `/context`, walked every ancestor of the event and
+  kept the greatest `(depth, event_id)` per state key, with no status filter: a remote member's rejected state event with
+  a huge depth became the room's name, membership or power levels in the answer and displaced the true event, and each
+  request parsed one JSON document per ancestor on the worker's small `local_pool`, with the auth chain collected
+  without a bound. **Mitigation:** the answer is the state this server recorded for the event (ADR-0363): a rejected
+  event is never in it, a soft-failed one is where resolution admitted it, an event with no recorded state or a broken
+  chain is a 404 (or an empty `/context` `state`), and a merge of several `prev_events` is resolved under a lowered
+  auth-walk budget (ADR-0365). A request costs one state-group chain and the state returned, never the room's history.
+  The auth chain of `/state` and `/state_ids` is bounded at 65536 events and refused with 502 `M_TOO_LARGE`, never cut
+  (ADR-0364). **Residual risk:** a request still costs the size of the room's state (and, for `/state`, parsing every
+  state and auth event); there is no per-origin concurrency share on `local_pool` reads. Tests: `[state-at-event]`.
+
+### What a joining server takes from a resident's answer (0.12.70, F-45, F-44)
+
+- **A resident could store any content it liked in the joining server's copy of a room (F-45, ADR-0369).** A signature and
+  an event ID cover only the redacted form, so an event with content changed after signing passed every check that ran,
+  and a later genuine copy was answered `already_stored`. The answer now passes the receipt checks: a hash mismatch is
+  redacted, and an event the auth rules refuse, or that names one the answer lacks, is dropped. **Residual risk:** a
+  resident can still omit events or offer an older event for a state slot, since individually valid events do not prove
+  current state. An event whose sender's key cannot be fetched now takes its dependents with it, so a join into a room
+  with a long-dead administrator can lose state or be refused. Tests: `[f45]`.
+- **A creator could have an event judged by version 12's rules in an older room (F-44, ADR-0370).** PDUs parked during a
+  join were verified under a guess of version 12 and replayed unchanged. The drain now verifies each afresh under the
+  version the stored create declares, and ingestion refuses an envelope naming any other. **Residual risk:** a PDU in
+  flight when the join commits is refused and needs the ordinary gap fill. Tests: `[f44]`.
+
+### Ban evasion through an event fetched to fill a gap (0.12.70, F-16)
+
+- **A banned user's message could be delivered by having it fetched (F-16, ADR-0371).** Fetched events stopped at the check
+  against the state before them, and read paths withhold by status. A fetched event that fails against current state is now
+  `soft_failed`, keeping its state group, and an outlier gaining a state group gets the same check. **Residual risk:** an event
+  with no known state-before gets no such check; it has no state group, so read paths do not show it, but one that gains a
+  group later is checked only then. Honest history from a sender who can no longer send is withheld too, as in `/send`. Tests:
+  `[f16]`.
+
+### A profile change fanning out under the runtime lock (0.12.70, F-11)
+
+- **One user could hold the runtime lock for as long as they had rooms (F-11, ADR-0353).** The join sent to each room on a
+  profile change ran under one hold, one database commit per room, and alternating two names repeated it. A request now sends
+  to at most `profile_propagation_sends_per_request` rooms and the `profile-propagation` job takes the lock per room for the
+  rest. The queue holds a user ID and a position, never a token. **Residual risk:** an attacker alternating names can keep the
+  job busy and delay other users' changes, though not other requests; rooms queued at a restart wait for the next change; the
+  number of rooms a user may join stays uncapped, as the spec sets no limit. Tests: `[f11]`.
+
+### A slow peer holding outbound federation (0.12.70, F-20)
+
+- **One peer could delay every other peer's delivery by hours (F-20, ADR-0354).** All delivery ran on one thread, attempts took
+  up to 90 s, and a slow `2xx` counted as healthy. Delivery now uses a small pool with one transaction in flight per destination,
+  shorter deadlines, a backoff for slow successes, and a circuit check before discovery. **Residual risk:** an attacker with many
+  server names joined to active rooms can occupy several threads, about 40 s per name per backoff period; an honest peer slower
+  than 10 s is throttled until it answers quickly. Tests: `[f20]`.

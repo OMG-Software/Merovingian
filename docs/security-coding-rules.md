@@ -449,6 +449,16 @@ quickly finding everything a given `AGENTS.md` file contributed.
   decays after a 5-minute quiet period. See ADR-0081.
   Source: `src/federation/AGENTS.md`, `docs/adr/0081-failed-inbound-signatures-are-never-charged-to-the-claimed-origin.md`.
 
+- **Charge a peer's trust record only for what the peer is responsible for, and only from a transaction.**
+  Why: a PDU the peer merely relays from a third server verifies or not according to that
+  server's keys, so charging it let the third server put an honest relay into the
+  five-minute backoff (F-22). Charge a failed PDU only when its sender domain is the
+  X-Matrix origin or cannot be read, and let a transaction in which any PDU failed
+  verification leave the count alone. A non-transaction answer (a read, `send_join`,
+  an invite) never writes the record, so a worker's synthetic remote cannot overwrite it
+  and a peer cannot clear its own backoff with a read (F-59). See ADR-0346 and ADR-0347.
+  Source: `src/federation/AGENTS.md`.
+
 - **Verify every inbound PDU's signature against the sending server's published key before
   it enters the event graph. Unverified events must be silently dropped, not persisted.**
   Why: without this, any peer (or a relay forwarding on another server's behalf) could
@@ -478,6 +488,21 @@ quickly finding everything a given `AGENTS.md` file contributed.
   remote server answering a history fetch, could get a forged restricted join stored
   (CWE-347 Improper Verification of Cryptographic Signature; security audit run-1, ADR-0171).
   Source: `src/federation/AGENTS.md`.
+- **An outbound federation call whose answer main does not verify by signature goes over main's own
+  `OutboundClient`, never the federation worker's tunnel.** Every caller of `perform_outbound_call` and its
+  wrappers names an `OutboundAnswerTrust`; only `signature_verified` (every use of a success body is a
+  signature check on the whole of it, and a failure only means "no data") may use the worker. A status main acts
+  on, a template it keeps, or a choice among signed objects makes the call `unverified`.
+  Why: the worker is the process most exposed to hostile traffic, and until 0.12.70 it could answer any
+  outbound call as any remote server (forged keys, aliases, leave and knock outcomes; CWE-345 Insufficient
+  Verification of Data Authenticity; security audit run-2 F-43, ADR-0349).
+  Source: `src/homeserver/AGENTS.md`.
+- **A client request that calls several remote servers takes one ADR-0079 slot, draws every call from one
+  `OutboundDeadline`, and asks a bounded number of servers.** `/keys/query` and `/keys/claim` report the
+  servers they did not ask in `failures`, never a request-wide 429 after one-time keys were consumed.
+  Why: each remote call holds a main-pool thread; unbounded serial calls pinned the pool (CWE-400
+  Uncontrolled Resource Consumption; security audit run-2 F-17, ADR-0350).
+  Source: `src/homeserver/AGENTS.md`.
 
 - **Check a sender's signature against every key ID it lists, never only the first, and
   bound the candidates.** Use `federation::authorize_federation_pdu_sender` or
@@ -549,6 +574,30 @@ quickly finding everything a given `AGENTS.md` file contributed.
   Why: the worker is the process most exposed to hostile input. Until 0.12.13 main trusted
   its signature check, so a compromised worker could inject events impersonating any
   sender the room authorised (ADR-0071, `docs/threat-model.md` #450).
+  Source: `src/homeserver/AGENTS.md`.
+
+- **Main decides the admin's federation policy and the room's server ACL for everything a worker relays or
+  receives.** `FederationProxy::handle` judges the verified origin's policy rule (and the policy server) before it forwards;
+  the `pdu_ingest`, `membership_ingest`, `invite_ingest` and `edu_ingest` handlers judge the rule again, and the first three
+  read the room's current `m.room.server_acl` from main's store for the transport origin and the verified sender's server.
+  A new relay does the same.
+  Why: a worker's store holds no policy rules (PostgreSQL) or a start-up snapshot (SQLite), and a room's ACL only
+  after `room_sync` reaches the shard that owns it; `/send` is routed by a room ID the sender chooses. Until 0.12.70 a denied
+  origin or server kept federating (F-21, F-24; ADR-0358, ADR-0359).
+  Source: `src/federation/AGENTS.md`, `src/federation_worker/AGENTS.md`.
+
+- **The worker reads its store only through the `StoreReadGuard`, and never waits on another process under it.** Store-reading
+  providers are wrapped in the shared lock before any provider that relays is installed; a reload reads the database with no
+  lock and takes the exclusive lock only for the in-memory swap; anything borrowed from a table (state-group views, state
+  indexes) is copied before the lock is released.
+  Why: the tables have no lock and a reload rewrites a room table by table, so an unguarded reader raced the writer and could
+  see a room with no ACL (F-27, ADR-0360).
+  Source: `src/federation_worker/AGENTS.md`, `src/database/AGENTS.md`.
+
+- **A call to the external policy server resolves its operator-configured host itself, in the lock-release scope, takes a place
+  in `policy_server_budget` first, and treats a refusal as "no decision".** Never call `OutboundClient::perform` without
+  pinned addresses; never run the call under `runtime.mutex`.
+  Why: each call holds a request thread for the round trip, on surfaces reachable before authentication (F-42, ADR-0361).
   Source: `src/homeserver/AGENTS.md`.
 
 - **A federation worker re-reads only public signing keys, and only on a miss.** The one
@@ -968,6 +1017,12 @@ media-fetch-pool task.
   Caps refuse, never evict (ADR-0118).
   `POST /createRoom` stops at `server.client_api.max_create_room_invites` and
   `max_create_room_initial_state` entries the same way, before the room is made (ADR-0316).
+  Every account-data row, the server's own `m.tag` included, is also refused past
+  `database::max_account_data_row_bytes` (256 KiB), and a room holds at most 100 tags of 1 KiB each (ADR-0339).
+  A to-device message is refused past `max_to_device_message_bytes`, a recipient's queue evicts its oldest rows past
+  `max_to_device_bytes_per_user_device`, and one `PUT /sendToDevice` names at most 1,000 local devices
+  (ADR-0335, ADR-0336). A one-time or fallback key is a string of at most 256 bytes or a key object of at most 4 KiB
+  (400 `M_BAD_JSON`), and `device_keys`, a cross-signing key or a signed key is at most 16 KiB (ADR-0338).
   Why: account-data reads scan every row under the lock, so one user adding types without bound
   slowed every request that reads them (CWE-770; security audit run-1, ADR-0173). Room rows
   multiply by rooms, so they need both bounds (conformance audit R10, ADR-0197).
@@ -1291,6 +1346,29 @@ media-fetch-pool task.
   security audit run-1, ADR-0174).
   Source: `src/sync/AGENTS.md`.
 
+- **A client's search term is matched with `core::FoldedSubstringMatcher`, never `std::search`, `find` or
+  `string_view::find`, and a term over `core::max_search_term_bytes` (1024) is refused `400 M_TOO_LARGE`, not
+  truncated. A list a client sends and a request judges per event (`keys`, `rooms`, `senders`, `types`) is prepared
+  once per request (`sync::PreparedRoomEventFilter`, a key bit mask), and a whole-table walk happens once per
+  request, never per match or per matching row.**
+  Why: the standard-library searches are O(text x term) in the worst case, and the text (a 64 KiB body, name or
+  topic, or a display name) and the term are both chosen by one caller, with the runtime lock held; a list scanned
+  per event multiplies its length by the events scanned (CWE-407; security audit run-2 F-28..F-31, F-34, F-50,
+  ADR-0330, ADR-0332, ADR-0333, ADR-0334).
+  Source: `src/core/AGENTS.md`, `src/homeserver/AGENTS.md`, `src/sync/AGENTS.md`.
+
+- **A resident plans the answer to a `send_join` before it stores the join, refuses 503 with nothing stored when the
+  answer would not fit, and reads the state for a `make_join` by key.** `plan_send_join_answer` names the answer's
+  events by ID and size and `send_join_answer_fits` checks them against `join_response_max_size` and the worker frame
+  (events at twice their size); only an accepted join has its events copied out. `omit_members` is the exact value `true`
+  on a `send_join`. The template provider and `decide_restricted_join` use `find_current_state_event_id`,
+  `for_each_room_state_row` and `EventTable::find_in_room`, never a pass over `store.state` or `store.events`. An IPC
+  response over the frame cap is replaced by an `ipc_error` reply, never left to its requester's timeout.
+  Why: a join committed and sent on whose answer is then dropped is lost to its sender, and an answer of attacker-chosen
+  size pinned relay and request threads for 60 to 130 s; a scan of every room's state under the runtime lock follows the
+  size of the server, not the request (CWE-400, CWE-407; security audit run-2 F-19, F-23, ADR-0366, ADR-0367, ADR-0368).
+  Source: `src/homeserver/AGENTS.md`, `src/federation/AGENTS.md`, `src/ipc/AGENTS.md`.
+
 ## Push notifications
 
 - **Glob matching for push rules is linear and never uses `std::regex`.** A pattern without
@@ -1487,7 +1565,7 @@ For finding everything a specific file contributed, without re-reading the whole
 |---|---|
 | root `AGENTS.md` | Memory safety and resource ownership |
 | `security/AGENTS.md`, `security/coding-rules.md` | Memory safety; Secrets and logging; Cryptography; Process |
-| `src/core/AGENTS.md` | Memory safety; Secrets and logging |
+| `src/core/AGENTS.md` | Memory safety; Secrets and logging; Sync |
 | `src/crypto/AGENTS.md` | Secrets and logging; Cryptography |
 | `src/canonicaljson/AGENTS.md` | Cryptography |
 | `src/auth/AGENTS.md` | Secrets and logging; Cryptography; Authentication and authorization; Database |

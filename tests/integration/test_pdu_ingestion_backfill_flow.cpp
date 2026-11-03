@@ -1271,6 +1271,167 @@ SCENARIO("A backfilled event passing its auth_events but failing state-before is
     }
 }
 
+namespace
+{
+
+// Bans @bob:remote.example.org in the room's current state, with `prev_event_id` as the ban's parent. The ban is the
+// room's sole forward extremity afterwards.
+auto seed_ban_of_bob(HomeserverRuntime& runtime, std::string const& room_id, std::string const& prev_event_id) -> void
+{
+    using namespace merovingian;
+
+    auto& store = runtime.database.persistent_store;
+    auto* policy = rooms::find_room_version_policy(room_version);
+    REQUIRE(policy != nullptr);
+    auto const bob = std::string{"@bob:remote.example.org"};
+    auto const ban_id = room_id + ":ban:bob";
+    auto const json = std::string{R"({"type":"m.room.member","state_key":")"} + bob + R"(","room_id":")" + room_id +
+                      R"(","sender":"@admin:local.example.org","content":{"membership":"ban"},)"
+                      R"("origin_server_ts":5,"depth":4,"prev_events":[")" +
+                      prev_event_id + R"("],"auth_events":[],"hashes":{"sha256":"hash"}})";
+    store.events.push_back({ban_id, room_id, "@admin:local.example.org", json, 4U, 0U, {prev_event_id}, {}, {}});
+    for (auto& row : store.state)
+    {
+        if (row.room_id == room_id && row.event_type == "m.room.member" && row.state_key == bob)
+        {
+            row.event_id = ban_id;
+        }
+    }
+    database::rebuild_state_index(store);
+    auto const state_before = homeserver::compute_state_before(store, room_id, *policy, {prev_event_id});
+    REQUIRE(state_before.ok);
+    auto const state_after = homeserver::compute_state_after(state_before.state, ban_id, "m.room.member", bob);
+    auto const group = homeserver::record_event_state(store, room_id, ban_id, {prev_event_id}, state_after, true);
+    REQUIRE(group.has_value());
+}
+
+} // namespace
+
+// Spec: Matrix Server-Server API v1.19, "Soft failure"
+// URL: ../../docs/matrix-v1.19-spec/server-server-api.md#soft-failure
+//
+// "When the homeserver receives a new event over federation it should also check whether the event passes auth checks
+// based on the current state of the room (as well as based on the state at the event). If the event does not pass the
+// auth checks based on the current state of the room (but does pass the auth checks based on the state at that event)
+// it should be 'soft failed'." and "When an event is 'soft failed' it should not be relayed to the client nor be
+// referenced by new events created by the homeserver". An event fetched to fill a gap is newly received like any other
+// (F-16, ADR-0371).
+SCENARIO("An event fetched to fill a gap is checked against the room's current state",
+         "[f16][pdu_ingestion][backfill][conformance]")
+{
+    GIVEN("a room whose member bob sends a message on a branch from before anything happened to him")
+    {
+        auto const path = unique_sqlite_path();
+        std::filesystem::remove(path);
+        auto started = merovingian::homeserver::start_runtime(config_with_sqlite(path));
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        merovingian::homeserver::wire_federation_callbacks(runtime);
+        auto const room_id = std::string{"!backfill-current-state:local.example.org"};
+        seed_room_with_genesis_state_group(runtime, room_id);
+        auto const create_id = room_id + ":create";
+        auto const pl_id = room_id + ":pl";
+        auto const member_bob_id = room_id + ":member:bob";
+
+        auto const fetched =
+            make_remote_message_pdu(room_id, {member_bob_id}, {create_id, pl_id, member_bob_id}, 5, 20);
+        auto const pdu = make_remote_message_pdu(room_id, {fetched.event_id}, {create_id, pl_id, member_bob_id}, 6, 21);
+
+        auto certificate = merovingian::tests::tls_mock::write_test_tls_certificate("localhost");
+        auto tls_context_result = merovingian::homeserver::make_tls_server_context(certificate.certificate_file,
+                                                                                   certificate.private_key_file);
+        REQUIRE(tls_context_result.ok());
+        auto tls_context = std::move(*tls_context_result.context);
+        auto acceptor = merovingian::net::TcpAcceptor{};
+        REQUIRE(acceptor.bind("127.0.0.1", 0U).ok);
+        auto const port = acceptor.bound_port();
+        REQUIRE(port > 0U);
+        runtime.test_forced_outbound_resolution[remote_server] =
+            merovingian::homeserver::TestOnlyForcedOutboundResolution{
+                "localhost", port, {"127.0.0.1"}, certificate.certificate_pem};
+        runtime.federation.remote_key_resolver =
+            [](std::string_view server_name,
+               std::string_view key_id) -> std::optional<merovingian::federation::FederationRemoteRuntime> {
+            if (server_name != remote_server || key_id != remote_key_id)
+            {
+                return std::nullopt;
+            }
+            return remote_runtime();
+        };
+        auto const http_response =
+            merovingian::tests::tls_mock::json_http_response("200 OK", get_missing_events_response(fetched.json));
+        auto server_thread = std::thread{[&]() {
+            run_body_aware_tls_server(acceptor, tls_context, http_response, nullptr);
+        }};
+        auto const join_server = merovingian::tests::tls_mock::ScopedThreadJoin{server_thread};
+        std::ignore = join_server;
+
+        auto const& store = runtime.database.persistent_store;
+        auto const status_of_fetched = [&] {
+            auto const stored = store.events.find_in_room(room_id, fetched.event_id);
+            return stored != store.events.end() ? stored->status : std::string{"absent"};
+        };
+
+        WHEN("bob has been banned in the current state and a PDU forces the message to be fetched")
+        {
+            seed_ban_of_bob(runtime, room_id, member_bob_id);
+            std::ignore = merovingian::homeserver::ingest_pdu_event(runtime, pdu);
+
+            THEN("it is stored soft failed, so no client is given it")
+            {
+                REQUIRE(status_of_fetched() == "soft_failed");
+            }
+
+            THEN("it keeps a state group, so what builds on it can still be placed")
+            {
+                REQUIRE(merovingian::database::find_event_state_group(store, fetched.event_id).has_value());
+            }
+
+            THEN("it is not a forward extremity, so no local event refers to it")
+            {
+                auto const tips = merovingian::database::find_forward_extremities(store, room_id);
+                REQUIRE(std::ranges::find(tips, fetched.event_id) == tips.end());
+            }
+        }
+
+        WHEN("bob was banned and the message is already stored as an outlier with no state of its own")
+        {
+            seed_ban_of_bob(runtime, room_id, member_bob_id);
+            auto stored = merovingian::database::PersistentEvent{};
+            stored.event_id = fetched.event_id;
+            stored.room_id = room_id;
+            stored.sender_user_id = fetched.sender;
+            stored.json = fetched.json;
+            stored.depth = fetched.depth;
+            stored.prev_event_ids = fetched.prev_event_ids;
+            stored.auth_event_ids = fetched.auth_event_ids;
+            stored.signatures = fetched.signatures;
+            stored.status = "outlier";
+            REQUIRE(merovingian::database::store_event_with_state(runtime.database.persistent_store, std::move(stored),
+                                                                  std::nullopt));
+            std::ignore = merovingian::homeserver::ingest_pdu_event(runtime, pdu);
+
+            THEN("gaining a state group does not make it visible: it is soft failed too")
+            {
+                REQUIRE(merovingian::database::find_event_state_group(store, fetched.event_id).has_value());
+                REQUIRE(status_of_fetched() == "soft_failed");
+            }
+        }
+
+        WHEN("bob is still a member and a PDU forces the message to be fetched")
+        {
+            std::ignore = merovingian::homeserver::ingest_pdu_event(runtime, pdu);
+
+            THEN("it is stored as the ordinary outlier it is")
+            {
+                REQUIRE(status_of_fetched() == "outlier");
+            }
+        }
+
+        std::filesystem::remove(path);
+    }
+}
+
 // Room version 11, authorization rule 2.2, and "Auth events selection": selection names a subset of the
 // room state, and an event with no state_key is not room state. Audit run-2 F-05: this holds for an
 // event fetched as a missing prev_event as it does for one received directly.

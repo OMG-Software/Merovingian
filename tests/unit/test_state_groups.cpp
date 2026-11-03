@@ -318,9 +318,9 @@ SCENARIO("A cyclic parent chain fails closed", "[state_groups][database]")
     GIVEN("two state groups whose parent links point at each other")
     {
         auto store = PersistentStore{};
-        store.state_groups.push_back(
+        std::ignore = store.state_groups.insert(
             PersistentStateGroup{"a", "!room:example.org", std::optional<std::string>{"b"}, 1U});
-        store.state_groups.push_back(
+        std::ignore = store.state_groups.insert(
             PersistentStateGroup{"b", "!room:example.org", std::optional<std::string>{"a"}, 1U});
 
         WHEN("the full state of either group is read")
@@ -357,12 +357,12 @@ SCENARIO("A delta chain longer than the depth cap fails closed", "[state_groups]
         // Snapshot at the root, then max_state_group_delta_depth + 1 deltas on
         // top of it — one hop more than read_state_group_full_state's bound
         // (max_state_group_delta_depth + 1 groups total) permits.
-        store.state_groups.push_back(PersistentStateGroup{"root", "!room:example.org", std::nullopt, 0U});
+        std::ignore = store.state_groups.insert(PersistentStateGroup{"root", "!room:example.org", std::nullopt, 0U});
         auto parent = std::string{"root"};
         for (auto depth = std::size_t{1U}; depth <= merovingian::events::max_state_group_delta_depth + 1U; ++depth)
         {
             auto const id = "chain-" + std::to_string(depth);
-            store.state_groups.push_back(PersistentStateGroup{
+            std::ignore = store.state_groups.insert(PersistentStateGroup{
                 id, "!room:example.org", std::optional<std::string>{parent}, static_cast<std::uint32_t>(depth)});
             parent = id;
         }

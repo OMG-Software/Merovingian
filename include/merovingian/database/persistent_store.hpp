@@ -4,6 +4,7 @@
 
 #include "merovingian/database/event_table.hpp"
 #include "merovingian/database/migration.hpp"
+#include "merovingian/database/state_group_tables.hpp"
 #include "merovingian/database/statement.hpp"
 #include "merovingian/events/event.hpp"
 
@@ -105,15 +106,12 @@ enum class TableLoadProfile
 //                       never exposes this server's own signing secret even
 //                       though the table name is shared with it.
 //
-//   state_groups        Phase A (ADR-0064) plumbing: the worker serves
-//                       federation /state and /state_ids locally today from
-//                       current_state/event relations, and a later phase
-//                       moves that to state groups. Readable now so that
-//                       phase does not require a further grant change.
-//   state_group_state   same ADR-0064 phase-A reasoning, for a group's own
-//                       delta/snapshot rows.
-//   event_state_groups  same ADR-0064 phase-A reasoning, for the
-//                       event -> state group mapping.
+//   state_groups        federation /state and /state_ids answer from the state
+//                       group recorded for the event (ADR-0363), and
+//                       ServerEventFilter judges history visibility on it
+//                       (ADR-0064).
+//   state_group_state   the same, for a group's own delta/snapshot rows.
+//   event_state_groups  the same, for the event -> state group mapping.
 //   forward_extremities same ADR-0064 phase-A reasoning: the worker's
 //                       membership_template_provider already reads forward
 //                       extremities via `events` (see above); this table
@@ -859,41 +857,6 @@ inline constexpr std::size_t max_deferred_pdu_json_bytes = std::size_t{16U} * 10
 inline constexpr std::chrono::hours max_deferred_pdu_age{24};
 inline constexpr std::uint32_t max_deferred_pdu_attempts = 10U;
 
-// A state group (ADR-0064, docs/adr/0064-spec-conformant-pdu-ingestion-with-
-// delta-state-groups.md): the room state after some event, stored either as
-// a full snapshot (`parent_state_group_id == nullopt`, `delta_depth == 0`)
-// or as a delta from `parent_state_group_id` (`delta_depth` = parent's
-// depth + 1, capped at `events::max_state_group_delta_depth`). The group's
-// own rows (the full state for a snapshot, or just the changed entries for a
-// delta) live in `state_group_state`/`PersistentStateGroupStateEntry`, keyed
-// by `state_group_id`. See database::create_or_reuse_state_group and
-// database::read_state_group_full_state.
-struct PersistentStateGroup final
-{
-    std::string state_group_id{};
-    std::string room_id{};
-    std::optional<std::string> parent_state_group_id{};
-    std::uint32_t delta_depth{0U};
-};
-
-// One row of a state group's own state: `state_group_id`'s snapshot or delta
-// contains (event_type, state_key) -> event_id. See PersistentStateGroup.
-struct PersistentStateGroupStateEntry final
-{
-    std::string state_group_id{};
-    std::string event_type{};
-    std::string state_key{};
-    std::string event_id{};
-};
-
-// Maps an event to the state group holding the room's state immediately
-// after it (ADR-0064). One row per event that has a known post-state.
-struct PersistentEventStateGroup final
-{
-    std::string event_id{};
-    std::string state_group_id{};
-};
-
 // A room's current forward extremity (ADR-0064): an accepted, non-soft-
 // failed event with no accepted child yet. See
 // database::update_forward_extremities.
@@ -916,6 +879,22 @@ struct RedactionState final
     std::unordered_set<std::string> withheld{};
     // Target event ID -> the redaction event that was applied to it.
     std::unordered_map<std::string, std::string> applied_by_target{};
+};
+
+// Which retained PDUs wait for which events (F-18, ADR-0326). In memory only, derived from
+// `PersistentStore::deferred_pdus` and never persisted: upsert_deferred_pdu and remove_deferred_pdu keep
+// it current, rebuild_deferred_pdu_awaits re-derives it after hydration. A PDU is indexed under the
+// event IDs it is missing (see find_missing_event_references), so waking the PDUs that wait for an event
+// is a lookup, not a search of every retained row's JSON.
+struct DeferredPduAwaits final
+{
+    // Awaited event ID -> (retained event ID -> its room ID).
+    std::unordered_map<std::string, std::unordered_map<std::string, std::string>> rows_by_awaited{};
+    // Retained event ID -> the event IDs it is indexed under.
+    std::unordered_map<std::string, std::vector<std::string>> awaited_by_row{};
+    // `deferred_pdus.size()` when the index was last made to match the rows. A caller that pushed rows
+    // directly leaves it behind, and take_deferred_pdus_awaiting rebuilds first.
+    std::size_t indexed_rows{0U};
 };
 
 struct PersistentStore;
@@ -961,6 +940,9 @@ struct PersistentStore final
         , redactions{other.redactions}
         , redaction_observer{other.redaction_observer}
         , state{other.state}
+        , state_position_index{other.state_position_index}
+        , state_room_index{other.state_room_index}
+        , state_indexed_rows{other.state_indexed_rows}
         , event_edges{other.event_edges}
         , event_auth{other.event_auth}
         , event_signatures{other.event_signatures}
@@ -1002,6 +984,7 @@ struct PersistentStore final
         , appservice_outbox{other.appservice_outbox}
         , appservice_directory{other.appservice_directory}
         , deferred_pdus{other.deferred_pdus}
+        , deferred_pdu_awaits{other.deferred_pdu_awaits}
         , state_groups{other.state_groups}
         , state_group_state{other.state_group_state}
         , event_state_groups{other.event_state_groups}
@@ -1019,6 +1002,9 @@ struct PersistentStore final
         , event_stream_watermark{other.event_stream_watermark}
         , max_to_device_messages_per_user_device{other.max_to_device_messages_per_user_device}
         , to_device_message_ttl_seconds{other.to_device_message_ttl_seconds}
+        , max_to_device_message_bytes{other.max_to_device_message_bytes}
+        , max_to_device_bytes_per_user_device{other.max_to_device_bytes_per_user_device}
+        , to_device_rows_examined{other.to_device_rows_examined}
     {
     }
     PersistentStore(PersistentStore&& other) noexcept = default;
@@ -1049,6 +1035,9 @@ struct PersistentStore final
         redactions = other.redactions;
         redaction_observer = other.redaction_observer;
         state = other.state;
+        state_position_index = other.state_position_index;
+        state_room_index = other.state_room_index;
+        state_indexed_rows = other.state_indexed_rows;
         event_edges = other.event_edges;
         event_auth = other.event_auth;
         event_signatures = other.event_signatures;
@@ -1090,6 +1079,7 @@ struct PersistentStore final
         appservice_outbox = other.appservice_outbox;
         appservice_directory = other.appservice_directory;
         deferred_pdus = other.deferred_pdus;
+        deferred_pdu_awaits = other.deferred_pdu_awaits;
         state_groups = other.state_groups;
         state_group_state = other.state_group_state;
         event_state_groups = other.event_state_groups;
@@ -1103,6 +1093,9 @@ struct PersistentStore final
         next_sync_stream_id = other.next_sync_stream_id;
         event_stream_watermark = other.event_stream_watermark;
         max_to_device_messages_per_user_device = other.max_to_device_messages_per_user_device;
+        max_to_device_message_bytes = other.max_to_device_message_bytes;
+        max_to_device_bytes_per_user_device = other.max_to_device_bytes_per_user_device;
+        to_device_rows_examined = other.to_device_rows_examined;
         to_device_message_ttl_seconds = other.to_device_message_ttl_seconds;
         write_connection_limit = other.write_connection_limit;
         sqlite_write_pool = other.sqlite_write_pool;
@@ -1140,6 +1133,14 @@ struct PersistentStore final
     RedactionState redactions{};
     RedactionObserver redaction_observer{};
     std::vector<PersistentStateEvent> state{};
+    // Positions in `state` by (room_id, event_type, state_key), and the positions of each room's
+    // rows (ADR-0344). Maintained by every writer in persistent_store.cpp and rebuilt after
+    // hydration and `reload_room`; only trusted while `state_indexed_rows == state.size()` and
+    // each position it names still holds the row asked for, otherwise a lookup scans `state`.
+    // A caller that edits `state` directly (a test) thereby loses speed, never correctness.
+    std::unordered_map<std::string, std::size_t> state_position_index{};
+    std::unordered_map<std::string, std::vector<std::size_t>> state_room_index{};
+    std::size_t state_indexed_rows{0U};
     std::vector<PersistentStateTransition> state_transitions{};
     // In-memory index over state_transitions keyed by (room_id, event_type, state_key, event_id)
     // and mapping to the vector offset. Rebuilt after hydration and updated on every insert so
@@ -1218,9 +1219,16 @@ struct PersistentStore final
     // max_deferred_pdu* constants; write through upsert_deferred_pdu and
     // remove_deferred_pdu so the bounds and the database row stay in step.
     std::vector<PersistentDeferredPdu> deferred_pdus{};
-    std::vector<PersistentStateGroup> state_groups{};
-    std::vector<PersistentStateGroupStateEntry> state_group_state{};
-    std::vector<PersistentEventStateGroup> event_state_groups{};
+    // What each retained PDU waits for, by awaited event (ADR-0326). Maintained by upsert_deferred_pdu and
+    // remove_deferred_pdu; read through take_deferred_pdus_awaiting.
+    DeferredPduAwaits deferred_pdu_awaits{};
+    // The state-group tables (ADR-0064) with their hash indexes (ADR-0325). Read-only through the
+    // tables; every change goes through them, so a writer cannot leave an index behind. Lookups:
+    // `event_state_groups.state_group_of(event_id)`, `state_groups.find(id)`,
+    // `state_group_state.entries_of(id)`; see state_group_tables.hpp for the reader discipline.
+    StateGroupTable state_groups{};
+    StateGroupEntryTable state_group_state{};
+    EventStateGroupTable event_state_groups{};
     std::vector<PersistentForwardExtremity> forward_extremities{};
     // Test-only capture of committed statements (AUTH-11). Empty and disabled
     // (`statement_capture_capacity == 0`) unless `enable_statement_capture` is
@@ -1279,6 +1287,15 @@ struct PersistentStore final
     // bound (not recommended); a TTL of zero disables age-based eviction.
     std::uint32_t max_to_device_messages_per_user_device{10000U};
     std::uint32_t to_device_message_ttl_seconds{604800U};
+    // Security audit run-2 F-14 (ADR-0335): the queue is bounded in bytes as well as rows. A message
+    // whose content is over `max_to_device_message_bytes` is refused (the client path answers 413
+    // M_TOO_LARGE, an inbound EDU drops that one message), and a recipient whose queued bytes would pass
+    // `max_to_device_bytes_per_user_device` loses its oldest rows to make room. Zero disables a bound.
+    std::uint32_t max_to_device_message_bytes{65536U};
+    std::uint32_t max_to_device_bytes_per_user_device{16777216U};
+    // Rows an enqueue or a drain looked at, summed over the store's life. A test reads the difference to
+    // prove that a batch of M messages costs one pass over the queue, not one per message (F-13).
+    std::uint64_t to_device_rows_examined{0U};
 };
 
 struct PersistentStoreOpenResult final
@@ -1297,6 +1314,8 @@ struct PersistentStoreOpenResult final
 // relation tables — see reconstruct_event_relations.
 struct RoomReloadSnapshot final
 {
+    // The room the rows belong to; load_room_snapshot sets it.
+    std::string room_id{};
     std::optional<PersistentRoom> room{};
     std::vector<PersistentMembership> memberships{};
     std::vector<PersistentInvite> invites{};
@@ -1309,6 +1328,8 @@ struct RoomReloadSnapshot final
     std::vector<PersistentStateGroup> state_groups{};
     std::vector<PersistentStateGroupStateEntry> state_group_state{};
     std::vector<PersistentEventStateGroup> event_state_groups{};
+    // A memory-backed store has no database to read: nothing to apply (apply_room_snapshot returns at once).
+    bool nothing_to_apply{false};
 };
 
 // Serialise a token expiry time_point to its TEXT column form (epoch-ms decimal
@@ -1441,6 +1462,14 @@ auto reconstruct_event_relations(PersistentStore& store) -> void;
 // that no longer exists is not an error — the room's stale rows are simply
 // removed from this store's copy.
 [[nodiscard]] auto reload_room(PersistentStore& store, std::string_view room_id) -> bool;
+// reload_room in its two halves (F-27, ADR-0358). `load_room_snapshot` is the database read: it
+// does not touch `store`'s rows, so a caller runs it with no lock held. `apply_room_snapshot` is
+// the in-memory swap: it replaces the room's rows with the snapshot's and needs exclusion from
+// every reader of the store, which is all a reader then waits for. nullopt from the load is the
+// connection/query failure reload_room reports as false; apply it never.
+[[nodiscard]] auto load_room_snapshot(PersistentStore const& store, std::string_view room_id)
+    -> std::optional<RoomReloadSnapshot>;
+auto apply_room_snapshot(PersistentStore& store, RoomReloadSnapshot snapshot) -> void;
 [[nodiscard]] auto store_membership(PersistentStore& store, PersistentMembership membership) -> MembershipStoreResult;
 [[nodiscard]] auto update_membership(PersistentStore& store, std::string_view room_id, std::string_view user_id,
                                      std::string_view new_membership, std::uint64_t stream_ordering) -> bool;
@@ -1622,6 +1651,21 @@ auto apply_forward_extremities_update(PersistentStore& store, std::string_view r
 // SQLite/PostgreSQL hydration and after any direct backfill of the vector.
 auto rebuild_state_transition_index(PersistentStore& store) -> void;
 
+// The event ID of the current state event for (room_id, event_type, state_key), or nullopt when the
+// room has none. An index lookup (ADR-0344): no scan of `state` while the index is in step with it.
+[[nodiscard]] auto find_current_state_event_id(PersistentStore const& store, std::string_view room_id,
+                                               std::string_view event_type, std::string_view state_key)
+    -> std::optional<std::string>;
+
+// Calls `visit` with every row of `state` that belongs to `room_id`, in storage order. Walks only
+// that room's rows while the index is in step with `state` (ADR-0344). `visit` must not change `state`.
+auto for_each_room_state_row(PersistentStore const& store, std::string_view room_id,
+                             std::function<void(PersistentStateEvent const&)> const& visit) -> void;
+
+// Rebuilds the in-memory state indexes from `state`. Called after SQLite/PostgreSQL hydration,
+// after `reload_room` and after any direct edit of the vector that should be fast again.
+auto rebuild_state_index(PersistentStore& store) -> void;
+
 // Rebuilds the in-memory client transaction indexes from `client_txn_ids`. Called after
 // SQLite/PostgreSQL hydration.
 auto rebuild_client_txn_index(PersistentStore& store) -> void;
@@ -1802,6 +1846,14 @@ inline constexpr auto max_audit_query_rows = std::size_t{10000U};
 [[nodiscard]] auto append_admin_action(PersistentStore& store, PersistentAdminAction action) -> bool;
 [[nodiscard]] auto store_policy_rule(PersistentStore& store, PersistentPolicyRule rule) -> bool;
 [[nodiscard]] auto delete_policy_rule(PersistentStore& store, std::string_view rule_id) -> bool;
+// Security audit run-2 F-12 (ADR-0339): the most bytes of content one account-data row may hold.
+// store_account_data and both capped forms refuse a row over it, so rows the server writes itself
+// (m.tag) are bounded by the same limit as a client's PUT. Every /sync parses each row into a DOM
+// under runtime.mutex, and a read-modify-write row such as m.tag grows past any one request body.
+inline constexpr std::size_t max_account_data_row_bytes{262144U};
+
+// Returns false, writing nothing, for a missing user or type, content over
+// `max_account_data_row_bytes`, or a failed write.
 [[nodiscard]] auto store_account_data(PersistentStore& store, PersistentAccountData data) -> bool;
 
 // Outcome of store_global_account_data_within_cap and store_room_account_data_within_cap.
@@ -1811,6 +1863,8 @@ enum class CappedAccountDataStore
     // The user already holds the cap's number of other types in the row's scope; nothing was
     // written.
     over_cap,
+    // The row's content is over `max_account_data_row_bytes`; nothing was written.
+    too_large,
     // A row of the wrong scope (room_id set for a global store, empty for a room store), a
     // missing user or type, or the write failed.
     failed,
@@ -1863,6 +1917,13 @@ enum class CappedAccountDataStore
 [[nodiscard]] auto enqueue_to_device_messages_with_client_txn(PersistentStore& store,
                                                               std::vector<PersistentToDeviceMessage> messages,
                                                               PersistentClientTxnRecord record) -> bool;
+// True when `content_json` is within `store.max_to_device_message_bytes` (F-14). The callers that take
+// to-device content from a client or a remote server ask this before queueing it.
+[[nodiscard]] auto to_device_content_fits(PersistentStore const& store, std::string_view content_json) noexcept -> bool;
+// The bytes the queue holds for one (user, device): what the per-device byte bound counts (F-14). Computed
+// from the rows, so it is right after any eviction, acknowledgement or hydration.
+[[nodiscard]] auto to_device_queue_bytes(PersistentStore const& store, std::string_view user_id,
+                                         std::string_view device_id) -> std::uint64_t;
 [[nodiscard]] auto drain_to_device_messages(PersistentStore& store, std::string_view user_id,
                                             std::string_view device_id, std::uint64_t since_stream_id,
                                             std::uint64_t upper_stream_id) -> std::vector<PersistentToDeviceMessage>;
@@ -2032,6 +2093,26 @@ enum class DeferredPduUpsert : std::uint8_t
 // Removes the row for `event_id`. False if there was none or the delete could
 // not be committed.
 [[nodiscard]] auto remove_deferred_pdu(PersistentStore& store, std::string_view event_id) -> bool;
+// The event IDs a PDU names that this store cannot yet use: every `auth_events` ID with no stored event,
+// and every `prev_events` ID that is not stored or has no recorded state group (so no state can be
+// computed before the PDU). The one definition ingestion backfills by and retained PDUs are indexed by.
+struct MissingEventReferences final
+{
+    std::vector<std::string> auth{};
+    std::vector<std::string> prev{};
+};
+[[nodiscard]] auto find_missing_event_references(PersistentStore const& store,
+                                                 std::vector<std::string> const& auth_event_ids,
+                                                 std::vector<std::string> const& prev_event_ids)
+    -> MissingEventReferences;
+// Rebuilds `store.deferred_pdu_awaits` from the retained rows, parsing each row's JSON once. Hydration
+// calls it after every table is loaded.
+auto rebuild_deferred_pdu_awaits(PersistentStore& store) -> void;
+// The IDs of the retained PDUs of `room_id` that are waiting for `event_id`, other than `event_id`
+// itself, found by lookup in the index (no row is searched). They stop waiting for it: a second call
+// with the same ID finds none until a retained PDU is indexed under it again.
+[[nodiscard]] auto take_deferred_pdus_awaiting(PersistentStore& store, std::string_view room_id,
+                                               std::string_view event_id) -> std::vector<std::string>;
 // Copies of the retained PDUs: every one, or one room's.
 [[nodiscard]] auto list_deferred_pdus(PersistentStore const& store) -> std::vector<PersistentDeferredPdu>;
 [[nodiscard]] auto deferred_pdus_for_room(PersistentStore const& store, std::string_view room_id)

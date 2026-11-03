@@ -140,6 +140,20 @@ namespace
                 add_parse_finding(findings, std::string{key}, "expected unsigned integer");
             }
         }
+        else if (key == "server.client_api.max_to_device_message_bytes")
+        {
+            if (!parse_u32_value(value, server.client_api.max_to_device_message_bytes))
+            {
+                add_parse_finding(findings, std::string{key}, "expected unsigned integer");
+            }
+        }
+        else if (key == "server.client_api.max_to_device_bytes_per_user_device")
+        {
+            if (!parse_u32_value(value, server.client_api.max_to_device_bytes_per_user_device))
+            {
+                add_parse_finding(findings, std::string{key}, "expected unsigned integer");
+            }
+        }
         else if (key == "server.client_api.max_one_time_keys_per_device")
         {
             if (!parse_u32_value(value, server.client_api.max_one_time_keys_per_device))
@@ -262,6 +276,13 @@ namespace
         else if (key == "security.federation.outbound_queue_capacity")
         {
             if (!parse_u32_value(value, security.federation.outbound_queue_capacity))
+            {
+                add_parse_finding(findings, std::string{key}, "expected unsigned integer");
+            }
+        }
+        else if (key == "security.federation.outbound_delivery_threads")
+        {
+            if (!parse_u32_value(value, security.federation.outbound_delivery_threads))
             {
                 add_parse_finding(findings, std::string{key}, "expected unsigned integer");
             }
@@ -1187,6 +1208,13 @@ namespace
         else if (key == "security.media.max_records")
         {
             if (!parse_u64_value(value, security.media.max_records))
+            {
+                add_parse_finding(findings, std::string{key}, "expected non-negative integer");
+            }
+        }
+        else if (key == "security.media.max_records_per_user")
+        {
+            if (!parse_u64_value(value, security.media.max_records_per_user))
             {
                 add_parse_finding(findings, std::string{key}, "expected non-negative integer");
             }

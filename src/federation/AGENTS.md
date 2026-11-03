@@ -26,6 +26,10 @@ Federation is the highest-risk surface: **all input comes from untrusted remote 
    through the resolver overload of `authorize_federation_pdu`, worker relay, backfill and the
    `send_join` state this server stores when it joins (`filter_verified_send_join_events`)
    directly (ADR-0171). A new ingestion path does the same.
+   The rule exists from room version 8 only (rooms/v8.md rule 4.2, "New in this version"; rooms
+   v3 to v7 never mention the property). The helper accepts when the policy has no
+   `restricted_join_rule`, so no caller tests the version, and a prefetch of authorising keys
+   skips those versions too (ADR-0356).
 
    Either signature is checked against every key ID the event lists for that server, not only
    the first. The sender check (`authorize_federation_pdu_sender`,
@@ -46,6 +50,13 @@ Federation is the highest-risk surface: **all input comes from untrusted remote 
    under this server's name before signing (R04, ADR-0185). No other endpoint
    or server gets that exemption.
 
+   The resident's answer to a `send_join` is bounded before the join is stored (F-23, ADR-0366): the acceptor plans it
+   (`plan_send_join_answer`) and refuses 503 with nothing stored or sent on when it would not fit the body cap or the
+   worker channel's frame. `handle_send_membership` parses the `omit_members` query parameter (only the exact value
+   `true`, only on `send_join`) into `InboundPduEnvelope::omit_members` and writes `members_omitted` and
+   `servers_in_room` from the acceptor's result. This server never sends `omit_members` when it joins a room
+   (ADR-0241), so its own join path needs no handling of a reduced answer.
+
    A content-hash mismatch is never a reason to refuse an event on any path: the event is
    redacted and processed further (spec "Checks performed on receipt of a PDU", step 3). The
    membership acceptor and the invite handler redact; `handle_send_membership` and
@@ -58,6 +69,14 @@ Federation is the highest-risk surface: **all input comes from untrusted remote 
    `M_LIMIT_EXCEEDED`). Write `consecutive_failures` only through
    `record_remote_trust_failure()` and only after the signature has verified; the backoff
    it feeds decays after `remote_backoff_decay_window` (5 minutes).
+
+   A failed PDU in a `/send` transaction is charged to the transport peer only when its sender
+   domain is the X-Matrix origin or cannot be read: a PDU relayed from a third server verifies
+   according to that server's keys, which the relay does not control, so it is dropped with its
+   per-PDU error and costs the relay nothing (F-22, ADR-0346). A transaction in which any PDU
+   failed verification does not reset the count. Only the transaction path writes the peer's
+   trust record: a 2xx answer on any other endpoint never resets or persists it, and a worker's
+   synthetic remote (ADR-0110) is never written back (F-59, ADR-0347).
 
 3. **Fetch remote server keys via `remote_key_cache.hpp`** — never trust a key the remote server
    supplies inline. The key cache fetches from `/_matrix/key/v2/server` and trusts a key for at
@@ -86,7 +105,8 @@ Federation is the highest-risk surface: **all input comes from untrusted remote 
 
 6. **Never relay a remote server's answer about users unfiltered.** Keep only the users that
    server was asked about, and only records that describe the user they are filed under. For
-   E2EE keys use `accept_remote_key_query_response()` (`key_query.hpp`). Merge uploaded key
+   E2EE keys use `accept_remote_key_query_response()` and, for a `/keys/claim` answer,
+   `accept_remote_key_claim_response()` (`key_query.hpp`, ADR-0337). Merge uploaded key
    signatures only through `key_signatures.hpp`, passing `std::nullopt` as the viewer for
    anything sent to another server (ADR-0060).
 
@@ -97,8 +117,8 @@ Federation is the highest-risk surface: **all input comes from untrusted remote 
    current state, or `world_readable` history visibility). Never take the origin from the
    query string or body. The gate lives in `event_query.cpp`, not the handler, so it holds on
    both the worker-snapshot path and the main-relay path (`/event`, which resolves the event's
-   own room). `/state` and `/state_ids` return 404 for an unknown `event_id` — never fall
-   back to current state — and `get_missing_events` is a bounded walk (limit at most 20), not
+   own room). `/state` and `/state_ids` return 404 for an unknown `event_id` or one with no state this server
+   recorded — never fall back to current state or to a walk of the graph (rule 19) — and `get_missing_events` is a bounded walk (limit at most 20), not
    a room scan. The server ACL check in `inbound_request.cpp` stays in front of all of this.
 
    **The gate is not the whole rule: what comes back is filtered per event by server-level history
@@ -113,7 +133,8 @@ Federation is the highest-risk surface: **all input comes from untrusted remote 
    `prev_events`, `auth_events` and event ID are untouched, and it is never dropped, which would leave a hole
    in the receiver's graph. Fail closed: an event with no state group or a broken chain is redacted; if it
    cannot be redacted either (room version unknown) it is left out, never sent in full. One filter serves
-   one request, so the group index is built once and a membership scan runs once per distinct group.
+   one request and builds no index of its own (the store's state-group indexes answer each lookup, ADR-0325), and a
+   membership scan runs once per distinct group.
    `/state`, `/state_ids` and `/event_auth` are deliberately NOT filtered: state events are part of the
    room's authorisation, and a joining or catching-up server needs the whole of them to compute state and
    authorise events. Do not add a filter there without an ADR. A new read that returns room events goes
@@ -127,7 +148,8 @@ Federation is the highest-risk surface: **all input comes from untrusted remote 
    (`database::enqueue_to_device_messages`), so a failed store never makes the resend look like
    a replay (ADR-0166). Our own outbound `message_id` is `derive_direct_to_device_message_id`
    (sender, event type, txn id), never the raw client txn id. One EDU queues at most
-   `max_inbound_direct_to_device_deliveries` messages. A `m.device_list_update` /
+   `max_inbound_direct_to_device_deliveries` messages, and a message whose content is over `max_to_device_message_bytes`
+   is dropped alone, not the EDU (ADR-0335). A `m.device_list_update` /
    `m.signing_key_update` writes a `device_list_changes` row only for local users who share a
    joined room with the subject, as one batch (`record_device_list_changes`), one row per
    (observer, subject). A remote user's own membership change reaches the same table through
@@ -242,6 +264,35 @@ Federation is the highest-risk surface: **all input comes from untrusted remote 
    `auth_chain` already holds it (its walk starts at the pre-join state). State resolution's own auth-chain
    computation and what this server accepts are not changed.
 
+18. **A handler checks the grammar of an identifier a remote server chose before it looks it up or relays it (F-08).**
+   `query/directory` (`room_alias`: `auth::room_alias_is_valid`), `user/devices` (`auth::user_id_is_valid_federated`),
+   `event` (`$`, at most 255 bytes, valid UTF-8) and `make_join`/`make_leave`/`make_knock` (room ID likewise with `!`,
+   user ID as above) answer 400 `M_INVALID_PARAM`, as `query/profile` does. The percent-decoder passes any byte, and a
+   worker relays these to main, so a new handler that takes an identifier from the path or query does the same.
+
+19. **Main decides the room ACL and the admin's policy for what a worker relays (F-21, F-24, ADR-0358, ADR-0359).**
+   `handle_pdu_ingest_request`, `handle_membership_ingest_request` and `handle_invite_ingest_request` read
+   `room_server_acl_allows` from main's store under `runtime.mutex` for the transport origin (before any key lookup) and,
+   for `pdu_ingest` and `membership_ingest`, for the verified sender's server, and judge the origin's federation policy
+   rule; `edu_ingest` judges the rule for the origin main authenticated. A refused PDU is `PduIngestionStatus::rejected_acl`,
+   which `/send` reports as an `error` entry (a rejection is stored and silent, the opposite of the spec's "ignored with an
+   error"). `load_room_server_acl` reads the ACL through `find_current_state_event_id`. A new relay does the same.
+19. **The state at an event is the state this server recorded, never a walk of the event graph (F-25, F-26, ADR-0363).**
+   `/state`, `/state_ids` and the client `/context` `state` answer through `state_before_event` and
+   `resolve_state_event_ids_at` (`event_query.cpp`). The state BEFORE an event is its own state group when the event is
+   not a state event or was rejected (a group holds the state AFTER its event, and a rejected event is recorded with the
+   state before it), else, with a single `prev_event`, its own group with its own key's entry from that `prev_event`'s
+   group (that group for any event but a fallback one, whose recorded state may hold a ban the cited fork lacks,
+   ADR-0373; that group alone for an event with no group of its own), else `compute_state_before` over several
+   `prev_events` under `state_read_resolution_limits` (a lowered auth-walk, ADR-0365). It fails closed with 404: no
+   recorded group for the `prev_event` (outlier, the events before a federated join's own event), a broken chain, a group
+   naming an event the store lacks or a rejected one. Never rebuild state from `prev_events` and `depth`: depth is the sender's, and a rejected state event
+   with the largest depth would win its key. A cost that grows with the room's history is the defect; the cost is at most
+   two group chains and the size of the state (`StateAtEvent::events_parsed`). The auth chain of `/state` and `/state_ids` is
+   at most `max_state_auth_chain_events` (65536) and a longer one is 502 `M_TOO_LARGE`, never cut (ADR-0364). The
+   functions hold no static state, take no lock and return owned data; the caller guards the store. Read current state
+   with `find_current_state_event_id` and `for_each_room_state_row`, never a scan of `store.state` (ADR-0344).
+
 ## Key files
 
 | File | Responsibility |
@@ -282,3 +333,16 @@ Federation is the highest-risk surface: **all input comes from untrusted remote 
 - [Transactions](../../docs/matrix-v1.19-spec/server-server-api.md#transactions)
 - [Joining rooms](../../docs/matrix-v1.19-spec/server-server-api.md#joining-rooms)
 - [Key publication](../../docs/matrix-v1.19-spec/server-server-api.md#publishing-keys)
+
+## Outbound delivery: one thread per destination at most (F-20, ADR-0354)
+
+`DispatchWorker` runs `delivery_threads` threads over one queue. `next_ready_locked` offers only a destination's oldest
+transaction, and only with none in flight: the spec's "must wait and retry for a 200 OK" is why, so keep `requeue_locked` at
+the front. Injected callbacks run concurrently. Never hold a `FederationDestination&` across a network call: an attempt works
+on a copy and puts it back with `remember_destination_locked`. Do not make a slow success free: it is what let one peer hold
+the only thread.
+
+`lookup_srv` can run on several delivery threads at once, so never call a resolver function that keeps process-wide state
+there. On NetBSD `res_query`, `res_search` and `res_send` all share one state with no lock, and a thread can end up blocked
+reading a socket another is closing, past any budget or request to stop (ADR-0355). Do not put a lock around them instead:
+one slow name server, which a remote operator chooses, would hold every other lookup.

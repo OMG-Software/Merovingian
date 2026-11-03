@@ -907,6 +907,35 @@ SCENARIO("Key-value config parser applies the resource capacity limits", "[confi
     }
 }
 
+// F-46, ADR-0340: one user's share of the local media record cap.
+SCENARIO("Key-value config parser reads the per-user media record share", "[config][parser][security][f-46]")
+{
+    GIVEN("a config that sets the share, one that turns it off and one that sets it badly")
+    {
+        auto const set = merovingian::config::parse_key_value_config("security.media.max_records_per_user=500\n");
+        auto const off = merovingian::config::parse_key_value_config("security.media.max_records_per_user=0\n");
+        auto const bad = merovingian::config::parse_key_value_config("security.media.max_records_per_user=lots\n");
+
+        WHEN("the defaults are read from an empty config")
+        {
+            auto const defaults = merovingian::config::parse_key_value_config("");
+
+            THEN("the share is applied, zero turns it off, junk is a finding, and the default is a small share")
+            {
+                REQUIRE(set.findings.empty());
+                REQUIRE(set.config.security().media.max_records_per_user == 500U);
+                REQUIRE(off.findings.empty());
+                REQUIRE(off.config.security().media.max_records_per_user == 0U);
+                REQUIRE_FALSE(bad.findings.empty());
+                REQUIRE(bad.findings.front().field == "security.media.max_records_per_user");
+                REQUIRE(defaults.config.security().media.max_records_per_user > 0U);
+                REQUIRE(defaults.config.security().media.max_records_per_user * 10U <=
+                        defaults.config.security().media.max_records);
+            }
+        }
+    }
+}
+
 SCENARIO("Key-value config parser rejects malformed resource capacity limits", "[config][parser][security]")
 {
     GIVEN("a non-numeric connection queue depth")

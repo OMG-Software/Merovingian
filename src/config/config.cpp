@@ -926,6 +926,17 @@ auto validate(Config const& config) -> std::vector<ConfigValidationFinding>
                    config.server().client_api.max_notifications_page_size, 10000U);
     validate_count("server.client_api.max_to_device_messages_per_user_device",
                    config.server().client_api.max_to_device_messages_per_user_device, 1000000U);
+    validate_count("server.client_api.max_to_device_message_bytes",
+                   config.server().client_api.max_to_device_message_bytes, 16777216U);
+    validate_count("server.client_api.max_to_device_bytes_per_user_device",
+                   config.server().client_api.max_to_device_bytes_per_user_device, 1073741824U);
+    // A message that cannot fit the recipient's byte budget on its own could never be queued.
+    if (config.server().client_api.max_to_device_message_bytes >
+        config.server().client_api.max_to_device_bytes_per_user_device)
+    {
+        findings.push_back({"server.client_api.max_to_device_message_bytes",
+                            "must not exceed server.client_api.max_to_device_bytes_per_user_device"});
+    }
     validate_count("server.client_api.to_device_message_ttl_seconds",
                    config.server().client_api.to_device_message_ttl_seconds, 31536000U);
     validate_count("server.client_api.max_one_time_keys_per_device",
@@ -952,6 +963,8 @@ auto validate(Config const& config) -> std::vector<ConfigValidationFinding>
     validate_count("security.federation.outbound_queue_capacity", config.security().federation.outbound_queue_capacity,
                    65536U);
     validate_count("security.federation.outbound_max_retries", config.security().federation.outbound_max_retries, 256U);
+    validate_count("security.federation.outbound_delivery_threads",
+                   config.security().federation.outbound_delivery_threads, 64U);
     validate_count("appservice.connect_timeout_seconds", config.appservice().connect_timeout_seconds, 120U);
     validate_count("appservice.total_timeout_seconds", config.appservice().total_timeout_seconds, 300U);
     validate_bytes("appservice.response_max_size", config.appservice().response_max_size, 67108864U);

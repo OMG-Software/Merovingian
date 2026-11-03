@@ -2000,7 +2000,8 @@ SCENARIO("Relayed sender resolution shares the source key-resolution budget",
                 REQUIRE(sink_calls == 0U);
                 CHECK(calls.load() == 3U);
                 CHECK(runtime.key_resolution_failures.size() == 3U);
-                CHECK(runtime.remotes.front().trust.consecutive_failures == 3U);
+                // F-22 (ADR-0346): the sender lookups failed for PDUs the relay only forwarded.
+                CHECK(runtime.remotes.front().trust.consecutive_failures == 0U);
                 CHECK(runtime.accepted_transactions.empty());
                 CHECK(runtime.key_resolutions_in_flight == 0U);
                 REQUIRE(runtime.key_resolution_buckets.size() == 1U);
@@ -2134,7 +2135,8 @@ SCENARIO("Failed sender lookups are cached per server and signing key",
                     return status == 200U;
                 }));
                 CHECK(calls.load() == 2U);
-                CHECK(runtime.remotes.front().trust.consecutive_failures == 3U);
+                // F-22 (ADR-0346): relayed PDUs, so none is charged to the relay.
+                CHECK(runtime.remotes.front().trust.consecutive_failures == 0U);
                 CHECK(runtime.key_resolutions_in_flight == 0U);
                 REQUIRE(runtime.key_resolution_failures.size() == 2U);
                 CHECK(runtime.key_resolution_failures.front().origin == sender);
@@ -3357,7 +3359,10 @@ SCENARIO("Mixed negative-cache failure and local overload preserve genuine trust
                     };
                     auto const response = merovingian::federation::handle_inbound_federation_request(runtime, request);
                     CHECK(response.status == 503U);
-                    CHECK(runtime.remotes.front().trust.consecutive_failures == 2U);
+                    // F-22 (ADR-0346): the failed sender's PDU is relayed, so it is not charged; the
+                    // penalty kept across a local denial is covered for the peer's own PDUs by the
+                    // "local denial mixed with the peer's own forged PDU" scenario.
+                    CHECK(runtime.remotes.front().trust.consecutive_failures == 1U);
                     CHECK(runtime.accepted_transactions.empty());
                     CHECK(edu_calls == 0U);
                     CHECK(raw_calls.load() == 0U);
@@ -4465,6 +4470,330 @@ SCENARIO("Transactions whose PDUs are all rejected keep incrementing the "
                 REQUIRE(accepted.body.starts_with("{\"pdus\":{\"$"));
                 REQUIRE(accepted.body.find("error") == std::string::npos);
                 REQUIRE(persisted_failures() == 0U);
+            }
+        }
+    }
+}
+
+// Spec: Matrix Server-Server API v1.19 - Transactions (PUT /send/{txnId}) and Joining Rooms (send_join)
+// URL:  ../../docs/matrix-v1.19-spec/server-server-api.md#transactions
+//
+// Transactions: the 200 response "is to use this response even in the event of one or more PDUs failing to
+// be processed". Joining Rooms (send_join): the resident server "must also send the event to other servers
+// participating in the room", so a server legitimately relays PDUs authored by a third server. Whether such
+// a PDU verifies here depends on the third server's keys, which the relay cannot influence; the relay is
+// therefore not charged for it (F-22, ADR-0346). F-59 (ADR-0347): only a transaction writes the peer's trust
+// state, so a read cannot clear a backoff the peer earned. The two interact -- a read between relayed
+// failures could hide a missing relay fix, and an uncharged relay could hide a missing read fix -- so each
+// scenario below pins one behaviour in a sequence the other fix cannot influence, and one scenario runs both
+// orders of interleaving.
+namespace
+{
+
+struct PeerTrafficFixture final
+{
+    merovingian::federation::FederationRuntimeState runtime;
+    std::string peer{"relay.example.org"};
+    std::string third_party{"third.example.org"};
+    std::string key_id{"ed25519:peer"};
+    std::string seed{"peer-trust-seed"};
+    std::string other_seed{"someone-elses-seed"};
+    std::size_t next_transaction{0U};
+
+    PeerTrafficFixture()
+        : runtime{merovingian::federation::make_federation_runtime_state(runtime_config())}
+    {
+        REQUIRE(sodium_is_ready());
+        runtime.config.key_resolution_per_ip_rate = {1000U, 3600U};
+        merovingian::federation::upsert_remote(runtime, remote_for(peer, key_id, seed));
+        runtime.profile_query_provider = [](std::string_view) -> merovingian::federation::FederationProfile {
+            return {true, "Alice", "mxc://local.example.org/avatar"};
+        };
+    }
+
+    // The third server's key is unavailable to this server.
+    auto third_party_key_is_unavailable() -> void
+    {
+        runtime.remote_key_resolver =
+            [](std::string_view, std::string_view) -> std::optional<merovingian::federation::FederationRemoteRuntime> {
+            return std::nullopt;
+        };
+    }
+
+    // The third server serves this server a key other than the one it signed with.
+    auto third_party_serves_a_different_key() -> void
+    {
+        runtime.remote_key_resolver =
+            [this](std::string_view server,
+                   std::string_view id) -> std::optional<merovingian::federation::FederationRemoteRuntime> {
+            return remote_for(std::string{server}, std::string{id}, other_seed);
+        };
+    }
+
+    [[nodiscard]] auto relayed_pdu() const -> std::string
+    {
+        return signed_json_pdu(third_party, key_id, seed);
+    }
+
+    // A PDU whose sender is the peer itself, signed with a key the peer does not hold.
+    [[nodiscard]] auto forged_own_pdu() const -> std::string
+    {
+        return signed_json_pdu(peer, key_id, other_seed);
+    }
+
+    [[nodiscard]] auto valid_own_pdu() const -> std::string
+    {
+        return signed_json_pdu(peer, key_id, seed);
+    }
+
+    auto send(std::vector<std::string> const& pdus, bool signature_verified = false)
+        -> merovingian::federation::FederationResponse
+    {
+        auto request = signed_request(peer, key_id, seed, transaction_body_pdus(peer, pdus));
+        request.target = "/_matrix/federation/v1/send/peer-trust-" + std::to_string(next_transaction++);
+        request.signature = merovingian::federation::make_federation_signature(
+            request.origin, request.destination, request.method, request.target, request.body,
+            merovingian::federation::test::keypair_from_seed(seed).secret_key);
+        request.signature_verified = signature_verified;
+        return merovingian::federation::handle_inbound_federation_request(runtime, request);
+    }
+
+    // A read that answers 2xx. `signature_verified` is how a federation worker receives requests main
+    // already authenticated (the synthetic-remote path); false is the full resolution path.
+    auto read(bool signature_verified) -> merovingian::federation::FederationResponse
+    {
+        auto request = merovingian::federation::SignedFederationRequest{};
+        request.method = "GET";
+        request.target = "/_matrix/federation/v1/query/profile?user_id=%40alice%3Alocal.example.org";
+        request.origin = peer;
+        request.destination = "local.example.org";
+        request.key_id = key_id;
+        request.now_ts = 1000U;
+        request.canonical_json_verified = true;
+        request.body = "{}";
+        request.signature = merovingian::federation::make_federation_signature(
+            request.origin, request.destination, request.method, request.target, request.body,
+            merovingian::federation::test::keypair_from_seed(seed).secret_key);
+        request.signature_verified = signature_verified;
+        return merovingian::federation::handle_inbound_federation_request(runtime, request);
+    }
+
+    [[nodiscard]] auto failures() const -> std::uint32_t
+    {
+        return runtime.remotes.front().trust.consecutive_failures;
+    }
+};
+
+} // namespace
+
+SCENARIO("A relay whose forwarded PDUs cannot be verified here is not backed off",
+         "[federation][inbound][trust][security][f22][conformance]")
+{
+    GIVEN("an authenticated peer relaying PDUs authored by a third server whose key this server cannot use")
+    {
+        auto fixture = PeerTrafficFixture{};
+        auto const unavailable_or_different = GENERATE(0, 1);
+        CAPTURE(unavailable_or_different);
+        if (unavailable_or_different == 0)
+        {
+            fixture.third_party_key_is_unavailable();
+        }
+        else
+        {
+            fixture.third_party_serves_a_different_key();
+        }
+
+        WHEN("four transactions in a row each carry one such PDU")
+        {
+            auto responses = std::vector<merovingian::federation::FederationResponse>{};
+            for (auto i = 0U; i < 4U; ++i)
+            {
+                responses.push_back(fixture.send({fixture.relayed_pdu()}));
+            }
+
+            THEN("every transaction is answered 200 with a per-PDU error, and the peer carries no failure")
+            {
+                for (auto const& response : responses)
+                {
+                    REQUIRE(response.status == 200U);
+                    CHECK(response.body.find("\"error\"") != std::string::npos);
+                }
+                CHECK(fixture.failures() == 0U);
+            }
+
+            AND_THEN("the peer's next valid transaction is still processed")
+            {
+                auto const next = fixture.send({fixture.valid_own_pdu()});
+                REQUIRE(next.status == 200U);
+                CHECK(next.body.find("error") == std::string::npos);
+            }
+        }
+    }
+}
+
+SCENARIO("A peer's own forged PDUs still back it off", "[federation][inbound][trust][security][f22]")
+{
+    GIVEN("an authenticated peer sending PDUs it authored but signed with a key it does not hold")
+    {
+        auto fixture = PeerTrafficFixture{};
+        fixture.third_party_key_is_unavailable();
+
+        WHEN("three such transactions arrive and a fourth follows")
+        {
+            for (auto i = 0U; i < 3U; ++i)
+            {
+                REQUIRE(fixture.send({fixture.forged_own_pdu()}).status == 200U);
+            }
+            auto const fourth = fixture.send({fixture.valid_own_pdu()});
+
+            THEN("each was charged and the fourth is refused with 429")
+            {
+                CHECK(fixture.failures() == 3U);
+                REQUIRE(fourth.status == 429U);
+                CHECK(fourth.body.find("remote backoff required") != std::string::npos);
+            }
+        }
+
+        AND_WHEN("one transaction carries a forged own PDU and an unverifiable relayed PDU")
+        {
+            auto const response = fixture.send({fixture.forged_own_pdu(), fixture.relayed_pdu()});
+
+            THEN("only the peer's own PDU is charged")
+            {
+                REQUIRE(response.status == 200U);
+                CHECK(fixture.failures() == 1U);
+            }
+        }
+    }
+}
+
+SCENARIO("A local denial mixed with the peer's own forged PDU keeps the peer's charge",
+         "[federation][inbound][trust][security][f22]")
+{
+    GIVEN("a peer whose transaction carries its own forged PDU and a relayed PDU this server cannot afford to look up")
+    {
+        auto fixture = PeerTrafficFixture{};
+        fixture.third_party_key_is_unavailable();
+        fixture.runtime.config.key_resolution_max_in_flight = 1U;
+        fixture.runtime.key_resolutions_in_flight = 1U;
+
+        WHEN("the transaction is processed")
+        {
+            auto const response = fixture.send({fixture.forged_own_pdu(), fixture.relayed_pdu()});
+
+            THEN("it is retryable (503), and the charge for the peer's own PDU is kept")
+            {
+                REQUIRE(response.status == 503U);
+                CHECK(fixture.failures() == 1U);
+                CHECK(fixture.runtime.accepted_transactions.empty());
+            }
+        }
+    }
+}
+
+SCENARIO("A peer cannot clear its backoff with a successful read",
+         "[federation][inbound][trust][security][f59][conformance]")
+{
+    GIVEN("a peer that earned three failures on its own forged PDUs")
+    {
+        auto fixture = PeerTrafficFixture{};
+        fixture.third_party_key_is_unavailable();
+        for (auto i = 0U; i < 3U; ++i)
+        {
+            REQUIRE(fixture.send({fixture.forged_own_pdu()}, true).status == 200U);
+        }
+        REQUIRE(fixture.failures() == 3U);
+        auto const failed_at = fixture.runtime.remotes.front().trust.last_failure_at;
+
+        WHEN("it makes a read main already authenticated (a worker's synthetic remote) and then sends again")
+        {
+            auto const read = fixture.read(true);
+            auto const next = fixture.send({fixture.valid_own_pdu()}, true);
+
+            THEN("the read is answered, the failures and their time are kept and the next transaction is 429")
+            {
+                REQUIRE(read.status == 200U);
+                CHECK(fixture.failures() == 3U);
+                CHECK(fixture.runtime.remotes.front().trust.last_failure_at == failed_at);
+                REQUIRE(next.status == 429U);
+                CHECK(next.body.find("remote backoff required") != std::string::npos);
+            }
+        }
+    }
+
+    GIVEN("a peer with two failures that has not yet tripped the backoff")
+    {
+        auto fixture = PeerTrafficFixture{};
+        fixture.third_party_key_is_unavailable();
+        for (auto i = 0U; i < 2U; ++i)
+        {
+            REQUIRE(fixture.send({fixture.forged_own_pdu()}).status == 200U);
+        }
+
+        WHEN("it makes a read through the full resolution path")
+        {
+            auto const read = fixture.read(false);
+
+            THEN("only a clean transaction resets the count, so the read leaves it alone")
+            {
+                REQUIRE(read.status == 200U);
+                CHECK(fixture.failures() == 2U);
+            }
+        }
+    }
+}
+
+SCENARIO("Reads and relayed failures interleaved with a peer's own forged PDUs leave the backoff intact",
+         "[federation][inbound][trust][security][f22][f59]")
+{
+    // Both orders: a relayed failure before the peer's own, and after. Neither a read nor an uncharged
+    // relayed failure may reset or hide what the peer's own PDUs earned.
+    GIVEN("a peer, a third server this server cannot verify, and a read endpoint that answers 2xx")
+    {
+        auto fixture = PeerTrafficFixture{};
+        fixture.third_party_key_is_unavailable();
+
+        WHEN("relayed failures and reads come first and the peer's own forged PDUs follow")
+        {
+            REQUIRE(fixture.read(true).status == 200U);
+            REQUIRE(fixture.send({fixture.relayed_pdu()}, true).status == 200U);
+            REQUIRE(fixture.read(true).status == 200U);
+            REQUIRE(fixture.send({fixture.relayed_pdu()}, true).status == 200U);
+            for (auto i = 0U; i < 3U; ++i)
+            {
+                REQUIRE(fixture.send({fixture.forged_own_pdu()}, true).status == 200U);
+                REQUIRE(fixture.read(true).status == 200U);
+            }
+
+            THEN("the three own failures stand and the next transaction is refused")
+            {
+                CHECK(fixture.failures() == 3U);
+                CHECK(fixture.send({fixture.valid_own_pdu()}, true).status == 429U);
+            }
+        }
+
+        AND_WHEN("the peer's own forged PDUs come first and relayed failures and reads follow")
+        {
+            for (auto i = 0U; i < 2U; ++i)
+            {
+                REQUIRE(fixture.send({fixture.forged_own_pdu()}, true).status == 200U);
+                REQUIRE(fixture.read(true).status == 200U);
+            }
+            for (auto i = 0U; i < 3U; ++i)
+            {
+                REQUIRE(fixture.send({fixture.relayed_pdu()}, true).status == 200U);
+                REQUIRE(fixture.read(true).status == 200U);
+            }
+
+            THEN("the count is still two (a transaction with a failed PDU is no evidence of good behaviour)")
+            {
+                CHECK(fixture.failures() == 2U);
+            }
+            AND_THEN("one more forged PDU of its own trips the backoff")
+            {
+                REQUIRE(fixture.send({fixture.forged_own_pdu()}, true).status == 200U);
+                CHECK(fixture.failures() == 3U);
+                CHECK(fixture.send({fixture.valid_own_pdu()}, true).status == 429U);
             }
         }
     }

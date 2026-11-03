@@ -19,6 +19,7 @@
 #include "merovingian/canonicaljson/parser.hpp"
 #include "merovingian/canonicaljson/serializer.hpp"
 #include "merovingian/canonicaljson/value.hpp"
+#include "merovingian/core/folded_substring.hpp"
 #include "merovingian/core/query_params.hpp"
 #include "merovingian/core/secret_buffer.hpp"
 #include "merovingian/crypto/constant_time.hpp"
@@ -51,11 +52,13 @@
 #include "merovingian/homeserver/room_power.hpp"
 #include "merovingian/homeserver/room_service.hpp"
 #include "merovingian/homeserver/runtime.hpp"
+#include "merovingian/homeserver/search_room_index.hpp"
 #include "merovingian/homeserver/space_hierarchy.hpp"
 #include "merovingian/homeserver/state_bookkeeping.hpp"
 #include "merovingian/homeserver/stored_push_rules.hpp"
 #include "merovingian/homeserver/stored_room_version.hpp"
 #include "merovingian/homeserver/url_preview_service.hpp"
+#include "merovingian/homeserver/user_directory_search.hpp"
 #include "merovingian/http/rate_limit.hpp"
 #include "merovingian/http/request.hpp"
 #include "merovingian/identity/identity_client.hpp"
@@ -655,6 +658,18 @@ namespace
     {
         auto const result = canonicaljson::serialize_canonical(value);
         return result.output;
+    }
+
+    // As json_serialize, but a serialiser error is returned, not hidden behind an empty body: a response
+    // that may hold members a remote server chose (F-36, ADR-0337) must never go out as a 200 with no body.
+    [[nodiscard]] auto json_serialize_checked(canonicaljson::Value const& value) -> std::optional<std::string>
+    {
+        auto result = canonicaljson::serialize_canonical(value);
+        if (result.error != canonicaljson::CanonicalJsonError::none)
+        {
+            return std::nullopt;
+        }
+        return std::move(result.output);
     }
 
     // 401 with soft_logout=true: token was found-but-expired so the client should
@@ -4394,12 +4409,9 @@ namespace
                                                   std::optional<std::size_t> limit, std::size_t since_offset,
                                                   PublicRoomsScope const& scope = {}) -> std::string
     {
-        auto const icase_contains = [](std::string_view haystack, std::string_view needle) noexcept -> bool {
-            return std::search(haystack.begin(), haystack.end(), needle.begin(), needle.end(),
-                               [](unsigned char a, unsigned char b) noexcept -> bool {
-                                   return std::tolower(a) == std::tolower(b);
-                               }) != haystack.end();
-        };
+        // One linear-time matcher for the request (ADR-0330): std::search was O(text * term) on a room name or
+        // topic of up to 64 KiB, under runtime.mutex (F-28). A term over the cap never reaches here.
+        auto matcher = core::FoldedSubstringMatcher{filter_term};
 
         auto const& store = rt.homeserver.database.persistent_store;
         auto const index = build_state_index(store);
@@ -4434,10 +4446,9 @@ namespace
 
             if (!filter_term.empty())
             {
-                auto const matches = icase_contains(room.room_id, filter_term) ||
-                                     (name.has_value() && icase_contains(*name, filter_term)) ||
-                                     (topic.has_value() && icase_contains(*topic, filter_term)) ||
-                                     (alias.has_value() && icase_contains(*alias, filter_term));
+                auto const matches = matcher.contains(room.room_id) || (name.has_value() && matcher.contains(*name)) ||
+                                     (topic.has_value() && matcher.contains(*topic)) ||
+                                     (alias.has_value() && matcher.contains(*alias));
                 if (!matches)
                     continue;
             }
@@ -5364,6 +5375,9 @@ namespace
         std::optional<std::uint64_t> since_ordering{};
         std::uint64_t sync_position{0U};
         std::size_t timeline_cap{0U};
+        // What room state the user may read (ADR-0357). `none` for a user who never joined: a retracted
+        // knock, a declined invite, a ban before any join.
+        sync::RoomReadAccess access{};
     };
 
     [[nodiscard]] auto build_left_room(database::PersistentStore const& store, sync::SyncFilter const& filter,
@@ -5430,31 +5444,49 @@ namespace
                                                               : std::to_string(since_ordering);
 
         auto state_events = canonicaljson::Array{};
-        if (!request.since_ordering.has_value())
+        // ADR-0357: a user who never joined (`none`) was never entitled to any of the room's state, so an
+        // initial sync tells them only what an incremental one does: their own leave or ban, when the
+        // timeline does not carry it.
+        auto const reads_room_state = request.access.kind != sync::RoomReadKind::none;
+        if (!request.since_ordering.has_value() && reads_room_state)
         {
             // An initial sync: all state up to the start of the timeline, or, with no timeline
-            // events, all state up to the leave itself.
-            auto at_start =
-                window_begin != matched.end()
-                    ? build_state_events_at_timeline_start(store, filter.room.state, request.room_id, **window_begin)
-                    : std::optional<canonicaljson::Array>{};
-            if (at_start.has_value())
+            // events, all state up to the leave itself. A user who left and was banned since reads
+            // the room only as of the leave, so an anchor after it is answered from the boundary.
+            auto const anchor_ordering =
+                window_begin != matched.end() ? (*window_begin)->stream_ordering : leave_ordering;
+            if (request.access.kind == sync::RoomReadKind::as_of && anchor_ordering > request.access.boundary_ordering)
             {
-                state_events = std::move(*at_start);
-            }
-            else if (window_begin == matched.end() && leave_event != store.events.end())
-            {
-                if (auto const group = database::find_event_state_group(store, leave_event->event_id);
-                    group.has_value())
+                if (auto const ids = sync::room_state_event_ids(store, request.room_id, request.access, std::nullopt);
+                    ids.has_value())
                 {
-                    if (auto const full = database::read_state_group_full_state(store, *group); full.has_value())
+                    state_events = build_state_events_array_for_ids(store, filter.room.state, *ids);
+                }
+            }
+            else
+            {
+                auto at_start = window_begin != matched.end()
+                                    ? build_state_events_at_timeline_start(store, filter.room.state, request.room_id,
+                                                                           **window_begin)
+                                    : std::optional<canonicaljson::Array>{};
+                if (at_start.has_value())
+                {
+                    state_events = std::move(*at_start);
+                }
+                else if (window_begin == matched.end() && leave_event != store.events.end())
+                {
+                    if (auto const group = database::find_event_state_group(store, leave_event->event_id);
+                        group.has_value())
                     {
-                        auto ids = std::vector<std::string>{};
-                        for (auto const& entry : *full)
+                        if (auto const full = database::read_state_group_full_state(store, *group); full.has_value())
                         {
-                            ids.push_back(entry.event_id);
+                            auto ids = std::vector<std::string>{};
+                            for (auto const& entry : *full)
+                            {
+                                ids.push_back(entry.event_id);
+                            }
+                            state_events = build_state_events_array_for_ids(store, filter.room.state, ids);
                         }
-                        state_events = build_state_events_array_for_ids(store, filter.room.state, ids);
                     }
                 }
             }
@@ -5882,7 +5914,7 @@ namespace
                         store, filter, history_visibility, viewer_unsigned, ignored_senders,
                         {membership.room_id, user, membership.stream_ordering,
                          since_token.has_value() ? std::optional<std::uint64_t>{since_ordering} : std::nullopt,
-                         sync_position, timeline_cap});
+                         sync_position, timeline_cap, sync::room_read_access_for(store, membership.room_id, user)});
                     leave_members.push_back(json_member(membership.room_id, left_room));
                     ++leave_count;
                 }
@@ -7509,6 +7541,79 @@ namespace
         return result.valid;
     }
 
+    // F-37, ADR-0338: what an uploaded key may be, before anything about it is stored. The spec's value is
+    // `string|KeyObject` (`{key, signatures, fallback?}`); a curve25519 key is 43 characters and a signed key
+    // object about 200 bytes, so the bounds below leave every real client alone and stop a row from growing
+    // to the size of the request body.
+    auto constexpr max_uploaded_key_id_bytes = std::size_t{255U};
+    auto constexpr max_uploaded_key_string_bytes = std::size_t{256U};
+    auto constexpr max_uploaded_key_object_bytes = std::size_t{4096U};
+    // device_keys, a cross-signing key, or one signed key of a signature upload, as serialised for storage.
+    auto constexpr max_uploaded_key_document_bytes = std::size_t{16384U};
+
+    // Empty when every member of an `one_time_keys` or `fallback_keys` object has an acceptable key ID and
+    // value, else a short reason for the first that does not. A null member is left to
+    // validate_key_object_members, which reports it.
+    [[nodiscard]] auto uploaded_key_shape_refusal(canonicaljson::Object const& keys) -> std::string
+    {
+        for (auto const& member : keys)
+        {
+            if (member.key.size() > max_uploaded_key_id_bytes)
+            {
+                return "a key ID is longer than " + std::to_string(max_uploaded_key_id_bytes) + " bytes";
+            }
+            if (member.value == nullptr)
+            {
+                continue;
+            }
+            if (auto const* text = std::get_if<std::string>(&member.value->storage()); text != nullptr)
+            {
+                if (text->empty() || text->size() > max_uploaded_key_string_bytes)
+                {
+                    return member.key + ": a key must be a string of 1 to " +
+                           std::to_string(max_uploaded_key_string_bytes) + " bytes";
+                }
+                continue;
+            }
+            auto const* object = std::get_if<canonicaljson::Object>(&member.value->storage());
+            if (object == nullptr)
+            {
+                return member.key + ": a key must be a string or a key object";
+            }
+            auto const* key = string_member(*object, "key");
+            if (key == nullptr || key->empty() || key->size() > max_uploaded_key_string_bytes)
+            {
+                return member.key + ": a key object needs a key string of 1 to " +
+                       std::to_string(max_uploaded_key_string_bytes) + " bytes";
+            }
+            if (auto const* signatures = object_member(*object, "signatures");
+                signatures != nullptr && std::get_if<canonicaljson::Object>(&signatures->storage()) == nullptr)
+            {
+                return member.key + ": signatures must be an object";
+            }
+            if (auto const* fallback = object_member(*object, "fallback");
+                fallback != nullptr && std::get_if<bool>(&fallback->storage()) == nullptr)
+            {
+                return member.key + ": fallback must be a boolean";
+            }
+            auto const serialized = serialized_value(*member.value);
+            if (!serialized.has_value() || serialized->size() > max_uploaded_key_object_bytes)
+            {
+                return member.key + ": a key object may be at most " + std::to_string(max_uploaded_key_object_bytes) +
+                       " bytes";
+            }
+        }
+        return {};
+    }
+
+    // True when `value`, serialised, is over the bound on one uploaded key document.
+    [[nodiscard]] auto key_document_too_large(canonicaljson::Value const& value) -> bool
+    {
+        auto const serialized = canonicaljson::serialize_canonical(value);
+        return serialized.error == canonicaljson::CanonicalJsonError::none &&
+               serialized.output.size() > max_uploaded_key_document_bytes;
+    }
+
     // Validate that every member of an OTK or fallback-key object is a
     // SignedKey carrying a cryptographically valid signature from the device's
     // own ed25519 identity key.
@@ -7672,6 +7777,17 @@ namespace
             return err(400U, "M_BAD_JSON", "key upload body must be Matrix JSON");
         }
         auto& store = rt.homeserver.database.persistent_store;
+        // F-37, ADR-0338: the shape and size of every key, before anything is stored.
+        for (auto const* member_name : {"one_time_keys", "fallback_keys"})
+        {
+            if (auto const* keys = object_member_object(*object, member_name); keys != nullptr)
+            {
+                if (auto const reason = uploaded_key_shape_refusal(*keys); !reason.empty())
+                {
+                    return err(400U, "M_BAD_JSON", std::string{member_name} + ": " + reason);
+                }
+            }
+        }
         // CSAZ-10: refuse before anything (device keys, one-time keys, fallback
         // keys) is stored, so an over-cap request leaves no partial state.
         if (auto const* one_time_keys = object_member_object(*object, "one_time_keys");
@@ -7698,6 +7814,12 @@ namespace
             normalize_device_key_object_for_client(rt, normalized_device_keys, user, device_id);
             auto const serialized =
                 canonicaljson::serialize_canonical(canonicaljson::Value{std::move(normalized_device_keys)});
+            if (serialized.error == canonicaljson::CanonicalJsonError::none &&
+                serialized.output.size() > max_uploaded_key_document_bytes)
+            {
+                return err(400U, "M_TOO_LARGE",
+                           "device_keys may be at most " + std::to_string(max_uploaded_key_document_bytes) + " bytes");
+            }
             if (serialized.error != canonicaljson::CanonicalJsonError::none ||
                 !database::sync_stream_has_write_reserve(store) ||
                 !database::store_device_key(store, {std::string{user}, std::string{device_id}, serialized.output}))
@@ -7777,8 +7899,63 @@ namespace
                           })));
     }
 
+    // F-17 (ADR-0350): what the remote half of one /keys/query or /keys/claim may spend. The request takes one
+    // ADR-0079 slot for all of it and one OutboundDeadline that every discovery and request draws from, and
+    // asks at most remote_keys_max_servers distinct servers. Each remote call holds a main-pool thread, so
+    // without these a body naming many servers that accept and never answer held one for the sum of their
+    // timeouts. A server this does not let through is reported in `failures`, as the spec has it for a server
+    // that could not be reached (client-server-api.md, POST /keys/query and /keys/claim, `failures`); the
+    // local half of the answer is unaffected, so a one-time key already claimed here is still returned.
+    class RemoteKeyCalls final
+    {
+    public:
+        RemoteKeyCalls(ClientServerRuntime& rt, std::string client_key)
+            : m_max_servers{rt.homeserver.client_outbound_proxy_policy.remote_keys_max_servers}
+            , m_slot{admit_client_outbound_proxy(rt.homeserver, std::move(client_key))}
+            , m_deadline{effective_client_outbound_deadline(
+                  rt.homeserver, rt.homeserver.client_outbound_proxy_policy.remote_keys_deadline_seconds)}
+        {
+        }
+
+        // Empty when the next server may be asked; otherwise why not. Counts the server it lets through.
+        [[nodiscard]] auto admit_next_server() -> std::string
+        {
+            if (!m_slot.has_value())
+            {
+                return "too many concurrent remote lookups, retry shortly";
+            }
+            if (m_asked >= m_max_servers)
+            {
+                return "too many remote servers in one request";
+            }
+            ++m_asked;
+            return {};
+        }
+
+        // What is left of the request's one deadline, to pass as the call's own.
+        [[nodiscard]] auto remaining_seconds() const noexcept -> std::uint32_t
+        {
+            return m_deadline.remaining_seconds();
+        }
+
+    private:
+        std::uint32_t m_max_servers;
+        std::optional<http::InFlightBudget::Slot> m_slot;
+        OutboundDeadline m_deadline;
+        std::uint32_t m_asked{0U};
+    };
+
+    [[nodiscard]] auto key_failure_member(std::string_view server, std::string_view errcode, std::string_view message)
+        -> canonicaljson::ObjectMember
+    {
+        return json_member(std::string{server}, json_obj({
+                                                    json_member("errcode", json_str(errcode)),
+                                                    json_member("error", json_str(message)),
+                                                }));
+    }
+
     [[nodiscard]] auto handle_key_query(ClientServerRuntime& rt, std::string_view requesting_user,
-                                        std::string_view body) -> LocalHttpResponse
+                                        std::string_view body, std::string client_key) -> LocalHttpResponse
     {
         auto const object = parsed_json_object(body);
         if (!object.has_value())
@@ -7911,8 +8088,14 @@ namespace
             auto const signing_key = ensure_runtime_server_signing_key(rt.homeserver);
             auto const key_id = signing_key.has_value() ? signing_key->key_id : std::string{};
             auto const signing_secret = core::SecretBuffer{rt.homeserver.database.signing_secret_key.bytes()};
+            auto remote_calls = RemoteKeyCalls{rt, std::move(client_key)};
             for (auto const& [server, uid_list] : remote_by_server)
             {
+                if (auto const refusal = remote_calls.admit_next_server(); !refusal.empty())
+                {
+                    failures.push_back(key_failure_member(server, "M_LIMIT_EXCEEDED", refusal));
+                    continue;
+                }
                 auto remote_dk = canonicaljson::Object{};
                 for (auto const& uid : uid_list)
                 {
@@ -7926,15 +8109,13 @@ namespace
                 // Each outbound call must own the key because the network path can
                 // release runtime.mutex and the runtime key may be rotated.
                 auto call_secret = core::SecretBuffer{signing_secret.bytes()};
-                auto const [ok, resp_body] = perform_sync_outbound_call(
-                    rt.homeserver, {}, tx, key_id, std::move(call_secret), "key_query.remote",
-                    rt.homeserver.federation.config.remote_timeout_seconds);
+                // Unverified (ADR-0349): the keys are the remote server's word, so the call is main's own.
+                auto const [ok, resp_body] = perform_bounded_outbound_call(
+                    rt.homeserver, OutboundAnswerTrust::unverified, {}, tx, key_id, std::move(call_secret),
+                    "key_query.remote", remote_calls.remaining_seconds());
                 if (!ok)
                 {
-                    failures.push_back(json_member(server, json_obj({
-                                                               json_member("errcode", json_str("M_UNKNOWN")),
-                                                               json_member("error", json_str(resp_body)),
-                                                           })));
+                    failures.push_back(key_failure_member(server, "M_UNKNOWN", resp_body));
                     continue;
                 }
                 // Keep only what the server may speak for: its own requested
@@ -7998,7 +8179,8 @@ namespace
         return resp(200U, json_serialize(json_obj(std::move(response))));
     }
 
-    [[nodiscard]] auto handle_key_claim(ClientServerRuntime& rt, std::string_view body) -> LocalHttpResponse
+    [[nodiscard]] auto handle_key_claim(ClientServerRuntime& rt, std::string_view body, std::string client_key)
+        -> LocalHttpResponse
     {
         auto const object = parsed_json_object(body);
         if (!object.has_value())
@@ -8088,8 +8270,31 @@ namespace
             auto const signing_key = ensure_runtime_server_signing_key(rt.homeserver);
             auto const key_id = signing_key.has_value() ? signing_key->key_id : std::string{};
             auto const signing_secret = core::SecretBuffer{rt.homeserver.database.signing_secret_key.bytes()};
+            auto remote_calls = RemoteKeyCalls{rt, std::move(client_key)};
             for (auto& [server, user_claims] : remote_by_server)
             {
+                if (auto const refusal = remote_calls.admit_next_server(); !refusal.empty())
+                {
+                    failures.push_back(key_failure_member(server, "M_LIMIT_EXCEEDED", refusal));
+                    continue;
+                }
+                // What this server is asked for: the answer is kept only for these users and devices.
+                auto requested = std::vector<std::pair<std::string, std::vector<std::string>>>{};
+                for (auto const& claim : user_claims)
+                {
+                    auto devices = std::vector<std::string>{};
+                    if (auto const* device_map = claim.value == nullptr
+                                                     ? nullptr
+                                                     : std::get_if<canonicaljson::Object>(&claim.value->storage());
+                        device_map != nullptr)
+                    {
+                        for (auto const& device : *device_map)
+                        {
+                            devices.push_back(device.key);
+                        }
+                    }
+                    requested.emplace_back(claim.key, std::move(devices));
+                }
                 auto claim_body_obj = canonicaljson::Object{};
                 claim_body_obj.push_back(json_member("one_time_keys", json_obj(std::move(user_claims))));
                 auto const claim_body = json_serialize(json_obj(std::move(claim_body_obj)));
@@ -8098,26 +8303,32 @@ namespace
                 // Each outbound call owns its copy because the network path may
                 // release runtime.mutex and rotate the runtime key.
                 auto call_secret = core::SecretBuffer{signing_secret.bytes()};
-                auto const [ok, resp_body] = perform_sync_outbound_call(
-                    rt.homeserver, {}, tx, key_id, std::move(call_secret), "key_claim.remote",
-                    rt.homeserver.federation.config.remote_timeout_seconds);
+                // Unverified (ADR-0349): the claimed keys are the remote server's word.
+                auto const [ok, resp_body] = perform_bounded_outbound_call(
+                    rt.homeserver, OutboundAnswerTrust::unverified, {}, tx, key_id, std::move(call_secret),
+                    "key_claim.remote", remote_calls.remaining_seconds());
                 if (ok)
                 {
-                    auto const parsed = canonicaljson::parse_lossless(resp_body);
-                    if (parsed.error == canonicaljson::ParseError::none)
+                    auto accepted = federation::accept_remote_key_claim_response(server, resp_body, requested);
+                    if (!accepted.has_value())
                     {
-                        auto const* robj = std::get_if<canonicaljson::Object>(&parsed.value.storage());
-                        if (robj != nullptr)
+                        failures.push_back(json_member(
+                            server, json_obj({
+                                        json_member("errcode", json_str("M_UNKNOWN")),
+                                        json_member("error", json_str("remote server returned an unusable answer")),
+                                    })));
+                    }
+                    else
+                    {
+                        for (auto& entry : accepted->one_time_keys)
                         {
-                            if (auto const* rotk = object_member_as_object(*robj, "one_time_keys"))
+                            // A user this response already holds (a local answer) is never overwritten or
+                            // repeated: the serialiser refuses a duplicate member.
+                            if (std::ranges::none_of(users, [&entry](canonicaljson::ObjectMember const& held) {
+                                    return held.key == entry.key;
+                                }))
                             {
-                                for (auto const& ue : *rotk)
-                                {
-                                    if (auto const* dm = std::get_if<canonicaljson::Object>(&ue.value->storage()))
-                                    {
-                                        users.push_back(json_member(ue.key, json_obj(*dm)));
-                                    }
-                                }
+                                users.push_back(std::move(entry));
                             }
                         }
                     }
@@ -8132,10 +8343,15 @@ namespace
             }
         }
 
-        return resp(200U, json_serialize(json_obj({
-                              json_member("one_time_keys", json_obj(std::move(users))),
-                              json_member("failures", json_obj(std::move(failures))),
-                          })));
+        auto const claim_response = json_serialize_checked(json_obj({
+            json_member("one_time_keys", json_obj(std::move(users))),
+            json_member("failures", json_obj(std::move(failures))),
+        }));
+        if (!claim_response.has_value())
+        {
+            return err(500U, "M_UNKNOWN", "the key claim response could not be serialised");
+        }
+        return resp(200U, *claim_response);
     }
 
     // PUT /_matrix/client/v3/sendToDevice/{eventType}/{txnId}
@@ -8198,6 +8414,27 @@ namespace
         }
 
         auto const& local_server = rt.homeserver.config.server().server_name;
+        auto const& device_store = rt.homeserver.database.persistent_store;
+
+        // The devices of every user the request names, from one pass over the device table: a scan per entry
+        // made the request cost entries x devices under runtime.mutex (F-13, ADR-0336).
+        auto devices_by_user = std::map<std::string_view, std::set<std::string_view>>{};
+        for (auto const& user_entry : *messages)
+        {
+            devices_by_user.try_emplace(user_entry.key);
+        }
+        for (auto const& device : device_store.devices)
+        {
+            if (auto const named = devices_by_user.find(device.user_id); named != devices_by_user.end())
+            {
+                named->second.insert(device.device_id);
+            }
+        }
+        auto const too_many_deliveries = [&rt] {
+            return err(413U, "M_TOO_LARGE",
+                       "a sendToDevice request may address at most " +
+                           std::to_string(rt.limits.max_send_to_device_deliveries) + " devices");
+        };
 
         // remote_messages: server → { user_id → { device_id → content_json } }
         auto remote_messages = std::map<std::string, std::map<std::string, std::map<std::string, std::string>>>{};
@@ -8226,6 +8463,14 @@ namespace
                 {
                     continue;
                 }
+                // F-14, ADR-0335: refuse the whole request, whichever server the message is for, so the client
+                // learns its message was too big instead of having it dropped on the way.
+                if (!database::to_device_content_fits(device_store, *content))
+                {
+                    return err(413U, "M_TOO_LARGE",
+                               "a to-device message may be at most " +
+                                   std::to_string(device_store.max_to_device_message_bytes) + " bytes");
+                }
                 if (is_local)
                 {
                     // Silently discard local deliveries to unknown users or to
@@ -8238,30 +8483,32 @@ namespace
                         continue;
                     }
 
+                    auto const& user_devices = devices_by_user[user_entry.key];
                     if (device_entry.key == "*")
                     {
-                        // Spec §10.5: "*" delivers to all devices of the target user.
-                        for (auto const& dev : rt.homeserver.database.persistent_store.devices)
+                        // Spec §10.5: "*" delivers to all devices of the target user. Each device is one
+                        // delivery against the request's cap (F-13, ADR-0336).
+                        for (auto const& device_id : user_devices)
                         {
-                            if (dev.user_id == user_entry.key)
+                            if (local_messages.size() >= rt.limits.max_send_to_device_deliveries)
                             {
-                                local_messages.push_back({0U, std::string{sender}, user_entry.key, dev.device_id,
-                                                          std::string{event_type}, *content});
+                                return too_many_deliveries();
                             }
+                            local_messages.push_back({0U, std::string{sender}, user_entry.key, std::string{device_id},
+                                                      std::string{event_type}, *content});
                         }
                     }
                     else
                     {
                         // Enqueue only when the named device really belongs to
                         // the target local user.
-                        auto const device_known = std::ranges::any_of(
-                            rt.homeserver.database.persistent_store.devices,
-                            [&user_entry, &device_entry](database::PersistentDevice const& device) {
-                                return device.user_id == user_entry.key && device.device_id == device_entry.key;
-                            });
-                        if (!device_known)
+                        if (!user_devices.contains(device_entry.key))
                         {
                             continue;
+                        }
+                        if (local_messages.size() >= rt.limits.max_send_to_device_deliveries)
+                        {
+                            return too_many_deliveries();
                         }
                         local_messages.push_back({0U, std::string{sender}, user_entry.key, device_entry.key,
                                                   std::string{event_type}, *content});
@@ -9113,6 +9360,31 @@ namespace
         return std::nullopt;
     }
 
+    // The Event ID of the last known event in a room: the newest, by stream ordering, of its
+    // forward extremities (events no later event follows; rejected and soft-failed events are
+    // never one). LocalRoom::events holds event JSON, not IDs, so it cannot answer this (F-48,
+    // ADR-0342). Empty when the store holds no extremity for the room.
+    [[nodiscard]] auto last_known_event_id(database::PersistentStore const& store, std::string_view room_id)
+        -> std::optional<std::string>
+    {
+        auto newest = std::optional<std::string>{};
+        auto newest_ordering = std::uint64_t{0U};
+        for (auto const& event_id : database::find_forward_extremities(store, room_id))
+        {
+            auto const row = store.events.find_in_room(room_id, event_id);
+            if (row == store.events.end())
+            {
+                continue;
+            }
+            if (!newest.has_value() || row->stream_ordering > newest_ordering)
+            {
+                newest = event_id;
+                newest_ordering = row->stream_ordering;
+            }
+        }
+        return newest;
+    }
+
     // The replacement room's creation options for POST /rooms/{roomId}/upgrade (spec, "Server
     // behaviour" for room upgrades). The create event carries `predecessor`, the version and
     // the old room's `type`; additional creators are only those the request names, never the
@@ -9130,9 +9402,13 @@ namespace
         auto const index = build_state_index(store);
         auto predecessor = canonicaljson::Object{};
         predecessor.push_back(json_member("room_id", json_str(old_room.room_id)));
-        if (!new_policy.create_event_is_room_id && !old_room.events.empty())
+        if (!new_policy.create_event_is_room_id)
         {
-            predecessor.push_back(json_member("event_id", json_str(old_room.events.back())));
+            // "The event ID of the last known event in the old room, if known": omitted when none is.
+            if (auto const last_event_id = last_known_event_id(store, old_room.room_id); last_event_id.has_value())
+            {
+                predecessor.push_back(json_member("event_id", json_str(*last_event_id)));
+            }
         }
         options.creation_content.push_back(json_member("predecessor", json_obj(std::move(predecessor))));
         if (auto const old_create = current_state_content(store, index, old_room.room_id, "m.room.create");
@@ -9540,52 +9816,64 @@ namespace
         double rank{0.0};
     };
 
-    // Counts non-overlapping occurrences of `needle` in `haystack` (both
-    // already lower-cased by the caller). Used both to decide whether an
-    // event matches at all and as its `rank` -- more hits of the search term
-    // rank higher, a simple monotonic proxy for relevance given this is a
-    // substring scan rather than a real text index.
-    [[nodiscard]] auto count_occurrences(std::string_view haystack, std::string_view needle) noexcept -> std::size_t
+    // The three keys the spec lists for `keys` ("The keys to search. Defaults to all."), resolved once at parse
+    // time to a bit each so that judging an event never scans a client-sized list (F-30, ADR-0332).
+    constexpr std::uint8_t kSearchKeyBody = 1U;  // content.body of m.room.message
+    constexpr std::uint8_t kSearchKeyName = 2U;  // content.name of m.room.name
+    constexpr std::uint8_t kSearchKeyTopic = 4U; // content.topic of m.room.topic
+    constexpr std::uint8_t kSearchKeysAll = kSearchKeyBody | kSearchKeyName | kSearchKeyTopic;
+
+    // The keys a request's `keys` list names: all of them when the list is empty, otherwise those of the
+    // three it lists (any other entry searches nothing, so a list of only unknown keys matches no event).
+    [[nodiscard]] auto search_key_mask(std::vector<std::string> const& keys) -> std::uint8_t
     {
-        if (needle.empty())
+        if (keys.empty())
         {
-            return 0U;
+            return kSearchKeysAll;
         }
-        auto count = std::size_t{0U};
-        auto pos = std::size_t{0U};
-        while ((pos = haystack.find(needle, pos)) != std::string_view::npos)
+        auto resolved = std::uint8_t{0U};
+        for (auto const& key : keys)
         {
-            ++count;
-            pos += needle.size();
+            if (key == "content.body")
+            {
+                resolved |= kSearchKeyBody;
+            }
+            else if (key == "content.name")
+            {
+                resolved |= kSearchKeyName;
+            }
+            else if (key == "content.topic")
+            {
+                resolved |= kSearchKeyTopic;
+            }
         }
-        return count;
+        return resolved;
     }
 
-    // Extracts the searchable texts for one event, filtered to `keys` when
-    // the caller supplied a non-empty subset (spec: "keys ... Defaults to
-    // all"). Only the three spec-listed keys are considered.
+    // Extracts the searchable texts for one event, limited to the keys in `key_mask`. Only the three
+    // spec-listed keys are considered.
     [[nodiscard]] auto search_texts_for_event(std::string_view event_type, canonicaljson::Object const& content,
-                                              std::vector<std::string> const& keys) -> std::vector<std::string const*>
+                                              std::uint8_t key_mask) -> std::vector<std::string const*>
     {
-        auto const wanted = [&](std::string_view key) {
-            return keys.empty() || std::ranges::find(keys, key) != keys.end();
+        auto const wanted = [key_mask](std::uint8_t key) noexcept {
+            return (key_mask & key) != 0U;
         };
         auto out = std::vector<std::string const*>{};
-        if (event_type == "m.room.message" && wanted("content.body"))
+        if (event_type == "m.room.message" && wanted(kSearchKeyBody))
         {
             if (auto const* body = string_member(content, "body"); body != nullptr)
             {
                 out.push_back(body);
             }
         }
-        else if (event_type == "m.room.name" && wanted("content.name"))
+        else if (event_type == "m.room.name" && wanted(kSearchKeyName))
         {
             if (auto const* name = string_member(content, "name"); name != nullptr)
             {
                 out.push_back(name);
             }
         }
-        else if (event_type == "m.room.topic" && wanted("content.topic"))
+        else if (event_type == "m.room.topic" && wanted(kSearchKeyTopic))
         {
             if (auto const* topic = string_member(content, "topic"); topic != nullptr)
             {
@@ -9595,17 +9883,18 @@ namespace
         return out;
     }
 
-    // Returns the event's rank (sum of case-insensitive `term_lower`
-    // occurrences across its searchable, key-filtered text) or nullopt when
-    // it does not match at all.
+    // Returns the event's rank (the sum of the matcher's non-overlapping, case-insensitive occurrences of the
+    // search term across its searchable, key-limited text -- more hits rank higher, a simple monotonic proxy
+    // for relevance given this is a substring scan rather than a real text index) or nullopt when it does
+    // not match at all. The matcher is linear in the text however the term and text are chosen (F-29).
     [[nodiscard]] auto search_event_rank(std::string_view event_type, canonicaljson::Object const& content,
-                                         std::vector<std::string> const& keys, std::string_view term_lower)
+                                         std::uint8_t key_mask, core::FoldedSubstringMatcher& matcher)
         -> std::optional<double>
     {
         auto total = std::size_t{0U};
-        for (auto const* text : search_texts_for_event(event_type, content, keys))
+        for (auto const* text : search_texts_for_event(event_type, content, key_mask))
         {
-            total += count_occurrences(to_lower(*text), term_lower);
+            total += matcher.count_non_overlapping(*text);
         }
         return total > 0U ? std::optional<double>{static_cast<double>(total)} : std::nullopt;
     }
@@ -9619,9 +9908,15 @@ namespace
     struct SearchRequest final
     {
         std::string search_term{};
-        std::vector<std::string> keys{};
+        std::uint8_t key_mask{kSearchKeysAll};
         bool order_recent{false}; // false == "rank", the spec default
         sync::RoomFilter filter{};
+        // `filter`'s lists as hash sets, built once (F-30, ADR-0332); the lists in `filter` are never scanned
+        // per event.
+        sync::PreparedRoomEventFilter prepared_filter{sync::RoomFilter{}};
+        // True when the request carried `event_context`: the spec returns a result's context only "if
+        // requested" (F-31, ADR-0333).
+        bool context_requested{false};
         std::optional<bool> contains_url{};
         std::size_t before_limit{5U};
         std::size_t after_limit{5U};
@@ -9649,7 +9944,7 @@ namespace
         {
             out.search_term = *term;
         }
-        out.keys = string_array_member(room_events, "keys");
+        out.key_mask = search_key_mask(string_array_member(room_events, "keys"));
         if (auto const* order = string_member(room_events, "order_by"); order != nullptr && *order == "recent")
         {
             out.order_recent = true;
@@ -9672,6 +9967,7 @@ namespace
                 return std::nullopt;
             }
             out.filter = *parsed;
+            out.prepared_filter = sync::PreparedRoomEventFilter{out.filter};
             if (auto const* cu = boolean_member(*filter_obj, "contains_url"); cu != nullptr)
             {
                 out.contains_url = *cu;
@@ -9689,6 +9985,7 @@ namespace
             {
                 return std::nullopt;
             }
+            out.context_requested = true;
             if (auto const* bl = integer_member(*ec_obj, "before_limit"); bl != nullptr && *bl >= 0)
             {
                 out.before_limit = std::min<std::size_t>(static_cast<std::size_t>(*bl),
@@ -9745,46 +10042,31 @@ namespace
     // practice each sender's *current* profile, not a point-in-time
     // snapshot -- see capability-gaps.md), and start/end pagination tokens in
     // the same plain stream-ordering format /messages produces.
+    //
+    // `room_index` holds the target's room's timeline, built once for the whole page (SearchRoomIndex, F-31,
+    // ADR-0333): ADR-0064 phase B2 pages search context through the timeline the same as GET /context, so a
+    // rejected or soft-failed event is excluded there. `target` itself is a search match, and the match-scan
+    // loop already excludes those statuses, so it is always present.
     [[nodiscard]] auto build_search_event_context(ClientServerRuntime const& rt,
                                                   database::PersistentEvent const& target, SearchRequest const& request,
+                                                  SearchRoomIndex const& room_index,
                                                   std::unordered_set<std::string> const& ignored_senders,
                                                   sync::HistoryVisibility& visibility) -> canonicaljson::Value
     {
         auto const& store = rt.homeserver.database.persistent_store;
-        auto entries = std::vector<database::PersistentEvent const*>{};
-        for (auto const& event : store.events)
-        {
-            if (event.room_id != target.room_id)
-            {
-                continue;
-            }
-            // ADR-0064 phase B2: search result context pages through the
-            // timeline the same as GET /context, so a rejected or
-            // soft-failed event is excluded. `target` itself is a search
-            // match, and the match-scan loop already excludes those
-            // statuses, so it is always present here.
-            if (event.status == "rejected" || event.status == "soft_failed")
-            {
-                continue;
-            }
-            entries.push_back(&event);
-        }
-        std::ranges::sort(entries, [](auto const* lhs, auto const* rhs) noexcept {
-            return lhs->stream_ordering < rhs->stream_ordering;
-        });
-        auto const target_it = std::ranges::find_if(entries, [&](database::PersistentEvent const* candidate) {
-            return candidate->event_id == target.event_id;
-        });
-        auto const target_index = static_cast<std::size_t>(target_it - entries.begin());
+        auto const entries = room_index.timeline(target.room_id);
+        // A target the index does not hold (it should) has no neighbours: both loops start at their end.
+        auto const target_position = room_index.position_of(target);
+        auto const before_start = target_position.value_or(0U);
+        auto const after_start = target_position.has_value() ? *target_position + 1U : entries.size();
 
         auto events_before = canonicaljson::Array{};
         auto start_token = std::to_string(target.stream_ordering);
         auto senders_in_context = std::unordered_set<std::string>{};
-        for (auto i = target_index; i > 0U && events_before.size() < request.before_limit; --i)
+        for (auto i = before_start; i > 0U && events_before.size() < request.before_limit; --i)
         {
             auto const* candidate = entries[i - 1U];
-            if (!sync::event_passes_filter(request.filter.timeline, stored_event_type(*candidate),
-                                           candidate->sender_user_id))
+            if (!request.prepared_filter.event_passes(stored_event_type(*candidate), candidate->sender_user_id))
             {
                 continue;
             }
@@ -9806,11 +10088,10 @@ namespace
 
         auto events_after = canonicaljson::Array{};
         auto end_token = std::to_string(target.stream_ordering);
-        for (auto i = target_index + 1U; i < entries.size() && events_after.size() < request.after_limit; ++i)
+        for (auto i = after_start; i < entries.size() && events_after.size() < request.after_limit; ++i)
         {
             auto const* candidate = entries[i];
-            if (!sync::event_passes_filter(request.filter.timeline, stored_event_type(*candidate),
-                                           candidate->sender_user_id))
+            if (!request.prepared_filter.event_passes(stored_event_type(*candidate), candidate->sender_user_id))
             {
                 continue;
             }
@@ -9963,7 +10244,7 @@ namespace
             {
                 continue;
             }
-            if (!sync::room_passes_filter(request.filter, event.room_id))
+            if (!request.prepared_filter.room_passes(event.room_id))
             {
                 continue;
             }
@@ -9978,6 +10259,7 @@ namespace
         });
 
         auto const term_lower = to_lower(request.search_term);
+        auto matcher = core::FoldedSubstringMatcher{request.search_term};
 
         auto start_index = std::size_t{0U};
         if (resume_before.has_value())
@@ -10018,7 +10300,7 @@ namespace
             // RoomEventFilter types/not_types/senders/not_senders -- silently
             // ignoring this would return matches the caller explicitly
             // excluded.
-            if (!sync::event_passes_filter(request.filter.timeline, *type, candidate->sender_user_id))
+            if (!request.prepared_filter.event_passes(*type, candidate->sender_user_id))
             {
                 continue;
             }
@@ -10042,7 +10324,7 @@ namespace
                     continue;
                 }
             }
-            auto const rank = search_event_rank(*type, *content_obj, request.keys, term_lower);
+            auto const rank = search_event_rank(*type, *content_obj, request.key_mask, matcher);
             if (!rank.has_value())
             {
                 continue;
@@ -10112,6 +10394,18 @@ namespace
             flush();
         }
 
+        // The rooms of this page's matches, whose timelines context needs: one pass over the events table for
+        // all of them, and none when the request did not ask for context (F-31, ADR-0333).
+        auto context_rooms = std::unordered_set<std::string_view>{};
+        if (request.context_requested)
+        {
+            for (auto const& match : matches)
+            {
+                context_rooms.insert(match.event->room_id);
+            }
+        }
+        auto const room_index = SearchRoomIndex{store, context_rooms};
+
         auto results = canonicaljson::Array{};
         auto rooms_in_page = std::vector<std::string>{};
         auto by_room = std::unordered_map<std::string, std::vector<std::string>>{};   // room_id -> event_ids
@@ -10126,12 +10420,16 @@ namespace
             by_room[event.room_id].push_back(event.event_id);
             by_sender[event.sender_user_id].push_back(event.event_id);
 
-            auto context = build_search_event_context(rt, event, request, ignored_senders, visibility);
-            results.push_back(json_obj({
-                json_member("rank", canonicaljson::Value{match.rank}),
-                json_member("result", client_event_with_id(store, event)),
-                json_member("context", std::move(context)),
-            }));
+            auto result_members = canonicaljson::Object{};
+            result_members.push_back(json_member("rank", canonicaljson::Value{match.rank}));
+            result_members.push_back(json_member("result", client_event_with_id(store, event)));
+            if (request.context_requested)
+            {
+                result_members.push_back(
+                    json_member("context", build_search_event_context(rt, event, request, room_index, ignored_senders,
+                                                                      visibility)));
+            }
+            results.push_back(json_obj(std::move(result_members)));
         }
 
         auto response = canonicaljson::Object{};
@@ -10662,8 +10960,9 @@ namespace
         auto const result = [&] {
             // Re-acquire before returning: dispatch_resp/dispatch_err read reloadable runtime state.
             auto const released = merovingian::homeserver::RuntimeLockRelease{guard};
-            return perform_bounded_outbound_call_with_status(rt.homeserver, {}, tx, key_id, std::move(secret),
-                                                             "profile.proxy", proxy_deadline);
+            return perform_bounded_outbound_call_with_status(rt.homeserver, OutboundAnswerTrust::unverified, {}, tx,
+                                                             key_id, std::move(secret), "profile.proxy",
+                                                             proxy_deadline);
         }();
         if (result.remote_status == 404U)
         {
@@ -10853,6 +11152,35 @@ namespace
             }));
         }
         return json_serialize(json_obj({json_member("policy_rules", json_arr(std::move(rules)))}));
+    }
+
+    // F-37, ADR-0338: true when any key of a /keys/signatures/upload body is over the bound on one key document.
+    // A body that does not parse is left for the store step to reject.
+    [[nodiscard]] auto signature_upload_has_oversized_key(std::string_view body) -> bool
+    {
+        auto const parsed = parsed_json_object(body);
+        if (!parsed.has_value())
+        {
+            return false;
+        }
+        for (auto const& user_member : *parsed)
+        {
+            auto const* signed_keys = user_member.value == nullptr
+                                          ? nullptr
+                                          : std::get_if<canonicaljson::Object>(&user_member.value->storage());
+            if (signed_keys == nullptr)
+            {
+                continue;
+            }
+            for (auto const& key_member : *signed_keys)
+            {
+                if (key_member.value != nullptr && key_document_too_large(*key_member.value))
+                {
+                    return true;
+                }
+            }
+        }
+        return false;
     }
 
     // CSAZ-10: true when storing the signatures in a /keys/signatures/upload
@@ -11114,9 +11442,9 @@ namespace
         case auth::KeyApiEndpoint::upload_keys:
             return handle_key_upload(rt, user, device_id, req.body);
         case auth::KeyApiEndpoint::query_keys:
-            return handle_key_query(rt, user, req.body);
+            return handle_key_query(rt, user, req.body, rate_limit_client_key(req, rt.homeserver.config.server()));
         case auth::KeyApiEndpoint::claim_keys:
-            return handle_key_claim(rt, req.body);
+            return handle_key_claim(rt, req.body, rate_limit_client_key(req, rt.homeserver.config.server()));
         case auth::KeyApiEndpoint::get_key_backup_version: {
             auto const* version = key_backup_version_for_user(rt.homeserver.database.persistent_store, user);
             if (version == nullptr)
@@ -11302,6 +11630,15 @@ namespace
                 }
                 return resp(401U, uia_password_failure_body(json_serialize(cs_uia)));
             }
+            for (auto const* key_type : {"master_key", "self_signing_key", "user_signing_key"})
+            {
+                if (auto const* key = object_member(*cs_body, key_type); key != nullptr && key_document_too_large(*key))
+                {
+                    return err(400U, "M_TOO_LARGE",
+                               std::string{key_type} + " may be at most " +
+                                   std::to_string(max_uploaded_key_document_bytes) + " bytes");
+                }
+            }
             if (!database::sync_stream_has_write_reserve(rt.homeserver.database.persistent_store) ||
                 !store_key_api_payload(rt, route.endpoint, user, device_id, req, {}))
             {
@@ -11331,6 +11668,11 @@ namespace
             return resp(200U, key_api_success_body(route.endpoint));
         }
         case auth::KeyApiEndpoint::upload_signatures:
+            if (signature_upload_has_oversized_key(req.body))
+            {
+                return err(400U, "M_TOO_LARGE",
+                           "a signed key may be at most " + std::to_string(max_uploaded_key_document_bytes) + " bytes");
+            }
             if (signature_upload_exceeds_cap(rt, user, req.body))
             {
                 return err(400U, "M_TOO_LARGE",
@@ -12292,8 +12634,8 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                 // reloadable runtime state (rt.cors), and every other return path
                 // from this handler leaves the guard held.
                 auto const released = merovingian::homeserver::RuntimeLockRelease{guard};
-                return perform_bounded_outbound_call(rt.homeserver, {}, tx, key_id, std::move(secret),
-                                                     "public_rooms.proxy", proxy_deadline);
+                return perform_bounded_outbound_call(rt.homeserver, OutboundAnswerTrust::unverified, {}, tx, key_id,
+                                                     std::move(secret), "public_rooms.proxy", proxy_deadline);
             }();
             if (!ok)
                 return dispatch_err(req, rt, 502U, "M_UNKNOWN", "Failed to fetch public rooms from remote server");
@@ -12332,8 +12674,8 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                 // reloadable runtime state (rt.cors), and every other return path
                 // from this handler leaves the guard held.
                 auto const released = merovingian::homeserver::RuntimeLockRelease{guard};
-                return perform_bounded_outbound_call(rt.homeserver, {}, tx, key_id, std::move(secret),
-                                                     "directory.room.proxy", proxy_deadline);
+                return perform_bounded_outbound_call(rt.homeserver, OutboundAnswerTrust::unverified, {}, tx, key_id,
+                                                     std::move(secret), "directory.room.proxy", proxy_deadline);
             }();
             if (!ok)
             {
@@ -13870,7 +14212,17 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                     filter_obj != nullptr)
                 {
                     if (auto const* term = string_member(*filter_obj, "generic_search_term"); term != nullptr)
+                    {
+                        // Refused, not truncated: a cut term returns the wrong rooms (ADR-0330). Before
+                        // the ?server= proxy below, which would forward it.
+                        if (term->size() > core::max_search_term_bytes)
+                        {
+                            return dispatch_err(req, rt, 400U, "M_TOO_LARGE",
+                                                "generic_search_term is longer than " +
+                                                    std::to_string(core::max_search_term_bytes) + " bytes");
+                        }
                         filter_term = *term;
+                    }
                 }
             }
             // Spec: `include_all_networks` is "Whether or not to include all known networks/protocols from
@@ -13969,8 +14321,8 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                 // reloadable runtime state (rt.cors), and every other return path
                 // from this handler leaves the guard held.
                 auto const released = merovingian::homeserver::RuntimeLockRelease{guard};
-                return perform_bounded_outbound_call(rt.homeserver, {}, tx, key_id, std::move(secret),
-                                                     "public_rooms.proxy", proxy_deadline);
+                return perform_bounded_outbound_call(rt.homeserver, OutboundAnswerTrust::unverified, {}, tx, key_id,
+                                                     std::move(secret), "public_rooms.proxy", proxy_deadline);
             }();
             if (!ok)
                 return dispatch_err(req, rt, 502U, "M_UNKNOWN", "Failed to fetch public rooms from remote server");
@@ -17062,42 +17414,46 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                 }
                 else
                 {
-                    auto state_backed_members = std::vector<std::string>{};
-                    for (auto const& state_entry : store.state)
-                    {
-                        if (state_entry.room_id != room_id || state_entry.event_type != "m.room.member")
-                        {
-                            continue;
-                        }
-                        auto const event_it = store.events.find(state_entry.event_id);
-                        if (event_it == store.events.end())
-                        {
-                            continue;
-                        }
-                        auto const parsed = canonicaljson::parse_lossless(event_it->json);
-                        auto const* event = parsed.error == canonicaljson::ParseError::none
-                                                ? std::get_if<canonicaljson::Object>(&parsed.value.storage())
-                                                : nullptr;
-                        auto const* content = event == nullptr ? nullptr : object_member_as_object(*event, "content");
-                        auto const* membership = content == nullptr ? nullptr : string_member(*content, "membership");
-                        if (event == nullptr || membership == nullptr)
-                        {
-                            continue;
-                        }
-                        if (!membership_allowed(*membership))
-                        {
-                            continue;
-                        }
-                        chunk.push_back(client_event_with_id(store, *event_it));
-                        state_backed_members.push_back(state_entry.state_key);
-                    }
+                    // The users whose current state holds a member event: a set, probed once per
+                    // membership row below, so the roster costs O(members) (F-10, security audit run-2).
+                    auto state_backed_members = std::unordered_set<std::string>{};
+                    database::for_each_room_state_row(
+                        store, room_id, [&](database::PersistentStateEvent const& state_entry) {
+                            if (state_entry.event_type != "m.room.member")
+                            {
+                                return;
+                            }
+                            auto const event_it = store.events.find(state_entry.event_id);
+                            if (event_it == store.events.end())
+                            {
+                                return;
+                            }
+                            auto const parsed = canonicaljson::parse_lossless(event_it->json);
+                            auto const* event = parsed.error == canonicaljson::ParseError::none
+                                                    ? std::get_if<canonicaljson::Object>(&parsed.value.storage())
+                                                    : nullptr;
+                            auto const* content =
+                                event == nullptr ? nullptr : object_member_as_object(*event, "content");
+                            auto const* membership =
+                                content == nullptr ? nullptr : string_member(*content, "membership");
+                            if (event == nullptr || membership == nullptr)
+                            {
+                                return;
+                            }
+                            if (!membership_allowed(*membership))
+                            {
+                                return;
+                            }
+                            chunk.push_back(client_event_with_id(store, *event_it));
+                            state_backed_members.insert(state_entry.state_key);
+                        });
                     for (auto const& m : store.memberships)
                     {
                         if (m.room_id != room_id)
                             continue;
                         if (!membership_allowed(m.membership))
                             continue;
-                        if (std::ranges::find(state_backed_members, m.user_id) != state_backed_members.end())
+                        if (state_backed_members.contains(m.user_id))
                             continue;
                         // Fallback: construct a synthetic m.room.member event from the
                         // membership record only when current state is missing entirely.
@@ -17911,33 +18267,30 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
         // by the limit." A negative limit returns nothing.
         auto const* limit_value = (body_obj != nullptr) ? object_member(*body_obj, "limit") : nullptr;
         auto const* limit_int = limit_value != nullptr ? std::get_if<std::int64_t>(&limit_value->storage()) : nullptr;
-        auto const limit =
-            limit_int != nullptr ? static_cast<std::size_t>(std::max<std::int64_t>(*limit_int, 0)) : std::size_t{10U};
+        // The spec sets no maximum for `limit`; a server one keeps the result list bounded and `limited` says
+        // when it cut (ADR-0334).
+        auto const limit = std::min(
+            limit_int != nullptr ? static_cast<std::size_t>(std::max<std::int64_t>(*limit_int, 0)) : std::size_t{10U},
+            max_user_directory_results);
+        // Refused, not truncated: a cut term returns the wrong users (ADR-0330).
+        if (search_term != nullptr && search_term->size() > core::max_search_term_bytes)
+        {
+            return dispatch_err(req, rt, 400U, "M_TOO_LARGE",
+                                "search_term is longer than " + std::to_string(core::max_search_term_bytes) + " bytes");
+        }
         auto results = canonicaljson::Array{};
         auto limited = false;
         if (search_term != nullptr && !search_term->empty())
         {
             auto const& store = rt.homeserver.database.persistent_store;
-            auto const term_lower = to_lower(*search_term);
-            auto matched = std::vector<database::PersistentProfile const*>{};
+            // One linear-time matcher and one pass over the accounts for the request (F-34, F-50, ADR-0334).
+            auto matcher = core::FoldedSubstringMatcher{*search_term};
+            auto search_stats = UserDirectorySearchStats{};
+            auto const matched = matching_directory_profiles(store, matcher, search_stats);
             auto candidates = std::unordered_set<std::string_view>{};
-            for (auto const& profile : store.profiles)
+            for (auto const* profile : matched)
             {
-                if (to_lower(profile.displayname).find(term_lower) == std::string::npos &&
-                    to_lower(profile.user_id).find(term_lower) == std::string::npos)
-                {
-                    continue;
-                }
-                // 0.12.13 audit item 5: a deactivated account can never log in
-                // again, so it is not offered as someone to contact.
-                if (std::ranges::any_of(store.users, [&profile](database::PersistentUser const& account) {
-                        return account.user_id == profile.user_id && account.deactivated;
-                    }))
-                {
-                    continue;
-                }
-                matched.push_back(&profile);
-                candidates.insert(profile.user_id);
+                candidates.insert(profile->user_id);
             }
             // Only users visible to the requester through rooms are searched (see
             // directory_visible_users).
@@ -17998,6 +18351,12 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
         if (parsed_request->search_term.empty())
         {
             return dispatch_err(req, rt, 400U, "M_MISSING_PARAM", "search_term is required");
+        }
+        // Refused, not truncated: a cut term returns the wrong events (ADR-0330).
+        if (parsed_request->search_term.size() > core::max_search_term_bytes)
+        {
+            return dispatch_err(req, rt, 400U, "M_TOO_LARGE",
+                                "search_term is longer than " + std::to_string(core::max_search_term_bytes) + " bytes");
         }
         auto const resume_before = parse_u64(messages_query_value(req.target, "next_batch"));
         return dispatch_resp(req, rt, 200U, search_room_events_json(rt, *user, *parsed_request, resume_before));
@@ -18148,6 +18507,16 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             }
             else if (!alias_server.empty())
             {
+                // F-17 (ADR-0350): the remote alias lookup holds a main-pool thread for a round trip to a
+                // peer this server does not control, like GET /directory/room/{alias}, so it takes an
+                // ADR-0079 slot and runs under the directory deadline.
+                auto const proxy_slot = admit_client_proxy(rt, req);
+                if (!proxy_slot.has_value())
+                {
+                    return client_proxy_refused(req, rt);
+                }
+                auto const proxy_deadline = effective_client_outbound_deadline(
+                    rt.homeserver, rt.homeserver.client_outbound_proxy_policy.directory_deadline_seconds);
                 wire_federation_callbacks(rt.homeserver);
                 auto const signing_key = ensure_runtime_server_signing_key(rt.homeserver);
                 auto const key_id = signing_key.has_value() ? signing_key->key_id : std::string{};
@@ -18158,9 +18527,10 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                     federation::make_outbound_transaction(std::string{alias_server}, "GET", target, our_server, {});
                 auto const [ok, body] = [&] {
                     auto const released = merovingian::homeserver::RuntimeLockRelease{guard};
-                    return perform_sync_outbound_call(rt.homeserver, {}, tx, key_id, std::move(secret),
-                                                      "room.join.alias_lookup_failed",
-                                                      rt.homeserver.federation.config.remote_timeout_seconds);
+                    // Unverified (ADR-0349): the room ID and via servers are the remote server's word.
+                    return perform_bounded_outbound_call(rt.homeserver, OutboundAnswerTrust::unverified, {}, tx, key_id,
+                                                         std::move(secret), "room.join.alias_lookup_failed",
+                                                         proxy_deadline);
                 }();
                 if (!ok)
                 {
@@ -18495,6 +18865,17 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                         return dispatch_err(req, rt, 400U, "M_TOO_LARGE",
                                             "account data limit of " + std::to_string(cap) + " types reached");
                     }
+                    if (outcome == database::CappedAccountDataStore::too_large)
+                    {
+                        log_diagnostic("account_data.rejected", {
+                                                                    {"actor",  *user,                        false},
+                                                                    {"type",   type,                         false},
+                                                                    {"reason", "account data row too large", false}
+                        });
+                        return dispatch_err(req, rt, 400U, "M_TOO_LARGE",
+                                            "account data content exceeds " +
+                                                std::to_string(database::max_account_data_row_bytes) + " bytes");
+                    }
                     if (outcome != database::CappedAccountDataStore::stored)
                     {
                         log_diagnostic("account_data.rejected",
@@ -18592,6 +18973,17 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                     {
                         return dispatch_err(req, rt, 400U, "M_INVALID_PARAM", "tag must not be empty");
                     }
+                    // Spec (Room Tagging): "The name of a tag MUST NOT exceed 255 bytes."
+                    if (tag.size() > max_tag_name_bytes)
+                    {
+                        return dispatch_err(req, rt, 400U, "M_INVALID_PARAM", "tag name must not exceed 255 bytes");
+                    }
+                    if (req.body.size() > max_tag_value_bytes)
+                    {
+                        return dispatch_err(req, rt, 400U, "M_TOO_LARGE",
+                                            "tag value must not exceed " + std::to_string(max_tag_value_bytes) +
+                                                " bytes");
+                    }
                     if (req.body.empty())
                     {
                         return dispatch_err(req, rt, 400U, "M_BAD_JSON", "tag body must not be empty");
@@ -18603,6 +18995,15 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                         return dispatch_err(req, rt, 400U, "M_BAD_JSON", "tag body must be a JSON object");
                     }
                     auto tags = room_tag_content(rt.homeserver.database.persistent_store, path_user, path_room);
+                    // A tag the user already has can always be changed; only an added one counts (ADR-0339).
+                    if (tags.size() >= max_tags_per_room &&
+                        std::ranges::none_of(tags, [&tag](canonicaljson::ObjectMember const& member) {
+                            return member.key == tag;
+                        }))
+                    {
+                        return dispatch_err(req, rt, 400U, "M_TOO_LARGE",
+                                            "a room can hold at most " + std::to_string(max_tags_per_room) + " tags");
+                    }
                     set_object_member(tags, tag, std::move(parsed.value));
                     if (!store_room_tag_content(rt, path_user, path_room, std::move(tags)))
                     {

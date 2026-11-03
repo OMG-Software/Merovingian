@@ -12,7 +12,7 @@ Spec authority:
 | File | Responsibility |
 |---|---|
 | `stream_token.cpp` | Encode/decode stream ordering tokens; used for `since=` / `next_batch` / `from=` parameters |
-| `sync_filter.cpp` | Parse and apply sync filter arguments (event type filters, room filters, timeline limits) |
+| `sync_filter.cpp` | Parse and apply sync filter arguments (event type filters, room filters, timeline limits); `PreparedRoomEventFilter`, the same rules over hash sets and a sorted prefix list for a caller that judges many events (`POST /search`, ADR-0332). A change to the rules in `event_passes_filter` / `room_passes_filter` goes into both; `test_prepared_room_event_filter.cpp` holds them equal |
 | `sync_notifier.cpp` | Broadcasts new events to waiting long-poll sync requests; handles the `timeout=` wait |
 | `sliding_sync_parser.cpp` | Parses MSC4186 request body (list operators, range, required_state, etc.) |
 | `sliding_sync_room_list.cpp` | Builds the ordered room list for a sliding sync response |
@@ -147,7 +147,11 @@ ban is shown whatever the visibility says, so a rejected invite under `joined` v
 reports it. Initial-sync `state` is the state at the start of the timeline, or as of the leave
 when the timeline is empty; an incremental sync's `state` carries the leave only when the
 timeline does not. An incremental sync lists a leave once, after `since`; `include_leave` lists
-left rooms on an initial sync only. A forgotten room has no membership row and is never listed
+left rooms on an initial sync only. `sync_json` computes `room_read_access_for` per left room and
+`build_left_room` obeys it (ADR-0357): `none` (a retracted knock, a declined invite, a ban before
+any join) gets no room state, only the user's own leave or ban, in the timeline or, when the
+timeline filter excludes it, in `state`; `as_of` never gets state later than the access boundary
+(a user who left and was then banned). Never build a left room's state without that access. A forgotten room has no membership row and is never listed
 (Leaving rooms: "forgotten ... will never appear in the response to `/sync`"). Do not add the
 events after the leave to a left room's timeline.
 
@@ -244,7 +248,8 @@ nothing else decides what a user may see** (ADR-0084; audit CSAZ-2, CSAZ-3).
   the state recorded at the event that ended the join, `boundary_event_id`), or `none` (knock,
   invite, declined invite, never joined, forgotten). `room_state_event_ids()` returns the state
   for it, optionally at an `at` position, never later than the boundary. It gates `initialSync`,
-  `/members`, `/joined_members` (current only), `/state` and `/state/{type}/{key}`.
+  `/members`, `/joined_members` (current only), `/state`, `/state/{type}/{key}` and the `state` of
+  `/sync`'s `rooms.leave` (ADR-0357).
 - A user with no read access may still peek events (not `/members` or `/state`) when the
   room's **current** visibility is `world_readable` (`room_is_world_readable`); each event is
   still judged on its own state.

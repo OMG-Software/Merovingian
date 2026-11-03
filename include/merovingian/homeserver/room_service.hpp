@@ -227,8 +227,25 @@ auto claim_membership_event_template(canonicaljson::Object& event, std::string_v
                                      std::int64_t now_ms) -> void;
 [[nodiscard]] auto validate_make_leave_response(std::string_view requested_room_id, std::string_view requested_user_id,
                                                 std::string_view body) -> ValidatedMakeLeaveResponse;
-// Synchronous outbound federation call — signs in-process then routes via
-// federation proxy (worker thread pool) if available, else direct outbound client.
+// What main can check an outbound federation answer against (F-43, ADR-0349). It decides the route:
+// the federation worker is the process most exposed to hostile traffic, so what it relays is input,
+// not a fact. An answer main uses without a signature check must be fetched over main's own
+// OutboundClient, or a compromised worker could speak as any remote server.
+enum class OutboundAnswerTrust : std::uint8_t
+{
+    // Main acts on the answer as given: its status, its fields or its choice of content. Direct
+    // route only. This includes an answer whose body is signed but whose status, or whose choice of
+    // which signed objects to send, main also acts on. A caller that cannot say it is
+    // signature_verified is this.
+    unverified,
+    // Every use main makes of a success body is a signature check on the whole of it (backfilled
+    // PDUs are verified one by one before they are stored), and a failure only means "no data".
+    // The worker may carry the call: the most it can do is withhold or replay what servers signed.
+    signature_verified,
+};
+
+// Synchronous outbound federation call — signs in-process then routes by `trust`: direct outbound
+// client, or, for a signature_verified answer with a federation proxy wired, the worker thread pool.
 // Returns {true, body} on HTTP 2xx, {false, reason} otherwise.
 // room_id is used only for worker shard routing; pass {} for non-room requests.
 // `secret_key` is an owned 64-byte Ed25519 secret key in a mlocked
@@ -239,7 +256,8 @@ auto claim_membership_event_template(canonicaljson::Object& event, std::string_v
 // OutboundCall default of 16 MiB); send_join passes
 // runtime.federation.config.join_response_max_bytes since a large room's
 // full state routinely exceeds the default.
-[[nodiscard]] auto perform_sync_outbound_call(HomeserverRuntime& runtime, std::string_view room_id,
+[[nodiscard]] auto perform_sync_outbound_call(HomeserverRuntime& runtime, OutboundAnswerTrust trust,
+                                              std::string_view room_id,
                                               federation::OutboundTransaction const& transaction,
                                               std::string_view key_id, core::SecretBuffer secret_key,
                                               std::string_view diagnostic_event, std::uint32_t timeout_seconds,
@@ -252,7 +270,8 @@ auto claim_membership_event_template(canonicaljson::Object& event, std::string_v
 // usual 10 s. A budget already used up is reported as "deadline exceeded" without
 // touching the network. Callers hold a client-outbound budget slot around it
 // (ADR-0079, `admit_client_outbound_proxy`).
-[[nodiscard]] auto perform_bounded_outbound_call(HomeserverRuntime& runtime, std::string_view room_id,
+[[nodiscard]] auto perform_bounded_outbound_call(HomeserverRuntime& runtime, OutboundAnswerTrust trust,
+                                                 std::string_view room_id,
                                                  federation::OutboundTransaction const& transaction,
                                                  std::string_view key_id, core::SecretBuffer secret_key,
                                                  std::string_view diagnostic_event, std::uint32_t deadline_seconds)
@@ -279,7 +298,8 @@ struct OutboundCallResult final
 
 // perform_bounded_outbound_call, keeping the remote's HTTP status for a caller whose answer depends on
 // it (a remote profile lookup relays the remote's 404 as its own). Same slot and deadline rules apply.
-[[nodiscard]] auto perform_bounded_outbound_call_with_status(HomeserverRuntime& runtime, std::string_view room_id,
+[[nodiscard]] auto perform_bounded_outbound_call_with_status(HomeserverRuntime& runtime, OutboundAnswerTrust trust,
+                                                             std::string_view room_id,
                                                              federation::OutboundTransaction const& transaction,
                                                              std::string_view key_id, core::SecretBuffer secret_key,
                                                              std::string_view diagnostic_event,
@@ -288,10 +308,11 @@ struct OutboundCallResult final
 // The shared implementation of perform_sync_outbound_call (bounded == nullopt)
 // and perform_bounded_outbound_call. Call it directly only when the remote's
 // status decides the answer, as a membership call refused with 403 does.
-[[nodiscard]] auto perform_outbound_call(HomeserverRuntime& runtime, std::string_view room_id,
-                                         federation::OutboundTransaction const& transaction, std::string_view key_id,
-                                         core::SecretBuffer secret_key, std::string_view diagnostic_event,
-                                         std::uint32_t timeout_seconds, std::uint64_t max_response_bytes,
+[[nodiscard]] auto perform_outbound_call(HomeserverRuntime& runtime, OutboundAnswerTrust trust,
+                                         std::string_view room_id, federation::OutboundTransaction const& transaction,
+                                         std::string_view key_id, core::SecretBuffer secret_key,
+                                         std::string_view diagnostic_event, std::uint32_t timeout_seconds,
+                                         std::uint64_t max_response_bytes,
                                          std::optional<BoundedOutboundLimits> const& bounded) -> OutboundCallResult;
 
 // ADR-0064 phase B1: joined_members is what callers used before (the user
@@ -390,19 +411,35 @@ struct SendJoinStateIngestResult final
 // Spec (Client-Server API, "Events on Change of Profile Information"): when a user changes their
 // display name or avatar URL, "an m.room.member event (with a join membership) is sent to every
 // room the user is a member of, to update the displayname and avatar_url". Sends that event,
-// carrying the user's current profile, through send_event to each room whose current m.room.member
-// state for `access_token`'s user is a join that does not already carry it. A room the runtime
-// member list names but whose state does not hold the user as joined is skipped, never joined
-// (ADR-0182). A room that refuses the event (its auth rules, room version, size limits or a storage
-// failure) is logged as a warning; the others still get theirs. Then sends the section's
-// m.presence update: the user's current presence (offline if
-// never set) is stored again at a new sync stream position, and /sync adds the display name and
-// avatar URL to it. Called after the profile is stored, so it succeeds whatever the rooms and
-// presence do: only an unauthenticated token fails it (401). A room left behind is sent the next
-// profile update, without duplicate membership events to rooms already current. Takes
-// runtime.mutex (recursive).
+// carrying the user's current profile, to each room whose current m.room.member state for
+// `access_token`'s user is a join that does not already carry it. A room the runtime member list
+// names but whose state does not hold the user as joined is skipped, never joined (ADR-0182). A
+// room that refuses the event (its auth rules, room version, size limits or a storage failure) is
+// logged as a warning; the others still get theirs. Sends to at most
+// profile_propagation_sends_per_request rooms under this hold, and queues the user for
+// propagate_queued_profile when rooms may remain (F-11, ADR-0353). Then sends the section's
+// m.presence update: the user's current presence (offline if never set) is stored again at a new
+// sync stream position, and /sync adds the display name and avatar URL to it. Called after the
+// profile is stored, so it succeeds whatever the rooms and presence do: only an unauthenticated
+// token fails it (401). A room left behind is sent the next profile update, without duplicate
+// membership events to rooms already current. Takes runtime.mutex (recursive).
 [[nodiscard]] auto propagate_profile_change(HomeserverRuntime& runtime, std::string_view access_token)
     -> OperationResult;
+// What one hold of runtime.mutex may do towards a profile change (F-11, ADR-0353): the rooms it may
+// look at, the user's member events it may read and, for a request, the rooms it may send to. The job
+// sends to one room per hold.
+inline constexpr auto profile_propagation_rooms_walked_per_hold = std::size_t{1024U};
+inline constexpr auto profile_propagation_member_events_read_per_hold = std::size_t{64U};
+inline constexpr auto profile_propagation_sends_per_request = std::size_t{16U};
+// How long the job leaves the lock free between holds, and how long it sleeps with nothing queued
+// (queueing a user wakes it).
+inline constexpr auto profile_propagation_pace = std::chrono::milliseconds{5};
+inline constexpr auto profile_propagation_idle_delay = std::chrono::hours{1};
+// The "profile-propagation" job's body (main.cpp; tests call it directly): one hold of runtime.mutex
+// on behalf of the next queued user, in turn. The profile and the user's membership are read in that
+// hold. A user who is now locked, suspended or deactivated is dropped from the queue. Returns how long
+// to wait before the next call. Takes runtime.mutex; never makes a network call under it.
+[[nodiscard]] auto propagate_queued_profile(HomeserverRuntime& runtime) -> std::chrono::milliseconds;
 // Evaluates push rules and dispatches push notifications (and GET
 // /notifications history rows) for `envelope`, an event that was just
 // accepted through federation ingestion (ingest_pdu_event) rather than
@@ -458,7 +495,17 @@ struct FetchThreadsRequest final
     std::optional<std::string> include{};
     std::optional<std::string> from{};
     std::optional<std::uint64_t> limit{};
+    // The most of the room's events the request may examine; `max_thread_events_examined` when
+    // unset. For a test to reach the bound without storing thousands of events.
+    std::optional<std::size_t> max_events_examined{};
 };
+
+// The most of a room's events one GET /threads request examines, newest first (ADR-0345). The
+// spec says to bound the request ("Servers should ... impose a maximum value to avoid resource
+// exhaustion"); this bounds the work, not only the page. In a room with more events, a thread whose
+// children are all older than the newest `max_thread_events_examined` events is not listed, and the
+// count of one with older children is of the children examined.
+inline constexpr std::size_t max_thread_events_examined = 10000U;
 
 // Lists the thread roots in a room, most recently active first, each carrying its
 // bundled `m.thread` aggregation (latest_event / count / current_user_participated).

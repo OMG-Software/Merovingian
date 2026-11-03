@@ -23,7 +23,10 @@ This is the largest and most complex module — read this file carefully before 
 | `deferred_pdu_retry.cpp` | Retains federation PDUs that could not yet be placed (`deferred_pdus`) and retries them: `retry_deferred_pdus`, `DeferredPduRetryJob` (R03, ADR-0165). A retry holds no lock across `ingest_pdu_event`; `ingest_pdu_event` writes rows only after signature verification |
 | `redaction_service.cpp` | Applies redactions (judge, overwrite the target's stored JSON, withhold unapplied redactions from clients) and checks a local client's redaction |
 | `room_power.cpp` | `may_send_state_event()`: whether a user may send a state event of a type in a room's current state, judged as the auth rules judge it (CSAZ-12) |
+| `search_room_index.cpp` | `SearchRoomIndex`: the timelines of the rooms a `POST /search` page's matches are in, from one pass over the events, for `event_context` (F-31, ADR-0333) |
+| `user_directory_search.cpp` | `matching_directory_profiles`: the profiles `POST /user_directory/search` matches, deactivated accounts read in one pass (F-50, ADR-0334) |
 | `room_residency.cpp` | `room_state_is_current()`: whether held room state is current, i.e. the create event is stored and a user of this server is joined (ADR-0301) |
+| `send_join_answer_authorization.cpp` | `authorize_send_join_answer`: the auth rules over a resident's `send_join` answer, in dependency order, from the answer's own events, with `runtime.mutex` released (F-45, ADR-0369) |
 | `restricted_join.cpp` | `decide_restricted_join()`: as the resident, whether a user meets a restricted room's allow conditions and which local user authorises the join (R04, ADR-0185) |
 | `remote_timestamp_event.cpp` | Asking other servers for `GET /rooms/{roomId}/timestamp_to_event` (ADR-0299): `timestamp_to_event_candidate_servers`, `parse_timestamp_to_event_answer`, `timestamp_is_closer`, `acquire_closer_timestamp_event` (the loop over at most 3 servers; releases `runtime.mutex` for each exchange and for the verified fetch, `fetch_remote_event_into_store` in `local_http_router.cpp`) |
 | `space_hierarchy.cpp` | `GET /_matrix/client/v1/rooms/{roomId}/hierarchy` (a child room this server holds no state for is asked for over federation, see "Client requests that call another server") and the answer to `GET /_matrix/federation/v1/hierarchy/{roomId}`, judged for the authenticated requesting server; also `handle_client_room_summary` (`GET /_matrix/client/v1/room_summary/{roomIdOrAlias}`, local rooms only; a request with no token is answered before the auth gate in `client_server.cpp` and may see only a public, knock or world-readable room) |
@@ -39,7 +42,7 @@ This is the largest and most complex module — read this file carefully before 
 | `federation_proxy.cpp` | Forwards inbound federation requests to the out-of-process federation worker over encrypted IPC; `GET /_matrix/key/v2/server` stays local |
 | `federation_request_routing.cpp` | Extracts the room ID from an inbound federation request for worker shard routing |
 | `worker_pool.cpp` | Federation worker shard selection (FNV-1a of the room ID) and the main-process side of worker IPC |
-| `worker_supervisor.cpp` | Spawns and monitors the federation worker child; restarts it with exponential back-off |
+| `worker_supervisor.cpp` | Spawns and monitors the federation worker child; restarts it with exponential back-off, whether it exited or its main-side channel failed while it ran (it kills a live worker whose channel is unhealthy, ADR-0323) |
 | `worker_env.cpp` | Minimal environment allowlist for the worker child (ADR-0042) |
 | `tls.cpp` | TLS connection setup, certificate loading, non-blocking read/write retry loop (ADR-0054) |
 | `local_smoke_flow.cpp` | In-process register → login → room → message flow exercised by the vertical-slice integration test |
@@ -120,9 +123,22 @@ default-constructed and assigned in order to survive it.
 See [`docs/http-transport.md`](../../docs/http-transport.md) "Request lock and
 blocking network calls".
 
+## Federation policy and the policy server (F-21, F-42, ADR-0358, ADR-0361)
+
+`FederationProxy::handle` calls `evaluate_inbound_federation_policy` (rule only) after `verify_inbound_federation_signature` and
+before every branch, and again with the policy server just before it forwards to a worker; `handle_federation_http_request`
+judges what main answers itself, and skips it where `federation_policy_decided_upstream` is set (the worker). The worker never
+runs the hook. `resolve_policy_server_hook` takes a place in
+`policy_server_budget` (key: the surface name; no place is "no usable decision", so `policy_server_allow_without_result`
+decides), reads everything it needs from the runtime, then resolves the configured host with `discovery_network->lookup_addresses`
+(operator-trusted: no deny-list) and calls, all inside one `RuntimeLockRelease` scope and within what is left of
+`policy_server_timeout`. The caps derive from the request pool in `client_outbound_proxy_policy_for_pool`. A transport error is
+logged at warning level. A pre-v12 `create_room` holds a `RoomIdReservation` from choosing its `!room<N>` ID until it returns
+(ADR-0362): an identifier derived from state and used after a lock release is reserved before the release.
+
 ## Client requests that call another server
 
-`publicRooms?server=` (GET and POST), a remote room-alias lookup, a remote user's profile (`remote_profile_response`: relays only `displayname`/`avatar_url`), remote media download or
+`publicRooms?server=` (GET and POST), a remote room-alias lookup (`GET /directory/room/{alias}` and `POST /join/{#alias}`), a remote user's profile (`remote_profile_response`: relays only `displayname`/`avatar_url`), remote media download or
 thumbnail, and the `/thirdparty/*` lookups that call an appservice (ADR-0181) make this server
 call a peer it does not control, and the spec lets clients make them
 without authentication. `RuntimeLockRelease` frees the mutex, not the thread, so each holds one of
@@ -138,6 +154,12 @@ the main pool's threads for the round trip. Every such call therefore:
    `remote_timeout`;
 3. for media, is checked against `security.media.remote_fetch_enabled` and `allow_remote` before
    anything else (`remote_media_refusal`): 404 `M_NOT_FOUND`, counted but not audited.
+
+`POST /keys/query` and `POST /keys/claim` are the same kind of request for each remote server they name (F-17, ADR-0350). `RemoteKeyCalls`
+takes one slot for all of them, and every call is `perform_bounded_outbound_call` on the remaining time of one
+`remote_keys_deadline_seconds` (30 s) deadline, for at most `remote_keys_max_servers` (16) distinct servers. A server it does not ask is
+reported in `failures` with `M_LIMIT_EXCEEDED`, never as a 429 for the request: the local half is answered first, and a one-time
+key already claimed here must reach the client. Do not move the slot ahead of the local loop's consumption by failing the request.
 
 `GET /rooms/{roomId}/timestamp_to_event` (`handle_timestamp_to_event`) is the same kind of request, but only when the local answer is
 absent or the event found has a `prev_event` this server does not hold (`event_is_held`, ADR-0289), or, for `dir=b`, the nearest
@@ -161,6 +183,12 @@ asks at most 3 servers per room, and answers `429 M_LIMIT_EXCEEDED` when the slo
 only spec fields are copied, only rooms the requested space's `children_state` names are cached from `children`, local
 state beats the remote answer, and a room is shown to the user only if the user may see it by the remote summary's own
 `join_rule` / `world_readable` / `allowed_room_ids`.
+
+Every caller of `perform_outbound_call` (and its wrappers) names an `OutboundAnswerTrust` (F-43, ADR-0349). `signature_verified` is for a call
+whose every use of a success body is a signature check on the whole of it and whose failure only means "no data": today the four
+backfill fetches, and it alone may use the federation worker's tunnel. Everything else is `unverified` and goes over
+`runtime.outbound_client`: a status you act on, a template you keep, or a choice among signed objects makes a call unverified. Do not
+add a caller as `signature_verified` without a row in ADR-0349's table and in `tests/tooling/test_outbound_answer_trust.py`.
 
 `perform_outbound_call` (every federated join, leave, knock and proxied lookup) resolves its
 destination through `runtime.cached_discovery` with `DiscoveryCachePolicy::successes_only`, never
@@ -308,6 +336,30 @@ other servers with joined members; never this server), offering only the room's 
   and the membership is `join`. Any other stored copy leaves the join failed.
 - If no candidate succeeds the client gets the original 403, not an upstream error.
 
+## A resident's answer to our send_join is a receipt (F-45, ADR-0369)
+
+`perform_federated_join` runs the answer through `filter_verified_send_join_events` (room, signatures, then the content
+hash: a mismatch is redacted) and `authorize_send_join_answer` (auth rules, dependency order) before anything reaches
+`ingest_send_join_state` or the auth-chain writer. Both run with `runtime.mutex` released. An event that fails is dropped,
+never stored `rejected`. Do not consult the store in the check, and do not recurse over `auth_events`: the resident
+chooses the depth. A join through another resident (ADR-0287) never feeds the answer to these writers, so it skips this.
+
+## The answer to a send_join is planned before the join is stored (F-23, ADR-0366)
+
+`send_join_answer.cpp` is the one place the answer's contents and size are decided. The acceptor calls
+`plan_send_join_answer` (event IDs and JSON sizes, from the room's own state entries and one walk of its auth DAG) after
+it has judged the join and before it takes a stream ordering, refuses with 503 and nothing stored when
+`send_join_answer_fits` says no (`join_response_max_size` as the body, `worker_ipc_frame_bytes` with every event at twice
+its size as the frame), and only after the store copies the events out, once, with `collect_send_join_answer`. Never build
+the answer after the join is stored, and never let a path add events to it without adding them to the plan. `omit_members`
+reaches the acceptor as `InboundPduEnvelope::omit_members` (set from the request target by `handle_send_membership`, carried
+from a worker in the `membership_ingest` frame; main takes only that flag from the frame). A join already stored is
+answered again from current state (`resent_send_join_state`, ADR-0372), never from the state at its `prev_events`, which
+date from `make_join` and may predate a ban; it is never stored or sent on a second time, and a stored `rejected` join is
+refused 403 again. `servers_in_room` is "before the join", so it counts the joiner only if the answer's state has them joined. Without `omit_members` the auth chain still repeats the state events; the spec allows the
+deduplication only with the parameter. `send_leave` and `send_knock` carry no state or chain (a knock's stripped state is a
+fixed small list), so they have no size to plan.
+
 ## The resident sends accepted membership events on
 
 As the resident, the `membership_acceptor` stores a `send_join`, `send_leave` or `send_knock` and then
@@ -372,6 +424,9 @@ only endpoints the spec requires and the origin may be asked for:
 - `verify_and_store_backfilled_event` stores an event with resolvable but disallowed, rejected or denied `auth_events`
   as `rejected` (after-state equal to its state-before), never drops it; only an unresolvable auth event is a gap.
   Dropping it left every event that named it unplaced.
+- It also authorises an event against the current state and stores a failure `soft_failed`, with its state group (F-16,
+  ADR-0371); so does an `outlier` gaining a state group, because the group is what makes it visible to read paths. Do not
+  store a fetched event with a state group and status `outlier` without that check.
 
 ## Read paths that return room events or state
 
@@ -422,13 +477,40 @@ client, sender or remote server controls, and per-user rows that requests scan m
   type the user already holds (ADR-0173). `PUT /user/{userId}/rooms/{roomId}/account_data/{type}`
   is written only for a room the user holds a membership row in, and refuses a new type past
   `max_room_account_data_per_room` per room the same way (ADR-0197). Server-written rows (`m.tag`,
-  `m.fully_read`) go through `set_account_data` and are never refused.
+  `m.fully_read`) go through `set_account_data` and are never refused by the type cap, but every account-data row,
+  theirs included, is refused past `database::max_account_data_row_bytes` (256 KiB, ADR-0339). `PUT .../tags/{tag}`
+  refuses a tag name over 255 bytes (400 `M_INVALID_PARAM`), a value over `max_tag_value_bytes` and a new tag past
+  `max_tags_per_room` (400 `M_TOO_LARGE`).
+- `PUT /sendToDevice` names at most `ClientApiLimits::max_send_to_device_deliveries` (1000) local devices, a `*`
+  counting one per device, and every message is at most `max_to_device_message_bytes`: over either is 413
+  `M_TOO_LARGE` with nothing queued (ADR-0335, ADR-0336). The devices of the named users come from one pass over
+  `store.devices`; never scan the device table per entry. The database layer gathers a batch's recipient queues in
+  one pass (`index_to_device_recipients`) and never walks the queue per message.
+- `POST /keys/upload` checks the shape and size of every one-time and fallback key before storing anything
+  (`uploaded_key_shape_refusal`, 400 `M_BAD_JSON`), and `device_keys`, each cross-signing key and each signed key of
+  a signature upload are at most `max_uploaded_key_document_bytes` (400 `M_TOO_LARGE`, ADR-0338). A new key upload
+  path does the same.
+- `POST /keys/claim` keeps a remote server's answer only for the users and devices asked of it
+  (`federation::accept_remote_key_claim_response`), never overwrites a user the response already holds, and answers
+  500 if the response cannot be serialised: use `json_serialize_checked` on any response that holds members a remote
+  server chose (ADR-0337).
 - `POST /createRoom` refuses past `max_create_room_invites` or `max_create_room_initial_state` with
   `400 M_TOO_LARGE` before `create_room` is called (ADR-0316): `create_room` stores one event per entry under
   the lock.
 - A client's device or key change goes through `record_shared_room_device_changes`: local observers only,
   deduplicated across rooms, one batch (ADR-0317). Never loop over a roster calling `record_device_list_change`;
   a federated room's roster is chosen by a remote server.
+- A fallback local event (ADR-0225) records the room's `current_state` as its state before, never the cited
+  extremity's own state (ADR-0373, F-40): the extremity is picked by stream order and may predate a ban. Do not
+  change `basis_for_new_event` to return the fork's state, or suppress only the diff in `store_event_with_bookkeeping`:
+  the next single-extremity `recompute_current_state` writes the recorded group. A peer can reject such an event at
+  step 5 when the sender's standing exists only on a retired tip: accepted in the ADR, not a bug to fix by recording the
+  fork's state.
+- `recompute_current_state` returns a `CurrentStateRecompute`, not a bool: `refused` (the extremities could not be
+  resolved) is logged and is not success (ADR-0375, F-49). Extremities in one state group are resolved as one state,
+  and `ingest_pdu_event` does not make an accepted event with no `state_key` a tip once the room holds
+  `max_state_groups` of them (`forward_extremities_stay_bounded`, ADR-0374). A state event is always a tip: a
+  ban or demotion must reach resolution. A new path that adds a tip for an inbound event asks the same question.
 - A local event's depth comes from `depth_after_prev_events` over the `prev_events` it was built on (ADR-0314).
   Never derive it from every row of a room: rejected rows keep the depth their sender chose.
 - `GET /rooms/{roomId}/timestamp_to_event` and the federation `timestamp_to_event` provider seek the per-room
@@ -436,8 +518,21 @@ client, sender or remote server controls, and per-user rows that requests scan m
   (1000) events to the visibility filter; never replace the seek with a walk of the room's events. The federation
   provider takes `runtime.mutex` itself (the other federation read providers do not), because the index changes
   under that mutex.
+- State lookups for ingestion and compose are the store's indexes (ADR-0325): `find_event_state_group`,
+  `read_state_group_full_state` and `make_store_event_lookup` cost the rows they return. Never loop over
+  `state_groups`, `state_group_state`, `event_state_groups` or `events` to find a key. A retained PDU is woken through
+  `take_deferred_pdus_awaiting` (ADR-0326), never by searching the retained JSON, and the retry job reads
+  `deferred_pdus` in place rather than copying it.
 - `/search` judges a room the user has left with `room_read_access_for` only when one of its
   events would be returned, so those scans stay bounded by the page (R16).
+- `POST /search`, `POST /publicRooms` and `POST /user_directory/search` match their term with one
+  `core::FoldedSubstringMatcher` built per request (linear in the text; never `std::search`, `find` or `string_view::find`
+  on client text) and refuse a term over `core::max_search_term_bytes` (1024) with `400 M_TOO_LARGE` at parse time, before
+  any work (ADR-0330). `/search` resolves `keys` to a bit mask and builds one `sync::PreparedRoomEventFilter` in
+  `parse_search_request` (ADR-0332): never scan `filter.rooms`, `senders`, `types` or `keys` per event. A result's
+  `context` exists only when the request had `event_context`, and comes from one `SearchRoomIndex` per page (ADR-0333);
+  never walk `store.events` per match. The user directory reads `store.users` once (`matching_directory_profiles`) and
+  returns at most `max_user_directory_results` (100) users (ADR-0334).
 - `expire_typing` groups the typing table by room in a fixed number of passes and hands each
   affected room its new typing list; it never rescans the table per expired room (R13).
 - Sliding sync classifies `room_subscriptions` through one `sync::room_access_index` per request
@@ -445,12 +540,31 @@ client, sender or remote server controls, and per-user rows that requests scan m
 - A user's push rules are evaluated for every event they receive. `PUT /pushrules/...` refuses a new
   rule past `max_push_rules_per_user` with `400 M_TOO_LARGE` and bounds each rule (ADR-0204);
   `m.push_rules` cannot be set through the account-data API (405).
+- `GET /rooms/{roomId}/hierarchy` reads state through `database::find_current_state_event_id` and
+  `for_each_room_state_row` (ADR-0344), parses each child event once, and stops its walk at the end of the page
+  plus one room, or at `max_hierarchy_walk_visits` (ADR-0345). Never filter `store.state` for one key or one room.
+- `GET /rooms/{roomId}/threads` aggregates by root ID in a hash map over `EventTable::walk_room_newest_first`, at
+  most `max_thread_events_examined` events (ADR-0345); never walk `store.events` for one room.
+- `GET /rooms/{roomId}/members` collects the state-backed members in a set (F-10).
+- `GET /make_join` (the template provider) and `decide_restricted_join` read the create, join rules, power levels and the
+  joiner's member event by `find_current_state_event_id`, a named room's local members by one `for_each_room_state_row`
+  walk of that room, and events by `EventTable::find_in_room` (F-19, ADR-0367); `stored_room_version` reads the create
+  row by the index. `RestrictedJoinDecision::work` counts what a decision read. Never filter `store.state` or walk
+  `store.events` for one room or one key in this path; `[f19]` in `tests/unit/test_send_join_answer.cpp` shows the cost
+  is the same with unrelated rooms present.
 - Push delivery's badge count (`counts.unread`, `count_push_badge`) runs per recipient per event.
   It walks `store.events.in_stream_order()` newest first, stops once every joined room is settled,
   visits at most `push_badge_row_budget` (10000) rows, and saturates at `push_badge_unread_cap`
   (1000) (ADR-0207); do not replace it with a per-room or unbounded count. Its setup walks each
   table a fixed number of times (`PushBadgeCount::table_walks`), whatever the number of rooms:
   nothing per room may walk a whole table.
+
+### A profile change sends a fixed share, and a job sends the rest (F-11, ADR-0353)
+
+`propagate_profile_change` sends to at most `profile_propagation_sends_per_request` rooms; the `profile-propagation`
+`PeriodicJob` in `main.cpp` runs `propagate_queued_profile`, one hold of `runtime.mutex` per room. Both go through
+`walk_rooms_for_profile`, which reads the profile and the user's membership in the hold that sends. Never queue a token or
+an event body: the queue holds a user ID and a position, and the job sends through `send_event_as_user`.
 
 ## A room's version comes from its create event, through one accessor (ADR-0179)
 
@@ -463,6 +577,11 @@ substitute a default. The accessor never returns an empty string (an unusable de
 create (unknown here) may take a caller-chosen fallback, written as `value_or(...)` at the call
 site. A federated join is refused unless the verified `m.room.create` declares the make_join
 version.
+
+`InboundPduEnvelope::room_version` is a claim until a create is stored: every receipt path falls back to "12" before then.
+`ingest_pdu_event` takes its policy from `stored_room_version` once a create is stored and refuses an envelope naming another
+version (ADR-0370). A PDU parked during a join is kept as received and verified afresh under the real version at the drain,
+with `runtime.mutex` released (`pending_pdu_under_room_version`); never replay a queued envelope unchanged.
 
 ## Media upload boundary
 
@@ -531,6 +650,12 @@ When a client endpoint's action is, or advertises, a state event (`/upgrade` sen
 visibility and aliases stand for `m.room.canonical_alias`), refuse it up front with `may_send_state_event()` for that
 event type, before anything is created. Membership alone is not enough. Alias `PUT` validates with
 `auth::room_alias_is_valid` and requires this server's domain; `DELETE` allows the alias's recorded creator.
+
+## `LocalRoom::events` holds event JSON, never IDs (ADR-0342)
+
+Every writer pushes the signed event's JSON into `LocalRoom::events`. Take an event ID from the event table
+or the room's forward extremities (`last_known_event_id` in `client_server.cpp` is the model); reading one
+from this vector put a whole event into a room upgrade's `predecessor.event_id`.
 
 ## Typing expiry (R13, ADR-0199)
 

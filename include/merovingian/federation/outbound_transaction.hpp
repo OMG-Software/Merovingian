@@ -128,6 +128,11 @@ struct OutboundCall final
 // `make_federation_signature`.
 [[nodiscard]] auto build_outbound_request(OutboundCall const& call) -> http::OutboundRequest;
 
+// A transaction was delivered, but the attempt took long enough to count against the destination
+// (F-20, ADR-0354): its backoff grows from `failures_before`, the count before this attempt.
+auto apply_slow_success(FederationDestination& destination, std::uint32_t failures_before,
+                        std::uint64_t now_ts) noexcept -> void;
+
 // Updates the federation destination retry state based on a call result.
 // A 2xx response clears the failure counter and records last_success_ts.
 // Any other outcome increments the failure counter and sets retry_after_ts

@@ -14,6 +14,7 @@ Manages schema migrations and provides a dual-backend (SQLite / PostgreSQL) pers
 | `connection.cpp` | Connection lifecycle and pool management |
 | `statement.cpp` | Prepared statement wrapper; parameters are always bound, never interpolated |
 | `schema.cpp` | Schema introspection helpers |
+| `state_group_tables.cpp` | `StateGroupTable`, `StateGroupEntryTable`, `EventStateGroupTable`: the state-group tables with their hash indexes (ADR-0325) |
 | `runtime_database.cpp` | Exposes the live store to the rest of the server |
 
 ## Security rules — non-negotiable
@@ -57,6 +58,30 @@ Manages schema migrations and provides a dual-backend (SQLite / PostgreSQL) pers
     carries the room's state groups, their entries and its events' group mappings too: federation reads fail closed on an
     event with no group, so a new table a worker-served read depends on must be added to the snapshot and `reload_room`.
 
+11. **The to-device queue is bounded in rows, age and bytes, and a batch is prepared in one pass** (ADR-0335,
+    ADR-0336). `index_to_device_recipients` gathers the queue of every recipient a batch names with one pass over
+    `to_device_messages`; `prepare_to_device_enqueue` then evicts expired, then oldest rows (count, then bytes) from that
+    recipient's queue only. The byte total of a queue is never stored: it is summed from the rows when the batch is
+    prepared, so it cannot drift from them. Remove in-memory rows with `erase_to_device_rows` (a hash of stream ids),
+    never `remove_if` over the victims. `store_account_data` and the capped writers refuse content over
+    `max_account_data_row_bytes` (ADR-0339).
+
+## Reloading a room (F-27, ADR-0360)
+
+`reload_room` is `load_room_snapshot` (the database read; touches no row of the store, takes no lock) followed by
+`apply_room_snapshot` (the in-memory swap). A caller that shares the store with readers calls the halves itself and takes
+its exclusion only around the second: the federation worker does so through `federation_worker::StoreReadGuard`. A
+change to what a reload rewrites goes in both the snapshot and the swap, and the swap must keep the state index in step
+(`rebuild_state_index`).
+
+## The state index (ADR-0344)
+
+`PersistentStore::state` has two position indexes (`state_position_index`, `state_room_index`) behind
+`find_current_state_event_id` and `for_each_room_state_row`. They are trusted only while `state_indexed_rows ==
+state.size()` and the row a position names still matches. Every code path that appends to or erases from `state`
+calls `note_state_row_appended` or `rebuild_state_index` (the two writers in `persistent_store.cpp`, `reload_room`,
+and both hydration paths); a new one must too. Do not scan `state` for one key or one room in a handler.
+
 ## Backend selection
 
 The backend is chosen at startup from config (`database.engine = sqlite | postgresql`).
@@ -81,3 +106,20 @@ was applied to which target) is derived from `events` and never persisted in a t
 re-derives it after hydration and the homeserver's startup reconciliation re-applies. What is durable is the redacted
 JSON of the target (`replace_event_json`), so no migration. The database module does not judge redactions (it cannot
 link `events`/`rooms`); `PersistentStore::redaction_observer` is how the homeserver does, after each stored event.
+
+## State-group tables (F-07, F-15, ADR-0325)
+
+`PersistentStore::state_groups`, `state_group_state` and `event_state_groups` are table classes, not vectors: they own their
+rows, show them read-only, and keep a hash index over them. Look up with `event_state_groups.state_group_of(event_id)`,
+`state_groups.find(id)` and `state_group_state.entries_of(id)` (or `find_event_state_group`, `find_state_group`,
+`read_state_group_full_state`); never loop over a whole table to find a key. Write only through `insert`, `insert_all`,
+`assign`, `erase_if` and `clear`, which keep the index right; a writer that bypasses them does not compile. Hydration and
+`reload_room` use `insert_all` / `erase_if`. The tables have no lock: a reader needs exclusion from writers (in main,
+`runtime.mutex`), and a view or `string_view` they return is valid only until the next write.
+
+## Retained PDUs (F-18, ADR-0326)
+
+`PersistentStore::deferred_pdu_awaits` indexes each retained PDU under the event IDs it is missing
+(`find_missing_event_references`, also what ingestion backfills by). `upsert_deferred_pdu` and `remove_deferred_pdu` keep it
+current; hydration calls `rebuild_deferred_pdu_awaits`. Find the rows waiting for an event with
+`take_deferred_pdus_awaiting`; never search `pdu_json` for an ID.

@@ -35,6 +35,7 @@ SCENARIO("runtime federation policy carries configured backfill and admission bu
         federation.pending_join_max_size = "2MiB";
         federation.outbound_queue_capacity = 79U;
         federation.outbound_max_retries = 83U;
+        federation.outbound_delivery_threads = 7U;
         federation.per_origin_transaction_rate = {53U, 60U};
         federation.per_origin_pdu_rate = {59U, 60U};
         federation.per_origin_edu_rate = {61U, 60U};
@@ -72,6 +73,7 @@ SCENARIO("runtime federation policy carries configured backfill and admission bu
                 REQUIRE(runtime.pending_join_max_bytes == 2U * 1024U * 1024U);
                 REQUIRE(runtime.outbound_queue_capacity == 79U);
                 REQUIRE(runtime.outbound_max_retries == 83U);
+                REQUIRE(runtime.outbound_delivery_threads == 7U);
                 REQUIRE(runtime.per_origin_transaction_rate.max_requests == 53U);
                 REQUIRE(runtime.per_origin_pdu_rate.max_requests == 59U);
                 REQUIRE(runtime.per_origin_edu_rate.max_requests == 61U);

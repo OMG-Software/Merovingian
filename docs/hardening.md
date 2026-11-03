@@ -424,6 +424,20 @@ separate process on the same host:
   to impersonate or intercept via filesystem access.
 * **SOCK_CLOEXEC**: the socket pair is created `SOCK_CLOEXEC` so it is
   not inherited by any further child processes.
+* **Main fetches the answers it acts on itself; the worker's replies are checked** (F-43, ADR-0349): an
+  outbound federation call whose answer main does not verify by signature (keys, alias, profile,
+  publicRooms, `make_*`, `send_*`, invites, `state_ids`, `hierarchy`, `timestamp_to_event`) goes over
+  main's own `OutboundClient`, not the worker, so a compromised worker cannot make main believe what only
+  a remote server could say. Main therefore parses more remote responses than before. That is accepted:
+  it is the same pinned (`CURLOPT_RESOLVE` after `federation::discover_server`), TLS-verified,
+  size-capped libcurl path main already uses for key fetches, `DispatchWorker`, remote media and push
+  gateways, so the same syscalls and resolver paths are in main's seccomp allowlist and no filter
+  changed. The four backfill fetches, whose PDUs are each verified before storage, stay on the worker
+  so the largest remote bodies are still parsed in the sandbox. What does cross the tunnel is checked in
+  `WorkerPool::send_outbound_request` (`validate_worker_outbound_reply`): status in 100 to 599, body within
+  the request's `max_response_body_bytes`, `error_detail` cut to 256 printable bytes. Inbound
+  `fed_response` frames reaching remote peers from the worker are not covered by this and remain a
+  residual (`docs/threat-model.md`).
 * **Minimal worker environment** (#330): the worker is spawned with an
   explicit minimal environment (`PATH` only) rather than inheriting the parent
   environment, so no parent secret leaked via environment reaches the
@@ -432,7 +446,9 @@ separate process on the same host:
   (`merovingian::ipc::kIpcMaxFrameBytes`) by default, lowered from a prior
   50 MiB cap to bound memory-exhaustion DoS across concurrent workers;
   oversize frames are logged and propagated as send/request failures rather
-  than silently dropped. Response bodies (`fed_response`/`outbound_http_response`)
+  than silently dropped: a response over the cap is replaced by a small
+  `ipc_error` reply that releases the requester at once instead of leaving it
+  to its timeout (F-23, ADR-0368). Response bodies (`fed_response`/`outbound_http_response`)
   are base64-encoded before framing — a fixed 4/3 expansion — instead of raw
   JSON-string escaping, whose expansion depends on the response content and
   could otherwise push a response already at the response cap over the frame
@@ -467,6 +483,18 @@ separate process on the same host:
   unhealthy and the reader stops, so the supervisor replaces the worker instead
   of main buffering without limit. Every IPC socket has a 30 s send timeout, so
   a peer that stops reading cannot pin a writer.
+* **A remote server cannot end the channel, and a dead channel is replaced**
+  (F-35, F-09, F-08, [ADR-0321](adr/0321-every-ipc-frame-is-valid-utf-8-by-construction.md),
+  [ADR-0322](adr/0322-an-authenticated-frame-whose-payload-does-not-parse-fails-one-request.md),
+  [ADR-0323](adr/0323-the-supervisor-restarts-a-worker-whose-main-side-channel-failed.md)):
+  every frame a process writes is valid UTF-8 (`ipc_json_str` replaces bad bytes;
+  the `fed_request` target, header values and body carry non-UTF-8 bytes as
+  `<key>_b64`), so remote bytes cannot make a frame the peer's parser refuses.
+  Only a failed read (length, short read, AEAD authentication) ends a channel;
+  an authenticated frame whose payload does not parse is logged and dropped, and
+  the waiter of a response is released at once. If main's side of a channel does
+  fail while the worker is alive, the supervisor kills and respawns the worker
+  after the usual backoff.
 * **The worker cannot signal or re-limit other processes** (ISO-2,
   [ADR-0112](adr/0112-restrict-worker-signals-and-resource-limits.md)): the
   worker seccomp filter has no `kill`, `tkill`, `setrlimit` or `prlimit64`, and

@@ -33,6 +33,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <tuple>
 #include <utility>
 #include <variant>
 #include <vector>
@@ -450,7 +451,7 @@ SCENARIO("Which stored predecessors count as held", "[sync][dag-gap]")
         {
             auto const m2 = f.row_with_body("m2").event_id;
             REQUIRE(merovingian::database::set_event_status(store, m2, "outlier"));
-            std::erase_if(store.event_state_groups, [&](auto const& mapping) {
+            std::ignore = store.event_state_groups.erase_if([&](auto const& mapping) {
                 return mapping.event_id == m2;
             });
             f.set_prev("m3", {m2});

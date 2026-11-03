@@ -156,6 +156,13 @@ Implemented now:
   store — the ordinary `/send` transaction path above and the membership
   acceptor here — must enforce this gate: a rule enforced on only one of two
   paths into the same store is not enforced at all
+- a resident's answer to this server's `send_join` passes the receipt checks before anything is stored (0.12.70, F-45,
+  ADR-0369): a content hash mismatch is redacted, and `authorize_send_join_answer` judges `state` and `auth_chain` in
+  dependency order from the answer's own events, dropping what fails and refusing a join the rest does not authorise;
+- a PDU parked during a join is verified afresh and rebuilt under the version the stored create declares, and ingestion
+  refuses an envelope naming any other version (0.12.70, F-44, ADR-0370);
+- an event fetched to fill a gap is also checked against the current state and stored `soft_failed` on failure, with its
+  state group (0.12.70, F-16, ADR-0371);
 - membership endpoint/content agreement (0.12.16, FED-6): `send_join`,
   `send_leave`, and `send_knock` validate the membership value, event type,
   authenticated-origin/sender relationship, sender/state-key equality, and
@@ -191,7 +198,9 @@ Implemented now:
   path that admits a remote PDU verifies it cryptographically with
   `federation::verify_join_authorising_server_signature` first: `/send`,
   `send_join`, worker relay, backfill ingestion, and the `send_join` state this
-  server stores when it joins a remote room (0.12.31, ADR-0171).
+  server stores when it joins a remote room (0.12.31, ADR-0171). The rule is
+  new in room version 8 (rooms/v8.md rule 4.2); in versions 3 to 7 the property
+  is ordinary content and the helper accepts without checking (ADR-0356).
   The membership and power checks need the authorising user's
   `m.room.member` event in the auth map, which "Auth events selection"
   names for such a join. State resolution has always selected it; since
@@ -686,10 +695,37 @@ fails (an extremity with no recorded state, an auth-chain event this server
 does not hold, the state-resolution budget), the event is built on the newest
 extremity, by this server's stream order, whose after-state reads alone, and
 storing it retires every other extremity. A warning
-(`event.prev_events.fallback`) names the reason. Only when no extremity has a
+(`event.prev_events.fallback`) names the reason. The event's state before is
+then the room's cached `current_state`, not that extremity's after-state
+(ADR-0373, F-40): a retired tip, or this fork's predecessors, may hold a ban or
+a demotion that the cited fork lacks, and current state still holds it. The
+event's state group, built from it, keeps the revocation, so neither the
+`current_state` diff written with the event nor the single-extremity
+`recompute_current_state` that runs after every later accepted PDU restores the
+fork's older state. Its `auth_events` come from the same current state. The
+recorded state can differ from what a peer derives from the cited `prev_event`
+alone, and a peer can reject the event at step 5 of the receipt checks when the
+sender's standing exists only on a retired tip. `state_before_event` answers
+with the recorded state: for a state event with one `prev_event`, its own group
+with its own key's entry from that `prev_event`'s group. Only when no extremity has a
 readable state is the event refused (500, `event.prev_events.unresolvable`).
 Before 0.12.48 the failed resolution refused every local event in the room,
 with no log above debug.
+
+`recompute_current_state` returns a status (ADR-0375, F-49): `resolved`, `refused`
+or `write_failed`. A refusal (an extremity with no readable state, more distinct
+extremity states than `max_state_groups`, the state budget, a resolution that
+fails closed) leaves `current_state` as it was, logs `state.current.refused` at
+warning level, and is no longer reported as success; the caller still stores the
+event. Extremities that share a state group resolve as one state, so a flood of
+messages citing one event costs one state, not one per message (ADR-0374). An
+accepted event with no `state_key` that cites no current tip does not become a
+tip once the room holds `max_state_groups` of them
+(`forward_extremities_stay_bounded`); it is stored, delivered and placed
+normally. A state event is always a tip. While a refusal lasts each accepted
+state event still writes its own `current_state` row, so a ban applies; the
+residual is that a state event resolution would have reverted can stay current
+until the tips are back within budget.
 
 A federated join makes the join event the room's sole forward extremity: every
 extremity recorded before it, left from an earlier stay, is retired (0.12.48).
@@ -1029,14 +1065,23 @@ The membership-acceptor path does not yet run this backfill step — see the
 
 The inbound federation `GET /state/{roomId}` and `/state_ids/{roomId}` endpoints
 return the room state resolved *as of* the required `event_id` query parameter —
-the state prior to the changes that event itself induces. Because the persistent
-store keeps only the current resolved state per `(type, state_key)`, historical
-state is reconstructed by walking the event DAG backward from the requested
-event's `prev_events`: state events are identified by the presence of a
-`state_key` member in the stored PDU JSON, and for each `(type, state_key)` the
-ancestor with the greatest `(depth, event_id)` wins. This is the deterministic
-linearisation that v2 state resolution produces for a conflict-free DAG, so
-superseded historical state values are recovered without a stored state group.
+the state prior to the changes that event itself induces. The answer is the state
+this server *recorded* (ADR-0064 state groups), never a walk of the event graph
+(F-25, F-26, ADR-0363): `federation::state_before_event` reads the event's own group
+when the event is not a state event or was rejected (its state before equals its state
+after); for a state event with one `prev_event`, its own group with its own key's entry
+from that `prev_event`'s group (which is that group for any event but a fallback one,
+ADR-0373, and that group alone for an event with no group of its own); and for a state
+event with several `prev_events` the resolution `compute_state_before` makes at ingestion, under a
+lower auth-walk budget (ADR-0365). A rejected event is therefore never in the answer, a
+soft-failed one is where resolution admitted it, and sender-chosen depth decides nothing.
+It fails closed: an event with no recorded state (an outlier, or the state before a
+federated join's own event), a broken group chain, a group naming an event this store lacks
+or a rejected one, or a resolution over its budget is answered `404 M_NOT_FOUND` ("the
+server doesn't know about the state at that event"). The cost of a request is the state
+groups on at most two chains plus the size of the state, not the length of the room's history. The
+auth chain is bounded at `max_state_auth_chain_events` (65536) and a longer one is refused
+with `502 M_TOO_LARGE`, never cut (ADR-0364).
 When `event_id` is absent the handler rejects the request with
 `400 M_MISSING_PARAM`; an `event_id` that is unknown, or that belongs to another
 room, answers `404 M_NOT_FOUND` (there is no fallback to the current state, 0.12.15).
@@ -1066,15 +1111,15 @@ with no state group (an outlier) or a broken group chain is redacted. `/state`,
 authorisation and a joining or catching-up server needs them whole to compute state and
 authorise events. The `origin_may_read_room` gate still runs first.
 
-The client-server `GET /rooms/{roomId}/context/{eventId}` endpoint reuses this
-same backward DAG walk (`federation::resolve_state_event_ids_at()`, 0.11.11)
-to populate its `state` field with the room state at the last event the
-response actually returns, rather than the room's current state, per CS API:
-"The state of the room at the last event returned." Because `/context`'s
-`state` needs the pinned event's *own* contribution included when that event
-is itself a state event — unlike the federation endpoints above, which stop
-one step short by design — the shared walk's result is folded together with
-the pinned event before being returned. `GET /rooms/{roomId}/messages` was not
+The client-server `GET /rooms/{roomId}/context/{eventId}` endpoint populates its `state`
+field (`federation::resolve_state_event_ids_at()`) with the room state at the last event
+the response actually returns, rather than the room's current state, per CS API: "The
+state of the room at the last event returned." That is the event's *own* recorded group
+(ADR-0363), the state after it: a state event's own change is in it, a rejected event's is
+not. An event with no recorded group, or a group that cannot be served whole, gives an
+empty `state` (never a walk, never current state). It reads one group chain under
+`runtime.mutex` and resolves nothing.
+`GET /rooms/{roomId}/messages` was not
 changed: its `state` field is spec'd around chunk-relevance/lazy-loading, not
 a DAG position, so this reconstruction does not apply to it in the same way;
 see `docs/todos/capability-gaps.md` for that tracked divergence.

@@ -147,6 +147,12 @@ value. Test fixtures that do not exercise persistence select it through
   hydration, copied with the store, and ignored (lookup scans) while its row count
   differs from `key_signatures`, so rows pushed directly never produce a missing
   result. Read signatures through this function, not by scanning the vector.
+- `find_current_state_event_id` and `for_each_room_state_row` read current state through in-memory indexes over
+  `PersistentStore::state` (`state_position_index` by room, type and state key; `state_room_index` by room).
+  Every writer in `persistent_store.cpp` keeps them in step, `reload_room` and both hydration paths rebuild them
+  (`rebuild_state_index`), and a lookup scans while `state_indexed_rows` differs from `state.size()` or a position
+  no longer names the row asked for (ADR-0344). Read state by key or by room through these, not by scanning the
+  vector; a new writer of `state` must call `note_state_row_appended` or `rebuild_state_index`.
 - Physical migration-file loading for SQL files with explicit metadata and
   statement names; the checked-in `migrations/` directory contains only
   `001_initial_schema.sql`, the frozen record of the v1 schema.
@@ -536,6 +542,16 @@ value. Test fixtures that do not exercise persistence select it through
   write-through path (the `PersistentStoreBackend::memory` backend commits
   trivially, so unit tests exercise the in-memory bookkeeping directly —
   see `tests/unit/test_state_groups.cpp`).
+
+  **In-memory indexes (F-07, F-15, ADR-0325).** The three tables are mirrored in
+  memory by `StateGroupTable`, `StateGroupEntryTable` and `EventStateGroupTable`
+  (`state_group_tables.hpp`), which own the rows and keep hash indexes by
+  `state_group_id` and `event_id`, so `find_event_state_group`, `find_state_group`
+  and `read_state_group_full_state` cost the rows they return and not a pass over
+  every room's. They are filled by hydration and `reload_room` through the tables'
+  own methods; no schema changed. Retained federation PDUs (`deferred_pdus`) are
+  likewise indexed in memory by the event IDs they are missing
+  (`PersistentStore::deferred_pdu_awaits`, rebuilt after hydration; ADR-0326).
 
   A fresh database starts with no state groups or forward extremities; they are
   written as rooms are created and events ingested. Nothing is seeded at
@@ -1073,9 +1089,9 @@ Two independent mechanisms close this, together:
    | `event_signatures` | same `reconstruct_event_relations` dependency, for `PersistentEvent::signatures` |
    | `room_aliases` | `query/directory` (`find_room_alias`) |
    | `server_signing_keys` | remote-key caching (`remote_key_cache_probe`/`remote_key_resolver`) — **column-restricted**, see below |
-   | `state_groups` | ADR-0064 phase A (0.12.13): the worker serves federation `/state` and `/state_ids` locally today from `current_state`/event relations; a later phase moves that to state groups, granted now so that phase needs no further role change |
-   | `state_group_state` | same ADR-0064 phase-A reasoning, for a group's own delta/snapshot rows |
-   | `event_state_groups` | same ADR-0064 phase-A reasoning, for the event → state group mapping |
+   | `state_groups` | federation `/state` and `/state_ids` answer from the state group recorded for the event (ADR-0363); also `ServerEventFilter`'s visibility judgement (ADR-0064) |
+   | `state_group_state` | the same, for a group's own delta/snapshot rows |
+   | `event_state_groups` | the same, for the event → state group mapping (an event with none has no answerable state: 404) |
    | `forward_extremities` | same ADR-0064 phase-A reasoning: the worker's membership-template forward-extremity read comes from here (ADR-0318) |
    | `schema_migrations` | needed for ANY store to open (schema-version check via `load_schema_state`), not gated by `TableLoadProfile` at all |
 

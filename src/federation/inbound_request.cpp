@@ -186,6 +186,16 @@ namespace
         return {accepted, status, std::move(reason)};
     }
 
+    // Appendices, "Room IDs" and "Event IDs": `!opaque_id` / `$opaque_id`, valid non-surrogate
+    // Unicode code points (the localpart of a room ID may not hold NUL), and at most 255 bytes
+    // including the sigil. The opaque part is room-version specific, so nothing more is checked.
+    // A value that is not even this is refused before it is relayed or looked up (F-08).
+    [[nodiscard]] auto opaque_id_is_well_formed(std::string_view id, char sigil) noexcept -> bool
+    {
+        return id.size() >= 2U && id.size() <= 255U && id.front() == sigil && id.find('\0') == std::string_view::npos &&
+               canonicaljson::utf8_is_valid(id);
+    }
+
     [[nodiscard]] auto sender_domain(std::string_view sender) noexcept -> std::string_view
     {
         // A sender's server name may carry an explicit port (host:port), so
@@ -1095,6 +1105,16 @@ namespace
         {
             return {400U, "membership path is malformed"};
         }
+        // A remote server chose both identifiers. Refuse one that is not an identifier before the
+        // provider sees it: a worker relays it to main (F-08).
+        if (!opaque_id_is_well_formed(params->room_id, '!'))
+        {
+            return {400U, homeserver::matrix_error("M_INVALID_PARAM", "roomId path parameter is not a room ID")};
+        }
+        if (!auth::user_id_is_valid_federated(params->subject))
+        {
+            return {400U, homeserver::matrix_error("M_INVALID_PARAM", "userId path parameter is not a user ID")};
+        }
         if (sender_domain(params->subject) != request.origin)
         {
             audit_federation(runtime, "federation.make_membership_rejected", request.origin, request.target,
@@ -1153,6 +1173,8 @@ namespace
         }
         return {200U, std::move(body)};
     }
+
+    [[nodiscard]] auto query_param_value(std::string_view target, std::string_view name) -> std::string;
 
     [[nodiscard]] auto handle_send_membership(FederationRuntimeState& runtime, SignedFederationRequest const& request,
                                               FederationRoute const& route, FederationRemoteRuntime& remote)
@@ -1256,6 +1278,10 @@ namespace
             // too, so the rule holds wherever the event is accepted).
         }
         envelope->origin = request.origin;
+        // Spec v1.19 PUT /send_join, query parameter `omit_members`: "If true, indicates that that
+        // calling server can accept a reduced response". Only a send_join has it.
+        envelope->omit_members = route.endpoint == FederationEndpoint::send_join &&
+                                 query_param_value(request.target, "omit_members") == "true";
         auto const acceptance =
             runtime.membership_acceptor(route.endpoint, params->room_id, params->subject, *envelope);
         if (!acceptance.accepted)
@@ -1278,8 +1304,20 @@ namespace
             // Spec §11.5.1 (PUT /send_join): members_omitted is a REQUIRED field.
             // Without it Synapse raises a parse error and returns 500 to its
             // joining client, causing an infinite make_join/send_join retry loop.
-            // We always include full member events so the value is always false.
-            response.push_back(canonicaljson::make_member("members_omitted", canonicaljson::Value{false}));
+            // True only when the request set omit_members and membership events were left out of
+            // `state`; `servers_in_room` is then required (v1.6).
+            response.push_back(
+                canonicaljson::make_member("members_omitted", canonicaljson::Value{acceptance.members_omitted}));
+            if (acceptance.members_omitted)
+            {
+                auto servers = canonicaljson::Array{};
+                for (auto const& server : acceptance.servers_in_room)
+                {
+                    servers.push_back(canonicaljson::Value{server});
+                }
+                response.push_back(
+                    canonicaljson::make_member("servers_in_room", canonicaljson::Value{std::move(servers)}));
+            }
         }
         response.push_back(canonicaljson::make_member("auth_chain", build_array_value(acceptance.auth_chain_json)));
         response.push_back(canonicaljson::make_member("state", build_array_value(acceptance.state_json)));
@@ -1557,6 +1595,13 @@ namespace
         {
             return {400U, homeserver::matrix_error("M_MISSING_PARAM", "room_alias is required")};
         }
+        // Appendices, "Room Aliases": `#localpart:domain`, at most 255 bytes. A malformed alias is a
+        // bad request, as for query/profile's user_id, and never reaches the provider, which a
+        // worker relays to main (F-08).
+        if (!auth::room_alias_is_valid(alias))
+        {
+            return {400U, homeserver::matrix_error("M_INVALID_PARAM", "room_alias is not a valid room alias")};
+        }
         auto const result = runtime.directory_query_provider(alias);
         if (!result.found)
         {
@@ -1677,6 +1722,12 @@ namespace
             return {400U, "user/devices path is malformed"};
         }
         auto const user_id = core::percent_decode(path.substr(prefix.size()));
+        // As for query/profile: a malformed user ID is a bad request, and is never looked up or
+        // relayed to main by a worker (F-08).
+        if (!auth::user_id_is_valid_federated(user_id))
+        {
+            return {400U, homeserver::matrix_error("M_INVALID_PARAM", "userId is not a valid user ID")};
+        }
         auto body = runtime.user_devices_provider(user_id);
         if (body.empty())
         {
@@ -1737,6 +1788,11 @@ namespace
         if (event_id.empty())
         {
             return {400U, "event path is malformed"};
+        }
+        // Appendices, "Event IDs": `$opaque_id`, at most 255 bytes (F-08).
+        if (!opaque_id_is_well_formed(event_id, '$'))
+        {
+            return {400U, homeserver::matrix_error("M_INVALID_PARAM", "eventId path parameter is not an event ID")};
         }
         return room_read_response(runtime.event_query_provider(event_id, request.origin), "Event not found",
                                   "event request is malformed");
@@ -2774,6 +2830,13 @@ auto verify_join_authorising_server_signature(canonicaljson::Value const& event,
                                               crypto::Ed25519Provider& provider,
                                               std::chrono::steady_clock::time_point deadline) -> FederationDecision
 {
+    // rooms/v8.md rule 4.2 introduced this rule ("New in this version"); in room versions 3 to 7 the
+    // property is ordinary content, and refusing an event for it would strand every descendant that
+    // the other servers accepted (F-38, ADR-0356).
+    if (!room_version.restricted_join_rule)
+    {
+        return make_decision(true, 200U, {});
+    }
     auto const signature_key = join_authorising_signature_key(event);
     if (!signature_key.has_value())
     {
@@ -3468,8 +3531,9 @@ namespace
                 dispatch_non_transaction_endpoint(runtime, request, route_match.route, remote);
             if (non_transaction_response.status >= 200U && non_transaction_response.status < 300U)
             {
-                remote.trust.consecutive_failures = 0U;
-                persist_remote_trust(runtime, remote);
+                // F-59 / ADR-0347: no trust write here. Only a /send transaction is evidence about
+                // the peer's PDUs, and `remote` may be a worker's synthetic record (ADR-0110) that
+                // would overwrite the real one, clearing a backoff the peer earned.
                 log_diagnostic("request.accepted",
                                {
                                    {"origin", request.origin,                                       false},
@@ -3628,6 +3692,9 @@ namespace
         // Room-ACL denials are deliberately excluded — an ACL is local policy, not
         // evidence that the peer is misbehaving.
         auto pdu_trust_failures = std::size_t{0U};
+        // Every PDU that failed verification here, whoever it is charged to (F-22): a relayed one is
+        // not the peer's fault, but a transaction carrying one is still no evidence of good behaviour.
+        auto pdu_verification_failures = std::size_t{0U};
         auto local_key_resolution_denied = false;
         // Pre-resolve distinct relayed sender-domain signing keys in parallel so a
         // large inbound transaction carrying PDUs from many senders does not pay N
@@ -3773,8 +3840,17 @@ namespace
                 }
                 else
                 {
-                    record_remote_trust_failure(remote.trust);
-                    ++pdu_trust_failures;
+                    ++pdu_verification_failures;
+                    // F-22 / ADR-0346: only the peer's own events are evidence against the peer. A
+                    // relayed PDU's verification depends on its author's keys, which the author
+                    // controls and the relay cannot influence, so a third server must not be able to
+                    // back an honest relay off. A sender whose domain cannot be read is no faithful
+                    // relay of a valid event, so that PDU is the peer's own.
+                    if (pdu_sender_dom.empty() || pdu_sender_dom == request.origin)
+                    {
+                        record_remote_trust_failure(remote.trust);
+                        ++pdu_trust_failures;
+                    }
                 }
                 log_diagnostic("pdu.rejected", {
                                                    {"origin",         request.origin,                      false},
@@ -3860,6 +3936,18 @@ namespace
                                                          {"event_id",       envelope->event_id,         false},
                                                          {"room_id",        envelope->room_id,          false}
                 });
+                break;
+            case PduIngestionStatus::rejected_acl:
+                // F-24 (ADR-0359): main's own room ACL denies the origin or the sender's server for a PDU
+                // this process let through (a federation worker's snapshot of the room can be stale). Same
+                // answer as the ACL check above: ignored, with an error for the event ID. No trust penalty.
+                audit_federation(runtime, "federation.acl_rejected", request.origin, request.target, ingestion.reason);
+                pdu_errors.push_back(canonicaljson::make_member(
+                    envelope->event_id,
+                    canonicaljson::Value{canonicaljson::Object{canonicaljson::make_member(
+                        "error",
+                        canonicaljson::Value{ingestion.reason.empty() ? std::string{"server is denied by room ACL"}
+                                                                      : ingestion.reason})}}));
                 break;
             case PduIngestionStatus::internal_error:
                 // WARNING, not only an audit entry: the sender is told this PDU failed, and an
@@ -3989,10 +4077,10 @@ namespace
         // Security (audit H-04): only a transaction in which every PDU passed its
         // trust checks resets the peer's consecutive-failure count. When PDUs were
         // rejected, `remote.trust.consecutive_failures` already carries the
-        // incremented value and is persisted as-is, so a stream of forged-PDU
+        // incremented value (for a PDU the peer authored; F-22) and is persisted as-is, so a stream of forged-PDU
         // transactions eventually trips the backoff and circuit breaker instead of
         // zeroing the counter on every round trip.
-        if (pdu_trust_failures == 0U)
+        if (pdu_verification_failures == 0U)
         {
             remote.trust.consecutive_failures = 0U;
         }

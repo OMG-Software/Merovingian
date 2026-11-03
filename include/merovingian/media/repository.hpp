@@ -125,6 +125,10 @@ struct RemoteMediaCacheEntry final
     std::string local_media_id{};
     std::uint64_t expires_at_ms{0U};
     std::uint64_t last_access_ms{0U};
+    // F-47, ADR-0341: the size of the file the entry points at, set when the
+    // entry is admitted or restored, so planning an admission sizes the cache
+    // without looking each record up.
+    std::uint64_t size_bytes{0U};
 };
 
 struct LocalMediaRepository final
@@ -149,6 +153,14 @@ struct LocalMediaRepository final
     // ADR-0212: reservations made by POST /_matrix/media/v1/create, keyed by
     // media ID. Bounded by RuntimeMediaConfig::max_pending_uploads.
     std::unordered_map<std::string, PendingMediaUpload> pending_uploads{};
+    // F-46, ADR-0340: how many live (not removed) local records each owner
+    // holds, so the per-user record share is checked in O(1) under
+    // runtime.mutex. Cached remote media is never counted. Kept in step on
+    // insert, erase, removal and hydration; `owner_record_counts_basis` is
+    // records.size() when the map was last known to match, and a mismatch
+    // (records changed behind the repository's back) rebuilds it.
+    std::unordered_map<std::string, std::uint64_t> owner_record_counts{};
+    std::size_t owner_record_counts_basis{0U};
 };
 
 struct LocalMediaUploadRequest final
@@ -368,9 +380,11 @@ auto complete_pending_media_upload(LocalMediaRepository& repository, std::string
 // apply_remote_media_admission.
 // `incoming_size_bytes` is the new file's size: least recently used entries are
 // also displaced until it fits remote_media_cache_max_bytes (ADR-0120).
+// Entries whose lifetime ended by `now_ms` are displaced too, so they do not
+// hold the caps (F-47, ADR-0341). The cost is one pass over the cache.
 [[nodiscard]] auto plan_remote_media_admission(LocalMediaRepository const& repository, std::string_view origin_server,
-                                               std::string_view media_id, std::uint64_t incoming_size_bytes)
-    -> std::vector<RemoteMediaCacheEntry>;
+                                               std::string_view media_id, std::uint64_t incoming_size_bytes,
+                                               std::uint64_t now_ms) -> std::vector<RemoteMediaCacheEntry>;
 // Applies an admission the database has committed: forgets the displaced
 // entries' records and blob references, and records the new entry.
 auto apply_remote_media_admission(LocalMediaRepository& repository, std::string_view origin_server,

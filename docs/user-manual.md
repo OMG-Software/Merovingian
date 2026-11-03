@@ -534,6 +534,10 @@ Notification history retains the newest `max_notifications_retained_per_user` ro
 
 `max_create_room_invites` and `max_create_room_initial_state` limit the entries of one `POST /createRoom` (ADR-0316). Each entry stores one event while the server holds its global lock, so a request past either cap is refused with HTTP 400 `M_TOO_LARGE` before anything is stored. A user listed twice in `invite` is invited once, and the raw list length is what is counted.
 
+The to-device queue is bounded in bytes as well as rows (ADR-0335). `max_to_device_message_bytes` is the largest content one to-device message may have: a client `PUT /sendToDevice` with any message over it is refused with HTTP 413 `M_TOO_LARGE` and queues nothing, while an inbound `m.direct_to_device` EDU loses only the oversized message. `max_to_device_bytes_per_user_device` is the content bytes one `(user, device)` queue may hold; when a new message would pass it the device's oldest rows are evicted first, as `max_to_device_messages_per_user_device` does for rows. One `PUT /sendToDevice` may address at most 1,000 local devices (a `*` counts one per device) and is refused with 413 `M_TOO_LARGE` past that (ADR-0336). A message larger than the byte budget could never be queued, so the validator refuses a message limit over the budget.
+
+Uploaded keys and room tags are bounded by fixed limits rather than configuration. A one-time or fallback key must be a string of 1 to 256 bytes or a key object (`key`, optional `signatures` object and boolean `fallback`) of at most 4 KiB, or `/keys/upload` answers 400 `M_BAD_JSON`; `device_keys`, each cross-signing key and each signed key of a signature upload may be at most 16 KiB, or the request answers 400 `M_TOO_LARGE` (ADR-0338). A room holds at most 100 tags per user, each tag's value at most 1 KiB, and a tag name at most 255 bytes (the spec's limit; 400 `M_INVALID_PARAM`); any account-data row, including the `m.tag` row the server writes itself, is at most 256 KiB (ADR-0339).
+
 Six per-user caps bound end-to-end key material, filters, account data and push rules. A request that would take a user over a cap is refused with HTTP 400 `M_TOO_LARGE` and stores nothing from that request; stored rows are never evicted to make room, so a client at its cap must delete or consume entries first. `max_one_time_keys_per_device` limits the one-time keys held for one device on `/keys/upload` (key IDs the device already holds are not counted twice, and a refused upload stores no device, one-time or fallback keys). `max_key_signatures_per_user` limits the distinct (target user, target key) pairs a user has signed through `/keys/signatures/upload`. `max_filters_per_user` limits the filters stored through `POST /user/{userId}/filter`; a filter identical to one the user already stores (compared in canonical JSON form; new filters are stored in that form) returns the existing `filter_id` instead of storing a duplicate, even at the cap. `max_global_account_data_per_user` limits the global (non-room) account-data types a user stores through `PUT /user/{userId}/account_data/{type}`; updating a type the user already holds always succeeds, and room account data is not counted. `max_room_account_data_per_room` limits the account-data types a user stores for one room through `PUT /user/{userId}/rooms/{roomId}/account_data/{type}`; updating a held type always succeeds, the tags and read-marker APIs are never refused (their `m.tag` and `m.fully_read` rows still count), and the room must be one the user is or was a member of. The Matrix specification has no way to delete account data, so a user at either cap cannot make room: every new type is refused with `M_TOO_LARGE` until an operator raises the cap. `max_push_rules_per_user` limits the user-defined push rules (created through `PUT /pushrules/global/{kind}/{ruleId}`, counted across all five kinds) a user holds; a `PUT` that would create one more is refused with `M_TOO_LARGE`, updating an existing rule always succeeds, server-default rules are not counted, and deleting a rule makes room. Each device keeps one fallback key per algorithm, as the Matrix specification requires; a new fallback key replaces the previous one.
 
 The HTTP generic body cap and the client API body cap both apply to ordinary client JSON requests; raise both if necessary. Federation `/send` instead uses `security.federation.max_transaction_size`. Media uploads retain authenticated admission and their media-specific cap. Head byte/count limits remain enforced before bodies. Sync admission is clamped to the configured sync worker count; the per-device and per-user caps cannot exceed global admission.
@@ -576,6 +580,8 @@ Pending-join limits apply per room, except `pending_join_max_rooms`, which is pr
 | `max_notifications_retained_per_user` | `1000` | 1..100,000 |
 | `max_to_device_messages_per_user_device` | `10000` | 1..1,000,000 |
 | `to_device_message_ttl_seconds` | `604800` | 1..31,536,000 |
+| `max_to_device_message_bytes` | `65536` | 1..16,777,216 |
+| `max_to_device_bytes_per_user_device` | `16777216` | 1..1,073,741,824 |
 | `max_one_time_keys_per_device` | `1000` | 1..100,000 |
 | `max_key_signatures_per_user` | `10000` | 1..1,000,000 |
 | `max_filters_per_user` | `1000` | 1..100,000 |
@@ -667,6 +673,7 @@ not survive a restart. These limits are fixed. See
 | `pending_join_max_pdus` | `32` | 1..4,096 |
 | `outbound_queue_capacity` | `4096` | 1..65,536 |
 | `outbound_max_retries` | `32` | 1..256 |
+| `outbound_delivery_threads` | `4` | 1..64 |
 | `pending_join_max_size` | `512KiB` | 1 byte..16MiB |
 | `bad_signature_per_ip_rate` | `30/60s` | Positive N/Ws |
 
@@ -689,6 +696,11 @@ not survive a restart. These limits are fixed. See
 | `max_conflicted_state_keys` | `65536` | 1..262,144 |
 | `max_mainline_auth_chain_depth` | `10000` | 1..100,000 |
 | `max_auth_chain_walk_events` | `131072` | 1..524,288 |
+
+`max_state_groups` is the most distinct forward-extremity states one room's current state is resolved from, and the
+most forward extremities a room holds before an accepted event with no `state_key` that cites none of them stops
+becoming one (ADR-0374). Extremities that share a state group count once. When a room's extremities cannot be
+resolved the server logs `state.current.refused` at warning level and keeps the current state it had (ADR-0375).
 
 `appservice.*`:
 
@@ -1123,7 +1135,7 @@ pool free for requests that never leave this server. Behind a reverse proxy set
 | `security.federation.join_race_deadline` | `45s` | Overall wall-clock budget for the whole candidate race. |
 | `security.federation.join_max_candidates` | `20` | Hard cap on `via` candidates raced. |
 | `security.federation.join_state_key_parallelism` | `100` | Concurrent remote signing-key resolutions while verifying `send_join` state. |
-| `security.federation.join_response_max_size` | `64MiB` | Response body cap specifically for `make_join`/`send_join`. **Requires restart.** |
+| `security.federation.join_response_max_size` | `64MiB` | Response body cap specifically for `make_join`/`send_join`, in both directions: the size of a join response this server accepts when it joins, and the size of the answer it will send as the resident (a join whose answer would be larger, or would not fit the worker channel's frame, is refused `503` before it is stored; see below). **Requires restart.** |
 
 `join_parallelism` bounds *concurrency*, not *total elapsed time*. A room
 with a large `via` candidate list races in batches of `join_parallelism`,
@@ -1158,6 +1170,14 @@ federation call uses. It also sizes the federation-worker IPC channel's
 frame budget, which is fixed for the worker process's lifetime — raising
 this value takes effect only after both the main process and the worker
 restart.
+
+As the resident of a room, this server plans the answer to a `send_join` before it stores the join. If the
+events it would send (the room's state and the auth chain, counted at twice their size for the worker channel) do
+not fit `join_response_max_size` or the channel's frame, it answers `503` with nothing stored and nothing sent to the
+room's other servers, and the reason says to retry with `omit_members=true`. A joining server that sends
+`?omit_members=true` (server-server-api.md) gets a reduced answer: no membership events in `state` except the five
+heroes' when the room has no name or alias, `members_omitted: true` and `servers_in_room`. A join sent twice is
+answered twice. This server never asks for a reduced answer when it joins a room.
 
 #### Federation inbound abuse controls — `security.federation.*`
 
@@ -1236,9 +1256,13 @@ a config key), that address is answered `429 M_LIMIT_EXCEEDED` with a
 real peer that shares an address with a sender of forged requests, including
 every peer behind a reverse proxy that has no `trusted_proxies` configured,
 shares that budget. Separately, an origin that sends malformed transactions or
-forged relayed PDUs after a valid signature is backed off after three
-consecutive failures; the backoff lapses after five minutes without a further
-failure.
+PDUs it authored itself (the PDU's sender is on that origin) that fail
+verification, after a valid signature, is backed off after three consecutive
+failures; the backoff lapses after five minutes without a further failure. A
+PDU that an origin merely relays from a third server, and that fails
+verification here, is answered with a per-PDU error and is not counted against
+the relay. Only a `/send` transaction changes the count: a read, a join, a leave,
+a knock or an invite never resets it.
 
 Rate values use `N/Ws` or `N/Wm` syntax (e.g. `300/60s`). The six `per_origin_*`
 and transaction keys require restart. An origin that exceeds a bucket gets `429 M_LIMIT_EXCEEDED` for
@@ -1381,6 +1405,7 @@ Service API".
 | `security.media.max_total_size` | `250GiB` | Cap on stored local media bytes, in the database; cached remote media has its own budget below. Media is read from the database per request, so this bounds storage, not memory. Empty means no limit. |
 | `security.media.max_size_per_user` | `10GiB` | Per-user media quota in bytes. Keep it at or above `max_upload_size`. Empty means no limit. |
 | `security.media.max_records` | `1000000` | Cap on local media records. Each record's metadata is still held in memory (roughly 300-500 bytes), so this also bounds memory: 1,000,000 records is about 400 MB. `0` means no limit. |
+| `security.media.max_records_per_user` | `20000` | One user's share of `max_records`: the live local records they own, deduplicated uploads included. An upload past it is refused with 403 `M_FORBIDDEN` (internal 507), so one account cannot fill the server-wide cap. An admin-removed record frees its slot but still counts against `max_records`. Cached remote media is never counted. `0` means no per-user limit. |
 | `security.media.allowed_mime_types` | built-in list | Comma-separated allow-list; keep `application/octet-stream` so encrypted-room attachments are accepted. |
 | `security.media.quarantine_unknown_mime` | `true` | Quarantine uploads whose MIME type is not in the allow-list. |
 | `security.media.block_private_ip_fetches` | `true` | Block private/loopback origins when fetching remote media. |
@@ -1490,6 +1515,19 @@ body is expected to be JSON with at least:
 If the policy server is unreachable, returns a non-2xx status, omits a
 usable decision, or sends malformed JSON, the guarded workflow is rejected
 unless `security.trust_safety.policy_server_allow_without_result=true`.
+
+The host in `policy_server_url` is resolved by this server, as it is for an
+application service: it is your own configuration, so a policy service on a
+private network or a loopback address works, and the usual private-address
+refusal for federation peers does not apply to it. The certificate must still
+be valid for the host name. A failed lookup or connection is logged at warning
+level (`Policy server call failed`). To protect the request threads, at most a
+quarter of `server.http.request_threads` (at least 2) policy calls are in
+flight at once, and half of that for any one kind of request (registration,
+room creation, media, federation). A call over that is not made and counts as
+"no usable decision": the workflow is rejected, or allowed with
+`policy_server_allow_without_result=true`, as for an unreachable server (log
+line `Policy server call not made: too many are in flight`).
 
 #### Logging redaction — `security.logging.*`
 
@@ -2851,6 +2889,7 @@ commit.
 | `429 Too Many Requests` for all clients | `server.trusted_proxies` is unset behind a reverse proxy. | Set `server.trusted_proxies` and ensure the proxy overwrites `X-Forwarded-For` with the direct peer IP. |
 | `502 send_join failed: timeout` | Large room join exceeds `security.federation.join_timeout` or the proxy's request timeout. | Raise `join_timeout` and `join_race_deadline`; ensure they fit inside the proxy timeout. |
 | `502 send_join failed: response_too_large` | `send_join` response exceeds `security.federation.join_response_max_size`. | Raise the value and restart both main and worker processes. |
+| A remote server's `send_join` into a room here is refused `503` ("retry with omit_members=true") | The room's state and auth chain are too large to send. | The remote server should retry with `omit_members=true`; raise `join_response_max_size` (restart) for servers that do not. |
 | Federation worker does not start | `merovingian-fed-worker` binary is missing or `federation.worker.binary` points to the wrong path. | Check binary location and permissions. |
 | Encrypted media downloads fail | `application/octet-stream` was removed from `security.media.allowed_mime_types`. | Restore it. |
 

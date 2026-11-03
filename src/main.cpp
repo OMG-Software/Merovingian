@@ -24,6 +24,7 @@
 #include "merovingian/homeserver/local_services.hpp"
 #include "merovingian/homeserver/periodic_job.hpp"
 #include "merovingian/homeserver/push_retry.hpp"
+#include "merovingian/homeserver/room_service.hpp"
 #include "merovingian/homeserver/tls.hpp"
 #include "merovingian/media/runtime_media.hpp"
 #include "merovingian/media/thumbnailer.hpp"
@@ -63,7 +64,7 @@
 namespace
 {
 
-constexpr auto version = std::string_view{"0.12.69"};
+constexpr auto version = std::string_view{"0.12.70"};
 
 struct BootstrapConfigResult final
 {
@@ -884,6 +885,22 @@ struct ListenerBinding final
         sync_pool.request_stop();
         return std::nullopt;
     }
+    // Sends a profile change to the rooms its request left (F-11, ADR-0353), taking the runtime lock
+    // per room. It only ever touches `runtime`, which outlives this function. Declared after the
+    // pools so it is stopped and joined before them.
+    auto profile_propagation_job = merovingian::homeserver::PeriodicJob{
+        "profile-propagation", [&runtime](merovingian::homeserver::StopFlag const&) {
+            return merovingian::homeserver::propagate_queued_profile(runtime.homeserver);
+        }};
+    if (!profile_propagation_job.start())
+    {
+        LOG_CRITICAL("Profile propagation thread failed to start; refusing to serve");
+        dispatcher.request_stop();
+        pool.request_stop();
+        media_fetch_pool.request_stop();
+        sync_pool.request_stop();
+        return std::nullopt;
+    }
     // Sends failed push notifications again with exponential backoff (R14, ADR-0206): delivery tasks
     // queue a failure in memory and this one thread retries it, never under the runtime lock across
     // the network call. Declared after the pools and the dispatcher so it stops, and clears the
@@ -919,6 +936,9 @@ struct ListenerBinding final
         auto const guard = std::unique_lock<merovingian::homeserver::RuntimeMutex>{runtime.homeserver.mutex};
         runtime.homeserver.typing_expiry_wake = [&typing_expiry_job]() {
             typing_expiry_job.wake();
+        };
+        runtime.homeserver.profile_propagation_wake = [&profile_propagation_job]() {
+            profile_propagation_job.wake();
         };
     }
     auto threads = std::vector<std::thread>{};
@@ -991,8 +1011,12 @@ struct ListenerBinding final
     {
         auto const guard = std::unique_lock<merovingian::homeserver::RuntimeMutex>{runtime.homeserver.mutex};
         runtime.homeserver.typing_expiry_wake = nullptr;
+        runtime.homeserver.profile_propagation_wake = nullptr;
     }
     typing_expiry_job.stop();
+    // Rooms still queued are left for the user's next profile change (ADR-0353). One room's send ends
+    // first; it makes no network call.
+    profile_propagation_job.stop();
     // Clears its wake hook under the runtime lock, then stops; a retry in
     // progress ends within its own outbound deadlines and the PDU stays
     // retained in the database for the next start.

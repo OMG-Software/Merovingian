@@ -50,9 +50,12 @@ inline constexpr auto deferred_pdu_idle_delay = std::chrono::minutes{5};
                                         std::string const& stored_json) -> bool;
 
 // After a PDU of `room_id` has been stored: makes due every retained PDU of that
-// room whose JSON names `event_id` (a prev_event or auth_event it was waiting
+// room that was missing `event_id` (a prev_event or auth_event it was waiting
 // for) and, if there was one, calls HomeserverRuntime::deferred_pdu_retry_wake.
-// Takes HomeserverRuntime::mutex; call it with no room stripe held.
+// The store indexes retained PDUs by the events they are missing (ADR-0326), so
+// this costs the rows that wait for `event_id`; a row whose JSON merely contains
+// the ID as text is not woken. Takes HomeserverRuntime::mutex; call it with no
+// room stripe held.
 auto wake_deferred_pdus_waiting_for(HomeserverRuntime& runtime, std::string_view room_id, std::string_view event_id)
     -> void;
 

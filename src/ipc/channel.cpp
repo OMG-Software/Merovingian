@@ -10,6 +10,7 @@
 
 #include <algorithm>
 #include <array>
+#include <charconv>
 #include <chrono>
 #include <cstdint>
 #include <cstring>
@@ -18,6 +19,8 @@
 #include <span>
 #include <stdexcept>
 #include <string>
+#include <string_view>
+#include <system_error>
 #include <utility>
 #include <variant>
 #include <vector>
@@ -32,6 +35,10 @@ namespace
 {
 
     constexpr auto kIpcEnvelopeHeadroom = std::uint64_t{2U * 1024U * 1024U};
+    // The body of a response frame that stands for an answer the sender could not send. The
+    // member name is reserved: no frame body uses it, and the reader treats a reply carrying it
+    // as "no response" for the waiter.
+    constexpr auto failed_response_body = std::string_view{R"({"ipc_error":"response_too_large"})"};
     constexpr auto kIpcRequestEscapeMultiplier = std::uint64_t{6U};
     // The frame prefix stores ciphertext bytes in uint32, and each plaintext
     // frame gains the secretstream's fixed 17-byte authentication overhead.
@@ -78,6 +85,66 @@ namespace
             }
         }
         return std::nullopt;
+    }
+
+    // Whether a parsed reply frame is the notice send_response writes in place of an answer it
+    // could not send.
+    [[nodiscard]] auto reply_is_failure_notice(canonicaljson::Object const& frame) noexcept -> bool
+    {
+        for (auto const& member : frame)
+        {
+            if (member.key == "ipc_error")
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    // The routing members of a frame whose payload did not parse.
+    struct FrameRouting final
+    {
+        std::optional<std::uint64_t> id{};
+        std::optional<std::uint64_t> reply_to{};
+    };
+
+    // Consumes a run of decimal digits from the front of `text` as a uint64.
+    [[nodiscard]] auto take_uint64(std::string_view& text) noexcept -> std::optional<std::uint64_t>
+    {
+        auto value = std::uint64_t{0U};
+        auto const* const first = text.data();
+        auto const result = std::from_chars(first, first + text.size(), value);
+        if (result.ec != std::errc{} || result.ptr == first)
+        {
+            return std::nullopt;
+        }
+        text.remove_prefix(static_cast<std::size_t>(result.ptr - first));
+        return value;
+    }
+
+    // Reads the id and reply_to that IpcChannel::build_frame writes at the very start of every
+    // frame, `{"id":N` and then `,"reply_to":M` for a response, without parsing the rest. Used
+    // only for an authenticated frame whose payload the JSON parser refused (an integer past
+    // 2^53 - 1, invalid UTF-8, ...), so the request it answers can be failed at once instead
+    // of waiting for its timeout (ADR-0322). A frame that does not start that way yields
+    // nothing.
+    [[nodiscard]] auto read_frame_routing(std::string_view frame) noexcept -> FrameRouting
+    {
+        constexpr auto id_prefix = std::string_view{R"({"id":)"};
+        constexpr auto reply_prefix = std::string_view{R"(,"reply_to":)"};
+        auto routing = FrameRouting{};
+        if (!frame.starts_with(id_prefix))
+        {
+            return routing;
+        }
+        frame.remove_prefix(id_prefix.size());
+        routing.id = take_uint64(frame);
+        if (routing.id.has_value() && frame.starts_with(reply_prefix))
+        {
+            frame.remove_prefix(reply_prefix.size());
+            routing.reply_to = take_uint64(frame);
+        }
+        return routing;
     }
 
 } // namespace
@@ -445,7 +512,9 @@ auto IpcChannel::send_response(std::uint64_t reply_to, std::string_view json_bod
     if (json_body.size() > max_frame_bytes_)
     {
         report_oversize_drop(json_body, "response");
-        return;
+        // The requester is waiting for this answer: tell it there will not be one, in a frame
+        // that cannot itself be over the cap, so it fails now and not at its timeout (F-23).
+        json_body = failed_response_body;
     }
     auto const id = next_id_.fetch_add(1U, std::memory_order_relaxed);
     auto const frame = build_frame(id, reply_to, json_body);
@@ -512,14 +581,43 @@ auto IpcChannel::reader_loop() -> void
         // Parse the frame once with the fuzzed, depth-bounded canonicaljson
         // parser and read id/reply_to from the DOM. The previous substring
         // scanner misparsed frames whose body string values contained
-        // `"id":`-shaped substrings (issue #320). On a malformed frame, drop
-        // it and stop the loop rather than act on garbage routing metadata.
+        // `"id":`-shaped substrings (issue #320).
+        //
+        // A frame that got here passed AEAD authentication and the length checks in read_frame,
+        // so the peer wrote it. Its payload not parsing (an integer past 2^53 - 1, bytes that
+        // are not UTF-8) is a problem with that one request, not with the channel: it fails
+        // that request and the loop carries on. Only a failure of read_frame ends the channel
+        // (ADR-0322).
         auto const parsed = canonicaljson::parse_json(*frame);
         auto const* obj = std::get_if<canonicaljson::Object>(&parsed.value.storage());
         if (parsed.error != canonicaljson::ParseError::none || obj == nullptr)
         {
-            healthy_.store(false);
-            break;
+            auto const routing = read_frame_routing(*frame);
+            LOG_WARNING("ipc: dropping a frame whose payload does not parse: error=" +
+                        std::string{canonicaljson::parse_error_name(parsed.error)} +
+                        " bytes=" + std::to_string(frame->size()) +
+                        " id=" + (routing.id.has_value() ? std::to_string(*routing.id) : std::string{"unreadable"}) +
+                        " reply_to=" +
+                        (routing.reply_to.has_value() ? std::to_string(*routing.reply_to) : std::string{"none"}));
+            if (routing.reply_to.has_value())
+            {
+                // The answer to one of our requests: release its waiter with no response.
+                std::shared_ptr<PendingEntry> entry; // SHARED_PTR: reviewed — outlives lock for cv::notify_one()
+                {
+                    auto const lk = std::lock_guard{pending_mu_};
+                    auto const it = pending_.find(*routing.reply_to);
+                    if (it != pending_.end())
+                    {
+                        it->second->ready = true;
+                        entry = it->second;
+                    }
+                }
+                if (entry)
+                {
+                    entry->cv.notify_one();
+                }
+            }
+            continue;
         }
         auto const id = extract_uint64(*obj, "id").value_or(0U);
         auto const reply_to = extract_uint64(*obj, "reply_to");
@@ -536,7 +634,12 @@ auto IpcChannel::reader_loop() -> void
                 auto const it = pending_.find(*reply_to);
                 if (it != pending_.end())
                 {
-                    it->second->response = std::move(*frame);
+                    // A reply that says the peer could not send the answer releases the waiter
+                    // with no response, as a timeout would, but now (F-23).
+                    if (!reply_is_failure_notice(*obj))
+                    {
+                        it->second->response = std::move(*frame);
+                    }
                     it->second->ready = true;
                     entry = it->second;
                 }

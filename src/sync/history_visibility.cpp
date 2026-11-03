@@ -142,38 +142,6 @@ HistoryVisibility::HistoryVisibility(database::PersistentStore const& store, std
 {
 }
 
-auto HistoryVisibility::ensure_event_group_index() -> void
-{
-    if (event_group_index_built_)
-    {
-        return;
-    }
-    group_by_event_.reserve(store_.event_state_groups.size());
-    for (auto const& mapping : store_.event_state_groups)
-    {
-        group_by_event_.emplace(mapping.event_id, mapping.state_group_id);
-    }
-    event_group_index_built_ = true;
-}
-
-auto HistoryVisibility::ensure_group_index() -> void
-{
-    if (group_index_built_)
-    {
-        return;
-    }
-    groups_by_id_.reserve(store_.state_groups.size());
-    for (auto const& group : store_.state_groups)
-    {
-        groups_by_id_.emplace(group.state_group_id, &group);
-    }
-    for (auto const& entry : store_.state_group_state)
-    {
-        entries_by_group_[entry.state_group_id].push_back(&entry);
-    }
-    group_index_built_ = true;
-}
-
 auto HistoryVisibility::find_event(std::string_view event_id) -> database::PersistentEvent const*
 {
     auto const found = store_.events.find(event_id);
@@ -182,9 +150,7 @@ auto HistoryVisibility::find_event(std::string_view event_id) -> database::Persi
 
 auto HistoryVisibility::state_group_of(std::string_view event_id) -> std::optional<std::string_view>
 {
-    ensure_event_group_index();
-    auto const found = group_by_event_.find(event_id);
-    return found == group_by_event_.end() ? std::nullopt : std::optional<std::string_view>{found->second};
+    return store_.event_state_groups.state_group_of(event_id);
 }
 
 auto HistoryVisibility::has_state_group(std::string_view event_id) -> bool
@@ -198,7 +164,6 @@ auto HistoryVisibility::has_state_group(std::string_view event_id) -> bool
 auto HistoryVisibility::lookup_in_group(std::string_view group_id, std::string_view event_type,
                                         std::string_view state_key) -> LookupResult
 {
-    ensure_group_index();
     auto visited = std::unordered_set<std::string_view>{};
     auto current = group_id;
     for (auto hops = std::size_t{0U};; ++hops)
@@ -207,26 +172,23 @@ auto HistoryVisibility::lookup_in_group(std::string_view group_id, std::string_v
         {
             return {Lookup::broken, {}};
         }
-        auto const group = groups_by_id_.find(current);
-        if (group == groups_by_id_.end())
+        auto const group = store_.state_groups.find(current);
+        if (group == store_.state_groups.end())
         {
             return {Lookup::broken, {}};
         }
-        if (auto const entries = entries_by_group_.find(current); entries != entries_by_group_.end())
+        for (auto const& entry : store_.state_group_state.entries_of(current))
         {
-            for (auto const* entry : entries->second)
+            if (entry.event_type == event_type && entry.state_key == state_key)
             {
-                if (entry->event_type == event_type && entry->state_key == state_key)
-                {
-                    return {Lookup::found, entry->event_id};
-                }
+                return {Lookup::found, entry.event_id};
             }
         }
-        if (!group->second->parent_state_group_id.has_value())
+        if (!group->parent_state_group_id.has_value())
         {
             return {Lookup::absent, {}};
         }
-        current = *group->second->parent_state_group_id;
+        current = *group->parent_state_group_id;
     }
 }
 

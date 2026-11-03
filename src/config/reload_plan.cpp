@@ -424,6 +424,10 @@ auto build_reload_plan(Config const& current, Config const& next) -> ReloadPlan
     {
         add_change(plan, "security.media.max_records");
     }
+    if (current.security().media.max_records_per_user != next.security().media.max_records_per_user)
+    {
+        add_change(plan, "security.media.max_records_per_user");
+    }
     if (current.security().media.remote_media_cache_max_size != next.security().media.remote_media_cache_max_size)
     {
         add_change(plan, "security.media.remote_media_cache_max_size");
@@ -1017,6 +1021,15 @@ auto build_reload_plan(Config const& current, Config const& next) -> ReloadPlan
     {
         add_change(plan, "server.client_api.max_notifications_retained_per_user");
     }
+    if (current.server().client_api.max_to_device_message_bytes != next.server().client_api.max_to_device_message_bytes)
+    {
+        add_change(plan, "server.client_api.max_to_device_message_bytes");
+    }
+    if (current.server().client_api.max_to_device_bytes_per_user_device !=
+        next.server().client_api.max_to_device_bytes_per_user_device)
+    {
+        add_change(plan, "server.client_api.max_to_device_bytes_per_user_device");
+    }
     if (current.server().client_api.max_one_time_keys_per_device !=
         next.server().client_api.max_one_time_keys_per_device)
     {
@@ -1072,6 +1085,10 @@ auto build_reload_plan(Config const& current, Config const& next) -> ReloadPlan
     if (current.security().federation.outbound_queue_capacity != next.security().federation.outbound_queue_capacity)
     {
         add_change(plan, "security.federation.outbound_queue_capacity");
+    }
+    if (current.security().federation.outbound_delivery_threads != next.security().federation.outbound_delivery_threads)
+    {
+        add_change(plan, "security.federation.outbound_delivery_threads");
     }
     if (current.security().federation.outbound_max_retries != next.security().federation.outbound_max_retries)
     {

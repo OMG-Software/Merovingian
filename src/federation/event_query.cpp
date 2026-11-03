@@ -9,6 +9,7 @@
 #include "merovingian/events/limits.hpp"
 #include "merovingian/events/redaction.hpp"
 #include "merovingian/federation/server_acl.hpp"
+#include "merovingian/homeserver/state_bookkeeping.hpp"
 #include "merovingian/homeserver/stored_room_version.hpp"
 #include "merovingian/observability/logger.hpp"
 #include "merovingian/observability/observability.hpp"
@@ -19,7 +20,6 @@
 #include <cstdint>
 #include <deque>
 #include <limits>
-#include <map>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -39,6 +39,18 @@ namespace
                         observability::LogEventSeverity severity = observability::LogEventSeverity::debug) -> void
     {
         observability::log_diagnostic("event_query", event, fields, severity);
+    }
+
+    auto log_state_auth_chain_too_large(std::string_view event, std::string_view room_id, std::string_view event_id)
+        -> void
+    {
+        log_diagnostic(event,
+                       {
+                           {"room_id",  std::string{room_id},                        false},
+                           {"event_id", std::string{event_id},                       false},
+                           {"bound",    std::to_string(max_state_auth_chain_events), false}
+        },
+                       observability::LogEventSeverity::warning);
     }
 
     [[nodiscard]] auto parsed_value(std::string_view json) -> std::optional<canonicaljson::Value>
@@ -132,23 +144,21 @@ namespace
     [[nodiscard]] auto origin_has_joined_user(database::PersistentStore const& store, std::string_view room_id,
                                               std::string_view origin) -> bool
     {
-        auto candidate_event_ids = std::unordered_set<std::string_view>{};
-        for (auto const& state : store.state)
-        {
-            if (state.room_id == room_id && state.event_type == "m.room.member" &&
-                user_id_server_name(state.state_key) == origin)
+        auto candidate_event_ids = std::unordered_set<std::string>{};
+        database::for_each_room_state_row(store, room_id, [&](database::PersistentStateEvent const& state) {
+            if (state.event_type == "m.room.member" && user_id_server_name(state.state_key) == origin)
             {
                 candidate_event_ids.insert(state.event_id);
             }
-        }
+        });
         if (candidate_event_ids.empty())
         {
             return false;
         }
-        for (auto const& event : store.events)
+        for (auto const& candidate : candidate_event_ids)
         {
-            if (event.room_id == room_id && candidate_event_ids.contains(event.event_id) &&
-                content_string(event.json, "membership") == "join")
+            auto const* event = find_event(store, candidate);
+            if (event != nullptr && event->room_id == room_id && content_string(event->json, "membership") == "join")
             {
                 return true;
             }
@@ -158,16 +168,14 @@ namespace
 
     [[nodiscard]] auto room_is_world_readable(database::PersistentStore const& store, std::string_view room_id) -> bool
     {
-        for (auto const& state : store.state)
+        auto const visibility_id =
+            database::find_current_state_event_id(store, room_id, "m.room.history_visibility", "");
+        if (!visibility_id.has_value())
         {
-            if (state.room_id != room_id || state.event_type != "m.room.history_visibility" || !state.state_key.empty())
-            {
-                continue;
-            }
-            auto const* event = find_event(store, state.event_id);
-            return event != nullptr && content_string(event->json, "history_visibility") == "world_readable";
+            return false;
         }
-        return false;
+        auto const* event = find_event(store, *visibility_id);
+        return event != nullptr && content_string(event->json, "history_visibility") == "world_readable";
     }
 
     constexpr auto forbidden_body =
@@ -285,20 +293,17 @@ namespace
         {
             return std::nullopt;
         }
-        for (auto const& state : store.state)
+        auto const create_id = database::find_current_state_event_id(store, room_id, "m.room.create", "");
+        if (!create_id.has_value())
         {
-            if (state.room_id != room_id || state.event_type != "m.room.create" || !state.state_key.empty())
-            {
-                continue;
-            }
-            auto const* event = find_event(store, state.event_id);
-            if (event == nullptr || event->room_id != room_id || event->json.empty())
-            {
-                return std::nullopt;
-            }
-            return event->event_id;
+            return std::nullopt;
         }
-        return std::nullopt;
+        auto const* event = find_event(store, *create_id);
+        if (event == nullptr || event->room_id != room_id || event->json.empty())
+        {
+            return std::nullopt;
+        }
+        return event->event_id;
     }
 
     // Adds the room's implied create event to `chain` unless it is already there (or is `exclude`,
@@ -354,70 +359,73 @@ namespace
         return identity;
     }
 
-    // Reconstructs the resolved room state as of `at_event_id` — the state prior
-    // to the changes that event induces — by walking the event DAG backward from
-    // the event's prev_events (the event itself is excluded). For each
-    // (type, state_key) the ancestor with the greatest (depth, event_id) wins,
-    // which is the deterministic linearisation that state resolution yields for a
-    // conflict-free DAG. Returns the chosen state event IDs, or an empty vector
-    // when the event is unknown or belongs to another room.
-    [[nodiscard]] auto reconstruct_state_at_event(database::PersistentStore const& store, std::string_view room_id,
-                                                  std::string_view at_event_id) -> std::vector<std::string>
+    // The most auth events a state answer's resolution may walk when a state event has several
+    // prev_events and its state before has to be resolved (ADR-0363). The same bound
+    // `/event_auth` answers with; a longer walk makes the state "unknown" (404), which the spec allows.
+    constexpr auto max_state_read_auth_walk_events = std::size_t{10000U};
+
+    // The event IDs a recorded state names, or nullopt when the state cannot be served whole. It fails
+    // closed (ADR-0363): an entry that names an event this store lacks, holds under another room, or has
+    // no body is not skipped, since a state with a hole in it is not the room's state; and an entry that
+    // names a REJECTED event is a bookkeeping error, never state ("not updating with the rejected
+    // event", SS API "Rejection").
+    [[nodiscard]] auto state_entries_event_ids(database::PersistentStore const& store, std::string_view room_id,
+                                               std::vector<database::PersistentStateGroupStateEntry> const& entries)
+        -> std::optional<std::vector<std::string>>
     {
-        auto const* start = find_event(store, at_event_id);
-        if (start == nullptr || start->room_id != room_id)
+        auto ids = std::vector<std::string>{};
+        ids.reserve(entries.size());
+        for (auto const& entry : entries)
         {
-            return {};
+            auto const* event = find_event(store, entry.event_id);
+            if (event == nullptr || event->room_id != room_id || event->json.empty() || event->status == "rejected")
+            {
+                return std::nullopt;
+            }
+            ids.push_back(entry.event_id);
         }
-        struct Choice final
+        return ids;
+    }
+
+    // The event IDs of the full state of the group `group_id`: nullopt when the chain is broken
+    // (read_state_group_full_state is bounded and cycle-checked) or an entry fails
+    // state_entries_event_ids.
+    [[nodiscard]] auto group_state_event_ids(database::PersistentStore const& store, std::string_view room_id,
+                                             std::string_view group_id) -> std::optional<std::vector<std::string>>
+    {
+        auto const full_state = database::read_state_group_full_state(store, group_id);
+        if (!full_state.has_value())
         {
-            std::uint64_t depth{0U};
-            std::string event_id{};
+            return std::nullopt;
+        }
+        return state_entries_event_ids(store, room_id, *full_state);
+    }
+
+    // The state before a state event with one prev_event: its own group, whose entry at the event's
+    // own key is the event, with that entry taken from the prev_event's group. For an ordinary event
+    // the own group is the prev_event's group plus the event, so this is the prev_event's group. For
+    // one stored through the fallback it is the current state that was recorded (ADR-0373), which the
+    // cited fork may not hold. Either group that cannot be read leaves the state unknown.
+    [[nodiscard]] auto state_before_recorded_state_event(database::PersistentStore const& store,
+                                                         std::string_view room_id, StateIdentity const& identity,
+                                                         std::string_view own_group, std::string_view prev_group)
+        -> std::optional<std::vector<std::string>>
+    {
+        auto entries = database::read_state_group_full_state(store, own_group);
+        auto const prev_entries = database::read_state_group_full_state(store, prev_group);
+        if (!entries.has_value() || !prev_entries.has_value())
+        {
+            return std::nullopt;
+        }
+        auto const at_own_key = [&identity](database::PersistentStateGroupStateEntry const& entry) {
+            return entry.event_type == identity.type && entry.state_key == identity.state_key;
         };
-        auto chosen = std::map<std::pair<std::string, std::string>, Choice>{};
-        auto seen = std::unordered_set<std::string>{};
-        auto queue = std::deque<std::string>{};
-        for (auto const& prev_id : start->prev_event_ids)
+        std::erase_if(*entries, at_own_key);
+        if (auto const replaced = std::ranges::find_if(*prev_entries, at_own_key); replaced != prev_entries->end())
         {
-            if (seen.insert(prev_id).second)
-            {
-                queue.push_back(prev_id);
-            }
+            entries->push_back(*replaced);
         }
-        while (!queue.empty())
-        {
-            auto const id = std::move(queue.front());
-            queue.pop_front();
-            auto const* event = find_event(store, id);
-            if (event == nullptr || event->room_id != room_id || event->json.empty())
-            {
-                continue;
-            }
-            if (auto const identity = state_identity(event->json); identity.is_state)
-            {
-                auto const key = std::pair{identity.type, identity.state_key};
-                auto const existing = chosen.find(key);
-                if (existing == chosen.end() || event->depth > existing->second.depth ||
-                    (event->depth == existing->second.depth && id > existing->second.event_id))
-                {
-                    chosen[key] = Choice{event->depth, id};
-                }
-            }
-            for (auto const& prev_id : event->prev_event_ids)
-            {
-                if (seen.insert(prev_id).second)
-                {
-                    queue.push_back(prev_id);
-                }
-            }
-        }
-        auto result = std::vector<std::string>{};
-        result.reserve(chosen.size());
-        for (auto const& [key, choice] : chosen)
-        {
-            result.push_back(choice.event_id);
-        }
-        return result;
+        return state_entries_event_ids(store, room_id, *entries);
     }
 
     // The room's current recorded state event IDs -- the fallback
@@ -428,50 +436,9 @@ namespace
         -> std::vector<std::string>
     {
         auto ids = std::vector<std::string>{};
-        for (auto const& state_event : store.state)
-        {
-            if (state_event.room_id == room_id)
-            {
-                ids.push_back(state_event.event_id);
-            }
-        }
-        return ids;
-    }
-
-    // Reconstructs "the room state at `event`" -- state that includes `event`'s
-    // own contribution when it is itself a state event, unlike
-    // `reconstruct_state_at_event` (which stops just short of it). Starts from
-    // the state prior to `event` and, when `event` carries a state_key,
-    // replaces (or adds) the entry for its (type, state_key) with `event`
-    // itself, since a state event's own change is by definition part of the
-    // room's state once that event has happened.
-    [[nodiscard]] auto reconstruct_state_including_event(database::PersistentStore const& store,
-                                                         std::string_view room_id, database::PersistentEvent const& at)
-        -> std::vector<std::string>
-    {
-        auto ids = reconstruct_state_at_event(store, room_id, at.event_id);
-        auto const identity = state_identity(at.json);
-        if (!identity.is_state)
-        {
-            return ids;
-        }
-        auto const existing = std::ranges::find_if(ids, [&](std::string const& id) {
-            auto const* event = find_event(store, id);
-            if (event == nullptr)
-            {
-                return false;
-            }
-            auto const candidate_identity = state_identity(event->json);
-            return candidate_identity.type == identity.type && candidate_identity.state_key == identity.state_key;
+        database::for_each_room_state_row(store, room_id, [&ids](database::PersistentStateEvent const& state_event) {
+            ids.push_back(state_event.event_id);
         });
-        if (existing != ids.end())
-        {
-            *existing = at.event_id;
-        }
-        else
-        {
-            ids.push_back(at.event_id);
-        }
         return ids;
     }
 
@@ -505,10 +472,12 @@ namespace
     }
 
     // Decides, for one requesting server, which room events it may read in full, and redacts the
-    // rest. One instance serves one request: it builds its indexes over the store once, lazily, and
-    // caches per state group, so a page of events costs one group lookup per event and one
+    // rest. One instance serves one request. It holds no index of its own: the event -> group, group
+    // and group-entries lookups are the store's hash indexes (ADR-0325), so a request costs the rows
+    // of the groups on the chains it reads and never a pass over the server's tables. It caches the
+    // verdict per state group, so a page of events costs one group lookup per event and one
     // membership scan per DISTINCT group, never a walk of the room. Not thread-safe; it must not
-    // outlive the store reference.
+    // outlive the store reference, and the store must not change while it is in use.
     //
     // The rule is the client-server "Room History Visibility" rule applied to the server `origin`
     // (owner decision 2026-10-29), against the state group recorded for the event (ADR-0064): the
@@ -635,37 +604,10 @@ namespace
             std::string_view event_id{};
         };
 
-        [[nodiscard]] auto group_of(std::string_view event_id) -> std::optional<std::string_view>
+        // The state group recorded for the event: one hash lookup in the store's index (ADR-0325).
+        [[nodiscard]] auto group_of(std::string_view event_id) const -> std::optional<std::string_view>
         {
-            if (!event_group_index_built_)
-            {
-                group_by_event_.reserve(store_.event_state_groups.size());
-                for (auto const& mapping : store_.event_state_groups)
-                {
-                    group_by_event_.emplace(mapping.event_id, mapping.state_group_id);
-                }
-                event_group_index_built_ = true;
-            }
-            auto const found = group_by_event_.find(event_id);
-            return found == group_by_event_.end() ? std::nullopt : std::optional<std::string_view>{found->second};
-        }
-
-        auto ensure_group_index() -> void
-        {
-            if (group_index_built_)
-            {
-                return;
-            }
-            groups_by_id_.reserve(store_.state_groups.size());
-            for (auto const& group : store_.state_groups)
-            {
-                groups_by_id_.emplace(group.state_group_id, &group);
-            }
-            for (auto const& entry : store_.state_group_state)
-            {
-                entries_by_group_[entry.state_group_id].push_back(&entry);
-            }
-            group_index_built_ = true;
+            return store_.event_state_groups.state_group_of(event_id);
         }
 
         // Finds the event ID `group_id`'s full state holds for (event_type, state_key), walking the
@@ -674,7 +616,6 @@ namespace
         [[nodiscard]] auto lookup_in_group(std::string_view group_id, std::string_view event_type,
                                            std::string_view state_key) -> LookupResult
         {
-            ensure_group_index();
             auto visited = std::unordered_set<std::string_view>{};
             auto current = group_id;
             for (auto hops = std::size_t{0U};; ++hops)
@@ -683,26 +624,23 @@ namespace
                 {
                     return {Lookup::broken, {}};
                 }
-                auto const group = groups_by_id_.find(current);
-                if (group == groups_by_id_.end())
+                auto const group = store_.state_groups.find(current);
+                if (group == store_.state_groups.end())
                 {
                     return {Lookup::broken, {}};
                 }
-                if (auto const entries = entries_by_group_.find(current); entries != entries_by_group_.end())
+                for (auto const& entry : store_.state_group_state.entries_of(current))
                 {
-                    for (auto const* entry : entries->second)
+                    if (entry.event_type == event_type && entry.state_key == state_key)
                     {
-                        if (entry->event_type == event_type && entry->state_key == state_key)
-                        {
-                            return {Lookup::found, entry->event_id};
-                        }
+                        return {Lookup::found, entry.event_id};
                     }
                 }
-                if (!group->second->parent_state_group_id.has_value())
+                if (!group->parent_state_group_id.has_value())
                 {
                     return {Lookup::absent, {}};
                 }
-                current = *group->second->parent_state_group_id;
+                current = *group->parent_state_group_id;
             }
         }
 
@@ -712,7 +650,6 @@ namespace
         // event the store lacks.
         [[nodiscard]] auto scan_origin_membership(std::string_view group_id, GroupView& view) -> bool
         {
-            ensure_group_index();
             auto visited = std::unordered_set<std::string_view>{};
             auto shadowed = std::unordered_set<std::string_view>{};
             auto current = group_id;
@@ -722,43 +659,40 @@ namespace
                 {
                     return false;
                 }
-                auto const group = groups_by_id_.find(current);
-                if (group == groups_by_id_.end())
+                auto const group = store_.state_groups.find(current);
+                if (group == store_.state_groups.end())
                 {
                     return false;
                 }
-                if (auto const entries = entries_by_group_.find(current); entries != entries_by_group_.end())
+                for (auto const& entry : store_.state_group_state.entries_of(current))
                 {
-                    for (auto const* entry : entries->second)
+                    if (entry.event_type != "m.room.member" || user_id_server_name(entry.state_key) != origin_ ||
+                        !shadowed.insert(entry.state_key).second)
                     {
-                        if (entry->event_type != "m.room.member" || user_id_server_name(entry->state_key) != origin_ ||
-                            !shadowed.insert(entry->state_key).second)
-                        {
-                            continue;
-                        }
-                        auto const* member_event = find_event(store_, entry->event_id);
-                        if (member_event == nullptr)
-                        {
-                            return false;
-                        }
-                        auto const membership = content_string(member_event->json, "membership");
-                        if (membership == std::optional<std::string>{"join"})
-                        {
-                            view.origin_joined = true;
-                            view.origin_invited_or_joined = true;
-                            return true;
-                        }
-                        if (membership == std::optional<std::string>{"invite"})
-                        {
-                            view.origin_invited_or_joined = true;
-                        }
+                        continue;
+                    }
+                    auto const* member_event = find_event(store_, entry.event_id);
+                    if (member_event == nullptr)
+                    {
+                        return false;
+                    }
+                    auto const membership = content_string(member_event->json, "membership");
+                    if (membership == std::optional<std::string>{"join"})
+                    {
+                        view.origin_joined = true;
+                        view.origin_invited_or_joined = true;
+                        return true;
+                    }
+                    if (membership == std::optional<std::string>{"invite"})
+                    {
+                        view.origin_invited_or_joined = true;
                     }
                 }
-                if (!group->second->parent_state_group_id.has_value())
+                if (!group->parent_state_group_id.has_value())
                 {
                     return true;
                 }
-                current = *group->second->parent_state_group_id;
+                current = *group->parent_state_group_id;
             }
         }
 
@@ -808,17 +742,89 @@ namespace
 
         database::PersistentStore const& store_;
         std::string_view origin_;
-        bool event_group_index_built_{false};
-        std::unordered_map<std::string_view, std::string_view> group_by_event_{};
-        bool group_index_built_{false};
-        std::unordered_map<std::string_view, database::PersistentStateGroup const*> groups_by_id_{};
-        std::unordered_map<std::string_view, std::vector<database::PersistentStateGroupStateEntry const*>>
-            entries_by_group_{};
         std::unordered_map<std::string, GroupView> group_views_{};
         std::unordered_map<std::string, rooms::RoomVersionPolicy const*> policies_{};
     };
 
 } // namespace
+
+auto state_read_resolution_limits() -> events::StateResolutionLimits
+{
+    auto limits = events::StateResolutionLimits{};
+    limits.max_auth_chain_walk_events = max_state_read_auth_walk_events;
+    return limits;
+}
+
+auto state_before_event(database::PersistentStore const& store, std::string_view room_id, std::string_view at_event_id)
+    -> StateAtEvent
+{
+    auto result = StateAtEvent{};
+    auto const* at = find_event(store, at_event_id);
+    if (at == nullptr || at->room_id != room_id || at->json.empty())
+    {
+        return result;
+    }
+    auto const adopt = [&result](std::optional<std::vector<std::string>> ids) {
+        if (ids.has_value())
+        {
+            result.known = true;
+            result.event_ids = std::move(*ids);
+        }
+    };
+    ++result.events_parsed;
+    auto const identity = state_identity(at->json);
+    // A message's state before it is its state after, and a rejected event is recorded with the state
+    // before it (SS API "Rejection"), so for both the event's own group is the answer. If that group
+    // cannot be served the state is unknown; the prev_events are not tried instead.
+    if (!identity.is_state || at->status == "rejected")
+    {
+        if (auto const group = store.event_state_groups.state_group_of(at->event_id); group.has_value())
+        {
+            adopt(group_state_event_ids(store, room_id, *group));
+            return result;
+        }
+    }
+    auto const& prev_event_ids = at->prev_event_ids;
+    if (prev_event_ids.empty())
+    {
+        result.known = true; // nothing precedes the room's first event
+        return result;
+    }
+    if (prev_event_ids.size() == 1U)
+    {
+        auto const prev_group = store.event_state_groups.state_group_of(prev_event_ids.front());
+        if (!prev_group.has_value())
+        {
+            return result;
+        }
+        // No group of its own (an outlier) leaves the prev_event's. A group it has is what was recorded
+        // for it, and if that cannot be read the state is unknown, as above.
+        auto const own_group = store.event_state_groups.state_group_of(at->event_id);
+        adopt(own_group.has_value()
+                  ? state_before_recorded_state_event(store, room_id, identity, *own_group, *prev_group)
+                  : group_state_event_ids(store, room_id, *prev_group));
+        return result;
+    }
+    auto const* policy = homeserver::stored_room_version_policy(store, room_id);
+    if (policy == nullptr)
+    {
+        return result;
+    }
+    result.resolved = true;
+    auto const before =
+        homeserver::compute_state_before(store, room_id, *policy, prev_event_ids, state_read_resolution_limits());
+    if (!before.ok)
+    {
+        log_diagnostic("state_at_event.unresolved",
+                       {
+                           {"event_id", std::string{at_event_id}, false},
+                           {"reason",   before.reason,            false}
+        });
+        return result;
+    }
+    adopt(state_entries_event_ids(store, room_id, before.state));
+    return result;
+}
 
 auto origin_has_joined_user_in_room(database::PersistentStore const& store, std::string_view room_id,
                                     std::string_view origin) -> bool
@@ -896,10 +902,10 @@ auto build_state_response(database::PersistentStore const& store, std::string_vi
         });
         return forbidden_result();
     }
-    // The event must be one this server stored in this room: there is no
-    // fallback to the room's current state for an unknown event.
-    auto const* at_event = at_event_id.empty() ? nullptr : find_event(store, at_event_id);
-    if (at_event == nullptr || at_event->room_id != room_id)
+    // The event must be one this server stored in this room, with state this server recorded for it:
+    // there is no fallback to the room's current state, or to a walk of the graph (ADR-0363).
+    auto const state = state_before_event(store, room_id, at_event_id);
+    if (!state.known)
     {
         return not_found_result();
     }
@@ -911,17 +917,15 @@ auto build_state_response(database::PersistentStore const& store, std::string_vi
     // Seed IDs for the auth chain: every auth event named by a returned state
     // event. The transitive closure is computed once after the state is gathered.
     auto auth_seed_ids = std::vector<std::string>{};
-    for (auto const& state_event_id : reconstruct_state_at_event(store, room_id, at_event_id))
+    for (auto const& state_event_id : state.event_ids)
     {
+        // state_before_event checked that the event is held, in this room and has a body. One whose
+        // JSON does not parse makes the state unknown: a state with a hole in it is not served.
         auto const* event = find_event(store, state_event_id);
-        if (event == nullptr || event->json.empty())
-        {
-            continue;
-        }
-        auto value = parsed_value(event->json);
+        auto value = event == nullptr ? std::nullopt : parsed_value(event->json);
         if (!value.has_value())
         {
-            continue;
+            return not_found_result();
         }
         auth_seed_ids.insert(auth_seed_ids.end(), event->auth_event_ids.begin(), event->auth_event_ids.end());
         pdus.push_back(std::move(*value));
@@ -937,8 +941,13 @@ auto build_state_response(database::PersistentStore const& store, std::string_vi
     // so a receiving server can authorize the returned state. Spec: SS API
     // GET /_matrix/federation/v1/state/{roomId}.
     auto auth_chain = canonicaljson::Array{};
-    auto auth_ids = collect_auth_chain(store, auth_seed_ids);
+    auto auth_ids = collect_auth_chain(store, auth_seed_ids, max_state_auth_chain_events);
     append_implied_create_event(store, room_id, auth_ids);
+    if (auth_ids.size() > max_state_auth_chain_events)
+    {
+        log_state_auth_chain_too_large("state_query.too_large", room_id, at_event_id);
+        return RoomReadResult{RoomReadStatus::too_large, {}};
+    }
     for (auto const& auth_id : auth_ids)
     {
         auto const* event = find_event(store, auth_id);
@@ -1043,15 +1052,15 @@ auto build_state_ids_response(database::PersistentStore const& store, std::strin
         });
         return forbidden_result();
     }
-    auto const* at_event = at_event_id.empty() ? nullptr : find_event(store, at_event_id);
-    if (at_event == nullptr || at_event->room_id != room_id)
+    auto const state = state_before_event(store, room_id, at_event_id);
+    if (!state.known)
     {
         return not_found_result();
     }
     // IDs only, and unfiltered for the same reason as /state: state is the room's authorisation record.
     auto pdu_ids = canonicaljson::Array{};
     auto auth_seed_ids = std::vector<std::string>{};
-    for (auto const& state_event_id : reconstruct_state_at_event(store, room_id, at_event_id))
+    for (auto const& state_event_id : state.event_ids)
     {
         if (auto const* event = find_event(store, state_event_id); event != nullptr)
         {
@@ -1067,8 +1076,13 @@ auto build_state_ids_response(database::PersistentStore const& store, std::strin
         return not_found_result();
     }
     auto auth_chain_ids = canonicaljson::Array{};
-    auto auth_ids = collect_auth_chain(store, auth_seed_ids);
+    auto auth_ids = collect_auth_chain(store, auth_seed_ids, max_state_auth_chain_events);
     append_implied_create_event(store, room_id, auth_ids);
+    if (auth_ids.size() > max_state_auth_chain_events)
+    {
+        log_state_auth_chain_too_large("state_ids_query.too_large", room_id, at_event_id);
+        return RoomReadResult{RoomReadStatus::too_large, {}};
+    }
     for (auto const& auth_id : auth_ids)
     {
         auth_chain_ids.push_back(canonicaljson::Value{auth_id});
@@ -1099,7 +1113,14 @@ auto resolve_state_event_ids_at(database::PersistentStore const& store, std::str
     {
         return current_state_event_ids(store, room_id);
     }
-    return reconstruct_state_including_event(store, room_id, *at);
+    // The state AFTER the event is the group recorded for it (ADR-0363): a state event's own change is
+    // in it, a rejected event's is not. No group, or one that cannot be served whole, is no state.
+    auto const group = store.event_state_groups.state_group_of(at->event_id);
+    if (!group.has_value())
+    {
+        return {};
+    }
+    return group_state_event_ids(store, room_id, *group).value_or(std::vector<std::string>{});
 }
 
 auto event_visible_to_server(database::PersistentStore const& store, std::string_view event_id, std::string_view origin)

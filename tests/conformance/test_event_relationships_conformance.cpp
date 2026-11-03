@@ -32,13 +32,16 @@
 #include "../support/registration_token.hpp"
 #include "merovingian/config/config.hpp"
 #include "merovingian/homeserver/client_server.hpp"
+#include "merovingian/homeserver/room_service.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <cstddef>
 #include <cstdint>
 #include <optional>
 #include <string>
 #include <tuple>
+#include <vector>
 
 namespace
 {
@@ -903,6 +906,117 @@ SCENARIO("GET /rooms/{roomId}/threads rejects a zero limit and an unusable "
                 auto const* chunk = std::get_if<merovingian::canonicaljson::Array>(&chunk_value->storage());
                 REQUIRE(chunk != nullptr);
                 REQUIRE(chunk->size() == 1U);
+            }
+        }
+    }
+}
+
+namespace
+{
+
+// The event IDs of the thread roots GET /threads lists, in order.
+[[nodiscard]] auto listed_thread_roots(merovingian::homeserver::ClientServerRuntime& runtime, std::string const& token,
+                                       std::string const& room_id,
+                                       std::optional<std::size_t> max_events_examined = std::nullopt)
+    -> std::vector<std::string>
+{
+    auto request = merovingian::homeserver::FetchThreadsRequest{};
+    request.room_id = room_id;
+    request.max_events_examined = max_events_examined;
+    auto const result = merovingian::homeserver::fetch_room_threads(runtime.homeserver, token, request);
+    REQUIRE(result.ok);
+    auto const body = parse_object(result.value);
+    auto const* chunk = object_member_as_array(body, "chunk");
+    REQUIRE(chunk != nullptr);
+    auto ids = std::vector<std::string>{};
+    for (auto const& entry : *chunk)
+    {
+        auto const* object = std::get_if<merovingian::canonicaljson::Object>(&entry.storage());
+        REQUIRE(object != nullptr);
+        ids.push_back(*string_member(*object, "event_id"));
+    }
+    return ids;
+}
+
+} // namespace
+
+// Spec: Matrix Client-Server API v1.19 — Querying threads in a room
+// Endpoint: GET /_matrix/client/v1/rooms/{roomId}/threads
+// URL:
+// ../../docs/matrix-v1.19-spec/client-server-api.md#querying-threads-in-a-room
+//
+// Security audit run-2 (F-33, ADR-0345). The thread roots are "ordered by the latest_event in each
+// event's aggregated children"; the spec tells servers to "impose a maximum value to avoid
+// resource exhaustion". The work, not only the page, is bounded: a request examines the room's
+// newest events, up to a budget.
+SCENARIO("GET /rooms/{roomId}/threads examines a bounded number of the room's newest events",
+         "[event-relationships][conformance][threads][f33]")
+{
+    GIVEN("a room with six threads, each a root then one reply, oldest first")
+    {
+        auto started = merovingian::homeserver::start_client_server(conformance_config());
+        REQUIRE(started.started);
+        auto const token = logged_in_token(started.runtime);
+        auto const room_id = create_room(started.runtime, token);
+
+        auto roots = std::vector<std::string>{};
+        for (auto index = 1; index <= 6; ++index)
+        {
+            auto const root = send_text_message(started.runtime, token, room_id, "txn_root_" + std::to_string(index));
+            roots.push_back(root);
+            std::ignore =
+                send_thread_reply(started.runtime, token, room_id, root, "txn_reply_" + std::to_string(index));
+        }
+
+        WHEN("the threads are listed with the default budget")
+        {
+            auto const listed = listed_thread_roots(started.runtime, token, room_id);
+
+            THEN("all six roots are listed, most recently active first")
+            {
+                REQUIRE(listed.size() == 6U);
+                REQUIRE(listed.front() == roots.back());
+                REQUIRE(listed.back() == roots.front());
+            }
+        }
+
+        WHEN("the threads are listed with a budget of the newest four events")
+        {
+            auto const listed = listed_thread_roots(started.runtime, token, room_id, 4U);
+
+            THEN("only the two newest threads are found, still most recently active first")
+            {
+                REQUIRE(listed == std::vector<std::string>{roots[5], roots[4]});
+            }
+        }
+    }
+}
+
+// Spec: Matrix Client-Server API v1.19 — Server-side aggregation of m.thread relationships and
+// Event IDs (appendices, "Event IDs": at most 255 bytes).
+// URL:
+// ../../docs/matrix-v1.19-spec/client-server-api.md#server-side-aggregation-of-mthread-relationships
+SCENARIO("GET /rooms/{roomId}/threads ignores a thread relation whose target is not an event ID",
+         "[event-relationships][conformance][threads][f33]")
+{
+    GIVEN("a real thread, and replies relating to text that is not an event ID")
+    {
+        auto started = merovingian::homeserver::start_client_server(conformance_config());
+        REQUIRE(started.started);
+        auto const token = logged_in_token(started.runtime);
+        auto const room_id = create_room(started.runtime, token);
+        auto const root = send_text_message(started.runtime, token, room_id, "txn_root");
+        std::ignore = send_thread_reply(started.runtime, token, room_id, root, "txn_reply");
+        std::ignore = send_thread_reply(started.runtime, token, room_id, "not-an-event-id", "txn_bad_1");
+        std::ignore = send_thread_reply(started.runtime, token, room_id, "$" + std::string(300U, 'a'), "txn_bad_2");
+
+        WHEN("the threads are listed")
+        {
+            auto const listed = listed_thread_roots(started.runtime, token, room_id);
+
+            THEN("only the real thread is listed, with only its own reply counted")
+            {
+                REQUIRE(listed == std::vector<std::string>{root});
             }
         }
     }

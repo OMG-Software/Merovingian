@@ -17,6 +17,7 @@
 #include "merovingian/federation/runtime_federation.hpp"
 #include "merovingian/homeserver/appservice_ephemeral.hpp"
 #include "merovingian/homeserver/auth_service.hpp"
+#include "merovingian/homeserver/client_outbound_proxy.hpp"
 #include "merovingian/homeserver/federation_proxy.hpp"
 #include "merovingian/homeserver/local_services.hpp"
 #include "merovingian/homeserver/redaction_service.hpp"
@@ -496,6 +497,7 @@ HomeserverRuntime::HomeserverRuntime(HomeserverRuntime&& other) noexcept
     , room_typing_stream_id(std::move(other.room_typing_stream_id))
     , last_create_event_ts_ms(other.last_create_event_ts_ms)
     , client_outbound_budget(std::move(other.client_outbound_budget))
+    , policy_server_budget(std::move(other.policy_server_budget))
     , client_outbound_proxy_policy(other.client_outbound_proxy_policy)
     , argon2id_admission(std::move(other.argon2id_admission))
     , deferred_pdu_next_attempt(std::move(other.deferred_pdu_next_attempt))
@@ -552,6 +554,7 @@ auto HomeserverRuntime::operator=(HomeserverRuntime&& other) noexcept -> Homeser
     room_typing_stream_id = std::move(other.room_typing_stream_id);
     last_create_event_ts_ms = other.last_create_event_ts_ms;
     client_outbound_budget = std::move(other.client_outbound_budget);
+    policy_server_budget = std::move(other.policy_server_budget);
     client_outbound_proxy_policy = other.client_outbound_proxy_policy;
     argon2id_admission = std::move(other.argon2id_admission);
     deferred_pdu_next_attempt = std::move(other.deferred_pdu_next_attempt);
@@ -851,6 +854,9 @@ auto bootstrap_local_database(config::Config const& config, database::SchemaStat
     database.persistent_store.max_to_device_messages_per_user_device =
         config.server().client_api.max_to_device_messages_per_user_device;
     database.persistent_store.to_device_message_ttl_seconds = config.server().client_api.to_device_message_ttl_seconds;
+    database.persistent_store.max_to_device_message_bytes = config.server().client_api.max_to_device_message_bytes;
+    database.persistent_store.max_to_device_bytes_per_user_device =
+        config.server().client_api.max_to_device_bytes_per_user_device;
     database.schema_validated = database::validate_persistent_store(database.persistent_store).valid;
     database.schema_version = database.persistent_store.schema.version;
     database.tables = database.persistent_store.schema.tables;
@@ -1422,6 +1428,27 @@ auto find_policy_rule(HomeserverRuntime const& runtime, std::string_view scope, 
     return wildcard == rules.end() ? std::nullopt : std::optional<database::PersistentPolicyRule>{*wildcard};
 }
 
+auto evaluate_inbound_federation_policy(HomeserverRuntime& runtime, std::string_view origin, bool consult_policy_server)
+    -> trust_safety::PolicyDecision
+{
+    auto held_for_review = false;
+    auto blocked_by_local_policy = false;
+    {
+        auto const guard = std::unique_lock<RuntimeMutex>{runtime.mutex};
+        auto const local_rule = find_policy_rule(runtime, "federation", origin);
+        held_for_review = local_rule.has_value() && local_rule->action == "quarantine";
+        blocked_by_local_policy =
+            local_rule.has_value() && local_rule->action != "allow" && local_rule->action != "quarantine";
+    }
+    // The policy server is asked with runtime.mutex released: a slow or unreachable one must not freeze
+    // every consumer of the mutex (#415). resolve_policy_server_hook releases it around its own call.
+    auto hook = consult_policy_server
+                    ? resolve_policy_server_hook(runtime, trust_safety::PolicySurface::federation, origin)
+                    : trust_safety::PolicyServerHook{};
+    return trust_safety::evaluate_federation_policy(
+        {std::string{origin}, held_for_review, blocked_by_local_policy, std::move(hook)});
+}
+
 auto resolve_policy_server_hook(HomeserverRuntime& runtime, trust_safety::PolicySurface surface,
                                 std::string_view entity) -> trust_safety::PolicyServerHook
 {
@@ -1469,6 +1496,22 @@ auto resolve_policy_server_hook(HomeserverRuntime& runtime, trust_safety::Policy
         return hook;
     }
 
+    // F-42 (ADR-0361): the call below holds this request thread for up to policy_server_timeout, on surfaces
+    // reachable before authentication (registration, inbound federation, media), so it takes a place in a
+    // bounded budget first. No place is "no usable decision": the same answer as an unreachable policy server,
+    // so security.trust_safety.policy_server_allow_without_result decides it as it decides any other failure
+    // to get one (false: refused; true: allowed). Taken before the lock is released and held to the end.
+    auto const& proxy_policy = runtime.client_outbound_proxy_policy;
+    auto const admitted = runtime.policy_server_budget->try_acquire(
+        std::string{trust_safety::policy_surface_name(surface)}, proxy_policy.policy_server_global_cap,
+        proxy_policy.policy_server_per_surface_cap);
+    if (!admitted.has_value())
+    {
+        LOG_WARNING(std::string{"Policy server call not made: too many are in flight; surface="} +
+                    trust_safety::policy_surface_name(surface));
+        return hook;
+    }
+
     auto payload = canonicaljson::Object{};
     payload.push_back(canonicaljson::make_member(
         "surface", canonicaljson::Value{std::string{trust_safety::policy_surface_name(surface)}}));
@@ -1490,12 +1533,48 @@ auto resolve_policy_server_hook(HomeserverRuntime& runtime, trust_safety::Policy
         {"Content-Type", "application/json"}
     };
     request.body = serialized.output;
-    auto const result = [&]() {
+    // The policy server is the operator's own configured destination, like an appservice's, not an address a
+    // peer or a client chose, so its host is resolved without the SSRF deny-list and may be on a private
+    // network (ADR-0361). It is still resolved here, not by perform, which resolves nothing and refuses an
+    // empty pin list. Everything read from the runtime is read before the lock is released.
+    auto const parsed = http::parse_outbound_url(trust_safety_config.policy_server_url);
+    if (!parsed.has_value())
+    {
+        LOG_WARNING("Policy server call not made: policy_server_url is not a usable URL");
+        return hook;
+    }
+    request.trusted_ca_pem = runtime.test_policy_server_trusted_ca_pem;
+    if (runtime.discovery_network == nullptr)
+    {
+        LOG_WARNING("Policy server call not made: no resolver is available");
+        return hook;
+    }
+    auto& network = *runtime.discovery_network;
+    auto& client = *runtime.outbound_client;
+    auto const deadline = OutboundDeadline{timeout.valid ? timeout.seconds : 0U};
+    auto const result = [&]() -> http::OutboundResult {
         auto const unlocked = RuntimeLockRelease{};
-        return runtime.outbound_client->perform(request);
+        // getaddrinfo takes as long as the system resolver is configured to; the budget above bounds how many
+        // threads can be in it, and what is left of policy_server_timeout is all the call itself is given.
+        auto const resolved = network.lookup_addresses(parsed->host, parsed->port);
+        if (!resolved.ok || resolved.addresses.empty())
+        {
+            return {false, {}, http::OutboundError::unresolved_host, "policy server host: " + resolved.reason};
+        }
+        auto const remaining = deadline.remaining_seconds();
+        if (remaining == 0U)
+        {
+            return {false, {}, http::OutboundError::timeout, "policy_server_timeout spent resolving the host"};
+        }
+        request.pinned_addresses = resolved.addresses;
+        request.connect_timeout_seconds = std::min(request.connect_timeout_seconds, remaining);
+        request.total_timeout_seconds = std::min(request.total_timeout_seconds, remaining);
+        return client.perform(request);
     }();
     if (!result.ok)
     {
+        LOG_WARNING(std::string{"Policy server call failed: "} + std::string{http::outbound_error_name(result.error)} +
+                    " (" + result.error_detail + "); surface=" + trust_safety::policy_surface_name(surface));
         return hook;
     }
     if (result.response.status < 200U || result.response.status >= 300U)

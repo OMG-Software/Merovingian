@@ -38,6 +38,11 @@ struct InboundPduEnvelope final
     // origin when our own copy of the DAG is incomplete. Not present in the
     // PDU JSON itself; set by the transaction handler before invoking pdu_sink.
     std::string origin{};
+    // PUT /send_join only: the request's `omit_members` query parameter (server-server-api.md),
+    // which says the calling server accepts an answer without membership events. Like `origin`, not
+    // part of the PDU: the join handler sets it from the request target, and the worker relay
+    // carries it to main in the membership_ingest frame.
+    bool omit_members{false};
 };
 
 enum class PduIngestionStatus : std::uint8_t
@@ -88,6 +93,12 @@ enum class PduIngestionStatus : std::uint8_t
     // is NOT verified, authorised or stored again: no stream ordering, push, fan-out or membership
     // projection. A stored copy is never re-judged, whatever its status (ADR-0285).
     already_stored,
+    // F-24 (ADR-0359): main judged the PDU against its own room m.room.server_acl and the transport origin
+    // or the sender's server is denied. Spec: server-server-api.md "Server Access Control Lists (ACLs)" --
+    // such a PDU "MUST be ignored with an appropriate error included in the response for the respective
+    // event ID". Nothing is stored, and unlike a rejection (which is stored) the transaction answer carries
+    // an `error` entry for it.
+    rejected_acl,
 };
 
 struct PduIngestionResult final

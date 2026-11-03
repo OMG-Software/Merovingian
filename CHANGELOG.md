@@ -1,3 +1,240 @@
+## 0.12.70
+
+The medium findings of security audit run 2 (ref 5e67d4e8).
+
+### Security
+
+- **A slow federation peer no longer delays delivery to every other peer (F-20, ADR-0354).** Outbound federation now runs on `security.federation.outbound_delivery_threads` threads (default 4, restart required), with one transaction in flight per destination. An attempt has a 30 s deadline, discovery a 10 s budget, and a success slower than 10 s grows the destination's backoff. A failed transaction is now retried before any later one to that destination, as the spec requires. A shutdown drains for at most 30 s; the rest stays durable.
+- **A profile change no longer holds the runtime lock for every room the user is in (F-11, ADR-0353).** One request sends to at most 16 rooms; a background job takes the lock per room for the rest, sends only the latest profile, and skips a room the user has left. Rooms still queued at a restart get the profile at the user's next change. Composing an event also no longer walks the whole state table.
+- **An event fetched to fill a gap is checked against the room's current state (F-16, ADR-0371).** A banned user's server could send a message on a pre-ban branch and have it fetched through `/get_missing_events`, and local clients were shown it. It is now stored soft failed, as it would be if it arrived in `/send`.
+- **A PDU parked during a federated join is judged under the room version its create event declares (F-44, ADR-0370).** It was replayed under a guess of version 12, so a creator of an older room could have an event accepted that the room's rules reject, and honest events were refused. Ingestion now also refuses a PDU verified under any other version than the stored create's.
+- **A joining server applies the receipt checks to a resident's `send_join` answer (F-45, ADR-0369).** An event whose content hash does not match is stored redacted. An event the auth rules refuse, or that names an event the answer does not hold or that was refused, is dropped. The join is refused with 502 when the answer's state holds no single valid create event or does not authorise the join.
+- **Two SRV lookups at once can no longer hang delivery threads on NetBSD (ADR-0355).** `res_query` there shares one
+  resolver state between threads, so one thread could block reading a socket another was closing. Neither returned, and
+  shutdown waited on them. Each lookup on NetBSD now uses a state of its own.
+- **A fork that predates a ban can no longer restore it through the ADR-0225 fallback (F-40, ADR-0373).** When the
+  state across a room's forward extremities cannot be resolved, a local event cites the newest tip and retires the
+  others; its state before was that one fork's, so a fork from before a ban wrote the banned user's old join over the
+  ban in current state, again on the next accepted PDU, and the banned user's next event was accepted. The event's state
+  before is now the room's current state, so its state group and later recomputes keep the ban, and `/state` and
+  `/state_ids` at such an event answer that state, not the cited fork's. A peer can still reject the event when the
+  sender's standing exists only on a retired tip, as it could before. ADR-0225's state-before and consequence wording is
+  superseded.
+- **A refused recomputation of current state is reported, and message floods no longer force it (F-49, ADR-0374,
+  ADR-0375).** `recompute_current_state` returned true when it could not resolve the forward extremities, so more than
+  `max_state_groups` tips left a demoted moderator's concurrent state change current. It now returns `resolved`,
+  `refused` or `write_failed`, a refusal logs `state.current.refused` at warning level (and
+  `store_event_with_bookkeeping` reports `resolution_refused`), extremities that share a state group resolve as one,
+  and an accepted event with no `state_key` that cites no current tip is not made a tip once the room holds
+  `max_state_groups` of them. State events are always tips.
+- **A member event in a room of version 3 to 7 is no longer refused for naming an authorising server (F-38, ADR-0356).**
+  `verify_join_authorising_server_signature` applied rooms/v8.md's rule 4.2.1 to every room version, so a member of a
+  legacy room could send an ordinary member event with `join_authorised_via_users_server` naming a third server, which
+  other servers accept and this one refused on `/send`, worker relay, backfill and `send_join` state, leaving every
+  descendant without its `prev_event`. The helper now accepts when the room version has no restricted joins, so all four
+  paths are fixed together, and the authorising-key prefetch is skipped for those versions. Version 8 and later still
+  refuse the event.
+- **`GET /sync` `rooms.leave` no longer gives a user who never joined the room's state (F-41, ADR-0357).** With
+  `include_leave` set, a user who knocked and retracted, declined an invite, or was banned before joining was sent the
+  whole room state before their leave (roster, power levels, topic, custom state) that `GET /state` refuses them. Their
+  entry now holds only their own leave or ban, in the timeline or, when the filter excludes it, in `state`. A user who
+  joined and then left keeps the state they had; one who left and was then banned is capped at the state when they left.
+- **The federation worker can no longer forge an answer main acts on (F-43, ADR-0349).** Main sent every outbound
+  federation call through the sandboxed federation worker and took its reply as the remote server's. A compromised worker
+  could therefore forge device, cross-signing and one-time keys for a `/keys/query` or `/keys/claim`, alias, public-room
+  and profile answers (and so the room `POST /join/{alias}` joined), a `make_leave` 403 that ended an invite, and
+  `send_leave`, `send_knock` and `send_join` outcomes. Each call now names what main can check it against
+  (`OutboundAnswerTrust`): only the four backfill fetches, whose PDUs are each verified before they are stored, may still
+  use the worker; every other call, including `make_*`, `send_*`, invites, `state_ids`, `hierarchy` and
+  `timestamp_to_event`, goes over main's own pinned, TLS-verified client with the same size caps and deadlines.
+  `WorkerPool::send_outbound_request` also refuses a reply whose status is outside 100 to 599 or whose body exceeds the
+  request's cap, and cuts `error_detail` to 256 printable bytes. The other direction, inbound `fed_response` frames
+  reaching remote peers from the worker, is unchanged and recorded as a residual in `docs/threat-model.md`.
+- **A key query, a key claim and a join by remote alias can no longer pin the request pool (F-17, ADR-0350).**
+  `POST /keys/query` and `/keys/claim` called each named remote server in turn with the full 60 s `remote_timeout`, no
+  in-flight slot and no limit on the number of servers, and `POST /join/{#alias}` made one unslotted 60 s lookup. A key
+  request now takes one ADR-0079 slot for all its remote calls, draws them from one 30 s deadline, and asks at most 16
+  distinct servers; a server it does not ask (no slot, deadline spent, over the cap) is reported in `failures` with
+  `M_LIMIT_EXCEEDED` or "deadline exceeded", and the local part of the answer, including one-time keys already claimed
+  here, is still returned. A join by remote alias takes a slot (`429 M_LIMIT_EXCEEDED` when none is free) and runs under
+  the 10 s directory deadline.
+- **A join whose answer cannot be delivered is refused before it is stored, and `omit_members` is implemented (F-23,
+  ADR-0366).** The resident stored a `send_join` and sent it on to the room's other servers, then built the answer; one
+  federating server could grow a public room's state past the worker channel's frame cap, after which the join was
+  committed but its answer was dropped with a log line, the joining server waited out a 60 to 130 s timeout holding a
+  thread, got 503, and got 500 on retry. The answer is now planned from event IDs and sizes after the join is judged
+  and before it is stored; one that cannot fit `join_response_max_size` as a body or the worker frame cap (events
+  counted twice over) is refused `503` with nothing stored, nothing sent on and no stream ordering taken. With
+  `?omit_members=true` the state leaves out membership events except the five heroes' when the room has no name or
+  alias, `members_omitted` is true, `servers_in_room` lists the servers with joined members, and the auth chain drops
+  what the state returns and carries the join's own auth events. A join sent twice is answered again (from current
+  state, so never older than the first answer, ADR-0372; nothing stored or sent on again; a rejected one is refused 403
+  again), not `500`.
+- **A response too large for the worker channel fails its requester at once (F-23, ADR-0368).** `send_response` logged
+  and dropped it, leaving the requester to wait for its whole timeout. It now sends a small `ipc_error` reply that
+  releases the waiter with no response, and the channel carries on.
+- **`make_join` and the restricted-join decision no longer scan the server (F-19, ADR-0367).** The template's auth events,
+  `decide_restricted_join` (which runs for every make_join) and `stored_room_version` passed over every room's state rows
+  and every stored event under `runtime.mutex`. They now read by key through the state index and by room through the
+  event table; `RestrictedJoinDecision::work` counts what a decision read. The template's `prev_events` are the room's
+  stored tips, at most 20, with a depth taken from them, and a room with none is refused (PR #549, ADR-0318).
+- **An admin's federation policy rule now binds every inbound request, and what a worker relays (F-21, ADR-0358).** A
+  scope-`federation` deny or quarantine rule was looked up only in the process that handled the request. A worker's
+  store holds no rules on PostgreSQL and a start-up snapshot on SQLite, so a blocked origin kept federating. Main now
+  applies the verified origin's rule in `FederationProxy::handle` before any branch, including the forward to a worker, and
+  answers `403 M_FORBIDDEN`; the policy server is asked once, where the request is handed on, and never by a worker. The main-side `pdu_ingest`, `membership_ingest`,
+  `invite_ingest` and `edu_ingest` handlers judge the local rule again, so a rule added while a request was in flight holds.
+- **A worker can no longer get a PDU past a room's server ACL by choosing the shard (F-24, ADR-0359).** `/send` is
+  routed by the first PDU's room ID, which the sender picks, and only the owning shard learns of a room's later state,
+  so a stale shard allowed a denied server and main's relay handler never checked. Main now reads the room's current
+  `m.room.server_acl` for the transport origin and, once the event is verified, for its sender's server, on `pdu_ingest`,
+  `membership_ingest` and `invite_ingest`. A refused PDU is reported to the sender as an `error` entry for its event ID
+  (new `PduIngestionStatus::rejected_acl`), a refused membership or invite as 403. The ACL is read through the state
+  index, not a scan.
+- **The worker's store is read under a reader-writer lock, and a reload no longer exposes a room half-rewritten (F-27,
+  ADR-0360).** Request threads read the worker's store with no lock while `room_sync` erased and re-added a room's rows
+  on another thread, a data race in which a reader could see a room with no ACL and allow a denied server. `reload_room`
+  is split into `load_room_snapshot` (the database read, no lock) and `apply_room_snapshot` (the swap).
+  `federation_worker::StoreReadGuard` wraps the worker's ACL, room-version, state, state_ids, event_auth,
+  get_missing_events, backfill, timestamp_to_event, hierarchy and make_leave/make_knock providers in a shared lock and
+  takes the exclusive lock only for the swap. Main's providers are unchanged. The comment and rule 6 of the worker
+  `AGENTS.md` that said a relay transaction holds `runtime.mutex` are corrected.
+- **The policy server hook now reaches the policy server (F-42, ADR-0361, ADR-0362).** It never set the request's
+  pinned addresses, so `OutboundClient` refused every call before opening a socket: with the default
+  `policy_server_allow_without_result=false` every guarded workflow was refused, and with `true` the server was never
+  asked. The operator-configured host is now resolved inside the lock-release scope, without the SSRF deny-list (the
+  operator chose it, as for an appservice), with what is left of `policy_server_timeout`, and a transport error is
+  logged at warning level. Calls take a place in a new budget first (a quarter of the request pool across surfaces, half
+  of that per surface); no place counts as no decision, so `policy_server_allow_without_result` decides it as before. A
+  pre-v12 `createRoom` reserves its `!room<N>` ID across the hook and takes the first free number, so two creations
+  overlapping the hook no longer collide (500 "room persistence failed").
+- **Federation `/state`, `/state_ids` and the client `/context` `state` no longer serve a rejected event as room state (F-25, ADR-0363).**
+  They walked every ancestor of the event and kept the greatest sender-chosen `(depth, event_id)` per state key, with no
+  status filter, so a remote member's rejected `m.room.name`, member or power-levels event with a huge depth displaced the
+  true event in the answer. The answer is now the state this server recorded for the event: its own state group when the
+  event is not a state event or was rejected, the group of its single `prev_event`, or the resolution of several. A
+  rejected event is never in it and a soft-failed one is where resolution admitted it. An event with no recorded state (an
+  outlier, the events before a federated join's own event), a broken group chain, or a group naming a missing or rejected
+  event is `404 M_NOT_FOUND` (an empty `state` for `/context`), where the walk returned a guess.
+- **A `/state` or `/state_ids` request no longer costs the room's history, and its auth chain is bounded (F-26, ADR-0363,
+  ADR-0364, ADR-0365).** Each request parsed one JSON document per ancestor of the event on the federation worker's small
+  `local_pool`, and collected the auth chain without a limit. A request now reads one state-group chain and the state it
+  returns. A merge of several `prev_events` is resolved under a lowered auth-walk budget of 10000 events, and answers 404
+  when over it. An auth chain over 65536 events (the default of `security.federation.backfill.max_auth_chain_ids`) is
+  refused `502 M_TOO_LARGE`, never cut. Current-state lookups on this path use the state index instead of scanning every
+  room's rows (`origin_may_read_room`, `stored_room_version`).
+- **One user can no longer use up the local media record cap (F-46, ADR-0340).** `security.media.max_records` was one
+  budget for the whole server, and distinct tiny files or deduplicated re-uploads cost the per-user byte quota almost
+  nothing, so one account could fill it and every user's upload was then refused until an operator raised it. New key
+  `security.media.max_records_per_user` (default 20000, `0` for no limit) caps each user's live local records, deduplicated
+  uploads included, in O(1) from an owner-to-count map. A removed record frees its owner's slot but still counts against
+  the server-wide cap. Cached remote media never counts against a user.
+- **Admitting remote media no longer scans every record per cache entry (F-47, ADR-0341).** `plan_remote_media_admission`
+  looked up each cache entry's record linearly, under the global lock, so one admission cost cache entries times records.
+  Each entry now carries its size, and an admission drops up to 16 expired entries so they stop holding the caps.
+- **A room upgrade names a real event in `predecessor.event_id` (F-48, ADR-0342).** Upgrading to a version below 12 copied
+  the old room's last event's whole JSON into the new room's create event, where every member could read it. It is now
+  the ID of the old room's newest forward extremity, and is left out when there is none.
+- **The three search endpoints match in linear time and refuse a term over 1024 bytes (F-28, F-29, F-34, ADR-0330).**
+  `POST /publicRooms`, `POST /search` and `POST /user_directory/search` searched a room name, topic, message body or
+  display name with `std::search` or `find`, which cost text x term comparisons, about 9e8 for one 60 KB text and
+  2.5e11 for a 1 MiB display name, with the global lock held. One matcher (KMP over case-folded bytes) now takes at most
+  two steps per byte of text. A `search_term` or `generic_search_term` over 1024 bytes is answered `400 M_TOO_LARGE`
+  before any work (and before `?server=` forwards it), where it was searched before.
+- **`POST /search` filter and `keys` lists no longer multiply the scan (F-30, ADR-0332).** `keys` is resolved to the
+  three searchable keys at parse time, and `rooms`, `not_rooms`, `senders`, `not_senders`, `types` and `not_types` are
+  hashed once per request (type patterns are deduplicated and the covered ones dropped), so judging an event no longer
+  scans lists the client sized. Results are unchanged.
+- **`POST /search` builds result context only when asked, in one pass (F-31, ADR-0333).** Every match used to walk the
+  whole events table and sort its room, 100 times for a page of 100, even with no `event_context`. A result now carries
+  `context` only when the request has `event_context` (the spec: "if requested"), built from one walk of the events for
+  all the page's rooms and found by binary search.
+- **`POST /user_directory/search` reads the accounts once and caps its results (F-50, ADR-0334).** Each matching
+  profile rescanned every account for the deactivated flag, accounts squared for a term like `@`. The deactivated
+  accounts are now collected in one pass, and `limit` is clamped to 100 (`limited` is true when more matched).
+
+- **One event can no longer cost a recipient seconds of push matching (F-39, ADR-0343).** Content rules and
+  `event_match` conditions on `content.body` now draw from one budget of 2^21 matcher steps for each recipient and
+  event, and search only the first 4096 bytes of the body; a glob that runs out does not match, the result says so and
+  delivery logs `push.glob_budget.exhausted`. Unread counting uses the same function and so the same bound. A keyword
+  after the first 4 KiB of a message is no longer found.
+- **`GET /hierarchy` walks only as far as its page (F-32, ADR-0344, ADR-0345).** State is read through a
+  (room, type, state key) index instead of scanning every room's state three times for each child, each child event is
+  parsed once, and a page stops walking at its own end. A tree is walked for at most 4096 rooms.
+- **`GET /rooms/{roomId}/threads` reads the room's newest events only (F-33, ADR-0345).** Roots are aggregated in a hash
+  map from the room's own events (at most the newest 10000), not by two scans of every event on the server. A
+  `m.thread` relation that does not name a well-formed event ID is ignored, and rejected, soft-failed and outlier
+  events no longer count towards a thread.
+- **`GET /rooms/{roomId}/members` builds the roster in linear time (F-10, ADR-0344).** The state-backed members are a
+  hash set and only the room's own state rows are read; the answer is unchanged.
+- **Room tags and account-data rows are bounded (F-12, ADR-0339).** `PUT .../tags/{tag}` read-modified-wrote one
+  `m.tag` row with no limit, so a user could grow it past any request body and every later tag request and `/sync`
+  parsed it whole under the global lock. A tag name over the spec's 255 bytes is now refused (400 `M_INVALID_PARAM`),
+  a room holds at most 100 tags of at most 1 KiB each (400 `M_TOO_LARGE`; changing a held tag is always allowed), and
+  any account-data row, including the ones the server writes itself and the generic account-data `PUT`, is refused
+  past 256 KiB (400 `M_TOO_LARGE`).
+- **A `sendToDevice` batch costs one pass over the queue, and one request names a bounded number of devices (F-13,
+  ADR-0336).** Each message used to walk the whole shared queue and scan the batch's evictions for every row, so a
+  request naming many full devices cost queue x devices squared under the global lock. A batch now gathers its
+  recipients' queues in one pass, evictions and acknowledgements remove rows through a hash, and the devices a
+  request addresses come from one pass over the device table. A request addressing more than 1,000 local devices
+  (a `*` counts one per device) is refused with 413 `M_TOO_LARGE`, nothing queued.
+- **The to-device queue is bounded in bytes (F-14, ADR-0335).** A message over `max_to_device_message_bytes` (default
+  64 KiB) is refused with 413 `M_TOO_LARGE`, or dropped alone from an inbound `m.direct_to_device` EDU, and a
+  recipient whose queue would pass `max_to_device_bytes_per_user_device` (default 16 MiB) loses its oldest rows first.
+  Both are new `server.client_api` keys. The byte total is computed from the rows, so it is right after eviction,
+  acknowledgement and a restart.
+- **A remote server can no longer corrupt or blank a client's key claim (F-36, ADR-0337).** `POST /keys/claim` copied
+  every user a remote server named into the response; naming a user the client also asked a local answer for made a
+  duplicate member that the serialiser refused, so the client got an empty 200 after its local one-time keys were
+  spent. The answer is now kept only for the users and devices asked of that server, an unusable answer is recorded
+  as a failure of that server, and a response that cannot be serialised is a 500, never an empty 200.
+- **Uploaded keys have a shape and a size (F-37, ADR-0338).** `/keys/upload` accepted any non-null value for an
+  unsigned one-time or fallback key, so one key could be the size of the 1 MiB body. A key is now a string of at most
+  256 bytes or a key object (`key`, `signatures`, `fallback`) of at most 4 KiB, refused with 400 `M_BAD_JSON` before
+  anything is stored. `device_keys`, each cross-signing key and each signed key of a signature upload are refused
+  past 16 KiB with 400 `M_TOO_LARGE`.
+- **A request from a remote server can no longer end a federation worker's IPC channel (F-35, F-08, ADR-0321).** A
+  header value, request target or body that was not UTF-8 went into the `fed_request` frame unchanged, and the worker's
+  parser refused the whole frame, so one signed request took a shard down for up to 30 seconds and could be repeated.
+  `ipc_json_str` now writes only valid UTF-8 (each bad byte becomes U+FFFD), and the `fed_request` frame carries a target,
+  header value or body that is not UTF-8 as `target_b64`, `v_b64` or `body_b64`, which the worker restores byte for byte.
+- **A frame whose payload does not parse fails one request, not the channel (F-09, ADR-0322).** `IpcChannel` ended
+  the channel on any application value its parser refused, such as an integer above 2^53 - 1. A frame that passed
+  authentication but does not parse is now logged and dropped; the waiter of a response is released at once; a failed
+  authentication or broken framing still ends the channel.
+- **`query/directory`, `user/devices`, `event` and `make_join`/`make_leave`/`make_knock` refuse malformed identifiers (F-08).**
+  A room alias, user ID, event ID or room ID that does not meet the identifier grammar (or is not UTF-8) is answered
+  400 `M_INVALID_PARAM` before any lookup, as `query/profile` already did, and is no longer relayed from a worker to main.
+- **A worker whose main-side channel has failed is restarted (F-08, ADR-0323).** The supervisor replaced a worker only
+  when it exited, so a shard whose channel main had given up on answered 503 until main was restarted. It now kills the
+  worker and respawns it after the existing backoff.
+- **State lookups no longer scan the server's state-group tables (F-07, F-15, ADR-0325).** Finding the state group of
+  an event, a group by ID, or a group's entries was a pass over every room's rows (and, per hop of a delta chain of up
+  to 101 groups, over every entry row), so each ingested PDU, local send, federation `/event`, `backfill`,
+  `get_missing_events` and `timestamp_to_event`, and each client history-visibility read, paid for the whole server
+  with `runtime.mutex` held. The three tables are now classes that own their rows and keep hash indexes, so each lookup
+  costs the rows it returns. `ServerEventFilter` and `HistoryVisibility` build no per-request map, and
+  `make_store_event_lookup` uses `EventTable::find` instead of building a map of every event for each resolution.
+  `recompute_current_state` reads the room's current state once instead of once per resolved entry, and a federation
+  read's check that a server has a joined user looks up the named member events instead of walking every event.
+- **Waking retained PDUs no longer searches their JSON (F-18, ADR-0326).** After each PDU stored in a room the server
+  searched every retained PDU of that room for the event ID as text, up to 6.4 MiB a time under `runtime.mutex`, and
+  woke a PDU that only mentioned the ID. Retained PDUs are now indexed by the events they are missing, so the wake
+  touches only the rows waiting for that event. The retry job no longer copies the whole table every cycle.
+- **A third server can no longer put an honest relay into the inbound backoff (F-22, ADR-0346).** A resident server
+  relays the PDUs of the servers that join its rooms, and whether one verifies here depends on its author's keys, which
+  the author controls. Three that failed were charged to the relay, which was then answered 429 `remote backoff
+  required` for five minutes on that worker shard. A failed PDU in a `/send` transaction is now charged to the
+  transport peer only when its sender domain is the X-Matrix origin (or cannot be read); a relayed third-party PDU is
+  dropped with its per-PDU error in the usual 200 answer. A transaction in which any PDU failed verification still does
+  not reset the failure count. The per-origin transaction and PDU rate limits and the key-resolution budgets remain
+  the cost control. ADR-0081 and ADR-0133 are marked partly superseded.
+- **A successful read can no longer clear a peer's backoff (F-59, ADR-0347).** A federation worker answers requests main
+  has verified with a synthetic remote holding default trust, and after any 2xx non-transaction answer the handler wrote
+  that record over the worker's real one, so a peer charged on `/send` cleared the charge with one cheap read (and a
+  `send_join` or invite reset a sub-threshold count the same way). Only the `/send` transaction path now writes a
+  peer's trust record.
 ## 0.12.69
 
 ### Fixed

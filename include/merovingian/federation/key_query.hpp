@@ -9,6 +9,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 namespace merovingian::federation
@@ -47,6 +48,25 @@ struct RemoteKeyQueryKeys final
 [[nodiscard]] auto accept_remote_key_query_response(std::string_view origin, std::string_view response_body,
                                                     std::vector<std::string> const& requested_users)
     -> std::optional<RemoteKeyQueryKeys>;
+
+// What a client `POST /keys/claim` takes from one remote server's answer.
+struct RemoteKeyClaimKeys final
+{
+    // User ID -> device ID -> key ID -> key, for requested users and devices only.
+    canonicaljson::Object one_time_keys{};
+};
+
+// Accepts `origin`'s `/user/keys/claim` response to a claim for `requested` (user ID -> the device IDs
+// asked for; every user is on `origin`). Keeps only users that were requested, only devices that were
+// requested of them, and only a device whose value is a non-empty object of key ID -> string or object
+// (the spec's `string|KeyObject`). A user named twice keeps its first entry. A remote server has no
+// authority over users it was not asked about, and a duplicate user would make the client response
+// unserialisable. Anything dropped is logged. std::nullopt when the body is not a JSON object with a
+// `one_time_keys` object (the caller records that as a failure of `origin`).
+[[nodiscard]] auto accept_remote_key_claim_response(
+    std::string_view origin, std::string_view response_body,
+    std::vector<std::pair<std::string, std::vector<std::string>>> const& requested)
+    -> std::optional<RemoteKeyClaimKeys>;
 
 // Builds the content of an `m.signing_key_update` EDU announcing `user_id`'s
 // current master and self-signing keys, with the owner's own signatures. The

@@ -30,11 +30,26 @@ and `merovingian-fed-worker`. There is no filesystem socket path: the fd is inhe
    frame body (`docs/hardening.md`).
 4. **Oversize frames fail the send and are logged, never silently dropped.** `max_frame_bytes`
    (`kIpcMaxFrameBytes`, 24 MiB) is derived identically on both ends from
-   `security.federation.join_response_max_size`; both processes parse the same `--config` rather
-   than negotiating over IPC, so both must restart to pick up a change.
+   `security.federation.join_response_max_size` and the transport caps, by
+   `homeserver::worker_ipc_frame_bytes` (use it, never a copy of the arithmetic); both processes parse the same
+   `--config` rather than negotiating over IPC, so both must restart to pick up a change. A response over the
+   cap is replaced by `{"ipc_error":"response_too_large"}`, which the reader turns into "no response" for the
+   waiter at once (`send_request` returns `nullopt`, as for a timeout), so the requester never waits out its timeout
+   (ADR-0368). `ipc_error` is a reserved frame member.
 5. **Response bodies are base64-encoded, not JSON-string-escaped.** Base64's 4/3 expansion is
    fixed; escaping's is payload-dependent and can push a near-cap response over the frame limit
    (ADR-0043).
+
+6. **Every frame a process writes is valid UTF-8, and only a failed read ends a channel.** The reader
+   parses frames with `canonicaljson::parse_json`, which refuses invalid UTF-8, so `ipc_json_str` copies
+   only valid sequences and writes U+FFFD for the rest (ADR-0321). A `fed_request` field that holds bytes
+   a remote server chose (`target`, header `v`, `body`) goes through `append_lossless_member`, which sends
+   a value that is not UTF-8 as `<key>_b64` and `get_lossless_str` restores it; a new such field does the
+   same. An authenticated frame whose payload does not parse (an integer past 2^53 - 1, bad UTF-8) is logged
+   and dropped by `reader_loop`, and the waiter of a response is released through `read_frame_routing`,
+   which reads `{"id":N,"reply_to":M` from the front: keep that prefix first in `build_frame`. Only
+   `read_frame` failing (length, short read, AEAD authentication) marks the channel unhealthy (ADR-0322).
+   Never put a clamp for one value in place of this; the next value has the same effect.
 
 ## Thread safety — the reader/dispatch split
 
@@ -61,4 +76,7 @@ Each `IpcChannel` runs two threads (`docs/architecture.md`, "IPC reader/dispatch
 - `docs/hardening.md` — "Out-of-process federation worker IPC security"
 - `docs/crypto-boundary.md` — IPC key derivation and cipher
 - [ADR-0027](../../docs/adr/0027-bound-the-connection-queue-but-not-the-ipc-queue.md) ·
-  [ADR-0043](../../docs/adr/0043-base64-encode-ipc-response-bodies.md)
+  [ADR-0043](../../docs/adr/0043-base64-encode-ipc-response-bodies.md) ·
+  [ADR-0368](../../docs/adr/0368-an-ipc-response-that-cannot-be-sent-fails-its-requester-at-once.md) ·
+  [ADR-0321](../../docs/adr/0321-every-ipc-frame-is-valid-utf-8-by-construction.md) ·
+  [ADR-0322](../../docs/adr/0322-an-authenticated-frame-whose-payload-does-not-parse-fails-one-request.md)

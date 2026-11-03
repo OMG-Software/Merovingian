@@ -60,6 +60,11 @@ concurrency caps are in `homeserver/room_service.cpp`; every attempt and the ret
     allocate per character or try every substring pair. The `[push][security][sp01]` scenario
     in `tests/unit/test_push_rules.cpp` checks the matchers against the old implementation on
     seeded random cases; a change to the matchers must keep it passing.
+11a. **Every `content.body` match draws from one budget per evaluation and searches a bounded prefix** (ADR-0343).
+    `evaluate_push_rules` gives all of a recipient's body globs `max_push_glob_steps_per_evaluation` steps together
+    and searches the first `max_push_glob_body_bytes`; a glob that runs out does not match and the result carries
+    `glob_budget_exhausted`. A new matcher over a sender-chosen value takes steps from the same `GlobBudget`.
+    `PushRuleUnreadClassifier` is bounded by calling the same function.
 12. **A user's rules are bounded before they are stored, and again when they are read**
     (ADR-0204). `UserPushRules` refuses a rule past `server.client_api.max_push_rules_per_user`
     and any rule over the per-rule bounds in `user_push_rules.hpp` (ID, pattern and string

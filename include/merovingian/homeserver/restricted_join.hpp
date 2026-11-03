@@ -42,6 +42,15 @@ enum class RestrictedJoinVerdict : std::uint8_t
     forbidden,
 };
 
+// What one decision read, for a test that the cost follows the room and not the server (F-19).
+struct RestrictedJoinWork final
+{
+    // Rows of `state` the decision looked at, all of them rows of rooms the join rule names.
+    std::size_t state_rows_visited{0U};
+    // Stored events parsed.
+    std::size_t events_parsed{0U};
+};
+
 struct RestrictedJoinDecision final
 {
     RestrictedJoinVerdict verdict{RestrictedJoinVerdict::forbidden};
@@ -52,6 +61,7 @@ struct RestrictedJoinDecision final
     std::string authorising_user{};
     std::string authorising_member_event_id{};
     std::string reason{};
+    RestrictedJoinWork work{};
 };
 
 // The number of allow conditions in m.room.join_rules that are considered.

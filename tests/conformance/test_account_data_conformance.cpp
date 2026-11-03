@@ -662,3 +662,51 @@ SCENARIO("room account data refuses bad bodies, invalid room IDs and other users
         }
     }
 }
+
+// Spec: Matrix Client-Server API v1.19
+// Endpoint / Section: PUT /_matrix/client/v3/user/{userId}/rooms/{roomId}/tags/{tag}, "Room Tagging"
+// URL: ../../docs/matrix-v1.19-spec/client-server-api.md#room-tagging
+//
+// "The name of a tag MUST NOT exceed 255 bytes." (audit run-2 F-12, ADR-0339)
+SCENARIO("a room tag name over 255 bytes is refused and one of exactly 255 bytes is stored",
+         "[conformance][client-server][account-data][room-tags][security][run2][f12]")
+{
+    GIVEN("a user in a room")
+    {
+        auto started = merovingian::homeserver::start_client_server(account_data_config());
+        // Fixture: the homeserver must start.
+        REQUIRE(started.started);
+        auto& rt = started.runtime;
+        auto const token = register_and_login(rt, "alice");
+        auto const room_id = create_public_room(rt, token);
+        auto const tag_url = [&room_id](std::string const& tag) {
+            return "/_matrix/client/v3/user/%40alice%3Aexample.org/rooms/" + room_id + "/tags/" + tag;
+        };
+
+        WHEN("she sets a tag of 256 bytes")
+        {
+            auto const response = call(rt, "PUT", tag_url("u." + std::string(254U, 'a')), token, R"({"order":0.5})");
+
+            THEN("it is refused")
+            {
+                // Spec MUST NOT: a tag name exceeds 255 bytes.
+                REQUIRE(response.status == 400U);
+                REQUIRE(response.body.find("M_INVALID_PARAM") != std::string::npos);
+            }
+        }
+
+        WHEN("she sets a tag of exactly 255 bytes")
+        {
+            auto const response = call(rt, "PUT", tag_url("u." + std::string(253U, 'a')), token, R"({"order":0.5})");
+
+            THEN("it is stored")
+            {
+                // The limit is "MUST NOT exceed 255 bytes": 255 is allowed.
+                REQUIRE(response.status == 200U);
+                auto const tags = call(rt, "GET", tag_url("").substr(0U, tag_url("").size() - 1U), token);
+                REQUIRE(tags.status == 200U);
+                REQUIRE(tags.body.find(std::string(253U, 'a')) != std::string::npos);
+            }
+        }
+    }
+}

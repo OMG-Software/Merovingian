@@ -87,6 +87,7 @@ struct RuntimeFederationConfig final
     std::uint64_t pending_join_max_bytes{4U * 1024U * 1024U};
     std::uint32_t outbound_queue_capacity{4096U};
     std::uint32_t outbound_max_retries{32U};
+    std::uint32_t outbound_delivery_threads{4U};
     // Bytes of /send answers the accepted_transactions ring keeps for replay to
     // retries (ADR-0283). Fixed at this default, like bad_signature_per_ip_rate:
     // not an operator setting. Last, so the positional

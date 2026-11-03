@@ -278,6 +278,13 @@ struct ClientApiConfig final
     // time, so the queue stays bounded even for recipients that never sync.
     std::uint32_t max_to_device_messages_per_user_device{10000U};
     std::uint32_t to_device_message_ttl_seconds{604800U};
+    // Security audit run-2 F-14 (ADR-0335): the queue is bounded in bytes as well. A to-device
+    // message whose content is over max_to_device_message_bytes is refused (413 M_TOO_LARGE for a
+    // client; one message of an inbound m.direct_to_device EDU is dropped, the rest are kept). A
+    // recipient (user, device) whose queued bytes would pass max_to_device_bytes_per_user_device
+    // loses its oldest rows to make room, as the row-count cap does.
+    std::uint32_t max_to_device_message_bytes{65536U};
+    std::uint32_t max_to_device_bytes_per_user_device{16777216U};
     // CSAZ-10: bound the end-to-end key material and filters one user can
     // store.  An upload that would take the user over a cap is refused with
     // M_TOO_LARGE and stores nothing; stored rows are never evicted to make
@@ -575,6 +582,7 @@ struct FederationSecurityConfig final
     std::string pending_join_max_size{"512KiB"};
     std::uint32_t outbound_queue_capacity{4096U};
     std::uint32_t outbound_max_retries{32U};
+    std::uint32_t outbound_delivery_threads{4U};
     std::string remote_timeout{"60s"};
     // Separate, extendable budget for the make_join/send_join/make_leave/send_leave
     // membership dance. A large remote room's make_join can take longer than the
@@ -634,6 +642,10 @@ struct MediaSecurityConfig final
     std::string max_total_size{"250GiB"};
     std::string max_size_per_user{"10GiB"};
     std::uint64_t max_records{1000000U};
+    // F-46, ADR-0340: one user's share of max_records, so a single account
+    // cannot fill the server-wide cap and refuse every other user. Counts live
+    // local records, deduplicated or not. 0 means no per-user limit.
+    std::uint64_t max_records_per_user{20000U};
     std::vector<std::string> allowed_mime_types{};
     bool quarantine_unknown_mime{true};
     bool enable_av_scanner{true};

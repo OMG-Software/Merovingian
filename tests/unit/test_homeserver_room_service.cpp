@@ -730,7 +730,8 @@ SCENARIO("perform_sync_outbound_call returns failure immediately when discovery_
                 .body = R"({"pdus":[]})",
             };
             auto const [ok, reason] = merovingian::homeserver::perform_sync_outbound_call(
-                runtime, "!room:remote.example.com", tx, "ed25519:K001", {}, "test.diagnostic", 30U);
+                runtime, merovingian::homeserver::OutboundAnswerTrust::unverified, "!room:remote.example.com", tx,
+                "ed25519:K001", {}, "test.diagnostic", 30U);
 
             THEN("the call fails fast without crashing or blocking, and returns a non-empty reason")
             {
@@ -769,7 +770,8 @@ SCENARIO("perform_sync_outbound_call with timeout_seconds=0 does not collapse th
                 .body = "",
             };
             auto const [ok, reason] = merovingian::homeserver::perform_sync_outbound_call(
-                runtime, "!r:remote.example.com", tx, "ed25519:K001", {}, "test.diagnostic.zero_timeout", 0U);
+                runtime, merovingian::homeserver::OutboundAnswerTrust::unverified, "!r:remote.example.com", tx,
+                "ed25519:K001", {}, "test.diagnostic.zero_timeout", 0U);
 
             THEN("the call fails with a non-empty reason — discovery unavailable, not a crash or silent hang")
             {

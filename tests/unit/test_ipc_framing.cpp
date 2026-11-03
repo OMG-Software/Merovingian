@@ -10,7 +10,9 @@
 
 #include "merovingian/core/file_descriptor.hpp"
 #include "merovingian/crypto/ipc_auth_key.hpp"
+#include "merovingian/homeserver/local_http_router.hpp"
 #include "merovingian/ipc/channel.hpp"
+#include "merovingian/ipc/federation_ipc_frames.hpp"
 #include "merovingian/net/thread_pool.hpp"
 
 #include <catch2/catch_test_macros.hpp>
@@ -27,10 +29,13 @@
 #include <string>
 #include <string_view>
 #include <thread>
+#include <tuple>
 #include <vector>
 
+#include <fcntl.h>
 #include <sodium.h>
 #include <sys/socket.h>
+#include <unistd.h>
 
 namespace
 {
@@ -126,7 +131,7 @@ struct ChannelPair final
     return result;
 }
 
-[[nodiscard]] auto make_channel_pair() -> ChannelPair
+[[nodiscard]] auto make_channel_pair(std::uint32_t max_frame_bytes = 0U) -> ChannelPair
 {
     auto [server_fd, client_fd] = make_socketpair();
 
@@ -141,7 +146,7 @@ struct ChannelPair final
         try
         {
             pair.server = std::make_unique<merovingian::ipc::IpcChannel>(
-                std::move(server_fd), merovingian::ipc::IpcChannel::Role::server, auth_key);
+                std::move(server_fd), merovingian::ipc::IpcChannel::Role::server, auth_key, max_frame_bytes);
         }
         catch (...)
         {
@@ -152,7 +157,7 @@ struct ChannelPair final
         try
         {
             pair.client = std::make_unique<merovingian::ipc::IpcChannel>(
-                std::move(client_fd), merovingian::ipc::IpcChannel::Role::client, auth_key);
+                std::move(client_fd), merovingian::ipc::IpcChannel::Role::client, auth_key, max_frame_bytes);
         }
         catch (...)
         {
@@ -1116,5 +1121,375 @@ SCENARIO("expired or stopped pending requests cannot authorize EDU relays", "[ip
                 CHECK_FALSE(pair.server->matches_pending_origin(parent, "a.remote.example"));
             }
         }
+    }
+}
+
+// F-08, F-09, F-35 (security audit run 2): a remote server must not be able to end an IPC
+// channel. Only a frame that fails AEAD authentication, or that breaks the framing, is fatal.
+// An authenticated frame whose application payload does not parse fails the one request it
+// belonged to and leaves the channel up (ADR-0322). Every frame this process produces is valid
+// UTF-8 by construction (ADR-0321).
+namespace
+{
+
+// A channel pair plus a duplicate of the client's socket end, so a test can inject raw bytes
+// into the stream the server reads, bypassing the client channel's own framing.
+struct TappedChannelPair final
+{
+    ChannelPair channels{};
+    merovingian::core::FileDescriptor tap{};
+};
+
+[[nodiscard]] auto make_tapped_channel_pair() -> TappedChannelPair
+{
+    auto [server_fd, client_fd] = make_socketpair();
+    auto const tap_raw = ::fcntl(client_fd.get(), F_DUPFD_CLOEXEC, 0);
+    REQUIRE(tap_raw >= 0);
+    auto tapped = TappedChannelPair{};
+    tapped.tap = merovingian::core::FileDescriptor{tap_raw};
+
+    auto const auth_key = make_test_auth_key();
+    auto server_ex = std::exception_ptr{};
+    auto client_ex = std::exception_ptr{};
+    auto t1 = std::thread{[&]() {
+        try
+        {
+            tapped.channels.server = std::make_unique<merovingian::ipc::IpcChannel>(
+                std::move(server_fd), merovingian::ipc::IpcChannel::Role::server, auth_key);
+        }
+        catch (...)
+        {
+            server_ex = std::current_exception();
+        }
+    }};
+    auto t2 = std::thread{[&]() {
+        try
+        {
+            tapped.channels.client = std::make_unique<merovingian::ipc::IpcChannel>(
+                std::move(client_fd), merovingian::ipc::IpcChannel::Role::client, auth_key);
+        }
+        catch (...)
+        {
+            client_ex = std::current_exception();
+        }
+    }};
+    t1.join();
+    t2.join();
+    REQUIRE(server_ex == nullptr);
+    REQUIRE(client_ex == nullptr);
+    return tapped;
+}
+
+// Writes `bytes` to a raw socket end.
+auto write_all(int fd, std::string_view bytes) -> void
+{
+    auto written = std::size_t{0U};
+    while (written < bytes.size())
+    {
+        auto const rc = ::write(fd, bytes.data() + written, bytes.size() - written);
+        REQUIRE(rc > 0);
+        written += static_cast<std::size_t>(rc);
+    }
+}
+
+// An integer one above the canonical JSON limit of 2^53 - 1, which the parser refuses.
+constexpr auto out_of_range_frame_body = std::string_view{R"({"type":"reply","depth":9007199254740992})"};
+
+} // namespace
+
+SCENARIO("A response with an out-of-range integer fails that one request and leaves the channel up",
+         "[ipc][channel][f09][request_response][robustness]")
+{
+    GIVEN("a channel pair whose server answers the first request with an out-of-range integer")
+    {
+        auto pair = make_channel_pair();
+        auto handled = std::atomic<std::size_t>{0U};
+        pair.server->set_request_handler([&pair, &handled](std::uint64_t id, std::string /*json*/) {
+            if (handled.fetch_add(1U) == 0U)
+            {
+                pair.server->send_response(id, out_of_range_frame_body);
+            }
+            else
+            {
+                pair.server->send_response(id, R"({"type":"reply","ok":true})");
+            }
+        });
+        pair.server->start();
+        pair.client->start();
+
+        WHEN("the client sends the first request")
+        {
+            auto first = std::async(std::launch::async, [&] {
+                return pair.client->send_request(R"({"type":"ping"})", std::chrono::seconds{120});
+            });
+            auto const released = first.wait_for(std::chrono::seconds{30}) == std::future_status::ready;
+
+            THEN("the waiter is released without a response, long before its timeout")
+            {
+                REQUIRE(released);
+                CHECK_FALSE(first.get().has_value());
+            }
+            AND_THEN("both ends of the channel are still healthy")
+            {
+                REQUIRE(released);
+                CHECK(pair.client->healthy());
+                CHECK(pair.server->healthy());
+            }
+            AND_THEN("the next request on the same channel is answered normally")
+            {
+                REQUIRE(released);
+                auto const second = pair.client->send_request(R"({"type":"ping"})", std::chrono::seconds{10});
+                REQUIRE(second.has_value());
+                CHECK(second->find("\"ok\":true") != std::string::npos);
+            }
+        }
+
+        pair.server->stop();
+        pair.client->stop();
+    }
+}
+
+SCENARIO("A request with an out-of-range integer is dropped and the channel keeps serving",
+         "[ipc][channel][f09][dispatch][robustness]")
+{
+    GIVEN("a channel pair whose server records the requests its handler sees")
+    {
+        auto pair = make_channel_pair();
+        auto seen = std::atomic<std::size_t>{0U};
+        pair.server->set_request_handler([&pair, &seen](std::uint64_t id, std::string /*json*/) {
+            ++seen;
+            pair.server->send_response(id, R"({"type":"reply","ok":true})");
+        });
+        pair.server->start();
+        pair.client->start();
+
+        WHEN("the client sends a request carrying an out-of-range integer, then an ordinary one")
+        {
+            pair.client->send_notification(out_of_range_frame_body);
+            auto const reply = pair.client->send_request(R"({"type":"ping"})", std::chrono::seconds{10});
+
+            THEN("only the ordinary request reaches the handler and is answered")
+            {
+                REQUIRE(reply.has_value());
+                CHECK(seen.load() == 1U);
+            }
+            AND_THEN("both ends of the channel are still healthy")
+            {
+                CHECK(pair.client->healthy());
+                CHECK(pair.server->healthy());
+            }
+        }
+
+        pair.server->stop();
+        pair.client->stop();
+    }
+}
+
+SCENARIO("An authenticated frame that is not valid UTF-8 does not end the channel", "[ipc][channel][f35][robustness]")
+{
+    GIVEN("a channel pair and a frame body with a raw 0xFF byte that bypasses ipc_json_str")
+    {
+        auto pair = make_channel_pair();
+        auto seen = std::atomic<std::size_t>{0U};
+        pair.server->set_request_handler([&pair, &seen](std::uint64_t id, std::string /*json*/) {
+            ++seen;
+            pair.server->send_response(id, R"({"type":"reply","ok":true})");
+        });
+        pair.server->start();
+        pair.client->start();
+
+        WHEN("the client sends it as a notification and then a normal request")
+        {
+            auto bad = std::string{R"({"type":"x","v":")"};
+            bad += static_cast<char>(0xFF);
+            bad += "\"}";
+            pair.client->send_notification(bad);
+            auto const reply = pair.client->send_request(R"({"type":"ping"})", std::chrono::seconds{10});
+
+            THEN("the normal request is answered and the bad frame never reached the handler")
+            {
+                REQUIRE(reply.has_value());
+                CHECK(seen.load() == 1U);
+                CHECK(pair.server->healthy());
+                CHECK(pair.client->healthy());
+            }
+        }
+
+        pair.server->stop();
+        pair.client->stop();
+    }
+}
+
+SCENARIO("A frame that fails authentication still ends the channel", "[ipc][channel][f09][security]")
+{
+    GIVEN("a channel pair and a raw tap on the stream the server reads")
+    {
+        auto tapped = make_tapped_channel_pair();
+        auto& pair = tapped.channels;
+        pair.server->set_request_handler([](std::uint64_t /*id*/, std::string /*json*/) {
+        });
+        pair.server->start();
+        pair.client->start();
+
+        WHEN("bytes with a valid length prefix but no valid AEAD tag are written to the stream")
+        {
+            auto forged = std::string{};
+            forged.push_back('\0');
+            forged.push_back('\0');
+            forged.push_back('\0');
+            forged.push_back(static_cast<char>(64));
+            forged.append(64U, 'A');
+            write_all(tapped.tap.get(), forged);
+
+            THEN("the server channel becomes unhealthy")
+            {
+                auto const deadline = std::chrono::steady_clock::now() + std::chrono::seconds{10};
+                while (pair.server->healthy() && std::chrono::steady_clock::now() < deadline)
+                {
+                    std::this_thread::sleep_for(std::chrono::milliseconds{5});
+                }
+                REQUIRE_FALSE(pair.server->healthy());
+            }
+        }
+
+        pair.server->stop();
+        pair.client->stop();
+    }
+}
+
+SCENARIO("A fed_request with non-UTF-8 bytes reaches the peer byte-exact over a live channel",
+         "[ipc][channel][f35][framing]")
+{
+    GIVEN("a channel pair whose client deserialises every fed_request it is sent")
+    {
+        auto pair = make_channel_pair();
+        auto received = std::promise<merovingian::homeserver::LocalHttpRequest>{};
+        auto received_future = received.get_future();
+        pair.client->set_request_handler([&pair, &received](std::uint64_t id, std::string json) {
+            received.set_value(merovingian::ipc::deserialize_fed_request(json));
+            pair.client->send_response(id, R"({"type":"fed_response","status":200,"headers":[],"body":""})");
+        });
+        pair.server->start();
+        pair.client->start();
+
+        WHEN("the server sends a request whose target, header value and body hold invalid UTF-8")
+        {
+            auto request = merovingian::homeserver::LocalHttpRequest{};
+            request.method = "PUT";
+            request.target = std::string{"/_matrix/federation/v1/send/t?x="} + static_cast<char>(0xFF);
+            request.headers.push_back({"X-Pad", std::string{"a"} + static_cast<char>(0xFF) + "b"});
+            request.body = std::string{"{\"k\":\""} + static_cast<char>(0xC0) + static_cast<char>(0x80) + "\"}";
+            auto const reply =
+                pair.server->send_request(merovingian::ipc::serialize_fed_request(request), std::chrono::seconds{10});
+
+            THEN("the worker side answers, stays healthy, and read every field exactly")
+            {
+                REQUIRE(reply.has_value());
+                REQUIRE(received_future.wait_for(std::chrono::seconds{10}) == std::future_status::ready);
+                auto const got = received_future.get();
+                CHECK(got.target == request.target);
+                CHECK(got.body == request.body);
+                REQUIRE(got.headers.size() == 1U);
+                CHECK(got.headers.front().name == "X-Pad");
+                CHECK(got.headers.front().value == request.headers.front().value);
+                CHECK(pair.server->healthy());
+                CHECK(pair.client->healthy());
+            }
+        }
+
+        pair.server->stop();
+        pair.client->stop();
+    }
+}
+
+SCENARIO("A worker relay frame built with a non-UTF-8 field reaches main and keeps the channel up",
+         "[ipc][channel][f08][framing]")
+{
+    GIVEN("a channel pair whose server answers every relay request")
+    {
+        auto pair = make_channel_pair();
+        auto seen_alias = std::promise<std::string>{};
+        auto seen_alias_future = seen_alias.get_future();
+        pair.server->set_request_handler([&pair, &seen_alias](std::uint64_t id, std::string json) {
+            seen_alias.set_value(merovingian::ipc::ipc_json_get_str(json, "room_alias"));
+            pair.server->send_response(id, R"({"type":"directory_query_ingest_result","found":false})");
+        });
+        pair.server->start();
+        pair.client->start();
+
+        WHEN("the worker relays a directory query whose alias holds a raw 0xFF byte")
+        {
+            auto const alias = std::string{"#a"} + static_cast<char>(0xFF) + ":example.org";
+            auto const body = std::string{R"({"type":"directory_query_ingest","room_alias":)"} +
+                              merovingian::ipc::ipc_json_str(alias) + "}";
+            auto const reply = pair.client->send_request(body, std::chrono::seconds{10});
+
+            THEN("main's handler runs, answers, and neither end is marked unhealthy")
+            {
+                REQUIRE(reply.has_value());
+                REQUIRE(seen_alias_future.wait_for(std::chrono::seconds{10}) == std::future_status::ready);
+                CHECK(seen_alias_future.get().find("#a") == 0U);
+                CHECK(pair.server->healthy());
+                CHECK(pair.client->healthy());
+            }
+        }
+
+        pair.server->stop();
+        pair.client->stop();
+    }
+}
+
+// F-23. A response over the frame cap used to be logged and dropped, and the requester waited for
+// its whole timeout (130 s in main, 60 s in a worker) holding a thread. src/ipc/AGENTS.md rule 4:
+// an oversize frame fails the send. The peer is told at once, in a frame that is itself small.
+SCENARIO("A response over the frame cap releases the requester at once and the channel carries on",
+         "[ipc][channel][f23][request_response]")
+{
+    GIVEN("a channel pair with a 64 KiB frame cap whose server answers the first request with 128 KiB")
+    {
+        auto pair = make_channel_pair(64U * 1024U);
+        auto handled = std::atomic<std::size_t>{0U};
+        pair.server->set_request_handler([&pair, &handled](std::uint64_t id, std::string /*json*/) {
+            if (handled.fetch_add(1U) == 0U)
+            {
+                pair.server->send_response(id, R"({"type":"big","pad":")" + std::string(128U * 1024U, 'x') + R"("})");
+            }
+            else
+            {
+                pair.server->send_response(id, R"({"type":"reply","ok":true})");
+            }
+        });
+        pair.server->start();
+        pair.client->start();
+
+        WHEN("the client sends the first request with a long timeout")
+        {
+            auto first = std::async(std::launch::async, [&] {
+                return pair.client->send_request(R"({"type":"ping"})", std::chrono::seconds{120});
+            });
+            auto const released = first.wait_for(std::chrono::seconds{30}) == std::future_status::ready;
+
+            THEN("the waiter is released without a response, long before its timeout")
+            {
+                REQUIRE(released);
+                CHECK_FALSE(first.get().has_value());
+            }
+            AND_THEN("both ends of the channel are still healthy")
+            {
+                REQUIRE(released);
+                CHECK(pair.client->healthy());
+                CHECK(pair.server->healthy());
+            }
+            AND_THEN("the next request on the same channel is answered normally")
+            {
+                REQUIRE(released);
+                auto const second = pair.client->send_request(R"({"type":"ping"})", std::chrono::seconds{10});
+                REQUIRE(second.has_value());
+                CHECK(second->find("\"ok\":true") != std::string::npos);
+            }
+        }
+
+        pair.server->stop();
+        pair.client->stop();
     }
 }

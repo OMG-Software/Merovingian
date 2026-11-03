@@ -66,20 +66,16 @@ auto stored_create_room_version(std::string_view create_event_json) -> std::stri
 
 auto stored_room_version(database::PersistentStore const& store, std::string_view room_id) -> std::optional<std::string>
 {
-    for (auto const& state : store.state)
+    // The create event's state row, by the state index (ADR-0344): this runs under runtime.mutex on
+    // every make_join and every membership event, and must not scan the state of other rooms.
+    auto const create_id = database::find_current_state_event_id(store, room_id, "m.room.create", {});
+    if (!create_id.has_value())
     {
-        if (state.room_id != room_id || state.event_type != "m.room.create" || !state.state_key.empty())
-        {
-            continue;
-        }
-        for (auto const& event : store.events.with_id(state.event_id))
-        {
-            return stored_create_room_version(event.json);
-        }
-        // The create row names an event that is not stored: nothing usable is declared.
-        return std::string{"1"};
+        return std::nullopt;
     }
-    return std::nullopt;
+    auto const event = store.events.find(*create_id);
+    // The create row names an event that is not stored: nothing usable is declared.
+    return event == store.events.end() ? std::string{"1"} : stored_create_room_version(event->json);
 }
 
 auto stored_room_version_policy(database::PersistentStore const& store, std::string_view room_id)

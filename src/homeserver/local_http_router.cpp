@@ -41,6 +41,7 @@
 #include "merovingian/homeserver/room_service.hpp"
 #include "merovingian/homeserver/runtime.hpp"
 #include "merovingian/homeserver/runtime_signing_key_store.hpp"
+#include "merovingian/homeserver/send_join_answer.hpp"
 #include "merovingian/homeserver/space_hierarchy.hpp"
 #include "merovingian/homeserver/state_bookkeeping.hpp"
 #include "merovingian/homeserver/stored_room_version.hpp"
@@ -152,63 +153,13 @@ namespace
         };
 
         auto result = events::AuthEventMap{};
+        auto const slots =
+            events::AuthEventSlots{sender, target_state_key, event_type, third_party_invite_token, authorising_user};
         for (auto const& entry : entries)
         {
-            if (entry.event_type == "m.room.create" && entry.state_key.empty())
-            {
-                result.create = load(entry.event_id);
-                result.create_event_id = entry.event_id;
-            }
-            else if (entry.event_type == "m.room.power_levels" && entry.state_key.empty())
-            {
-                result.power_levels = load(entry.event_id);
-            }
-            else if (entry.event_type == "m.room.join_rules" && entry.state_key.empty())
-            {
-                result.join_rules = load(entry.event_id);
-            }
-            else if (entry.event_type == "m.room.member" && entry.state_key == sender)
-            {
-                result.sender_member = load(entry.event_id);
-            }
-            else if (entry.event_type == "m.room.member" && event_type == "m.room.member" &&
-                     entry.state_key == target_state_key)
-            {
-                result.target_member = load(entry.event_id);
-            }
-            else if (entry.event_type == "m.room.third_party_invite" && !third_party_invite_token.empty() &&
-                     entry.state_key == third_party_invite_token)
-            {
-                result.third_party_invite = load(entry.event_id);
-            }
-            // Not part of the chain above: the authorising user may also be the
-            // sender or target, and each slot must still be filled.
-            if (!authorising_user.empty() && entry.event_type == "m.room.member" && entry.state_key == authorising_user)
-            {
-                result.authorising_user_member = load(entry.event_id);
-            }
+            events::fill_auth_event_slot(result, slots, entry.event_type, entry.state_key, entry.event_id, load);
         }
         return result;
-    }
-
-    // A join's content.join_authorised_via_users_server, or empty. Spec "Auth
-    // events selection": "If membership is join,
-    // content.join_authorised_via_users_server is present, and the room version
-    // supports restricted rooms, then the m.room.member event with state_key
-    // matching content.join_authorised_via_users_server". No room-version gate
-    // here, as in state resolution: only the restricted join branch reads the
-    // member event, and no pre-v8 room reaches it.
-    [[nodiscard]] auto join_authorising_user(canonicaljson::Value const& pdu) -> std::string
-    {
-        if (events::extract_content_membership(pdu) != "join")
-        {
-            return {};
-        }
-        auto const* obj = std::get_if<canonicaljson::Object>(&pdu.storage());
-        auto const* content = obj != nullptr ? object_member_as_object(*obj, "content") : nullptr;
-        auto const* authorised =
-            content != nullptr ? string_member(*content, "join_authorised_via_users_server") : nullptr;
-        return authorised != nullptr ? *authorised : std::string{};
     }
 
     // `event` without any signature filed under `server_name`. Before this
@@ -256,13 +207,9 @@ namespace
         -> std::vector<database::PersistentStateGroupStateEntry>
     {
         auto entries = std::vector<database::PersistentStateGroupStateEntry>{};
-        for (auto const& state : store.state)
-        {
-            if (state.room_id == room_id)
-            {
-                entries.push_back({{}, state.event_type, state.state_key, state.event_id});
-            }
-        }
+        database::for_each_room_state_row(store, room_id, [&entries](database::PersistentStateEvent const& state) {
+            entries.push_back({{}, state.event_type, state.state_key, state.event_id});
+        });
         return entries;
     }
 
@@ -336,67 +283,6 @@ namespace
         disallowed,
     };
 
-    // The (type, state_key) pairs a PDU's auth_events MAY name, per spec
-    // "Auth events selection" (server-server-api.md, ~line 1792).
-    [[nodiscard]] auto permitted_auth_event_keys(canonicaljson::Value const& pdu,
-                                                 rooms::RoomVersionPolicy const& policy, std::string_view event_type,
-                                                 std::string_view sender, std::optional<std::string> const& state_key,
-                                                 std::string_view third_party_invite_token)
-        -> std::vector<std::pair<std::string, std::string>>
-    {
-        auto permitted = std::vector<std::pair<std::string, std::string>>{};
-        // "The auth_events for the m.room.create event in a room is empty."
-        if (event_type == "m.room.create")
-        {
-            return permitted;
-        }
-        // v12 (MSC4291): the create event is implicit in the room ID and
-        // MUST NOT be selected for auth_events.
-        // Spec: docs/matrix-v1.19-spec/rooms/v12.md — "The m.room.create
-        // event MUST NOT be selected for auth_events on events. The
-        // room_id (being the m.room.create event's ID) implies this
-        // instead." and rule 3.2: "In this room version, m.room.create
-        // MUST NOT be selected" (reject if it is). An inbound v12 event
-        // that names it is therefore a rejection, not a tolerated
-        // redundancy — do not relax this to "always permitted" again
-        // without re-reading rooms/v12.md rule 3.2 first.
-        if (!policy.create_event_is_room_id)
-        {
-            permitted.emplace_back("m.room.create", std::string{});
-        }
-        // "The current m.room.power_levels event, if any" — unconditional.
-        permitted.emplace_back("m.room.power_levels", std::string{});
-        // "The sender's current m.room.member event, if any" — unconditional.
-        permitted.emplace_back("m.room.member", std::string{sender});
-
-        if (event_type == "m.room.member" && state_key.has_value())
-        {
-            // "The target's current m.room.member event, if any."
-            permitted.emplace_back("m.room.member", *state_key);
-            auto const membership = events::extract_content_membership(pdu);
-            if (membership == "join" || membership == "invite" || membership == "knock")
-            {
-                permitted.emplace_back("m.room.join_rules", std::string{});
-            }
-            if (membership == "invite" && !third_party_invite_token.empty())
-            {
-                permitted.emplace_back("m.room.third_party_invite", std::string{third_party_invite_token});
-            }
-            if (membership == "join")
-            {
-                auto const* obj = std::get_if<canonicaljson::Object>(&pdu.storage());
-                auto const* content = obj != nullptr ? object_member_as_object(*obj, "content") : nullptr;
-                auto const* authorised =
-                    content != nullptr ? string_member(*content, "join_authorised_via_users_server") : nullptr;
-                if (authorised != nullptr && !authorised->empty())
-                {
-                    permitted.emplace_back("m.room.member", *authorised);
-                }
-            }
-        }
-        return permitted;
-    }
-
     // Spec: server-server-api.md — "Auth events selection". Validates that
     // every event `auth_event_ids` names is a permitted selection for this
     // PDU: the correct (type, state_key), no duplicates, and from the same
@@ -457,7 +343,7 @@ namespace
         std::vector<std::string> const& auth_event_ids) -> AuthEventsSelectionCheck
     {
         auto const permitted =
-            permitted_auth_event_keys(pdu, policy, event_type, sender, state_key, third_party_invite_token);
+            events::permitted_auth_event_keys(pdu, policy, event_type, sender, state_key, third_party_invite_token);
         auto seen = std::vector<std::pair<std::string, std::string>>{};
         seen.reserve(auth_event_ids.size());
         for (auto const& id : auth_event_ids)
@@ -1382,6 +1268,8 @@ namespace
         bool invalid_message_type{false};
         // (origin, sender, message_id) was already recorded in the replay window: whole EDU dropped.
         bool replay{false};
+        // Messages dropped because their content is over the to-device message limit (F-14).
+        std::size_t dropped_oversized{0U};
         // Target entries skipped because the user is not a local, active account.
         std::size_t skipped_non_local{0U};
         // True when the per-EDU delivery cap was reached and the rest dropped.
@@ -1558,6 +1446,13 @@ namespace
                 auto const serialized = canonicaljson::serialize_canonical(*device_entry.value);
                 if (serialized.error != canonicaljson::CanonicalJsonError::none)
                 {
+                    continue;
+                }
+                // F-14, ADR-0335: a message over the size limit is dropped alone; the sender cannot be told
+                // which one, and the rest of the EDU is still delivered.
+                if (!database::to_device_content_fits(runtime.database.persistent_store, serialized.output))
+                {
+                    ++result.dropped_oversized;
                     continue;
                 }
                 // Each device a wildcard expands to is one delivery against
@@ -2022,6 +1917,15 @@ namespace
             case federation::EduType::direct_to_device: {
                 auto const enqueue_result =
                     enqueue_direct_to_device_messages(*rt, envelope.origin, envelope.content_json);
+                if (enqueue_result.dropped_oversized > 0U)
+                {
+                    log_diagnostic("federation.edu.direct_to_device.oversized_dropped",
+                                   {
+                                       {"origin",  envelope.origin,                                  false},
+                                       {"dropped", std::to_string(enqueue_result.dropped_oversized), false}
+                    },
+                                   observability::LogEventSeverity::warning);
+                }
                 if (enqueue_result.sender_not_on_origin || enqueue_result.invalid_message_id ||
                     enqueue_result.invalid_message_type)
                 {
@@ -2223,20 +2127,26 @@ namespace
             // auth_events — Synapse asserts this and crashes with 500 if it does.
             auto const* version_policy = rooms::find_room_version_policy(room_version);
             auto const include_create_in_auth = version_policy == nullptr || !version_policy->create_event_is_room_id;
-            for (auto const& s : store.state)
+            // Four lookups by key in the state index (ADR-0344, F-19), each costing one hash probe:
+            // never a pass over the state of every room, which this request would pay for under
+            // runtime.mutex whatever the room is.
+            auto const add_auth_event = [&](std::string_view type, std::string_view state_key) {
+                auto id = database::find_current_state_event_id(store, room_id, type, state_key);
+                if (id.has_value() && !id->empty())
+                {
+                    tmpl.auth_events.push_back(std::move(*id));
+                }
+            };
+            if (include_create_in_auth)
             {
-                if (s.room_id != room_id || s.event_id.empty())
-                {
-                    continue;
-                }
-                if ((include_create_in_auth && s.event_type == "m.room.create") ||
-                    (s.event_type == "m.room.join_rules" && tmpl.membership != "leave") ||
-                    s.event_type == "m.room.power_levels" ||
-                    (s.event_type == "m.room.member" && s.state_key == user_id))
-                {
-                    tmpl.auth_events.push_back(s.event_id);
-                }
+                add_auth_event("m.room.create", {});
             }
+            if (tmpl.membership != "leave")
+            {
+                add_auth_event("m.room.join_rules", {});
+            }
+            add_auth_event("m.room.power_levels", {});
+            add_auth_event("m.room.member", user_id);
             // The room's stored tips, as for a local event (ADR-0318). Only accepted events become
             // tips, and the selection stops at the room version's limit. A room with none has nothing
             // a joiner can build on, and an empty prev_events would detach the join from the room's graph.
@@ -2318,6 +2228,57 @@ namespace
             if (room_it == store.rooms.end())
             {
                 return {false, 404U, "room not found", {}, {}};
+            }
+            // A join this server already stored is answered again, not refused (F-23): the server
+            // that sent it may not have received the first answer (a lost response, a retry). The
+            // event is not judged, stored or sent on a second time. The answer is the room's current
+            // state, as the first answer was, never the state at the join's prev_events, which date
+            // from make_join and may predate a ban (ADR-0372). A join rejected on receipt is refused again.
+            if (endpoint == federation::FederationEndpoint::send_join)
+            {
+                auto const stored_join = store.events.find_in_room(room_id, envelope.event_id);
+                if (stored_join != store.events.end())
+                {
+                    if (stored_join->status == "rejected")
+                    {
+                        return {
+                            false, 403U, "event auth denied: the join was rejected when it was first received", {}, {}};
+                    }
+                    auto const resent_version = room_version_from_store(store, room_id);
+                    auto const* const resent_policy = rooms::find_room_version_policy(resent_version);
+                    if (resent_policy == nullptr)
+                    {
+                        return {false, 400U, "unknown room version", {}, {}};
+                    }
+                    // A read: the sender decides how often it runs (ADR-0365).
+                    auto const state_before_join =
+                        compute_state_before(store, room_id, *resent_policy, stored_join->prev_event_ids,
+                                             federation::state_read_resolution_limits());
+                    if (!state_before_join.ok)
+                    {
+                        return {false, 503U, "the state before the join is not available here; retry", {}, {}};
+                    }
+                    auto resent_plan =
+                        plan_send_join_answer(*rt, room_id, envelope.sender,
+                                              resent_send_join_state(store, room_id, envelope.sender, envelope.event_id,
+                                                                     state_before_join.state),
+                                              stored_join->auth_event_ids, envelope.omit_members);
+                    if (!send_join_answer_fits(resent_plan, send_join_answer_limits(rt->config)))
+                    {
+                        return {false, 503U, std::string{send_join_answer_too_large_reason}, {}, {}};
+                    }
+                    auto answer = collect_send_join_answer(store, room_id, resent_plan);
+                    return {true,
+                            200U,
+                            {},
+                            std::move(answer.auth_chain_json),
+                            std::move(answer.state_json),
+                            resent_version,
+                            stored_join->json,
+                            {},
+                            resent_plan.members_omitted,
+                            std::move(resent_plan.servers_in_room)};
+                }
             }
             // M-01: evaluate the room's authorization rules before any part of
             // this event reaches the store. The Ed25519 signature and
@@ -2446,7 +2407,7 @@ namespace
                 if (endpoint == federation::FederationEndpoint::send_join)
                 {
                     auto const our_server = std::string{rt->config.server().server_name};
-                    auto const authoriser = join_authorising_user(effective_pdu);
+                    auto const authoriser = events::join_authorising_user(effective_pdu);
                     if (!authoriser.empty() && server_name_from_user_id(authoriser) == our_server)
                     {
                         auto const decision =
@@ -2502,7 +2463,7 @@ namespace
                     auto auth_events_map = build_auth_event_map_from_entries(
                         store, state_entries_from_named_events(store, envelope.auth_event_ids), envelope.sender,
                         envelope.state_key.value_or(std::string{}), envelope.event_type, third_party_invite_token,
-                        join_authorising_user(effective_pdu));
+                        events::join_authorising_user(effective_pdu));
                     // v12 (MSC4291): the create event is implicit in the room
                     // ID and MUST NOT be named in auth_events, so fill it from
                     // the room's recorded state — same as ingest_pdu_event.
@@ -2541,7 +2502,8 @@ namespace
             {
                 auto state_before_map = build_auth_event_map_from_entries(
                     store, state_before.state, envelope.sender, envelope.state_key.value_or(std::string{}),
-                    envelope.event_type, membership_third_party_token, join_authorising_user(membership_effective_pdu));
+                    envelope.event_type, membership_third_party_token,
+                    events::join_authorising_user(membership_effective_pdu));
                 fill_create_from_room_state(state_before_map, store, room_id);
                 auto const state_before_decision = events::authorize_event_against_auth_events(
                     membership_effective_pdu, *room_policy, state_before_map);
@@ -2563,7 +2525,7 @@ namespace
             {
                 auto current_state_map = build_pdu_auth_event_map(
                     store, room_id, envelope.sender, envelope.state_key.value_or(std::string{}), envelope.event_type,
-                    membership_third_party_token, join_authorising_user(membership_effective_pdu));
+                    membership_third_party_token, events::join_authorising_user(membership_effective_pdu));
                 fill_create_from_room_state(current_state_map, store, room_id);
                 auto const current_state_decision = events::authorize_event_against_auth_events(
                     membership_effective_pdu, *room_policy, current_state_map);
@@ -2572,6 +2534,30 @@ namespace
                     outcome = MembershipReceiptOutcome::soft_failed;
                     outcome_reason =
                         "event auth denied against current state (soft failure): " + current_state_decision.reason;
+                }
+            }
+
+            // What the answer to a send_join will hold, and whether it can be delivered, are
+            // settled BEFORE the join is stored (F-23): a join stored and sent on to the room's
+            // servers whose answer is then too big for the worker channel is committed but lost
+            // to the server that sent it. Refused here the join is retryable (503) with nothing
+            // stored, nothing sent on and no stream ordering taken. The state is the room's
+            // current state, which does not yet hold the join. A rejected join is answered 403 and
+            // needs no answer.
+            auto answer_plan = SendJoinAnswerPlan{};
+            if (endpoint == federation::FederationEndpoint::send_join && outcome != MembershipReceiptOutcome::rejected)
+            {
+                answer_plan =
+                    plan_send_join_answer(*rt, room_id, envelope.sender, current_room_state_entries(store, room_id),
+                                          envelope.auth_event_ids, envelope.omit_members);
+                if (!send_join_answer_fits(answer_plan, send_join_answer_limits(rt->config)))
+                {
+                    LOG_WARNING("send_join refused: the answer cannot be delivered; room_id=" + std::string{room_id} +
+                                " event_id=" + envelope.event_id +
+                                " projected_body_bytes=" + std::to_string(answer_plan.projected_body_bytes) +
+                                " projected_frame_bytes=" + std::to_string(answer_plan.projected_frame_bytes) +
+                                " omit_members=" + (envelope.omit_members ? "true" : "false"));
+                    return {false, 503U, std::string{send_join_answer_too_large_reason}, {}, {}};
                 }
             }
 
@@ -2597,21 +2583,6 @@ namespace
                 // the stored state consistent with the stored event.
                 state = database::PersistentStateEvent{envelope.room_id, envelope.event_type, *envelope.state_key,
                                                        envelope.event_id};
-            }
-            // Snapshot pre-join state IDs before persistence. The Matrix spec
-            // requires the send_join response state to reflect the room *prior
-            // to* the new join event. After store_event_with_state the store
-            // already contains the join, so we must capture the snapshot first.
-            auto pre_join_state_ids = std::vector<std::string>{};
-            if (endpoint == federation::FederationEndpoint::send_join)
-            {
-                for (auto const& s : store.state)
-                {
-                    if (s.room_id == room_id && !s.event_id.empty())
-                    {
-                        pre_join_state_ids.push_back(s.event_id);
-                    }
-                }
             }
             auto const accepted_event_id = event.event_id;
             auto const accepted_prev_event_ids = event.prev_event_ids;
@@ -2655,11 +2626,19 @@ namespace
                     LOG_WARNING("State-group bookkeeping failed after membership PDU was accepted; event_id=" +
                                 accepted_event_id + " room_id=" + std::string{room_id});
                 }
-                else if (!recompute_current_state(
+                else if (auto const recomputed = recompute_current_state(
                              store, room_id, *room_policy,
-                             state_resolution_limits(rt->config.security().federation.state_resolution)))
+                             state_resolution_limits(rt->config.security().federation.state_resolution));
+                         recomputed.status == CurrentStateRecomputeStatus::write_failed)
                 {
                     LOG_WARNING("Current-state recomputation failed after membership PDU was accepted; event_id=" +
+                                accepted_event_id + " room_id=" + std::string{room_id});
+                }
+                else if (recomputed.status == CurrentStateRecomputeStatus::refused)
+                {
+                    // F-49: recompute_current_state logged the reason; current state is not the
+                    // resolution of the room's forward extremities until one can be resolved.
+                    LOG_WARNING("Current state left unresolved after membership PDU was accepted; event_id=" +
                                 accepted_event_id + " room_id=" + std::string{room_id});
                 }
             }
@@ -2716,83 +2695,33 @@ namespace
                                                    server_name_from_user_id(envelope.sender));
             }
 
-            auto auth_chain = std::vector<std::string>{};
-            auto state_events = std::vector<std::string>{};
-            if (endpoint == federation::FederationEndpoint::send_join)
-            {
-                // Build auth_chain by walking auth_events from PRE-JOIN state.
-                // Per Matrix spec §11.5.1 the state in the response must be the
-                // room state prior to the join event. We captured pre_join_state_ids
-                // before persisting, so the join event itself is never seeded here,
-                // preventing the circular auth_events reference Synapse warns about.
-                // All auth_chain events must be state events (have state_key);
-                // including non-state events crashes Synapse.
-                auto visited = std::unordered_set<std::string>{};
-                auto queue = std::vector<std::string>{};
-                for (auto const& eid : pre_join_state_ids)
-                {
-                    if (visited.insert(eid).second)
-                    {
-                        queue.push_back(eid);
-                    }
-                }
-                // BFS: follow auth_event_ids from each discovered event in this room
-                auto cursor = std::size_t{0U};
-                while (cursor < queue.size())
-                {
-                    auto const& eid = queue[cursor];
-                    ++cursor;
-                    auto const it = store.events.find_in_room(room_id, eid);
-                    if (it == store.events.end())
-                    {
-                        continue;
-                    }
-                    for (auto const& auth_id : it->auth_event_ids)
-                    {
-                        if (!auth_id.empty() && visited.insert(auth_id).second)
-                        {
-                            queue.push_back(auth_id);
-                        }
-                    }
-                }
-                // Collect JSON for every event in the auth chain
-                for (auto const& eid : queue)
-                {
-                    auto const it = store.events.find_in_room(room_id, eid);
-                    if (it != store.events.end() && !it->json.empty())
-                    {
-                        auth_chain.push_back(it->json);
-                    }
-                }
-                // State events: pre-join snapshot, resolved the same way.
-                for (auto const& eid : pre_join_state_ids)
-                {
-                    auto const it = store.events.find_in_room(room_id, eid);
-                    if (it != store.events.end() && !it->json.empty())
-                    {
-                        state_events.push_back(it->json);
-                    }
-                }
-            }
-            // The send_join v2 "event" field is "the membership event sent to
-            // other servers by the resident server": the copy this server
-            // accepted and stored — redacted after a hash mismatch (R06) and
-            // carrying this server's signature when it authorised a
-            // restricted join (R04) — never the raw request body.
+            // The answer's events are copied out once, now that the join is accepted. Per Matrix
+            // spec PUT /send_join the state is the room's state prior to the join event, which the
+            // plan captured before the join was stored; the join itself is never in it.
+            auto answer = endpoint == federation::FederationEndpoint::send_join
+                              ? collect_send_join_answer(store, room_id, answer_plan)
+                              : SendJoinAnswerEvents{};
             // Spec v1.19 PUT /send_knock: `knock_room_state` MUST contain the room's m.room.create, and
             // "all events listed MUST additionally be formatted according to the room version
             // specification": the stored signed PDUs of the stripped-state types, not stripped events.
             auto knock_room_state = endpoint == federation::FederationEndpoint::send_knock
                                         ? stripped_state_pdus(store, room_id)
                                         : std::vector<std::string>{};
+            // The send_join v2 "event" field is "the membership event sent to
+            // other servers by the resident server": the copy this server
+            // accepted and stored — redacted after a hash mismatch (R06) and
+            // carrying this server's signature when it authorised a
+            // restricted join (R04) — never the raw request body.
             return {true,
                     200U,
                     {},
-                    std::move(auth_chain),
-                    std::move(state_events),
+                    std::move(answer.auth_chain_json),
+                    std::move(answer.state_json),
                     room_version_from_store(store, room_id),
                     stored_json,
-                    std::move(knock_room_state)};
+                    std::move(knock_room_state),
+                    answer_plan.members_omitted,
+                    std::move(answer_plan.servers_in_room)};
         };
 
         runtime.federation.invite_handler =
@@ -3212,6 +3141,7 @@ namespace
             dispatch_config.origin = runtime.config.server().server_name;
             dispatch_config.max_queue_depth = runtime.federation.config.outbound_queue_capacity;
             dispatch_config.max_retries = runtime.federation.config.outbound_max_retries;
+            dispatch_config.delivery_threads = runtime.federation.config.outbound_delivery_threads;
             dispatch_config.key_id = key->key_id;
             // Move the signing key into the worker's own mlocked, zeroised
             // SecretBuffer rather than an unpinned std::string. The runtime
@@ -3219,7 +3149,8 @@ namespace
             dispatch_config.secret_key = core::SecretBuffer{runtime.database.signing_secret_key.bytes()};
             auto* discovery_ptr = discovery;
             auto* cached_ptr = cached;
-            auto const discovery_timeout = timeout > 0U ? timeout : 30U;
+            auto const discovery_timeout =
+                std::min(timeout > 0U ? timeout : 30U, federation::dispatch_discovery_timeout_seconds);
             auto resolver = [discovery_ptr, cached_ptr, discovery_timeout](
                                 std::string_view server_name) -> std::optional<federation::ServerDiscoveryResult> {
                 // Prefer the TTL cache; fall back to the raw network for tests.
@@ -3383,30 +3314,14 @@ namespace
 
     // Returns the IDs of auth_events the store cannot resolve at all, and the
     // IDs of prev_events that are either absent or have no recorded state group.
+    // database::find_missing_event_references is the one definition: retained PDUs are
+    // indexed by the same IDs (ADR-0326).
     [[nodiscard]] auto collect_missing_pdu_references(database::PersistentStore const& store,
                                                       federation::InboundPduEnvelope const& envelope)
         -> std::pair<std::vector<std::string>, std::vector<std::string>>
     {
-        auto missing_auth = std::vector<std::string>{};
-        for (auto const& id : envelope.auth_event_ids)
-        {
-            auto const it = store.events.find(id);
-            if (it == store.events.end())
-            {
-                missing_auth.push_back(id);
-            }
-        }
-
-        auto missing_prev = std::vector<std::string>{};
-        for (auto const& id : envelope.prev_event_ids)
-        {
-            auto const it = store.events.find(id);
-            if (it == store.events.end() || !event_has_state_group(store, id))
-            {
-                missing_prev.push_back(id);
-            }
-        }
-        return {std::move(missing_auth), std::move(missing_prev)};
+        auto missing = database::find_missing_event_references(store, envelope.auth_event_ids, envelope.prev_event_ids);
+        return {std::move(missing.auth), std::move(missing.prev)};
     }
 
     [[nodiscard]] auto signing_material_for_backfill(HomeserverRuntime& runtime)
@@ -3470,9 +3385,11 @@ namespace
         {
             return std::nullopt;
         }
-        auto const [ok, body] = perform_sync_outbound_call(
-            runtime, room_id, tx, key_id, std::move(secret_key), "federation.backfill.get_missing_events_failed",
-            timeout, static_cast<std::size_t>(runtime.federation.config.backfill_response_max_bytes));
+        // Signature-verified: each PDU is verified one by one before it is stored.
+        auto const [ok, body] =
+            perform_sync_outbound_call(runtime, OutboundAnswerTrust::signature_verified, room_id, tx, key_id,
+                                       std::move(secret_key), "federation.backfill.get_missing_events_failed", timeout,
+                                       static_cast<std::size_t>(runtime.federation.config.backfill_response_max_bytes));
         if (!ok)
         {
             return std::nullopt;
@@ -3640,9 +3557,11 @@ namespace
         {
             return std::nullopt;
         }
-        auto const [ok, body] = perform_sync_outbound_call(
-            runtime, room_id, tx, key_id, std::move(secret_key), "federation.backfill.event_fetch_failed", timeout,
-            static_cast<std::size_t>(runtime.federation.config.backfill_response_max_bytes));
+        // Signature-verified: the PDU is verified before it is stored.
+        auto const [ok, body] =
+            perform_sync_outbound_call(runtime, OutboundAnswerTrust::signature_verified, room_id, tx, key_id,
+                                       std::move(secret_key), "federation.backfill.event_fetch_failed", timeout,
+                                       static_cast<std::size_t>(runtime.federation.config.backfill_response_max_bytes));
         if (!ok)
         {
             return std::nullopt;
@@ -3680,9 +3599,11 @@ namespace
         {
             return std::nullopt;
         }
+        // Signature-verified: the PDU is verified before it is stored.
         auto const [ok, body] = perform_sync_outbound_call(
-            runtime, room_id, tx, key_id, std::move(secret_key), "federation.backfill.snapshot_event_fetch_failed",
-            timeout, static_cast<std::size_t>(runtime.federation.config.backfill_response_max_bytes));
+            runtime, OutboundAnswerTrust::signature_verified, room_id, tx, key_id, std::move(secret_key),
+            "federation.backfill.snapshot_event_fetch_failed", timeout,
+            static_cast<std::size_t>(runtime.federation.config.backfill_response_max_bytes));
         if (!ok)
         {
             return std::nullopt;
@@ -3750,9 +3671,12 @@ namespace
         {
             return std::nullopt;
         }
-        auto const [ok, body] = perform_sync_outbound_call(
-            runtime, room_id, tx, key_id, std::move(secret_key), "federation.backfill.state_ids_failed", timeout,
-            static_cast<std::size_t>(runtime.federation.config.backfill_response_max_bytes));
+        // Unverified: the event IDs name the state a later event is judged against, and nothing signs
+        // the choice of which IDs; the PDUs they lead to are verified, the list is not.
+        auto const [ok, body] =
+            perform_sync_outbound_call(runtime, OutboundAnswerTrust::unverified, room_id, tx, key_id,
+                                       std::move(secret_key), "federation.backfill.state_ids_failed", timeout,
+                                       static_cast<std::size_t>(runtime.federation.config.backfill_response_max_bytes));
         if (!ok)
         {
             return std::nullopt;
@@ -3810,9 +3734,11 @@ namespace
         {
             return std::nullopt;
         }
-        auto const [ok, body] = perform_sync_outbound_call(
-            runtime, room_id, tx, key_id, std::move(secret_key), "federation.backfill.event_auth_failed", timeout,
-            static_cast<std::size_t>(runtime.federation.config.backfill_response_max_bytes));
+        // Signature-verified: every PDU of the chain is verified before it is stored.
+        auto const [ok, body] =
+            perform_sync_outbound_call(runtime, OutboundAnswerTrust::signature_verified, room_id, tx, key_id,
+                                       std::move(secret_key), "federation.backfill.event_auth_failed", timeout,
+                                       static_cast<std::size_t>(runtime.federation.config.backfill_response_max_bytes));
         if (!ok)
         {
             return std::nullopt;
@@ -4024,7 +3950,7 @@ namespace
             runtime.database.persistent_store,
             state_entries_from_named_events(runtime.database.persistent_store, envelope.auth_event_ids),
             envelope.sender, envelope.state_key.value_or(std::string{}), envelope.event_type, third_party_invite_token,
-            join_authorising_user(effective_pdu));
+            events::join_authorising_user(effective_pdu));
         if (policy.create_event_is_room_id && std::holds_alternative<std::nullptr_t>(auth_events_map.create.storage()))
         {
             auth_events_map.create = create_event_json_for_room(runtime.database.persistent_store, room_id);
@@ -4076,10 +4002,10 @@ namespace
         // that can run. An event already rejected there needs no second verdict.
         if (state_before_known && outcome == BackfillOutcome::accepted)
         {
-            auto state_before_map =
-                build_auth_event_map_from_entries(runtime.database.persistent_store, state_before, envelope.sender,
-                                                  envelope.state_key.value_or(std::string{}), envelope.event_type,
-                                                  third_party_invite_token, join_authorising_user(effective_pdu));
+            auto state_before_map = build_auth_event_map_from_entries(
+                runtime.database.persistent_store, state_before, envelope.sender,
+                envelope.state_key.value_or(std::string{}), envelope.event_type, third_party_invite_token,
+                events::join_authorising_user(effective_pdu));
             fill_create_from_room_state(state_before_map, runtime.database.persistent_store, room_id);
             auto const state_before_decision =
                 events::authorize_event_against_auth_events(effective_pdu, policy, state_before_map);
@@ -4087,6 +4013,28 @@ namespace
             {
                 outcome = BackfillOutcome::rejected;
                 outcome_reason = "event auth denied against state before the event: " + state_before_decision.reason;
+            }
+        }
+
+        // Spec "Soft failure" (F-16, ADR-0371): an event fetched to fill a gap is newly received like any other, so it
+        // is also checked against the current state. Read paths withhold by status, and an event with a state group
+        // would otherwise reach clients however it evaded a ban. It keeps its state group and takes part in state
+        // resolution; a backfilled event never becomes a forward extremity. With no state-before there is no group
+        // either, and nothing shows such an event to a client.
+        auto soft_failed = false;
+        if (state_before_known && outcome == BackfillOutcome::accepted)
+        {
+            auto current_state_map = build_pdu_auth_event_map(
+                runtime.database.persistent_store, room_id, envelope.sender, envelope.state_key.value_or(std::string{}),
+                envelope.event_type, third_party_invite_token, events::join_authorising_user(effective_pdu));
+            fill_create_from_room_state(current_state_map, runtime.database.persistent_store, room_id);
+            auto const current_state_decision =
+                events::authorize_event_against_auth_events(effective_pdu, policy, current_state_map);
+            if (!current_state_decision.allowed)
+            {
+                soft_failed = true;
+                LOG_INFO("Fetched event soft failed against current state; event_id=" + envelope.event_id +
+                         " room_id=" + std::string{room_id} + " reason=" + current_state_decision.reason);
             }
         }
 
@@ -4163,6 +4111,15 @@ namespace
                 return false;
             }
             record_state_group(*state_after);
+            // A state group makes an outlier visible to read paths, so the outcome of the check above is recorded
+            // now. Any other status was decided when the event was received.
+            if (soft_failed && existing->status == "outlier" &&
+                !database::set_event_status(runtime.database.persistent_store, envelope.event_id, "soft_failed"))
+            {
+                LOG_WARNING("Could not mark a fetched event soft failed; event_id=" + envelope.event_id +
+                            " room_id=" + std::string{room_id});
+                return false;
+            }
             return true;
         }
 
@@ -4185,7 +4142,7 @@ namespace
         event.prev_event_ids = envelope.prev_event_ids;
         event.auth_event_ids = envelope.auth_event_ids;
         event.signatures = envelope.signatures;
-        event.status = outcome == BackfillOutcome::rejected ? "rejected" : "outlier";
+        event.status = outcome == BackfillOutcome::rejected ? "rejected" : soft_failed ? "soft_failed" : "outlier";
 
         if (outcome == BackfillOutcome::rejected)
         {
@@ -5019,16 +4976,25 @@ namespace
     // ordering and no sync stream ID. This check is the cheap path only: a concurrent
     // ingest of the same event can store it after this look, so it is made again below,
     // under the room stripe, where it is decisive.
+    auto stored_version = std::optional<std::string>{};
     {
         auto const guard = std::unique_lock<RuntimeMutex>{runtime.mutex};
         if (auto const stored = answer_for_stored_pdu(runtime, envelope); stored.has_value())
         {
             return *stored;
         }
+        stored_version = stored_room_version(runtime.database.persistent_store, room_id);
     }
 
-    auto const* room_policy =
-        rooms::find_room_version_policy(envelope.room_version.empty() ? "12" : envelope.room_version);
+    // F-44, ADR-0370: a room's version is the one its stored create event declares, never the envelope's. The
+    // envelope's event ID and signatures were checked under the envelope's version, which is a guess while no create
+    // is stored, so one that disagrees proves nothing about the event under the room's real rules.
+    if (stored_version.has_value() && !envelope.room_version.empty() && envelope.room_version != *stored_version)
+    {
+        return {federation::PduIngestionStatus::rejected_invalid, "PDU was verified under another room version"};
+    }
+    auto const* room_policy = rooms::find_room_version_policy(
+        stored_version.value_or(envelope.room_version.empty() ? std::string{"12"} : envelope.room_version));
     if (room_policy == nullptr)
     {
         return {federation::PduIngestionStatus::rejected_invalid, "unknown room version"};
@@ -5106,15 +5072,14 @@ namespace
             auto const max_pdus = static_cast<std::size_t>(runtime.federation.config.pending_join_max_pdus);
             auto const max_bytes = runtime.federation.config.pending_join_max_bytes;
             if (queue.pdus.size() >= max_pdus || queue.json_bytes > max_bytes ||
-                stored_json.size() > max_bytes - queue.json_bytes)
+                envelope.json.size() > max_bytes - queue.json_bytes)
             {
                 return {federation::PduIngestionStatus::main_overloaded, "pending join PDU capacity exhausted"};
             }
-            auto deferred = envelope;
-            deferred.json = std::move(stored_json);
-            auto const bytes = deferred.json.size();
-            queue.pdus.push_back(std::move(deferred));
-            queue.json_bytes += bytes;
+            // As received, never `stored_json`: any redaction so far followed a guess at the room version, and the
+            // drain judges the PDU afresh under the real one (ADR-0370).
+            queue.pdus.push_back(envelope);
+            queue.json_bytes += envelope.json.size();
             return {federation::PduIngestionStatus::deferred, "PDU deferred until outbound join commits"};
         }
         sync_stream_id = database::allocate_sync_stream_id(runtime.database.persistent_store);
@@ -5259,7 +5224,7 @@ namespace
             runtime.database.persistent_store,
             state_entries_from_named_events(runtime.database.persistent_store, envelope.auth_event_ids),
             envelope.sender, envelope.state_key.value_or(std::string{}), envelope.event_type, third_party_invite_token,
-            join_authorising_user(effective_pdu));
+            events::join_authorising_user(effective_pdu));
         // v12 (MSC4291): the create event is implicit in the room ID and
         // MUST NOT be listed in auth_events (validate_auth_events_selection
         // rejects a PDU that names it), so it can never come from the named
@@ -5305,7 +5270,7 @@ namespace
         auto state_before_map =
             build_auth_event_map_from_entries(runtime.database.persistent_store, state_before.state, envelope.sender,
                                               envelope.state_key.value_or(std::string{}), envelope.event_type,
-                                              third_party_invite_token, join_authorising_user(effective_pdu));
+                                              third_party_invite_token, events::join_authorising_user(effective_pdu));
         fill_create_from_room_state(state_before_map, runtime.database.persistent_store, room_id);
         auto const state_before_decision =
             events::authorize_event_against_auth_events(effective_pdu, *room_policy, state_before_map);
@@ -5322,7 +5287,7 @@ namespace
     {
         auto current_state_map = build_pdu_auth_event_map(
             runtime.database.persistent_store, room_id, envelope.sender, envelope.state_key.value_or(std::string{}),
-            envelope.event_type, third_party_invite_token, join_authorising_user(effective_pdu));
+            envelope.event_type, third_party_invite_token, events::join_authorising_user(effective_pdu));
         fill_create_from_room_state(current_state_map, runtime.database.persistent_store, room_id);
         auto const current_state_decision =
             events::authorize_event_against_auth_events(effective_pdu, *room_policy, current_state_map);
@@ -5332,6 +5297,17 @@ namespace
             outcome_reason = "event auth denied against current state (soft failure): " + current_state_decision.reason;
         }
     }
+
+    // F-49, ADR-0374: an accepted event that adds no state and would take the room past the most forward
+    // extremities that can be resolved is stored, delivered and placed by its own prev_events as
+    // usual, but it is not made a tip. A state event is always a tip: it is what a ban or a demotion
+    // looks like, and it must reach resolution whatever the room's message forks.
+    auto const becomes_forward_extremity =
+        outcome == ReceiptOutcome::accepted &&
+        (envelope.state_key.has_value() ||
+         forward_extremities_stay_bounded(
+             runtime.database.persistent_store, room_id, envelope.prev_event_ids,
+             state_resolution_limits(runtime.config.security().federation.state_resolution)));
 
     // The naive immediate current_state write (see recompute_current_state's
     // doc comment on why this is safe: it is always reconciled against the
@@ -5438,19 +5414,26 @@ namespace
             outcome == ReceiptOutcome::rejected
                 ? state_before.state
                 : compute_state_after(state_before.state, envelope.event_id, envelope.event_type, envelope.state_key);
-        auto const state_group =
-            record_event_state(runtime.database.persistent_store, room_id, envelope.event_id, envelope.prev_event_ids,
-                               state_after, outcome == ReceiptOutcome::accepted);
+        auto const state_group = record_event_state(runtime.database.persistent_store, room_id, envelope.event_id,
+                                                    envelope.prev_event_ids, state_after, becomes_forward_extremity);
         if (!state_group.has_value())
         {
             LOG_WARNING("State-group bookkeeping failed after PDU was processed; event_id=" + envelope.event_id +
                         " room_id=" + room_id);
         }
-        else if (!recompute_current_state(
+        else if (auto const recomputed = recompute_current_state(
                      runtime.database.persistent_store, room_id, *room_policy,
-                     state_resolution_limits(runtime.config.security().federation.state_resolution)))
+                     state_resolution_limits(runtime.config.security().federation.state_resolution));
+                 recomputed.status == CurrentStateRecomputeStatus::write_failed)
         {
             LOG_WARNING("Current-state recomputation failed after PDU was processed; event_id=" + envelope.event_id +
+                        " room_id=" + room_id);
+        }
+        else if (recomputed.status == CurrentStateRecomputeStatus::refused)
+        {
+            // F-49: recompute_current_state logged the reason; current state is not the resolution of
+            // the room's forward extremities until one can be resolved.
+            LOG_WARNING("Current state left unresolved after PDU was processed; event_id=" + envelope.event_id +
                         " room_id=" + room_id);
         }
     }
@@ -6139,8 +6122,6 @@ auto wire_federation_callbacks(HomeserverRuntime& runtime) -> void
         return federation_method_not_allowed_response(*allow);
     }
     auto signed_request_opt = std::optional<federation::SignedFederationRequest>{};
-    auto held_for_review = false;
-    auto blocked_by_local_policy = false;
 
     {
         auto guard = std::unique_lock<RuntimeMutex>{runtime.mutex};
@@ -6228,28 +6209,26 @@ auto wire_federation_callbacks(HomeserverRuntime& runtime) -> void
             return response(502U, matrix_error("M_UNKNOWN", "malformed federation authorization"));
         }
 
-        auto const local_rule = find_policy_rule(runtime, "federation", signed_request_opt->origin);
-        held_for_review = local_rule.has_value() && local_rule->action == "quarantine";
-        blocked_by_local_policy =
-            local_rule.has_value() && local_rule->action != "allow" && local_rule->action != "quarantine";
     }
 
-    // #415: the policy-server hook (when trust_safety.enabled and a
-    // policy_server_url is configured) performs a synchronous outbound HTTP
-    // call via resolve_policy_server_hook() -> OutboundClient::perform(),
-    // which can block for up to policy_server_timeout. It MUST run outside
-    // runtime.mutex — that mutex guards runtime.started and most
-    // client-server dispatch paths that re-enter the runtime, so holding it
-    // across a network call to a slow or unreachable policy server would
-    // freeze the entire process, not just federation handling.
-    auto const decision = trust_safety::evaluate_federation_policy(
-        {signed_request_opt->origin, held_for_review, blocked_by_local_policy,
-         resolve_policy_server_hook(runtime, trust_safety::PolicySurface::federation, signed_request_opt->origin)});
-    if (!decision.allowed)
+    // F-21 (ADR-0358): a federation worker is not asked to judge a request: main applied the admin's policy
+    // rule and asked the policy server before forwarding it, and a worker's store holds no rules (PostgreSQL)
+    // or a start-up snapshot (SQLite). Main, or any process that answers a request itself, judges it here.
+    //
+    // #415: the policy-server hook (when trust_safety.enabled and a policy_server_url is configured)
+    // performs a synchronous outbound HTTP call, which can block for up to policy_server_timeout. It runs
+    // outside runtime.mutex: that mutex guards runtime.started and most client-server dispatch paths that
+    // re-enter the runtime, so holding it across a network call to a slow or unreachable policy server
+    // would freeze the entire process, not just federation handling.
+    if (!runtime.federation_policy_decided_upstream)
     {
-        auto const body =
-            decision.reason.public_summary.empty() ? decision.reason.code : decision.reason.public_summary;
-        return response(403U, matrix_error("M_FORBIDDEN", body));
+        auto const decision = evaluate_inbound_federation_policy(runtime, signed_request_opt->origin, true);
+        if (!decision.allowed)
+        {
+            auto const body =
+                decision.reason.public_summary.empty() ? decision.reason.code : decision.reason.public_summary;
+            return response(403U, matrix_error("M_FORBIDDEN", body));
+        }
     }
 
     // The federation core protects its own bookkeeping, and production

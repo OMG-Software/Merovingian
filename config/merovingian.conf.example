@@ -427,6 +427,10 @@ security.media.max_upload_size=50MiB
 security.media.max_total_size=250GiB
 security.media.max_size_per_user=10GiB
 security.media.max_records=1000000
+# One user's share of max_records (their live local records, deduplicated
+# uploads included), so one account cannot fill the server-wide cap. 0 means
+# no per-user limit.
+security.media.max_records_per_user=20000
 # Remote media admitted within the TTL is served from the stored copy without
 # contacting the origin again, also after a restart. When max_entries is
 # reached the least recently used remote file is deleted. max_entries=0
@@ -693,6 +697,11 @@ server.client_api.max_threads_page_size=500
 server.client_api.max_notifications_retained_per_user=1000
 server.client_api.max_to_device_messages_per_user_device=10000
 server.client_api.to_device_message_ttl_seconds=604800
+# Bytes (ADR-0335). A to-device message whose content is over the first is refused with 413 M_TOO_LARGE (an inbound
+# federation message is dropped alone). A device whose queue would pass the second loses its oldest rows first.
+# 1..16777216 and 1..1073741824; the first must not exceed the second.
+server.client_api.max_to_device_message_bytes=65536
+server.client_api.max_to_device_bytes_per_user_device=16777216
 server.client_api.max_one_time_keys_per_device=1000
 server.client_api.max_key_signatures_per_user=10000
 server.client_api.max_filters_per_user=1000
@@ -751,6 +760,7 @@ security.federation.pending_join_max_rooms=32
 security.federation.pending_join_max_pdus=32
 security.federation.outbound_queue_capacity=4096
 security.federation.outbound_max_retries=32
+security.federation.outbound_delivery_threads=4
 security.federation.pending_join_max_size=512KiB
 security.federation.bad_signature_per_ip_rate=30/60s
 

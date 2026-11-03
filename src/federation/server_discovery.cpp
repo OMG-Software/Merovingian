@@ -302,6 +302,53 @@ namespace
         return length;
     }
 
+#if defined(__NetBSD__)
+    // The resolver state of one lookup. NetBSD's res_query runs on one process-wide state with no lock, so
+    // two threads share a socket, and one closing it while the other is blocked reading it hangs both
+    // (ADR-0355). A lock instead would let one slow name server hold every other lookup.
+    class ResolverState final
+    {
+    public:
+        ResolverState()
+            : ready_{::res_ninit(&state_) == 0}
+        {
+        }
+
+        ~ResolverState()
+        {
+            if (ready_)
+            {
+                ::res_ndestroy(&state_);
+            }
+        }
+
+        ResolverState(ResolverState const&) = delete;
+        auto operator=(ResolverState const&) -> ResolverState& = delete;
+        ResolverState(ResolverState&&) = delete;
+        auto operator=(ResolverState&&) -> ResolverState& = delete;
+
+        [[nodiscard]] auto query(char const* name, int dns_class, int dns_type, unsigned char* answer, int size) -> int
+        {
+            return ready_ ? ::res_nquery(&state_, name, dns_class, dns_type, answer, size) : -1;
+        }
+
+    private:
+        struct __res_state state_{};
+        bool ready_;
+    };
+#endif
+
+    // Safe from several threads: res_query keeps per-thread state everywhere but NetBSD (ADR-0355).
+    [[nodiscard]] auto query_srv_records(std::string const& service, std::array<unsigned char, 4096U>& answer) -> int
+    {
+#if defined(__NetBSD__)
+        auto state = ResolverState{};
+        return state.query(service.c_str(), dns_class_in, dns_type_srv, answer.data(), static_cast<int>(answer.size()));
+#else
+        return ::res_query(service.c_str(), dns_class_in, dns_type_srv, answer.data(), static_cast<int>(answer.size()));
+#endif
+    }
+
     class SystemServerDiscoveryNetwork final : public ServerDiscoveryNetwork
     {
     public:
@@ -346,9 +393,7 @@ namespace
         [[nodiscard]] auto lookup_srv(std::string_view service_name) -> std::vector<SrvRecord> override
         {
             auto answer = std::array<unsigned char, 4096U>{};
-            auto const service = std::string{service_name};
-            auto const length = ::res_query(service.c_str(), dns_class_in, dns_type_srv, answer.data(),
-                                            static_cast<int>(answer.size()));
+            auto const length = query_srv_records(std::string{service_name}, answer);
             if (length <= 0)
             {
                 return {};

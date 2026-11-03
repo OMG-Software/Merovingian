@@ -1,15 +1,19 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include "../support/joining_threads.hpp"
+#include "../support/tls_mock_server.hpp"
 #include "federation_signing_test_support.hpp"
 #include "merovingian/database/persistent_store.hpp"
 #include "merovingian/federation/dispatch_worker.hpp"
 #include "merovingian/federation/outbound_transaction.hpp"
 #include "merovingian/federation/server_discovery.hpp"
+#include "merovingian/homeserver/tls.hpp"
 #include "merovingian/http/outbound_client.hpp"
+#include "merovingian/net/tcp_acceptor.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cstdint>
@@ -161,12 +165,14 @@ SCENARIO("Dispatch worker re-enqueues transactions when the destination circuit 
             auto second = sample_transaction("remote.example.org");
             second.transaction_id = "txn-2";
             REQUIRE(worker.enqueue(std::move(second)));
-            REQUIRE(worker.run_once());
+            // Spec (Server-Server API, PUT /send/{txnId}): "must wait and retry for a 200 OK response before sending a
+            // transaction with a different txnId". The later one waits behind the one in backoff.
+            REQUIRE_FALSE(worker.run_once());
 
-            THEN("the circuit-open transaction stays pending for retry instead of being discarded")
+            THEN("both stay pending for retry instead of being discarded")
             {
                 auto const summary = worker.summary();
-                REQUIRE(summary.failed >= 4U);
+                REQUIRE(summary.failed == 3U);
                 REQUIRE(summary.pending == 2U);
                 REQUIRE(summary.dropped == 0U);
             }
@@ -766,6 +772,353 @@ SCENARIO("The worker waits rather than spins while every queued transaction is i
                 REQUIRE(attempted);
                 CAPTURE(idle_reads);
                 REQUIRE(idle_reads < 1000U);
+            }
+        }
+    }
+}
+
+namespace
+{
+
+constexpr auto stalled_peer = std::string_view{"stalled.example.org"};
+constexpr auto healthy_peer = std::string_view{"healthy.example.org"};
+
+// A resolver that holds the stalled peer's discovery until released, as a peer holding a delivery thread would. Every
+// other peer answers at once. Both report no address, so that nothing here reaches the network.
+struct StallingPeers final
+{
+    std::counting_semaphore<64> stalled_entered{0};
+    std::counting_semaphore<64> released{0};
+    std::counting_semaphore<64> healthy_attempted{0};
+    std::atomic<std::size_t> stalled_attempts{0U};
+    std::atomic<std::size_t> stalled_now{0U};
+    std::atomic<std::size_t> stalled_most_at_once{0U};
+
+    [[nodiscard]] auto resolver() -> merovingian::federation::DispatchResolver
+    {
+        return [this](std::string_view server_name) -> std::optional<merovingian::federation::ServerDiscoveryResult> {
+            if (server_name != stalled_peer)
+            {
+                healthy_attempted.release();
+                return std::nullopt;
+            }
+            ++stalled_attempts;
+            auto const now = ++stalled_now;
+            auto most = stalled_most_at_once.load();
+            while (most < now && !stalled_most_at_once.compare_exchange_weak(most, now))
+            {
+            }
+            stalled_entered.release();
+            released.acquire();
+            --stalled_now;
+            return std::nullopt;
+        };
+    }
+};
+
+// Lets the stalled peer go however the scenario ends. Declared after the worker, so it runs before the worker's
+// destructor joins the threads the stall is holding.
+class StallRelease final
+{
+public:
+    explicit StallRelease(StallingPeers& peers) noexcept
+        : peers_{peers}
+    {
+    }
+    ~StallRelease()
+    {
+        peers_.released.release(32);
+    }
+
+    StallRelease(StallRelease const&) = delete;
+    auto operator=(StallRelease const&) -> StallRelease& = delete;
+    StallRelease(StallRelease&&) = delete;
+    auto operator=(StallRelease&&) -> StallRelease& = delete;
+
+private:
+    StallingPeers& peers_;
+};
+
+[[nodiscard]] auto transaction_named(std::string id, std::string_view destination)
+    -> merovingian::federation::OutboundTransaction
+{
+    auto transaction = sample_transaction(std::string{destination});
+    transaction.target = "/_matrix/federation/v1/send/" + id;
+    transaction.transaction_id = std::move(id);
+    return transaction;
+}
+
+[[nodiscard]] auto stored_retry_count(merovingian::database::PersistentStore const& store, std::string_view id)
+    -> std::uint32_t
+{
+    auto const row = std::ranges::find_if(store.federation_transactions, [id](auto const& candidate) {
+        return candidate.transaction_id == id;
+    });
+    // Fixture: a queued transaction has a durable row.
+    REQUIRE(row != store.federation_transactions.end());
+    return row->retry_count;
+}
+
+[[nodiscard]] auto stored_destination(merovingian::database::PersistentStore const& store, std::string_view server_name)
+    -> merovingian::database::PersistentFederationDestination
+{
+    auto const row = std::ranges::find_if(store.federation_destinations, [server_name](auto const& candidate) {
+        return candidate.server_name == server_name;
+    });
+    // Fixture: an attempted destination has a durable row.
+    REQUIRE(row != store.federation_destinations.end());
+    return *row;
+}
+
+} // namespace
+
+// Security audit run 2, F-20, extending ADR-0177: "One peer must not be able to take the delivery capacity every other
+// peer depends on." ADR-0177 bounded how much of the queue a peer holds, not how long it holds the worker.
+SCENARIO("A peer that stalls a delivery does not delay any other peer", "[f20][federation][dispatch-worker]")
+{
+    GIVEN("a worker delivering from more than one thread, with a peer that stalls")
+    {
+        auto client = merovingian::http::OutboundClient{};
+        auto peers = StallingPeers{};
+        auto config = worker_config();
+        config.delivery_threads = 2U;
+        auto worker = merovingian::federation::DispatchWorker{std::move(config), client, peers.resolver(), {}, {}};
+        auto const release = StallRelease{peers};
+
+        WHEN("the stalled peer's transaction is queued ahead of a healthy peer's")
+        {
+            REQUIRE(worker.enqueue(transaction_named("stalled-1", stalled_peer)));
+            REQUIRE(worker.enqueue(transaction_named("healthy-1", healthy_peer)));
+            worker.start();
+
+            THEN("the healthy peer is attempted while the stalled attempt is still in progress")
+            {
+                REQUIRE(peers.stalled_entered.try_acquire_for(std::chrono::seconds{30}));
+                REQUIRE(peers.healthy_attempted.try_acquire_for(std::chrono::seconds{10}));
+                REQUIRE(peers.stalled_now.load() == 1U);
+            }
+        }
+    }
+}
+
+// Spec: Matrix Server-Server API v1.19, PUT /_matrix/federation/v1/send/{txnId}
+// URL: ../../docs/matrix-v1.19-spec/server-server-api.md#put_matrixfederationv1sendtxnid
+//
+// "The sending server must wait and retry for a 200 OK response before sending a transaction with a different txnId to
+// the receiving server."
+SCENARIO("One destination has one transaction in flight, and its oldest goes first",
+         "[f20][federation][dispatch-worker][conformance]")
+{
+    GIVEN("a worker with threads to spare and two transactions for a peer that stalls")
+    {
+        auto client = merovingian::http::OutboundClient{};
+        auto peers = StallingPeers{};
+        auto config = worker_config();
+        config.delivery_threads = 4U;
+        auto worker = merovingian::federation::DispatchWorker{std::move(config), client, peers.resolver(), {}, {}};
+        auto release = std::optional<StallRelease>{std::in_place, peers};
+        REQUIRE(worker.enqueue(transaction_named("stalled-1", stalled_peer)));
+        REQUIRE(worker.enqueue(transaction_named("stalled-2", stalled_peer)));
+        REQUIRE(worker.enqueue(transaction_named("healthy-1", healthy_peer)));
+
+        WHEN("the worker runs")
+        {
+            worker.start();
+            REQUIRE(peers.stalled_entered.try_acquire_for(std::chrono::seconds{30}));
+            REQUIRE(peers.healthy_attempted.try_acquire_for(std::chrono::seconds{30}));
+
+            THEN("the second is not attempted while the first is in flight, though threads are free")
+            {
+                REQUIRE(peers.stalled_attempts.load() == 1U);
+                release.reset();
+                worker.request_shutdown();
+                worker.join();
+                REQUIRE(peers.stalled_most_at_once.load() == 1U);
+            }
+        }
+    }
+
+    GIVEN("a transaction that has failed and is waiting to retry")
+    {
+        auto opened = merovingian::database::open_persistent_store();
+        REQUIRE(opened.ok);
+        auto& store = opened.store;
+        auto client = merovingian::http::OutboundClient{};
+        auto discoveries = std::atomic<std::size_t>{0U};
+        auto resolver = merovingian::federation::DispatchResolver{
+            [&discoveries](std::string_view) -> std::optional<merovingian::federation::ServerDiscoveryResult> {
+                ++discoveries;
+                return std::nullopt;
+            }};
+        auto fake_now = std::atomic<std::uint64_t>{0U};
+        auto now_ms = merovingian::federation::DispatchClock{[&fake_now] {
+            return fake_now.load();
+        }};
+        auto config = worker_config();
+        config.max_retries = 8U;
+        auto worker = merovingian::federation::DispatchWorker{std::move(config), client, std::move(resolver),
+                                                              std::move(now_ms), {},     &store};
+        REQUIRE(worker.enqueue(transaction_named("first", healthy_peer)));
+        REQUIRE(worker.run_once());
+        auto const retry_due = stored_destination(store, healthy_peer).retry_after_ts;
+        REQUIRE(retry_due > 0U);
+
+        WHEN("a later transaction for the same peer is queued")
+        {
+            REQUIRE(worker.enqueue(transaction_named("second", healthy_peer)));
+
+            THEN("the later one waits behind it, and the next attempt retries the first")
+            {
+                fake_now.store(retry_due - 1U);
+                // Spec MUST: nothing with a different txnId goes out until the first is answered.
+                REQUIRE_FALSE(worker.run_once());
+                REQUIRE(discoveries.load() == 1U);
+                fake_now.store(retry_due);
+                REQUIRE(worker.run_once());
+                // Spec MUST: the retry is of the first transaction.
+                REQUIRE(stored_retry_count(store, "first") == 2U);
+                REQUIRE(stored_retry_count(store, "second") == 0U);
+            }
+        }
+    }
+}
+
+SCENARIO("A shutdown does not wait for everything that is due", "[f20][federation][dispatch-worker][shutdown]")
+{
+    GIVEN("a worker with no time left to drain, and work queued")
+    {
+        auto client = merovingian::http::OutboundClient{};
+        auto attempts = std::atomic<std::size_t>{0U};
+        auto resolver = merovingian::federation::DispatchResolver{
+            [&attempts](std::string_view) -> std::optional<merovingian::federation::ServerDiscoveryResult> {
+                ++attempts;
+                return std::nullopt;
+            }};
+        auto config = worker_config();
+        config.delivery_threads = 2U;
+        config.shutdown_drain_budget = std::chrono::milliseconds{0};
+        auto worker = merovingian::federation::DispatchWorker{std::move(config), client, std::move(resolver), {}, {}};
+        REQUIRE(worker.enqueue(transaction_named("one", "one.example.org")));
+        REQUIRE(worker.enqueue(transaction_named("two", "two.example.org")));
+
+        WHEN("the worker is asked to stop before it has started")
+        {
+            worker.request_shutdown();
+            worker.start();
+            worker.join();
+
+            THEN("every thread ends, and the work is kept for replay")
+            {
+                REQUIRE(attempts.load() == 0U);
+                REQUIRE(worker.summary().pending == 2U);
+            }
+        }
+    }
+}
+
+// F-20: a peer that answers just inside the deadline used to count as healthy, so it could hold a thread for a whole
+// attempt every time.
+SCENARIO("A slow success grows the destination's backoff", "[f20][federation][dispatch-worker]")
+{
+    GIVEN("a peer that answers 200, on a clock the test controls")
+    {
+        auto opened = merovingian::database::open_persistent_store();
+        REQUIRE(opened.ok);
+        auto& store = opened.store;
+        auto certificate = merovingian::tests::tls_mock::write_test_tls_certificate("localhost");
+        auto tls_context = merovingian::homeserver::make_tls_server_context(certificate.certificate_file,
+                                                                            certificate.private_key_file);
+        REQUIRE(tls_context.ok());
+        auto acceptor = merovingian::net::TcpAcceptor{};
+        REQUIRE(acceptor.bind("127.0.0.1", 0U).ok);
+        auto const port = acceptor.bound_port();
+        REQUIRE(port > 0U);
+        auto const answer = merovingian::tests::tls_mock::json_http_response("200 OK", R"({"pdus":{}})");
+        auto server_thread = std::thread{[&]() {
+            merovingian::tests::tls_mock::run_one_shot_tls_server(acceptor, *tls_context.context, answer);
+        }};
+        auto const join_server = merovingian::tests::tls_mock::ScopedThreadJoin{server_thread};
+        std::ignore = join_server;
+
+        auto client = merovingian::http::OutboundClient{};
+        auto fake_now = std::atomic<std::uint64_t>{1000U};
+        auto attempt_takes_ms = std::atomic<std::uint64_t>{0U};
+        auto discoveries = std::atomic<std::size_t>{0U};
+        auto resolver = merovingian::federation::DispatchResolver{
+            [&, port](std::string_view server_name) -> std::optional<merovingian::federation::ServerDiscoveryResult> {
+                ++discoveries;
+                fake_now.fetch_add(attempt_takes_ms.load());
+                auto discovery = merovingian::federation::ServerDiscoveryResult{};
+                discovery.server_name = std::string{server_name};
+                discovery.resolved_host = "localhost";
+                discovery.tls_server_name = "localhost";
+                discovery.resolved_port = port;
+                discovery.pinned_addresses = {"127.0.0.1"};
+                discovery.discovery_allowed = true;
+                return discovery;
+            }};
+        auto now_ms = merovingian::federation::DispatchClock{[&fake_now] {
+            return fake_now.load();
+        }};
+        auto config = worker_config();
+        config.trusted_ca_pem = certificate.certificate_pem;
+        auto const slow = config.slow_attempt_ms + 1U;
+        auto worker = merovingian::federation::DispatchWorker{std::move(config), client, std::move(resolver),
+                                                              std::move(now_ms), {},     &store};
+        REQUIRE(worker.enqueue(transaction_named("first", healthy_peer)));
+
+        WHEN("it answers within the limit")
+        {
+            REQUIRE(worker.run_once());
+
+            THEN("the destination stays healthy")
+            {
+                REQUIRE(worker.summary().delivered == 1U);
+                auto const destination = stored_destination(store, healthy_peer);
+                REQUIRE(destination.consecutive_failures == 0U);
+                REQUIRE(destination.retry_after_ts == 0U);
+            }
+        }
+
+        WHEN("it answers only after the limit")
+        {
+            attempt_takes_ms.store(slow);
+            REQUIRE(worker.run_once());
+
+            THEN("the transaction was delivered, and the destination backs off as if it had failed")
+            {
+                REQUIRE(worker.summary().delivered == 1U);
+                auto const destination = stored_destination(store, healthy_peer);
+                REQUIRE(destination.consecutive_failures == 1U);
+                REQUIRE(destination.retry_after_ts > fake_now.load());
+            }
+
+            AND_WHEN("another transaction for it is due during the backoff")
+            {
+                REQUIRE(worker.enqueue(transaction_named("second", healthy_peer)));
+                auto const discoveries_before = discoveries.load();
+                REQUIRE(worker.run_once());
+
+                THEN("it takes no thread, not even for discovery, and is kept")
+                {
+                    REQUIRE(discoveries.load() == discoveries_before);
+                    REQUIRE(worker.summary().delivered == 1U);
+                    REQUIRE(worker.summary().pending == 1U);
+                }
+            }
+        }
+
+        WHEN("it was already backing off and answers only after the limit again")
+        {
+            REQUIRE(merovingian::database::store_federation_destination(
+                store, {std::string{healthy_peer}, "backoff", 0U, 0U, 3U}));
+            std::ignore = worker.replay_pending();
+            attempt_takes_ms.store(slow);
+            REQUIRE(worker.run_once());
+
+            THEN("the backoff grows")
+            {
+                REQUIRE(stored_destination(store, healthy_peer).consecutive_failures == 4U);
             }
         }
     }

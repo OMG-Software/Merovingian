@@ -6,6 +6,7 @@
 #include "merovingian/events/state_resolution.hpp"
 #include "merovingian/rooms/room_version_policy.hpp"
 
+#include <cstdint>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -34,9 +35,10 @@ namespace merovingian::homeserver
 // Builds a store-backed events::EventLookupFn for the state-res v2
 // auth-chain walk (auth difference / v12 conflicted state subgraph):
 // resolves an event_id to a events::StateEventReference by parsing that
-// event's stored JSON. Indexes `store.events` by event_id once per call, so
-// callers that need many lookups (a single resolution) should build one
-// instance and reuse it rather than calling this per lookup.
+// event's stored JSON. Each call is one `EventTable::find` hash lookup
+// (ADR-0215, ADR-0325): building the function costs nothing, and a lookup costs
+// the event asked for, not the number of events the server stores. It reads
+// `store` on every call, so the store must outlive the function.
 //
 // This is the one lookup every state-group-aware code path uses; the
 // separate lookup that used to live in local_http_router.cpp's
@@ -128,6 +130,34 @@ struct StateBeforeResult final
                                       std::vector<database::PersistentStateGroupStateEntry> const& state_after,
                                       bool accepted = true) -> std::optional<std::string>;
 
+// How a recomputation of the room's current state ended (F-49, ADR-0375).
+enum class CurrentStateRecomputeStatus : std::uint8_t
+{
+    // Current state is the resolution of the room's forward extremities: it was written where it
+    // differed, or the room has no extremity to resolve.
+    resolved,
+    // The extremities could not be resolved (an extremity with no readable state, more extremities
+    // than `max_state_groups`, the state budget, a missing auth-chain event, or a resolution that
+    // fails closed). Current state was not touched, so it is NOT the resolution of the extremities:
+    // each accepted event has put only its own row in it since. Logged at warning level.
+    refused,
+    // A diffed entry could not be written.
+    write_failed,
+};
+
+struct CurrentStateRecompute final
+{
+    CurrentStateRecomputeStatus status{CurrentStateRecomputeStatus::resolved};
+    // Why the extremities could not be resolved; empty unless `status` is `refused`.
+    std::string reason{};
+
+    // True only when current state is the resolution of the extremities.
+    [[nodiscard]] explicit operator bool() const noexcept
+    {
+        return status == CurrentStateRecomputeStatus::resolved;
+    }
+};
+
 // Recomputes the room's current state as the state resolution over its
 // forward extremities' after-states (one extremity: that state directly, no
 // resolution needed), diffs it against the cached `current_state`, and
@@ -137,16 +167,30 @@ struct StateBeforeResult final
 // existing sync-detection path stay correct; current_state is never written
 // to directly elsewhere.
 //
-// Returns false only on a backend write failure while applying a diffed
-// entry. An empty extremity set, a missing state group on an extremity, or
-// an unresolvable fork all leave the cached current_state untouched (a
-// no-op, not an error) rather than risk corrupting it — every accepted
-// event recorded through record_event_state always has a state group, so
-// these are defensive fallbacks for degenerate inputs, not an expected
-// runtime path.
+// An empty extremity set has nothing to resolve and is `resolved`. Extremities held in one state
+// group are one state. A missing state group on an extremity, more distinct states than
+// `limits.max_state_groups`, the state budget or a resolution that fails closed is `refused`
+// (F-49, ADR-0375): current_state is left as it is and a warning names the room and the reason.
+// That is reachable from the network (a member's many profile-change forks, a large room's
+// state budget), so a caller must not read it as success: until the next recomputation resolves,
+// current state is the cache it was plus each accepted event's own row. `write_failed` is a
+// backend write failure.
 [[nodiscard]] auto recompute_current_state(database::PersistentStore& store, std::string_view room_id,
                                            rooms::RoomVersionPolicy const& policy,
-                                           events::StateResolutionLimits const& limits = {}) -> bool;
+                                           events::StateResolutionLimits const& limits = {}) -> CurrentStateRecompute;
+
+// Whether an accepted event that adds NO state (a message, a receipt-less event: no state_key) with
+// these prev_events may become one of `room_id`'s forward extremities without taking their
+// number past `limits.max_state_groups` (F-49, ADR-0374). An event that cites a current
+// extremity replaces it and never grows the set, so it is always allowed; one that cites only
+// older events adds a tip, and past the limit it is refused. The caller still stores, delivers
+// and places such an event by its own prev_events; it only does not make it a tip. A state event
+// is always a tip (a ban or a demotion must reach resolution), and a local event retires the tips
+// it cites, so neither asks. recompute_current_state resolves extremities that share a state
+// group as one state, so the tips this bounds cost resolution nothing.
+[[nodiscard]] auto forward_extremities_stay_bounded(database::PersistentStore const& store, std::string_view room_id,
+                                                    std::vector<std::string> const& prev_event_ids,
+                                                    events::StateResolutionLimits const& limits) -> bool;
 
 // ---- Local event-creation choke point (ADR-0064 phase B1, continued) ----
 //
@@ -194,9 +238,13 @@ struct NewEventBasis final
 // their states. When that resolution fails (an extremity with no recorded
 // state, a missing auth-chain event, the state-resolution budget), it logs a
 // warning and falls back to the newest extremity, by this server's stream
-// order, whose state can be read alone, retiring every other extremity
-// (ADR-0225). `ok` is false, with a warning logged, only when no extremity has
-// a readable state. Call it under runtime.mutex, before composing and signing
+// order, whose state can be read alone, as the one prev_event, retiring every
+// other extremity (ADR-0225). The state before a fallback event is the room's
+// cached current_state, NOT that extremity's own after-state (F-40, ADR-0373):
+// a retired tip may carry a ban or demotion the cited fork lacks, and current
+// state still holds it. A room with no current_state row (degenerate) uses the
+// extremity's state. `ok` is false, with a warning logged, only when no
+// extremity has a readable state. Call it under runtime.mutex, before composing and signing
 // the event, and hand the result to store_local_event under the same hold.
 [[nodiscard]] auto basis_for_new_event(database::PersistentStore const& store, std::string_view room_id,
                                        rooms::RoomVersionPolicy const& policy,
@@ -219,6 +267,11 @@ struct StoredWithBookkeeping final
     bool ok{false};
     std::string step{};
     std::string reason{};
+    // True when the event was stored but the room's forward extremities could not be resolved
+    // (F-49), so current state holds only the event's own row beyond what it already held. A
+    // warning was logged. `resolution_refusal` says why.
+    bool resolution_refused{false};
+    std::string resolution_refusal{};
 };
 
 // Stores an event this server places itself (a local event, or the join event
@@ -227,7 +280,9 @@ struct StoredWithBookkeeping final
 // after-state group, its mapping to that group, the forward-extremity change,
 // and whatever the resolution of the resulting extremities changes in current
 // state. Nothing is written unless all of it is, so a refusal leaves no event,
-// membership, group or tip behind. Call it under runtime.mutex.
+// membership, group or tip behind. When the extremities cannot be resolved the event is still
+// stored, current state is left to its own row, and the result says so (`resolution_refused`).
+// Call it under runtime.mutex.
 [[nodiscard]] auto store_event_with_bookkeeping(
     database::PersistentStore& store, rooms::RoomVersionPolicy const& policy, database::PersistentEvent event,
     std::optional<database::PersistentStateEvent> state, std::optional<database::MembershipProjection> membership,

@@ -461,6 +461,23 @@ auto constexpr resident_key_seed = "join-room-flow-resident-seed";
 // signed event as a parsed canonicaljson::Value ready to drop into a state or
 // auth_chain array. sign_test_event below does the same with the keypair
 // derived from a seed.
+// `event` with its real hashes.sha256, replacing any it holds.
+[[nodiscard]] auto with_content_hash(merovingian::canonicaljson::Value const& event)
+    -> merovingian::canonicaljson::Value
+{
+    auto const hash = merovingian::events::make_content_hash(event);
+    REQUIRE(hash.error.empty());
+    auto object = std::get<merovingian::canonicaljson::Object>(event.storage());
+    std::erase_if(object, [](merovingian::canonicaljson::ObjectMember const& member) {
+        return member.key == "hashes";
+    });
+    auto hashes = merovingian::canonicaljson::Object{};
+    hashes.push_back(merovingian::canonicaljson::make_member("sha256", merovingian::canonicaljson::Value{hash.sha256}));
+    object.push_back(
+        merovingian::canonicaljson::make_member("hashes", merovingian::canonicaljson::Value{std::move(hashes)}));
+    return merovingian::canonicaljson::Value{std::move(object)};
+}
+
 [[nodiscard]] auto sign_test_event_with_secret(std::string const& raw_event_json,
                                                merovingian::rooms::RoomVersionPolicy const& policy,
                                                std::string const& claimed_server, std::string const& claimed_key_id,
@@ -470,7 +487,9 @@ auto constexpr resident_key_seed = "join-room-flow-resident-seed";
     REQUIRE(secret_key.size() == crypto_sign_SECRETKEYBYTES);
     auto const parsed = merovingian::canonicaljson::parse_lossless(raw_event_json);
     REQUIRE(parsed.error == merovingian::canonicaljson::ParseError::none);
-    auto const payload = merovingian::events::make_event_signing_payload(parsed.value, policy);
+    // An honest server's event carries its real content hash (F-45): the joining server redacts any other.
+    auto const hashed = with_content_hash(parsed.value);
+    auto const payload = merovingian::events::make_event_signing_payload(hashed, policy);
     REQUIRE(payload.error == merovingian::canonicaljson::CanonicalJsonError::none);
     auto sig = std::array<unsigned char, crypto_sign_BYTES>{};
     crypto_sign_detached(sig.data(), nullptr, reinterpret_cast<unsigned char const*>(payload.output.data()),
@@ -478,7 +497,7 @@ auto constexpr resident_key_seed = "join-room-flow-resident-seed";
     auto const sig_b64 =
         merovingian::events::matrix_base64_from_bytes({reinterpret_cast<char const*>(sig.data()), crypto_sign_BYTES});
     auto const attached =
-        merovingian::events::attach_event_signature(parsed.value, {claimed_server, claimed_key_id}, sig_b64);
+        merovingian::events::attach_event_signature(hashed, {claimed_server, claimed_key_id}, sig_b64);
     REQUIRE(attached.error == merovingian::canonicaljson::CanonicalJsonError::none);
     auto const reparsed = merovingian::canonicaljson::parse_lossless(attached.output);
     REQUIRE(reparsed.error == merovingian::canonicaljson::ParseError::none);
@@ -516,6 +535,70 @@ auto constexpr resident_key_seed = "join-room-flow-resident-seed";
     REQUIRE(eid.error.empty());
     REQUIRE_FALSE(eid.event_id.empty());
     return eid.event_id;
+}
+
+// The start of an honest resident's public room: every event names the events that authorise it, so a joining
+// server's receipt checks pass (F-45, ADR-0369).
+struct ResidentRoomChain final
+{
+    merovingian::canonicaljson::Value create{};
+    merovingian::canonicaljson::Value creator_join{};
+    merovingian::canonicaljson::Value power_levels{};
+    merovingian::canonicaljson::Value join_rules{};
+    std::string create_id{};
+    std::string creator_join_id{};
+    std::string power_levels_id{};
+    std::string join_rules_id{};
+
+    [[nodiscard]] auto events() const -> merovingian::canonicaljson::Array
+    {
+        return {create, creator_join, power_levels, join_rules};
+    }
+    // What a member event for a user holding no membership names.
+    [[nodiscard]] auto member_auth() const -> std::string
+    {
+        return "\"" + create_id + "\",\"" + power_levels_id + "\",\"" + join_rules_id + "\"";
+    }
+};
+
+[[nodiscard]] auto resident_room_chain(std::string const& room_id, std::string const& creator,
+                                       merovingian::rooms::RoomVersionPolicy const& policy) -> ResidentRoomChain
+{
+    auto const event = [&](std::string const& type, std::string const& state_key, std::string const& content, int depth,
+                           std::string const& prev, std::string const& auth) {
+        return sign_test_event(std::string{R"({"type":")"} + type + R"(","state_key":")" + state_key +
+                                   R"(","sender":")" + creator + R"(","room_id":")" + room_id + R"(","depth":)" +
+                                   std::to_string(depth) + R"(,"origin_server_ts":900,"prev_events":[)" + prev +
+                                   R"(],"auth_events":[)" + auth + R"(],"content":)" + content + "}",
+                               policy, resident_server, resident_key_id, resident_key_seed);
+    };
+    auto const quoted = [](std::string const& id) {
+        return "\"" + id + "\"";
+    };
+    auto chain = ResidentRoomChain{};
+    chain.create = event("m.room.create", "", R"({"room_version":"10","creator":")" + creator + "\"}", 1, "", "");
+    chain.create_id = reference_event_id(chain.create, policy);
+    chain.creator_join = event("m.room.member", creator, R"({"membership":"join"})", 2, quoted(chain.create_id),
+                               quoted(chain.create_id));
+    chain.creator_join_id = reference_event_id(chain.creator_join, policy);
+    auto const creator_auth = quoted(chain.create_id) + "," + quoted(chain.creator_join_id);
+    chain.power_levels = event("m.room.power_levels", "", R"({"users":{")" + creator + R"(":100}})", 3,
+                               quoted(chain.creator_join_id), creator_auth);
+    chain.power_levels_id = reference_event_id(chain.power_levels, policy);
+    chain.join_rules = event("m.room.join_rules", "", R"({"join_rule":"public"})", 4, quoted(chain.power_levels_id),
+                             creator_auth + "," + quoted(chain.power_levels_id));
+    chain.join_rules_id = reference_event_id(chain.join_rules, policy);
+    return chain;
+}
+
+// `raw_event_json`, built with an empty auth_events, naming `auth` instead.
+[[nodiscard]] auto naming_auth_events(std::string raw_event_json, std::string const& auth) -> std::string
+{
+    auto const empty = std::string{R"("auth_events":[])"};
+    auto const position = raw_event_json.find(empty);
+    REQUIRE(position != std::string::npos);
+    raw_event_json.replace(position, empty.size(), R"("auth_events":[)" + auth + "]");
+    return raw_event_json;
 }
 
 [[nodiscard]] auto canonicaljson_array_to_string(merovingian::canonicaljson::Array const& array) -> std::string
@@ -619,35 +702,23 @@ SCENARIO("join_room completes a live federated join with every member of the ret
         auto const policy = *merovingian::rooms::find_room_version_policy("10");
 
         // --- make_join response: a minimal, unsigned v10 join template. ---
-        auto const make_join_event = std::string{R"({"type":"m.room.member","state_key":")"} + alice +
-                                     R"(","room_id":")" + room_id + R"(","sender":")" + alice +
-                                     R"(","depth":6,"origin_server_ts":1000,)"
-                                     R"("prev_events":[],"auth_events":[],)" +
-                                     (template_has_hashes ? R"("hashes":{"sha256":"stale"},)" : "") +
-                                     R"("content":{"membership":"join","displayname":"Resident Supplied",)"
-                                     R"("avatar_url":"mxc://resident.example.org/forged"}})";
+        auto const room_chain = resident_room_chain(room_id, creator, policy);
+        auto const make_join_event =
+            naming_auth_events(std::string{R"({"type":"m.room.member","state_key":")"} + alice + R"(","room_id":")" +
+                                   room_id + R"(","sender":")" + alice +
+                                   R"(","depth":6,"origin_server_ts":1000,)"
+                                   R"("prev_events":[],"auth_events":[],)" +
+                                   (template_has_hashes ? R"("hashes":{"sha256":"stale"},)" : "") +
+                                   R"("content":{"membership":"join","displayname":"Resident Supplied",)"
+                                   R"("avatar_url":"mxc://resident.example.org/forged"}})",
+                               room_chain.member_auth());
         auto const make_join_body = std::string{R"({"room_version":"10","event":)"} + make_join_event + "}";
 
         // --- send_join response: create, power_levels and our own membership,
         // plus five OTHER members' m.room.member events, all signed by the
         // resident server. ---
-        auto const create_event = std::string{R"({"type":"m.room.create","state_key":"","sender":")"} + creator +
-                                  R"(","room_id":")" + room_id +
-                                  R"(","depth":1,"origin_server_ts":900,)"
-                                  R"("prev_events":[],"auth_events":[],)"
-                                  R"("content":{"room_version":"10","creator":")" +
-                                  creator + R"("}})";
-        auto const power_levels_event = std::string{R"({"type":"m.room.power_levels","state_key":"","sender":")"} +
-                                        creator + R"(","room_id":")" + room_id +
-                                        R"(","depth":2,"origin_server_ts":901,)"
-                                        R"("prev_events":[],"auth_events":[],"content":{"users":{")" +
-                                        creator + R"(":100}}})";
 
-        auto state_array = merovingian::canonicaljson::Array{};
-        state_array.push_back(
-            sign_test_event(create_event, policy, resident_server, resident_key_id, resident_key_seed));
-        state_array.push_back(
-            sign_test_event(power_levels_event, policy, resident_server, resident_key_id, resident_key_seed));
+        auto state_array = room_chain.events();
         // Our own join event, echoed back: sender domain == our_server, so
         // filter_verified_send_join_events verifies it against this server's
         // own signing keys, with no resolver round trip. It must carry a
@@ -659,20 +730,18 @@ SCENARIO("join_room completes a live federated join with every member of the ret
         for (auto member_index = std::size_t{0U}; member_index < k_other_member_count; ++member_index)
         {
             auto const member_id = "@member" + std::to_string(member_index) + ":" + resident_server;
-            auto const member_event = std::string{R"({"type":"m.room.member","state_key":")"} + member_id +
-                                      R"(","room_id":")" + room_id + R"(","sender":")" + member_id +
-                                      R"(","depth":3,"origin_server_ts":902,)"
-                                      R"("prev_events":[],"auth_events":[],)"
-                                      R"("content":{"membership":"join"}})";
+            auto const member_event =
+                naming_auth_events(std::string{R"({"type":"m.room.member","state_key":")"} + member_id +
+                                       R"(","room_id":")" + room_id + R"(","sender":")" + member_id +
+                                       R"(","depth":3,"origin_server_ts":902,)"
+                                       R"("prev_events":[],"auth_events":[],)"
+                                       R"("content":{"membership":"join"}})",
+                                   room_chain.member_auth());
             state_array.push_back(
                 sign_test_event(member_event, policy, resident_server, resident_key_id, resident_key_seed));
         }
 
-        auto auth_chain_array = merovingian::canonicaljson::Array{};
-        auth_chain_array.push_back(
-            sign_test_event(create_event, policy, resident_server, resident_key_id, resident_key_seed));
-        auth_chain_array.push_back(
-            sign_test_event(power_levels_event, policy, resident_server, resident_key_id, resident_key_seed));
+        auto auth_chain_array = room_chain.events();
 
         auto const send_join_body = std::string{R"({"state":)"} + canonicaljson_array_to_string(state_array) +
                                     R"(,"auth_chain":)" + canonicaljson_array_to_string(auth_chain_array) + "}";
@@ -786,8 +855,8 @@ SCENARIO("join_room completes a live federated join with every member of the ret
                     return r.room_id == room_id;
                 });
                 REQUIRE(room_it != runtime.database.rooms.end());
-                // alice + the five members the resident returned.
-                REQUIRE(room_it->members.size() == k_other_member_count + 1U);
+                // alice, the creator and the five members the resident returned.
+                REQUIRE(room_it->members.size() == k_other_member_count + 2U);
 
                 // The federation worker is told about this room, and no other.
                 REQUIRE_FALSE(changed_rooms.empty());
@@ -1450,39 +1519,23 @@ SCENARIO("A federated join seeds the join event's after-state group and forward 
         auto const creator = std::string{"@creator:"} + resident_server;
         auto const policy = *merovingian::rooms::find_room_version_policy("10");
 
-        auto const make_join_event = std::string{R"({"type":"m.room.member","state_key":")"} + alice +
-                                     R"(","room_id":")" + room_id + R"(","sender":")" + alice +
-                                     R"(","depth":3,"origin_server_ts":1000,)"
-                                     R"("prev_events":[],"auth_events":[],)"
-                                     R"("content":{"membership":"join"}})";
+        auto const room_chain = resident_room_chain(room_id, creator, policy);
+        auto const make_join_event =
+            naming_auth_events(std::string{R"({"type":"m.room.member","state_key":")"} + alice + R"(","room_id":")" +
+                                   room_id + R"(","sender":")" + alice +
+                                   R"(","depth":3,"origin_server_ts":1000,)"
+                                   R"("prev_events":[],"auth_events":[],)"
+                                   R"("content":{"membership":"join"}})",
+                               room_chain.member_auth());
         auto const make_join_body = std::string{R"({"room_version":"10","event":)"} + make_join_event + "}";
 
-        auto const create_event = std::string{R"({"type":"m.room.create","state_key":"","sender":")"} + creator +
-                                  R"(","room_id":")" + room_id +
-                                  R"(","depth":1,"origin_server_ts":900,)"
-                                  R"("prev_events":[],"auth_events":[],)"
-                                  R"("content":{"room_version":"10","creator":")" +
-                                  creator + R"("}})";
-        auto const power_levels_event = std::string{R"({"type":"m.room.power_levels","state_key":"","sender":")"} +
-                                        creator + R"(","room_id":")" + room_id +
-                                        R"(","depth":2,"origin_server_ts":901,)"
-                                        R"("prev_events":[],"auth_events":[],"content":{"users":{")" +
-                                        creator + R"(":100}}})";
 
         // The state array is the room's state BEFORE the join — create and
         // power_levels only, no join event and no other members, matching
         // spec (server-server-api.md#joining-rooms).
-        auto state_array = merovingian::canonicaljson::Array{};
-        state_array.push_back(
-            sign_test_event(create_event, policy, resident_server, resident_key_id, resident_key_seed));
-        state_array.push_back(
-            sign_test_event(power_levels_event, policy, resident_server, resident_key_id, resident_key_seed));
+        auto state_array = room_chain.events();
 
-        auto auth_chain_array = merovingian::canonicaljson::Array{};
-        auth_chain_array.push_back(
-            sign_test_event(create_event, policy, resident_server, resident_key_id, resident_key_seed));
-        auth_chain_array.push_back(
-            sign_test_event(power_levels_event, policy, resident_server, resident_key_id, resident_key_seed));
+        auto auth_chain_array = room_chain.events();
 
         auto const send_join_body = std::string{R"({"state":)"} + canonicaljson_array_to_string(state_array) +
                                     R"(,"auth_chain":)" + canonicaljson_array_to_string(auth_chain_array) + "}";
@@ -1525,18 +1578,17 @@ SCENARIO("A federated join seeds the join event's after-state group and forward 
                 REQUIRE(group.has_value());
                 auto const full = merovingian::database::read_state_group_full_state(store, *group);
                 REQUIRE(full.has_value());
-                REQUIRE(full->size() == 3U); // create + power_levels + alice's join
+                REQUIRE(full->size() == 5U); // create, creator's join, power_levels, join_rules, alice's join
                 REQUIRE(std::ranges::any_of(*full, [](auto const& e) {
                     return e.event_type == "m.room.create";
                 }));
                 REQUIRE(std::ranges::any_of(*full, [](auto const& e) {
                     return e.event_type == "m.room.power_levels";
                 }));
-                auto const member_entry = std::ranges::find_if(*full, [](auto const& e) {
-                    return e.event_type == "m.room.member";
+                auto const member_entry = std::ranges::find_if(*full, [&](auto const& e) {
+                    return e.event_type == "m.room.member" && e.state_key == alice;
                 });
                 REQUIRE(member_entry != full->end());
-                REQUIRE(member_entry->state_key == alice);
                 REQUIRE(member_entry->event_id == join_event_id);
 
                 AND_THEN("the join event is the room's sole forward extremity")
@@ -1833,39 +1885,23 @@ SCENARIO("Outbound joins defer concurrent PDUs until committed and discard them 
         auto const creator = std::string{"@creator:"} + resident_server;
         auto const policy = *merovingian::rooms::find_room_version_policy("10");
 
-        auto const make_join_event = std::string{R"({"type":"m.room.member","state_key":")"} + alice +
-                                     R"(","room_id":")" + room_id + R"(","sender":")" + alice +
-                                     R"(","depth":3,"origin_server_ts":1000,)"
-                                     R"("prev_events":[],"auth_events":[],)"
-                                     R"("content":{"membership":"join"}})";
+        auto const room_chain = resident_room_chain(room_id, creator, policy);
+        auto const make_join_event =
+            naming_auth_events(std::string{R"({"type":"m.room.member","state_key":")"} + alice + R"(","room_id":")" +
+                                   room_id + R"(","sender":")" + alice +
+                                   R"(","depth":3,"origin_server_ts":1000,)"
+                                   R"("prev_events":[],"auth_events":[],)"
+                                   R"("content":{"membership":"join"}})",
+                               room_chain.member_auth());
         auto const make_join_body = std::string{R"({"room_version":"10","event":)"} + make_join_event + "}";
 
-        auto const create_event = std::string{R"({"type":"m.room.create","state_key":"","sender":")"} + creator +
-                                  R"(","room_id":")" + room_id +
-                                  R"(","depth":1,"origin_server_ts":900,)"
-                                  R"("prev_events":[],"auth_events":[],)"
-                                  R"("content":{"room_version":"10","creator":")" +
-                                  creator + R"("}})";
-        auto const power_levels_event = std::string{R"({"type":"m.room.power_levels","state_key":"","sender":")"} +
-                                        creator + R"(","room_id":")" + room_id +
-                                        R"(","depth":2,"origin_server_ts":901,)"
-                                        R"("prev_events":[],"auth_events":[],"content":{"users":{")" +
-                                        creator + R"(":100}}})";
 
         // The state array is the room's state BEFORE the join — create and
         // power_levels only, no join event and no other members, matching
         // spec (server-server-api.md#joining-rooms).
-        auto state_array = merovingian::canonicaljson::Array{};
-        state_array.push_back(
-            sign_test_event(create_event, policy, resident_server, resident_key_id, resident_key_seed));
-        state_array.push_back(
-            sign_test_event(power_levels_event, policy, resident_server, resident_key_id, resident_key_seed));
+        auto state_array = room_chain.events();
 
-        auto auth_chain_array = merovingian::canonicaljson::Array{};
-        auth_chain_array.push_back(
-            sign_test_event(create_event, policy, resident_server, resident_key_id, resident_key_seed));
-        auth_chain_array.push_back(
-            sign_test_event(power_levels_event, policy, resident_server, resident_key_id, resident_key_seed));
+        auto auth_chain_array = room_chain.events();
 
         auto const send_join_body = std::string{R"({"state":)"} + canonicaljson_array_to_string(state_array) +
                                     R"(,"auth_chain":)" + canonicaljson_array_to_string(auth_chain_array) + "}";
@@ -1897,7 +1933,7 @@ SCENARIO("Outbound joins defer concurrent PDUs until committed and discard them 
                         auto const join = event_from_send_request(request);
                         auto const join_id = reference_event_id(join, policy);
                         auto const create_id = reference_event_id(state_array[0], policy);
-                        auto const power_id = reference_event_id(state_array[1], policy);
+                        auto const power_id = room_chain.power_levels_id;
                         auto const message =
                             std::string{R"({"type":"m.room.message","room_id":")"} + room_id + R"(","sender":")" +
                             alice +
@@ -2217,22 +2253,14 @@ SCENARIO("A send_join response cannot inject state into a local room",
         auto const evil = std::string{"@evil:"} + resident_server;
         auto const policy = *merovingian::rooms::find_room_version_policy("10");
 
-        auto const make_join_event = std::string{R"({"type":"m.room.member","state_key":")"} + bob +
-                                     R"(","room_id":")" + joined_room + R"(","sender":")" + bob +
-                                     R"(","depth":3,"origin_server_ts":1000,)"
-                                     R"("prev_events":[],"auth_events":[],)"
-                                     R"("content":{"membership":"join"}})";
+        auto const room_chain = resident_room_chain(joined_room, creator, policy);
+        auto const make_join_event = naming_auth_events(std::string{R"({"type":"m.room.member","state_key":")"} + bob +
+                                                            R"(","room_id":")" + joined_room + R"(","sender":")" + bob +
+                                                            R"(","depth":3,"origin_server_ts":1000,)"
+                                                            R"("prev_events":[],"auth_events":[],)"
+                                                            R"("content":{"membership":"join"}})",
+                                                        room_chain.member_auth());
         auto const make_join_body = std::string{R"({"room_version":"10","event":)"} + make_join_event + "}";
-        auto const create_event = std::string{R"({"type":"m.room.create","state_key":"","sender":")"} + creator +
-                                  R"(","room_id":")" + joined_room +
-                                  R"(","depth":1,"origin_server_ts":900,"prev_events":[],"auth_events":[],)"
-                                  R"("content":{"room_version":"10","creator":")" +
-                                  creator + R"("}})";
-        auto const power_levels_event = std::string{R"({"type":"m.room.power_levels","state_key":"","sender":")"} +
-                                        creator + R"(","room_id":")" + joined_room +
-                                        R"(","depth":2,"origin_server_ts":901,"prev_events":[],"auth_events":[],)"
-                                        R"("content":{"users":{")" +
-                                        creator + R"(":100}}})";
 
         // (a) an unsigned m.room.power_levels for L naming an own-domain sender.
         auto const forged_unsigned_pl = std::string{R"({"type":"m.room.power_levels","state_key":"","sender":")"} +
@@ -2263,20 +2291,12 @@ SCENARIO("A send_join response cannot inject state into a local room",
             reference_event_id(forged_member_value, policy),
         };
 
-        auto state_array = merovingian::canonicaljson::Array{};
-        state_array.push_back(
-            sign_test_event(create_event, policy, resident_server, resident_key_id, resident_key_seed));
-        state_array.push_back(
-            sign_test_event(power_levels_event, policy, resident_server, resident_key_id, resident_key_seed));
+        auto state_array = room_chain.events();
         state_array.push_back(forged_unsigned_pl_value);
         state_array.push_back(forged_signed_pl_value);
         state_array.push_back(forged_member_value);
 
-        auto auth_chain_array = merovingian::canonicaljson::Array{};
-        auth_chain_array.push_back(
-            sign_test_event(create_event, policy, resident_server, resident_key_id, resident_key_seed));
-        auth_chain_array.push_back(
-            sign_test_event(power_levels_event, policy, resident_server, resident_key_id, resident_key_seed));
+        auto auth_chain_array = room_chain.events();
         auth_chain_array.push_back(forged_unsigned_pl_value);
         auth_chain_array.push_back(forged_signed_pl_value);
 
@@ -2378,30 +2398,27 @@ SCENARIO("A send_join response's own-domain events are accepted when signed with
         auto const former = std::string{"@former:"} + resident_server;
         auto const policy = *merovingian::rooms::find_room_version_policy("10");
 
-        auto const make_join_event = std::string{R"({"type":"m.room.member","state_key":")"} + alice +
-                                     R"(","room_id":")" + room_id + R"(","sender":")" + alice +
-                                     R"(","depth":5,"origin_server_ts":1000,)"
-                                     R"("prev_events":[],"auth_events":[],)"
-                                     R"("content":{"membership":"join"}})";
+        auto const room_chain = resident_room_chain(room_id, creator, policy);
+        auto const make_join_event =
+            naming_auth_events(std::string{R"({"type":"m.room.member","state_key":")"} + alice + R"(","room_id":")" +
+                                   room_id + R"(","sender":")" + alice +
+                                   R"(","depth":5,"origin_server_ts":1000,)"
+                                   R"("prev_events":[],"auth_events":[],)"
+                                   R"("content":{"membership":"join"}})",
+                               room_chain.member_auth());
         auto const make_join_body = std::string{R"({"room_version":"10","event":)"} + make_join_event + "}";
-        auto const create_event = std::string{R"({"type":"m.room.create","state_key":"","sender":")"} + creator +
-                                  R"(","room_id":")" + room_id +
-                                  R"(","depth":1,"origin_server_ts":900,"prev_events":[],"auth_events":[],)"
-                                  R"("content":{"room_version":"10","creator":")" +
-                                  creator + R"("}})";
-        auto const power_levels_event = std::string{R"({"type":"m.room.power_levels","state_key":"","sender":")"} +
-                                        creator + R"(","room_id":")" + room_id +
-                                        R"(","depth":2,"origin_server_ts":901,"prev_events":[],"auth_events":[],)"
-                                        R"("content":{"users":{")" +
-                                        creator + R"(":100}}})";
-        auto const carol_member = std::string{R"({"type":"m.room.member","state_key":")"} + carol + R"(","room_id":")" +
-                                  room_id + R"(","sender":")" + carol +
-                                  R"(","depth":3,"origin_server_ts":902,"prev_events":[],"auth_events":[],)"
-                                  R"("content":{"membership":"join"}})";
-        auto const former_member = std::string{R"({"type":"m.room.member","state_key":")"} + former +
-                                   R"(","room_id":")" + room_id + R"(","sender":")" + former +
+        auto const carol_member =
+            naming_auth_events(std::string{R"({"type":"m.room.member","state_key":")"} + carol + R"(","room_id":")" +
+                                   room_id + R"(","sender":")" + carol +
+                                   R"(","depth":3,"origin_server_ts":902,"prev_events":[],"auth_events":[],)"
+                                   R"("content":{"membership":"join"}})",
+                               room_chain.member_auth());
+        auto const former_member =
+            naming_auth_events(std::string{R"({"type":"m.room.member","state_key":")"} + former + R"(","room_id":")" +
+                                   room_id + R"(","sender":")" + former +
                                    R"(","depth":2,"origin_server_ts":901,"prev_events":[],"auth_events":[],)"
-                                   R"("content":{"membership":"join"}})";
+                                   R"("content":{"membership":"join"}})",
+                               room_chain.member_auth());
 
         auto const carol_value = sign_with_local_server_key(runtime, carol_member, policy);
         auto const carol_event_id = reference_event_id(carol_value, policy);
@@ -2409,18 +2426,10 @@ SCENARIO("A send_join response's own-domain events are accepted when signed with
             sign_test_event(former_member, policy, resident_server, resident_key_id, resident_key_seed);
         auto const former_event_id = reference_event_id(former_value, policy);
 
-        auto state_array = merovingian::canonicaljson::Array{};
-        state_array.push_back(
-            sign_test_event(create_event, policy, resident_server, resident_key_id, resident_key_seed));
-        state_array.push_back(
-            sign_test_event(power_levels_event, policy, resident_server, resident_key_id, resident_key_seed));
+        auto state_array = room_chain.events();
         state_array.push_back(carol_value);
 
-        auto auth_chain_array = merovingian::canonicaljson::Array{};
-        auth_chain_array.push_back(
-            sign_test_event(create_event, policy, resident_server, resident_key_id, resident_key_seed));
-        auth_chain_array.push_back(
-            sign_test_event(power_levels_event, policy, resident_server, resident_key_id, resident_key_seed));
+        auto auth_chain_array = room_chain.events();
         auth_chain_array.push_back(former_value);
 
         auto const send_join_body = std::string{R"({"state":)"} + canonicaljson_array_to_string(state_array) +
@@ -2478,6 +2487,404 @@ SCENARIO("A send_join response's own-domain events are accepted when signed with
 // origin, origin_server_ts, and event_id on the templated event". The leave we
 // sign carries our origin and our clock, whatever the template held, and a
 // template without them is accepted.
+// Spec: Matrix Server-Server API v1.19, "Checks performed on receipt of a PDU"
+// URL: ../../docs/matrix-v1.19-spec/server-server-api.md#checks-performed-on-receipt-of-a-pdu
+//
+// "3. Passes hash checks, otherwise it is redacted before being processed further. 4. Passes authorisation rules
+// based on the event's auth events, otherwise it is rejected." A resident's send_join answer is a receipt like any
+// other (F-45, ADR-0369).
+SCENARIO("A joining server applies the receipt checks to a resident's send_join answer",
+         "[f45][security][homeserver][federation][join][integration]")
+{
+    GIVEN("a resident server answering a join with a room it controls")
+    {
+        REQUIRE(sodium_init() >= 0);
+        auto started = merovingian::homeserver::start_runtime(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+
+        auto const reg = merovingian::homeserver::register_local_user(runtime, "alice", "CorrectHorse7!",
+                                                                      merovingian::tests::registration_token);
+        REQUIRE(reg.ok);
+        auto const login = merovingian::homeserver::login_local_user(runtime, reg.value, "CorrectHorse7!", "DEVICE1");
+        REQUIRE(login.ok);
+        auto const alice = reg.value;
+
+        auto const certificate = write_test_tls_certificate();
+        auto tls_context = merovingian::homeserver::make_tls_server_context(certificate.certificate_file,
+                                                                            certificate.private_key_file);
+        REQUIRE(tls_context.ok());
+        auto acceptor = merovingian::net::TcpAcceptor{};
+        REQUIRE(acceptor.bind("127.0.0.1", 0U).ok);
+        auto const port = acceptor.bound_port();
+        REQUIRE(port > 0U);
+        runtime.test_forced_outbound_resolution[resident_server] =
+            merovingian::homeserver::TestOnlyForcedOutboundResolution{
+                "localhost", port, {"127.0.0.1"}, certificate.certificate_pem};
+        merovingian::homeserver::wire_federation_callbacks(runtime);
+        runtime.federation.remote_key_resolver =
+            [](std::string_view server_name,
+               std::string_view key_id) -> std::optional<merovingian::federation::FederationRemoteRuntime> {
+            if (server_name != resident_server || key_id != resident_key_id)
+            {
+                return std::nullopt;
+            }
+            return resident_remote_runtime();
+        };
+
+        auto const room_id = std::string{"!f45:"} + resident_server;
+        auto const creator = std::string{"@creator:"} + resident_server;
+        auto const bob = std::string{"@bob:"} + resident_server;
+        auto const policy = *merovingian::rooms::find_room_version_policy("10");
+        auto const room_chain = resident_room_chain(room_id, creator, policy);
+        auto const make_join_event =
+            naming_auth_events(std::string{R"({"type":"m.room.member","state_key":")"} + alice + R"(","room_id":")" +
+                                   room_id + R"(","sender":")" + alice +
+                                   R"(","depth":5,"origin_server_ts":1000,)"
+                                   R"("prev_events":[],"auth_events":[],)"
+                                   R"("content":{"membership":"join"}})",
+                               room_chain.member_auth());
+        auto const make_join_response =
+            json_http_response("200 OK", std::string{R"({"room_version":"10","event":)"} + make_join_event + "}");
+
+        auto const bob_join = sign_test_event(
+            naming_auth_events(std::string{R"({"type":"m.room.member","state_key":")"} + bob + R"(","room_id":")" +
+                                   room_id + R"(","sender":")" + bob +
+                                   R"(","depth":5,"origin_server_ts":950,"prev_events":[],"auth_events":[],)"
+                                   R"("content":{"membership":"join"}})",
+                               room_chain.member_auth()),
+            policy, resident_server, resident_key_id, resident_key_seed);
+
+        auto const join_with_answer = [&](merovingian::canonicaljson::Array const& state) {
+            auto captured_requests = std::vector<std::string>{};
+            auto server_thread = std::thread{[&]() {
+                run_resident_server(acceptor, *tls_context.context, make_join_response,
+                                    json_http_response("200 OK", std::string{R"({"state":)"} +
+                                                                     canonicaljson_array_to_string(state) +
+                                                                     R"(,"auth_chain":[]})"),
+                                    captured_requests);
+            }};
+            auto result =
+                merovingian::homeserver::join_room(runtime, login.value, room_id, {std::string{resident_server}});
+            server_thread.join();
+            return result;
+        };
+
+        WHEN("the resident changes an event's content after it was signed")
+        {
+            // m.room.server_acl keeps no content when redacted, so the signature and the event ID still hold.
+            auto const genuine_acl = sign_test_event(
+                naming_auth_events(std::string{R"({"type":"m.room.server_acl","state_key":"","room_id":")"} + room_id +
+                                       R"(","sender":")" + creator +
+                                       R"(","depth":5,"origin_server_ts":951,"prev_events":[],"auth_events":[],)"
+                                       R"("content":{"allow":["*"],"deny":[]}})",
+                                   "\"" + room_chain.create_id + "\",\"" + room_chain.creator_join_id + "\",\"" +
+                                       room_chain.power_levels_id + "\""),
+                policy, resident_server, resident_key_id, resident_key_seed);
+            auto const acl_id = reference_event_id(genuine_acl, policy);
+            auto tampered_json = merovingian::canonicaljson::serialize_canonical(genuine_acl).output;
+            auto const genuine_content = std::string{R"("allow":["*"],"deny":[])"};
+            auto const content_position = tampered_json.find(genuine_content);
+            REQUIRE(content_position != std::string::npos);
+            tampered_json.replace(content_position, genuine_content.size(),
+                                  R"("allow":["evil.example.org"],"deny":[])");
+            auto const tampered = merovingian::canonicaljson::parse_lossless(tampered_json);
+            REQUIRE(tampered.error == merovingian::canonicaljson::ParseError::none);
+            REQUIRE(reference_event_id(tampered.value, policy) == acl_id);
+
+            auto state = room_chain.events();
+            state.push_back(tampered.value);
+            auto const result = join_with_answer(state);
+            auto const lock = std::lock_guard{runtime.mutex};
+            auto const stored = runtime.database.persistent_store.events.find_in_room(room_id, acl_id);
+
+            THEN("the join succeeds and the event is stored redacted, without the resident's content")
+            {
+                CAPTURE(result.reason);
+                REQUIRE(result.ok);
+                REQUIRE(stored != runtime.database.persistent_store.events.end());
+                REQUIRE(stored->json.find("evil.example.org") == std::string::npos);
+            }
+        }
+
+        WHEN("the answer lists an event the auth rules refuse")
+        {
+            // Bob holds power level 0; a state event needs 50.
+            auto const forged = sign_test_event(
+                naming_auth_events(std::string{R"({"type":"m.room.power_levels","state_key":"","room_id":")"} +
+                                       room_id + R"(","sender":")" + bob +
+                                       R"(","depth":6,"origin_server_ts":952,"prev_events":[],"auth_events":[],)"
+                                       R"("content":{"users":{")" +
+                                       bob + R"(":100}}})",
+                                   "\"" + room_chain.create_id + "\",\"" + room_chain.power_levels_id + "\",\"" +
+                                       reference_event_id(bob_join, policy) + "\""),
+                policy, resident_server, resident_key_id, resident_key_seed);
+            auto const forged_id = reference_event_id(forged, policy);
+            auto state = room_chain.events();
+            state.push_back(bob_join);
+            state.push_back(forged);
+            auto const result = join_with_answer(state);
+            auto const lock = std::lock_guard{runtime.mutex};
+            auto const& store = runtime.database.persistent_store;
+
+            THEN("the join succeeds, the refused event is not stored and the genuine power levels stay")
+            {
+                CAPTURE(result.reason);
+                REQUIRE(result.ok);
+                REQUIRE(store.events.find_in_room(room_id, forged_id) == store.events.end());
+                REQUIRE(merovingian::database::find_current_state_event_id(store, room_id, "m.room.power_levels", "") ==
+                        room_chain.power_levels_id);
+            }
+        }
+
+        WHEN("the answer's join rules do not let the joining user in")
+        {
+            auto const invite_only = sign_test_event(
+                naming_auth_events(std::string{R"({"type":"m.room.join_rules","state_key":"","room_id":")"} + room_id +
+                                       R"(","sender":")" + creator +
+                                       R"(","depth":4,"origin_server_ts":900,"prev_events":[],"auth_events":[],)"
+                                       R"("content":{"join_rule":"invite"}})",
+                                   "\"" + room_chain.create_id + "\",\"" + room_chain.creator_join_id + "\",\"" +
+                                       room_chain.power_levels_id + "\""),
+                policy, resident_server, resident_key_id, resident_key_seed);
+            auto const invite_only_id = reference_event_id(invite_only, policy);
+            auto const refused_template = naming_auth_events(
+                std::string{R"({"type":"m.room.member","state_key":")"} + alice + R"(","room_id":")" + room_id +
+                    R"(","sender":")" + alice +
+                    R"(","depth":5,"origin_server_ts":1000,"prev_events":[],"auth_events":[],)"
+                    R"("content":{"membership":"join"}})",
+                "\"" + room_chain.create_id + "\",\"" + room_chain.power_levels_id + "\",\"" + invite_only_id + "\"");
+            auto const answer = merovingian::canonicaljson::Array{room_chain.create, room_chain.creator_join,
+                                                                  room_chain.power_levels, invite_only};
+            auto captured_requests = std::vector<std::string>{};
+            auto server_thread = std::thread{[&]() {
+                run_resident_server(
+                    acceptor, *tls_context.context,
+                    json_http_response("200 OK",
+                                       std::string{R"({"room_version":"10","event":)"} + refused_template + "}"),
+                    json_http_response("200 OK", std::string{R"({"state":)"} + canonicaljson_array_to_string(answer) +
+                                                     R"(,"auth_chain":[]})"),
+                    captured_requests);
+            }};
+            auto const result =
+                merovingian::homeserver::join_room(runtime, login.value, room_id, {std::string{resident_server}});
+            server_thread.join();
+            auto const lock = std::lock_guard{runtime.mutex};
+            auto const& store = runtime.database.persistent_store;
+
+            THEN("the join is refused and nothing of the room is stored")
+            {
+                REQUIRE_FALSE(result.ok);
+                REQUIRE(store.events.find_in_room(room_id, room_chain.create_id) == store.events.end());
+                REQUIRE_FALSE(std::ranges::any_of(store.memberships, [&](auto const& row) {
+                    return row.room_id == room_id && row.user_id == alice && row.membership == "join";
+                }));
+            }
+        }
+    }
+}
+
+// Spec: Matrix Server-Server API v1.19, "Checks performed on receipt of a PDU", and rooms/v10.md, authorisation rule
+// 2.4: "If there is no m.room.create event among the entries, reject." A room version comes from the room's create
+// event (client-server-api.md, m.room.create), so a PDU that arrived before the create was stored is judged again
+// under the version the create declares (F-44, ADR-0370).
+SCENARIO("A PDU parked during a federated join is judged under the room version the create event declares",
+         "[f44][security][homeserver][federation][join][integration]")
+{
+    GIVEN("a version 10 room whose resident delivers PDUs before it answers send_join")
+    {
+        REQUIRE(sodium_init() >= 0);
+        auto started = merovingian::homeserver::start_runtime(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+
+        auto const reg = merovingian::homeserver::register_local_user(runtime, "alice", "CorrectHorse7!",
+                                                                      merovingian::tests::registration_token);
+        REQUIRE(reg.ok);
+        auto const login = merovingian::homeserver::login_local_user(runtime, reg.value, "CorrectHorse7!", "DEVICE1");
+        REQUIRE(login.ok);
+        auto const alice = reg.value;
+
+        auto const certificate = write_test_tls_certificate();
+        auto tls_context = merovingian::homeserver::make_tls_server_context(certificate.certificate_file,
+                                                                            certificate.private_key_file);
+        REQUIRE(tls_context.ok());
+        auto acceptor = merovingian::net::TcpAcceptor{};
+        REQUIRE(acceptor.bind("127.0.0.1", 0U).ok);
+        auto const port = acceptor.bound_port();
+        REQUIRE(port > 0U);
+        runtime.test_forced_outbound_resolution[resident_server] =
+            merovingian::homeserver::TestOnlyForcedOutboundResolution{
+                "localhost", port, {"127.0.0.1"}, certificate.certificate_pem};
+        merovingian::homeserver::wire_federation_callbacks(runtime);
+        runtime.federation.remote_key_resolver =
+            [](std::string_view server_name,
+               std::string_view key_id) -> std::optional<merovingian::federation::FederationRemoteRuntime> {
+            if (server_name != resident_server || key_id != resident_key_id)
+            {
+                return std::nullopt;
+            }
+            return resident_remote_runtime();
+        };
+
+        auto const room_id = std::string{"!f44:"} + resident_server;
+        auto const creator = std::string{"@creator:"} + resident_server;
+        auto const bob = std::string{"@bob:"} + resident_server;
+        auto const policy = *merovingian::rooms::find_room_version_policy("10");
+        auto const guessed_policy = *merovingian::rooms::find_room_version_policy("12");
+        auto const room_chain = resident_room_chain(room_id, creator, policy);
+        auto const make_join_event =
+            naming_auth_events(std::string{R"({"type":"m.room.member","state_key":")"} + alice + R"(","room_id":")" +
+                                   room_id + R"(","sender":")" + alice +
+                                   R"(","depth":6,"origin_server_ts":1000,)"
+                                   R"("prev_events":[],"auth_events":[],)"
+                                   R"("content":{"membership":"join"}})",
+                               room_chain.member_auth());
+        auto const bob_join = sign_test_event(
+            naming_auth_events(std::string{R"({"type":"m.room.member","state_key":")"} + bob + R"(","room_id":")" +
+                                   room_id + R"(","sender":")" + bob +
+                                   R"(","depth":5,"origin_server_ts":950,"prev_events":[],"auth_events":[],)"
+                                   R"("content":{"membership":"join"}})",
+                               room_chain.member_auth()),
+            policy, resident_server, resident_key_id, resident_key_seed);
+        auto const bob_join_id = reference_event_id(bob_join, policy);
+        auto state = room_chain.events();
+        state.push_back(bob_join);
+        auto const make_join_response =
+            json_http_response("200 OK", std::string{R"({"room_version":"10","event":)"} + make_join_event + "}");
+        auto const send_join_response = json_http_response(
+            "200 OK", std::string{R"({"state":)"} + canonicaljson_array_to_string(state) + R"(,"auth_chain":[]})");
+
+        auto const quoted = [](std::string const& id) {
+            return "\"" + id + "\"";
+        };
+        // This server holds no create event yet, so every receipt path guesses version 12.
+        auto const received = [&](std::string const& raw, merovingian::rooms::RoomVersionPolicy const& signing_policy) {
+            auto const signed_event =
+                sign_test_event(raw, signing_policy, resident_server, resident_key_id, resident_key_seed);
+            auto const json = merovingian::canonicaljson::serialize_canonical(signed_event).output;
+            auto envelope = merovingian::federation::parse_inbound_pdu_envelope(json, "12");
+            REQUIRE(envelope.has_value());
+            envelope->origin = resident_server;
+            return *envelope;
+        };
+
+        WHEN("the PDUs arrive while the join is in progress")
+        {
+            auto ban_event_id = std::string{};
+            auto honest_event_id = std::string{};
+            auto forged_event_ids = std::vector<std::string>{};
+            auto statuses = std::vector<merovingian::federation::PduIngestionStatus>{};
+            auto captured_requests = std::vector<std::string>{};
+            auto server_thread = merovingian::tests::JoiningThreads{};
+            server_thread.emplace_back([&]() {
+                run_resident_server(
+                    acceptor, *tls_context.context, make_join_response, send_join_response, captured_requests,
+                    [&](std::string const& request) {
+                        auto const join_id = reference_event_id(event_from_send_request(request), policy);
+                        // Valid under version 12, where a creator outranks everyone and the create event is not named.
+                        // Version 10 rejects it: its auth_events hold no m.room.create.
+                        auto const ban =
+                            received(std::string{R"({"type":"m.room.member","state_key":")"} + bob +
+                                         R"(","room_id":")" + room_id + R"(","sender":")" + creator +
+                                         R"(","depth":7,"origin_server_ts":1100,"prev_events":[)" + quoted(join_id) +
+                                         R"(],"auth_events":[)" + quoted(room_chain.power_levels_id) + "," +
+                                         quoted(room_chain.creator_join_id) + "," + quoted(bob_join_id) +
+                                         R"(],"content":{"membership":"ban"}})",
+                                     guessed_policy);
+                        ban_event_id =
+                            reference_event_id(merovingian::canonicaljson::parse_lossless(ban.json).value, policy);
+                        statuses.push_back(runtime.federation.pdu_sink(ban).status);
+                        // Signed over the version 12 redaction, which drops a top-level `origin`. Version 10 keeps it,
+                        // so the signature does not cover what version 10 checks.
+                        auto const forged = received(
+                            std::string{R"({"type":"m.room.message","room_id":")"} + room_id + R"(","sender":")" +
+                                creator +
+                                R"(","origin":"resident.example.org","depth":7,"origin_server_ts":1101,"prev_events":[)" +
+                                quoted(join_id) + R"(],"auth_events":[)" + quoted(room_chain.create_id) + "," +
+                                quoted(room_chain.power_levels_id) + "," + quoted(room_chain.creator_join_id) +
+                                R"(],"content":{"body":"x","msgtype":"m.text"}})",
+                            guessed_policy);
+                        forged_event_ids.push_back(forged.event_id);
+                        forged_event_ids.push_back(
+                            reference_event_id(merovingian::canonicaljson::parse_lossless(forged.json).value, policy));
+                        statuses.push_back(runtime.federation.pdu_sink(forged).status);
+                        // Nothing wrong with this one, under the room's real version.
+                        auto const honest = received(
+                            std::string{R"({"type":"m.room.message","room_id":")"} + room_id + R"(","sender":")" +
+                                creator + R"(","depth":7,"origin_server_ts":1102,"prev_events":[)" + quoted(join_id) +
+                                R"(],"auth_events":[)" + quoted(room_chain.create_id) + "," +
+                                quoted(room_chain.power_levels_id) + "," + quoted(room_chain.creator_join_id) +
+                                R"(],"content":{"body":"hello","msgtype":"m.text"}})",
+                            policy);
+                        honest_event_id = honest.event_id;
+                        statuses.push_back(runtime.federation.pdu_sink(honest).status);
+                    });
+            });
+            auto const result =
+                merovingian::homeserver::join_room(runtime, login.value, room_id, {std::string{resident_server}});
+            server_thread.join();
+
+            auto const lock = std::lock_guard{runtime.mutex};
+            auto const& store = runtime.database.persistent_store;
+            auto const status_of = [&](std::string const& event_id) -> std::string {
+                auto const stored = store.events.find_in_room(room_id, event_id);
+                return stored != store.events.end() ? stored->status : std::string{"absent"};
+            };
+
+            THEN("every one was parked until the join committed")
+            {
+                CAPTURE(result.reason);
+                REQUIRE(result.ok);
+                REQUIRE(statuses.size() == 3U);
+                REQUIRE(std::ranges::all_of(statuses, [](auto const status) {
+                    return status == merovingian::federation::PduIngestionStatus::deferred;
+                }));
+            }
+
+            THEN("the ban that only version 12 allows does not take effect")
+            {
+                CAPTURE(status_of(ban_event_id));
+                REQUIRE(status_of(ban_event_id) != "accepted");
+                REQUIRE(merovingian::database::find_current_state_event_id(store, room_id, "m.room.member", bob) ==
+                        bob_join_id);
+            }
+
+            THEN("the event whose signature holds only under version 12 is not stored under either ID")
+            {
+                for (auto const& event_id : forged_event_ids)
+                {
+                    CAPTURE(event_id);
+                    REQUIRE(status_of(event_id) == "absent");
+                }
+            }
+
+            THEN("the honest event is accepted under the room's real version")
+            {
+                REQUIRE(status_of(honest_event_id) == "accepted");
+            }
+
+            AND_WHEN("a PDU still carrying the guessed version arrives once the create is stored")
+            {
+                auto const late =
+                    received(std::string{R"({"type":"m.room.message","room_id":")"} + room_id + R"(","sender":")" +
+                                 creator + R"(","depth":8,"origin_server_ts":1103,"prev_events":[)" +
+                                 quoted(honest_event_id) + R"(],"auth_events":[)" + quoted(room_chain.create_id) + "," +
+                                 quoted(room_chain.power_levels_id) + "," + quoted(room_chain.creator_join_id) +
+                                 R"(],"content":{"body":"late","msgtype":"m.text"}})",
+                             policy);
+                auto const answer = runtime.federation.pdu_sink(late);
+
+                THEN("it is refused: the version it was verified under is not the room's")
+                {
+                    REQUIRE(answer.status == merovingian::federation::PduIngestionStatus::rejected_invalid);
+                    REQUIRE(status_of(late.event_id) == "absent");
+                }
+            }
+        }
+    }
+}
+
 SCENARIO("leave_room signs remote membership templates with and without existing hashes",
          "[membership-template-hashes][homeserver][federation][integration][make-join]")
 {
@@ -2622,36 +3029,20 @@ SCENARIO("join_room signs the join with its own origin and timestamp, whatever t
         auto const creator = std::string{"@creator:"} + resident_server;
         auto const policy = *merovingian::rooms::find_room_version_policy("10");
 
-        auto const make_join_event = std::string{R"({"type":"m.room.member","state_key":")"} + alice +
-                                     R"(","room_id":")" + room_id + R"(","sender":")" + alice + R"(","depth":3,)" +
-                                     (template_is_stamped ? std::string{R"("origin":")"} + resident_server +
-                                                                R"(","origin_server_ts":1,"event_id":"$resident",)"
-                                                          : std::string{}) +
-                                     R"("prev_events":[],"auth_events":[],"content":{"membership":"join"}})";
+        auto const room_chain = resident_room_chain(room_id, creator, policy);
+        auto const make_join_event =
+            naming_auth_events(std::string{R"({"type":"m.room.member","state_key":")"} + alice + R"(","room_id":")" +
+                                   room_id + R"(","sender":")" + alice + R"(","depth":3,)" +
+                                   (template_is_stamped ? std::string{R"("origin":")"} + resident_server +
+                                                              R"(","origin_server_ts":1,"event_id":"$resident",)"
+                                                        : std::string{}) +
+                                   R"("prev_events":[],"auth_events":[],"content":{"membership":"join"}})",
+                               room_chain.member_auth());
         auto const make_join_body = std::string{R"({"room_version":"10","event":)"} + make_join_event + "}";
 
-        auto const create_event = std::string{R"({"type":"m.room.create","state_key":"","sender":")"} + creator +
-                                  R"(","room_id":")" + room_id +
-                                  R"(","depth":1,"origin_server_ts":900,)"
-                                  R"("prev_events":[],"auth_events":[],)"
-                                  R"("content":{"room_version":"10","creator":")" +
-                                  creator + R"("}})";
-        auto const power_levels_event = std::string{R"({"type":"m.room.power_levels","state_key":"","sender":")"} +
-                                        creator + R"(","room_id":")" + room_id +
-                                        R"(","depth":2,"origin_server_ts":901,)"
-                                        R"("prev_events":[],"auth_events":[],"content":{"users":{")" +
-                                        creator + R"(":100}}})";
         // The state before the join, and its auth chain: the same two events.
-        auto state_array = merovingian::canonicaljson::Array{};
-        state_array.push_back(
-            sign_test_event(create_event, policy, resident_server, resident_key_id, resident_key_seed));
-        state_array.push_back(
-            sign_test_event(power_levels_event, policy, resident_server, resident_key_id, resident_key_seed));
-        auto auth_chain_array = merovingian::canonicaljson::Array{};
-        auth_chain_array.push_back(
-            sign_test_event(create_event, policy, resident_server, resident_key_id, resident_key_seed));
-        auth_chain_array.push_back(
-            sign_test_event(power_levels_event, policy, resident_server, resident_key_id, resident_key_seed));
+        auto state_array = room_chain.events();
+        auto auth_chain_array = room_chain.events();
         auto const send_join_body = std::string{R"({"state":)"} + canonicaljson_array_to_string(state_array) +
                                     R"(,"auth_chain":)" + canonicaljson_array_to_string(auth_chain_array) + "}";
 

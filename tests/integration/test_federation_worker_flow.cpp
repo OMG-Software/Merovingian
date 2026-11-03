@@ -10,6 +10,7 @@
 
 #include "../federation_signing_test_support.hpp"
 #include "../support/edu_relay_context.hpp"
+#include "../support/ingested_state_fixture.hpp"
 #include "../support/joining_threads.hpp"
 #include "../support/master_key.hpp"
 #include "../support/membership_fixture_support.hpp"
@@ -1538,6 +1539,52 @@ SCENARIO("handle_membership_ingest_request persists a worker-relayed federated j
                 REQUIRE(has_membership_row);
             }
         }
+
+        // F-23. The request's `omit_members` query parameter reaches main in the membership_ingest
+        // frame (the verified envelope takes only that flag from the frame), and the reduced answer
+        // comes back with members_omitted and servers_in_room (server-server-api.md PUT /send_join).
+        WHEN("the relayed join asks for omit_members")
+        {
+            auto const sender = std::string{"@remote:matrix.example.org"};
+            auto& store = runtime.database.persistent_store;
+            auto const join_auth_events = merovingian::tests::fixture_auth_event_ids(store, room_id, sender, false);
+            auto const join_prev_events = merovingian::tests::fixture_prev_event_ids(store, room_id);
+            auto const event_json = make_membership_event_json(room_id, sender, sender, "join", join_prev_events,
+                                                               join_auth_events, 5, 1234);
+            auto escaped_event = std::string{'"'};
+            for (auto const ch : event_json)
+            {
+                if (ch == '"' || ch == '\\')
+                {
+                    escaped_event += '\\';
+                }
+                escaped_event += ch;
+            }
+            escaped_event += '"';
+            auto const request_json =
+                std::string{R"({"type":"membership_ingest","endpoint":"send_join","event_id":")"} +
+                event_id_of(event_json) + R"(")" + R"(,"room_id":")" + room_id + R"(","room_version":"10","sender":")" +
+                sender + R"(","event_type":"m.room.member","state_key":")" + sender +
+                R"(","origin_server_ts":1234,"depth":5,"auth_event_ids":)" + json_id_array(join_auth_events) +
+                R"(,"prev_event_ids":)" + json_id_array(join_prev_events) + R"(,"signatures":[],"json":)" +
+                escaped_event + R"(,"omit_members":1})";
+            auto const response_json = merovingian::homeserver::handle_membership_ingest_request(runtime, request_json);
+
+            THEN("the answer says membership events were omitted, and the state holds none of them")
+            {
+                INFO("response: " << response_json);
+                REQUIRE(response_json.find(R"("accepted":true)") != std::string::npos);
+                REQUIRE(response_json.find(R"("members_omitted":true)") != std::string::npos);
+                REQUIRE(response_json.find(R"("servers_in_room":)") != std::string::npos);
+                auto const state_at = response_json.find(R"("state_json":[)");
+                REQUIRE(state_at != std::string::npos);
+                auto const state_end = response_json.find(R"("knock_room_state_json":)", state_at);
+                REQUIRE(state_end != std::string::npos);
+                auto const state_part = response_json.substr(state_at, state_end - state_at);
+                REQUIRE(state_part.find("m.room.create") != std::string::npos);
+                REQUIRE(state_part.find("m.room.member") == std::string::npos);
+            }
+        }
     }
 }
 
@@ -2827,16 +2874,9 @@ SCENARIO("The wired federation providers refuse a server outside the room and se
         REQUIRE(merovingian::database::store_state(store, {room_id, "m.room.create", "", "$create"}));
         REQUIRE(merovingian::database::store_state(store, {room_id, "m.room.member", member_id, "$join"}));
         // A federation read sends an event in full only when the state recorded for it (ADR-0064) shows the
-        // server may see it: record a state group, without a history_visibility event (so `shared`).
-        {
-            auto const group =
-                merovingian::database::create_or_reuse_state_group(store, room_id, "sg:fed2-shared", std::nullopt, {});
-            REQUIRE(group.has_value());
-            for (auto const* event_id : {"$create", "$join", "$msg"})
-            {
-                REQUIRE(merovingian::database::set_event_state_group(store, event_id, *group));
-            }
-        }
+        // server may see it, and /state and /state_ids answer from that recorded state (ADR-0363): record
+        // what ingestion would have (no history_visibility event, so `shared`).
+        merovingian::tests::record_ingested_state_for_room(store, room_id);
 
         auto const stranger = std::string{"stranger.example.net"};
         auto const member = std::string{"member.example.org"};
@@ -3308,6 +3348,85 @@ SCENARIO("WorkerSupervisor restarts an unexpectedly exited worker with exponenti
 
                 supervisor.stop();
                 REQUIRE_FALSE(supervisor.healthy());
+                REQUIRE(supervisor.worker_pid() == -1);
+            }
+        }
+    }
+}
+
+// F-08 (security audit run 2, ADR-0323): main's side of a worker's channel can die while the worker
+// lives (a reader failure, a flooded dispatch queue, a throwing handler). The supervisor used to
+// restart a worker only when waitpid reported an exit, so such a shard answered 503 until main was
+// restarted by hand.
+SCENARIO("WorkerSupervisor restarts a live worker whose main-side channel has failed",
+         "[integration][federation-worker][supervisor][lifecycle][f08]")
+{
+    GIVEN("a running real worker whose first frame to main makes main's request handler throw")
+    {
+        if (worker_binary_path().empty())
+        {
+            SKIP("MEROVINGIAN_TEST_FEDERATION_WORKER is not defined");
+        }
+
+        REQUIRE(sodium_init() >= 0);
+
+        auto const tmp_dir = unique_temp_dir("merovingian-fed-worker-channel-failed");
+        auto config = make_federation_worker_config(tmp_dir);
+        config.federation_worker().request_timeout_seconds = 2U;
+        auto const config_path = tmp_dir / "merovingian.conf";
+        write_worker_config(config_path, config);
+
+        auto started = start_runtime(config);
+        REQUIRE(started.started);
+
+        auto supervisor = WorkerSupervisor{
+            std::string{worker_binary_path()}, config_path.string(), config.federation_worker().request_timeout_seconds,
+            0U, derive_worker_ipc_auth_key_material(config.security().secrets.master_key_file)};
+        auto frames_seen = std::atomic<std::size_t>{0U};
+        supervisor.set_channel_request_handler(
+            [&frames_seen](std::shared_ptr<merovingian::ipc::IpcChannel> const&, // SHARED_PTR: reviewed — handler type
+                           std::uint64_t, std::string) {
+                // Only the first frame fails, so the replacement worker is not failed in turn.
+                if (frames_seen.fetch_add(1U) == 0U)
+                {
+                    throw std::runtime_error{"simulated handler failure"};
+                }
+            });
+        supervisor.start();
+
+        auto const deadline = std::chrono::steady_clock::now() + std::chrono::seconds{15};
+        while (!supervisor.healthy() && std::chrono::steady_clock::now() < deadline)
+        {
+            std::this_thread::sleep_for(std::chrono::milliseconds{50});
+        }
+        REQUIRE(supervisor.healthy());
+        auto const original_pid = supervisor.worker_pid();
+        REQUIRE(original_pid > 0);
+
+        WHEN("the worker answers a room_sync with its room_sync_result and main's handler throws")
+        {
+            auto const channel = supervisor.channel_snapshot();
+            REQUIRE(channel != nullptr);
+            channel->send_notification(merovingian::ipc::serialize_room_sync_notification("!f08:example.org", 1U));
+
+            THEN("the supervisor replaces the still-running worker and the shard is healthy again")
+            {
+                auto const restart_deadline = std::chrono::steady_clock::now() + std::chrono::seconds{30};
+                while (supervisor.worker_pid() == original_pid && std::chrono::steady_clock::now() < restart_deadline)
+                {
+                    std::this_thread::sleep_for(std::chrono::milliseconds{50});
+                }
+                REQUIRE(supervisor.worker_pid() != original_pid);
+                REQUIRE_FALSE(channel->healthy());
+
+                while (!supervisor.healthy() && std::chrono::steady_clock::now() < restart_deadline)
+                {
+                    std::this_thread::sleep_for(std::chrono::milliseconds{50});
+                }
+                REQUIRE(supervisor.healthy());
+                REQUIRE(supervisor.channel_snapshot() != channel);
+
+                supervisor.stop();
                 REQUIRE(supervisor.worker_pid() == -1);
             }
         }
@@ -3921,6 +4040,24 @@ SCENARIO("Main binds worker EDU origins to genuinely verified pending federation
                            row.content_json == marker_b && row.stream_id > after_forgery.watermark;
                 });
                 CHECK(fresh_b);
+                // F-21 (ADR-0358): the origin is genuinely verified and its parent is live, but an admin's
+                // federation policy rule added since still binds it, in main, for an EDU already in flight.
+                {
+                    auto guard = std::lock_guard{runtime.mutex};
+                    runtime.database.persistent_store.policy_rules.push_back(
+                        {"rule-fed12-f21", "federation", origin_a, "deny", ""});
+                }
+                auto const ruled =
+                    relay.relay(frame(parent_a->id, origin_a, content(origin_a, "fed12-ruled", marker_a)));
+                REQUIRE(ruled.has_value());
+                CHECK(bool{ipc::ipc_json_get_str(*ruled, "status") == "rejected_invalid"});
+                CHECK(same_rows(snapshot().rows, after_retry.rows));
+                {
+                    auto guard = std::lock_guard{runtime.mutex};
+                    std::erase_if(runtime.database.persistent_store.policy_rules, [](auto const& rule) {
+                        return rule.rule_id == "rule-fed12-f21";
+                    });
+                }
                 REQUIRE(relay.parent_is_pending(0U));
                 REQUIRE(relay.parent_is_pending(1U));
                 REQUIRE(relay.finish());
@@ -3934,6 +4071,129 @@ SCENARIO("Main binds worker EDU origins to genuinely verified pending federation
                 CHECK(same_rows(after_completion.rows, after_retry.rows));
                 CHECK(after_completion.watermark == after_retry.watermark);
                 CHECK(after_completion.notified == after_retry.notified);
+            }
+        }
+    }
+}
+
+// F-21 (ADR-0358): the admin's federation policy rules are main's to enforce. A worker's store holds no rules
+// (PostgreSQL) or a snapshot from its start (SQLite), so a rule added after the worker started never reached it
+// and a denied origin kept federating. Main now judges every verified request in FederationProxy::handle before
+// anything is forwarded.
+// Spec: docs/matrix-v1.19-spec/server-server-api.md "Request Authentication" (a 403 M_FORBIDDEN is the answer
+// to a server this one will not serve); the rule itself is the admin API's
+// PUT /_matrix/client/v3/admin/safety/policy_rules/federation/{server} (docs/trust-safety.md).
+SCENARIO("main refuses a signed request from an origin an admin denied after the worker started",
+         "[integration][federation][worker][send][policy_authority][f21]")
+{
+    using namespace merovingian;
+    using namespace merovingian::tests::remote_room;
+    GIVEN("a resident room served by one actual worker shard and a signed transaction from a relay origin")
+    {
+        auto const tmp = unique_temp_dir("merovingian-policy-authority-");
+        auto cleanup = Fed10TempDirectory{tmp};
+        auto config = make_federation_worker_config(tmp);
+        config.server().server_name = local_server;
+        config.federation_worker().shards = 1U;
+        auto const config_path = tmp / "worker.conf";
+        write_worker_config(config_path, config);
+        auto started = homeserver::start_client_server(config);
+        REQUIRE(started.started);
+        auto& client = started.runtime;
+        auto& runtime = client.homeserver;
+        homeserver::wire_federation_callbacks(runtime);
+        auto const room_id = std::string{"!policy-authority:"} + local_server;
+        fed10_persist_remote_room(runtime, room_id);
+        auto const relay_server = std::string{"203.0.113.22"};
+        auto const relay_member = std::string{"@relay:"} + relay_server;
+        REQUIRE(database::store_membership(runtime.database.persistent_store, {room_id, relay_member, "join"}) ==
+                database::MembershipStoreResult::stored);
+        auto relay = remote_runtime();
+        relay.server_name = relay_server;
+        relay.signing_key.server_name = relay_server;
+        relay.discovery.server_name = relay_server;
+        relay.discovery.resolved_host = relay_server;
+        relay.discovery.resolved_addresses = {relay_server};
+        REQUIRE(database::store_server_signing_key(
+            runtime.database.persistent_store,
+            {relay_server, relay.signing_key.key_id,
+             events::matrix_base64_from_bytes(relay.signing_key.public_key_bytes), relay.signing_key.valid_until_ts}));
+        auto const signed_pdu = make_remote_message_json(
+            room_id, {room_id + ":member"}, {room_id + ":create", room_id + ":pl", room_id + ":member:bob"}, 4, 50);
+        auto const envelope = federation::parse_inbound_pdu_envelope(signed_pdu, room_version);
+        REQUIRE(envelope.has_value());
+        auto const event_id = envelope->event_id;
+        auto const body = std::string{"{\"origin\":\""} + relay_server + "\",\"origin_server_ts\":50,\"pdus\":[" +
+                          signed_pdu + "],\"edus\":[]}";
+        auto const target = std::string{"/_matrix/federation/v1/send/policy-authority"};
+        auto call = federation::OutboundCall{};
+        call.transaction = federation::make_outbound_transaction(local_server, "PUT", target, relay_server, body);
+        call.key_id = remote_key_id;
+        call.secret_key = federation::test::secret_key_buffer(federation::test::keypair_from_seed(remote_key_seed));
+        auto const outbound = federation::build_outbound_request(call);
+        auto const authorization = std::ranges::find_if(outbound.headers, [](auto const& header) {
+            return header.name == "Authorization";
+        });
+        REQUIRE(authorization != outbound.headers.end());
+        auto const wire = "PUT " + target + " HTTP/1.1\r\nHost: localhost\r\nAuthorization: " + authorization->value +
+                          "\r\nContent-Type: application/json\r\nContent-Length: " + std::to_string(body.size()) +
+                          "\r\nConnection: close\r\n\r\n" + body;
+        runtime.federation.remotes = {relay};
+        runtime.federation.remote_key_resolver = genuine_key_resolver();
+        runtime.federation_proxy = std::make_unique<FederationProxy>(
+            config.federation_worker(), runtime, std::string{worker_binary_path()}, config_path.string());
+        auto const proxy_lifetime = Fed10ProxyLifetime{runtime};
+        std::ignore = proxy_lifetime;
+        REQUIRE(wait_for_healthy(*runtime.federation_proxy, std::chrono::seconds{15}));
+        auto listener = Fed10SocketListener{client};
+
+        // The worker is running and has loaded its store. The rule is added now, so only main can know it.
+        auto const add_rule = [&runtime](std::string const& server, std::string const& action) {
+            auto const guard = std::lock_guard{runtime.mutex};
+            runtime.database.persistent_store.policy_rules.push_back(
+                {"rule-" + server, "federation", server, action, ""});
+        };
+
+        WHEN("an admin deny rule is added for the origin")
+        {
+            add_rule(relay_server, "deny");
+            auto const refused = fed10_socket_request(listener.port(), wire);
+
+            THEN("the request is refused 403 M_FORBIDDEN and nothing is stored")
+            {
+                CHECK(refused.status == 403U);
+                CHECK(refused.body.find("M_FORBIDDEN") != std::string::npos);
+                auto guard = std::lock_guard{runtime.mutex};
+                CHECK(fed10_target_count(runtime.database.persistent_store, event_id) == 0U);
+                auto durable = database::open_sqlite_persistent_store(config.database().sqlite_path);
+                REQUIRE(durable.ok);
+                CHECK(fed10_target_count(durable.store, event_id) == 0U);
+            }
+        }
+
+        WHEN("an admin quarantine rule is added for the origin")
+        {
+            add_rule(relay_server, "quarantine");
+            auto const held = fed10_socket_request(listener.port(), wire);
+
+            THEN("the request is held back 403 M_FORBIDDEN and nothing is stored")
+            {
+                CHECK(held.status == 403U);
+                auto guard = std::lock_guard{runtime.mutex};
+                CHECK(fed10_target_count(runtime.database.persistent_store, event_id) == 0U);
+            }
+        }
+
+        WHEN("the rule names a different server")
+        {
+            add_rule("somebody-else.example.org", "deny");
+            auto const accepted = fed10_socket_request(listener.port(), wire);
+
+            THEN("the same request is served and stored, so the refusals above are the rule's and nothing else's")
+            {
+                CHECK(accepted.status == 200U);
+                auto guard = std::lock_guard{runtime.mutex};
+                CHECK(fed10_target_count(runtime.database.persistent_store, event_id) == 1U);
             }
         }
     }

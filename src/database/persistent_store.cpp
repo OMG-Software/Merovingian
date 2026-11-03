@@ -1348,11 +1348,14 @@ auto reconstruct_event_relations(PersistentStore& store) -> void
     }
 }
 
-[[nodiscard]] auto reload_room(PersistentStore& store, std::string_view room_id) -> bool
+[[nodiscard]] auto load_room_snapshot(PersistentStore const& store, std::string_view room_id)
+    -> std::optional<RoomReloadSnapshot>
 {
     if (store.backend == PersistentStoreBackend::memory)
     {
-        return true;
+        auto unchanged = RoomReloadSnapshot{};
+        unchanged.nothing_to_apply = true;
+        return unchanged;
     }
     auto snapshot = detail::load_room_snapshot_from_backend(store, room_id);
     if (!snapshot.has_value())
@@ -1362,8 +1365,32 @@ auto reconstruct_event_relations(PersistentStore& store) -> void
                            {"room_id", std::string{room_id}, false}
         },
                        observability::LogEventSeverity::warning);
+    }
+    else
+    {
+        snapshot->room_id = std::string{room_id};
+    }
+    return snapshot;
+}
+
+[[nodiscard]] auto reload_room(PersistentStore& store, std::string_view room_id) -> bool
+{
+    auto snapshot = load_room_snapshot(store, room_id);
+    if (!snapshot.has_value())
+    {
         return false;
     }
+    apply_room_snapshot(store, std::move(*snapshot));
+    return true;
+}
+
+auto apply_room_snapshot(PersistentStore& store, RoomReloadSnapshot snapshot) -> void
+{
+    if (snapshot.nothing_to_apply)
+    {
+        return;
+    }
+    auto const& room_id = snapshot.room_id;
 
     // Replace this room's slice of the store: drop every existing row keyed
     // to room_id (rooms/memberships/invites/state and this room's own
@@ -1379,7 +1406,7 @@ auto reconstruct_event_relations(PersistentStore& store) -> void
             stale_event_ids.insert(event.event_id);
         }
     }
-    for (auto const& event : snapshot->events)
+    for (auto const& event : snapshot.events)
     {
         stale_event_ids.insert(event.event_id);
     }
@@ -1421,45 +1448,42 @@ auto reconstruct_event_relations(PersistentStore& store) -> void
             stale_group_ids.insert(group.state_group_id);
         }
     }
-    for (auto const& group : snapshot->state_groups)
+    for (auto const& group : snapshot.state_groups)
     {
         stale_group_ids.insert(group.state_group_id);
     }
-    std::erase_if(store.state_groups, [&](PersistentStateGroup const& g) {
+    std::ignore = store.state_groups.erase_if([&](PersistentStateGroup const& g) {
         return stale_group_ids.contains(g.state_group_id);
     });
-    std::erase_if(store.state_group_state, [&](PersistentStateGroupStateEntry const& e) {
+    std::ignore = store.state_group_state.erase_if([&](PersistentStateGroupStateEntry const& e) {
         return stale_group_ids.contains(e.state_group_id);
     });
-    std::erase_if(store.event_state_groups, [&](PersistentEventStateGroup const& m) {
+    std::ignore = store.event_state_groups.erase_if([&](PersistentEventStateGroup const& m) {
         return stale_event_ids.contains(m.event_id);
     });
-    store.state_groups.insert(store.state_groups.end(), std::make_move_iterator(snapshot->state_groups.begin()),
-                              std::make_move_iterator(snapshot->state_groups.end()));
-    store.state_group_state.insert(store.state_group_state.end(),
-                                   std::make_move_iterator(snapshot->state_group_state.begin()),
-                                   std::make_move_iterator(snapshot->state_group_state.end()));
-    store.event_state_groups.insert(store.event_state_groups.end(),
-                                    std::make_move_iterator(snapshot->event_state_groups.begin()),
-                                    std::make_move_iterator(snapshot->event_state_groups.end()));
+    std::ignore = store.state_groups.insert_all(std::move(snapshot.state_groups));
+    store.state_group_state.insert_all(std::move(snapshot.state_group_state));
+    store.event_state_groups.insert_all(std::move(snapshot.event_state_groups));
 
-    if (snapshot->room.has_value())
+    if (snapshot.room.has_value())
     {
-        store.rooms.push_back(std::move(*snapshot->room));
+        store.rooms.push_back(std::move(*snapshot.room));
     }
-    for (auto& membership : snapshot->memberships)
+    for (auto& membership : snapshot.memberships)
     {
         store.memberships.push_back(std::move(membership));
     }
-    for (auto& invite : snapshot->invites)
+    for (auto& invite : snapshot.invites)
     {
         store.invites.push_back(std::move(invite));
     }
-    for (auto& state : snapshot->state)
+    for (auto& state : snapshot.state)
     {
         store.state.push_back(std::move(state));
     }
-    for (auto& event : snapshot->events)
+    // The erase above shifted every later row; a pushed row alone would not repair the indexes.
+    rebuild_state_index(store);
+    for (auto& event : snapshot.events)
     {
         for (auto const& prev_id : event.prev_event_ids)
         {
@@ -1475,8 +1499,7 @@ auto reconstruct_event_relations(PersistentStore& store) -> void
                 {event.event_id, signature.server_name, signature.key_id, signature.signature});
         }
     }
-    std::ignore = store.events.insert_all(std::move(snapshot->events));
-    return true;
+    std::ignore = store.events.insert_all(std::move(snapshot.events));
 }
 
 namespace
@@ -2132,6 +2155,121 @@ auto rebuild_state_transition_index(PersistentStore& store) -> void
 namespace
 {
 
+    // The key of `state_position_index`: the same NUL-separated form as the transition index. A
+    // collision (an ID holding a NUL) only makes a lookup disagree with the row it reaches, which
+    // is checked, so it costs a scan and never a wrong answer.
+    [[nodiscard]] auto state_position_key(std::string_view room_id, std::string_view event_type,
+                                          std::string_view state_key) -> std::string
+    {
+        auto key = std::string{};
+        key.reserve(room_id.size() + event_type.size() + state_key.size() + 2U);
+        key.append(room_id);
+        key.push_back('\0');
+        key.append(event_type);
+        key.push_back('\0');
+        key.append(state_key);
+        return key;
+    }
+
+    [[nodiscard]] auto state_row_is(PersistentStateEvent const& row, std::string_view room_id,
+                                    std::string_view event_type, std::string_view state_key) -> bool
+    {
+        return row.room_id == room_id && row.event_type == event_type && row.state_key == state_key;
+    }
+
+    // Adds the row just appended to `state` to the indexes, if they were in step before it. If they
+    // were not (something edited the vector behind the store's back) they stay out of step, so
+    // lookups scan, until the next rebuild.
+    auto note_state_row_appended(PersistentStore& store) -> void
+    {
+        if (store.state.empty() || store.state_indexed_rows + 1U != store.state.size())
+        {
+            return;
+        }
+        auto const position = store.state.size() - 1U;
+        auto const& row = store.state[position];
+        store.state_position_index.emplace(state_position_key(row.room_id, row.event_type, row.state_key), position);
+        store.state_room_index[row.room_id].push_back(position);
+        store.state_indexed_rows = store.state.size();
+    }
+
+} // namespace
+
+auto rebuild_state_index(PersistentStore& store) -> void
+{
+    store.state_position_index.clear();
+    store.state_room_index.clear();
+    store.state_position_index.reserve(store.state.size());
+    for (auto position = std::size_t{0U}; position < store.state.size(); ++position)
+    {
+        auto const& row = store.state[position];
+        store.state_position_index.emplace(state_position_key(row.room_id, row.event_type, row.state_key), position);
+        store.state_room_index[row.room_id].push_back(position);
+    }
+    store.state_indexed_rows = store.state.size();
+}
+
+[[nodiscard]] auto find_current_state_event_id(PersistentStore const& store, std::string_view room_id,
+                                               std::string_view event_type, std::string_view state_key)
+    -> std::optional<std::string>
+{
+    if (store.state_indexed_rows == store.state.size())
+    {
+        auto const entry = store.state_position_index.find(state_position_key(room_id, event_type, state_key));
+        if (entry == store.state_position_index.end())
+        {
+            return std::nullopt;
+        }
+        if (entry->second < store.state.size() &&
+            state_row_is(store.state[entry->second], room_id, event_type, state_key))
+        {
+            return store.state[entry->second].event_id;
+        }
+    }
+    for (auto const& row : store.state)
+    {
+        if (state_row_is(row, room_id, event_type, state_key))
+        {
+            return row.event_id;
+        }
+    }
+    return std::nullopt;
+}
+
+auto for_each_room_state_row(PersistentStore const& store, std::string_view room_id,
+                             std::function<void(PersistentStateEvent const&)> const& visit) -> void
+{
+    if (store.state_indexed_rows == store.state.size())
+    {
+        auto const entry = store.state_room_index.find(std::string{room_id});
+        if (entry == store.state_room_index.end())
+        {
+            return;
+        }
+        auto const names_the_room = [&](std::size_t position) {
+            return position < store.state.size() && store.state[position].room_id == room_id;
+        };
+        if (std::ranges::all_of(entry->second, names_the_room))
+        {
+            for (auto const position : entry->second)
+            {
+                visit(store.state[position]);
+            }
+            return;
+        }
+    }
+    for (auto const& row : store.state)
+    {
+        if (row.room_id == room_id)
+        {
+            visit(row);
+        }
+    }
+}
+
+namespace
+{
+
     struct RedactionShape final
     {
         bool is_redaction{false};
@@ -2354,6 +2492,7 @@ auto apply_current_state(PersistentStore& store, PreparedCurrentState const& pre
     else
     {
         store.state.push_back(state);
+        note_state_row_appended(store);
     }
     // Mirror the same upsert semantics into the in-memory index: update the
     // existing row in place when this (room, type, key, event_id) tuple was
@@ -2522,6 +2661,7 @@ auto apply_store_event_with_state(PersistentStore& store, PreparedStateUpdate co
         else
         {
             store.state.push_back(*update.state);
+            note_state_row_appended(store);
         }
         store.state_transitions.push_back({update.state->room_id, update.state->event_type, update.state->state_key,
                                            update.state->event_id, update.previous_event_id});
@@ -2594,10 +2734,7 @@ namespace
     [[nodiscard]] auto find_persistent_state_group(PersistentStore const& store, std::string_view state_group_id)
         -> PersistentStateGroup const*
     {
-        auto const iterator =
-            std::ranges::find_if(store.state_groups, [state_group_id](PersistentStateGroup const& group) {
-                return group.state_group_id == state_group_id;
-            });
+        auto const iterator = store.state_groups.find(state_group_id);
         return iterator == store.state_groups.end() ? nullptr : &*iterator;
     }
 
@@ -2652,12 +2789,8 @@ namespace
     auto result = std::vector<PersistentStateGroupStateEntry>{};
     for (auto const* group : chain) // newest (target) first, snapshot last
     {
-        for (auto const& entry : store.state_group_state)
+        for (auto const& entry : store.state_group_state.entries_of(group->state_group_id))
         {
-            if (entry.state_group_id != group->state_group_id)
-            {
-                continue;
-            }
             if (seen.insert(state_group_entry_key(entry.event_type, entry.state_key)).second)
             {
                 result.push_back(entry);
@@ -2779,8 +2912,8 @@ auto apply_state_group(PersistentStore& store, PreparedStateGroup const& prepare
     {
         return; // the parent was reused
     }
-    store.state_groups.push_back(*prepared.group);
-    store.state_group_state.insert(store.state_group_state.end(), prepared.rows.begin(), prepared.rows.end());
+    std::ignore = store.state_groups.insert(*prepared.group);
+    store.state_group_state.insert_all(prepared.rows);
 }
 
 [[nodiscard]] auto set_event_state_group(PersistentStore& store, std::string_view event_id,
@@ -2810,29 +2943,14 @@ auto apply_state_group(PersistentStore& store, PreparedStateGroup const& prepare
 
 auto apply_event_state_group(PersistentStore& store, std::string_view event_id, std::string_view state_group_id) -> void
 {
-    auto const existing =
-        std::ranges::find_if(store.event_state_groups, [event_id](PersistentEventStateGroup const& mapping) {
-            return mapping.event_id == event_id;
-        });
-    if (existing != store.event_state_groups.end())
-    {
-        existing->state_group_id = std::string{state_group_id};
-    }
-    else
-    {
-        store.event_state_groups.push_back({std::string{event_id}, std::string{state_group_id}});
-    }
+    store.event_state_groups.assign(event_id, state_group_id);
 }
 
 [[nodiscard]] auto find_event_state_group(PersistentStore const& store, std::string_view event_id)
     -> std::optional<std::string>
 {
-    auto const existing =
-        std::ranges::find_if(store.event_state_groups, [event_id](PersistentEventStateGroup const& mapping) {
-            return mapping.event_id == event_id;
-        });
-    return existing == store.event_state_groups.end() ? std::nullopt
-                                                      : std::optional<std::string>{existing->state_group_id};
+    auto const group_id = store.event_state_groups.state_group_of(event_id);
+    return group_id.has_value() ? std::optional<std::string>{std::string{*group_id}} : std::nullopt;
 }
 
 [[nodiscard]] auto update_forward_extremities(PersistentStore& store, std::string_view room_id,
@@ -4080,7 +4198,7 @@ namespace
 
 [[nodiscard]] auto store_account_data(PersistentStore& store, PersistentAccountData data) -> bool
 {
-    if (data.user_id.empty() || data.event_type.empty())
+    if (data.user_id.empty() || data.event_type.empty() || data.content_json.size() > max_account_data_row_bytes)
     {
         return false;
     }
@@ -4111,6 +4229,10 @@ namespace
     [[nodiscard]] auto store_account_data_within_scope_cap(PersistentStore& store, PersistentAccountData data,
                                                            std::size_t max_types) -> CappedAccountDataStore
     {
+        if (data.content_json.size() > max_account_data_row_bytes)
+        {
+            return CappedAccountDataStore::too_large;
+        }
         auto held_types = std::size_t{0U};
         auto existing = std::optional<std::size_t>{};
         for (auto index = std::size_t{0U}; index < store.account_data.size(); ++index)
@@ -4249,6 +4371,31 @@ namespace
 namespace
 {
 
+    // The identity of one queued row: stream ids are allocated once, but the recipient is part of the key
+    // because the table's primary key is (stream_id, target_user_id, target_device_id).
+    struct ToDeviceRowKey final
+    {
+        std::uint64_t stream_id{0U};
+        std::string target_user_id{};
+        std::string target_device_id{};
+    };
+
+    // One row of a recipient's queue as the byte and count bounds see it.
+    struct QueuedRow final
+    {
+        std::uint64_t stream_id{0U};
+        std::uint64_t created_at_ms{0U};
+        std::uint64_t bytes{0U};
+    };
+
+    // A recipient's rows, oldest first, and their total bytes. Built from the rows once per batch, so the
+    // total is right whatever happened to the rows before (eviction, acknowledgement, hydration).
+    struct RecipientQueue final
+    {
+        std::deque<QueuedRow> rows{};
+        std::uint64_t bytes{0U};
+    };
+
     // The rows one atomic to-device write adds and evicts, and the statements
     // that do it. Building a batch changes nothing in `PersistentStore`; the
     // caller commits `statements` in one transaction and only then applies the
@@ -4257,26 +4404,83 @@ namespace
     {
         std::vector<PreparedStatement> statements{};
         std::vector<PersistentToDeviceMessage> added{};
-        std::vector<PersistentToDeviceMessage> evicted{};
+        std::vector<ToDeviceRowKey> evicted{};
+        // The queue of every recipient the batch names, by `recipient_key`. Empty when the store applies no
+        // bound, because nothing is then evicted.
+        std::unordered_map<std::string, RecipientQueue> queues{};
     };
 
-    [[nodiscard]] auto same_to_device_row(PersistentToDeviceMessage const& left,
-                                          PersistentToDeviceMessage const& right) noexcept -> bool
+    // `out` is the key of a recipient; the user ID's length leads so no user ID can run into the device ID.
+    auto assign_recipient_key(std::string& out, std::string_view user_id, std::string_view device_id) -> void
     {
-        return left.stream_id == right.stream_id && left.target_user_id == right.target_user_id &&
-               left.target_device_id == right.target_device_id;
+        out.assign(std::to_string(user_id.size()));
+        out.push_back(':');
+        out.append(user_id);
+        out.append(device_id);
     }
 
-    [[nodiscard]] auto to_device_message_is_valid(PersistentToDeviceMessage const& message) noexcept -> bool
+    [[nodiscard]] auto to_device_bounds_apply(PersistentStore const& store) noexcept -> bool
     {
-        return !message.sender_user_id.empty() && !message.target_user_id.empty() && !message.message_type.empty() &&
-               !message.content_json.empty();
+        return store.to_device_message_ttl_seconds > 0U || store.max_to_device_messages_per_user_device > 0U ||
+               store.max_to_device_bytes_per_user_device > 0U;
+    }
+
+    [[nodiscard]] auto to_device_message_is_valid(PersistentStore const& store,
+                                                  PersistentToDeviceMessage const& message) noexcept -> bool
+    {
+        if (message.sender_user_id.empty() || message.target_user_id.empty() || message.message_type.empty() ||
+            message.content_json.empty())
+        {
+            return false;
+        }
+        // A message the recipient's queue could never hold is refused whole (F-14); the callers that take
+        // content from a client or a remote server check it first, to answer precisely.
+        return to_device_content_fits(store, message.content_json) &&
+               (store.max_to_device_bytes_per_user_device == 0U ||
+                message.content_json.size() <= store.max_to_device_bytes_per_user_device);
+    }
+
+    // Gathers the queue of every recipient `messages` names with ONE pass over the store's rows (F-13): a
+    // batch of M messages costs the queue's length, not M times it. Rows of other recipients are never
+    // copied or compared beyond the recipient lookup.
+    auto index_to_device_recipients(PersistentStore& store, std::vector<PersistentToDeviceMessage> const& messages,
+                                    ToDeviceBatch& batch) -> void
+    {
+        if (!to_device_bounds_apply(store))
+        {
+            return;
+        }
+        auto key = std::string{};
+        for (auto const& message : messages)
+        {
+            assign_recipient_key(key, message.target_user_id, message.target_device_id);
+            batch.queues.try_emplace(key);
+        }
+        for (auto const& row : store.to_device_messages)
+        {
+            ++store.to_device_rows_examined;
+            assign_recipient_key(key, row.target_user_id, row.target_device_id);
+            auto const queue = batch.queues.find(key);
+            if (queue == batch.queues.end())
+            {
+                continue;
+            }
+            auto const bytes = static_cast<std::uint64_t>(row.content_json.size());
+            queue->second.rows.push_back({row.stream_id, row.created_at_ms, bytes});
+            queue->second.bytes += bytes;
+        }
+        for (auto& [recipient, queue] : batch.queues)
+        {
+            std::ranges::sort(queue.rows, {}, &QueuedRow::stream_id);
+            store.to_device_rows_examined += queue.rows.size();
+        }
     }
 
     // Allocates the message's stream id, works out which rows the per-recipient
-    // bounds evict to make room (CSAZ-10), and appends the DELETE and INSERT
+    // bounds evict to make room (CSAZ-10, F-14), and appends the DELETE and INSERT
     // statements to `batch`. Rows already added or evicted by `batch` count, so
     // two messages for one recipient in a single batch are bounded together.
+    // Needs `index_to_device_recipients` to have run for the batch.
     // The stream id is consumed even if the batch is never committed; ids are
     // only ever skipped, never reused.
     auto prepare_to_device_enqueue(PersistentStore& store, PersistentToDeviceMessage message, ToDeviceBatch& batch)
@@ -4287,57 +4491,50 @@ namespace
 
         auto const ttl_ms = static_cast<std::uint64_t>(store.to_device_message_ttl_seconds) * 1000ULL;
         auto const now_ms = message.created_at_ms;
+        auto const message_bytes = static_cast<std::uint64_t>(message.content_json.size());
 
-        auto to_delete = std::vector<PersistentToDeviceMessage>{};
-        if (ttl_ms > 0U || store.max_to_device_messages_per_user_device > 0U)
+        if (to_device_bounds_apply(store))
         {
-            auto matching = std::vector<std::reference_wrapper<PersistentToDeviceMessage const>>{};
-            auto const consider = [&](PersistentToDeviceMessage const& candidate) {
-                auto const evicted_earlier = std::ranges::any_of(batch.evicted, [&](auto const& victim) {
-                    return same_to_device_row(victim, candidate);
-                });
-                if (candidate.target_user_id == message.target_user_id &&
-                    candidate.target_device_id == message.target_device_id && !evicted_earlier)
-                {
-                    matching.emplace_back(candidate);
-                }
+            auto key = std::string{};
+            assign_recipient_key(key, message.target_user_id, message.target_device_id);
+            auto& queue = batch.queues[key];
+            auto const evict = [&](QueuedRow const& row) {
+                batch.statements.push_back(
+                    record_statement("delete_to_device_message",
+                                     "DELETE FROM to_device_messages WHERE stream_id = $1 AND target_user_id = $2 AND "
+                                     "target_device_id = $3",
+                                     {public_value(std::to_string(row.stream_id)), public_value(message.target_user_id),
+                                      public_value(message.target_device_id)}));
+                batch.evicted.push_back({row.stream_id, message.target_user_id, message.target_device_id});
+                queue.bytes -= row.bytes;
             };
-            std::ranges::for_each(store.to_device_messages, consider);
-            std::ranges::for_each(batch.added, consider);
-            std::ranges::sort(matching, {}, [](PersistentToDeviceMessage const& candidate) {
-                return candidate.stream_id;
-            });
-
-            for (PersistentToDeviceMessage const& candidate : matching)
+            // created_at_ms == 0 is a row written before migration 019: its age is unknown, so it is not
+            // expired here, as in the drain. The count and byte bounds still apply to it.
+            if (ttl_ms > 0U)
             {
-                // created_at_ms == 0 is a row written before migration 019: its age
-                // is unknown, so it is not expired here, as in the drain. The count
-                // cap still bounds it.
-                auto const expired = ttl_ms > 0U && candidate.created_at_ms > 0U && now_ms > candidate.created_at_ms &&
-                                     now_ms - candidate.created_at_ms >= ttl_ms;
-                if (expired)
-                {
-                    to_delete.push_back(candidate);
-                    continue;
-                }
-                auto const kept_after_deletions = static_cast<std::uint64_t>(matching.size() - to_delete.size());
-                if (store.max_to_device_messages_per_user_device > 0U &&
-                    kept_after_deletions >= store.max_to_device_messages_per_user_device)
-                {
-                    to_delete.push_back(candidate);
-                }
+                std::erase_if(queue.rows, [&](QueuedRow const& row) {
+                    auto const expired =
+                        row.created_at_ms > 0U && now_ms > row.created_at_ms && now_ms - row.created_at_ms >= ttl_ms;
+                    if (expired)
+                    {
+                        evict(row);
+                    }
+                    return expired;
+                });
             }
+            // Oldest first: room is made for the incoming message by dropping the rows that have waited longest.
+            while (!queue.rows.empty() && ((store.max_to_device_messages_per_user_device > 0U &&
+                                            queue.rows.size() >= store.max_to_device_messages_per_user_device) ||
+                                           (store.max_to_device_bytes_per_user_device > 0U &&
+                                            queue.bytes + message_bytes > store.max_to_device_bytes_per_user_device)))
+            {
+                evict(queue.rows.front());
+                queue.rows.pop_front();
+            }
+            queue.rows.push_back({message.stream_id, message.created_at_ms, message_bytes});
+            queue.bytes += message_bytes;
         }
 
-        for (auto const& victim : to_delete)
-        {
-            batch.statements.push_back(record_statement(
-                "delete_to_device_message",
-                "DELETE FROM to_device_messages WHERE stream_id = $1 AND target_user_id = $2 AND target_device_id = $3",
-                {public_value(std::to_string(victim.stream_id)), public_value(victim.target_user_id),
-                 public_value(victim.target_device_id)}));
-            batch.evicted.push_back(victim);
-        }
         batch.statements.push_back(record_statement(
             "insert_to_device_message",
             "INSERT INTO to_device_messages (stream_id, sender_user_id, target_user_id, target_device_id, "
@@ -4349,6 +4546,31 @@ namespace
         batch.added.push_back(std::move(message));
     }
 
+    // Removes `victims` from the in-memory queue in one pass over the rows (F-13), looking each row's stream id up
+    // in a hash rather than comparing it with every victim.
+    auto erase_to_device_rows(PersistentStore& store, std::vector<ToDeviceRowKey> const& victims) -> void
+    {
+        if (victims.empty())
+        {
+            return;
+        }
+        auto by_stream_id = std::unordered_multimap<std::uint64_t, std::size_t>{};
+        by_stream_id.reserve(victims.size());
+        for (auto position = std::size_t{0U}; position < victims.size(); ++position)
+        {
+            by_stream_id.emplace(victims[position].stream_id, position);
+        }
+        std::erase_if(store.to_device_messages, [&](PersistentToDeviceMessage const& candidate) {
+            ++store.to_device_rows_examined;
+            auto const [first, last] = by_stream_id.equal_range(candidate.stream_id);
+            return std::any_of(first, last, [&](auto const& entry) {
+                auto const& victim = victims[entry.second];
+                return victim.target_user_id == candidate.target_user_id &&
+                       victim.target_device_id == candidate.target_device_id;
+            });
+        });
+    }
+
     // Mirrors a committed batch into memory. Call only after the commit succeeded.
     auto apply_to_device_batch(PersistentStore& store, ToDeviceBatch&& batch) -> void
     {
@@ -4356,13 +4578,7 @@ namespace
         {
             store.to_device_messages.push_back(std::move(message));
         }
-        auto const [first, last] =
-            std::ranges::remove_if(store.to_device_messages, [&batch](PersistentToDeviceMessage const& candidate) {
-                return std::ranges::any_of(batch.evicted, [&candidate](PersistentToDeviceMessage const& victim) {
-                    return same_to_device_row(victim, candidate);
-                });
-            });
-        store.to_device_messages.erase(first, last);
+        erase_to_device_rows(store, batch.evicted);
     }
 
     [[nodiscard]] auto insert_client_txn_statement(PersistentClientTxnRecord const& record) -> PreparedStatement
@@ -4417,8 +4633,8 @@ namespace
 [[nodiscard]] auto enqueue_to_device_messages(PersistentStore& store, std::vector<PersistentToDeviceMessage> messages)
     -> bool
 {
-    if (!std::ranges::all_of(messages, [](PersistentToDeviceMessage const& message) {
-            return to_device_message_is_valid(message);
+    if (!std::ranges::all_of(messages, [&store](PersistentToDeviceMessage const& message) {
+            return to_device_message_is_valid(store, message);
         }))
     {
         return false;
@@ -4428,6 +4644,7 @@ namespace
         return true;
     }
     auto batch = ToDeviceBatch{};
+    index_to_device_recipients(store, messages, batch);
     for (auto& message : messages)
     {
         prepare_to_device_enqueue(store, std::move(message), batch);
@@ -4452,8 +4669,8 @@ namespace
                                                               PersistentClientTxnRecord record) -> bool
 {
     if (record.user_id.empty() || record.event_type.empty() || record.txn_id.empty() ||
-        !std::ranges::all_of(messages, [](PersistentToDeviceMessage const& message) {
-            return to_device_message_is_valid(message);
+        !std::ranges::all_of(messages, [&store](PersistentToDeviceMessage const& message) {
+            return to_device_message_is_valid(store, message);
         }))
     {
         return false;
@@ -4467,6 +4684,7 @@ namespace
     }
 
     auto batch = ToDeviceBatch{};
+    index_to_device_recipients(store, messages, batch);
     for (auto& message : messages)
     {
         prepare_to_device_enqueue(store, std::move(message), batch);
@@ -4479,6 +4697,25 @@ namespace
     apply_to_device_batch(store, std::move(batch));
     append_client_txn(store, std::move(record));
     return true;
+}
+
+[[nodiscard]] auto to_device_content_fits(PersistentStore const& store, std::string_view content_json) noexcept -> bool
+{
+    return store.max_to_device_message_bytes == 0U || content_json.size() <= store.max_to_device_message_bytes;
+}
+
+[[nodiscard]] auto to_device_queue_bytes(PersistentStore const& store, std::string_view user_id,
+                                         std::string_view device_id) -> std::uint64_t
+{
+    auto bytes = std::uint64_t{0U};
+    for (auto const& row : store.to_device_messages)
+    {
+        if (row.target_user_id == user_id && row.target_device_id == device_id)
+        {
+            bytes += row.content_json.size();
+        }
+    }
+    return bytes;
 }
 
 [[nodiscard]] auto drain_to_device_messages(PersistentStore& store, std::string_view user_id,
@@ -4501,9 +4738,10 @@ namespace
     // response snapshot: newer rows stay pending so next_batch cannot
     // acknowledge a room key that was never put in the /sync response.
     auto drained = std::vector<PersistentToDeviceMessage>{};
-    auto to_purge = std::vector<PersistentToDeviceMessage>{};
+    auto to_purge = std::vector<ToDeviceRowKey>{};
     auto const ttl_ms = static_cast<std::uint64_t>(store.to_device_message_ttl_seconds) * 1000ULL;
     auto const now_ms = current_epoch_ms();
+    store.to_device_rows_examined += store.to_device_messages.size();
     for (auto const& message : store.to_device_messages)
     {
         if (!addressed_to_device(message))
@@ -4525,7 +4763,7 @@ namespace
             // shared across this user's devices and are not acknowledged
             // per-device here, so they persist until TTL or a new broadcast
             // replaces them under the per-recipient cap.
-            to_purge.push_back(message);
+            to_purge.push_back({message.stream_id, message.target_user_id, message.target_device_id});
             continue;
         }
         if (!acknowledged)
@@ -4551,15 +4789,7 @@ namespace
         }
         if (commit_persistent_transaction(store, statements))
         {
-            auto const [first, last] = std::ranges::remove_if(
-                store.to_device_messages, [&to_purge](PersistentToDeviceMessage const& candidate) {
-                    return std::ranges::any_of(to_purge, [&candidate](PersistentToDeviceMessage const& victim) {
-                        return victim.stream_id == candidate.stream_id &&
-                               victim.target_user_id == candidate.target_user_id &&
-                               victim.target_device_id == candidate.target_device_id;
-                    });
-                });
-            store.to_device_messages.erase(first, last);
+            erase_to_device_rows(store, to_purge);
         }
     }
     return drained;
@@ -5537,6 +5767,175 @@ auto sort_appservice_outbox(PersistentStore& store) -> void
     return true;
 }
 
+namespace
+{
+
+    // The strings of the top-level array member `key` of a PDU's JSON; empty when the member is missing
+    // or not an array. Non-string elements are skipped.
+    [[nodiscard]] auto top_level_string_array(canonicaljson::Value const& pdu, std::string_view key)
+        -> std::vector<std::string>
+    {
+        auto result = std::vector<std::string>{};
+        auto const* object = std::get_if<canonicaljson::Object>(&pdu.storage());
+        if (object == nullptr)
+        {
+            return result;
+        }
+        for (auto const& member : *object)
+        {
+            if (member.key != key)
+            {
+                continue;
+            }
+            auto const* array = std::get_if<canonicaljson::Array>(&member.value->storage());
+            if (array == nullptr)
+            {
+                break;
+            }
+            for (auto const& element : *array)
+            {
+                if (auto const* text = std::get_if<std::string>(&element.storage()); text != nullptr)
+                {
+                    result.push_back(*text);
+                }
+            }
+            break;
+        }
+        return result;
+    }
+
+    // The event IDs a retained PDU is indexed under: the ones it is missing now. A PDU that is
+    // retained although it is missing nothing (its state before it could not be resolved) is
+    // indexed under everything it references, so an event it names arriving still wakes it.
+    [[nodiscard]] auto awaited_event_ids(PersistentStore const& store, std::string_view pdu_json)
+        -> std::vector<std::string>
+    {
+        auto const parsed = canonicaljson::parse_lossless(pdu_json);
+        if (parsed.error != canonicaljson::ParseError::none)
+        {
+            return {};
+        }
+        auto auth = top_level_string_array(parsed.value, "auth_events");
+        auto prev = top_level_string_array(parsed.value, "prev_events");
+        auto missing = find_missing_event_references(store, auth, prev);
+        auto awaited = std::move(missing.auth);
+        awaited.insert(awaited.end(), std::make_move_iterator(missing.prev.begin()),
+                       std::make_move_iterator(missing.prev.end()));
+        if (awaited.empty())
+        {
+            awaited = std::move(auth);
+            awaited.insert(awaited.end(), std::make_move_iterator(prev.begin()), std::make_move_iterator(prev.end()));
+        }
+        std::ranges::sort(awaited);
+        awaited.erase(std::ranges::unique(awaited).begin(), awaited.end());
+        return awaited;
+    }
+
+    auto unindex_deferred_pdu(DeferredPduAwaits& awaits, std::string_view event_id) -> void
+    {
+        auto const row = awaits.awaited_by_row.find(std::string{event_id});
+        if (row == awaits.awaited_by_row.end())
+        {
+            return;
+        }
+        for (auto const& awaited : row->second)
+        {
+            auto const waiting = awaits.rows_by_awaited.find(awaited);
+            if (waiting == awaits.rows_by_awaited.end())
+            {
+                continue;
+            }
+            waiting->second.erase(std::string{event_id});
+            if (waiting->second.empty())
+            {
+                awaits.rows_by_awaited.erase(waiting);
+            }
+        }
+        awaits.awaited_by_row.erase(row);
+    }
+
+    auto index_deferred_pdu(PersistentStore& store, PersistentDeferredPdu const& row) -> void
+    {
+        auto& awaits = store.deferred_pdu_awaits;
+        unindex_deferred_pdu(awaits, row.event_id);
+        auto awaited = awaited_event_ids(store, row.pdu_json);
+        for (auto const& awaited_id : awaited)
+        {
+            awaits.rows_by_awaited[awaited_id].insert_or_assign(row.event_id, row.room_id);
+        }
+        awaits.awaited_by_row.insert_or_assign(row.event_id, std::move(awaited));
+    }
+
+} // namespace
+
+[[nodiscard]] auto find_missing_event_references(PersistentStore const& store,
+                                                 std::vector<std::string> const& auth_event_ids,
+                                                 std::vector<std::string> const& prev_event_ids)
+    -> MissingEventReferences
+{
+    auto missing = MissingEventReferences{};
+    for (auto const& id : auth_event_ids)
+    {
+        if (!store.events.contains(id))
+        {
+            missing.auth.push_back(id);
+        }
+    }
+    for (auto const& id : prev_event_ids)
+    {
+        if (!store.events.contains(id) || !store.event_state_groups.contains(id))
+        {
+            missing.prev.push_back(id);
+        }
+    }
+    return missing;
+}
+
+auto rebuild_deferred_pdu_awaits(PersistentStore& store) -> void
+{
+    store.deferred_pdu_awaits = DeferredPduAwaits{};
+    for (auto const& row : store.deferred_pdus)
+    {
+        index_deferred_pdu(store, row);
+    }
+    store.deferred_pdu_awaits.indexed_rows = store.deferred_pdus.size();
+}
+
+[[nodiscard]] auto take_deferred_pdus_awaiting(PersistentStore& store, std::string_view room_id,
+                                               std::string_view event_id) -> std::vector<std::string>
+{
+    if (store.deferred_pdu_awaits.indexed_rows != store.deferred_pdus.size())
+    {
+        rebuild_deferred_pdu_awaits(store);
+    }
+    auto& awaits = store.deferred_pdu_awaits;
+    auto woken = std::vector<std::string>{};
+    auto const waiting = awaits.rows_by_awaited.find(std::string{event_id});
+    if (waiting == awaits.rows_by_awaited.end())
+    {
+        return woken;
+    }
+    for (auto it = waiting->second.begin(); it != waiting->second.end();)
+    {
+        if (it->second != room_id || it->first == event_id)
+        {
+            ++it;
+            continue;
+        }
+        woken.push_back(it->first);
+        if (auto const row = awaits.awaited_by_row.find(it->first); row != awaits.awaited_by_row.end())
+        {
+            std::erase(row->second, std::string{event_id});
+        }
+        it = waiting->second.erase(it);
+    }
+    if (waiting->second.empty())
+    {
+        awaits.rows_by_awaited.erase(waiting);
+    }
+    return woken;
+}
+
 [[nodiscard]] auto upsert_deferred_pdu(PersistentStore& store, PersistentDeferredPdu pdu) -> DeferredPduUpsert
 {
     if (pdu.event_id.empty() || pdu.room_id.empty())
@@ -5578,13 +5977,33 @@ auto sort_appservice_outbox(PersistentStore& store) -> void
     {
         return DeferredPduUpsert::persistence_failed;
     }
+    // Index the row by what it is missing now (an update re-derives it: some of what it waited for may
+    // have arrived). If a caller left the index behind the rows, rebuild all of it instead.
+    auto const index_was_current = store.deferred_pdu_awaits.indexed_rows == store.deferred_pdus.size();
     if (existing != store.deferred_pdus.end())
     {
         existing->origin = std::move(pdu.origin);
         existing->attempts = pdu.attempts;
+        if (index_was_current)
+        {
+            index_deferred_pdu(store, *existing);
+        }
+        else
+        {
+            rebuild_deferred_pdu_awaits(store);
+        }
         return DeferredPduUpsert::updated;
     }
     store.deferred_pdus.push_back(std::move(pdu));
+    if (index_was_current)
+    {
+        index_deferred_pdu(store, store.deferred_pdus.back());
+        store.deferred_pdu_awaits.indexed_rows = store.deferred_pdus.size();
+    }
+    else
+    {
+        rebuild_deferred_pdu_awaits(store);
+    }
     return DeferredPduUpsert::inserted;
 }
 
@@ -5603,7 +6022,13 @@ auto sort_appservice_outbox(PersistentStore& store) -> void
     {
         return false;
     }
+    auto const index_was_current = store.deferred_pdu_awaits.indexed_rows == store.deferred_pdus.size();
+    unindex_deferred_pdu(store.deferred_pdu_awaits, event_id);
     store.deferred_pdus.erase(existing);
+    if (index_was_current)
+    {
+        store.deferred_pdu_awaits.indexed_rows = store.deferred_pdus.size();
+    }
     return true;
 }
 

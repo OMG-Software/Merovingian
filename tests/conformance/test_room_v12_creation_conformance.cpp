@@ -462,3 +462,52 @@ SCENARIO("Upgrading to room version 12 applies additional_creators and transfers
         }
     }
 }
+
+// Spec: Matrix Client-Server API v1.19, m.room.create "Previous Room" and POST /upgrade
+// URL:  ../../docs/matrix-v1.19-spec/client-server-api.md#mroomcreate
+//
+// Spec SHOULD: predecessor.event_id is "The event ID of the last known event in the old room",
+// an Event ID, and "SHOULD still be populated where possible/practical". F-48 (security audit
+// run-2, ADR-0342): this server copied the old room's last event's JSON into the field, which
+// is not an event ID and disclosed that event to the new room.
+SCENARIO("A room upgrade's predecessor.event_id is the ID of the old room's last event",
+         "[conformance][rooms][room-upgrade][f-48]")
+{
+    GIVEN("a version 11 room whose last event is a message")
+    {
+        auto started = merovingian::homeserver::start_client_server(v12_config());
+        REQUIRE(started.started);
+        auto& rt = started.runtime;
+        auto const alice = register_and_login(rt, "alice");
+        auto const room_id =
+            created_room_id(call(rt, "POST", "/_matrix/client/v3/createRoom", alice, R"({"room_version":"11"})"));
+        auto const sent = call(rt, "PUT", "/_matrix/client/v3/rooms/" + room_id + "/send/m.room.message/t1", alice,
+                               R"({"msgtype":"m.text","body":"a secret the new room must not see"})");
+        REQUIRE(sent.status == 200U);
+        auto const message_id = *string_member(parse_object(sent.body), "event_id");
+
+        WHEN("it is upgraded to version 10 or version 11")
+        {
+            auto const target = GENERATE(as<std::string>{}, "10", "11");
+            auto const reply = call(rt, "POST", "/_matrix/client/v3/rooms/" + room_id + "/upgrade", alice,
+                                    R"({"new_version":")" + target + R"("})");
+            REQUIRE(reply.status == 200U);
+            auto const new_room = *string_member(parse_object(reply.body), "replacement_room");
+            auto const create = state_content(rt, alice, new_room, "m.room.create");
+            auto const* predecessor = object_member_as_object(create, "predecessor");
+
+            THEN("predecessor.event_id is that event's ID and carries none of its content")
+            {
+                CAPTURE(target);
+                REQUIRE(predecessor != nullptr);
+                auto const* event_id = string_member(*predecessor, "event_id");
+                // Spec SHOULD: the Event ID of the last known event in the old room.
+                REQUIRE(event_id != nullptr);
+                REQUIRE(*event_id == message_id);
+                REQUIRE(event_id->starts_with('$'));
+                REQUIRE(event_id->find('{') == std::string::npos);
+                REQUIRE(event_id->find("secret") == std::string::npos);
+            }
+        }
+    }
+}
