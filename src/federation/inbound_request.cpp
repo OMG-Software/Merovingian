@@ -3513,8 +3513,9 @@ namespace
                 dispatch_non_transaction_endpoint(runtime, request, route_match.route, remote);
             if (non_transaction_response.status >= 200U && non_transaction_response.status < 300U)
             {
-                remote.trust.consecutive_failures = 0U;
-                persist_remote_trust(runtime, remote);
+                // F-59 / ADR-0347: no trust write here. Only a /send transaction is evidence about
+                // the peer's PDUs, and `remote` may be a worker's synthetic record (ADR-0110) that
+                // would overwrite the real one, clearing a backoff the peer earned.
                 log_diagnostic("request.accepted",
                                {
                                    {"origin", request.origin,                                       false},
@@ -3673,6 +3674,9 @@ namespace
         // Room-ACL denials are deliberately excluded — an ACL is local policy, not
         // evidence that the peer is misbehaving.
         auto pdu_trust_failures = std::size_t{0U};
+        // Every PDU that failed verification here, whoever it is charged to (F-22): a relayed one is
+        // not the peer's fault, but a transaction carrying one is still no evidence of good behaviour.
+        auto pdu_verification_failures = std::size_t{0U};
         auto local_key_resolution_denied = false;
         // Pre-resolve distinct relayed sender-domain signing keys in parallel so a
         // large inbound transaction carrying PDUs from many senders does not pay N
@@ -3818,8 +3822,17 @@ namespace
                 }
                 else
                 {
-                    record_remote_trust_failure(remote.trust);
-                    ++pdu_trust_failures;
+                    ++pdu_verification_failures;
+                    // F-22 / ADR-0346: only the peer's own events are evidence against the peer. A
+                    // relayed PDU's verification depends on its author's keys, which the author
+                    // controls and the relay cannot influence, so a third server must not be able to
+                    // back an honest relay off. A sender whose domain cannot be read is no faithful
+                    // relay of a valid event, so that PDU is the peer's own.
+                    if (pdu_sender_dom.empty() || pdu_sender_dom == request.origin)
+                    {
+                        record_remote_trust_failure(remote.trust);
+                        ++pdu_trust_failures;
+                    }
                 }
                 log_diagnostic("pdu.rejected", {
                                                    {"origin",         request.origin,                      false},
@@ -4034,10 +4047,10 @@ namespace
         // Security (audit H-04): only a transaction in which every PDU passed its
         // trust checks resets the peer's consecutive-failure count. When PDUs were
         // rejected, `remote.trust.consecutive_failures` already carries the
-        // incremented value and is persisted as-is, so a stream of forged-PDU
+        // incremented value (for a PDU the peer authored; F-22) and is persisted as-is, so a stream of forged-PDU
         // transactions eventually trips the backoff and circuit breaker instead of
         // zeroing the counter on every round trip.
-        if (pdu_trust_failures == 0U)
+        if (pdu_verification_failures == 0U)
         {
             remote.trust.consecutive_failures = 0U;
         }

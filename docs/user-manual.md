@@ -1197,9 +1197,13 @@ a config key), that address is answered `429 M_LIMIT_EXCEEDED` with a
 real peer that shares an address with a sender of forged requests, including
 every peer behind a reverse proxy that has no `trusted_proxies` configured,
 shares that budget. Separately, an origin that sends malformed transactions or
-forged relayed PDUs after a valid signature is backed off after three
-consecutive failures; the backoff lapses after five minutes without a further
-failure.
+PDUs it authored itself (the PDU's sender is on that origin) that fail
+verification, after a valid signature, is backed off after three consecutive
+failures; the backoff lapses after five minutes without a further failure. A
+PDU that an origin merely relays from a third server, and that fails
+verification here, is answered with a per-PDU error and is not counted against
+the relay. Only a `/send` transaction changes the count: a read, a join, a leave,
+a knock or an invite never resets it.
 
 Rate values use `N/Ws` or `N/Wm` syntax (e.g. `300/60s`). The six `per_origin_*`
 and transaction keys require restart. An origin that exceeds a bucket gets `429 M_LIMIT_EXCEEDED` for

@@ -134,6 +134,19 @@ The medium findings of security audit run 2 (ref 5e67d4e8).
   searched every retained PDU of that room for the event ID as text, up to 6.4 MiB a time under `runtime.mutex`, and
   woke a PDU that only mentioned the ID. Retained PDUs are now indexed by the events they are missing, so the wake
   touches only the rows waiting for that event. The retry job no longer copies the whole table every cycle.
+- **A third server can no longer put an honest relay into the inbound backoff (F-22, ADR-0346).** A resident server
+  relays the PDUs of the servers that join its rooms, and whether one verifies here depends on its author's keys, which
+  the author controls. Three that failed were charged to the relay, which was then answered 429 `remote backoff
+  required` for five minutes on that worker shard. A failed PDU in a `/send` transaction is now charged to the
+  transport peer only when its sender domain is the X-Matrix origin (or cannot be read); a relayed third-party PDU is
+  dropped with its per-PDU error in the usual 200 answer. A transaction in which any PDU failed verification still does
+  not reset the failure count. The per-origin transaction and PDU rate limits and the key-resolution budgets remain
+  the cost control. ADR-0081 and ADR-0133 are marked partly superseded.
+- **A successful read can no longer clear a peer's backoff (F-59, ADR-0347).** A federation worker answers requests main
+  has verified with a synthetic remote holding default trust, and after any 2xx non-transaction answer the handler wrote
+  that record over the worker's real one, so a peer charged on `/send` cleared the charge with one cheap read (and a
+  `send_join` or invite reset a sub-threshold count the same way). Only the `/send` transaction path now writes a
+  peer's trust record.
 
 ## 0.12.67
 

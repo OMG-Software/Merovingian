@@ -1,6 +1,6 @@
 # Federation worker trusts the main-process verified identity for room-scoped reads
 
-* Status: accepted
+* Status: accepted; refined by [ADR-0347](0347-only-a-transaction-writes-a-peers-trust-record.md) (the synthetic remote is never written back)
 * Date: 2026-10-05
 
 Technical Story: security audit follow-up to DB-2 / ADR-0108. The federation worker receives inbound room-scoped requests from the main process over an authenticated IPC channel after main has verified the X-Matrix signature. Requiring the worker to resolve and rediscover the remote peer independently blocked tests that have no production DNS/key-fetch seam, and duplicated policy enforcement that main had already performed.

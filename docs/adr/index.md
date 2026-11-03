@@ -312,6 +312,8 @@
 * [0343 - Push glob matching spends a bounded budget per recipient and event](0343-push-glob-matching-spends-a-bounded-budget-per-event.md)
 * [0344 - Index current state by room, type and key, and trust the index only while it is in step](0344-index-current-state-by-room-type-and-key-and-trust-it-only-while-in-step.md)
 * [0345 - Hierarchy and threads reads are bounded by the page and by a budget of rooms or rows](0345-hierarchy-and-threads-reads-are-bounded-by-the-page-and-a-visit-budget.md)
+* [0346 - A relayed PDU that fails verification is not charged to the relaying peer](0346-a-relayed-pdu-that-fails-verification-is-not-charged-to-the-relaying-peer.md) — Supersedes the relayed-PDU part of ADR-0081 and the failed-lookup penalty of ADR-0133
+* [0347 - Only a transaction writes a peer's trust record](0347-only-a-transaction-writes-a-peers-trust-record.md) — Refines ADR-0110: a worker's synthetic remote is never written back
 * [0335 - Bound the to-device queue in bytes per recipient](0335-bound-the-to-device-queue-in-bytes-per-recipient.md)
 * [0336 - Enqueue a to-device batch in one pass, and cap a request's deliveries](0336-enqueue-a-to-device-batch-in-one-pass-and-cap-a-requests-deliveries.md)
 * [0337 - Keep only what was asked of a server in a key claim answer](0337-keep-only-what-was-asked-of-a-server-in-a-key-claim-answer.md)
