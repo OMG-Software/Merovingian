@@ -963,6 +963,8 @@ auto validate(Config const& config) -> std::vector<ConfigValidationFinding>
     validate_count("security.federation.outbound_queue_capacity", config.security().federation.outbound_queue_capacity,
                    65536U);
     validate_count("security.federation.outbound_max_retries", config.security().federation.outbound_max_retries, 256U);
+    validate_count("security.federation.outbound_delivery_threads",
+                   config.security().federation.outbound_delivery_threads, 64U);
     validate_count("appservice.connect_timeout_seconds", config.appservice().connect_timeout_seconds, 120U);
     validate_count("appservice.total_timeout_seconds", config.appservice().total_timeout_seconds, 300U);
     validate_bytes("appservice.response_max_size", config.appservice().response_max_size, 67108864U);

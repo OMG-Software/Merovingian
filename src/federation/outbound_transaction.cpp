@@ -293,6 +293,14 @@ auto apply_outbound_result(FederationDestination& destination, OutboundTransacti
     destination.state = "backoff";
 }
 
+auto apply_slow_success(FederationDestination& destination, std::uint32_t failures_before,
+                        std::uint64_t now_ts) noexcept -> void
+{
+    destination.consecutive_failures = failures_before + 1U;
+    destination.retry_after_ts = now_ts + compute_backoff(destination.consecutive_failures);
+    destination.state = "backoff";
+}
+
 auto perform_outbound_transaction(http::OutboundClient& client, OutboundCall const& call,
                                   FederationDestination& destination, std::uint64_t now_ts,
                                   std::function<std::uint64_t()> const& finished_clock) -> OutboundTransactionResult

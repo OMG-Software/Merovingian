@@ -582,6 +582,7 @@ struct FederationSecurityConfig final
     std::string pending_join_max_size{"512KiB"};
     std::uint32_t outbound_queue_capacity{4096U};
     std::uint32_t outbound_max_retries{32U};
+    std::uint32_t outbound_delivery_threads{4U};
     std::string remote_timeout{"60s"};
     // Separate, extendable budget for the make_join/send_join/make_leave/send_leave
     // membership dance. A large remote room's make_join can take longer than the

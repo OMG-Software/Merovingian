@@ -331,3 +331,11 @@ Federation is the highest-risk surface: **all input comes from untrusted remote 
 - [Transactions](../../docs/matrix-v1.19-spec/server-server-api.md#transactions)
 - [Joining rooms](../../docs/matrix-v1.19-spec/server-server-api.md#joining-rooms)
 - [Key publication](../../docs/matrix-v1.19-spec/server-server-api.md#publishing-keys)
+
+## Outbound delivery: one thread per destination at most (F-20, ADR-0354)
+
+`DispatchWorker` runs `delivery_threads` threads over one queue. `next_ready_locked` offers only a destination's oldest
+transaction, and only with none in flight: the spec's "must wait and retry for a 200 OK" is why, so keep `requeue_locked` at
+the front. Injected callbacks run concurrently. Never hold a `FederationDestination&` across a network call: an attempt works
+on a copy and puts it back with `remember_destination_locked`. Do not make a slow success free: it is what let one peer hold
+the only thread.

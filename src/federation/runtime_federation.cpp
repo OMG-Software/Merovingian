@@ -126,6 +126,7 @@ auto make_runtime_federation_config(config::Config const& config) -> RuntimeFede
         pending_join_max_size.valid ? pending_join_max_size.bytes : 0U,
         config.security().federation.outbound_queue_capacity,
         config.security().federation.outbound_max_retries,
+        config.security().federation.outbound_delivery_threads,
     };
 }
 
@@ -174,7 +175,8 @@ auto federation_summary(RuntimeFederationConfig const& config) -> std::string
            " pending_join_max_pdus=" + std::to_string(config.pending_join_max_pdus) +
            " pending_join_max_bytes=" + std::to_string(config.pending_join_max_bytes) +
            " outbound_queue_capacity=" + std::to_string(config.outbound_queue_capacity) +
-           " outbound_max_retries=" + std::to_string(config.outbound_max_retries);
+           " outbound_max_retries=" + std::to_string(config.outbound_max_retries) +
+           " outbound_delivery_threads=" + std::to_string(config.outbound_delivery_threads);
 }
 
 auto federation_server_policy(RuntimeFederationConfig const& config, std::string_view server_name)

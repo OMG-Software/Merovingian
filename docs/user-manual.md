@@ -628,6 +628,7 @@ not survive a restart. These limits are fixed. See
 | `pending_join_max_pdus` | `32` | 1..4,096 |
 | `outbound_queue_capacity` | `4096` | 1..65,536 |
 | `outbound_max_retries` | `32` | 1..256 |
+| `outbound_delivery_threads` | `4` | 1..64 |
 | `pending_join_max_size` | `512KiB` | 1 byte..16MiB |
 | `bad_signature_per_ip_rate` | `30/60s` | Positive N/Ws |
 

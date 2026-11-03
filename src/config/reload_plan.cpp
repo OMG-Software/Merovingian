@@ -1086,6 +1086,10 @@ auto build_reload_plan(Config const& current, Config const& next) -> ReloadPlan
     {
         add_change(plan, "security.federation.outbound_queue_capacity");
     }
+    if (current.security().federation.outbound_delivery_threads != next.security().federation.outbound_delivery_threads)
+    {
+        add_change(plan, "security.federation.outbound_delivery_threads");
+    }
     if (current.security().federation.outbound_max_retries != next.security().federation.outbound_max_retries)
     {
         add_change(plan, "security.federation.outbound_max_retries");

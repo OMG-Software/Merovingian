@@ -760,6 +760,7 @@ security.federation.pending_join_max_rooms=32
 security.federation.pending_join_max_pdus=32
 security.federation.outbound_queue_capacity=4096
 security.federation.outbound_max_retries=32
+security.federation.outbound_delivery_threads=4
 security.federation.pending_join_max_size=512KiB
 security.federation.bad_signature_per_ip_rate=30/60s
 

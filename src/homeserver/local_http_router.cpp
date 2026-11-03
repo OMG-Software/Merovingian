@@ -3136,6 +3136,7 @@ namespace
             dispatch_config.origin = runtime.config.server().server_name;
             dispatch_config.max_queue_depth = runtime.federation.config.outbound_queue_capacity;
             dispatch_config.max_retries = runtime.federation.config.outbound_max_retries;
+            dispatch_config.delivery_threads = runtime.federation.config.outbound_delivery_threads;
             dispatch_config.key_id = key->key_id;
             // Move the signing key into the worker's own mlocked, zeroised
             // SecretBuffer rather than an unpinned std::string. The runtime
@@ -3143,7 +3144,8 @@ namespace
             dispatch_config.secret_key = core::SecretBuffer{runtime.database.signing_secret_key.bytes()};
             auto* discovery_ptr = discovery;
             auto* cached_ptr = cached;
-            auto const discovery_timeout = timeout > 0U ? timeout : 30U;
+            auto const discovery_timeout =
+                std::min(timeout > 0U ? timeout : 30U, federation::dispatch_discovery_timeout_seconds);
             auto resolver = [discovery_ptr, cached_ptr, discovery_timeout](
                                 std::string_view server_name) -> std::optional<federation::ServerDiscoveryResult> {
                 // Prefer the TTL cache; fall back to the raw network for tests.

@@ -280,6 +280,13 @@ namespace
                 add_parse_finding(findings, std::string{key}, "expected unsigned integer");
             }
         }
+        else if (key == "security.federation.outbound_delivery_threads")
+        {
+            if (!parse_u32_value(value, security.federation.outbound_delivery_threads))
+            {
+                add_parse_finding(findings, std::string{key}, "expected unsigned integer");
+            }
+        }
         else if (key == "security.federation.outbound_max_retries")
         {
             if (!parse_u32_value(value, security.federation.outbound_max_retries))

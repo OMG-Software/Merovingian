@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <chrono>
 #include <string>
+#include <system_error>
 #include <thread>
 #include <tuple>
 #include <utility>
@@ -171,8 +172,9 @@ auto DispatchWorker::push_queue_locked(OutboundTransaction transaction) -> void
 
 auto DispatchWorker::requeue_locked(OutboundTransaction transaction) -> void
 {
-    // The transaction kept its slot while it was in flight; it is not counted again.
-    queue_.push_back(std::move(transaction));
+    // The transaction kept its slot while it was in flight; it is not counted again. At the front:
+    // it was its destination's oldest, and stays so (next_ready_locked).
+    queue_.push_front(std::move(transaction));
 }
 
 auto DispatchWorker::destination_at_share_locked(std::string const& destination) const -> bool
@@ -203,18 +205,35 @@ auto DispatchWorker::start() -> void
     {
         return;
     }
-    try
+    auto const wanted = std::max<std::size_t>(1U, config_.delivery_threads);
+    threads_.reserve(wanted);
+    for (auto index = std::size_t{0U}; index < wanted; ++index)
     {
-        thread_ = std::thread{[this] {
-            loop();
-        }};
-    }
-    catch (...)
-    {
-        // Reset so a subsequent start() attempt (after the caller resolves
-        // the underlying cause) can try again rather than silently no-oping.
-        started_.store(false, std::memory_order_release);
-        throw;
+        try
+        {
+            threads_.emplace_back([this] {
+                loop();
+            });
+        }
+        catch (std::system_error const& error)
+        {
+            if (threads_.empty())
+            {
+                // Reset so a subsequent start() attempt (after the caller resolves
+                // the underlying cause) can try again rather than silently no-oping.
+                started_.store(false, std::memory_order_release);
+                throw;
+            }
+            // Fewer threads still deliver; one peer can then hold a larger part of them.
+            log_diagnostic("start.fewer_threads",
+                           {
+                               {"wanted",  std::to_string(wanted),          false},
+                               {"started", std::to_string(threads_.size()), false},
+                               {"reason",  error.what(),                    false}
+            },
+                           observability::LogEventSeverity::warning);
+            return;
+        }
     }
 }
 
@@ -231,41 +250,69 @@ auto DispatchWorker::request_shutdown() noexcept -> void
 
 auto DispatchWorker::join() -> void
 {
-    if (thread_.joinable())
+    for (auto& thread : threads_)
     {
-        thread_.join();
+        if (thread.joinable())
+        {
+            thread.join();
+        }
     }
 }
 
-auto DispatchWorker::has_due_locked(std::uint64_t due_by) const -> bool
+auto DispatchWorker::next_ready_locked(std::uint64_t due_by) const -> std::optional<std::size_t>
 {
-    return std::ranges::any_of(queue_, [due_by](OutboundTransaction const& candidate) {
-        return candidate.next_retry_ts <= due_by;
-    });
+    auto held_back = std::set<std::string_view>{in_flight_destinations_.begin(), in_flight_destinations_.end()};
+    for (auto position = std::size_t{0U}; position < queue_.size(); ++position)
+    {
+        auto const& candidate = queue_[position];
+        if (held_back.contains(candidate.destination))
+        {
+            continue;
+        }
+        if (candidate.next_retry_ts <= due_by)
+        {
+            return position;
+        }
+        held_back.insert(candidate.destination);
+    }
+    return std::nullopt;
 }
 
 auto DispatchWorker::take_next(OutboundTransaction& out, std::uint64_t due_by) -> bool
 {
     auto lock = std::lock_guard{mutex_};
-    if (queue_.empty())
+    auto const ready = next_ready_locked(due_by);
+    if (!ready.has_value())
     {
         return false;
     }
-    // Pull the next transaction whose retry delay has elapsed by `due_by`. Skipping
-    // future-scheduled retries preserves FIFO among ready work.
-    auto const ready = std::ranges::find_if(queue_, [due_by](OutboundTransaction const& candidate) {
-        return candidate.next_retry_ts <= due_by;
-    });
-    if (ready == queue_.end())
+    auto const position = queue_.begin() + static_cast<std::ptrdiff_t>(*ready);
+    out = std::move(*position);
+    queue_.erase(position);
+    in_flight_destinations_.insert(out.destination);
+    if (summary_.pending > 0U)
     {
-        return false;
+        --summary_.pending;
     }
-    out = std::move(*ready);
-    queue_.erase(ready);
     // Removing an entry frees a slot under max_queue_depth — top up the
     // active queue from any replay overflow that was parked at startup.
     std::ignore = top_up_replay_locked();
     return true;
+}
+
+DispatchWorker::InFlightSlot::InFlightSlot(DispatchWorker& worker, std::string destination) noexcept
+    : worker_{worker}
+    , destination_{std::move(destination)}
+{
+}
+
+DispatchWorker::InFlightSlot::~InFlightSlot()
+{
+    {
+        auto lock = std::lock_guard{worker_.mutex_};
+        worker_.in_flight_destinations_.erase(destination_);
+    }
+    worker_.cv_.notify_all();
 }
 
 auto DispatchWorker::find_or_create_destination(std::string_view server_name) -> FederationDestination&
@@ -282,6 +329,16 @@ auto DispatchWorker::find_or_create_destination(std::string_view server_name) ->
     destination.server_name = std::string{server_name};
     destinations_.push_back({std::string{server_name}, std::move(destination)});
     return destinations_.back().state;
+}
+
+auto DispatchWorker::remember_destination_locked(FederationDestination const& destination) -> void
+{
+    find_or_create_destination(destination.server_name) = destination;
+    if (persistent_store_ != nullptr)
+    {
+        std::ignore =
+            database::store_federation_destination(*persistent_store_, to_persistent_destination(destination));
+    }
 }
 
 auto DispatchWorker::re_enqueue_with_backoff(OutboundTransaction transaction, std::uint64_t now_ts) -> void
@@ -350,15 +407,56 @@ auto DispatchWorker::run_due(std::uint64_t due_by) -> bool
     {
         return false;
     }
+    auto const in_flight = InFlightSlot{*this, transaction.destination};
+    attempt(std::move(transaction));
+    return true;
+}
+
+auto DispatchWorker::wait_out_open_circuit(OutboundTransaction transaction, FederationDestination const& destination,
+                                           std::uint64_t now_ts) -> void
+{
+    log_diagnostic("transaction.circuit_open", {
+                                                   {"transaction_id", transaction.transaction_id,              false},
+                                                   {"destination",    transaction.destination,                 false},
+                                                   {"retry_count",    std::to_string(transaction.retry_count), false}
+    });
+    transaction.next_retry_ts = destination.retry_after_ts > now_ts ? destination.retry_after_ts
+                                                                    : now_ts + compute_backoff(transaction.retry_count);
     {
         auto lock = std::lock_guard{mutex_};
-        if (summary_.pending > 0U)
+        ++summary_.failed;
+        // Same hard-failure rule as re_enqueue_with_backoff: persisting the
+        // updated next_retry_ts must succeed before we trust the in-memory
+        // queue entry to remain authoritative across a restart.
+        if (persistent_store_ != nullptr &&
+            !database::store_federation_transaction(*persistent_store_, to_persistent_transaction(transaction)))
         {
-            --summary_.pending;
+            release_destination_slot_locked(transaction.destination);
+            ++summary_.failed;
+            return;
         }
+        requeue_locked(std::move(transaction));
+        ++summary_.pending;
+    }
+    cv_.notify_one();
+}
+
+auto DispatchWorker::attempt(OutboundTransaction transaction) -> void
+{
+    auto const now = now_ms_();
+    auto destination = FederationDestination{};
+    {
+        auto lock = std::lock_guard{mutex_};
+        destination = find_or_create_destination(transaction.destination);
+    }
+    // Before discovery: a destination that is backing off takes no thread at all, so a peer whose
+    // discovery stalls holds one only as often as its backoff allows.
+    if (!destination_should_retry(destination, now))
+    {
+        wait_out_open_circuit(std::move(transaction), destination, now);
+        return;
     }
 
-    auto const now = now_ms_();
     auto resolution = resolver_ ? resolver_(transaction.destination) : std::nullopt;
     if (!resolution.has_value() || !resolution->discovery_allowed)
     {
@@ -373,22 +471,17 @@ auto DispatchWorker::run_due(std::uint64_t due_by) -> bool
         // attempt. The transaction goes back on the queue with retry+1.
         // ADR-0309: the backoff runs from when the failure was known, not from when the attempt began.
         auto const failed_at = now_ms_();
-        auto& destination = find_or_create_destination(transaction.destination);
         auto result = OutboundTransactionResult{};
         result.sent = false;
         result.error = "discovery_failed";
         apply_outbound_result(destination, result, failed_at);
         {
             auto lock = std::lock_guard{mutex_};
-            if (persistent_store_ != nullptr)
-            {
-                std::ignore =
-                    database::store_federation_destination(*persistent_store_, to_persistent_destination(destination));
-            }
+            remember_destination_locked(destination);
             ++summary_.failed;
         }
         re_enqueue_with_backoff(std::move(transaction), failed_at);
-        return true;
+        return;
     }
 
     auto call = OutboundCall{};
@@ -405,9 +498,11 @@ auto DispatchWorker::run_due(std::uint64_t due_by) -> bool
         auto lock = std::lock_guard{mutex_};
         call.key_id = config_.key_id;
         call.secret_key = core::SecretBuffer{config_.secret_key.bytes()};
+        call.total_timeout_seconds = config_.attempt_timeout_seconds;
+        call.trusted_ca_pem = config_.trusted_ca_pem;
     }
 
-    auto& destination = find_or_create_destination(transaction.destination);
+    auto const failures_before = destination.consecutive_failures;
     auto const result = perform_outbound_transaction(client_, call, destination, now, now_ms_);
     // ADR-0309: every retry scheduled below runs from the end of this attempt.
     auto const finished_at = now_ms_();
@@ -419,6 +514,19 @@ auto DispatchWorker::run_due(std::uint64_t due_by) -> bool
                                                     {"destination",    transaction.destination,            false},
                                                     {"http_status",    std::to_string(result.http_status), false}
         });
+        // ADR-0354: answering just inside the deadline must not make a peer free to hold a thread for
+        // every transaction it is sent.
+        if (finished_at > now && finished_at - now > config_.slow_attempt_ms)
+        {
+            apply_slow_success(destination, failures_before, finished_at);
+            log_diagnostic("transaction.slow_success",
+                           {
+                               {"destination", transaction.destination,                          false},
+                               {"elapsed_ms",  std::to_string(finished_at - now),                false},
+                               {"failures",    std::to_string(destination.consecutive_failures), false}
+            },
+                           observability::LogEventSeverity::warning);
+        }
         // Persist destination success state and drop the durable queue row.
         // If the durable delete fails, do NOT count the transaction as
         // delivered: leaving the row would cause replay-on-restart to re-send
@@ -427,15 +535,12 @@ auto DispatchWorker::run_due(std::uint64_t due_by) -> bool
         auto durable_drop_failed = false;
         {
             auto lock = std::lock_guard{mutex_};
-            if (persistent_store_ != nullptr)
+            remember_destination_locked(destination);
+            if (persistent_store_ != nullptr &&
+                !database::delete_federation_transaction(*persistent_store_, transaction.transaction_id))
             {
-                std::ignore =
-                    database::store_federation_destination(*persistent_store_, to_persistent_destination(destination));
-                if (!database::delete_federation_transaction(*persistent_store_, transaction.transaction_id))
-                {
-                    durable_drop_failed = true;
-                    ++summary_.failed;
-                }
+                durable_drop_failed = true;
+                ++summary_.failed;
             }
             if (!durable_drop_failed)
             {
@@ -447,48 +552,14 @@ auto DispatchWorker::run_due(std::uint64_t due_by) -> bool
         {
             re_enqueue_with_backoff(std::move(transaction), finished_at);
         }
-        return true;
+        return;
     }
     {
         auto lock = std::lock_guard{mutex_};
-        if (persistent_store_ != nullptr)
-        {
-            std::ignore =
-                database::store_federation_destination(*persistent_store_, to_persistent_destination(destination));
-        }
+        remember_destination_locked(destination);
         ++summary_.failed;
     }
-    if (result.error == "circuit_open")
-    {
-        log_diagnostic("transaction.circuit_open",
-                       {
-                           {"transaction_id", transaction.transaction_id,              false},
-                           {"destination",    transaction.destination,                 false},
-                           {"retry_count",    std::to_string(transaction.retry_count), false}
-        });
-        transaction.next_retry_ts = destination.retry_after_ts > finished_at
-                                        ? destination.retry_after_ts
-                                        : finished_at + compute_backoff(transaction.retry_count);
-        {
-            auto lock = std::lock_guard{mutex_};
-            // Same hard-failure rule as re_enqueue_with_backoff: persisting the
-            // updated next_retry_ts must succeed before we trust the in-memory
-            // queue entry to remain authoritative across a restart.
-            if (persistent_store_ != nullptr &&
-                !database::store_federation_transaction(*persistent_store_, to_persistent_transaction(transaction)))
-            {
-                release_destination_slot_locked(transaction.destination);
-                ++summary_.failed;
-                return true;
-            }
-            requeue_locked(std::move(transaction));
-            ++summary_.pending;
-        }
-        cv_.notify_one();
-        return true;
-    }
     re_enqueue_with_backoff(std::move(transaction), finished_at);
-    return true;
 }
 
 auto DispatchWorker::top_up_replay_locked() -> std::size_t
@@ -576,16 +647,28 @@ auto DispatchWorker::loop() -> void
             // thread for the whole backoff (ADR-0309).
             auto lock = std::unique_lock{mutex_};
             cv_.wait_for(lock, config_.idle_poll, [this] {
-                return shutdown_requested_.load() || has_due_locked(now_ms_());
+                return shutdown_requested_.load() || next_ready_locked(now_ms_()).has_value();
             });
         }
     }
     // Drain phase: shutdown was requested. Process what was due when the drain began, so work
     // already scheduled completes. A transaction that fails during the drain is due again only
     // later, so it stays pending and durable replay handles it next start; retrying it here kept
-    // a process whose peer was down alive until it was killed (ADR-0309).
-    auto const due_by = now_ms_();
-    while (run_due(due_by))
+    // a process whose peer was down alive until it was killed (ADR-0309). The budget bounds the rest:
+    // what it does not reach stays durable (ADR-0354).
+    auto due_by = std::uint64_t{0U};
+    auto deadline = std::chrono::steady_clock::time_point{};
+    {
+        auto lock = std::lock_guard{mutex_};
+        if (!drain_due_by_.has_value())
+        {
+            drain_due_by_ = now_ms_();
+            drain_deadline_ = std::chrono::steady_clock::now() + config_.shutdown_drain_budget;
+        }
+        due_by = *drain_due_by_;
+        deadline = drain_deadline_;
+    }
+    while (std::chrono::steady_clock::now() < deadline && run_due(due_by))
     {
     }
 }

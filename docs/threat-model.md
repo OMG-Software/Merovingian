@@ -2835,3 +2835,11 @@ nothing, all from trusting the worker's view or the hook's transport.
   rest. The queue holds a user ID and a position, never a token. **Residual risk:** an attacker alternating names can keep the
   job busy and delay other users' changes, though not other requests; rooms queued at a restart wait for the next change; the
   number of rooms a user may join stays uncapped, as the spec sets no limit. Tests: `[f11]`.
+
+### A slow peer holding outbound federation (0.12.68, F-20)
+
+- **One peer could delay every other peer's delivery by hours (F-20, ADR-0354).** All delivery ran on one thread, attempts took
+  up to 90 s, and a slow `2xx` counted as healthy. Delivery now uses a small pool with one transaction in flight per destination,
+  shorter deadlines, a backoff for slow successes, and a circuit check before discovery. **Residual risk:** an attacker with many
+  server names joined to active rooms can occupy several threads, about 40 s per name per backoff period; an honest peer slower
+  than 10 s is throttled until it answers quickly. Tests: `[f20]`.

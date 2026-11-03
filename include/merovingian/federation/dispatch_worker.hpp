@@ -16,6 +16,7 @@
 #include <functional>
 #include <mutex>
 #include <optional>
+#include <set>
 #include <string>
 #include <string_view>
 #include <thread>
@@ -48,6 +49,10 @@ using DispatchSleep = std::function<void(std::chrono::milliseconds)>;
 // deterministic resolver that returns synthetic addresses.
 using DispatchResolver = std::function<std::optional<ServerDiscoveryResult>(std::string_view server_name)>;
 
+// The most that discovery may take on a delivery thread (F-20, ADR-0354). The runtime's general remote
+// timeout is for other callers; discovery here runs before an attempt has even started.
+inline constexpr auto dispatch_discovery_timeout_seconds = std::uint32_t{10U};
+
 struct DispatchWorkerConfig final
 {
     // Identity used when signing outbound traffic. The signing identity
@@ -70,6 +75,18 @@ struct DispatchWorkerConfig final
     // Maximum number of retry attempts before a transaction is dropped and
     // recorded as terminally failed. Matches the federation backoff curve.
     std::uint32_t max_retries{8U};
+    // Threads delivering at once. One destination holds at most one of them at a time (ADR-0354).
+    std::size_t delivery_threads{1U};
+    // The whole of one attempt once the destination is known.
+    std::uint32_t attempt_timeout_seconds{30U};
+    // An attempt, discovery included, that took longer than this and then succeeded counts against
+    // the destination all the same (ADR-0354).
+    std::uint64_t slow_attempt_ms{10000U};
+    // How long a shutdown keeps delivering what was already due. What it does not reach stays durable.
+    std::chrono::milliseconds shutdown_drain_budget{std::chrono::seconds{30}};
+    // Optional PEM CA bundle trusted in place of the system trust store. Only ever set by tests, as
+    // with OutboundCall::trusted_ca_pem.
+    std::string trusted_ca_pem{};
     // How long the worker sleeps when the queue is empty before re-checking
     // for shutdown. Smaller values shorten shutdown latency.
     std::chrono::milliseconds idle_poll{std::chrono::milliseconds{50}};
@@ -95,10 +112,14 @@ struct DispatchWorkerSummary final
 //
 // Lifecycle:
 //   - `enqueue` and the worker thread are safe to use concurrently.
-//   - `start` spawns one background thread that drains the queue.
+//   - `start` spawns config.delivery_threads background threads that drain
+//     the queue. A destination has at most one transaction in flight, and
+//     only its oldest can be taken, so one destination occupies at most one
+//     thread and its transactions keep their order (ADR-0354).
 //   - `request_shutdown` signals the loop to stop pulling new work and to
-//     exit after the in-flight attempt completes. The remaining queue is
-//     left intact; persisted queue rows can be replayed by the next worker.
+//     exit after the in-flight attempts complete and the shutdown drain has
+//     had its budget. The remaining queue is left intact; persisted queue rows
+//     can be replayed by the next worker.
 //     It takes the worker's mutex (ADR-0312), so never call it from an
 //     injected callback: the clock runs inside the idle wait with it held.
 //   - `drain` is the cooperative variant: the loop keeps pulling until the
@@ -109,9 +130,10 @@ struct DispatchWorkerSummary final
 //
 // Safety:
 //   - The worker owns its mutex/condition_variable and never exposes them.
-//   - All injected callbacks are invoked from the worker thread; callers
-//     must keep referenced resources (OutboundClient, store, etc.) alive
-//     until the worker is joined.
+//   - All injected callbacks are invoked from the worker threads, at the same
+//     time when delivery_threads is above one, so they must be safe to call
+//     concurrently; callers must keep referenced resources (OutboundClient,
+//     store, etc.) alive until the worker is joined.
 class DispatchWorker final
 {
 public:
@@ -155,15 +177,45 @@ public:
     auto update_signing_identity(std::string key_id, core::SecretBuffer secret_key) -> void;
 
 private:
+    // Holds a destination's place as in flight for the length of one attempt, and wakes the other
+    // threads when it ends: the destination's next transaction may now be taken.
+    class InFlightSlot final
+    {
+    public:
+        InFlightSlot(DispatchWorker& worker, std::string destination) noexcept;
+        ~InFlightSlot();
+
+        InFlightSlot(InFlightSlot const&) = delete;
+        auto operator=(InFlightSlot const&) -> InFlightSlot& = delete;
+        InFlightSlot(InFlightSlot&&) = delete;
+        auto operator=(InFlightSlot&&) -> InFlightSlot& = delete;
+
+    private:
+        DispatchWorker& worker_;
+        std::string destination_;
+    };
+
     auto loop() -> void;
     // One attempt of a transaction due by `due_by` (ADR-0309): run_once passes now; the shutdown drain
     // passes the moment it started, so a transaction that fails during the drain waits for replay.
     [[nodiscard]] auto run_due(std::uint64_t due_by) -> bool;
+    auto attempt(OutboundTransaction transaction) -> void;
+    // A transaction whose destination is backing off waits for it, without taking a discovery or a
+    // network call.
+    auto wait_out_open_circuit(OutboundTransaction transaction, FederationDestination const& destination,
+                               std::uint64_t now_ts) -> void;
     auto take_next(OutboundTransaction& out, std::uint64_t due_by) -> bool;
-    // Whether a queued transaction is due by `due_by`. Call with mutex_ held.
-    [[nodiscard]] auto has_due_locked(std::uint64_t due_by) const -> bool;
+    // The position in queue_ of the next transaction that may go, or nullopt. A destination offers
+    // only its oldest, and only with nothing in flight. Spec (Server-Server API, PUT /send/{txnId}):
+    // "The sending server must wait and retry for a 200 OK response before sending a transaction
+    // with a different txnId to the receiving server." Call with mutex_ held.
+    [[nodiscard]] auto next_ready_locked(std::uint64_t due_by) const -> std::optional<std::size_t>;
     auto re_enqueue_with_backoff(OutboundTransaction transaction, std::uint64_t now_ts) -> void;
+    // Attempts work on a copy of a destination's state and put it back here: only one attempt per
+    // destination runs at a time, and destinations_ can reallocate while it does. Call with mutex_
+    // held.
     auto find_or_create_destination(std::string_view server_name) -> FederationDestination&;
+    auto remember_destination_locked(FederationDestination const& destination) -> void;
     // Promote replay-overflow rows into the active queue while capacity allows.
     // Caller must hold mutex_. Returns the number of rows promoted.
     auto top_up_replay_locked() -> std::size_t;
@@ -194,12 +246,19 @@ private:
     // Slots held per destination: transactions in queue_ or in flight (not pending_replay_),
     // guarded by mutex_.
     std::unordered_map<std::string, std::size_t> queued_per_destination_{};
+    // Destinations with an attempt running, guarded by mutex_.
+    std::set<std::string, std::less<>> in_flight_destinations_{};
     std::vector<DispatchDestinationSnapshot> destinations_{};
     DispatchWorkerSummary summary_{};
 
     std::atomic<bool> shutdown_requested_{false};
     std::atomic<bool> started_{false};
-    std::thread thread_{};
+    std::vector<std::thread> threads_{};
+    // What the shutdown drain covers and when it ends, set by the first thread to reach it, so a thread
+    // finishing a long attempt does not re-try what another thread failed during the drain. Guarded by
+    // mutex_.
+    std::optional<std::uint64_t> drain_due_by_{};
+    std::chrono::steady_clock::time_point drain_deadline_{};
 };
 
 } // namespace merovingian::federation
