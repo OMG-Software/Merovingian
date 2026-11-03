@@ -1,4 +1,4 @@
-## 0.12.68
+## 0.12.70
 
 The medium findings of security audit run 2 (ref 5e67d4e8).
 
@@ -235,6 +235,40 @@ The medium findings of security audit run 2 (ref 5e67d4e8).
   that record over the worker's real one, so a peer charged on `/send` cleared the charge with one cheap read (and a
   `send_join` or invite reset a sub-threshold count the same way). Only the `/send` transaction path now writes a
   peer's trust record.
+## 0.12.69
+
+### Fixed
+
+- **The FreeBSD package now contains Merovingian.** `pkg create` was given no packing list, so every `.pkg` up to
+  0.12.67 was a valid archive of about 1 KB holding no files. The script now lists the staged files and fails if the
+  package lacks a binary, the rc.d script or the sample config.
+- **Fedora 44 hosts can install the RPM again.** The only RPM was built on `fedora:latest`, and when that became
+  Fedora 45 with OpenSSL 4 the package stopped installing on Fedora 44 (`nothing provides libcrypto.so.4`). An RPM is
+  now published for Fedora 44 and for `fedora:latest` (ADR-0376).
+- **FreeBSD and OpenBSD servers can pass the startup hardening self-check.** The ELF and seccomp checks reported
+  `unknown` off Linux, so every BSD server refused to start in production; test runs bypass the check, so nothing
+  caught it. The ELF probe now reads the running image in memory on every platform, FreeBSD and OpenBSD binaries are
+  linked with full RELRO, and seccomp is not applicable where Capsicum or pledge has its own check (ADR-0378).
+- **The refusal to run an unsandboxed federation worker off Linux now gives advice that works.** It suggested
+  `federation.worker.enabled=false`, a key the config parser rejects. It now offers
+  `security.federation.enabled=false`, which runs a non-federating server with no worker, or, only for a worker the
+  operator has confined themselves, `federation.worker.apply_hardening=false` with
+  `federation.worker.allow_without_landlock=true`. `docs/hardening.md` also said federation degrades to 503 in this
+  case, when the server exits with status 80, which is now the recorded decision (ADR-0377).
+
+### Known limitations
+
+- A NetBSD server still refuses to start, on purpose: its thumbnail decoder has no syscall confinement (ADR-0378).
+- On FreeBSD, a federation worker that dies after startup cannot be restarted, because the main process is in Capsicum
+  capability mode. Federation answers 503 until the server is restarted (ADR-0377).
+
+### CI
+
+- The FreeBSD package job and the Fedora RPM job each install the package they built and boot the installed server
+  through the startup hardening gate before attesting it. Off Linux, the gate accepts a federation worker with no
+  in-process sandbox, since that sandbox exists only on Linux.
+- The full suite runs on both Fedora 44 and `fedora:latest`, as `fedora-suite`. The required `fedora-build-and-test` and
+  `Fedora RPM package` checks now come from jobs that pass only when every image passed.
 
 ## 0.12.67
 

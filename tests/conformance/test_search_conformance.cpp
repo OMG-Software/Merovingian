@@ -225,7 +225,7 @@ auto set_ignored_users(merovingian::homeserver::ClientServerRuntime& rt, std::st
 // Spec MUST: a search result carries `rank` and `result` (the matched
 // ClientEvent, with its required event_id/type/sender/room_id/content
 // fields). `context` is "Context for result, if requested": it is present when the request carried
-// `event_context` and absent otherwise (F-31, ADR-0333; before 0.12.68 it was always built).
+// `event_context` and absent otherwise (F-31, ADR-0333; before 0.12.70 it was always built).
 SCENARIO("a matching event is returned with rank and result fields, and context only when requested",
          "[search][conformance]")
 {

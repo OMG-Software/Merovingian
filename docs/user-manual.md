@@ -120,7 +120,7 @@ Thumbnail worker library libjpeg-turbo version not reported (dynamic, /lib/x86_6
 |---|---|
 | Ubuntu | 24.04 LTS |
 | Debian | 13 (trixie) |
-| Fedora | 40+ |
+| Fedora | 44 or the current release (RPM); 40+ (source build) |
 | RHEL-compatible | RHEL 10 / AlmaLinux 10 |
 | OpenSUSE | Tumbleweed |
 | FreeBSD | 14.1+ |
@@ -148,15 +148,60 @@ The rolling `latest` GitHub prerelease is rebuilt on every push to `main`.
 
 ```sh
 # Debian/Ubuntu example
-dpkg -i merovingian_0.10.38_amd64.deb
+dpkg -i merovingian_X.Y.Z_amd64.deb
 
-# Fedora/RHEL example
-dnf install merovingian-0.10.38-1.fc40.x86_64.rpm
+# Fedora example: use the RPM whose .fcNN tag matches `rpm -E %fedora`
+dnf install merovingian-X.Y.Z-1.fc44.x86_64.rpm
+
+# FreeBSD example
+pkg add merovingian-X.Y.Z.pkg
 ```
 
-Packages create the `merovingian` system user and group, install the systemd
+An RPM installs only on the Fedora release it was built on, because it links
+against that release's libraries. The rolling release has one RPM for Fedora 44
+and one for the current Fedora. On any other release, use the static tarball
+below or build from source.
+
+On FreeBSD and OpenBSD, the federation worker's in-process sandbox is not
+available, so with the default settings the worker refuses to start and the
+server exits with status 80. Choose one of:
+
+- `security.federation.enabled=false`, to run a non-federating server, which
+  starts no worker.
+- `federation.worker.apply_hardening=false` and
+  `federation.worker.allow_without_landlock=true`, only if you have confined the
+  worker yourself, for example in a jail. Both are needed, because the worker
+  checks Landlock first. The packaged rc.d script only selects the service user,
+  and provides no jail, chroot or filesystem sandbox
+  ([ADR-0041](adr/0041-refuse-to-start-the-federation-worker-unsandboxed.md)).
+
+On FreeBSD, a federation worker that dies after startup cannot be restarted,
+because the main process is by then in Capsicum capability mode. Federation
+answers 503 until you restart the server
+([ADR-0377](adr/0377-the-server-exits-when-its-federation-worker-cannot-start.md)).
+
+A NetBSD server refuses to start, because NetBSD has no in-process confinement for
+the thumbnail decoder
+([ADR-0378](adr/0378-probe-elf-hardening-in-memory-and-keep-netbsd-refused.md)).
+
+Linux packages create the `merovingian` system user and group, install the systemd
 unit, and stage the example configuration at `/etc/merovingian/
 merovingian.conf.example`.
+
+The FreeBSD package creates the same user and group, and installs an rc.d script
+that reads `/usr/local/etc/merovingian/merovingian.conf`. It stages only a sample,
+whose secret file settings still point at `/etc/merovingian`. Create the file, move
+those paths, and enable the service:
+
+```sh
+cp /usr/local/etc/merovingian/merovingian.conf.sample \
+   /usr/local/etc/merovingian/merovingian.conf
+sed -i '' 's|/etc/merovingian/|/usr/local/etc/merovingian/|' \
+   /usr/local/etc/merovingian/merovingian.conf
+sysrc merovingian_enable=YES
+```
+
+Use `/usr/local/etc/merovingian` wherever the steps below say `/etc/merovingian`.
 
 ### Install the portable static Linux tarball
 
@@ -164,10 +209,10 @@ For older Linux distributions, use the musl-linked tarball. It has no glibc or
 runtime package dependencies.
 
 ```sh
-tar xzf merovingian-0.10.38-linux-static-x86_64.tar.gz
-cp merovingian-0.10.38-linux-static-x86_64/bin/merovingian-server /usr/local/bin/
-cp merovingian-0.10.38-linux-static-x86_64/bin/merovingian-db-migrate /usr/local/bin/
-cp merovingian-0.10.38-linux-static-x86_64/libexec/merovingian/merovingian-fed-worker \
+tar xzf merovingian-X.Y.Z-linux-static-x86_64.tar.gz
+cp merovingian-X.Y.Z-linux-static-x86_64/bin/merovingian-server /usr/local/bin/
+cp merovingian-X.Y.Z-linux-static-x86_64/bin/merovingian-db-migrate /usr/local/bin/
+cp merovingian-X.Y.Z-linux-static-x86_64/libexec/merovingian/merovingian-fed-worker \
    /usr/local/libexec/merovingian/
 ```
 
@@ -186,11 +231,11 @@ gpg --keyserver keys.openpgp.org --recv-keys 66DFCC50187C8E46B5ED85FD92A3A264F0A
 
 # Download the tarball, signature, and checksum for your platform, then verify
 the signature.
-gpg --verify merovingian-0.10.38-linux-static-x86_64.tar.gz.asc \
-             merovingian-0.10.38-linux-static-x86_64.tar.gz
+gpg --verify merovingian-X.Y.Z-linux-static-x86_64.tar.gz.asc \
+             merovingian-X.Y.Z-linux-static-x86_64.tar.gz
 
 # Verify the checksum.
-sha256sum -c merovingian-0.10.38-linux-static-x86_64.tar.gz.sha256
+sha256sum -c merovingian-X.Y.Z-linux-static-x86_64.tar.gz.sha256
 ```
 
 A valid signature reports a "Good signature" from `The Merovingian Release

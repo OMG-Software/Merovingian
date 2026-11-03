@@ -493,7 +493,7 @@ quickly finding everything a given `AGENTS.md` file contributed.
   wrappers names an `OutboundAnswerTrust`; only `signature_verified` (every use of a success body is a
   signature check on the whole of it, and a failure only means "no data") may use the worker. A status main acts
   on, a template it keeps, or a choice among signed objects makes the call `unverified`.
-  Why: the worker is the process most exposed to hostile traffic, and until 0.12.68 it could answer any
+  Why: the worker is the process most exposed to hostile traffic, and until 0.12.70 it could answer any
   outbound call as any remote server (forged keys, aliases, leave and knock outcomes; CWE-345 Insufficient
   Verification of Data Authenticity; security audit run-2 F-43, ADR-0349).
   Source: `src/homeserver/AGENTS.md`.
@@ -582,7 +582,7 @@ quickly finding everything a given `AGENTS.md` file contributed.
   read the room's current `m.room.server_acl` from main's store for the transport origin and the verified sender's server.
   A new relay does the same.
   Why: a worker's store holds no policy rules (PostgreSQL) or a start-up snapshot (SQLite), and a room's ACL only
-  after `room_sync` reaches the shard that owns it; `/send` is routed by a room ID the sender chooses. Until 0.12.68 a denied
+  after `room_sync` reaches the shard that owns it; `/send` is routed by a room ID the sender chooses. Until 0.12.70 a denied
   origin or server kept federating (F-21, F-24; ADR-0358, ADR-0359).
   Source: `src/federation/AGENTS.md`, `src/federation_worker/AGENTS.md`.
 
@@ -1222,6 +1222,17 @@ media-fetch-pool task.
   Why: a fail-open self-check (log a warning and continue) would mean a hardening
   regression silently ships to production; aborting is what makes "required" actually mean
   required.
+  Source: `src/platform/AGENTS.md`.
+
+- **The ELF probe reads the running image with `dl_iterate_phdr` and opens no file.**
+  Why: the final self-check runs inside Capsicum, where a path cannot be opened, and OpenBSD
+  has no path to the executable at all (ADR-0378).
+  Source: `src/platform/AGENTS.md`.
+
+- **Do not clear NetBSD's seccomp self-check until its thumbnail decoder is confined.**
+  Why: the check is what stops a NetBSD server starting, and NetBSD has no pledge or Capsicum,
+  so clearing it would decode untrusted images with the server's whole syscall surface and its
+  read access to the master key and TLS keys (ADR-0378).
   Source: `src/platform/AGENTS.md`.
 
 - **If a new syscall needs to be allowed by seccomp, add it to the allow-list — do not

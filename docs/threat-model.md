@@ -452,10 +452,10 @@ threat it closes; the controls above are the standing defences these reinforce.
   worker never signs (ADR-0078), so the pre-signed value crossing IPC is the
   design, not a gap to close by giving the worker a signing provider.
 
-  **What main believes of a remote server's answer (F-43, 0.12.68,
+  **What main believes of a remote server's answer (F-43, 0.12.70,
   [ADR-0349](adr/0349-an-outbound-answer-main-does-not-verify-comes-over-mains-own-connection.md)).**
   The residual above covers requests and relayed PDUs; it did not cover the
-  worker's *replies* to the outbound calls main hands it. Until 0.12.68 a
+  worker's *replies* to the outbound calls main hands it. Until 0.12.70 a
   compromised worker could answer any of them as any remote server, and main
   acted on `ok`, the status, the body and `error_detail` as given: forged
   device, cross-signing and one-time keys returned to clients, forged alias,
@@ -2594,7 +2594,7 @@ Security audit run-1 (2026-10-20) found six LOW issues, all fixed in 0.12.34.
   address to them and letting a user point it at any public service within the caps; `http`
   previews can be altered in transit (the content is treated as hostile either way).
 
-### Policy and ACL decisions are main's; the worker's store is a stale snapshot (0.12.68, F-21, F-24, F-27, F-42)
+### Policy and ACL decisions are main's; the worker's store is a stale snapshot (0.12.70, F-21, F-24, F-27, F-42)
 
 Four ways a remote server that an admin or a room had denied could keep federating, or an enabled policy control did
 nothing, all from trusting the worker's view or the hook's transport.
@@ -2807,7 +2807,7 @@ nothing, all from trusting the worker's view or the hook's transport.
   (ADR-0364). **Residual risk:** a request still costs the size of the room's state (and, for `/state`, parsing every
   state and auth event); there is no per-origin concurrency share on `local_pool` reads. Tests: `[state-at-event]`.
 
-### What a joining server takes from a resident's answer (0.12.68, F-45, F-44)
+### What a joining server takes from a resident's answer (0.12.70, F-45, F-44)
 
 - **A resident could store any content it liked in the joining server's copy of a room (F-45, ADR-0369).** A signature and
   an event ID cover only the redacted form, so an event with content changed after signing passed every check that ran,
@@ -2821,7 +2821,7 @@ nothing, all from trusting the worker's view or the hook's transport.
   version the stored create declares, and ingestion refuses an envelope naming any other. **Residual risk:** a PDU in
   flight when the join commits is refused and needs the ordinary gap fill. Tests: `[f44]`.
 
-### Ban evasion through an event fetched to fill a gap (0.12.68, F-16)
+### Ban evasion through an event fetched to fill a gap (0.12.70, F-16)
 
 - **A banned user's message could be delivered by having it fetched (F-16, ADR-0371).** Fetched events stopped at the check
   against the state before them, and read paths withhold by status. A fetched event that fails against current state is now
@@ -2830,7 +2830,7 @@ nothing, all from trusting the worker's view or the hook's transport.
   group later is checked only then. Honest history from a sender who can no longer send is withheld too, as in `/send`. Tests:
   `[f16]`.
 
-### A profile change fanning out under the runtime lock (0.12.68, F-11)
+### A profile change fanning out under the runtime lock (0.12.70, F-11)
 
 - **One user could hold the runtime lock for as long as they had rooms (F-11, ADR-0353).** The join sent to each room on a
   profile change ran under one hold, one database commit per room, and alternating two names repeated it. A request now sends
@@ -2839,7 +2839,7 @@ nothing, all from trusting the worker's view or the hook's transport.
   job busy and delay other users' changes, though not other requests; rooms queued at a restart wait for the next change; the
   number of rooms a user may join stays uncapped, as the spec sets no limit. Tests: `[f11]`.
 
-### A slow peer holding outbound federation (0.12.68, F-20)
+### A slow peer holding outbound federation (0.12.70, F-20)
 
 - **One peer could delay every other peer's delivery by hours (F-20, ADR-0354).** All delivery ran on one thread, attempts took
   up to 90 s, and a slow `2xx` counted as healthy. Delivery now uses a small pool with one transaction in flight per destination,

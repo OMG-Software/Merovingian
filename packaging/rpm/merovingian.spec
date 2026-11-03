@@ -1,5 +1,5 @@
 Name:           merovingian
-Version:        0.12.68
+Version:        0.12.70
 Release:        1%{?dist}
 Summary:        Secure Matrix Protocol homeserver
 
@@ -101,8 +101,12 @@ fi
 %{_sysconfdir}/merovingian/merovingian.conf.example
 
 %changelog
-* Tue Nov 03 2026 James Chapman <claude@ping.me.uk> - 0.12.68-1
+* Tue Nov 03 2026 James Chapman <claude@ping.me.uk> - 0.12.70-1
 - Fix the medium findings of security audit run 2
+
+* Tue Nov 03 2026 James Chapman <claude@ping.me.uk> - 0.12.69-1
+- Fills the FreeBSD package, which held no files, and publishes a Fedora 44 RPM
+  alongside the one built on fedora:latest.
 
 * Mon Nov 02 2026 James Chapman <claude@ping.me.uk> - 0.12.67-1
 - Fixes the five high findings of security audit run 2: event depth, sync token

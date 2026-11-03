@@ -53,6 +53,7 @@ private:
 // be changed at runtime, so absence is indistinguishable from an intentional
 // static-binary build.
 [[nodiscard]] auto linker_hardening_check_from_probe(ElfHardeningResult const& result) -> HardeningCheck;
+[[nodiscard]] auto pie_check_from_probe(ElfHardeningResult const& result) -> HardeningCheck;
 [[nodiscard]] auto relro_check_from_probe(ElfHardeningResult const& result) -> HardeningCheck;
 
 // Maps a SeccompProbeResult to a HardeningCheck:

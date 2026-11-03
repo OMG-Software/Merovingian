@@ -1219,7 +1219,7 @@ for the regression coverage (registration, room creation, and media
 download, each gated on a blocking policy-server hook while an unrelated
 request is asserted to complete promptly).
 
-Since 0.12.68 (F-42, ADR-0361) the real call also resolves the configured host
+Since 0.12.70 (F-42, ADR-0361) the real call also resolves the configured host
 before `perform`, which resolves nothing: the lookup, the address pinning and the
 call all run in that one `RuntimeLockRelease` scope, within what is left of
 `policy_server_timeout`, and after the call has taken a place in

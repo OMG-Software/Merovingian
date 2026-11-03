@@ -41,7 +41,7 @@
 * [0038 - Degrade third party lookups instead of failing them](0038-degrade-third-party-lookups-instead-of-failing-them.md)
 * [0039 - Populate the full device list on an initial sync](0039-populate-the-full-device-list-on-an-initial-sync.md)
 * [0040 - Transfer PostgreSQL ownership with a scoped statement](0040-transfer-postgresql-ownership-with-a-scoped-statement.md)
-* [0041 - Refuse to start the federation worker unsandboxed](0041-refuse-to-start-the-federation-worker-unsandboxed.md)
+* [0041 - Refuse to start the federation worker unsandboxed](0041-refuse-to-start-the-federation-worker-unsandboxed.md) — Refined by ADR-0377: the server exits at startup rather than degrading federation to 503.
 * [0042 - Spawn the federation worker with a minimal environment](0042-spawn-the-federation-worker-with-a-minimal-environment.md)
 * [0043 - Base64 encode IPC response bodies](0043-base64-encode-ipc-response-bodies.md)
 * [0044 - Wipe secrets with an optimisation barrier](0044-wipe-secrets-with-an-optimisation-barrier.md)
@@ -344,6 +344,9 @@
 * [0373 - A fallback event records the room's current state as its state before](0373-a-fallback-event-records-the-rooms-current-state-as-its-state-before.md) — Supersedes the state-before and consequence wording of ADR-0225
 * [0374 - Forward extremities are bounded for events that add no state](0374-forward-extremities-are-bounded-for-events-that-add-no-state.md)
 * [0375 - A refused recomputation of current state is a status, not a success](0375-a-refused-recomputation-of-current-state-is-a-status-not-a-success.md)
+* [0376 - Build an RPM for Fedora 44 and for fedora:latest](0376-build-an-rpm-for-fedora-44-and-for-fedora-latest.md)
+* [0377 - The server exits when its federation worker cannot start](0377-the-server-exits-when-its-federation-worker-cannot-start.md)
+* [0378 - Probe ELF hardening in memory, and keep NetBSD refused](0378-probe-elf-hardening-in-memory-and-keep-netbsd-refused.md)
 
 ## Proposed Records
 
