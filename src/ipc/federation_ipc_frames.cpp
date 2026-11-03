@@ -246,7 +246,8 @@ auto ipc_json_str(std::string_view s) -> std::string
     auto result = std::string{};
     result.reserve(s.size() + 2U);
     result += '"';
-    for (auto index = std::size_t{0U}; index < s.size(); ++index)
+    auto index = std::size_t{0U};
+    while (index < s.size())
     {
         auto const ch = static_cast<unsigned char>(s[index]);
         if (ch >= 0x80U)
@@ -259,14 +260,16 @@ auto ipc_json_str(std::string_view s) -> std::string
             if (length > 0U && index + length <= s.size() && canonicaljson::utf8_is_valid(s.substr(index, length)))
             {
                 result.append(s.substr(index, length));
-                index += length - 1U;
+                index += length;
             }
             else
             {
                 result += "\xEF\xBF\xBD";
+                ++index;
             }
             continue;
         }
+        ++index;
         switch (ch)
         {
         case '"':

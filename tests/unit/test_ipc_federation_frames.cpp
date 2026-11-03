@@ -984,6 +984,28 @@ SCENARIO("ipc_json_str never emits invalid UTF-8", "[ipc][federation][json][f35]
                 REQUIRE(ipc_json_get_str(std::string{R"({"v":)"} + ipc_json_str(lone_continuation) + "}", "v")
                             .ends_with("z"));
             }
+            AND_THEN("each bad byte becomes one replacement character, wherever it falls")
+            {
+                auto const replacement = std::string{"\xEF\xBF\xBD"};
+                REQUIRE(ipc_json_str(lead_without_tail) == "\"a" + replacement + "z\"");
+                REQUIRE(ipc_json_str(lone_ff) == "\"" + replacement + "\"");
+                REQUIRE(ipc_json_str(truncated_at_end) == "\"ok" + replacement + replacement + "\"");
+            }
+        }
+    }
+
+    GIVEN("a string where characters to escape follow a multi-byte character and a bad byte")
+    {
+        auto const raw = std::string{"\xE2\x82\xAC\"\xFF\n"};
+
+        WHEN("it is escaped for an IPC frame")
+        {
+            auto const escaped = ipc_json_str(raw);
+
+            THEN("the character is copied whole and the bytes after it are each handled once")
+            {
+                REQUIRE(escaped == "\"\xE2\x82\xAC\\\"\xEF\xBF\xBD\\n\"");
+            }
         }
     }
 
