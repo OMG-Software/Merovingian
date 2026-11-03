@@ -88,8 +88,9 @@ public:
     };
     // No signing secret: the call resolves the destination, then refuses before
     // any network request, which is all these scenarios need.
-    return merovingian::homeserver::perform_sync_outbound_call(runtime, "!room:remote.example.org", transaction,
-                                                               "ed25519:K001", {}, "test.diagnostic", 1U);
+    return merovingian::homeserver::perform_sync_outbound_call(
+        runtime, merovingian::homeserver::OutboundAnswerTrust::unverified, "!room:remote.example.org", transaction,
+        "ed25519:K001", {}, "test.diagnostic", 1U);
 }
 } // namespace
 

@@ -478,6 +478,21 @@ quickly finding everything a given `AGENTS.md` file contributed.
   remote server answering a history fetch, could get a forged restricted join stored
   (CWE-347 Improper Verification of Cryptographic Signature; security audit run-1, ADR-0171).
   Source: `src/federation/AGENTS.md`.
+- **An outbound federation call whose answer main does not verify by signature goes over main's own
+  `OutboundClient`, never the federation worker's tunnel.** Every caller of `perform_outbound_call` and its
+  wrappers names an `OutboundAnswerTrust`; only `signature_verified` (every use of a success body is a
+  signature check on the whole of it, and a failure only means "no data") may use the worker. A status main acts
+  on, a template it keeps, or a choice among signed objects makes the call `unverified`.
+  Why: the worker is the process most exposed to hostile traffic, and until 0.12.68 it could answer any
+  outbound call as any remote server (forged keys, aliases, leave and knock outcomes; CWE-345 Insufficient
+  Verification of Data Authenticity; security audit run-2 F-43, ADR-0349).
+  Source: `src/homeserver/AGENTS.md`.
+- **A client request that calls several remote servers takes one ADR-0079 slot, draws every call from one
+  `OutboundDeadline`, and asks a bounded number of servers.** `/keys/query` and `/keys/claim` report the
+  servers they did not ask in `failures`, never a request-wide 429 after one-time keys were consumed.
+  Why: each remote call holds a main-pool thread; unbounded serial calls pinned the pool (CWE-400
+  Uncontrolled Resource Consumption; security audit run-2 F-17, ADR-0350).
+  Source: `src/homeserver/AGENTS.md`.
 
 - **Check a sender's signature against every key ID it lists, never only the first, and
   bound the candidates.** Use `federation::authorize_federation_pdu_sender` or

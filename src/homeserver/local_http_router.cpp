@@ -3488,9 +3488,11 @@ namespace
         {
             return std::nullopt;
         }
-        auto const [ok, body] = perform_sync_outbound_call(
-            runtime, room_id, tx, key_id, std::move(secret_key), "federation.backfill.get_missing_events_failed",
-            timeout, static_cast<std::size_t>(runtime.federation.config.backfill_response_max_bytes));
+        // Signature-verified: each PDU is verified one by one before it is stored.
+        auto const [ok, body] =
+            perform_sync_outbound_call(runtime, OutboundAnswerTrust::signature_verified, room_id, tx, key_id,
+                                       std::move(secret_key), "federation.backfill.get_missing_events_failed", timeout,
+                                       static_cast<std::size_t>(runtime.federation.config.backfill_response_max_bytes));
         if (!ok)
         {
             return std::nullopt;
@@ -3658,9 +3660,11 @@ namespace
         {
             return std::nullopt;
         }
-        auto const [ok, body] = perform_sync_outbound_call(
-            runtime, room_id, tx, key_id, std::move(secret_key), "federation.backfill.event_fetch_failed", timeout,
-            static_cast<std::size_t>(runtime.federation.config.backfill_response_max_bytes));
+        // Signature-verified: the PDU is verified before it is stored.
+        auto const [ok, body] =
+            perform_sync_outbound_call(runtime, OutboundAnswerTrust::signature_verified, room_id, tx, key_id,
+                                       std::move(secret_key), "federation.backfill.event_fetch_failed", timeout,
+                                       static_cast<std::size_t>(runtime.federation.config.backfill_response_max_bytes));
         if (!ok)
         {
             return std::nullopt;
@@ -3698,9 +3702,11 @@ namespace
         {
             return std::nullopt;
         }
+        // Signature-verified: the PDU is verified before it is stored.
         auto const [ok, body] = perform_sync_outbound_call(
-            runtime, room_id, tx, key_id, std::move(secret_key), "federation.backfill.snapshot_event_fetch_failed",
-            timeout, static_cast<std::size_t>(runtime.federation.config.backfill_response_max_bytes));
+            runtime, OutboundAnswerTrust::signature_verified, room_id, tx, key_id, std::move(secret_key),
+            "federation.backfill.snapshot_event_fetch_failed", timeout,
+            static_cast<std::size_t>(runtime.federation.config.backfill_response_max_bytes));
         if (!ok)
         {
             return std::nullopt;
@@ -3768,9 +3774,12 @@ namespace
         {
             return std::nullopt;
         }
-        auto const [ok, body] = perform_sync_outbound_call(
-            runtime, room_id, tx, key_id, std::move(secret_key), "federation.backfill.state_ids_failed", timeout,
-            static_cast<std::size_t>(runtime.federation.config.backfill_response_max_bytes));
+        // Unverified: the event IDs name the state a later event is judged against, and nothing signs
+        // the choice of which IDs; the PDUs they lead to are verified, the list is not.
+        auto const [ok, body] =
+            perform_sync_outbound_call(runtime, OutboundAnswerTrust::unverified, room_id, tx, key_id,
+                                       std::move(secret_key), "federation.backfill.state_ids_failed", timeout,
+                                       static_cast<std::size_t>(runtime.federation.config.backfill_response_max_bytes));
         if (!ok)
         {
             return std::nullopt;
@@ -3828,9 +3837,11 @@ namespace
         {
             return std::nullopt;
         }
-        auto const [ok, body] = perform_sync_outbound_call(
-            runtime, room_id, tx, key_id, std::move(secret_key), "federation.backfill.event_auth_failed", timeout,
-            static_cast<std::size_t>(runtime.federation.config.backfill_response_max_bytes));
+        // Signature-verified: every PDU of the chain is verified before it is stored.
+        auto const [ok, body] =
+            perform_sync_outbound_call(runtime, OutboundAnswerTrust::signature_verified, room_id, tx, key_id,
+                                       std::move(secret_key), "federation.backfill.event_auth_failed", timeout,
+                                       static_cast<std::size_t>(runtime.federation.config.backfill_response_max_bytes));
         if (!ok)
         {
             return std::nullopt;

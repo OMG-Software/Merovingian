@@ -7878,8 +7878,63 @@ namespace
                           })));
     }
 
+    // F-17 (ADR-0350): what the remote half of one /keys/query or /keys/claim may spend. The request takes one
+    // ADR-0079 slot for all of it and one OutboundDeadline that every discovery and request draws from, and
+    // asks at most remote_keys_max_servers distinct servers. Each remote call holds a main-pool thread, so
+    // without these a body naming many servers that accept and never answer held one for the sum of their
+    // timeouts. A server this does not let through is reported in `failures`, as the spec has it for a server
+    // that could not be reached (client-server-api.md, POST /keys/query and /keys/claim, `failures`); the
+    // local half of the answer is unaffected, so a one-time key already claimed here is still returned.
+    class RemoteKeyCalls final
+    {
+    public:
+        RemoteKeyCalls(ClientServerRuntime& rt, std::string client_key)
+            : m_max_servers{rt.homeserver.client_outbound_proxy_policy.remote_keys_max_servers}
+            , m_slot{admit_client_outbound_proxy(rt.homeserver, std::move(client_key))}
+            , m_deadline{effective_client_outbound_deadline(
+                  rt.homeserver, rt.homeserver.client_outbound_proxy_policy.remote_keys_deadline_seconds)}
+        {
+        }
+
+        // Empty when the next server may be asked; otherwise why not. Counts the server it lets through.
+        [[nodiscard]] auto admit_next_server() -> std::string
+        {
+            if (!m_slot.has_value())
+            {
+                return "too many concurrent remote lookups, retry shortly";
+            }
+            if (m_asked >= m_max_servers)
+            {
+                return "too many remote servers in one request";
+            }
+            ++m_asked;
+            return {};
+        }
+
+        // What is left of the request's one deadline, to pass as the call's own.
+        [[nodiscard]] auto remaining_seconds() const noexcept -> std::uint32_t
+        {
+            return m_deadline.remaining_seconds();
+        }
+
+    private:
+        std::uint32_t m_max_servers;
+        std::optional<http::InFlightBudget::Slot> m_slot;
+        OutboundDeadline m_deadline;
+        std::uint32_t m_asked{0U};
+    };
+
+    [[nodiscard]] auto key_failure_member(std::string_view server, std::string_view errcode, std::string_view message)
+        -> canonicaljson::ObjectMember
+    {
+        return json_member(std::string{server}, json_obj({
+                                                    json_member("errcode", json_str(errcode)),
+                                                    json_member("error", json_str(message)),
+                                                }));
+    }
+
     [[nodiscard]] auto handle_key_query(ClientServerRuntime& rt, std::string_view requesting_user,
-                                        std::string_view body) -> LocalHttpResponse
+                                        std::string_view body, std::string client_key) -> LocalHttpResponse
     {
         auto const object = parsed_json_object(body);
         if (!object.has_value())
@@ -8012,8 +8067,14 @@ namespace
             auto const signing_key = ensure_runtime_server_signing_key(rt.homeserver);
             auto const key_id = signing_key.has_value() ? signing_key->key_id : std::string{};
             auto const signing_secret = core::SecretBuffer{rt.homeserver.database.signing_secret_key.bytes()};
+            auto remote_calls = RemoteKeyCalls{rt, std::move(client_key)};
             for (auto const& [server, uid_list] : remote_by_server)
             {
+                if (auto const refusal = remote_calls.admit_next_server(); !refusal.empty())
+                {
+                    failures.push_back(key_failure_member(server, "M_LIMIT_EXCEEDED", refusal));
+                    continue;
+                }
                 auto remote_dk = canonicaljson::Object{};
                 for (auto const& uid : uid_list)
                 {
@@ -8027,15 +8088,13 @@ namespace
                 // Each outbound call must own the key because the network path can
                 // release runtime.mutex and the runtime key may be rotated.
                 auto call_secret = core::SecretBuffer{signing_secret.bytes()};
-                auto const [ok, resp_body] = perform_sync_outbound_call(
-                    rt.homeserver, {}, tx, key_id, std::move(call_secret), "key_query.remote",
-                    rt.homeserver.federation.config.remote_timeout_seconds);
+                // Unverified (ADR-0349): the keys are the remote server's word, so the call is main's own.
+                auto const [ok, resp_body] = perform_bounded_outbound_call(
+                    rt.homeserver, OutboundAnswerTrust::unverified, {}, tx, key_id, std::move(call_secret),
+                    "key_query.remote", remote_calls.remaining_seconds());
                 if (!ok)
                 {
-                    failures.push_back(json_member(server, json_obj({
-                                                               json_member("errcode", json_str("M_UNKNOWN")),
-                                                               json_member("error", json_str(resp_body)),
-                                                           })));
+                    failures.push_back(key_failure_member(server, "M_UNKNOWN", resp_body));
                     continue;
                 }
                 // Keep only what the server may speak for: its own requested
@@ -8099,7 +8158,8 @@ namespace
         return resp(200U, json_serialize(json_obj(std::move(response))));
     }
 
-    [[nodiscard]] auto handle_key_claim(ClientServerRuntime& rt, std::string_view body) -> LocalHttpResponse
+    [[nodiscard]] auto handle_key_claim(ClientServerRuntime& rt, std::string_view body, std::string client_key)
+        -> LocalHttpResponse
     {
         auto const object = parsed_json_object(body);
         if (!object.has_value())
@@ -8189,8 +8249,14 @@ namespace
             auto const signing_key = ensure_runtime_server_signing_key(rt.homeserver);
             auto const key_id = signing_key.has_value() ? signing_key->key_id : std::string{};
             auto const signing_secret = core::SecretBuffer{rt.homeserver.database.signing_secret_key.bytes()};
+            auto remote_calls = RemoteKeyCalls{rt, std::move(client_key)};
             for (auto& [server, user_claims] : remote_by_server)
             {
+                if (auto const refusal = remote_calls.admit_next_server(); !refusal.empty())
+                {
+                    failures.push_back(key_failure_member(server, "M_LIMIT_EXCEEDED", refusal));
+                    continue;
+                }
                 // What this server is asked for: the answer is kept only for these users and devices.
                 auto requested = std::vector<std::pair<std::string, std::vector<std::string>>>{};
                 for (auto const& claim : user_claims)
@@ -8216,9 +8282,10 @@ namespace
                 // Each outbound call owns its copy because the network path may
                 // release runtime.mutex and rotate the runtime key.
                 auto call_secret = core::SecretBuffer{signing_secret.bytes()};
-                auto const [ok, resp_body] = perform_sync_outbound_call(
-                    rt.homeserver, {}, tx, key_id, std::move(call_secret), "key_claim.remote",
-                    rt.homeserver.federation.config.remote_timeout_seconds);
+                // Unverified (ADR-0349): the claimed keys are the remote server's word.
+                auto const [ok, resp_body] = perform_bounded_outbound_call(
+                    rt.homeserver, OutboundAnswerTrust::unverified, {}, tx, key_id, std::move(call_secret),
+                    "key_claim.remote", remote_calls.remaining_seconds());
                 if (ok)
                 {
                     auto accepted = federation::accept_remote_key_claim_response(server, resp_body, requested);
@@ -10872,8 +10939,9 @@ namespace
         auto const result = [&] {
             // Re-acquire before returning: dispatch_resp/dispatch_err read reloadable runtime state.
             auto const released = merovingian::homeserver::RuntimeLockRelease{guard};
-            return perform_bounded_outbound_call_with_status(rt.homeserver, {}, tx, key_id, std::move(secret),
-                                                             "profile.proxy", proxy_deadline);
+            return perform_bounded_outbound_call_with_status(rt.homeserver, OutboundAnswerTrust::unverified, {}, tx,
+                                                             key_id, std::move(secret), "profile.proxy",
+                                                             proxy_deadline);
         }();
         if (result.remote_status == 404U)
         {
@@ -11353,9 +11421,9 @@ namespace
         case auth::KeyApiEndpoint::upload_keys:
             return handle_key_upload(rt, user, device_id, req.body);
         case auth::KeyApiEndpoint::query_keys:
-            return handle_key_query(rt, user, req.body);
+            return handle_key_query(rt, user, req.body, rate_limit_client_key(req, rt.homeserver.config.server()));
         case auth::KeyApiEndpoint::claim_keys:
-            return handle_key_claim(rt, req.body);
+            return handle_key_claim(rt, req.body, rate_limit_client_key(req, rt.homeserver.config.server()));
         case auth::KeyApiEndpoint::get_key_backup_version: {
             auto const* version = key_backup_version_for_user(rt.homeserver.database.persistent_store, user);
             if (version == nullptr)
@@ -12545,8 +12613,8 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                 // reloadable runtime state (rt.cors), and every other return path
                 // from this handler leaves the guard held.
                 auto const released = merovingian::homeserver::RuntimeLockRelease{guard};
-                return perform_bounded_outbound_call(rt.homeserver, {}, tx, key_id, std::move(secret),
-                                                     "public_rooms.proxy", proxy_deadline);
+                return perform_bounded_outbound_call(rt.homeserver, OutboundAnswerTrust::unverified, {}, tx, key_id,
+                                                     std::move(secret), "public_rooms.proxy", proxy_deadline);
             }();
             if (!ok)
                 return dispatch_err(req, rt, 502U, "M_UNKNOWN", "Failed to fetch public rooms from remote server");
@@ -12585,8 +12653,8 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                 // reloadable runtime state (rt.cors), and every other return path
                 // from this handler leaves the guard held.
                 auto const released = merovingian::homeserver::RuntimeLockRelease{guard};
-                return perform_bounded_outbound_call(rt.homeserver, {}, tx, key_id, std::move(secret),
-                                                     "directory.room.proxy", proxy_deadline);
+                return perform_bounded_outbound_call(rt.homeserver, OutboundAnswerTrust::unverified, {}, tx, key_id,
+                                                     std::move(secret), "directory.room.proxy", proxy_deadline);
             }();
             if (!ok)
             {
@@ -14232,8 +14300,8 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                 // reloadable runtime state (rt.cors), and every other return path
                 // from this handler leaves the guard held.
                 auto const released = merovingian::homeserver::RuntimeLockRelease{guard};
-                return perform_bounded_outbound_call(rt.homeserver, {}, tx, key_id, std::move(secret),
-                                                     "public_rooms.proxy", proxy_deadline);
+                return perform_bounded_outbound_call(rt.homeserver, OutboundAnswerTrust::unverified, {}, tx, key_id,
+                                                     std::move(secret), "public_rooms.proxy", proxy_deadline);
             }();
             if (!ok)
                 return dispatch_err(req, rt, 502U, "M_UNKNOWN", "Failed to fetch public rooms from remote server");
@@ -18418,6 +18486,16 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             }
             else if (!alias_server.empty())
             {
+                // F-17 (ADR-0350): the remote alias lookup holds a main-pool thread for a round trip to a
+                // peer this server does not control, like GET /directory/room/{alias}, so it takes an
+                // ADR-0079 slot and runs under the directory deadline.
+                auto const proxy_slot = admit_client_proxy(rt, req);
+                if (!proxy_slot.has_value())
+                {
+                    return client_proxy_refused(req, rt);
+                }
+                auto const proxy_deadline = effective_client_outbound_deadline(
+                    rt.homeserver, rt.homeserver.client_outbound_proxy_policy.directory_deadline_seconds);
                 wire_federation_callbacks(rt.homeserver);
                 auto const signing_key = ensure_runtime_server_signing_key(rt.homeserver);
                 auto const key_id = signing_key.has_value() ? signing_key->key_id : std::string{};
@@ -18428,9 +18506,10 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                     federation::make_outbound_transaction(std::string{alias_server}, "GET", target, our_server, {});
                 auto const [ok, body] = [&] {
                     auto const released = merovingian::homeserver::RuntimeLockRelease{guard};
-                    return perform_sync_outbound_call(rt.homeserver, {}, tx, key_id, std::move(secret),
-                                                      "room.join.alias_lookup_failed",
-                                                      rt.homeserver.federation.config.remote_timeout_seconds);
+                    // Unverified (ADR-0349): the room ID and via servers are the remote server's word.
+                    return perform_bounded_outbound_call(rt.homeserver, OutboundAnswerTrust::unverified, {}, tx, key_id,
+                                                         std::move(secret), "room.join.alias_lookup_failed",
+                                                         proxy_deadline);
                 }();
                 if (!ok)
                 {

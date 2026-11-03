@@ -454,6 +454,12 @@ struct HomeserverRuntime final
     // vector BEFORE the runtime/HomeserverRuntime variable, so it outlives
     // anything the runtime does while it is torn down.
     std::vector<std::string>* test_room_changed_log{nullptr};
+    // Test-only (F-43, ADR-0349): stands in for the federation worker's outbound tunnel. When set,
+    // perform_outbound_call hands it the signed request of every OutboundAnswerTrust::signature_verified
+    // call, in place of federation_proxy, and uses what it returns as the worker's reply. It lets a test
+    // play a compromised worker, and count the calls that reach one, without a worker process. An
+    // unverified call never reaches it. Always empty in production.
+    std::function<http::OutboundResult(http::OutboundRequest const&)> test_worker_outbound_route{};
     // Owned implementation of the runtime signing provider: the production
     // multi-key provider in main, or the refusing provider in the federation
     // worker (RuntimeStartOptions::signing_disabled, ADR-0078).

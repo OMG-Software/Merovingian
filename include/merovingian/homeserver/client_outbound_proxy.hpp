@@ -52,6 +52,12 @@ struct ClientOutboundProxyPolicy final
     // Total wall-clock budget for a remote media fetch: server discovery, the
     // federation media request, and the legacy fallback together.
     std::uint32_t media_deadline_seconds{30U};
+    // Total wall-clock budget for the remote half of one /keys/query or /keys/claim, however many
+    // servers it names: every discovery and every request draws from it (F-17, ADR-0350).
+    std::uint32_t remote_keys_deadline_seconds{30U};
+    // The most distinct remote servers one /keys/query or /keys/claim asks. Servers past it are
+    // reported in `failures` without being contacted.
+    std::uint32_t remote_keys_max_servers{16U};
     // Slack the federation-worker round trip may add on top of the deadline for
     // the worker to hand its (already timed-out) result back.
     std::uint32_t worker_margin_seconds{2U};

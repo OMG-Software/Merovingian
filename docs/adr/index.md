@@ -320,6 +320,8 @@
 * [0321 - Every IPC frame is valid UTF-8 by construction, and request bytes cross it losslessly](0321-every-ipc-frame-is-valid-utf-8-by-construction.md)
 * [0322 - An authenticated IPC frame whose payload does not parse fails one request, not the channel](0322-an-authenticated-frame-whose-payload-does-not-parse-fails-one-request.md)
 * [0323 - The supervisor restarts a live worker whose main-side channel has failed](0323-the-supervisor-restarts-a-worker-whose-main-side-channel-failed.md)
+* [0349 - An outbound federation answer main does not verify comes over main's own connection](0349-an-outbound-answer-main-does-not-verify-comes-over-mains-own-connection.md)
+* [0350 - A key query or claim takes one slot, one deadline and asks a bounded number of servers](0350-a-key-query-or-claim-takes-one-slot-one-deadline-and-asks-a-bounded-number-of-servers.md)
 
 ## Proposed Records
 

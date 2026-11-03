@@ -103,6 +103,11 @@ one exception to the `merovingian/` include-path rule in `src/AGENTS.md`.
    worker's Landlock grants (it logged `cannot open appservice registration file` on every start
    when it tried), and everything that consults the registry runs in main. Never grant the worker
    the registration directory to make a handler work; relay the decision to main.
+10. **Main believes only a signature-verified answer from this worker's outbound tunnel (F-43, ADR-0349).**
+    The `outbound_http_request` handler executes a request main already signed, and main uses its reply only for the
+    four backfill fetches (`OutboundAnswerTrust::signature_verified`); every other outbound call goes over main's own
+    client. Do not move another call onto the tunnel here, and do not add a worker-to-main frame whose content main
+    would act on without a signature check. The reply is validated in `WorkerPool::send_outbound_request`.
 
 ## Hardening
 

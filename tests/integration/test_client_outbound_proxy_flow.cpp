@@ -25,10 +25,15 @@
 #include "../support/master_key.hpp"
 #include "../support/registration_token.hpp"
 #include "merovingian/config/config.hpp"
+#include "merovingian/core/secret_buffer.hpp"
 #include "merovingian/core/socket_handle.hpp"
+#include "merovingian/database/persistent_store.hpp"
+#include "merovingian/federation/outbound_transaction.hpp"
 #include "merovingian/federation/server_discovery.hpp"
 #include "merovingian/homeserver/client_server.hpp"
+#include "merovingian/homeserver/room_service.hpp"
 #include "merovingian/homeserver/runtime.hpp"
+#include "merovingian/http/outbound_client.hpp"
 #include "merovingian/net/tcp_acceptor.hpp"
 
 #include <catch2/catch_test_macros.hpp>
@@ -216,6 +221,27 @@ struct Answer final
         }
     }
     return answer;
+}
+
+struct RawAnswer final
+{
+    std::uint16_t status{0U};
+    std::string body{};
+};
+
+// The status and the whole body, for a test that reads what was answered.
+[[nodiscard]] auto send_raw(ClientServerRuntime& runtime, std::string method, std::string target,
+                            std::string const& client_address, std::string const& token = {}, std::string body = {})
+    -> RawAnswer
+{
+    auto request = merovingian::homeserver::LocalHttpRequest{};
+    request.method = std::move(method);
+    request.target = std::move(target);
+    request.access_token = token;
+    request.body = std::move(body);
+    request.remote_addr = client_address;
+    auto const result = merovingian::homeserver::handle_client_server_request(runtime, request);
+    return {result.response.status, result.response.body};
 }
 
 [[nodiscard]] auto wait_until(std::function<bool()> const& condition, std::chrono::milliseconds timeout) -> bool
@@ -756,6 +782,569 @@ SCENARIO("A local publicRooms request never takes a proxy slot", "[http-2][integ
                 REQUIRE(plain.status == 200U);
                 REQUIRE(named.status == 200U);
                 REQUIRE(local_alias.status == 404U);
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// F-17 (ADR-0350): /keys/query, /keys/claim and POST /join/{#remoteAlias} are client-triggered
+// outbound calls like the lookups above, and run under the same controls.
+// ---------------------------------------------------------------------------
+
+namespace
+{
+
+// The `failures` object of a /keys/query or /keys/claim answer.
+[[nodiscard]] auto failures_of(std::string const& body) -> merovingian::canonicaljson::Object
+{
+    auto const root = parse_object(body);
+    auto const* failures = object_member_as_object(root, "failures");
+    REQUIRE(failures != nullptr);
+    return *failures;
+}
+
+[[nodiscard]] auto failure_errcode(merovingian::canonicaljson::Object const& failures, std::string const& server)
+    -> std::string
+{
+    auto const* entry = object_member_as_object(failures, server);
+    if (entry == nullptr)
+    {
+        return {};
+    }
+    auto const* code = string_member(*entry, "errcode");
+    return code == nullptr ? std::string{} : *code;
+}
+
+[[nodiscard]] auto failure_message(merovingian::canonicaljson::Object const& failures, std::string const& server)
+    -> std::string
+{
+    auto const* entry = object_member_as_object(failures, server);
+    if (entry == nullptr)
+    {
+        return {};
+    }
+    auto const* message = string_member(*entry, "error");
+    return message == nullptr ? std::string{} : *message;
+}
+
+[[nodiscard]] auto remote_user(std::string const& server) -> std::string
+{
+    return "@someone:" + server;
+}
+
+// The body of a /keys/query naming each remote user, and the local user alice.
+[[nodiscard]] auto key_query_body(std::vector<std::string> const& servers, std::string const& local_server)
+    -> std::string
+{
+    auto body = std::string{R"({"device_keys":{"@alice:)"} + local_server + R"(":[])";
+    for (auto const& server : servers)
+    {
+        body += R"(,")" + remote_user(server) + R"(":[])";
+    }
+    return body + "}}";
+}
+
+} // namespace
+
+SCENARIO("With no proxy slot free a key query reports its remote servers as failures and still answers locally",
+         "[f-17][http-2][integration][keys]")
+{
+    GIVEN("a budget of no calls and a remote server that would be reachable")
+    {
+        REQUIRE(sodium_init() >= 0);
+        auto started = merovingian::homeserver::start_client_server(proxy_test_config(false));
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        auto const peer = SilentPeer{};
+        point_at(runtime, peer);
+        auto const token = register_and_login(runtime);
+        runtime.homeserver.client_outbound_proxy_policy.global_cap = 0U;
+        auto const local_server = runtime.homeserver.config.server().server_name;
+
+        WHEN("a client queries the keys of a local user and of a user on that remote server")
+        {
+            // client-server-api.md, POST /keys/query: `failures` records "any remote homeservers could not be
+            // reached"; the rest of the answer is still returned.
+            auto const answer = send_raw(runtime, "POST", "/_matrix/client/v3/keys/query", "192.0.2.50", token,
+                                         key_query_body({std::string{silent_server}}, local_server));
+
+            THEN("the request succeeds, the remote server is a failure, and it was never contacted")
+            {
+                REQUIRE(answer.status == 200U);
+                auto const failures = failures_of(answer.body);
+                REQUIRE(failure_errcode(failures, std::string{silent_server}) == "M_LIMIT_EXCEEDED");
+                auto const root = parse_object(answer.body);
+                auto const* device_keys = object_member_as_object(root, "device_keys");
+                REQUIRE(device_keys != nullptr);
+                REQUIRE(object_member_as_object(*device_keys, "@alice:" + local_server) != nullptr);
+                REQUIRE(peer.connections() == 0);
+            }
+        }
+    }
+}
+
+SCENARIO("With no proxy slot free a key claim returns the one-time keys it already took here",
+         "[f-17][http-2][integration][keys]")
+{
+    GIVEN("a local one-time key, a budget of no calls and a remote server that would be reachable")
+    {
+        REQUIRE(sodium_init() >= 0);
+        auto started = merovingian::homeserver::start_client_server(proxy_test_config(false));
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        auto const peer = SilentPeer{};
+        point_at(runtime, peer);
+        auto const token = register_and_login(runtime);
+        auto const local_server = runtime.homeserver.config.server().server_name;
+        auto const alice = "@alice:" + local_server;
+        REQUIRE(merovingian::database::store_one_time_key(
+            runtime.homeserver.database.persistent_store,
+            {alice, "ALICEDEV", "signed_curve25519:AAAAAQ", R"({"key":"LOCAL_OTK_VALUE"})"}));
+        runtime.homeserver.client_outbound_proxy_policy.global_cap = 0U;
+
+        WHEN("a client claims a key of that local user and of a user on the remote server")
+        {
+            auto const claim = std::string{R"({"one_time_keys":{")"} + alice +
+                               R"(":{"ALICEDEV":"signed_curve25519"},")" + remote_user(std::string{silent_server}) +
+                               R"(":{"REMOTEDEV":"signed_curve25519"}}})";
+            auto const answer = send_raw(runtime, "POST", "/_matrix/client/v3/keys/claim", "192.0.2.51", token, claim);
+
+            THEN("the local key, which was consumed, is in the answer; the remote server is a failure, uncontacted")
+            {
+                // client-server-api.md, POST /keys/claim: an unreachable server is recorded in `failures`.
+                REQUIRE(answer.status == 200U);
+                REQUIRE(answer.body.find("LOCAL_OTK_VALUE") != std::string::npos);
+                auto const failures = failures_of(answer.body);
+                REQUIRE(failure_errcode(failures, std::string{silent_server}) == "M_LIMIT_EXCEEDED");
+                REQUIRE(peer.connections() == 0);
+                REQUIRE(runtime.homeserver.client_outbound_budget->active() == 0U);
+            }
+        }
+    }
+}
+
+SCENARIO("One key query shares a single deadline across every remote server it names",
+         "[f-17][http-2][integration][keys]")
+{
+    GIVEN("a one second key deadline and three remote servers that accept a connection and never answer")
+    {
+        REQUIRE(sodium_init() >= 0);
+        auto started = merovingian::homeserver::start_client_server(proxy_test_config(false));
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        runtime.homeserver.client_outbound_proxy_policy.remote_keys_deadline_seconds = 1U;
+        auto const peer = SilentPeer{};
+        auto const servers = std::vector<std::string>{"s1.example.org", "s2.example.org", "s3.example.org"};
+        for (auto const& server : servers)
+        {
+            runtime.homeserver.test_forced_outbound_resolution[server] =
+                merovingian::homeserver::TestOnlyForcedOutboundResolution{"localhost", peer.port(), {"127.0.0.1"}, {}};
+        }
+        auto const token = register_and_login(runtime);
+        auto const local_server = runtime.homeserver.config.server().server_name;
+
+        WHEN("a client queries the keys of a user on each of them")
+        {
+            auto const answer = send_raw(runtime, "POST", "/_matrix/client/v3/keys/query", "192.0.2.52", token,
+                                         key_query_body(servers, local_server));
+
+            THEN("only the first is dialled: it used the whole deadline, so the others fail without a connection")
+            {
+                REQUIRE(answer.status == 200U);
+                auto const failures = failures_of(answer.body);
+                for (auto const& server : servers)
+                {
+                    REQUIRE(failure_errcode(failures, server) == "M_UNKNOWN");
+                }
+                REQUIRE(peer.connections() == 1);
+                REQUIRE(runtime.homeserver.client_outbound_budget->active() == 0U);
+            }
+        }
+    }
+}
+
+SCENARIO("One key claim shares a single deadline across every remote server it names",
+         "[f-17][http-2][integration][keys]")
+{
+    GIVEN("a one second key deadline and three remote servers that accept a connection and never answer")
+    {
+        REQUIRE(sodium_init() >= 0);
+        auto started = merovingian::homeserver::start_client_server(proxy_test_config(false));
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        runtime.homeserver.client_outbound_proxy_policy.remote_keys_deadline_seconds = 1U;
+        auto const peer = SilentPeer{};
+        auto const servers = std::vector<std::string>{"s1.example.org", "s2.example.org", "s3.example.org"};
+        auto claim = std::string{R"({"one_time_keys":{)"};
+        for (auto const& server : servers)
+        {
+            runtime.homeserver.test_forced_outbound_resolution[server] =
+                merovingian::homeserver::TestOnlyForcedOutboundResolution{"localhost", peer.port(), {"127.0.0.1"}, {}};
+            claim += (claim.back() == '{' ? "" : ",") + std::string{"\""} + remote_user(server) +
+                     R"(":{"DEV":"signed_curve25519"})";
+        }
+        claim += "}}";
+        auto const token = register_and_login(runtime);
+
+        WHEN("a client claims a key from a user on each of them")
+        {
+            auto const answer = send_raw(runtime, "POST", "/_matrix/client/v3/keys/claim", "192.0.2.53", token, claim);
+
+            THEN("only the first is dialled and every server is reported as a failure")
+            {
+                REQUIRE(answer.status == 200U);
+                auto const failures = failures_of(answer.body);
+                for (auto const& server : servers)
+                {
+                    REQUIRE(failure_errcode(failures, server) == "M_UNKNOWN");
+                }
+                REQUIRE(peer.connections() == 1);
+            }
+        }
+    }
+}
+
+SCENARIO("A key query asks at most the configured number of distinct remote servers",
+         "[f-17][http-2][integration][keys]")
+{
+    GIVEN("a cap of two servers, two that fail at once, and two beyond the cap that would accept a connection")
+    {
+        REQUIRE(sodium_init() >= 0);
+        auto started = merovingian::homeserver::start_client_server(proxy_test_config(false));
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        runtime.homeserver.client_outbound_proxy_policy.remote_keys_max_servers = 2U;
+        runtime.homeserver.client_outbound_proxy_policy.remote_keys_deadline_seconds = 2U;
+        auto const discovery_calls = std::make_shared<std::atomic<int>>(0);
+        runtime.homeserver.discovery_network = std::make_unique<CountingDiscoveryNetwork>(discovery_calls);
+        auto const peer = SilentPeer{};
+        // The map orders servers by name, so a1 and a2 come first and are the two asked.
+        auto const asked = std::vector<std::string>{"a1.example.org", "a2.example.org"};
+        auto const excess = std::vector<std::string>{"z1.example.org", "z2.example.org"};
+        for (auto const& server : excess)
+        {
+            runtime.homeserver.test_forced_outbound_resolution[server] =
+                merovingian::homeserver::TestOnlyForcedOutboundResolution{"localhost", peer.port(), {"127.0.0.1"}, {}};
+        }
+        auto const token = register_and_login(runtime);
+        auto const local_server = runtime.homeserver.config.server().server_name;
+        auto all = asked;
+        all.insert(all.end(), excess.begin(), excess.end());
+
+        WHEN("a client queries the keys of a user on each of the four")
+        {
+            auto const answer = send_raw(runtime, "POST", "/_matrix/client/v3/keys/query", "192.0.2.54", token,
+                                         key_query_body(all, local_server));
+
+            THEN("the two beyond the cap are reported as failures and never contacted")
+            {
+                REQUIRE(answer.status == 200U);
+                auto const failures = failures_of(answer.body);
+                for (auto const& server : all)
+                {
+                    REQUIRE_FALSE(failure_errcode(failures, server).empty());
+                }
+                for (auto const& server : excess)
+                {
+                    REQUIRE(failure_errcode(failures, server) == "M_LIMIT_EXCEEDED");
+                    REQUIRE(failure_message(failures, server).find("too many remote servers") != std::string::npos);
+                }
+                for (auto const& server : asked)
+                {
+                    REQUIRE(failure_message(failures, server).find("too many remote servers") == std::string::npos);
+                }
+                REQUIRE(peer.connections() == 0);
+            }
+        }
+    }
+}
+
+SCENARIO("A join through a remote alias takes a proxy slot and ends within the directory deadline",
+         "[f-17][http-2][integration]")
+{
+    GIVEN("a budget of no calls and a remote server that would be reachable")
+    {
+        REQUIRE(sodium_init() >= 0);
+        auto started = merovingian::homeserver::start_client_server(proxy_test_config(false));
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        auto const peer = SilentPeer{};
+        point_at(runtime, peer);
+        auto const token = register_and_login(runtime);
+        auto const join_target = std::string{"/_matrix/client/v3/join/%23room%3A"} + std::string{silent_server};
+        runtime.homeserver.client_outbound_proxy_policy.global_cap = 0U;
+
+        WHEN("a client joins by that server's alias")
+        {
+            auto const answer = send(runtime, "POST", join_target, "192.0.2.55", token, "{}");
+
+            THEN("it is refused with 429 M_LIMIT_EXCEEDED before any outbound call")
+            {
+                REQUIRE(answer.status == 429U);
+                REQUIRE(answer.errcode == "M_LIMIT_EXCEEDED");
+                REQUIRE(answer.retry_after_ms == 1000);
+                REQUIRE(peer.connections() == 0);
+            }
+        }
+    }
+
+    GIVEN("a one second directory deadline and a remote server that never answers")
+    {
+        REQUIRE(sodium_init() >= 0);
+        auto started = merovingian::homeserver::start_client_server(proxy_test_config(false));
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        runtime.homeserver.client_outbound_proxy_policy.directory_deadline_seconds = 1U;
+        auto const peer = SilentPeer{};
+        point_at(runtime, peer);
+        auto const token = register_and_login(runtime);
+        auto const join_target = std::string{"/_matrix/client/v3/join/%23room%3A"} + std::string{silent_server};
+
+        WHEN("a client joins by that server's alias")
+        {
+            auto const answer = send(runtime, "POST", join_target, "192.0.2.56", token, "{}");
+
+            THEN("the lookup is a bad gateway once the deadline passes, and the slot is back")
+            {
+                // The lookup used the directory deadline, not the 60 s remote_timeout: the test would not end
+                // otherwise. Only the count of dials and the returned slot are asserted, not the time taken.
+                REQUIRE(answer.status == 502U);
+                REQUIRE(peer.connections() == 1);
+                REQUIRE(runtime.homeserver.client_outbound_budget->active() == 0U);
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// F-43 (ADR-0349): a federation worker is the process most exposed to hostile traffic, so what it relays
+// is input. An answer main uses without a signature check is fetched over main's own connection. These
+// scenarios play a compromised worker: `test_worker_outbound_route` answers any call handed to the
+// tunnel with a forgery, and the remote server is a closed port. A forgery that is used shows up in the
+// response; a call that reaches the tunnel shows up in the count.
+// ---------------------------------------------------------------------------
+
+namespace
+{
+
+constexpr auto forged_server = std::string_view{"forged.example.org"};
+
+// A compromised worker: counts the calls it is handed and answers each with `body`, as a success.
+struct ForgingWorker final
+{
+    std::atomic<int> calls{0};
+    std::string body{};
+
+    auto install(ClientServerRuntime& runtime) -> void
+    {
+        runtime.homeserver.test_worker_outbound_route = [this](merovingian::http::OutboundRequest const&) {
+            calls.fetch_add(1);
+            auto reply = merovingian::http::OutboundResult{};
+            reply.ok = true;
+            reply.response.status = 200U;
+            reply.response.body = body;
+            return reply;
+        };
+    }
+};
+
+// The remote server is a loopback port nothing listens on: a call made over main's own client is refused
+// at once, so the only way for the forged body to appear is for main to have believed the worker.
+auto point_at_closed_port(ClientServerRuntime& runtime) -> void
+{
+    runtime.homeserver.test_forced_outbound_resolution[std::string{forged_server}] =
+        merovingian::homeserver::TestOnlyForcedOutboundResolution{"localhost", 1U, {"127.0.0.1"}, {}};
+}
+
+} // namespace
+
+SCENARIO("A worker's forged key query answer is not what a client is told", "[f-43][integration][keys]")
+{
+    GIVEN("a worker that answers every call it is handed with a forged device for a remote user")
+    {
+        REQUIRE(sodium_init() >= 0);
+        auto worker = ForgingWorker{};
+        auto started = merovingian::homeserver::start_client_server(proxy_test_config(false));
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        auto const victim = remote_user(std::string{forged_server});
+        worker.body = R"({"device_keys":{")" + victim + R"(":{"DUMMYDEV":{"user_id":")" + victim +
+                      R"(","device_id":"DUMMYDEV","algorithms":[],"keys":{},"signatures":{}}}}})";
+        worker.install(runtime);
+        point_at_closed_port(runtime);
+        auto const token = register_and_login(runtime);
+        auto const local_server = runtime.homeserver.config.server().server_name;
+
+        WHEN("a client queries that user's keys")
+        {
+            auto const answer = send_raw(runtime, "POST", "/_matrix/client/v3/keys/query", "192.0.2.60", token,
+                                         key_query_body({std::string{forged_server}}, local_server));
+
+            THEN("the forged device is not returned, the server is a failure and the worker was not asked")
+            {
+                REQUIRE(answer.status == 200U);
+                REQUIRE(answer.body.find("DUMMYDEV") == std::string::npos);
+                REQUIRE_FALSE(failure_errcode(failures_of(answer.body), std::string{forged_server}).empty());
+                REQUIRE(worker.calls.load() == 0);
+            }
+        }
+    }
+}
+
+SCENARIO("A worker's forged key claim answer is not what a client is told", "[f-43][integration][keys]")
+{
+    GIVEN("a worker that answers every call it is handed with a forged one-time key for a remote user")
+    {
+        REQUIRE(sodium_init() >= 0);
+        auto worker = ForgingWorker{};
+        auto started = merovingian::homeserver::start_client_server(proxy_test_config(false));
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        auto const victim = remote_user(std::string{forged_server});
+        worker.body =
+            R"({"one_time_keys":{")" + victim + R"(":{"DEV":{"signed_curve25519:AAAAAQ":{"key":"FORGED_OTK"}}}}})";
+        worker.install(runtime);
+        point_at_closed_port(runtime);
+        auto const token = register_and_login(runtime);
+
+        WHEN("a client claims a key from that user")
+        {
+            auto const claim = R"({"one_time_keys":{")" + victim + R"(":{"DEV":"signed_curve25519"}}})";
+            auto const answer = send_raw(runtime, "POST", "/_matrix/client/v3/keys/claim", "192.0.2.61", token, claim);
+
+            THEN("the forged key is not returned and the worker was not asked")
+            {
+                REQUIRE(answer.status == 200U);
+                REQUIRE(answer.body.find("FORGED_OTK") == std::string::npos);
+                REQUIRE_FALSE(failure_errcode(failures_of(answer.body), std::string{forged_server}).empty());
+                REQUIRE(worker.calls.load() == 0);
+            }
+        }
+    }
+}
+
+SCENARIO("A worker's forged alias, public room and profile answers are not what a client is told",
+         "[f-43][integration]")
+{
+    GIVEN("a worker that answers every call it is handed with a forged room, directory entry and profile")
+    {
+        REQUIRE(sodium_init() >= 0);
+        auto worker = ForgingWorker{};
+        auto started = merovingian::homeserver::start_client_server(proxy_test_config(false));
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        worker.body = R"({"room_id":"!FORGED:forged.example.org","servers":["forged.example.org"],)"
+                      R"("chunk":[{"room_id":"!FORGED:forged.example.org"}],"displayname":"FORGED"})";
+        worker.install(runtime);
+        point_at_closed_port(runtime);
+        auto const token = register_and_login(runtime);
+        auto const server = std::string{forged_server};
+
+        WHEN("a client resolves an alias, lists that server's public rooms, reads a profile, and joins by alias")
+        {
+            auto const alias =
+                send_raw(runtime, "GET", "/_matrix/client/v3/directory/room/%23a%3A" + server, "192.0.2.62", token);
+            auto const rooms =
+                send_raw(runtime, "GET", "/_matrix/client/v3/publicRooms?server=" + server, "192.0.2.63", token);
+            auto const profile =
+                send_raw(runtime, "GET", "/_matrix/client/v3/profile/%40u%3A" + server, "192.0.2.64", token);
+            auto const join =
+                send_raw(runtime, "POST", "/_matrix/client/v3/join/%23a%3A" + server, "192.0.2.65", token, "{}");
+
+            THEN("none of them carries the forgery, none succeeds and the worker was never asked")
+            {
+                for (auto const* answer : {&alias, &rooms, &profile, &join})
+                {
+                    REQUIRE(answer->body.find("FORGED") == std::string::npos);
+                    REQUIRE(answer->status >= 400U);
+                }
+                REQUIRE(worker.calls.load() == 0);
+            }
+        }
+    }
+}
+
+SCENARIO("A worker's forged membership answers do not reach a join or a knock", "[f-43][integration][membership]")
+{
+    GIVEN("a worker that answers every call it is handed with a forged success")
+    {
+        REQUIRE(sodium_init() >= 0);
+        auto worker = ForgingWorker{};
+        auto started = merovingian::homeserver::start_client_server(proxy_test_config(false));
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        worker.body = R"({"room_version":"10","event":{"type":"m.room.member"}})";
+        worker.install(runtime);
+        point_at_closed_port(runtime);
+        auto const token = register_and_login(runtime);
+        auto const server = std::string{forged_server};
+
+        WHEN("a client joins and knocks on a room that server is said to host")
+        {
+            auto const join = send_raw(runtime, "POST", "/_matrix/client/v3/join/%21r%3A" + server + "?via=" + server,
+                                       "192.0.2.66", token, "{}");
+            auto const knock = send_raw(runtime, "POST", "/_matrix/client/v3/knock/%21r%3A" + server + "?via=" + server,
+                                        "192.0.2.67", token, "{}");
+
+            THEN("neither succeeds and the worker was never asked")
+            {
+                REQUIRE(join.status >= 400U);
+                REQUIRE(knock.status >= 400U);
+                REQUIRE(worker.calls.load() == 0);
+            }
+        }
+    }
+}
+
+SCENARIO("Only a call whose answer is checked by signature may be carried by the worker",
+         "[f-43][integration][routing]")
+{
+    GIVEN("a worker that answers every call it is handed, and a closed port for the remote server")
+    {
+        REQUIRE(sodium_init() >= 0);
+        auto worker = ForgingWorker{};
+        auto started = merovingian::homeserver::start_client_server(proxy_test_config(false));
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        worker.body = R"({"pdus":[]})";
+        worker.install(runtime);
+        point_at_closed_port(runtime);
+        auto const signing_key = merovingian::homeserver::ensure_runtime_server_signing_key(runtime.homeserver);
+        REQUIRE(signing_key.has_value());
+        auto const our_server = runtime.homeserver.config.server().server_name;
+        auto const transaction = merovingian::federation::make_outbound_transaction(
+            std::string{forged_server}, "GET", "/_matrix/federation/v1/event/%24e", our_server, {});
+
+        WHEN("a call whose answer main does not verify is made")
+        {
+            auto const [ok, body] = merovingian::homeserver::perform_sync_outbound_call(
+                runtime.homeserver, merovingian::homeserver::OutboundAnswerTrust::unverified, {}, transaction,
+                signing_key->key_id,
+                merovingian::core::SecretBuffer{runtime.homeserver.database.signing_secret_key.bytes()}, "test.f43",
+                5U);
+
+            THEN("the worker is not asked and the worker's answer is not the result")
+            {
+                REQUIRE(worker.calls.load() == 0);
+                REQUIRE_FALSE(ok);
+                REQUIRE(body.find("pdus") == std::string::npos);
+            }
+        }
+
+        WHEN("a call whose answer main verifies by signature is made")
+        {
+            auto const [ok, body] = merovingian::homeserver::perform_sync_outbound_call(
+                runtime.homeserver, merovingian::homeserver::OutboundAnswerTrust::signature_verified, {}, transaction,
+                signing_key->key_id,
+                merovingian::core::SecretBuffer{runtime.homeserver.database.signing_secret_key.bytes()}, "test.f43",
+                5U);
+
+            THEN("the worker carries it")
+            {
+                REQUIRE(worker.calls.load() == 1);
+                REQUIRE(ok);
+                REQUIRE(body == R"({"pdus":[]})");
             }
         }
     }

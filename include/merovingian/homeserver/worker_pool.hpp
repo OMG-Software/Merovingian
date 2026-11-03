@@ -13,6 +13,7 @@
 #include "merovingian/net/thread_pool.hpp"
 
 #include <chrono>
+#include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <mutex>
@@ -166,6 +167,19 @@ struct HomeserverRuntime;
 [[nodiscard]] auto refuse_forbidden_worker_request(ipc::IpcChannel& channel, std::uint64_t request_id,
                                                    std::string_view type) -> bool;
 
+// The most of a worker's `error_detail` that survives (F-43, ADR-0349). It reaches log lines and, for a
+// failed call, client-visible error text, so a worker cannot use it to carry a payload.
+inline constexpr std::size_t max_worker_outbound_error_detail_bytes{256U};
+
+// Checks the reply a federation worker gave for an outbound request against what was asked, before main
+// uses any of it (F-43, ADR-0349): the worker is the process most exposed to hostile traffic, so its frame
+// is input. A success must carry an HTTP status in 100..599 and a body no larger than the request's
+// `max_response_body_bytes`; one that does not becomes a failure with no body. A failure carries no body
+// and no status. `error_detail` is cut to max_worker_outbound_error_detail_bytes with control and non-ASCII
+// bytes replaced. Pure, and exposed so tests can drive it without a worker process.
+[[nodiscard]] auto validate_worker_outbound_reply(http::OutboundRequest const& request, http::OutboundResult reply)
+    -> http::OutboundResult;
+
 // Owns N out-of-process federation worker supervisors. Routes each inbound
 // federation request to the worker that owns the request's room ID.
 //
@@ -195,6 +209,8 @@ public:
     // room_id for execution. The worker calls OutboundClient::perform() in its
     // own thread pool, keeping the main process handler thread free.
     // IPC timeout = request.total_timeout_seconds + `ipc_margin` (10 s by default).
+    // The reply is checked by validate_worker_outbound_reply; callers still take it as unverified
+    // unless they check a signature on the whole of it (OutboundAnswerTrust, ADR-0349).
     [[nodiscard]] auto send_outbound_request(http::OutboundRequest const& request, std::string_view room_id,
                                              std::chrono::seconds ipc_margin = default_worker_ipc_margin)
         -> http::OutboundResult;
