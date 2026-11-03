@@ -70,16 +70,46 @@ inline constexpr auto default_missing_events_limit = std::size_t{10U};
 [[nodiscard]] auto build_event_response(database::PersistentStore const& store, std::string_view event_id,
                                         std::string_view local_server_name, std::string_view origin) -> RoomReadResult;
 
+// The most events the auth chain of a `/state` or `/state_ids` answer may hold. A longer chain is
+// refused (`RoomReadStatus::too_large`), never cut: the spec's answer is the full set of
+// authorisation events (ADR-0364). The default of `security.federation.backfill.max_auth_chain_ids`,
+// so this server never serves a chain it would refuse to read.
+inline constexpr auto max_state_auth_chain_events = std::size_t{65536U};
+
+// The state of `room_id` BEFORE `at_event_id`, as this server recorded it (ADR-0363, F-25, F-26).
+struct StateAtEvent final
+{
+    // False when the event is unknown, is in another room, or this server has no state it can serve
+    // whole for it: an outlier, a missing or broken state-group chain, a group naming an event this
+    // store lacks or a rejected one, a resolution over its budget (ADR-0365). The federation
+    // endpoints answer 404. Nothing is ever substituted from a walk of the graph or the current state.
+    bool known{false};
+    // The state event IDs, in no order. Empty with `known` true only for the room's first event.
+    std::vector<std::string> event_ids{};
+    // What the answer cost, so a test can show that it does not grow with the room's history: the
+    // stored events whose JSON was parsed here (the requested event's, once), and whether the state
+    // of several prev_events had to be resolved (which parses the entries of their groups, nothing else).
+    std::size_t events_parsed{0U};
+    bool resolved{false};
+};
+
+// The state before `at_event_id`: its own recorded group when it is not a state event or was rejected
+// (the state before equals the state after), otherwise the group of its single `prev_event`, otherwise
+// the resolution of its several `prev_events` (`homeserver::compute_state_before` under a lowered
+// auth-walk budget). A rejected event is never in the answer; a soft-failed one is where resolution
+// admitted it. Holds no state of its own and returns owned data. Takes no lock: the caller guards `store`.
+[[nodiscard]] auto state_before_event(database::PersistentStore const& store, std::string_view room_id,
+                                      std::string_view at_event_id) -> StateAtEvent;
+
 // Builds the response for an inbound federation
 // `GET /_matrix/federation/v1/state/{roomId}?event_id=...` request. `origin`
 // must pass `origin_may_read_room` for `room_id` (checked first, so a stranger
-// learns nothing about the event). The state is reconstructed as of
-// `at_event_id` -- the fully resolved state prior to the changes the event itself
-// induces (SS API §GET /state/{roomId}) -- by walking the event DAG backward from
-// the event's `prev_events`, and comes back in `pdus` with the transitive
-// auth-event closure of that state in `auth_chain`. An `at_event_id` that is
-// empty, unknown or not in `room_id` is `not_found`: there is deliberately no
-// fallback to the room's current state.
+// learns nothing about the event). The state is `state_before_event` -- the fully resolved
+// state prior to the changes the event itself induces (SS API §GET /state/{roomId}), as this server
+// recorded it -- and comes back in `pdus` with the transitive auth-event closure of that state in
+// `auth_chain`, at most `max_state_auth_chain_events` long (a longer one is `too_large`). An
+// `at_event_id` that is empty, unknown, not in `room_id` or without recorded state is `not_found`:
+// there is deliberately no fallback to the room's current state or to a walk of the graph.
 [[nodiscard]] auto build_state_response(database::PersistentStore const& store, std::string_view room_id,
                                         std::string_view at_event_id, std::string_view origin) -> RoomReadResult;
 
@@ -108,12 +138,10 @@ inline constexpr auto max_event_auth_chain_events = std::size_t{10000U};
 // "The state of the room at the last event returned"), which is distinct from
 // `build_state_response`'s federation-facing "state prior to this event"
 // (SS API `GET /state/{roomId}`: "prior to considering any state changes
-// induced by the requested event"). Reuses the same backward DAG walk from
-// `at_event_id`'s `prev_events` that `build_state_response`/
-// `build_state_ids_response` use, then folds `at_event_id` itself back in as
-// the winning entry for its own (type, state_key) when it is a state event.
-// Falls back to the room's current recorded state when `at_event_id` is empty
-// or does not name a stored event belonging to `room_id`.
+// induced by the requested event"). It is the state group recorded for
+// `at_event_id` (ADR-0363): a rejected event's change is not in it. Falls back to the room's
+// current recorded state when `at_event_id` is empty or does not name a stored event belonging to
+// `room_id`; an event with no group, or one that cannot be served whole, gives an empty list.
 [[nodiscard]] auto resolve_state_event_ids_at(database::PersistentStore const& store, std::string_view room_id,
                                               std::string_view at_event_id = {}) -> std::vector<std::string>;
 

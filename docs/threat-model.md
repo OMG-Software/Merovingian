@@ -2791,3 +2791,15 @@ nothing, all from trusting the worker's view or the hook's transport.
   device, not per account.
 - **A remote server could blank a client's key claim (audit run-2 F-36).** **Mitigation:** the answer is kept only
   for the users and devices asked of that server and a response that cannot be serialised is a 500 (ADR-0337).
+- **The state at an event was picked by sender-chosen depth and cost the whole room history (audit run-2 F-25, F-26).**
+  Federation `/state` and `/state_ids`, and the `state` of a client `/context`, walked every ancestor of the event and
+  kept the greatest `(depth, event_id)` per state key, with no status filter: a remote member's rejected state event with
+  a huge depth became the room's name, membership or power levels in the answer and displaced the true event, and each
+  request parsed one JSON document per ancestor on the worker's small `local_pool`, with the auth chain collected
+  without a bound. **Mitigation:** the answer is the state this server recorded for the event (ADR-0363): a rejected
+  event is never in it, a soft-failed one is where resolution admitted it, an event with no recorded state or a broken
+  chain is a 404 (or an empty `/context` `state`), and a merge of several `prev_events` is resolved under a lowered
+  auth-walk budget (ADR-0365). A request costs one state-group chain and the state returned, never the room's history.
+  The auth chain of `/state` and `/state_ids` is bounded at 65536 events and refused with 502 `M_TOO_LARGE`, never cut
+  (ADR-0364). **Residual risk:** a request still costs the size of the room's state (and, for `/state`, parsing every
+  state and auth event); there is no per-origin concurrency share on `local_pool` reads. Tests: `[state-at-event]`.

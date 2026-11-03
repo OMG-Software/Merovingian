@@ -106,15 +106,12 @@ enum class TableLoadProfile
 //                       never exposes this server's own signing secret even
 //                       though the table name is shared with it.
 //
-//   state_groups        Phase A (ADR-0064) plumbing: the worker serves
-//                       federation /state and /state_ids locally today from
-//                       current_state/event relations, and a later phase
-//                       moves that to state groups. Readable now so that
-//                       phase does not require a further grant change.
-//   state_group_state   same ADR-0064 phase-A reasoning, for a group's own
-//                       delta/snapshot rows.
-//   event_state_groups  same ADR-0064 phase-A reasoning, for the
-//                       event -> state group mapping.
+//   state_groups        federation /state and /state_ids answer from the state
+//                       group recorded for the event (ADR-0363), and
+//                       ServerEventFilter judges history visibility on it
+//                       (ADR-0064).
+//   state_group_state   the same, for a group's own delta/snapshot rows.
+//   event_state_groups  the same, for the event -> state group mapping.
 //   forward_extremities same ADR-0064 phase-A reasoning: the worker's
 //                       membership_template_provider already reads forward
 //                       extremities via `events` (see above); this table

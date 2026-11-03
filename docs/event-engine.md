@@ -1055,14 +1055,21 @@ The membership-acceptor path does not yet run this backfill step — see the
 
 The inbound federation `GET /state/{roomId}` and `/state_ids/{roomId}` endpoints
 return the room state resolved *as of* the required `event_id` query parameter —
-the state prior to the changes that event itself induces. Because the persistent
-store keeps only the current resolved state per `(type, state_key)`, historical
-state is reconstructed by walking the event DAG backward from the requested
-event's `prev_events`: state events are identified by the presence of a
-`state_key` member in the stored PDU JSON, and for each `(type, state_key)` the
-ancestor with the greatest `(depth, event_id)` wins. This is the deterministic
-linearisation that v2 state resolution produces for a conflict-free DAG, so
-superseded historical state values are recovered without a stored state group.
+the state prior to the changes that event itself induces. The answer is the state
+this server *recorded* (ADR-0064 state groups), never a walk of the event graph
+(F-25, F-26, ADR-0363): `federation::state_before_event` reads the event's own group
+when the event is not a state event or was rejected (its state before equals its state
+after), the group of its single `prev_event` otherwise, and for a state event with
+several `prev_events` the resolution `compute_state_before` makes at ingestion, under a
+lower auth-walk budget (ADR-0365). A rejected event is therefore never in the answer, a
+soft-failed one is where resolution admitted it, and sender-chosen depth decides nothing.
+It fails closed: an event with no recorded state (an outlier, or the state before a
+federated join's own event), a broken group chain, a group naming an event this store lacks
+or a rejected one, or a resolution over its budget is answered `404 M_NOT_FOUND` ("the
+server doesn't know about the state at that event"). The cost of a request is the state
+groups on one chain plus the size of the state, not the length of the room's history. The
+auth chain is bounded at `max_state_auth_chain_events` (65536) and a longer one is refused
+with `502 M_TOO_LARGE`, never cut (ADR-0364).
 When `event_id` is absent the handler rejects the request with
 `400 M_MISSING_PARAM`; an `event_id` that is unknown, or that belongs to another
 room, answers `404 M_NOT_FOUND` (there is no fallback to the current state, 0.12.15).
@@ -1092,15 +1099,15 @@ with no state group (an outlier) or a broken group chain is redacted. `/state`,
 authorisation and a joining or catching-up server needs them whole to compute state and
 authorise events. The `origin_may_read_room` gate still runs first.
 
-The client-server `GET /rooms/{roomId}/context/{eventId}` endpoint reuses this
-same backward DAG walk (`federation::resolve_state_event_ids_at()`, 0.11.11)
-to populate its `state` field with the room state at the last event the
-response actually returns, rather than the room's current state, per CS API:
-"The state of the room at the last event returned." Because `/context`'s
-`state` needs the pinned event's *own* contribution included when that event
-is itself a state event — unlike the federation endpoints above, which stop
-one step short by design — the shared walk's result is folded together with
-the pinned event before being returned. `GET /rooms/{roomId}/messages` was not
+The client-server `GET /rooms/{roomId}/context/{eventId}` endpoint populates its `state`
+field (`federation::resolve_state_event_ids_at()`) with the room state at the last event
+the response actually returns, rather than the room's current state, per CS API: "The
+state of the room at the last event returned." That is the event's *own* recorded group
+(ADR-0363), the state after it: a state event's own change is in it, a rejected event's is
+not. An event with no recorded group, or a group that cannot be served whole, gives an
+empty `state` (never a walk, never current state). It reads one group chain under
+`runtime.mutex` and resolves nothing.
+`GET /rooms/{roomId}/messages` was not
 changed: its `state` field is spec'd around chunk-relevance/lazy-loading, not
 a DAG position, so this reconstruction does not apply to it in the same way;
 see `docs/todos/capability-gaps.md` for that tracked divergence.

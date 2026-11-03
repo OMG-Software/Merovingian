@@ -97,6 +97,21 @@ The medium findings of security audit run 2 (ref 5e67d4e8).
   of that per surface); no place counts as no decision, so `policy_server_allow_without_result` decides it as before. A
   pre-v12 `createRoom` reserves its `!room<N>` ID across the hook and takes the first free number, so two creations
   overlapping the hook no longer collide (500 "room persistence failed").
+- **Federation `/state`, `/state_ids` and the client `/context` `state` no longer serve a rejected event as room state (F-25, ADR-0363).**
+  They walked every ancestor of the event and kept the greatest sender-chosen `(depth, event_id)` per state key, with no
+  status filter, so a remote member's rejected `m.room.name`, member or power-levels event with a huge depth displaced the
+  true event in the answer. The answer is now the state this server recorded for the event: its own state group when the
+  event is not a state event or was rejected, the group of its single `prev_event`, or the resolution of several. A
+  rejected event is never in it and a soft-failed one is where resolution admitted it. An event with no recorded state (an
+  outlier, the events before a federated join's own event), a broken group chain, or a group naming a missing or rejected
+  event is `404 M_NOT_FOUND` (an empty `state` for `/context`), where the walk returned a guess.
+- **A `/state` or `/state_ids` request no longer costs the room's history, and its auth chain is bounded (F-26, ADR-0363,
+  ADR-0364, ADR-0365).** Each request parsed one JSON document per ancestor of the event on the federation worker's small
+  `local_pool`, and collected the auth chain without a limit. A request now reads one state-group chain and the state it
+  returns. A merge of several `prev_events` is resolved under a lowered auth-walk budget of 10000 events, and answers 404
+  when over it. An auth chain over 65536 events (the default of `security.federation.backfill.max_auth_chain_ids`) is
+  refused `502 M_TOO_LARGE`, never cut. Current-state lookups on this path use the state index instead of scanning every
+  room's rows (`origin_may_read_room`, `stored_room_version`).
 - **One user can no longer use up the local media record cap (F-46, ADR-0340).** `security.media.max_records` was one
   budget for the whole server, and distinct tiny files or deduplicated re-uploads cost the per-user byte quota almost
   nothing, so one account could fill it and every user's upload was then refused until an operator raised it. New key

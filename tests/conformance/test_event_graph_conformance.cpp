@@ -16,6 +16,7 @@
 // |    -> Do NOT weaken, comment out, or remove assertions to make CI pass. |
 // +-------------------------------------------------------------------------+
 
+#include "../support/ingested_state_fixture.hpp"
 #include "merovingian/canonicaljson/parser.hpp"
 #include "merovingian/canonicaljson/value.hpp"
 #include "merovingian/database/persistent_store.hpp"
@@ -178,6 +179,8 @@ SCENARIO("state_ids response reconstructs the transitive auth chain", "[federati
         store.state.push_back({room, "m.room.power_levels", "", "$pl"});
         store.state.push_back({room, "m.room.member", "@creator:example.org", "$member"});
 
+        merovingian::tests::record_ingested_state_for_room(store, room);
+
         WHEN("the state_ids response is built")
         {
             auto const body =
@@ -269,6 +272,8 @@ SCENARIO("state response embeds the auth chain events", "[federation][conformanc
         store.state.push_back({room, "m.room.power_levels", "", "$pl"});
         store.state.push_back({room, "m.room.member", "@creator:example.org", "$member"});
 
+        merovingian::tests::record_ingested_state_for_room(store, room);
+
         WHEN("the state response is built")
         {
             auto const body =
@@ -325,6 +330,8 @@ SCENARIO("state_ids reconstructs the room state as of the requested event",
         store.state.push_back({room, "m.room.create", "", "$create"});
         store.state.push_back({room, "m.room.member", "@creator:example.org", "$join"});
         store.state.push_back({room, "m.room.topic", "", "$topic_v2"});
+
+        merovingian::tests::record_ingested_state_for_room(store, room);
 
         WHEN("state_ids is requested as of the second topic event")
         {
@@ -678,6 +685,7 @@ struct VersionedRoom final
     store.state.push_back({room, "m.room.create", "", create_id});
     store.state.push_back({room, "m.room.member", "@creator:example.org", "$member"});
     store.state.push_back({room, "m.room.power_levels", "", "$pl"});
+    merovingian::tests::record_ingested_state_for_room(store, room);
     return {room, create_id};
 }
 
@@ -928,6 +936,176 @@ SCENARIO("state and state_ids auth chains include the implied create event, once
             THEN("the create event is in auth_chain once, as before")
             {
                 REQUIRE(count_of(pdu_types_in(body, "auth_chain"), "m.room.create") == 1);
+            }
+        }
+    }
+}
+
+// --- State at an event is the state this server recorded (F-25, F-26, ADR-0363) --------------------
+// Spec: Matrix Server-Server API v1.19, GET /_matrix/federation/v1/state_ids/{roomId} and
+// GET /_matrix/federation/v1/state/{roomId}
+// URL:  ../../docs/matrix-v1.19-spec/server-server-api.md#get_matrixfederationv1state_idsroomid
+//
+// 200: "The fully resolved state for the room, prior to considering any state changes induced by the
+// requested event." Spec, "Rejection": a rejected event is stored, and "state is calculated as normal
+// ... except not updating with the rejected event where it is a state event". So a rejected state event
+// can never be state in the answer, whatever depth its sender chose for it; the true event stays.
+SCENARIO("state and state_ids never carry a rejected state event, whatever its depth",
+         "[federation][conformance][event-graph][state][state-at-event]")
+{
+    GIVEN("a room whose true m.room.name was followed by a rejected rename of the largest depth, then a message")
+    {
+        auto const room = std::string{"!rejected:example.org"};
+        auto store = merovingian::database::PersistentStore{};
+        store.events.push_back(make_state_event("$create", room, "m.room.create", "", 1U, {}, {}));
+        store.events.push_back(
+            make_state_event("$join", room, "m.room.member", "@creator:example.org", 2U, {"$create"}, {"$create"}));
+        store.events.push_back(make_state_event("$name_true", room, "m.room.name", "", 3U, {"$create"}, {"$join"}));
+        auto forged = make_state_event("$name_forged", room, "m.room.name", "", 9'007'199'254'740'991U, {"$create"},
+                                       {"$name_true"});
+        forged.status = "rejected";
+        store.events.push_back(std::move(forged));
+        store.events.push_back(make_event("$message", room, "m.room.message", {"$create"}, {"$name_forged"}));
+        store.state.push_back({room, "m.room.create", "", "$create"});
+        store.state.push_back({room, "m.room.member", "@creator:example.org", "$join"});
+        merovingian::tests::record_ingested_state_for_room(store, room);
+
+        WHEN("the state IDs at the message are requested")
+        {
+            auto const body =
+                ok_body(merovingian::federation::build_state_ids_response(store, room, "$message", requesting_server));
+            auto const pdu_ids = string_array_member(body, "pdu_ids");
+
+            THEN("the true name is the room's name and the rejected event is not state")
+            {
+                // Spec MUST: the rejected event does not update state.
+                REQUIRE_FALSE(contains(pdu_ids, "$name_forged"));
+                // Spec MUST: the state is the one that held before the message.
+                REQUIRE(contains(pdu_ids, "$name_true"));
+                REQUIRE(contains(pdu_ids, "$join"));
+            }
+        }
+
+        WHEN("the state PDUs at the message are requested")
+        {
+            auto const body =
+                ok_body(merovingian::federation::build_state_response(store, room, "$message", requesting_server));
+            auto const types = pdu_types_in(body, "pdus");
+
+            THEN("exactly one m.room.name is in the state")
+            {
+                // Spec MUST: one event per (type, state_key) in the resolved state.
+                REQUIRE(count_of(types, "m.room.name") == 1);
+            }
+        }
+    }
+}
+
+// Spec: Matrix Server-Server API v1.19, GET /_matrix/federation/v1/state_ids/{roomId}
+// URL:  ../../docs/matrix-v1.19-spec/server-server-api.md#get_matrixfederationv1state_idsroomid
+//
+// 404: "The given `event_id` was not found or the server doesn't know about the state at that event to
+// return anything useful." An event whose state this server never recorded is answered 404 and is not
+// guessed from the event graph.
+SCENARIO("state_ids is not found for an event whose state this server never recorded",
+         "[federation][conformance][event-graph][state][state-at-event]")
+{
+    GIVEN("a room holding a stored event with no recorded state")
+    {
+        auto const room = std::string{"!unrecorded:example.org"};
+        auto store = merovingian::database::PersistentStore{};
+        store.events.push_back(make_state_event("$create", room, "m.room.create", "", 1U, {}, {}));
+        store.events.push_back(
+            make_state_event("$join", room, "m.room.member", "@creator:example.org", 2U, {"$create"}, {"$create"}));
+        store.events.push_back(make_event("$outlier", room, "m.room.message", {"$create"}, {"$join"}));
+        store.state.push_back({room, "m.room.create", "", "$create"});
+        store.state.push_back({room, "m.room.member", "@creator:example.org", "$join"});
+
+        WHEN("the state IDs and the state are requested at that event")
+        {
+            auto const ids =
+                merovingian::federation::build_state_ids_response(store, room, "$outlier", requesting_server);
+            auto const full = merovingian::federation::build_state_response(store, room, "$outlier", requesting_server);
+
+            THEN("both answer 404")
+            {
+                // Spec: "the server doesn't know about the state at that event".
+                REQUIRE(ids.status == merovingian::federation::RoomReadStatus::not_found);
+                REQUIRE(full.status == merovingian::federation::RoomReadStatus::not_found);
+            }
+        }
+    }
+}
+
+// Spec: Matrix Server-Server API v1.19, GET /_matrix/federation/v1/state/{roomId}
+// URL:  ../../docs/matrix-v1.19-spec/server-server-api.md#get_matrixfederationv1stateroomid
+//
+// `auth_chain`: "The full set of authorisation events that make up the state of the room, and their
+// authorisation events, recursively." The answer is complete or it is refused, never cut (ADR-0364).
+SCENARIO("state and state_ids refuse an auth chain over the bound and answer one at the bound",
+         "[federation][conformance][event-graph][state][state-at-event]")
+{
+    auto const build_room = [](merovingian::database::PersistentStore& store, std::size_t chain_length) {
+        auto const room = std::string{"!bound:example.org"};
+        store.events.push_back(make_state_event("$create", room, "m.room.create", "", 1U, {}, {}));
+        store.events.push_back(
+            make_state_event("$join", room, "m.room.member", "@creator:example.org", 2U, {"$create"}, {"$create"}));
+        auto previous = std::vector<std::string>{};
+        for (auto i = std::size_t{0U}; i < chain_length; ++i)
+        {
+            auto id = "$link" + std::to_string(i);
+            store.events.push_back(make_event(id, room, "m.room.message", previous, {}));
+            previous = {std::move(id)};
+        }
+        // A state event whose auth chain is the whole run of links.
+        store.events.push_back(make_state_event("$topic", room, "m.room.topic", "", 3U, previous, {"$join"}));
+        store.events.push_back(make_event("$message", room, "m.room.message", {}, {"$topic"}));
+        store.state.push_back({room, "m.room.create", "", "$create"});
+        store.state.push_back({room, "m.room.member", "@creator:example.org", "$join"});
+        merovingian::tests::record_ingested_state(store, store.events[0]);
+        merovingian::tests::record_ingested_state(store, store.events[1]);
+        merovingian::tests::record_ingested_state(store, *store.events.find("$topic"));
+        merovingian::tests::record_ingested_state(store, *store.events.find("$message"));
+        return room;
+    };
+
+    GIVEN("a state whose auth chain (the create event and a run of links) is exactly the bound")
+    {
+        auto store = merovingian::database::PersistentStore{};
+        auto const room = build_room(store, merovingian::federation::max_state_auth_chain_events - 1U);
+
+        WHEN("the state and the state IDs are requested")
+        {
+            auto const ids =
+                merovingian::federation::build_state_ids_response(store, room, "$message", requesting_server);
+            auto const full = merovingian::federation::build_state_response(store, room, "$message", requesting_server);
+
+            THEN("both are answered whole")
+            {
+                REQUIRE(ids.status == merovingian::federation::RoomReadStatus::ok);
+                REQUIRE(full.status == merovingian::federation::RoomReadStatus::ok);
+            }
+        }
+    }
+
+    GIVEN("a state whose auth chain is one event over the bound")
+    {
+        auto store = merovingian::database::PersistentStore{};
+        auto const room = build_room(store, merovingian::federation::max_state_auth_chain_events);
+
+        WHEN("the state and the state IDs are requested")
+        {
+            auto const ids =
+                merovingian::federation::build_state_ids_response(store, room, "$message", requesting_server);
+            auto const full = merovingian::federation::build_state_response(store, room, "$message", requesting_server);
+
+            THEN("both are refused as too large, with no part of the chain")
+            {
+                // The answer is the complete chain or an error: a cut chain breaks the receiver later.
+                REQUIRE(ids.status == merovingian::federation::RoomReadStatus::too_large);
+                REQUIRE(ids.body.empty());
+                REQUIRE(full.status == merovingian::federation::RoomReadStatus::too_large);
+                REQUIRE(full.body.empty());
             }
         }
     }

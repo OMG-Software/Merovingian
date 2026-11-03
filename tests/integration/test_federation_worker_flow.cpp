@@ -10,6 +10,7 @@
 
 #include "../federation_signing_test_support.hpp"
 #include "../support/edu_relay_context.hpp"
+#include "../support/ingested_state_fixture.hpp"
 #include "../support/joining_threads.hpp"
 #include "../support/master_key.hpp"
 #include "../support/membership_fixture_support.hpp"
@@ -2873,16 +2874,9 @@ SCENARIO("The wired federation providers refuse a server outside the room and se
         REQUIRE(merovingian::database::store_state(store, {room_id, "m.room.create", "", "$create"}));
         REQUIRE(merovingian::database::store_state(store, {room_id, "m.room.member", member_id, "$join"}));
         // A federation read sends an event in full only when the state recorded for it (ADR-0064) shows the
-        // server may see it: record a state group, without a history_visibility event (so `shared`).
-        {
-            auto const group =
-                merovingian::database::create_or_reuse_state_group(store, room_id, "sg:fed2-shared", std::nullopt, {});
-            REQUIRE(group.has_value());
-            for (auto const* event_id : {"$create", "$join", "$msg"})
-            {
-                REQUIRE(merovingian::database::set_event_state_group(store, event_id, *group));
-            }
-        }
+        // server may see it, and /state and /state_ids answer from that recorded state (ADR-0363): record
+        // what ingestion would have (no history_visibility event, so `shared`).
+        merovingian::tests::record_ingested_state_for_room(store, room_id);
 
         auto const stranger = std::string{"stranger.example.net"};
         auto const member = std::string{"member.example.org"};
