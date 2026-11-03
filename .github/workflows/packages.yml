@@ -153,7 +153,7 @@ jobs:
             zlib-devel zlib-static \
             libnghttp2-devel \
             catch-devel perl bison flex m4 \
-            rpm-build systemd-rpm-macros
+            rpm-build systemd-rpm-macros util-linux
       - uses: actions/checkout@v4
       - name: Cache compiler output with ccache
         uses: hendrikmuhs/ccache-action@5ebbd400eff9e74630f759d94ddd7b6c26299639 # v1.2.20
@@ -162,6 +162,15 @@ jobs:
           restore-keys: ccache-rpm-${{ matrix.artifact }}-
       - name: Build .rpm
         run: sh scripts/build-rpm.sh
+      - name: Run the installed package's startup hardening gate
+        # OPS-5: install the RPM in the release it was built for, then boot the
+        # installed server as the package's unprivileged user with an empty
+        # capability bounding set, as the Debian package jobs do.
+        run: |
+          dnf install -y ./merovingian-*.rpm
+          setpriv --reuid=merovingian --regid=merovingian --init-groups \
+            --bounding-set=-all --inh-caps=-all \
+            sh scripts/check-startup-hardening-gate.sh /usr/bin/merovingian-server
       # actions/attest-build-provenance occasionally fails with "InternalError:
       # error fetching tlog entry - (404) Not Found": Sigstore's Rekor
       # transparency log has not finished replicating the entry the action
@@ -198,6 +207,20 @@ jobs:
           name: ${{ matrix.artifact }}
           path: merovingian-*.rpm
           retention-days: 30
+
+  # The main ruleset requires a check called "Fedora RPM package", and a matrix job
+  # reports one check per image, none of them with that name.
+  rpm-all-images:
+    name: Fedora RPM package
+    needs: rpm
+    if: always()
+    runs-on: ubuntu-latest
+    permissions: {}
+    steps:
+      - name: Require every Fedora image to pass
+        env:
+          RESULT: ${{ needs.rpm.result }}
+        run: test "${RESULT}" = success
 
   freebsd-pkg:
     name: FreeBSD package

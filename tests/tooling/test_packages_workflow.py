@@ -242,8 +242,13 @@ class PackagesWorkflowTests(unittest.TestCase):
         create = script.split("pkg create")[1].split("\n\n")[0]
 
         # WHEN the script creates the package
-        # THEN it passes a plist generated from the staged tree, resolved from the staging
-        # root because pkg appends the manifest's /usr/local prefix itself.
+        # THEN it passes a plist generated from the staged tree, in the --metadata form:
+        # pkg-create(8) documents --plist only there, not alongside --manifest. Paths
+        # resolve from the staging root because pkg appends the manifest's /usr/local
+        # prefix itself.
+        self.assertIn('--metadata "${METADATA}"', create)
+        self.assertNotIn("--manifest", create)
+        self.assertIn('"${METADATA}/+MANIFEST"', script)
         self.assertIn('--plist "${PLIST}"', create)
         self.assertIn('--root-dir "${PWD}/${STAGING}"', create)
         self.assertNotIn('/usr/local"', create)
@@ -306,6 +311,35 @@ class PackagesWorkflowTests(unittest.TestCase):
             with self.subTest(artifact=artifact):
                 self.assertIn(f"artifact: {artifact}", job)
                 self.assertIn(f"name: {artifact}", stage)
+
+    def test_each_fedora_rpm_is_installed_and_booted_before_it_is_attested(self) -> None:
+        # GIVEN each Fedora RPM is built in the release it is published for.
+        job = workflow_job(PACKAGES_WORKFLOW.read_text(encoding="utf-8"), "rpm")
+        before_attest = job.split("- name: Attest RPM package")[0]
+
+        # WHEN the build has finished
+        # THEN the job installs the RPM as an operator would and boots the installed server
+        # through the startup hardening gate, as the Debian package jobs do.
+        self.assertIn("dnf install -y ./merovingian-*.rpm", before_attest)
+        self.assertIn("--bounding-set=-all", before_attest)
+        self.assertIn(f"{GATE_SCRIPT} /usr/bin/merovingian-server", before_attest)
+
+    def test_the_required_fedora_rpm_check_covers_every_image(self) -> None:
+        # GIVEN the main ruleset requires a check called "Fedora RPM package", and a matrix
+        # job reports one check per image, none of them with that name.
+        workflow = PACKAGES_WORKFLOW.read_text(encoding="utf-8")
+        self.assertIn("name: Fedora RPM package (${{ matrix.image }})", workflow_job(workflow, "rpm"))
+
+        # WHEN the job reporting the required name runs
+        job = workflow_job(workflow, "rpm-all-images")
+
+        # THEN it reports under that name, even when a leg failed, and passes only when
+        # every leg succeeded.
+        self.assertIn("name: Fedora RPM package\n", job)
+        self.assertIn("needs: rpm", job)
+        self.assertIn("if: always()", job)
+        self.assertIn("${{ needs.rpm.result }}", job)
+        self.assertIn('test "${RESULT}" = success', job)
 
     def test_every_packaging_script_configures_a_release_buildtype(self) -> None:
         # GIVEN Meson builds `debug` (-O0) when no buildtype is given, and

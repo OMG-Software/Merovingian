@@ -11,9 +11,10 @@
 
 ### CI
 
-- The FreeBSD package job installs the package it built and boots the installed server through the startup hardening
-  gate before attesting it.
-- `fedora-build-and-test` runs the full suite on both Fedora 44 and `fedora:latest`.
+- The FreeBSD package job and the Fedora RPM job each install the package they built and boot the installed server
+  through the startup hardening gate before attesting it.
+- The full suite runs on both Fedora 44 and `fedora:latest`, as `fedora-suite`. The required `fedora-build-and-test` and
+  `Fedora RPM package` checks now come from jobs that pass only when every image passed.
 
 ## 0.12.67
 

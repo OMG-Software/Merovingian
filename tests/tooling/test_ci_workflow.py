@@ -30,7 +30,7 @@ class CiWorkflowTests(unittest.TestCase):
         # and each links against its own release's libraries (Fedora 44 has OpenSSL 3,
         # Fedora 45 has OpenSSL 4).
         workflow = CI_WORKFLOW.read_text(encoding="utf-8")
-        job = workflow.split("  fedora-build-and-test:")[1].split("\n  # ── Debian")[0]
+        job = workflow.split("  fedora-suite:")[1].split("\n  fedora-build-and-test:")[0]
 
         # WHEN the Fedora build-and-test job's matrix is read
         # THEN the full suite runs on both, and a failure on one still reports the other.
@@ -41,6 +41,21 @@ class CiWorkflowTests(unittest.TestCase):
         # AND the two builds keep separate compiler caches.
         self.assertIn("key: ccache-fedora-ci-${{ matrix.image }}-${{ github.run_id }}", job)
         self.assertIn("restore-keys: ccache-fedora-ci-${{ matrix.image }}-", job)
+
+    def test_the_required_fedora_check_covers_every_image(self) -> None:
+        # GIVEN the main ruleset requires a check called fedora-build-and-test, and a matrix
+        # job reports one check per image, none of them with that name.
+        workflow = CI_WORKFLOW.read_text(encoding="utf-8")
+
+        # WHEN the job reporting the required name runs
+        job = workflow.split("\n  fedora-build-and-test:")[1].split("\n  # ── Debian")[0]
+
+        # THEN it reports under that name, even when a leg failed, and passes only when
+        # every leg succeeded.
+        self.assertIn("needs: fedora-suite", job)
+        self.assertIn("if: always()", job)
+        self.assertIn("${{ needs.fedora-suite.result }}", job)
+        self.assertIn('test "${RESULT}" = success', job)
 
     def test_ci_installs_os_supplied_dynamic_libraries_on_primary_platforms(self) -> None:
         # GIVEN the repository CI workflow.

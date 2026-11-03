@@ -7,7 +7,7 @@ VERSION="0.12.69"
 STAGING="staging-fbsd"
 
 # Clean any state (staged files, build dir) from cached FreeBSD VM runs.
-rm -rf "${STAGING}" build-freebsd-pkg
+rm -rf "${STAGING}" "${STAGING}.metadata" build-freebsd-pkg
 
 # 1. Configure with meson using FreeBSD prefix conventions.
 #    -pie: produce a PIE executable so the kernel applies ASLR.
@@ -44,10 +44,12 @@ install -m 0644 config/merovingian.conf.example \
 echo "[debug] staged files under ${STAGING}/usr/local:"
 ls -lR "${STAGING}/usr/local" || true
 
-# 6. Patch manifest version into a temp file alongside (not inside) the staging root.
-MANIFEST="${PWD}/${STAGING}.manifest"
+# 6. Patch manifest version into a metadata directory alongside (not inside) the
+#    staging root.
+METADATA="${PWD}/${STAGING}.metadata"
+mkdir -p "${METADATA}"
 sed "s/version: \"[^\"]*\"/version: \"${VERSION}\"/" \
-    packaging/freebsd/+MANIFEST > "${MANIFEST}"
+    packaging/freebsd/+MANIFEST > "${METADATA}/+MANIFEST"
 
 # 7. Generate the packing list from the staged tree. pkg-create(8) packages only
 #    what a plist or the manifest lists: without one the result is a valid archive
@@ -63,10 +65,11 @@ PLIST="${PWD}/${STAGING}.plist"
 echo "[debug] packing list:"
 cat "${PLIST}"
 
-# 8. Create the .pkg archive. The root directory is the staging root, not its
-#    usr/local: pkg appends the manifest's prefix to each plist path itself.
+# 8. Create the .pkg archive. pkg-create(8) documents --plist only with --metadata,
+#    not with --manifest. The root directory is the staging root, not its usr/local:
+#    pkg appends the manifest's prefix to each plist path itself.
 pkg create \
-    --manifest "${MANIFEST}" \
+    --metadata "${METADATA}" \
     --plist "${PLIST}" \
     --root-dir "${PWD}/${STAGING}" \
     --out-dir .

@@ -148,13 +148,13 @@ The rolling `latest` GitHub prerelease is rebuilt on every push to `main`.
 
 ```sh
 # Debian/Ubuntu example
-dpkg -i merovingian_0.10.38_amd64.deb
+dpkg -i merovingian_X.Y.Z_amd64.deb
 
 # Fedora example: use the RPM whose .fcNN tag matches `rpm -E %fedora`
-dnf install merovingian-0.12.69-1.fc44.x86_64.rpm
+dnf install merovingian-X.Y.Z-1.fc44.x86_64.rpm
 
 # FreeBSD example
-pkg add merovingian-0.12.69.pkg
+pkg add merovingian-X.Y.Z.pkg
 ```
 
 An RPM installs only on the Fedora release it was built on, because it links
@@ -172,10 +172,10 @@ For older Linux distributions, use the musl-linked tarball. It has no glibc or
 runtime package dependencies.
 
 ```sh
-tar xzf merovingian-0.10.38-linux-static-x86_64.tar.gz
-cp merovingian-0.10.38-linux-static-x86_64/bin/merovingian-server /usr/local/bin/
-cp merovingian-0.10.38-linux-static-x86_64/bin/merovingian-db-migrate /usr/local/bin/
-cp merovingian-0.10.38-linux-static-x86_64/libexec/merovingian/merovingian-fed-worker \
+tar xzf merovingian-X.Y.Z-linux-static-x86_64.tar.gz
+cp merovingian-X.Y.Z-linux-static-x86_64/bin/merovingian-server /usr/local/bin/
+cp merovingian-X.Y.Z-linux-static-x86_64/bin/merovingian-db-migrate /usr/local/bin/
+cp merovingian-X.Y.Z-linux-static-x86_64/libexec/merovingian/merovingian-fed-worker \
    /usr/local/libexec/merovingian/
 ```
 
@@ -194,11 +194,11 @@ gpg --keyserver keys.openpgp.org --recv-keys 66DFCC50187C8E46B5ED85FD92A3A264F0A
 
 # Download the tarball, signature, and checksum for your platform, then verify
 the signature.
-gpg --verify merovingian-0.10.38-linux-static-x86_64.tar.gz.asc \
-             merovingian-0.10.38-linux-static-x86_64.tar.gz
+gpg --verify merovingian-X.Y.Z-linux-static-x86_64.tar.gz.asc \
+             merovingian-X.Y.Z-linux-static-x86_64.tar.gz
 
 # Verify the checksum.
-sha256sum -c merovingian-0.10.38-linux-static-x86_64.tar.gz.sha256
+sha256sum -c merovingian-X.Y.Z-linux-static-x86_64.tar.gz.sha256
 ```
 
 A valid signature reports a "Good signature" from `The Merovingian Release

@@ -38,4 +38,8 @@ hosts nobody has asked to support.
 * The dist tag keeps the file names apart. If `fedora:latest` were ever Fedora 44,
   both builds would produce the same file name and one would overwrite the other in
   the staged assets.
+* The `main` ruleset requires checks called `fedora-build-and-test` and `Fedora RPM
+  package`, and a matrix job reports one check per image, none with those names. The
+  `fedora-build-and-test` and `rpm-all-images` jobs report those names and pass only
+  when every image passed, so adding an image needs no ruleset change.
 * The full suite runs twice on Fedora, which adds CI time to every pull request.

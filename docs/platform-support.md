@@ -107,7 +107,7 @@ just cross-compiled. A regression on a Tier 1 platform blocks merge.
 |---|---|---|---|
 | Linux (glibc, Ubuntu) | `ubuntu-build-and-test` | clang | Reference platform |
 | Linux (Debian trixie) | `debian-build-and-test` | clang, container | apt-supplied libraries; `debian:trixie` |
-| Linux (Red Hat family, Fedora) | `fedora-build-and-test` | clang, container | dnf-supplied libraries; `fedora:44` and `fedora:latest` |
+| Linux (Red Hat family, Fedora) | `fedora-build-and-test`, which requires `fedora-suite` to pass on each image | clang, container | dnf-supplied libraries; `fedora:44` and `fedora:latest` |
 | Linux (RHEL-compatible, AlmaLinux 10) | `rhel-build-and-test` | clang, container | dnf+EPEL 10-supplied libraries; `almalinux:10` |
 | Linux (OpenSUSE Tumbleweed) | `opensuse-build-and-test` | clang, container | zypper-supplied libraries; `opensuse/tumbleweed` |
 | FreeBSD | `freebsd-build-and-test` | clang (base) | `vmactions/freebsd-vm` |
