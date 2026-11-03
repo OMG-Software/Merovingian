@@ -41,6 +41,7 @@ using merovingian::database::PersistentStateGroupStateEntry;
 using merovingian::database::PersistentStore;
 using merovingian::homeserver::compute_state_after;
 using merovingian::homeserver::compute_state_before;
+using merovingian::homeserver::CurrentStateRecomputeStatus;
 using merovingian::homeserver::recompute_current_state;
 using merovingian::homeserver::record_event_state;
 
@@ -81,7 +82,7 @@ auto ingest_test_event(PersistentStore& store, std::string const& event_id, std:
                        std::optional<std::string> const& state_key, std::string const& sender, std::int64_t ts,
                        std::vector<std::string> const& auth_ids, std::string const& content_json,
                        std::vector<std::string> const& prev, std::uint64_t depth,
-                       merovingian::rooms::RoomVersionPolicy const& policy) -> void
+                       merovingian::rooms::RoomVersionPolicy const& policy, std::uint64_t stream_ordering = 0U) -> void
 {
     auto event = PersistentEvent{};
     event.event_id = event_id;
@@ -89,6 +90,7 @@ auto ingest_test_event(PersistentStore& store, std::string const& event_id, std:
     event.sender_user_id = sender;
     event.json = make_event_json(event_type, state_key.value_or(""), event_id, sender, ts, auth_ids, content_json);
     event.depth = depth;
+    event.stream_ordering = stream_ordering;
     event.prev_event_ids = prev;
     store.events.push_back(event);
 
@@ -310,7 +312,7 @@ SCENARIO("Configured state-resolution budgets constrain fork resolution without 
             auto const state_before = compute_state_before(store, room_id, *policy, {"$topic_a", "$topic_b"}, limits);
             auto const recomputed = recompute_current_state(store, room_id, *policy, limits);
 
-            THEN("over-cap resolution fails closed and leaves cached state untouched")
+            THEN("over-cap resolution fails closed, says it was refused, and leaves cached state untouched")
             {
                 REQUIRE(limits.max_state_groups == config.max_state_groups);
                 REQUIRE(limits.max_events_per_state_group == 3U);
@@ -319,7 +321,9 @@ SCENARIO("Configured state-resolution budgets constrain fork resolution without 
                 REQUIRE(limits.max_auth_chain_walk_events == config.max_auth_chain_walk_events);
                 REQUIRE(limits.max_total_state_events == config.max_total_state_events);
                 REQUIRE_FALSE(state_before.ok);
-                REQUIRE(recomputed);
+                REQUIRE(recomputed.status == CurrentStateRecomputeStatus::refused);
+                REQUIRE_FALSE(recomputed);
+                REQUIRE_FALSE(recomputed.reason.empty());
                 REQUIRE(topic_winner(store) == cached_topic);
                 REQUIRE(std::ranges::equal(store.state, cached_state, [](auto const& current, auto const& previous) {
                     return current.room_id == previous.room_id && current.event_type == previous.event_type &&
@@ -657,6 +661,218 @@ SCENARIO("store_local_event refuses a local event it cannot place, and leaves th
                 REQUIRE_FALSE(stored);
                 nothing_left_of("$no_current_state");
             }
+        }
+    }
+}
+
+// F-40 (ADR-0373): the state before a fallback event is the room's current state, not one fork's.
+// Spec: server-server-api.md, "Soft failure": current state is the state resolved across the
+// forward extremities; a failure to resolve them must not give a banned user the old state back.
+SCENARIO("A local event built on the fallback extremity keeps the ban that fork predates",
+         "[pdu_ingestion][state_groups][fallback][f40]")
+{
+    GIVEN("a room with a ban tip and a newer fork that predates the ban, whose tips cannot be resolved")
+    {
+        auto const* policy = merovingian::rooms::find_room_version_policy("10");
+        REQUIRE(policy != nullptr);
+        auto store = PersistentStore{};
+        seed_genesis(store, *policy);
+        ingest_test_event(store, "$bob_join", "m.room.member", std::string{"@bob:example.org"}, "@bob:example.org", 40,
+                          {"$create", "$join_rules"}, R"({"membership":"join"})", {"$alice_join"}, 4U, *policy, 10U);
+        ingest_test_event(store, "$ban", "m.room.member", std::string{"@bob:example.org"}, "@alice:example.org", 50,
+                          {"$create", "$pl0", "$alice_join", "$bob_join"}, R"({"membership":"ban"})", {"$bob_join"}, 5U,
+                          *policy, 20U);
+        ingest_test_event(store, "$fork", "m.room.topic", std::string{}, "@bob:example.org", 60,
+                          {"$create", "$pl0", "$bob_join"}, "{}", {"$bob_join"}, 5U, *policy, 30U);
+        REQUIRE(recompute_current_state(store, room_id, *policy));
+        auto const bob_member = [&store]() {
+            return merovingian::database::find_current_state_event_id(store, room_id, "m.room.member",
+                                                                      "@bob:example.org");
+        };
+        REQUIRE(bob_member() == std::optional<std::string>{"$ban"});
+
+        auto config = merovingian::config::FederationStateResolutionConfig{};
+        config.max_conflicted_state_keys = 0U;
+        auto const limits = merovingian::homeserver::state_resolution_limits(config);
+        REQUIRE_FALSE(compute_state_before(store, room_id, *policy, {"$ban", "$fork"}, limits).ok);
+
+        WHEN("the basis of a new local event is chosen")
+        {
+            auto const basis = merovingian::homeserver::basis_for_new_event(store, room_id, *policy, limits);
+
+            THEN("it cites the newest tip, retires the ban tip, and its state before still holds the ban")
+            {
+                REQUIRE(basis.ok);
+                REQUIRE(basis.prev_event_ids == std::vector<std::string>{"$fork"});
+                REQUIRE(basis.retired_extremities == std::vector<std::string>{"$ban"});
+                auto const held = std::ranges::find_if(basis.state_before, [](auto const& entry) {
+                    return entry.event_type == "m.room.member" && entry.state_key == "@bob:example.org";
+                });
+                REQUIRE(held != basis.state_before.end());
+                REQUIRE(held->event_id == "$ban");
+            }
+        }
+
+        WHEN("a local event is stored on that basis, and the room's current state is then recomputed")
+        {
+            auto const basis = merovingian::homeserver::basis_for_new_event(store, room_id, *policy, limits);
+            REQUIRE(basis.ok);
+            REQUIRE(merovingian::homeserver::store_local_event(store, *policy, local_message("$local", {"$fork"}),
+                                                               std::nullopt, basis, limits));
+            auto const recomputed = recompute_current_state(store, room_id, *policy, limits);
+
+            THEN("the banned user is still banned in current state")
+            {
+                REQUIRE(recomputed);
+                REQUIRE(bob_member() == std::optional<std::string>{"$ban"});
+            }
+
+            THEN("the local event's own state group records the ban, so a later single-tip recompute keeps it")
+            {
+                auto const group = merovingian::database::find_event_state_group(store, "$local");
+                REQUIRE(group.has_value());
+                auto const full_state = merovingian::database::read_state_group_full_state(store, *group);
+                REQUIRE(full_state.has_value());
+                auto const held = std::ranges::find_if(*full_state, [](auto const& entry) {
+                    return entry.event_type == "m.room.member" && entry.state_key == "@bob:example.org";
+                });
+                REQUIRE(held != full_state->end());
+                REQUIRE(held->event_id == "$ban");
+                REQUIRE(merovingian::database::find_forward_extremities(store, room_id) ==
+                        std::vector<std::string>{"$local"});
+            }
+        }
+    }
+}
+
+// F-49 (ADR-0375): a refusal is a status, not a success.
+SCENARIO("A refused recomputation of current state is reported and writes nothing",
+         "[pdu_ingestion][state_groups][f49]")
+{
+    GIVEN("a room whose forward extremities include one with no recorded state")
+    {
+        auto const* policy = merovingian::rooms::find_room_version_policy("10");
+        REQUIRE(policy != nullptr);
+        auto store = PersistentStore{};
+        seed_genesis(store, *policy);
+        REQUIRE(recompute_current_state(store, room_id, *policy));
+        REQUIRE(merovingian::database::update_forward_extremities(store, room_id, "$ghost", {}, true));
+        auto const rows_before = store.state.size();
+        auto const transitions_before = store.state_transitions.size();
+
+        WHEN("current state is recomputed")
+        {
+            auto const recomputed = recompute_current_state(store, room_id, *policy);
+
+            THEN("it is refused with a reason, and no current_state row is written")
+            {
+                REQUIRE(recomputed.status == CurrentStateRecomputeStatus::refused);
+                REQUIRE_FALSE(recomputed);
+                REQUIRE(recomputed.reason.find("$ghost") != std::string::npos);
+                REQUIRE(store.state.size() == rows_before);
+                REQUIRE(store.state_transitions.size() == transitions_before);
+            }
+        }
+    }
+
+    GIVEN("a room with no forward extremity")
+    {
+        auto const* policy = merovingian::rooms::find_room_version_policy("10");
+        REQUIRE(policy != nullptr);
+        auto store = PersistentStore{};
+
+        WHEN("current state is recomputed")
+        {
+            auto const recomputed = recompute_current_state(store, room_id, *policy);
+
+            THEN("there was nothing to resolve, which is not a refusal")
+            {
+                REQUIRE(recomputed.status == CurrentStateRecomputeStatus::resolved);
+            }
+        }
+    }
+
+    GIVEN("a local event stored beside a fork whose state cannot be resolved with it")
+    {
+        auto const* policy = merovingian::rooms::find_room_version_policy("10");
+        REQUIRE(policy != nullptr);
+        auto store = PersistentStore{};
+        seed_genesis(store, *policy);
+        ingest_test_event(store, "$topic_a", "m.room.topic", std::string{}, "@alice:example.org", 100,
+                          {"$create", "$pl0"}, "{}", {"$alice_join"}, 4U, *policy);
+        ingest_test_event(store, "$topic_b", "m.room.topic", std::string{}, "@alice:example.org", 200,
+                          {"$create", "$pl0"}, "{}", {"$alice_join"}, 4U, *policy);
+        auto config = merovingian::config::FederationStateResolutionConfig{};
+        config.max_conflicted_state_keys = 0U;
+        auto const limits = merovingian::homeserver::state_resolution_limits(config);
+        auto const before = compute_state_before(store, room_id, *policy, {"$topic_a"});
+        REQUIRE(before.ok);
+        auto bookkeeping = merovingian::homeserver::EventBookkeeping{};
+        bookkeeping.state_after = before.state;
+        bookkeeping.parent_state_group_id = merovingian::database::find_event_state_group(store, "$topic_a");
+        bookkeeping.replaced_extremities = {"$topic_a"};
+
+        WHEN("the event is stored")
+        {
+            auto const stored = merovingian::homeserver::store_event_with_bookkeeping(
+                store, *policy, local_message("$beside", {"$topic_a"}), std::nullopt, std::nullopt, bookkeeping,
+                limits);
+
+            THEN("it is stored, and the result says the extremities could not be resolved")
+            {
+                REQUIRE(stored.ok);
+                REQUIRE(stored.resolution_refused);
+                REQUIRE_FALSE(stored.resolution_refusal.empty());
+                REQUIRE(event_is_stored(store, "$beside"));
+            }
+        }
+    }
+}
+
+// F-49 (ADR-0374): tips are bounded for events that add no state.
+SCENARIO("forward_extremities_stay_bounded refuses only an event that would add a tip past the limit",
+         "[pdu_ingestion][state_groups][f49]")
+{
+    GIVEN("a room holding as many forward extremities as the limit allows")
+    {
+        auto store = PersistentStore{};
+        auto config = merovingian::config::FederationStateResolutionConfig{};
+        config.max_state_groups = 3U;
+        auto const limits = merovingian::homeserver::state_resolution_limits(config);
+        for (auto const* tip : {"$t1", "$t2", "$t3"})
+        {
+            REQUIRE(merovingian::database::update_forward_extremities(store, room_id, tip, {}, true));
+        }
+
+        THEN("an event citing a tip replaces it and is allowed")
+        {
+            REQUIRE(merovingian::homeserver::forward_extremities_stay_bounded(store, room_id, {"$t2"}, limits));
+            REQUIRE(merovingian::homeserver::forward_extremities_stay_bounded(store, room_id, {"$old", "$t1"}, limits));
+        }
+
+        THEN("an event citing only older events would add a tip, and is refused")
+        {
+            REQUIRE_FALSE(merovingian::homeserver::forward_extremities_stay_bounded(store, room_id, {"$old"}, limits));
+        }
+
+        THEN("another room's tips do not count")
+        {
+            REQUIRE(merovingian::homeserver::forward_extremities_stay_bounded(store, "!other:example.org", {"$old"},
+                                                                              limits));
+        }
+    }
+
+    GIVEN("a room holding fewer forward extremities than the limit")
+    {
+        auto store = PersistentStore{};
+        auto config = merovingian::config::FederationStateResolutionConfig{};
+        config.max_state_groups = 3U;
+        auto const limits = merovingian::homeserver::state_resolution_limits(config);
+        REQUIRE(merovingian::database::update_forward_extremities(store, room_id, "$t1", {}, true));
+
+        THEN("an event citing only older events is allowed")
+        {
+            REQUIRE(merovingian::homeserver::forward_extremities_stay_bounded(store, room_id, {"$old"}, limits));
         }
     }
 }

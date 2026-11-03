@@ -2673,11 +2673,19 @@ namespace
                     LOG_WARNING("State-group bookkeeping failed after membership PDU was accepted; event_id=" +
                                 accepted_event_id + " room_id=" + std::string{room_id});
                 }
-                else if (!recompute_current_state(
+                else if (auto const recomputed = recompute_current_state(
                              store, room_id, *room_policy,
-                             state_resolution_limits(rt->config.security().federation.state_resolution)))
+                             state_resolution_limits(rt->config.security().federation.state_resolution));
+                         recomputed.status == CurrentStateRecomputeStatus::write_failed)
                 {
                     LOG_WARNING("Current-state recomputation failed after membership PDU was accepted; event_id=" +
+                                accepted_event_id + " room_id=" + std::string{room_id});
+                }
+                else if (recomputed.status == CurrentStateRecomputeStatus::refused)
+                {
+                    // F-49: recompute_current_state logged the reason; current state is not the
+                    // resolution of the room's forward extremities until one can be resolved.
+                    LOG_WARNING("Current state left unresolved after membership PDU was accepted; event_id=" +
                                 accepted_event_id + " room_id=" + std::string{room_id});
                 }
             }
@@ -5335,6 +5343,17 @@ namespace
         }
     }
 
+    // F-49, ADR-0374: an accepted event that adds no state and would take the room past the most forward
+    // extremities that can be resolved is stored, delivered and placed by its own prev_events as
+    // usual, but it is not made a tip. A state event is always a tip: it is what a ban or a demotion
+    // looks like, and it must reach resolution whatever the room's message forks.
+    auto const becomes_forward_extremity =
+        outcome == ReceiptOutcome::accepted &&
+        (envelope.state_key.has_value() ||
+         forward_extremities_stay_bounded(
+             runtime.database.persistent_store, room_id, envelope.prev_event_ids,
+             state_resolution_limits(runtime.config.security().federation.state_resolution)));
+
     // The naive immediate current_state write (see recompute_current_state's
     // doc comment on why this is safe: it is always reconciled against the
     // forward-extremity resolution right below) only ever applies to an
@@ -5440,19 +5459,26 @@ namespace
             outcome == ReceiptOutcome::rejected
                 ? state_before.state
                 : compute_state_after(state_before.state, envelope.event_id, envelope.event_type, envelope.state_key);
-        auto const state_group =
-            record_event_state(runtime.database.persistent_store, room_id, envelope.event_id, envelope.prev_event_ids,
-                               state_after, outcome == ReceiptOutcome::accepted);
+        auto const state_group = record_event_state(runtime.database.persistent_store, room_id, envelope.event_id,
+                                                    envelope.prev_event_ids, state_after, becomes_forward_extremity);
         if (!state_group.has_value())
         {
             LOG_WARNING("State-group bookkeeping failed after PDU was processed; event_id=" + envelope.event_id +
                         " room_id=" + room_id);
         }
-        else if (!recompute_current_state(
+        else if (auto const recomputed = recompute_current_state(
                      runtime.database.persistent_store, room_id, *room_policy,
-                     state_resolution_limits(runtime.config.security().federation.state_resolution)))
+                     state_resolution_limits(runtime.config.security().federation.state_resolution));
+                 recomputed.status == CurrentStateRecomputeStatus::write_failed)
         {
             LOG_WARNING("Current-state recomputation failed after PDU was processed; event_id=" + envelope.event_id +
+                        " room_id=" + room_id);
+        }
+        else if (recomputed.status == CurrentStateRecomputeStatus::refused)
+        {
+            // F-49: recompute_current_state logged the reason; current state is not the resolution of
+            // the room's forward extremities until one can be resolved.
+            LOG_WARNING("Current state left unresolved after PDU was processed; event_id=" + envelope.event_id +
                         " room_id=" + room_id);
         }
     }
