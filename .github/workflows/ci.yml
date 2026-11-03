@@ -697,10 +697,6 @@ jobs:
               export PKG_PATH="https://${mirror}/${package_path}"
               /usr/sbin/pkg_add -U gdb && break
             done
-            # TEMPORARY, PR #554: take stacks from the conformance hang. Always fails this job.
-            sh scripts/build-bsd.sh --builddir build --no-tests || exit 1
-            sh scripts/netbsd-hang-diag.sh
-            exit 1
             if ! sh scripts/build-bsd.sh --builddir build; then
                 echo "::group::NetBSD Catch2 failure report (runtime logs filtered out)"
                 if [ -f build/meson-logs/testlog.txt ]; then
