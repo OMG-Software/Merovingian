@@ -418,46 +418,63 @@ SCENARIO("ELF hardening is only reported from headers that prove it", "[platform
 
 SCENARIO("BIND_NOW is only reported when the dynamic section asks for it", "[platform][hardening][elf]")
 {
-    GIVEN("dynamic sections in each form a linker can write")
+    GIVEN("a dynamic section with DT_BIND_NOW")
     {
-        WHEN("DT_BIND_NOW is present")
+        auto const dynamic = std::array{dyn_entry(DT_BIND_NOW), dyn_entry(DT_NULL)};
+
+        WHEN("the probe reads it")
         {
-            auto const dynamic = std::array{dyn_entry(DT_BIND_NOW), dyn_entry(DT_NULL)};
+            auto const has_bind_now = bind_now_from(dynamic);
 
             THEN("BIND_NOW is confirmed")
             {
-                REQUIRE(bind_now_from(dynamic));
+                REQUIRE(has_bind_now);
             }
         }
+    }
 
-        WHEN("DT_FLAGS has DF_BIND_NOW set")
+    GIVEN("a dynamic section whose DT_FLAGS has DF_BIND_NOW set")
+    {
+        auto const dynamic = std::array{dyn_entry(DT_FLAGS, DF_BIND_NOW), dyn_entry(DT_NULL)};
+
+        WHEN("the probe reads it")
         {
-            auto const dynamic = std::array{dyn_entry(DT_FLAGS, DF_BIND_NOW), dyn_entry(DT_NULL)};
+            auto const has_bind_now = bind_now_from(dynamic);
 
             THEN("BIND_NOW is confirmed")
             {
-                REQUIRE(bind_now_from(dynamic));
+                REQUIRE(has_bind_now);
             }
         }
+    }
 
-        WHEN("DT_FLAGS has every flag except DF_BIND_NOW")
+    GIVEN("a dynamic section whose DT_FLAGS has every flag except DF_BIND_NOW")
+    {
+        auto const dynamic =
+            std::array{dyn_entry(DT_FLAGS, ~static_cast<Elf64_Xword>(DF_BIND_NOW)), dyn_entry(DT_NULL)};
+
+        WHEN("the probe reads it")
         {
-            auto const dynamic =
-                std::array{dyn_entry(DT_FLAGS, ~static_cast<Elf64_Xword>(DF_BIND_NOW)), dyn_entry(DT_NULL)};
+            auto const has_bind_now = bind_now_from(dynamic);
 
             THEN("BIND_NOW is not confirmed")
             {
-                REQUIRE_FALSE(bind_now_from(dynamic));
+                REQUIRE_FALSE(has_bind_now);
             }
         }
+    }
 
-        WHEN("the request appears only after the DT_NULL terminator")
+    GIVEN("a dynamic section with the request only after the DT_NULL terminator")
+    {
+        auto const dynamic = std::array{dyn_entry(DT_NULL), dyn_entry(DT_BIND_NOW)};
+
+        WHEN("the probe reads it")
         {
-            auto const dynamic = std::array{dyn_entry(DT_NULL), dyn_entry(DT_BIND_NOW)};
+            auto const has_bind_now = bind_now_from(dynamic);
 
             THEN("it is not part of the section, so BIND_NOW is not confirmed")
             {
-                REQUIRE_FALSE(bind_now_from(dynamic));
+                REQUIRE_FALSE(has_bind_now);
             }
         }
     }
