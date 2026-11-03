@@ -341,3 +341,8 @@ transaction, and only with none in flight: the spec's "must wait and retry for a
 the front. Injected callbacks run concurrently. Never hold a `FederationDestination&` across a network call: an attempt works
 on a copy and puts it back with `remember_destination_locked`. Do not make a slow success free: it is what let one peer hold
 the only thread.
+
+`lookup_srv` can run on several delivery threads at once, so never call a resolver function that keeps process-wide state
+there. On NetBSD `res_query`, `res_search` and `res_send` all share one state with no lock, and a thread can end up blocked
+reading a socket another is closing, past any budget or request to stop (ADR-0355). Do not put a lock around them instead:
+one slow name server, which a remote operator chooses, would hold every other lookup.
