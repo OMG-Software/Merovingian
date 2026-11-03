@@ -1326,7 +1326,10 @@ media-fetch-pool task.
   state at an event means not visible, never a fallback to current state. Rule 3 (`shared`)
   orders the user's join and the event by depth, never by stream ordering (ADR-0308); because
   depth is chosen by the event's creator (a join's by the resident), a former member is never
-  shown an event that descends from their leave (`may_descend_from_departure`, ADR-0311).
+  shown an event that descends from their leave (`may_descend_from_departure`, ADR-0311). An outlier with no
+  state group was fetched as history and its stream ordering is only the fetch time, so it is denied, the user's
+  own membership outlier excepted (ADR-0415). A `/members?at=` whose anchor event the user may not see is 403,
+  and the members are never judged one by one (ADR-0414).
   Source: `src/sync/AGENTS.md`, `src/homeserver/AGENTS.md`.
 
 - **A sliding-sync sort key is computed once per room before the sort, never inside the

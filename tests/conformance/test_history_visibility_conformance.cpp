@@ -681,7 +681,7 @@ SCENARIO("GET /members honours the at token", "[history-visibility][csaz-2][conf
 // `joined`: "Events are accessible to newly joined members from the point they joined the room onwards."
 // `at` names "the point in time (pagination token) to return members for", and the roster at a point is made of
 // the m.room.member events up to it, so a point from before the caller's window is not one they may be given
-// (ADR-0379). A caller asking at a point they could see still gets the roster, and a user who left is still
+// (ADR-0414). A caller asking at a point they could see still gets the roster, and a user who left is still
 // capped at their leave (ADR-0084).
 SCENARIO("GET /members?at= refuses a point from before the caller could see the room",
          "[history-visibility][csaz-2][security][conformance][members-at-lower-bound]")
@@ -791,7 +791,8 @@ SCENARIO("GET /members?at= refuses a point from before the caller could see the 
 
         WHEN("bob asks for the members at the token from before he joined")
         {
-            auto const reply = call(rt, "GET", "/_matrix/client/v3/rooms/" + room_id + "/members?at=" + before_bob, bob);
+            auto const reply =
+                call(rt, "GET", "/_matrix/client/v3/rooms/" + room_id + "/members?at=" + before_bob, bob);
 
             THEN("he is given that roster, because the room's history is shared")
             {
@@ -1489,11 +1490,11 @@ SCENARIO("History stored without a state group is visible only to users who were
     }
 }
 
-// Spec: Room History Visibility, `joined`: "Events are accessible to newly joined members from the point they joined the
-// room onwards." An outlier with no recorded state was fetched as history (ADR-0069, ADR-0070): this server cannot say
-// where in the room it sits, and the order it was stored in is only when it was fetched. It is therefore never shown by
-// its stream ordering, whatever the visibility; the user's own membership outlier (ADR-0304) is the one exception
-// (ADR-0380, which amends ADR-0084).
+// Spec: Room History Visibility, `joined`: "Events are accessible to newly joined members from the point they joined
+// the room onwards." An outlier with no recorded state was fetched as history (ADR-0069, ADR-0070): this server cannot
+// say where in the room it sits, and the order it was stored in is only when it was fetched. It is therefore never
+// shown by its stream ordering, whatever the visibility; the user's own membership outlier (ADR-0304) is the one
+// exception (ADR-0415, which amends ADR-0084).
 SCENARIO("An outlier with no recorded state is not delivered by its fetch order",
          "[history-visibility][csaz-3][security][conformance][stateless-outlier]")
 {
@@ -1519,8 +1520,8 @@ SCENARIO("An outlier with no recorded state is not delivered by its fetch order"
         topic.event_id = topic_outlier_id;
         topic.room_id = room_id;
         topic.sender_user_id = user_id("alice");
-        topic.json = R"({"type":"m.room.topic","state_key":"","sender":")" + user_id("alice") +
-                     R"(","room_id":")" + room_id +
+        topic.json = R"({"type":"m.room.topic","state_key":"","sender":")" + user_id("alice") + R"(","room_id":")" +
+                     room_id +
                      R"(","origin_server_ts":1,"content":{"topic":"superseded"},"event_id":"$outlier_topic"})";
         topic.depth = 1U; // older in the room than bob's join, which is what a fetch of history brings
         topic.stream_ordering = newest + 10U; // but stored after it
@@ -1532,9 +1533,10 @@ SCENARIO("An outlier with no recorded state is not delivered by its fetch order"
         own_invite.event_id = own_invite_id;
         own_invite.room_id = room_id;
         own_invite.sender_user_id = user_id("alice");
-        own_invite.json = R"({"type":"m.room.member","state_key":")" + user_id("bob") + R"(","sender":")" +
-                          user_id("alice") + R"(","room_id":")" + room_id +
-                          R"(","origin_server_ts":1,"content":{"membership":"invite"},"event_id":"$outlier_own_invite"})";
+        own_invite.json =
+            R"({"type":"m.room.member","state_key":")" + user_id("bob") + R"(","sender":")" + user_id("alice") +
+            R"(","room_id":")" + room_id +
+            R"(","origin_server_ts":1,"content":{"membership":"invite"},"event_id":"$outlier_own_invite"})";
         own_invite.depth = 1U;
         own_invite.stream_ordering = newest + 11U;
         own_invite.status = "outlier";
@@ -1549,7 +1551,8 @@ SCENARIO("An outlier with no recorded state is not delivered by its fetch order"
             REQUIRE(own_row != store.events.end());
             auto const timeline = sync_timeline_ids(rt, bob, room_id);
             auto const paged = event_ids_in(messages(rt, bob, room_id).body, "chunk");
-            auto const fetched = call(rt, "GET", "/_matrix/client/v3/rooms/" + room_id + "/event/" + topic_outlier_id, bob);
+            auto const fetched =
+                call(rt, "GET", "/_matrix/client/v3/rooms/" + room_id + "/event/" + topic_outlier_id, bob);
 
             THEN("the outlier is shown nowhere, and the accepted event still is")
             {

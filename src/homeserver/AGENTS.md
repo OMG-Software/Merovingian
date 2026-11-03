@@ -545,7 +545,9 @@ client, sender or remote server controls, and per-user rows that requests scan m
   plus one room, or at `max_hierarchy_walk_visits` (ADR-0345). Never filter `store.state` for one key or one room.
 - `GET /rooms/{roomId}/threads` aggregates by root ID in a hash map over `EventTable::walk_room_newest_first`, at
   most `max_thread_events_examined` events (ADR-0345); never walk `store.events` for one room.
-- `GET /rooms/{roomId}/members` collects the state-backed members in a set (F-10).
+- `GET /rooms/{roomId}/members` collects the state-backed members in a set (F-10). With `at` it judges the one event
+  the position resolves to (`sync::state_anchor_event`) with `HistoryVisibility::can_see` and answers 403 when it is
+  not visible (ADR-0414); it never judges the members one by one.
 - `GET /make_join` (the template provider) and `decide_restricted_join` read the create, join rules, power levels and the
   joiner's member event by `find_current_state_event_id`, a named room's local members by one `for_each_room_state_row`
   walk of that room, and events by `EventTable::find_in_room` (F-19, ADR-0367); `stored_room_version` reads the create

@@ -111,3 +111,8 @@ Rejected alternatives:
   groups, `state_transitions`, event status).
 * Related: the federation read gate, `federation::origin_may_read_room` (finding FED-2), judges
   current state only and is deliberately separate.
+* Amended by [ADR-0415](0415-an-outlier-with-no-state-group-is-not-judged-by-its-stream-ordering.md): the
+  "event with no state group gets rule 2 alone" bullet applies to rows that are not outliers; a group-less
+  outlier is denied (the user's own membership outlier excepted, ADR-0304).
+* Extended by [ADR-0414](0414-members-at-is-refused-when-its-event-is-not-visible-to-the-caller.md): the
+  `/members?at=` position is bounded from below by the caller's visibility.
