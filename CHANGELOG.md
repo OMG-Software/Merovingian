@@ -90,6 +90,19 @@ The medium findings of security audit run 2 (ref 5e67d4e8).
 - **A worker whose main-side channel has failed is restarted (F-08, ADR-0323).** The supervisor replaced a worker only
   when it exited, so a shard whose channel main had given up on answered 503 until main was restarted. It now kills the
   worker and respawns it after the existing backoff.
+- **State lookups no longer scan the server's state-group tables (F-07, F-15, ADR-0325).** Finding the state group of
+  an event, a group by ID, or a group's entries was a pass over every room's rows (and, per hop of a delta chain of up
+  to 101 groups, over every entry row), so each ingested PDU, local send, federation `/event`, `backfill`,
+  `get_missing_events` and `timestamp_to_event`, and each client history-visibility read, paid for the whole server
+  with `runtime.mutex` held. The three tables are now classes that own their rows and keep hash indexes, so each lookup
+  costs the rows it returns. `ServerEventFilter` and `HistoryVisibility` build no per-request map, and
+  `make_store_event_lookup` uses `EventTable::find` instead of building a map of every event for each resolution.
+  `recompute_current_state` reads the room's current state once instead of once per resolved entry, and a federation
+  read's check that a server has a joined user looks up the named member events instead of walking every event.
+- **Waking retained PDUs no longer searches their JSON (F-18, ADR-0326).** After each PDU stored in a room the server
+  searched every retained PDU of that room for the event ID as text, up to 6.4 MiB a time under `runtime.mutex`, and
+  woke a PDU that only mentioned the ID. Retained PDUs are now indexed by the events they are missing, so the wake
+  touches only the rows waiting for that event. The retry job no longer copies the whole table every cycle.
 
 ## 0.12.67
 

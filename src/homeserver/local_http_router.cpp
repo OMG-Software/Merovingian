@@ -3401,30 +3401,14 @@ namespace
 
     // Returns the IDs of auth_events the store cannot resolve at all, and the
     // IDs of prev_events that are either absent or have no recorded state group.
+    // database::find_missing_event_references is the one definition: retained PDUs are
+    // indexed by the same IDs (ADR-0326).
     [[nodiscard]] auto collect_missing_pdu_references(database::PersistentStore const& store,
                                                       federation::InboundPduEnvelope const& envelope)
         -> std::pair<std::vector<std::string>, std::vector<std::string>>
     {
-        auto missing_auth = std::vector<std::string>{};
-        for (auto const& id : envelope.auth_event_ids)
-        {
-            auto const it = store.events.find(id);
-            if (it == store.events.end())
-            {
-                missing_auth.push_back(id);
-            }
-        }
-
-        auto missing_prev = std::vector<std::string>{};
-        for (auto const& id : envelope.prev_event_ids)
-        {
-            auto const it = store.events.find(id);
-            if (it == store.events.end() || !event_has_state_group(store, id))
-            {
-                missing_prev.push_back(id);
-            }
-        }
-        return {std::move(missing_auth), std::move(missing_prev)};
+        auto missing = database::find_missing_event_references(store, envelope.auth_event_ids, envelope.prev_event_ids);
+        return {std::move(missing.auth), std::move(missing.prev)};
     }
 
     [[nodiscard]] auto signing_material_for_backfill(HomeserverRuntime& runtime)

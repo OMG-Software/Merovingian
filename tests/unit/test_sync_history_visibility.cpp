@@ -28,6 +28,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -83,17 +84,17 @@ auto add_event(PersistentStore& store, std::string_view event_id, std::string_vi
 auto add_group(PersistentStore& store, std::string_view group_id, std::optional<std::string> parent,
                std::vector<std::pair<std::pair<std::string, std::string>, std::string>> entries) -> void
 {
-    store.state_groups.push_back({std::string{group_id}, std::string{room}, std::move(parent), 0U});
+    std::ignore = store.state_groups.insert({std::string{group_id}, std::string{room}, std::move(parent), 0U});
     for (auto& [key, event_id] : entries)
     {
-        store.state_group_state.push_back(
+        store.state_group_state.insert(
             {std::string{group_id}, std::move(key.first), std::move(key.second), std::move(event_id)});
     }
 }
 
 auto map_event(PersistentStore& store, std::string_view event_id, std::string_view group_id) -> void
 {
-    store.event_state_groups.push_back({std::string{event_id}, std::string{group_id}});
+    store.event_state_groups.assign(event_id, group_id);
 }
 
 auto add_transition(PersistentStore& store, std::string_view type, std::string_view state_key,

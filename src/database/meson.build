@@ -10,6 +10,7 @@ database_sources = files(
   'runtime_database.cpp',
   'schema.cpp',
   'sqlite_store.cpp',
+  'state_group_tables.cpp',
   'statement.cpp',
 )
 

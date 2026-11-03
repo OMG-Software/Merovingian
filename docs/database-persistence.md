@@ -543,6 +543,16 @@ value. Test fixtures that do not exercise persistence select it through
   trivially, so unit tests exercise the in-memory bookkeeping directly —
   see `tests/unit/test_state_groups.cpp`).
 
+  **In-memory indexes (F-07, F-15, ADR-0325).** The three tables are mirrored in
+  memory by `StateGroupTable`, `StateGroupEntryTable` and `EventStateGroupTable`
+  (`state_group_tables.hpp`), which own the rows and keep hash indexes by
+  `state_group_id` and `event_id`, so `find_event_state_group`, `find_state_group`
+  and `read_state_group_full_state` cost the rows they return and not a pass over
+  every room's. They are filled by hydration and `reload_room` through the tables'
+  own methods; no schema changed. Retained federation PDUs (`deferred_pdus`) are
+  likewise indexed in memory by the event IDs they are missing
+  (`PersistentStore::deferred_pdu_awaits`, rebuilt after hydration; ADR-0326).
+
   A fresh database starts with no state groups or forward extremities; they are
   written as rooms are created and events ingested. Nothing is seeded at
   bootstrap. PostgreSQL bootstrap creating these tables is covered by

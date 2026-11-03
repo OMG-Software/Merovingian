@@ -1705,7 +1705,9 @@ private:
         membership.user_id = localize(membership.user_id);
         REQUIRE(db::store_membership(store, membership) == db::MembershipStoreResult::stored);
     }
-    auto group_state = fixture.database.persistent_store.state_group_state;
+    auto group_state =
+        std::vector<db::PersistentStateGroupStateEntry>{fixture.database.persistent_store.state_group_state.begin(),
+                                                        fixture.database.persistent_store.state_group_state.end()};
     for (auto& entry : group_state)
         entry.state_key = localize(entry.state_key);
     auto const group =

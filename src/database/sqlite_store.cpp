@@ -1161,16 +1161,16 @@ namespace
                              entry.parent_state_group_id =
                                  parent_text.empty() ? std::nullopt : std::optional<std::string>{parent_text};
                              entry.delta_depth = static_cast<std::uint32_t>(parse_u64(column_text(row, 3)));
-                             store.state_groups.push_back(std::move(entry));
+                             std::ignore = store.state_groups.insert(std::move(entry));
                          }) &&
                load_rows(connection, "SELECT state_group_id, event_type, state_key, event_id FROM state_group_state",
                          [&store](sqlite3_stmt& row) {
-                             store.state_group_state.push_back(
+                             store.state_group_state.insert(
                                  {column_text(row, 0), column_text(row, 1), column_text(row, 2), column_text(row, 3)});
                          }) &&
                load_rows(connection, "SELECT event_id, state_group_id FROM event_state_groups",
                          [&store](sqlite3_stmt& row) {
-                             store.event_state_groups.push_back({column_text(row, 0), column_text(row, 1)});
+                             store.event_state_groups.assign(column_text(row, 0), column_text(row, 1));
                          }) &&
                load_rows(connection, "SELECT room_id, event_id FROM forward_extremities", [&store](sqlite3_stmt& row) {
                    store.forward_extremities.push_back({column_text(row, 0), column_text(row, 1)});
@@ -1659,6 +1659,7 @@ auto open_sqlite_persistent_store(std::string const& path, TableLoadProfile prof
     rebuild_state_index(store);
     rebuild_client_txn_index(store);
     rebuild_redaction_state(store);
+    rebuild_deferred_pdu_awaits(store);
     rebuild_key_signature_index(store);
     restore_sync_stream_id(store);
 

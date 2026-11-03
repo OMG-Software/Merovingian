@@ -320,6 +320,8 @@
 * [0321 - Every IPC frame is valid UTF-8 by construction, and request bytes cross it losslessly](0321-every-ipc-frame-is-valid-utf-8-by-construction.md)
 * [0322 - An authenticated IPC frame whose payload does not parse fails one request, not the channel](0322-an-authenticated-frame-whose-payload-does-not-parse-fails-one-request.md)
 * [0323 - The supervisor restarts a live worker whose main-side channel has failed](0323-the-supervisor-restarts-a-worker-whose-main-side-channel-failed.md)
+* [0325 - The state-group tables own their rows and index them by key](0325-the-state-group-tables-own-their-rows-and-index-them.md)
+* [0326 - Retained PDUs are woken through an in-memory index of the events they are missing](0326-retained-pdus-are-woken-through-an-index-of-the-events-they-are-missing.md)
 
 ## Proposed Records
 

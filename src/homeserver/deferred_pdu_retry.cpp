@@ -137,19 +137,14 @@ auto wake_deferred_pdus_waiting_for(HomeserverRuntime& runtime, std::string_view
     -> void
 {
     auto const guard = std::unique_lock<RuntimeMutex>{runtime.mutex};
-    auto marked = std::size_t{0U};
-    for (auto const& row : runtime.database.persistent_store.deferred_pdus)
+    // The store indexes retained PDUs by the events they are missing (ADR-0326), so this costs the
+    // rows that wait for `event_id`, never a search of the room's retained JSON.
+    auto const woken = database::take_deferred_pdus_awaiting(runtime.database.persistent_store, room_id, event_id);
+    for (auto const& woken_id : woken)
     {
-        // The stored JSON names the events the PDU is waiting for in its
-        // prev_events and auth_events. A bare text match can also hit a PDU that
-        // merely mentions the id; waking it early costs one attempt, no more.
-        if (row.room_id == room_id && row.event_id != event_id && row.pdu_json.find(event_id) != std::string::npos)
-        {
-            runtime.deferred_pdu_next_attempt.erase(row.event_id);
-            ++marked;
-        }
+        runtime.deferred_pdu_next_attempt.erase(woken_id);
     }
-    if (marked != 0U && runtime.deferred_pdu_retry_wake)
+    if (!woken.empty() && runtime.deferred_pdu_retry_wake)
     {
         runtime.deferred_pdu_retry_wake();
     }
@@ -164,27 +159,37 @@ auto retry_deferred_pdus(HomeserverRuntime& runtime, StopFlag const& stop) -> st
     };
 
     // Phase 1, under the lock: drop what is over its limits or already stored,
-    // and copy out what is due.
+    // and copy out what is due. The rows are read in place (copying the table
+    // would copy up to 16 MiB of JSON under the lock, every cycle); what to drop or
+    // remove is noted and applied after the pass, since both change the table.
+    struct Dropped final
+    {
+        database::PersistentDeferredPdu row{};
+        std::string_view why{};
+    };
     auto due = std::vector<DueRow>{};
     {
         auto const guard = std::unique_lock<RuntimeMutex>{runtime.mutex};
         auto const now = std::chrono::steady_clock::now();
         auto const now_ms = wall_clock_ms();
-        auto const rows = database::list_deferred_pdus(runtime.database.persistent_store);
-        for (auto const& row : rows)
+        auto dropped = std::vector<Dropped>{};
+        auto stored = std::vector<std::string>{};
+        for (auto const& row : runtime.database.persistent_store.deferred_pdus)
         {
             if (over_age_or_attempt_limit(row, now_ms))
             {
-                drop_deferral(runtime, row,
-                              row.attempts >= database::max_deferred_pdu_attempts ? "retry attempts exhausted"
-                                                                                  : "retained for too long");
+                // The JSON is not needed to log and audit the drop, so it is not copied.
+                dropped.push_back({
+                    {row.event_id, row.room_id, row.origin, {}, row.received_at_ms, row.attempts},
+                    row.attempts >= database::max_deferred_pdu_attempts ? "retry attempts exhausted"
+                                                                        : "retained for too long"
+                });
                 continue;
             }
             if (database::find_event_status(runtime.database.persistent_store, row.event_id).has_value())
             {
                 // Stored by some other path (backfill) since it was retained.
-                runtime.deferred_pdu_next_attempt.erase(row.event_id);
-                std::ignore = database::remove_deferred_pdu(runtime.database.persistent_store, row.event_id);
+                stored.push_back(row.event_id);
                 continue;
             }
             auto const scheduled = runtime.deferred_pdu_next_attempt.find(row.event_id);
@@ -198,6 +203,15 @@ auto retry_deferred_pdus(HomeserverRuntime& runtime, StopFlag const& stop) -> st
                                         ? runtime.federation.room_version_resolver(row.room_id)
                                         : std::string{}});
             }
+        }
+        for (auto const& item : dropped)
+        {
+            drop_deferral(runtime, item.row, item.why);
+        }
+        for (auto const& event_id : stored)
+        {
+            runtime.deferred_pdu_next_attempt.erase(event_id);
+            std::ignore = database::remove_deferred_pdu(runtime.database.persistent_store, event_id);
         }
     }
 
