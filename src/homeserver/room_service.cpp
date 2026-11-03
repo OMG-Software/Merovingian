@@ -4487,8 +4487,10 @@ auto filter_verified_send_join_events(HomeserverRuntime& runtime, canonicaljson:
             }
             // A restricted join's authorising server is verified below too
             // (ADR-0171); fetch every key the verifier may try (at most
-            // max_authorising_signature_keys) in the same parallel pass.
-            if (auto const authorising = federation::join_authorising_signature_key(entry);
+            // max_authorising_signature_keys) in the same parallel pass. A room version
+            // without restricted joins has no such rule to check (ADR-0356).
+            if (auto const authorising =
+                    policy.restricted_join_rule ? federation::join_authorising_signature_key(entry) : std::nullopt;
                 authorising.has_value() && authorising->server_name != our_server)
             {
                 for (auto const& authorising_key_id : authorising->key_ids)

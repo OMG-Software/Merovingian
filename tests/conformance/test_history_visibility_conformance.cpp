@@ -1529,3 +1529,234 @@ SCENARIO("GET /timestamp_to_event never names an event the user may not see",
         }
     }
 }
+
+namespace
+{
+
+// The (type, state_key) of every event in rooms.leave[room].state.events of an initial sync that
+// sets `include_leave`, or nullopt when the room is not listed under rooms.leave.
+[[nodiscard]] auto left_room_state_events(ClientServerRuntime& rt, std::string const& token, std::string const& room_id,
+                                          std::string_view filter)
+    -> std::optional<std::vector<std::pair<std::string, std::string>>>
+{
+    auto const reply = call(rt, "GET", "/_matrix/client/v3/sync?filter=" + std::string{filter}, token);
+    REQUIRE(reply.status == 200U);
+    auto const parsed = parse_object(reply.body);
+    auto const* rooms = object_member_as_object(parsed, "rooms");
+    REQUIRE(rooms != nullptr);
+    auto const* left = object_member_as_object(*rooms, "leave");
+    auto const* room = left == nullptr ? nullptr : object_member_as_object(*left, room_id);
+    if (room == nullptr)
+    {
+        return std::nullopt;
+    }
+    auto const* state = object_member_as_object(*room, "state");
+    REQUIRE(state != nullptr);
+    auto const* events = object_member_as_array(*state, "events");
+    REQUIRE(events != nullptr);
+    auto out = std::vector<std::pair<std::string, std::string>>{};
+    for (auto const& value : *events)
+    {
+        auto const* event = std::get_if<merovingian::canonicaljson::Object>(&value.storage());
+        REQUIRE(event != nullptr);
+        auto const* type = string_member(*event, "type");
+        auto const* state_key = string_member(*event, "state_key");
+        REQUIRE(type != nullptr);
+        out.emplace_back(*type, state_key == nullptr ? std::string{} : *state_key);
+    }
+    return out;
+}
+
+constexpr auto include_leave_filter = std::string_view{R"({"room":{"include_leave":true}})"};
+// A one-event timeline, so the state before it is the room as the user left it.
+constexpr auto include_leave_one_event_filter =
+    std::string_view{R"({"room":{"include_leave":true,"timeline":{"limit":1}}})"};
+// A timeline filter that keeps the user's own leave or ban out of the timeline.
+constexpr auto include_leave_without_member_events_filter =
+    std::string_view{R"({"room":{"include_leave":true,"timeline":{"types":["a.madeup.test"]}}})"};
+
+// A knock room whose history, roster and settings are all worth stealing.
+struct SecretKnockRoom final
+{
+    std::string room_id{};
+};
+
+[[nodiscard]] auto make_secret_knock_room(ClientServerRuntime& rt, std::string const& alice, std::string const& bob)
+    -> SecretKnockRoom
+{
+    auto const room_id =
+        create_room(rt, alice, R"({"type":"m.room.join_rules","state_key":"","content":{"join_rule":"knock"}})");
+    invite_and_join(rt, alice, room_id, "bob", bob);
+    REQUIRE(call(rt, "PUT", "/_matrix/client/v3/rooms/" + room_id + "/state/m.room.topic", alice,
+                 R"({"topic":"secret-topic"})")
+                .status == 200U);
+    REQUIRE(call(rt, "PUT", "/_matrix/client/v3/rooms/" + room_id + "/state/a.madeup.secret/", alice,
+                 R"({"note":"secret-custom-state"})")
+                .status == 200U);
+    std::ignore = send_text(rt, alice, room_id, "secret-room-message");
+    return {room_id};
+}
+
+// The one thing a user who never joined may be told in rooms.leave[room].state: their own
+// m.room.member event, the leave or ban that ended their stay.
+auto require_only_own_membership(std::vector<std::pair<std::string, std::string>> const& state, std::string const& user)
+    -> void
+{
+    for (auto const& [type, state_key] : state)
+    {
+        CAPTURE(type, state_key);
+        REQUIRE(type == "m.room.member");
+        REQUIRE(state_key == user);
+    }
+}
+
+} // namespace
+
+// Spec: Matrix Client-Server API v1.19, GET /_matrix/client/v3/sync, `rooms.leave` (LeftRoom):
+// `state` is "The state updates for the room up to the start of the timeline."
+// Room History Visibility: "In all cases except world_readable, a user needs to join a room to
+// view events in that room." and GET /rooms/{roomId}/state: "403 You aren't a member of the room
+// and weren't previously a member of the room." A user who knocked, was invited or was banned
+// without ever joining has never been entitled to any of the room's state, so the room's
+// rooms.leave entry tells them only that they are out (their own leave or ban) (F-41).
+SCENARIO("A user who never joined is given none of the room's state in rooms.leave",
+         "[history-visibility][sync][f41][security][conformance]")
+{
+    GIVEN("a knock room with a roster, a topic, custom state and a message")
+    {
+        auto started = merovingian::homeserver::start_client_server(visibility_config());
+        REQUIRE(started.started);
+        auto& rt = started.runtime;
+        auto const alice = register_and_login(rt, "alice");
+        auto const bob = register_and_login(rt, "bob");
+        auto const mallory = register_and_login(rt, "mallory");
+        auto const carol = register_and_login(rt, "carol");
+        auto const eve = register_and_login(rt, "eve");
+        auto const room_id = make_secret_knock_room(rt, alice, bob).room_id;
+
+        WHEN("mallory knocks, retracts the knock and syncs with include_leave")
+        {
+            REQUIRE(call(rt, "POST", "/_matrix/client/v3/knock/" + room_id, mallory, "{}").status == 200U);
+            leave(rt, mallory, room_id);
+            REQUIRE(call(rt, "GET", "/_matrix/client/v3/rooms/" + room_id + "/state", mallory).status == 403U);
+            auto const state = left_room_state_events(rt, mallory, room_id, include_leave_filter);
+
+            THEN("the room is reported as left and its state holds nothing but mallory's own membership")
+            {
+                REQUIRE(state.has_value());
+                require_only_own_membership(*state, user_id("mallory"));
+            }
+        }
+
+        WHEN("mallory retracts a knock and a timeline filter keeps the leave out of the timeline")
+        {
+            REQUIRE(call(rt, "POST", "/_matrix/client/v3/knock/" + room_id, mallory, "{}").status == 200U);
+            leave(rt, mallory, room_id);
+            auto const state = left_room_state_events(rt, mallory, room_id, include_leave_without_member_events_filter);
+
+            THEN("the leave is told in state, and nothing else is")
+            {
+                REQUIRE(state.has_value());
+                REQUIRE(state->size() == 1U);
+                require_only_own_membership(*state, user_id("mallory"));
+            }
+        }
+
+        WHEN("carol is invited, declines and syncs with include_leave")
+        {
+            invite(rt, alice, room_id, "carol");
+            leave(rt, carol, room_id);
+            auto const state = left_room_state_events(rt, carol, room_id, include_leave_filter);
+            auto const filtered =
+                left_room_state_events(rt, carol, room_id, include_leave_without_member_events_filter);
+
+            THEN("her state holds nothing but her own membership, whatever the timeline filter")
+            {
+                REQUIRE(state.has_value());
+                require_only_own_membership(*state, user_id("carol"));
+                REQUIRE(filtered.has_value());
+                REQUIRE(filtered->size() == 1U);
+                require_only_own_membership(*filtered, user_id("carol"));
+            }
+        }
+
+        WHEN("eve, who never joined, is banned and syncs with include_leave")
+        {
+            ban(rt, alice, room_id, "eve");
+            auto const state = left_room_state_events(rt, eve, room_id, include_leave_filter);
+            auto const filtered = left_room_state_events(rt, eve, room_id, include_leave_without_member_events_filter);
+
+            THEN("her state holds nothing but her own ban, whatever the timeline filter")
+            {
+                REQUIRE(state.has_value());
+                require_only_own_membership(*state, user_id("eve"));
+                REQUIRE(filtered.has_value());
+                REQUIRE(filtered->size() == 1U);
+                require_only_own_membership(*filtered, user_id("eve"));
+            }
+        }
+    }
+}
+
+// Spec: Matrix Client-Server API v1.19, GET /sync `rooms.leave` `state`; Room History Visibility:
+// "After a user has left a room, they may see any events which they were allowed to see before
+// they left the room, but no events received after they left." A user who joined keeps the room's
+// state as of the leave, and nothing the room did after it (F-41).
+SCENARIO("A user who joined and left is given the room's state as of the leave in rooms.leave",
+         "[history-visibility][sync][f41][conformance]")
+{
+    GIVEN("a room where bob joined and left")
+    {
+        auto started = merovingian::homeserver::start_client_server(visibility_config());
+        REQUIRE(started.started);
+        auto& rt = started.runtime;
+        auto const alice = register_and_login(rt, "alice");
+        auto const bob = register_and_login(rt, "bob");
+        auto const carol = register_and_login(rt, "carol");
+        auto const room_id = make_secret_knock_room(rt, alice, bob).room_id;
+        leave(rt, bob, room_id);
+
+        WHEN("bob syncs with include_leave")
+        {
+            auto const state = left_room_state_events(rt, bob, room_id, include_leave_one_event_filter);
+
+            THEN("he is given the roster, topic and custom state he could see, and his own leave")
+            {
+                REQUIRE(state.has_value());
+                auto const has = [&](std::string const& type, std::string const& key) {
+                    return std::ranges::find(*state, std::pair<std::string, std::string>{type, key}) != state->end();
+                };
+                REQUIRE(has("m.room.member", user_id("alice")));
+                REQUIRE(has("m.room.member", user_id("bob")));
+                REQUIRE(has("m.room.power_levels", ""));
+                REQUIRE(has("m.room.topic", ""));
+                REQUIRE(has("a.madeup.secret", ""));
+            }
+        }
+
+        WHEN("the room moves on after bob left, then bob is banned, and he syncs with include_leave")
+        {
+            invite_and_join(rt, alice, room_id, "carol", carol);
+            REQUIRE(call(rt, "PUT", "/_matrix/client/v3/rooms/" + room_id + "/state/m.room.topic", alice,
+                         R"({"topic":"later-topic"})")
+                        .status == 200U);
+            ban(rt, alice, room_id, "bob");
+            auto const state = left_room_state_events(rt, bob, room_id, include_leave_one_event_filter);
+            auto const filtered = left_room_state_events(rt, bob, room_id, include_leave_without_member_events_filter);
+
+            THEN("his state is the room as of his leave: no member who joined later")
+            {
+                for (auto const* listed : {&state, &filtered})
+                {
+                    REQUIRE(listed->has_value());
+                    auto const has = [&](std::string const& type, std::string const& key) {
+                        return std::ranges::find(**listed, std::pair<std::string, std::string>{type, key}) !=
+                               (*listed)->end();
+                    };
+                    REQUIRE_FALSE(has("m.room.member", user_id("carol")));
+                }
+                REQUIRE(state->size() > 1U);
+            }
+        }
+    }
+}

@@ -575,6 +575,8 @@ Implemented endpoints are grouped below. Matrix v1.19 behaviour is described in 
 
 **`rooms.leave` timeline content**: `rooms.leave.<room_id>.timeline` must carry the room's state changes up to the point the caller left; Matrix v1.19 describes leave behaviour in [Behaviour on Room Leave](matrix-v1.19-spec/client-server-api.md#behaviour-on-room-leave). Real clients derive membership by processing that timeline's state events, not merely from the `room_id` key being present under `rooms.leave`. `build_leave_timeline_events_array()` (`client_server.cpp`) includes the user's current `m.room.member` state event for the room from `store.state`, including on idempotent repeat `/leave` calls.
 
+**`rooms.leave` state**: an initial sync's `rooms.leave.<room_id>.state` is gated by `sync::room_read_access_for` like `GET /state` (ADR-0357). A user who never joined (a retracted knock, a declined invite, a ban before any join) is given only their own leave or ban; a user who joined is given the state as of their leave, never later.
+
 ## Build system
 
 Meson (`>=1.1.0`), C++26, `-Werror`, warning level 3. Hardening: stack protector, PIE, hidden visibility, zero-init, stack clash protection, CF protection, FORTIFY_SOURCE=3, no-exec stack. Link flags: `-Wl,-z,noexecstack`.
