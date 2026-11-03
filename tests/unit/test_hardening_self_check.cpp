@@ -2,10 +2,10 @@
 
 #include "merovingian/platform/hardening_self_check.hpp"
 
-#include <optional>
 #include <catch2/catch_test_macros.hpp>
 
 #include <algorithm>
+#include <optional>
 #include <string>
 
 SCENARIO("Startup hardening self-check reports stable baseline checks", "[platform][hardening]")
@@ -266,18 +266,41 @@ SCENARIO("Hardening self-check maps Linux-only controls to appropriate non-Linux
         auto const self_check = merovingian::platform::run_startup_hardening_self_check();
         auto const& checks = self_check.checks();
 
-        WHEN("seccomp is examined on a non-Linux host")
+#if defined(__FreeBSD__) || defined(__OpenBSD__)
+        WHEN("seccomp is examined where Capsicum or pledge is the syscall control")
         {
-            THEN("seccomp status is unknown — not enabled or disabled")
+            THEN("seccomp is not applicable, so it does not block startup")
             {
-                // /proc/self/status does not exist on BSD; probe_seccomp_status
-                // returns {probed: false, seccomp_active: false} which maps to
-                // `unknown`. unknown is the correct signal — the OS cannot run
-                // seccomp-bpf at all.
+                // The confining control has its own check, which still blocks
+                // startup if it was not applied (ADR-0378).
+                REQUIRE(checks[6].name == "seccomp");
+                REQUIRE(checks[6].status == merovingian::platform::HardeningStatus::enabled);
+                REQUIRE(checks[6].note == "Not applicable on this platform.");
+            }
+        }
+#else
+        WHEN("seccomp is examined on NetBSD, which has no syscall confinement")
+        {
+            THEN("it stays a startup blocker and says why")
+            {
+                // Clearing this would serve media through an unconfined image
+                // decoder (ADR-0378).
                 REQUIRE(checks[6].name == "seccomp");
                 REQUIRE(checks[6].status == merovingian::platform::HardeningStatus::unknown);
-                REQUIRE(checks[6].status != merovingian::platform::HardeningStatus::enabled);
-                REQUIRE(checks[6].status != merovingian::platform::HardeningStatus::disabled);
+                REQUIRE(checks[6].note.find("NetBSD") != std::string::npos);
+                REQUIRE_FALSE(self_check.is_ready());
+            }
+        }
+#endif
+
+        WHEN("the binary's ELF hardening is examined on a non-Linux host")
+        {
+            THEN("the PIE check comes from the probe rather than a platform check")
+            {
+                auto const elf = merovingian::platform::probe_elf_hardening();
+                REQUIRE(elf.probed);
+                REQUIRE(checks[2].name == "PIE");
+                REQUIRE((checks[2].status == merovingian::platform::HardeningStatus::enabled) == elf.is_pie);
             }
         }
 

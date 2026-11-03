@@ -28,16 +28,18 @@ binary or in the service-manager configuration that ships with the packages.
 | Trivial auto-var init | `hardening_compile_flags` (`-ftrivial-auto-var-init=zero`) | Uninitialised locals are zeroed. |
 | Position-independent executable | `hardening_compile_flags` (`-fPIE`) and link args (`-pie`) | Enables ASLR. |
 | No-exec stack | `hardening_link_flags` (`-Wl,-z,noexecstack`) | ELF GNU_STACK note is non-executable. |
-| RELRO + BIND_NOW | `hardening_link_flags` (`-Wl,-z,relro -Wl,-z,now`) on GNU/Linux | Full RELRO; dynamic relocations resolved at load time. |
+| RELRO + BIND_NOW | `hardening_link_flags` (`-Wl,-z,relro -Wl,-z,now`) on Linux, FreeBSD and OpenBSD | Full RELRO; dynamic relocations resolved at load time. |
 | Static PIE fallback | `scripts/build-static-linux.sh` (`-static-pie`) | Fully static, position-independent musl build for Linux. |
 
 The startup hardening self-check probes the same flags at runtime:
 
 * `compiler hardening` checks for `__SSP__`/`__SSP_STRONG__`/`__SSP_ALL__`,
   `_FORTIFY_SOURCE > 0`, and `__PIE__`/`__pie__`.
-* `linker hardening`, `PIE`, and `RELRO` parse `/proc/self/exe` on Linux to
-  confirm `PT_GNU_RELRO`, `DT_BIND_NOW`, and `PT_GNU_STACK` without `PF_X`.
-  Static or non-ELF builds report `unknown` rather than `disabled`.
+* `linker hardening`, `PIE`, and `RELRO` read the running image's program headers
+  with `dl_iterate_phdr` to confirm `PT_GNU_RELRO`, `DT_BIND_NOW`, and
+  `PT_GNU_STACK` without `PF_X`, and a non-zero load offset for PIE. This opens no
+  file, so it also works inside Capsicum (ADR-0378). A build that lacks any of
+  these reports `unknown` rather than `disabled`.
 
 ### C++ memory and type safety
 
@@ -131,9 +133,12 @@ POSIX metadata:
 
 The startup self-check runs the same probe on every platform where the control
 exists, and reports "not applicable on this platform" only where the mechanism
-itself does not exist. Before 0.12.5 the POSIX probes were behind an `__linux__`
-guard, so a BSD server reported `unknown` for controls it had applied and
-`is_ready()` refused to start it — on platforms that are documented Tier 1.
+itself does not exist. Until 0.12.69 the ELF and seccomp checks reported `unknown`
+off Linux, so `is_ready()` refused to start every BSD server, on platforms that are
+documented Tier 1.
+
+NetBSD is still refused, on purpose. It has no syscall confinement for the thumbnail
+decoder, so its seccomp check stays a blocker until it does (ADR-0378).
 
 | Control | Linux | FreeBSD | OpenBSD | NetBSD |
 |---|---|---|---|---|
@@ -141,7 +146,8 @@ guard, so a BSD server reported `unknown` for controls it had applied and
 | Core-dump policy (`RLIMIT_CORE`) | probed, plus `PR_GET_DUMPABLE` | probed | probed | probed |
 | `no_new_privs` | probed | n/a | n/a | n/a |
 | Capability bounding | probed | n/a | n/a | n/a |
-| seccomp-bpf | probed | n/a | n/a | n/a |
+| ELF hardening (PIE, RELRO, BIND_NOW, noexec stack) | probed | probed | probed | probed |
+| seccomp-bpf | probed | n/a | n/a | blocks startup |
 | pledge / unveil | n/a | n/a | probed | n/a |
 | Capsicum | n/a | probed | n/a | n/a |
 
@@ -691,12 +697,15 @@ The call therefore happens *after* all resources are open:
 hardening self-check runs in `run_server()` after `cap_enter()` has been called,
 so the snapshot reflects the confined state.
 
+The federation worker's supervisor spawns by path, so it cannot restart a worker
+that dies after `cap_enter()`. Federation answers 503 and each attempt logs a
+warning until the server is restarted (ADR-0377).
+
 #### NetBSD and other BSDs
 
-No in-process sandbox primitives are implemented. The BSD hardening profile is
-validated as documented, but `apply_runtime_hardening_controls()` returns a
-mode-gated rejection. Service-manager privilege drop and filesystem restrictions
-apply via `rc.d` scripts.
+No in-process sandbox primitives are implemented, and a NetBSD server refuses to
+start: its seccomp check stays `unknown` until the thumbnail decoder has real
+confinement (ADR-0378). The `rc.d` scripts only select the service user.
 
 * The portable `setrlimit` gates are validated by the BSD hardening profile, and
   the thumbnail worker applies `RLIMIT_CPU`, `RLIMIT_FSIZE`, `RLIMIT_CORE`,
@@ -895,9 +904,12 @@ in-process syscalls:
   than a silent one: `federation.worker.apply_hardening=true` (the
   production default) makes the worker refuse to start on those platforms
   instead of running unsandboxed, and with federation enabled the server exits
-  too. An operator can opt into running an unsandboxed worker there with
-  `federation.worker.apply_hardening=false`, relying solely on service-manager
-  confinement, or turn federation off with `security.federation.enabled=false`.
+  too. An operator can turn federation off with
+  `security.federation.enabled=false`. Having confined the worker some other way,
+  for example in a jail, they can instead set
+  `federation.worker.apply_hardening=false` and
+  `federation.worker.allow_without_landlock=true`. The packaged `rc.d` scripts only
+  select the service user, and provide no such confinement.
 
 OpenBSD `pledge`/`unveil` and FreeBSD `cap_enter()` are fully wired and exercised
 in CI. The startup readiness gate will not pass until every hardening check

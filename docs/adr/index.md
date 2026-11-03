@@ -304,6 +304,7 @@
 * [0320 - A join comes after the ancestors that share its depth](0320-a-join-comes-after-the-ancestors-that-share-its-depth.md)
 * [0376 - Build an RPM for Fedora 44 and for fedora:latest](0376-build-an-rpm-for-fedora-44-and-for-fedora-latest.md)
 * [0377 - The server exits when its federation worker cannot start](0377-the-server-exits-when-its-federation-worker-cannot-start.md)
+* [0378 - Probe ELF hardening in memory, and keep NetBSD refused](0378-probe-elf-hardening-in-memory-and-keep-netbsd-refused.md)
 
 ## Proposed Records
 

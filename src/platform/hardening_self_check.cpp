@@ -202,26 +202,36 @@ auto run_startup_hardening_self_check() -> HardeningSelfCheck
     // Probe ELF program headers first — the result feeds both PIE and the
     // compiler hardening composite so it must precede both checks.
     auto const elf = probe_elf_hardening();
-    // ET_DYN (PIE) is confirmed by the ELF probe rather than a compile-time
+    // PIE is confirmed by the ELF probe rather than a compile-time
     // macro: Meson compiles static-library objects with -fPIC which overrides
     // -fPIE and prevents __PIE__ from being defined in those translation units.
     auto const elf_pie_active = elf.probed && elf.is_pie;
 
-    add("compiler hardening",
-        enabled_or_unknown(compile_time_compiler_hardening_enabled(elf_pie_active),
-                           "Stack protector, FORTIFY_SOURCE, or PIE (ELF ET_DYN) not confirmed."));
+    add("compiler hardening", enabled_or_unknown(compile_time_compiler_hardening_enabled(elf_pie_active),
+                                                 "Stack protector, FORTIFY_SOURCE, or PIE not confirmed."));
     add("linker hardening", linker_hardening_check_from_probe(elf));
-    add("PIE", elf_pie_active
-                   ? HardeningCheck{{}, HardeningStatus::enabled, {}}
-                   : HardeningCheck{{},
-                                    HardeningStatus::unknown,
-                                    "ELF probe: binary is ET_EXEC (not PIE-linked); rebuild with -pie linker flag."});
+    add("PIE", elf_pie_active ? HardeningCheck{{}, HardeningStatus::enabled, {}}
+                              : HardeningCheck{{},
+                                               HardeningStatus::unknown,
+                                               "ELF probe: binary is not PIE-linked; rebuild with -pie linker flag."});
     add("RELRO", relro_check_from_probe(elf));
     add("stack protector", enabled_or_unknown(compile_time_stack_protector_enabled(),
                                               "Compile did not advertise __SSP__/__SSP_STRONG__/__SSP_ALL__."));
     add("FORTIFY_SOURCE",
         enabled_or_unknown(compile_time_fortify_enabled(), "Compile did not advertise _FORTIFY_SOURCE > 0."));
+    // seccomp: Linux-only. FreeBSD and OpenBSD confine with Capsicum and pledge,
+    // checked below. NetBSD has no such control, and clearing this would serve
+    // media through an unconfined image decoder, so it stays a blocker (ADR-0378).
+#if defined(__FreeBSD__) || defined(__OpenBSD__)
+    add("seccomp", HardeningCheck{{}, HardeningStatus::enabled, "Not applicable on this platform."});
+#elif defined(__NetBSD__)
+    add("seccomp",
+        HardeningCheck{{},
+                       HardeningStatus::unknown,
+                       "NetBSD has no in-process syscall confinement for the thumbnail decoder or the server."});
+#else
     add("seccomp", seccomp_check_from_probe(probe_seccomp_status()));
+#endif
 
     // pledge/unveil: OpenBSD-only control. On all other platforms it is not
     // applicable — returning `enabled` is correct: there is no security gap.
@@ -353,7 +363,7 @@ auto seccomp_check_from_probe(SeccompProbeResult const& result) -> HardeningChec
 {
     // `enabled` only when the probe ran and confirmed a bpf filter is active.
     // `unknown` in all other cases: filter may not have been applied (dev/dry-run),
-    // the kernel may lack CONFIG_SECCOMP_FILTER, or the platform is non-Linux.
+    // or the kernel may lack CONFIG_SECCOMP_FILTER.
     if (result.probed && result.seccomp_active)
         return HardeningCheck{{}, HardeningStatus::enabled, {}};
     return HardeningCheck{

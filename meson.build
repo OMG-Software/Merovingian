@@ -93,10 +93,10 @@ hardening_compile_flags = [
 #   Fedora .rpm / FreeBSD .pkg â†’ -pie (dynamic-libc PIE via cpp_link_args)
 # -Wl,-z,noexecstack sets the PT_GNU_STACK ELF note; the kernel reads this on
 # both static and dynamic ELF binaries, so it applies universally.
-# -Wl,-z,relro/-z,now are requested for GNU/Linux dynamic ELF builds. Meson's
-# get_supported_link_arguments drops them for fully-static or non-ELF
-# toolchains, and the host-system gate keeps them off BSD package builds where
-# the base linker does not accept these GNU ld options.
+# -Wl,-z,relro/-z,now are requested wherever the startup self-check can pass,
+# because it requires BIND_NOW. Meson's get_supported_link_arguments drops them
+# for fully-static or non-ELF toolchains. NetBSD stays out: its server refuses
+# to start regardless (ADR-0378).
 noexecstack_flag = '-Wl,-z,noexecstack'
 relro_now_flags = ['-Wl,-z,relro', '-Wl,-z,now']
 
@@ -105,7 +105,10 @@ if host_machine.system() == 'linux'
   # -pie makes the binary ET_DYN (PIE-linked). Combined with -fPIE on the objects
   # this allows the ELF probe to confirm PIE at runtime. The packaging scripts
   # (build-*.sh) may also pass -pie or -static-pie; the linker tolerates duplicates.
-  hardening_link_flags += ['-pie'] + relro_now_flags
+  hardening_link_flags += ['-pie']
+endif
+if host_machine.system() in ['linux', 'freebsd', 'openbsd']
+  hardening_link_flags += relro_now_flags
 endif
 
 add_project_arguments(cpp.get_supported_arguments(warning_flags), language: 'cpp')

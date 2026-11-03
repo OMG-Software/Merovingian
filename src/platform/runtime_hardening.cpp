@@ -628,9 +628,10 @@ auto worker_hardening_unavailable_decision() -> HardeningPlanDecision
     return reject("worker hardening: in-process sandboxing (seccomp-bpf syscall filter, capability-bounding "
                   "drop, core dump policy, PR_SET_NO_NEW_PRIVS) is only implemented on Linux; this platform "
                   "cannot satisfy federation.worker.apply_hardening=true. Set "
-                  "federation.worker.apply_hardening=false to run the worker without an in-process sandbox "
-                  "(it then relies solely on service-manager confinement), or "
-                  "security.federation.enabled=false to run a non-federating server, which starts no worker.");
+                  "security.federation.enabled=false to run a non-federating server, which starts no worker. "
+                  "Only if you have confined the worker yourself (a jail, for example; the packaged service "
+                  "script provides none), set federation.worker.apply_hardening=false and "
+                  "federation.worker.allow_without_landlock=true to run it without an in-process sandbox.");
 }
 
 auto apply_worker_hardening() -> HardeningPlanDecision

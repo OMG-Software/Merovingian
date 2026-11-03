@@ -162,18 +162,43 @@ against that release's libraries. The rolling release has one RPM for Fedora 44
 and one for the current Fedora. On any other release, use the static tarball
 below or build from source.
 
-On FreeBSD, the federation worker's in-process sandbox is not available, so with
-the default `federation.worker.apply_hardening=true` the worker refuses to start
-and the server exits with status 80. Set
-`federation.worker.apply_hardening=false` to accept a worker confined only by the
-service manager
-([ADR-0041](adr/0041-refuse-to-start-the-federation-worker-unsandboxed.md)), or
-`security.federation.enabled=false` to run a non-federating server, which starts
-no worker.
+On FreeBSD and OpenBSD, the federation worker's in-process sandbox is not
+available, so with the default settings the worker refuses to start and the
+server exits with status 80. Choose one of:
 
-Packages create the `merovingian` system user and group, install the systemd
+- `security.federation.enabled=false`, to run a non-federating server, which
+  starts no worker.
+- `federation.worker.apply_hardening=false` and
+  `federation.worker.allow_without_landlock=true`, only if you have confined the
+  worker yourself, for example in a jail. Both are needed, because the worker
+  checks Landlock first. The packaged rc.d script only selects the service user,
+  and provides no jail, chroot or filesystem sandbox
+  ([ADR-0041](adr/0041-refuse-to-start-the-federation-worker-unsandboxed.md)).
+
+On FreeBSD, a federation worker that dies after startup cannot be restarted,
+because the main process is by then in Capsicum capability mode. Federation
+answers 503 until you restart the server
+([ADR-0377](adr/0377-the-server-exits-when-its-federation-worker-cannot-start.md)).
+
+A NetBSD server refuses to start, because NetBSD has no in-process confinement for
+the thumbnail decoder
+([ADR-0378](adr/0378-probe-elf-hardening-in-memory-and-keep-netbsd-refused.md)).
+
+Linux packages create the `merovingian` system user and group, install the systemd
 unit, and stage the example configuration at `/etc/merovingian/
 merovingian.conf.example`.
+
+The FreeBSD package creates the same user and group, and installs an rc.d script
+that reads `/usr/local/etc/merovingian/merovingian.conf`. It stages only a sample,
+so create the file and enable the service:
+
+```sh
+cp /usr/local/etc/merovingian/merovingian.conf.sample \
+   /usr/local/etc/merovingian/merovingian.conf
+sysrc merovingian_enable=YES
+```
+
+Use `/usr/local/etc/merovingian` wherever the steps below say `/etc/merovingian`.
 
 ### Install the portable static Linux tarball
 

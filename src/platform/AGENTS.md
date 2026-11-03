@@ -29,9 +29,13 @@ This module is security-critical. Changes here affect the server's attack surfac
    check is set to `unknown`, which `is_ready()` treats as a blocker. Controls that are not
    enabled are logged through `log_diagnostic` (DEBUG by default) and summarised at start-up.
 
+   The probe reads the running image with `dl_iterate_phdr` and opens no file, because the
+   final self-check runs inside Capsicum (ADR-0378).
+
    Off Linux, `runtime_hardening.cpp` applies the platform sandbox instead of seccomp:
    OpenBSD `pledge(2)`, and FreeBSD Capsicum capability mode, which `main.cpp` enters after
-   the listeners bind. The federation worker has its own path (`apply_worker_hardening`);
+   the listeners bind. NetBSD has neither, so its seccomp check stays a blocker until the
+   thumbnail decoder is confined; do not clear it before then (ADR-0378). The federation worker has its own path (`apply_worker_hardening`);
    see `docs/platform-support.md` and ADR-0041.
 
    OpenBSD `unveil(2)` calls are planned in full by `openbsd_unveil_rules()` before the first

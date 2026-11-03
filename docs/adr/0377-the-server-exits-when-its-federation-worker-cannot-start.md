@@ -33,8 +33,14 @@ worker. Its statement of how that failure appears does not.
 ### Consequences
 
 * An operator on a platform with no worker sandbox must choose before the server will start:
-  `federation.worker.apply_hardening=false`, or `security.federation.enabled=false` for a
-  non-federating server.
-* This covers the first spawn only. A worker that dies after startup is still restarted with
-  backoff, and federation requests answer 503 while it is down, so one crash does not take
-  local users down with it.
+  `security.federation.enabled=false` for a non-federating server, or, only with confinement they
+  have set up themselves, `federation.worker.apply_hardening=false` and
+  `federation.worker.allow_without_landlock=true`. The worker checks Landlock first, so it needs
+  both settings. The packaged service scripts provide no jail or filesystem sandbox.
+* This covers the first spawn only. A worker that dies after startup is restarted with backoff, and
+  federation requests answer 503 while it is down, so one crash does not take local users down with
+  it.
+* **On FreeBSD that restart cannot succeed.** The supervisor spawns the worker by path, which
+  capability mode forbids once the main process has entered Capsicum. A spawn from a descriptor
+  would not help, since the child would inherit capability mode and could not open its files.
+  Federation stays at 503, with a warning logged on each attempt, until the server is restarted.

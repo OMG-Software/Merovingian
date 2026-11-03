@@ -234,6 +234,16 @@ class PackagesWorkflowTests(unittest.TestCase):
         self.assertIn("gmake openssl libsodium postgresql17-client python3", workflow)
         self.assertNotIn("postgresql17-client curl sqlite3 catch2", workflow)
 
+    def test_bsds_the_self_check_can_pass_request_full_relro(self):
+        # The self-check requires BIND_NOW, and the packaging scripts pass only
+        # -pie, so without this a FreeBSD or OpenBSD server refuses to start.
+        meson_build = (REPO_ROOT / "meson.build").read_text(encoding="utf-8")
+        self.assertIn(
+            "if host_machine.system() in ['linux', 'freebsd', 'openbsd']\n"
+            "  hardening_link_flags += relro_now_flags",
+            meson_build,
+        )
+
     def test_freebsd_package_lists_the_files_it_ships(self) -> None:
         # GIVEN pkg-create(8) packages only what a plist or manifest lists, so a package
         # built from a staged tree with neither is a valid archive holding no files: every
