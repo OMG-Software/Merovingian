@@ -672,6 +672,10 @@ namespace
         return std::move(result.output);
     }
 
+    // Spec (setProfileField): "the total profile MUST be under 64 KiB". A profile whose serialised
+    // object is this many bytes or more is refused with 400 M_PROFILE_TOO_LARGE (ADR-0406).
+    constexpr std::size_t max_profile_bytes = 64U * 1024U;
+
     // 401 with soft_logout=true: token was found-but-expired so the client should
     // use its refresh token rather than clearing its session (spec §5.7.2).
     [[nodiscard]] auto dispatch_err_soft_logout(LocalHttpRequest const& req, ClientServerRuntime const& rt,
@@ -15885,13 +15889,38 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                 return dispatch_err(req, rt, 400U, "M_BAD_JSON", "profile update body must be a JSON object");
             }
             auto& store = rt.homeserver.database.persistent_store;
-            if (!database::find_profile(store, *user).has_value() && !database::store_profile(store, {*user, {}, {}}))
-            {
-                return dispatch_err(req, rt, 500U, "M_UNKNOWN", "failed to persist the profile");
-            }
             auto const field = is_displayname ? std::string_view{"displayname"} : std::string_view{"avatar_url"};
             auto const* val = string_member(*obj, field);
             auto const value = val != nullptr ? std::string_view{*val} : std::string_view{};
+            // Spec: "For `avatar_url`, the value MUST be an MXC URI string". The empty string stays
+            // accepted as the way this server's clients clear the avatar (ADR-0406).
+            if (is_avatar_url && !value.empty() && !media::mxc_uri_is_valid(value))
+            {
+                return dispatch_err(req, rt, 400U, "M_INVALID_PARAM", "avatar_url must be an MXC URI");
+            }
+            // Spec: "the total profile MUST be under 64 KiB"; a value that would make it larger is
+            // 400 M_PROFILE_TOO_LARGE. The profile this server stores is these two fields (it has no
+            // `m.tz` or custom fields), so the size is that of the profile object with the new value.
+            auto const existing = database::find_profile(store, *user);
+            auto const kept_displayname = existing.has_value() ? existing->displayname : std::string{};
+            auto const kept_avatar_url = existing.has_value() ? existing->avatar_url : std::string{};
+            auto const profile_json = json_serialize_checked(json_obj({
+                json_member("avatar_url", json_str(is_avatar_url ? std::string{value} : kept_avatar_url)),
+                json_member("displayname", json_str(is_displayname ? std::string{value} : kept_displayname)),
+            }));
+            if (!profile_json.has_value())
+            {
+                return dispatch_err(req, rt, 400U, "M_BAD_JSON", "profile value cannot be serialised");
+            }
+            if (profile_json->size() >= max_profile_bytes)
+            {
+                return dispatch_err(req, rt, 400U, "M_PROFILE_TOO_LARGE",
+                                    "the profile would exceed its maximum allowed size of 64 KiB");
+            }
+            if (!existing.has_value() && !database::store_profile(store, {*user, {}, {}}))
+            {
+                return dispatch_err(req, rt, 500U, "M_UNKNOWN", "failed to persist the profile");
+            }
             auto const updated = is_displayname ? database::update_profile_displayname(store, *user, value)
                                                 : database::update_profile_avatar_url(store, *user, value);
             if (!updated)

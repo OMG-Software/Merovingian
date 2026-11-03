@@ -202,6 +202,12 @@ struct AdminQuarantineRequest final
 // quarantine path can be exercised end-to-end without needing real malware.
 [[nodiscard]] auto content_matches_eicar_test_signature(std::string_view bytes) noexcept -> bool;
 
+// True for a Matrix Content URI as the spec defines it ("Matrix Content (mxc://) URIs"):
+// `mxc://<server-name>/<media-id>`, a valid server name and a media ID of one or more of
+// `A-Za-z0-9`, `_` and `-` (so no further `/`, query or fragment). Used wherever a client
+// supplies an MXC URI that the server stores, such as a profile's `avatar_url`.
+[[nodiscard]] auto mxc_uri_is_valid(std::string_view uri) noexcept -> bool;
+
 [[nodiscard]] auto media_disposition_name(MediaDisposition disposition) noexcept -> char const*;
 [[nodiscard]] auto media_mime_type_is_allowed(MediaUploadPolicy const& policy, std::string_view mime_type) noexcept
     -> bool;

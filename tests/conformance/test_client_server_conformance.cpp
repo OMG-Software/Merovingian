@@ -12159,6 +12159,175 @@ SCENARIO("PUT /profile/{userId}/avatar_url updates the avatar URL", "[conformanc
     }
 }
 
+// --- PUT /_matrix/client/v3/profile/{userId}/{keyName}: size and format ------
+// Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#put_matrixclientv3profileuseridkeyname
+// "the total profile MUST be under 64 KiB"; 400 M_PROFILE_TOO_LARGE when storing the value "would make
+// the profile exceed its maximum allowed size of 64 KiB"; for avatar_url "the value MUST be an MXC URI string".
+namespace
+{
+// The serialised profile {"avatar_url":"<a>","displayname":"<d>"} is this many bytes before either value.
+constexpr std::size_t profile_object_overhead = 34U;
+constexpr std::size_t profile_limit_bytes = 65536U;
+
+[[nodiscard]] auto put_profile_field(merovingian::homeserver::ClientServerRuntime& runtime, std::string const& token,
+                                     std::string const& field, std::string const& value)
+    -> merovingian::homeserver::DispatchResult
+{
+    return merovingian::homeserver::handle_client_server_request(
+        runtime, {"PUT", "/_matrix/client/v3/profile/%40alice%3Aexample.org/" + field, token,
+                  R"({")" + field + R"(":")" + value + R"("})"});
+}
+
+[[nodiscard]] auto get_profile_field(merovingian::homeserver::ClientServerRuntime& runtime, std::string const& field)
+    -> std::string
+{
+    auto const response = merovingian::homeserver::handle_client_server_request(
+        runtime, {"GET", "/_matrix/client/v3/profile/%40alice%3Aexample.org", {}, {}});
+    auto const body = parse_object(response.response.body);
+    auto const* value = string_member(body, field);
+    return value != nullptr ? *value : std::string{};
+}
+} // namespace
+
+SCENARIO("PUT /profile/{userId}/displayname answers 400 M_PROFILE_TOO_LARGE for a profile of 64 KiB or more",
+         "[conformance][client-server][profile][profile-size]")
+{
+    GIVEN("a logged-in user whose display name is already set")
+    {
+        auto started = merovingian::homeserver::start_client_server(conformance_config());
+        REQUIRE(started.started);
+        auto const token = logged_in_token(started.runtime);
+        REQUIRE(put_profile_field(started.runtime, token, "displayname", "Alice Before").response.status == 200U);
+
+        WHEN("the new display name would make the serialised profile exactly 64 KiB")
+        {
+            auto const value = std::string(profile_limit_bytes - profile_object_overhead, 'a');
+            auto const response = put_profile_field(started.runtime, token, "displayname", value);
+
+            THEN("the server answers 400 M_PROFILE_TOO_LARGE and keeps the old display name")
+            {
+                REQUIRE(response.response.status == 400U);
+                auto const body = parse_object(response.response.body);
+                auto const* errcode = string_member(body, "errcode");
+                REQUIRE(errcode != nullptr);
+                REQUIRE(*errcode == "M_PROFILE_TOO_LARGE");
+                REQUIRE(get_profile_field(started.runtime, "displayname") == "Alice Before");
+            }
+        }
+
+        WHEN("the new display name leaves the serialised profile one byte under 64 KiB")
+        {
+            auto const value = std::string(profile_limit_bytes - profile_object_overhead - 1U, 'a');
+            auto const response = put_profile_field(started.runtime, token, "displayname", value);
+
+            THEN("the server accepts it and serves it back")
+            {
+                REQUIRE(response.response.status == 200U);
+                REQUIRE(get_profile_field(started.runtime, "displayname") == value);
+            }
+        }
+
+        WHEN("the display name is large but valid and the avatar_url then pushes the profile over the limit")
+        {
+            auto const name = std::string(profile_limit_bytes - 1000U, 'a');
+            REQUIRE(put_profile_field(started.runtime, token, "displayname", name).response.status == 200U);
+            auto const response =
+                put_profile_field(started.runtime, token, "avatar_url", "mxc://example.org/" + std::string(1000U, 'b'));
+
+            THEN("the server counts the whole profile, answers 400 M_PROFILE_TOO_LARGE and stores no avatar_url")
+            {
+                REQUIRE(response.response.status == 400U);
+                auto const body = parse_object(response.response.body);
+                auto const* errcode = string_member(body, "errcode");
+                REQUIRE(errcode != nullptr);
+                REQUIRE(*errcode == "M_PROFILE_TOO_LARGE");
+                REQUIRE(get_profile_field(started.runtime, "avatar_url").empty());
+            }
+        }
+
+        WHEN("a display name near the limit is replaced by a short one")
+        {
+            auto const big = std::string(profile_limit_bytes - profile_object_overhead - 1U, 'a');
+            REQUIRE(put_profile_field(started.runtime, token, "displayname", big).response.status == 200U);
+            auto const response = put_profile_field(started.runtime, token, "displayname", "Alice After");
+
+            THEN("shrinking the profile is accepted")
+            {
+                REQUIRE(response.response.status == 200U);
+                REQUIRE(get_profile_field(started.runtime, "displayname") == "Alice After");
+            }
+        }
+    }
+}
+
+SCENARIO("PUT /profile/{userId}/avatar_url requires an MXC URI",
+         "[conformance][client-server][profile][profile-avatar-url]")
+{
+    GIVEN("a logged-in user with an avatar_url already set")
+    {
+        auto started = merovingian::homeserver::start_client_server(conformance_config());
+        REQUIRE(started.started);
+        auto const token = logged_in_token(started.runtime);
+        REQUIRE(put_profile_field(started.runtime, token, "avatar_url", "mxc://example.org/before").response.status ==
+                200U);
+
+        WHEN("the avatar_url is not an MXC URI")
+        {
+            auto const not_mxc = std::vector<std::string>{
+                "https://example.org/avatar.png",
+                "data:text/plain,hello",
+                "mxc://",
+                "mxc://example.org",
+                "mxc://example.org/",
+                "mxc:///abc",
+                "mxc://example.org/a/b",
+                "mxc://example.org/a b",
+                "mxc://example.org/a.b",
+                "mxc://exa mple.org/abc",
+                "MXC://example.org/abc",
+                "not a url",
+            };
+
+            THEN("each is refused with 400 M_INVALID_PARAM and the stored avatar_url is unchanged")
+            {
+                for (auto const& value : not_mxc)
+                {
+                    INFO("avatar_url = " << value);
+                    auto const response = put_profile_field(started.runtime, token, "avatar_url", value);
+                    REQUIRE(response.response.status == 400U);
+                    auto const body = parse_object(response.response.body);
+                    auto const* errcode = string_member(body, "errcode");
+                    REQUIRE(errcode != nullptr);
+                    REQUIRE(*errcode == "M_INVALID_PARAM");
+                    REQUIRE(get_profile_field(started.runtime, "avatar_url") == "mxc://example.org/before");
+                }
+            }
+        }
+
+        WHEN("the avatar_url is a well-formed MXC URI")
+        {
+            auto const response = put_profile_field(started.runtime, token, "avatar_url", "mxc://example.org/AbC_-123");
+
+            THEN("it is stored")
+            {
+                REQUIRE(response.response.status == 200U);
+                REQUIRE(get_profile_field(started.runtime, "avatar_url") == "mxc://example.org/AbC_-123");
+            }
+        }
+
+        WHEN("the avatar_url is the empty string")
+        {
+            auto const response = put_profile_field(started.runtime, token, "avatar_url", "");
+
+            THEN("the avatar is cleared")
+            {
+                REQUIRE(response.response.status == 200U);
+                REQUIRE(get_profile_field(started.runtime, "avatar_url").empty());
+            }
+        }
+    }
+}
+
 // =============================================================================
 // USER DATA — FILTERS
 // =============================================================================
