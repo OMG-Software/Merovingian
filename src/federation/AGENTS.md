@@ -98,8 +98,8 @@ Federation is the highest-risk surface: **all input comes from untrusted remote 
    current state, or `world_readable` history visibility). Never take the origin from the
    query string or body. The gate lives in `event_query.cpp`, not the handler, so it holds on
    both the worker-snapshot path and the main-relay path (`/event`, which resolves the event's
-   own room). `/state` and `/state_ids` return 404 for an unknown `event_id` — never fall
-   back to current state — and `get_missing_events` is a bounded walk (limit at most 20), not
+   own room). `/state` and `/state_ids` return 404 for an unknown `event_id` or one with no state this server
+   recorded — never fall back to current state or to a walk of the graph (rule 19) — and `get_missing_events` is a bounded walk (limit at most 20), not
    a room scan. The server ACL check in `inbound_request.cpp` stays in front of all of this.
 
    **The gate is not the whole rule: what comes back is filtered per event by server-level history
@@ -250,6 +250,20 @@ Federation is the highest-risk surface: **all input comes from untrusted remote 
    `event` (`$`, at most 255 bytes, valid UTF-8) and `make_join`/`make_leave`/`make_knock` (room ID likewise with `!`,
    user ID as above) answer 400 `M_INVALID_PARAM`, as `query/profile` does. The percent-decoder passes any byte, and a
    worker relays these to main, so a new handler that takes an identifier from the path or query does the same.
+
+19. **The state at an event is the state this server recorded, never a walk of the event graph (F-25, F-26, ADR-0363).**
+   `/state`, `/state_ids` and the client `/context` `state` answer through `state_before_event` and
+   `resolve_state_event_ids_at` (`event_query.cpp`). The state BEFORE an event is its own state group when the event is
+   not a state event or was rejected (a group holds the state AFTER its event, and a rejected event is recorded with the
+   state before it), else the group of its single `prev_event`, else `compute_state_before` over several `prev_events`
+   under `state_read_resolution_limits` (a lowered auth-walk, ADR-0365). It fails closed with 404: no recorded group
+   (outlier, the events before a federated join's own event), a broken chain, a group naming an event the store lacks or
+   a rejected one. Never rebuild state from `prev_events` and `depth`: depth is the sender's, and a rejected state event
+   with the largest depth would win its key. A cost that grows with the room's history is the defect; the cost is one
+   group chain and the size of the state (`StateAtEvent::events_parsed`). The auth chain of `/state` and `/state_ids` is
+   at most `max_state_auth_chain_events` (65536) and a longer one is 502 `M_TOO_LARGE`, never cut (ADR-0364). The
+   functions hold no static state, take no lock and return owned data; the caller guards the store. Read current state
+   with `find_current_state_event_id` and `for_each_room_state_row`, never a scan of `store.state` (ADR-0344).
 
 ## Key files
 

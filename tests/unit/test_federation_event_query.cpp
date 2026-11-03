@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+#include "../support/ingested_state_fixture.hpp"
 #include "merovingian/federation/event_query.hpp"
 
 #include <catch2/catch_test_macros.hpp>
@@ -89,6 +90,8 @@ auto record_shared_state_group(merovingian::database::PersistentStore& store) ->
                             {}});
     store.state.push_back({room_id, "m.room.create", "", "$create:remote.example.org"});
     store.state.push_back({room_id, "m.room.member", sender, "$member:remote.example.org"});
+    // /state and /state_ids answer from the state recorded for the event (ADR-0363).
+    merovingian::tests::record_ingested_state_for_room(store, room_id_under_test);
     record_shared_state_group(store);
     return store;
 }

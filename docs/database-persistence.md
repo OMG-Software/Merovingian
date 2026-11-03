@@ -1089,9 +1089,9 @@ Two independent mechanisms close this, together:
    | `event_signatures` | same `reconstruct_event_relations` dependency, for `PersistentEvent::signatures` |
    | `room_aliases` | `query/directory` (`find_room_alias`) |
    | `server_signing_keys` | remote-key caching (`remote_key_cache_probe`/`remote_key_resolver`) — **column-restricted**, see below |
-   | `state_groups` | ADR-0064 phase A (0.12.13): the worker serves federation `/state` and `/state_ids` locally today from `current_state`/event relations; a later phase moves that to state groups, granted now so that phase needs no further role change |
-   | `state_group_state` | same ADR-0064 phase-A reasoning, for a group's own delta/snapshot rows |
-   | `event_state_groups` | same ADR-0064 phase-A reasoning, for the event → state group mapping |
+   | `state_groups` | federation `/state` and `/state_ids` answer from the state group recorded for the event (ADR-0363); also `ServerEventFilter`'s visibility judgement (ADR-0064) |
+   | `state_group_state` | the same, for a group's own delta/snapshot rows |
+   | `event_state_groups` | the same, for the event → state group mapping (an event with none has no answerable state: 404) |
    | `forward_extremities` | same ADR-0064 phase-A reasoning: the worker's membership-template forward-extremity read comes from here (ADR-0318) |
    | `schema_migrations` | needed for ANY store to open (schema-version check via `load_schema_state`), not gated by `TableLoadProfile` at all |
 

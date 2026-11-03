@@ -256,6 +256,7 @@ shell = find_program('sh')
       'unit/test_dispatch_worker.cpp',
       'unit/test_event.cpp',
       'unit/test_federation_event_query.cpp',
+      'unit/test_federation_state_at_event.cpp',
       'unit/test_federation_inbound_request.cpp',
       'unit/test_federation_pdu_ingest_concurrency.cpp',
       'unit/test_pdu_ingestion_state_groups.cpp',
