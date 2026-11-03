@@ -7859,6 +7859,35 @@ namespace
     // event_id_only field trim are computed per recipient/per pusher, so each
     // delivery gets its own PushGatewayNotification even though several may
     // share the same event).
+    // Hashes a string_view the same as the string it views, so a set of strings is searched without
+    // building one.
+    struct TransparentStringHash final
+    {
+        using is_transparent = void;
+
+        [[nodiscard]] auto operator()(std::string_view text) const noexcept -> std::size_t
+        {
+            return std::hash<std::string_view>{}(text);
+        }
+    };
+
+    // The local users who exist and are not deactivated: what asserted_user_is_active answers for
+    // each of them, from one pass over runtime.database.users. A user with no row is not in it,
+    // which is how asserted_user_is_active treats one too.
+    [[nodiscard]] auto active_local_user_ids(HomeserverRuntime const& runtime)
+        -> std::unordered_set<std::string, TransparentStringHash, std::equal_to<>>
+    {
+        auto active = std::unordered_set<std::string, TransparentStringHash, std::equal_to<>>{};
+        for (auto const& user : runtime.database.users)
+        {
+            if (!user.deactivated)
+            {
+                active.insert(user.user_id);
+            }
+        }
+        return active;
+    }
+
     struct PendingPushDelivery final
     {
         database::PersistentPusher pusher{};
@@ -8046,6 +8075,8 @@ namespace
             return membership != nullptr ? *membership : std::string{};
         }();
 
+        // Built on the first recipient with a pusher (see the check below).
+        auto active_users = std::optional<std::unordered_set<std::string, TransparentStringHash, std::equal_to<>>>{};
         auto recipients = room.members;
         for (auto const& extra : extra_recipients)
         {
@@ -8129,6 +8160,19 @@ namespace
             auto const max_pushers_per_delivery =
                 static_cast<std::size_t>(runtime.config.server().push.max_pushers_per_delivery);
             if (pushers.empty())
+            {
+                continue;
+            }
+            // A deactivated account keeps no pusher (ADR-0411), and nobody can sign in to it to
+            // remove one that survived, so it is never notified, as email_push.cpp does not mail it.
+            // The users are read once per call, on the first recipient with a pusher, not once per
+            // recipient: this runs under runtime.mutex for every event. Recipients are local here
+            // (remote members were skipped above), and a user with no row is not active.
+            if (!active_users.has_value())
+            {
+                active_users = active_local_user_ids(runtime);
+            }
+            if (!active_users->contains(member))
             {
                 continue;
             }
@@ -8242,9 +8286,15 @@ namespace
     // its response to the client.
     auto run_pending_push_deliveries(HomeserverRuntime& runtime, std::vector<PendingPushDelivery> deliveries) -> void
     {
-        auto client =
-            push::PushGatewayClient{*runtime.outbound_client, *runtime.cached_discovery, runtime.config.server().push,
-                                    &runtime.test_forced_push_gateway_resolution};
+        auto client = push::PushGatewayClient{
+            *runtime.outbound_client, *runtime.cached_discovery, runtime.config.server().push,
+            &runtime.test_forced_push_gateway_resolution, std::ref(*runtime.push_gateway_in_flight_)};
+        // F-79 (ADR-0409): this batch holds one of the in-flight slots until the loop ends, and each
+        // attempt can take the whole timeout. Past the deadline the pushers not yet reached are
+        // queued for retry instead of being contacted now, so the slot is held for the deadline and
+        // one attempt, not for as many timeouts as the recipient has pushers.
+        auto const batch_started = std::chrono::steady_clock::now();
+        auto const batch_deadline = push_batch_deadline(runtime.config.server().push);
         for (auto& delivery : deliveries)
         {
             auto attempt = push::PushRetry{};
@@ -8253,6 +8303,11 @@ namespace
             attempt.pushkey = delivery.pusher.pushkey;
             attempt.gateway_url = delivery.pusher.data_url;
             attempt.notification = std::move(delivery.notification);
+            if (std::chrono::steady_clock::now() - batch_started >= batch_deadline)
+            {
+                defer_push_delivery(runtime, std::move(attempt), std::chrono::steady_clock::now());
+                continue;
+            }
             attempt_push_delivery(runtime, client, std::move(attempt), std::chrono::steady_clock::now());
         }
     }

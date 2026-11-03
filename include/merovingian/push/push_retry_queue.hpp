@@ -80,8 +80,19 @@ public:
     // `now + push_retry_backoff(failed_attempts)`, then calls the wake hook.
     [[nodiscard]] auto schedule(PushRetry retry, std::chrono::steady_clock::time_point now) -> PushRetryAdmission;
 
-    // Removes and returns up to `max` retries due at `now`, earliest first.
+    // Removes and returns up to `max` retries due at `now`, one recipient's at a time in turn
+    // (F-81, ADR-0410): the first of each recipient with a due retry, earliest-due recipient
+    // first, then the second of each, and so on. Within a recipient the earliest due comes first.
     [[nodiscard]] auto take_due(std::chrono::steady_clock::time_point now, std::size_t max) -> std::vector<PushRetry>;
+
+    // Puts back a retry that take_due returned but that was not attempted (the batch ran out of
+    // time, or the job is stopping), with its due time and attempt count unchanged. Takes no wake
+    // and is not refused: it was counted against the bounds when it was queued, so the queue
+    // exceeds them by at most the size of one batch until that batch has been sent.
+    auto return_untried(PushRetry retry) -> void;
+
+    // Drops the queued retries to one pusher of `user_id`, which has been removed. Returns how many.
+    auto drop_pusher(std::string_view user_id, std::string_view app_id, std::string_view pushkey) -> std::size_t;
 
     // Drops every queued retry to (`app_id`, `pushkey`), which the gateway has rejected ("Homeservers
     // must cease sending notification requests for these pushkeys"). Returns how many were dropped.

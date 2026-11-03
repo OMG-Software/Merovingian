@@ -14,6 +14,7 @@ Spec authority:
 | `user_push_rules.cpp` | `UserPushRules`: one user's rules over the server defaults; the Push Rules API's create, order, delete, enable and re-action edits, and their validation and bounds (R19, ADR-0204) |
 | `push_gateway_client.cpp` | `PushGatewayClient::notify`: builds and sends `POST /_matrix/push/v1/notify`, parses `rejected_pushkeys` |
 | `gateway_circuit_breaker.cpp` | `GatewayCircuitBreaker`: per-host consecutive-failure circuit with a cooldown and one probe per window (OUT-3) |
+| `gateway_in_flight_limiter.cpp` | `GatewayInFlightLimiter`: requests in flight per gateway host and per resolved address, capped; `PushGatewayClient::notify` holds a slot for the length of a request (F-79, ADR-0409) |
 | `push_retry_queue.cpp` | `PushRetryQueue`, `push_retry_backoff`, `push_delivery_should_retry`: the bounded queue of notifications to send again, and when (R14, ADR-0206) |
 | `email_digest_queue.cpp` | `EmailDigestQueue`, `email_digest_backoff`: which kind `"email"` pushers have a digest email due, and when; the delay, throttle, fold and retry policy (ADR-0219) |
 
@@ -49,10 +50,15 @@ concurrency caps are in `homeserver/room_service.cpp`; every attempt and the ret
    has an in-flight cap of its own, at most `server.push.max_pushers_per_delivery` pushers are
    contacted per event (ADR-0029), `POST /pushers/set` refuses a user's pusher beyond
    `server.push.max_pushers_per_user`, and `GatewayCircuitBreaker` skips a gateway host that
-   could not be reached several times in a row (ADR-0151, OUT-3). Only a transport failure counts
-   (`gateway_circuit_outcome`); never count an HTTP answer such as a 5xx, which concerns one
-   notification on a host other users share. The delivery caps and the breaker are applied in
-   `room_service.cpp`; any change to how push is invoked must preserve them.
+   could not be reached several times in a row (ADR-0151, OUT-3). Only a transport failure or a
+   slow answer (more than half of `total_timeout_seconds`, ADR-0409) counts
+   (`gateway_circuit_outcome`); never count a prompt HTTP answer such as a 5xx, which concerns one
+   notification on a host other users share. A recipient batch holds its slot for at most twice
+   `total_timeout_seconds` plus one attempt (`push_batch_deadline`; the pushers it did not reach are
+   queued with `defer_push_delivery`), and `PushGatewayClient::notify` takes a `GatewayInFlightLimiter`
+   slot per gateway host (an eighth of `max_in_flight_deliveries`) and per resolved address (a quarter),
+   returning `busy`, which is retried and not counted against the host. The delivery caps and the
+   breaker are applied in `room_service.cpp`; any change to how push is invoked must preserve them.
 10. **No network call here runs under the caller's locks**, matching the project rule that
     `runtime.mutex` is never held across a blocking call.
 11. **Glob matching stays linear and never uses `std::regex`** (ADR-0175). Evaluation runs per
@@ -76,7 +82,12 @@ concurrency caps are in `homeserver/room_service.cpp`; every attempt and the ret
     or an unreachable gateway is retried with exponential backoff (`push_retry_backoff`) up to
     `push_retry_max_retries`; nothing else is (`push_delivery_should_retry`). The queue's bounds
     (`push_retry_queue_capacity`, `push_retry_per_user_capacity`) drop, never block. A rejected
-    pushkey drops its queued retries. Every attempt goes through `homeserver::attempt_push_delivery`,
+    pushkey drops its queued retries, and so does a deactivated account's pusher
+    (`drop_pusher`, ADR-0411). `take_due` takes retries one recipient at a time in turn, and the one
+    retry thread stops starting attempts after `push_retry_batch_budget`, puts the retries it had
+    not reached back with `return_untried`, and sends retries with a total timeout of at most
+    `push_retry_total_timeout` (ADR-0410): never take a batch and let a loop run it to the end
+    without checking the budget and `stop`. Every attempt goes through `homeserver::attempt_push_delivery`,
     which keeps the circuit breaker and rejection handling in one place; never sleep in a delivery
     task to retry, which would hold an in-flight slot (ADR-0028).
 
@@ -95,6 +106,7 @@ concurrency caps are in `homeserver/room_service.cpp`; every attempt and the ret
 - `tests/conformance/test_push_rules_api_conformance.cpp` — Push Rules API and `m.push_rules`
 - `tests/unit/test_push_gateway_client.cpp` — request building, response parsing, SSRF gate
 - `tests/unit/test_push_retry_queue.cpp` — backoff, retry classification, queue bounds and concurrency
+- `tests/unit/test_push_gateway_in_flight_limiter.cpp` — per-host and per-address in-flight caps, all-or-nothing keys, concurrency
 - `tests/unit/test_push_pusher_store.cpp` — pusher persistence
 - `tests/conformance/test_push_notifications_conformance.cpp` — spec conformance
 - `tests/integration/test_push_delivery_flow.cpp` — end-to-end delivery

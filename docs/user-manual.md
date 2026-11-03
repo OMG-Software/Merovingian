@@ -625,12 +625,20 @@ row (a DNS, connection, TLS or timeout failure) is not contacted for
 probe until one reaches it, and deliveries skipped meanwhile are logged
 (`push.delivery.circuit_open`) and retried like failed ones (below). Any HTTP answer, a 5xx or 429 included, counts as
 reaching the host: a gateway shared by many users is never closed to all of them
-because it keeps refusing one user's pusher. A gateway's `rejected` list removes only
-the pushers whose pushkeys it names. OUT-3, ADR-0151.
+because it keeps refusing one user's pusher. The exception is an answer slower than half
+of `total_timeout_seconds`, which counts against the host like an unreachable gateway
+(`push.delivery.slow_gateway`): a gateway answering just inside the timeout would
+otherwise hold a delivery slot as long as one that never answers. At most an eighth of
+`max_in_flight_deliveries` requests are in flight to one gateway host, and a quarter to
+one resolved address; a request over either is retried (below), not counted against the
+host. A gateway's `rejected` list removes only
+the pushers whose pushkeys it names. OUT-3, ADR-0151, ADR-0409.
 
 The in-flight limit counts recipient batches, not whole events: gateways for one
 recipient run sequentially in that recipient's task. For global limit `G`, each
-recipient can hold at most `G > 1 ? min(8, G - 1) : 1` batches. At either bound,
+recipient can hold at most `G > 1 ? min(8, G - 1) : 1` batches. A batch stops contacting
+gateways after twice `total_timeout_seconds` and queues the pushers it has not reached for
+retry (`push.delivery.deferred`), so it holds its slot for that and one attempt. At either bound,
 only that batch is dropped; dropped batches are not retried. At `G=1`, delivery
 remains serial and there is no reserved parallel capacity for another recipient.
 Use at least two slots for single-recipient isolation. Several recipients can
@@ -640,10 +648,14 @@ See [ADR-0140](adr/0140-isolate-push-delivery-capacity-per-recipient.md).
 A notification the gateway answers with an HTTP error status, or that could not reach the
 gateway, is sent again 5 seconds later, then after 10, 20 and so on up to 10 minutes, and given up
 after 8 retries, about 20 minutes after the first attempt (`push.delivery.gave_up`). One
-`push-retry` thread sends retries; they never hold a request thread. At most 1,024 notifications
+`push-retry` thread sends retries; they never hold a request thread. It takes due retries one
+recipient at a time in turn, waits at most 10 seconds for a gateway to answer a retry, and
+starts no attempt after 30 seconds of one run, leaving the rest queued for the next
+(ADR-0410). At most 1,024 notifications
 wait for a retry, 32 per recipient; past that a retry is dropped and logged
 (`push.delivery.retry_dropped`). A pushkey the gateway rejects stops its retries along with its
-pusher, and a retry whose pusher has been removed is not sent. Retries are kept in memory and do
+pusher, and a retry whose pusher has been removed, or whose account has been deactivated, is
+not sent. Deactivating an account deletes its pushers. Retries are kept in memory and do
 not survive a restart. These limits are fixed. See
 [ADR-0206](adr/0206-retry-failed-push-notifications-from-a-bounded-in-memory-queue.md).
 

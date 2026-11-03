@@ -593,6 +593,11 @@ are reversible where deactivation is not.
   `auth::password_matches` can never match, so a credential leak predating
   deactivation cannot be replayed even if a future change were to soften the
   login gate.
+- **Every pusher goes too** (ADR-0411). `deactivate_local_user` deletes all of the account's
+  pushers, forgets their email-digest entries and drops their queued retries: nobody can sign in
+  to remove one, and a pusher registered by a compromised session would keep receiving the
+  account's room messages. Push delivery and the retry job also refuse a deactivated recipient,
+  so a pusher that survived sends nothing. Logout and device deletion are unchanged (ADR-0264).
 - **The `users` row is retained**, not deleted: `deactivated` is a
   column of `users` (part of the v1 schema — see `docs/database-persistence.md`), not a row
   removal, so registration's existing duplicate-`user_id` check keeps

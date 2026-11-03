@@ -1,6 +1,6 @@
 # Retry failed push notifications from a bounded in-memory queue on one job thread
 
-* Status: accepted
+* Status: accepted (the one-at-a-time delay it accepts is bounded by [ADR-0410](0410-bound-the-push-retry-thread-by-time-and-take-retries-in-turn.md))
 * Date: 2026-10-22
 
 Technical Story: conformance audit 2026-10-17, finding R14 (failed push notifications are never
@@ -58,6 +58,11 @@ Chosen option: the in-memory queue and one job thread.
   usually stale; the event still reaches the user through `/sync`.
 * Retries are sent one at a time, so a slow gateway delays the retries queued behind it, by at
   most the gateway client's timeout each. The circuit breaker skips hosts that keep failing.
+  *Superseded in part by [ADR-0410](0410-bound-the-push-retry-thread-by-time-and-take-retries-in-turn.md):
+  the breaker did not skip a host that answers with an error just inside the timeout, so one account's
+  gateway could hold the thread for a whole batch (about 16 minutes). A run now stops starting
+  attempts after 30 s, retries are taken one recipient at a time in turn, and a retry's timeout is
+  at most 10 s.*
 
 ## Pros and Cons of the Options
 

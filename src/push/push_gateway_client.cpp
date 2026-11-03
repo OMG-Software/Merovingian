@@ -279,14 +279,33 @@ auto parse_notify_response(std::string_view body) -> std::optional<PushGatewayRe
     return result;
 }
 
-PushGatewayClient::PushGatewayClient(
-    http::OutboundClient& outbound, federation::CachedServerDiscovery& discovery, config::PushConfig const& config,
-    std::map<std::string, TestForcedPushGatewayResolution> const* forced_resolution) noexcept
+PushGatewayClient::PushGatewayClient(http::OutboundClient& outbound, federation::CachedServerDiscovery& discovery,
+                                     config::PushConfig const& config,
+                                     std::map<std::string, TestForcedPushGatewayResolution> const* forced_resolution,
+                                     std::optional<std::reference_wrapper<GatewayInFlightLimiter>> limiter) noexcept
     : outbound_{outbound}
     , discovery_{discovery}
     , config_{config}
     , test_forced_resolution_{forced_resolution}
+    , limiter_{limiter}
 {
+}
+
+auto PushGatewayClient::total_timeout() const noexcept -> std::chrono::seconds
+{
+    return std::chrono::seconds{config_.total_timeout_seconds};
+}
+
+auto push_gateway_host_in_flight_cap(config::PushConfig const& config) noexcept -> std::size_t
+{
+    auto const budget = static_cast<std::size_t>(config.max_in_flight_deliveries);
+    return std::max(budget / 8U, std::min(budget, std::size_t{2U}));
+}
+
+auto push_gateway_address_in_flight_cap(config::PushConfig const& config) noexcept -> std::size_t
+{
+    auto const budget = static_cast<std::size_t>(config.max_in_flight_deliveries);
+    return std::max(budget / 4U, std::min(budget, std::size_t{2U}));
 }
 
 auto push_gateway_host(std::string_view gateway_url) -> std::optional<std::string>
@@ -317,6 +336,10 @@ auto gateway_circuit_outcome(PushGatewayResult const& result) noexcept -> Gatewa
     {
         return GatewayCircuitOutcome::reachable;
     }
+    if (result.busy)
+    {
+        return GatewayCircuitOutcome::not_attempted;
+    }
     switch (result.error)
     {
     case http::OutboundError::unresolved_host:
@@ -335,6 +358,18 @@ auto gateway_circuit_outcome(PushGatewayResult const& result) noexcept -> Gatewa
         return GatewayCircuitOutcome::not_attempted;
     }
     return GatewayCircuitOutcome::not_attempted;
+}
+
+auto gateway_circuit_outcome(PushGatewayResult const& result, std::chrono::milliseconds elapsed,
+                             std::chrono::seconds total_timeout) noexcept -> GatewayCircuitOutcome
+{
+    auto const outcome = gateway_circuit_outcome(result);
+    if (outcome == GatewayCircuitOutcome::reachable &&
+        elapsed > std::chrono::duration_cast<std::chrono::milliseconds>(total_timeout) / 2)
+    {
+        return GatewayCircuitOutcome::slow_answer;
+    }
+    return outcome;
 }
 
 auto pushkey_was_rejected(PushGatewayResult const& result, std::string_view pushkey) -> bool
@@ -357,6 +392,27 @@ auto PushGatewayClient::notify(std::string_view gateway_url, PushGatewayNotifica
     if (!parsed.has_value())
     {
         return {false, false, 0U, {}, http::OutboundError::invalid_url, "invalid push gateway URL"};
+    }
+
+    // F-79, ADR-0409: no more than a fixed share of the delivery budget waits on one gateway host,
+    // and none past a larger share on one address. Taken before the lookup, held to the end of the
+    // request, and refused rather than queued.
+    auto const busy_result = [] {
+        auto busy = PushGatewayResult{};
+        busy.error = http::OutboundError::none;
+        busy.error_detail = "too many requests already in flight to this push gateway";
+        busy.busy = true;
+        return busy;
+    };
+    auto host_slot = std::optional<GatewayInFlightLimiter::Slot>{};
+    if (limiter_.has_value())
+    {
+        auto const host_key = std::vector<std::string>{"host:" + push_gateway_host(gateway_url).value_or(parsed->host)};
+        host_slot = limiter_->get().try_acquire(host_key, push_gateway_host_in_flight_cap(config_));
+        if (!host_slot.has_value())
+        {
+            return busy_result();
+        }
     }
 
     auto request = http::OutboundRequest{};
@@ -395,6 +451,21 @@ auto PushGatewayClient::notify(std::string_view gateway_url, PushGatewayNotifica
                     "SSRF-safe resolution failed for push gateway host: " + resolved.reason};
         }
         request.pinned_addresses = resolved.addresses;
+    }
+
+    auto address_slot = std::optional<GatewayInFlightLimiter::Slot>{};
+    if (limiter_.has_value())
+    {
+        auto address_keys = std::vector<std::string>{};
+        for (auto const& address : request.pinned_addresses)
+        {
+            address_keys.push_back("addr:" + address);
+        }
+        address_slot = limiter_->get().try_acquire(address_keys, push_gateway_address_in_flight_cap(config_));
+        if (!address_slot.has_value())
+        {
+            return busy_result();
+        }
     }
 
     request.method = "POST";

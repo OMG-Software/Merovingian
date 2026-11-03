@@ -15,6 +15,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -33,6 +34,9 @@ namespace merovingian::homeserver
 // and the user's profile; the events those name come from the visibility filter's event index.
 // The first counted_after() walks the events once for every room's join start. A room the user
 // holds no membership row in is never counted; asked about anyway, it is computed on its own.
+//
+// Events from a sender the user has ignored are not counted, as they are not delivered, except
+// state events (Ignoring Users, F-64); the list is read once at construction.
 //
 // Only events after the user's current join are counted. Earlier events are history the user
 // may not be allowed to see, and a content rule counted over them would reveal whether they
@@ -93,6 +97,8 @@ private:
 
     std::reference_wrapper<database::PersistentStore const> store_;
     std::string user_;
+    // `user`'s m.ignored_user_list, resolved once at construction (trust_safety::resolve_ignored_users).
+    std::unordered_set<std::string> ignored_;
     push::PushRuleset ruleset_;
     // The filter a caller lent, or one of this classifier's own. Declared before `visibility_`,
     // which may refer to it.

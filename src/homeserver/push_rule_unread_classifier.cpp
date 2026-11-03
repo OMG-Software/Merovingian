@@ -6,6 +6,7 @@
 #include "merovingian/canonicaljson/parser.hpp"
 #include "merovingian/homeserver/stored_push_rules.hpp"
 #include "merovingian/homeserver/stored_room_version.hpp"
+#include "merovingian/trust_safety/ignore_list.hpp"
 
 #include <algorithm>
 #include <unordered_map>
@@ -96,6 +97,7 @@ PushRuleUnreadClassifier::PushRuleUnreadClassifier(database::PersistentStore con
                                                    std::size_t max_user_rules)
     : store_{store}
     , user_{user}
+    , ignored_{trust_safety::resolve_ignored_users(store, user)}
     , ruleset_{load_push_ruleset(store, user, max_user_rules)}
     , owned_visibility_{std::in_place, store, user}
     , visibility_{*owned_visibility_}
@@ -106,6 +108,7 @@ PushRuleUnreadClassifier::PushRuleUnreadClassifier(database::PersistentStore con
                                                    std::size_t max_user_rules, sync::HistoryVisibility& visibility)
     : store_{store}
     , user_{user}
+    , ignored_{trust_safety::resolve_ignored_users(store, user)}
     , ruleset_{load_push_ruleset(store, user, max_user_rules)}
     , owned_visibility_{}
     , visibility_{visibility}
@@ -114,6 +117,15 @@ PushRuleUnreadClassifier::PushRuleUnreadClassifier(database::PersistentStore con
 
 auto PushRuleUnreadClassifier::visible(database::PersistentEvent const& event) const -> bool
 {
+    // Ignoring Users: "the client will no longer receive events sent by that user", with the
+    // exception of state events. The sender is looked up first so the event JSON is parsed only
+    // for an ignored sender's event, and no event costs a store scan.
+    if (ignored_.contains(event.sender_user_id) &&
+        trust_safety::is_delivery_suppressed(ignored_, event.sender_user_id,
+                                             trust_safety::event_json_is_state_event(event.json)))
+    {
+        return false;
+    }
     return visibility_.get().can_see(event);
 }
 
@@ -121,6 +133,7 @@ PushRuleUnreadClassifier::PushRuleUnreadClassifier(database::PersistentStore con
                                                    push::PushRuleset ruleset)
     : store_{store}
     , user_{user}
+    , ignored_{trust_safety::resolve_ignored_users(store, user)}
     , ruleset_{std::move(ruleset)}
     , owned_visibility_{std::in_place, store, user}
     , visibility_{*owned_visibility_}

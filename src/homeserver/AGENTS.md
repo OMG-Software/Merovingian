@@ -37,7 +37,7 @@ This is the largest and most complex module — read this file carefully before 
 | `push_badge_count.cpp` | `count_push_badge`: the Push Gateway `counts.unread` from one walk of the events, newest first in stream order, that stops once every room is settled, at most 10000 rows (ADR-0207) |
 | `push_rule_unread_classifier.cpp` | `PushRuleUnreadClassifier`: counts unread events by the user's push rules, from the start of their current join (R15, ADR-0205) |
 | `presence_service.cpp` | Presence (CS API "Presence", SS API `m.presence`): `read_presence` (GET), `apply_sync_presence` (the `/sync` `set_presence` parameter), `build_sync_presence_events` (`presence.events`), `accept_inbound_presence` (the EDU sink's presence case) and `record_presence`, the one place a presence row is stored. `presence.enabled=false` turns every entry point into a no-op. Sending the EDU stays in `client_server.cpp` (`broadcast_presence_edu`), beside the other outbound EDUs |
-| `push_retry.cpp` | `attempt_push_delivery` (every push attempt: circuit breaker, rejected pushkeys, scheduling retries) and `PushRetryJob`, the one thread that sends retries (R14, ADR-0206) |
+| `push_retry.cpp` | `attempt_push_delivery` (every push attempt: circuit breaker, rejected pushkeys, scheduling retries) and `PushRetryJob`, the one thread that sends retries (R14, ADR-0206); a run is bounded by a time budget, takes retries one recipient at a time in turn and sends with a shorter timeout (ADR-0410), and a slow answer counts against the gateway's circuit (ADR-0409) |
 | `email_push.cpp` | Kind `"email"` pushers (ADR-0219, ADR-0220): `owned_email_pusher_address` (the pushkey must be the account's own email 3PID), `remove_email_pushers_for_address`, and `EmailPushJob`, the one thread that sends due digests through `send_due_email_notifications`. It re-reads the pusher, the 3PID, the account and the badge count under `runtime.mutex`, then sends with the mutex released |
 | `runtime_signing_key_store.cpp` | Production `SigningKeyStore` over the persisted server signing-key rows |
 | `federation_proxy.cpp` | Forwards inbound federation requests to the out-of-process federation worker over encrypted IPC; `GET /_matrix/key/v2/server` stays local |
@@ -561,6 +561,9 @@ client, sender or remote server controls, and per-user rows that requests scan m
   row by the index. `RestrictedJoinDecision::work` counts what a decision read. Never filter `store.state` or walk
   `store.events` for one room or one key in this path; `[f19]` in `tests/unit/test_send_join_answer.cpp` shows the cost
   is the same with unrelated rooms present.
+- `build_pending_push_deliveries` skips a deactivated recipient from a set of active users built once per call
+  (`active_local_user_ids`, on the first recipient with a pusher; ADR-0411). Never call `asserted_user_is_active`
+  per recipient there: it scans `database.users`.
 - Push delivery's badge count (`counts.unread`, `count_push_badge`) runs per recipient per event.
   It walks `store.events.in_stream_order()` newest first, stops once every joined room is settled,
   visits at most `push_badge_row_budget` (10000) rows, and saturates at `push_badge_unread_cap`

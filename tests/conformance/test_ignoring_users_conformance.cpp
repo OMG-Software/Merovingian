@@ -26,12 +26,17 @@
 #include "merovingian/canonicaljson/value.hpp"
 #include "merovingian/config/config.hpp"
 #include "merovingian/homeserver/client_server.hpp"
+#include "merovingian/homeserver/push_badge_count.hpp"
+#include "merovingian/homeserver/runtime_mutex.hpp"
+#include "merovingian/homeserver/stored_push_rules.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
 #include <algorithm>
+#include <mutex>
 #include <string>
 #include <string_view>
+#include <tuple>
 #include <vector>
 
 namespace
@@ -605,6 +610,142 @@ SCENARIO("GET /context filters events_before/events_after by the ignore list but
                 REQUIRE(array_has_event_id(*after, carol_after_id));
                 REQUIRE_FALSE(array_has_event_id(*after, bob_after_id));
                 REQUIRE_FALSE(array_has_message_from(*after, "@bob:example.org"));
+            }
+        }
+    }
+}
+
+// ── Notification counts follow what the client can receive ──────────────────
+
+namespace
+{
+
+// Alice, bob and carol share a room; alice has ignored bob. Both then send messages that the
+// default push rules notify alice for (three members, so the one-to-one rules do not apply).
+struct IgnoredSenderCountsFixture final
+{
+    std::string alice;
+    std::string room_id;
+};
+
+[[nodiscard]] auto build_ignored_sender_counts_fixture(merovingian::homeserver::ClientServerRuntime& rt)
+    -> IgnoredSenderCountsFixture
+{
+    auto fixture = IgnoredSenderCountsFixture{};
+    fixture.alice = register_and_login(rt, "alice");
+    auto const bob = register_and_login(rt, "bob");
+    auto const carol = register_and_login(rt, "carol");
+    fixture.room_id = create_room_with_invite(rt, fixture.alice, "@bob:example.org");
+    join_room(rt, bob, fixture.room_id);
+    REQUIRE(merovingian::homeserver::handle_client_server_request(
+                rt, {"POST", "/_matrix/client/v3/rooms/" + fixture.room_id + "/invite", fixture.alice,
+                     R"({"user_id":"@carol:example.org"})"})
+                .response.status == 200U);
+    join_room(rt, carol, fixture.room_id);
+    set_ignored_users(rt, fixture.alice, "%40alice%3Aexample.org", R"({"ignored_users":{"@bob:example.org":{}}})");
+    std::ignore = send_text_message(rt, bob, fixture.room_id, "txn-bob-1", "ignored one");
+    std::ignore = send_text_message(rt, bob, fixture.room_id, "txn-bob-2", "ignored two");
+    std::ignore = send_text_message(rt, carol, fixture.room_id, "txn-carol-1", "from carol");
+    return fixture;
+}
+
+} // namespace
+
+// Spec ("Ignoring Users", Server behaviour): once a user is ignored "the client will no longer
+// receive events sent by that user", so the unread count of `GET /sync` must not count them.
+SCENARIO("an ignored user's messages are not counted in the ignoring user's /sync unread_notifications",
+         "[ignoring-users][conformance][sync][unread-counts][f64]")
+{
+    GIVEN("alice has ignored bob, and bob sent two messages and carol one into their shared room")
+    {
+        auto started = merovingian::homeserver::start_client_server(ignoring_users_config());
+        REQUIRE(started.started);
+        auto const fixture = build_ignored_sender_counts_fixture(started.runtime);
+
+        WHEN("alice syncs")
+        {
+            auto const sync = sync_full(started.runtime, fixture.alice);
+            REQUIRE(sync.response.status == 200U);
+            auto const body = parse_object(sync.response.body);
+            auto const* rooms = object_member_as_object(body, "rooms");
+            REQUIRE(rooms != nullptr);
+            auto const* joined = object_member_as_object(*rooms, "join");
+            REQUIRE(joined != nullptr);
+            auto const* room = object_member_as_object(*joined, fixture.room_id);
+            REQUIRE(room != nullptr);
+            auto const* unread = object_member_as_object(*room, "unread_notifications");
+            REQUIRE(unread != nullptr);
+            auto const* notification_count = int_member(*unread, "notification_count");
+            REQUIRE(notification_count != nullptr);
+
+            THEN("only carol's message is counted")
+            {
+                REQUIRE(*notification_count == 1);
+            }
+        }
+    }
+}
+
+// The same rule for MSC4186: a room's counts are what the client can receive.
+SCENARIO("an ignored user's messages are not counted in the ignoring user's sliding sync room counts",
+         "[ignoring-users][conformance][sync][sliding-sync][unread-counts][f64]")
+{
+    GIVEN("alice has ignored bob, and bob sent two messages and carol one into their shared room")
+    {
+        auto started = merovingian::homeserver::start_client_server(ignoring_users_config());
+        REQUIRE(started.started);
+        auto const fixture = build_ignored_sender_counts_fixture(started.runtime);
+
+        WHEN("alice asks for her room list by notification count")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                started.runtime,
+                {"POST", "/_matrix/client/unstable/org.matrix.simplified_msc3575/sync?timeout=0", fixture.alice,
+                 R"({"conn_id":"c","lists":{"all":{"ranges":[[0,9]],"timeline_limit":5,"required_state":[],)"
+                 R"("sort":["by_notification_count"]}}})"},
+                /*can_wait=*/false);
+            REQUIRE(response.response.status == 200U);
+            auto const body = parse_object(response.response.body);
+            auto const* rooms = object_member_as_object(body, "rooms");
+            REQUIRE(rooms != nullptr);
+            auto const* room = object_member_as_object(*rooms, fixture.room_id);
+            REQUIRE(room != nullptr);
+            auto const* notification_count = int_member(*room, "notification_count");
+            REQUIRE(notification_count != nullptr);
+
+            THEN("only carol's message is counted")
+            {
+                REQUIRE(*notification_count == 1);
+            }
+        }
+    }
+}
+
+// The Push Gateway's `counts.unread` is "the number of unread messages a user has across all of
+// the rooms they are a member of": messages the user is never sent are not among them.
+SCENARIO("an ignored user's messages are not counted in the ignoring user's push badge",
+         "[ignoring-users][conformance][push][unread-counts][f64]")
+{
+    GIVEN("alice has ignored bob, and bob sent two messages and carol one into their shared room")
+    {
+        auto started = merovingian::homeserver::start_client_server(ignoring_users_config());
+        REQUIRE(started.started);
+        std::ignore = build_ignored_sender_counts_fixture(started.runtime);
+
+        WHEN("the badge for alice is counted")
+        {
+            auto const badge = [&] {
+                auto const guard =
+                    std::unique_lock<merovingian::homeserver::RuntimeMutex>{started.runtime.homeserver.mutex};
+                auto const ruleset = merovingian::homeserver::load_push_ruleset(
+                    started.runtime.homeserver.database.persistent_store, "@alice:example.org", 200U);
+                return merovingian::homeserver::count_push_badge(started.runtime.homeserver, "@alice:example.org",
+                                                                 ruleset);
+            }();
+
+            THEN("only carol's message is counted")
+            {
+                REQUIRE(badge.unread == 1U);
             }
         }
     }

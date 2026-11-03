@@ -192,7 +192,12 @@ production) about every unread event, and counts only events after
 highlight from the event type or `m.mentions` here. Only `accepted` events the
 user may see count: the walk asks `unread.visible()` (`HistoryVisibility::can_see`,
 the request's own filter for `/sync` and sliding sync) before it classifies,
-because a backfilled event from before the join is ordered after it.
+because a backfilled event from before the join is ordered after it. `visible()` is also
+false for a non-state event from a sender the user has ignored (Ignoring Users: the client
+no longer receives it; state events still count). The classifier resolves the user's
+`m.ignored_user_list` once, at construction (`trust_safety::resolve_ignored_users`), and
+`visible()` parses an event's JSON only when its sender is ignored, so this adds no per-event
+scan; /sync, sliding sync and the push badge all get it through the classifier.
 
 Build one classifier per request and pass it to every count in that request
 (`/sync`, `compute_room_list`, `build_room_response`). It loads the user's rules
