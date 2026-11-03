@@ -499,27 +499,47 @@ auto WorkerSupervisor::supervisor_loop() -> void
         if (pid > 0)
         {
             auto status = int{0};
-            auto const waited = ::waitpid(pid, &status, WNOHANG);
+            auto waited = ::waitpid(pid, &status, WNOHANG);
             if (waited == 0)
             {
-                auto const now = std::chrono::steady_clock::now();
-                if (healthy())
+                // A worker that is alive but whose main-side channel has died (a reader failure,
+                // a flooded dispatch queue, a throwing handler) serves nothing, and nothing else
+                // would ever replace it: kill it and take the restart path below, which waits the
+                // same backoff as for a worker that exited by itself (F-08, ADR-0323).
+                auto const channel = channel_snapshot();
+                if (channel == nullptr || channel->healthy())
                 {
-                    if (!healthy_since.has_value())
+                    auto const now = std::chrono::steady_clock::now();
+                    if (healthy())
                     {
-                        healthy_since = now;
+                        if (!healthy_since.has_value())
+                        {
+                            healthy_since = now;
+                        }
+                        if (now - *healthy_since >= stable_uptime)
+                        {
+                            backoff_ms = 1000U;
+                        }
                     }
-                    if (now - *healthy_since >= stable_uptime)
+                    else
                     {
-                        backoff_ms = 1000U;
+                        healthy_since.reset();
                     }
+                    std::this_thread::sleep_for(std::chrono::milliseconds{100});
+                    continue;
                 }
-                else
+                if (!running_.load())
                 {
-                    healthy_since.reset();
+                    break;
                 }
-                std::this_thread::sleep_for(std::chrono::milliseconds{100});
-                continue;
+                LOG_WARNING("Federation worker IPC channel failed while the worker was running; killing it to restart: "
+                            "pid=" +
+                            std::to_string(pid));
+                std::ignore = ::kill(pid, SIGKILL);
+                do
+                {
+                    waited = ::waitpid(pid, &status, 0);
+                } while (waited < 0 && errno == EINTR);
             }
             if (waited < 0)
             {

@@ -3314,6 +3314,85 @@ SCENARIO("WorkerSupervisor restarts an unexpectedly exited worker with exponenti
     }
 }
 
+// F-08 (security audit run 2, ADR-0323): main's side of a worker's channel can die while the worker
+// lives (a reader failure, a flooded dispatch queue, a throwing handler). The supervisor used to
+// restart a worker only when waitpid reported an exit, so such a shard answered 503 until main was
+// restarted by hand.
+SCENARIO("WorkerSupervisor restarts a live worker whose main-side channel has failed",
+         "[integration][federation-worker][supervisor][lifecycle][f08]")
+{
+    GIVEN("a running real worker whose first frame to main makes main's request handler throw")
+    {
+        if (worker_binary_path().empty())
+        {
+            SKIP("MEROVINGIAN_TEST_FEDERATION_WORKER is not defined");
+        }
+
+        REQUIRE(sodium_init() >= 0);
+
+        auto const tmp_dir = unique_temp_dir("merovingian-fed-worker-channel-failed");
+        auto config = make_federation_worker_config(tmp_dir);
+        config.federation_worker().request_timeout_seconds = 2U;
+        auto const config_path = tmp_dir / "merovingian.conf";
+        write_worker_config(config_path, config);
+
+        auto started = start_runtime(config);
+        REQUIRE(started.started);
+
+        auto supervisor = WorkerSupervisor{
+            std::string{worker_binary_path()}, config_path.string(), config.federation_worker().request_timeout_seconds,
+            0U, derive_worker_ipc_auth_key_material(config.security().secrets.master_key_file)};
+        auto frames_seen = std::atomic<std::size_t>{0U};
+        supervisor.set_channel_request_handler(
+            [&frames_seen](std::shared_ptr<merovingian::ipc::IpcChannel> const&, // SHARED_PTR: reviewed — handler type
+                           std::uint64_t, std::string) {
+                // Only the first frame fails, so the replacement worker is not failed in turn.
+                if (frames_seen.fetch_add(1U) == 0U)
+                {
+                    throw std::runtime_error{"simulated handler failure"};
+                }
+            });
+        supervisor.start();
+
+        auto const deadline = std::chrono::steady_clock::now() + std::chrono::seconds{15};
+        while (!supervisor.healthy() && std::chrono::steady_clock::now() < deadline)
+        {
+            std::this_thread::sleep_for(std::chrono::milliseconds{50});
+        }
+        REQUIRE(supervisor.healthy());
+        auto const original_pid = supervisor.worker_pid();
+        REQUIRE(original_pid > 0);
+
+        WHEN("the worker answers a room_sync with its room_sync_result and main's handler throws")
+        {
+            auto const channel = supervisor.channel_snapshot();
+            REQUIRE(channel != nullptr);
+            channel->send_notification(merovingian::ipc::serialize_room_sync_notification("!f08:example.org", 1U));
+
+            THEN("the supervisor replaces the still-running worker and the shard is healthy again")
+            {
+                auto const restart_deadline = std::chrono::steady_clock::now() + std::chrono::seconds{30};
+                while (supervisor.worker_pid() == original_pid && std::chrono::steady_clock::now() < restart_deadline)
+                {
+                    std::this_thread::sleep_for(std::chrono::milliseconds{50});
+                }
+                REQUIRE(supervisor.worker_pid() != original_pid);
+                REQUIRE_FALSE(channel->healthy());
+
+                while (!supervisor.healthy() && std::chrono::steady_clock::now() < restart_deadline)
+                {
+                    std::this_thread::sleep_for(std::chrono::milliseconds{50});
+                }
+                REQUIRE(supervisor.healthy());
+                REQUIRE(supervisor.channel_snapshot() != channel);
+
+                supervisor.stop();
+                REQUIRE(supervisor.worker_pid() == -1);
+            }
+        }
+    }
+}
+
 SCENARIO("WorkerSupervisor retries a transient spawn failure without losing supervision",
          "[iso-3][integration][federation-worker][supervisor]")
 {

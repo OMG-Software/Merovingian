@@ -92,9 +92,13 @@ namespace
         return std::get_if<canonicaljson::Array>(&value->storage());
     }
 
+    // Reads a string written by append_lossless_member (defined below, with the base64 helpers).
+    [[nodiscard]] auto get_lossless_str(canonicaljson::Object const& obj, std::string_view key) -> std::string;
+
     // Extracts an array of {"n":...,"v":...} header objects into a container of
     // {name, value} pairs. Works for http::Header, OutboundHeader, and
     // std::pair<std::string, std::string> (all two-string aggregate/brace-init).
+    // A value that was not valid UTF-8 arrives as "v_b64" and is restored exactly.
     template <typename Container>
     auto extract_headers(canonicaljson::Array const& arr, Container& out) -> void
     {
@@ -106,7 +110,7 @@ namespace
                 continue;
             }
             auto name = get_str(*obj, "n");
-            auto value = get_str(*obj, "v");
+            auto value = get_lossless_str(*obj, "v");
             if (!name.empty())
             {
                 out.push_back({std::move(name), std::move(value)});
@@ -189,6 +193,52 @@ namespace
         return decoded.value_or("");
     }
 
+    // Appends `"key":<value>` as a JSON string member when `value` is valid UTF-8 and
+    // `"key_b64":<base64>` when it is not, so a request field that carries raw bytes from a
+    // remote server reaches the peer exactly, in a frame that is valid UTF-8 (ADR-0321). Valid
+    // text keeps the plain form: it stays readable and costs no 4/3 expansion.
+    auto append_lossless_member(std::string& out, std::string_view key, std::string_view value) -> void
+    {
+        out += '"';
+        out += key;
+        if (canonicaljson::utf8_is_valid(value))
+        {
+            out += "\":";
+            out += ipc_json_str(value);
+            return;
+        }
+        out += "_b64\":";
+        out += ipc_json_str(base64_encode_body(value));
+    }
+
+    [[nodiscard]] auto get_lossless_str(canonicaljson::Object const& obj, std::string_view key) -> std::string
+    {
+        if (find_member(obj, key) != nullptr)
+        {
+            return get_str(obj, key);
+        }
+        return base64_decode_body(get_str(obj, std::string{key} + "_b64"));
+    }
+
+    // Length of the UTF-8 sequence a lead byte announces, or 0 for a byte that cannot
+    // start one (a continuation byte, 0xF8 and up).
+    [[nodiscard]] auto utf8_sequence_length(unsigned char lead) noexcept -> std::size_t
+    {
+        if ((lead & 0xE0U) == 0xC0U)
+        {
+            return 2U;
+        }
+        if ((lead & 0xF0U) == 0xE0U)
+        {
+            return 3U;
+        }
+        if ((lead & 0xF8U) == 0xF0U)
+        {
+            return 4U;
+        }
+        return 0U;
+    }
+
 } // namespace
 
 auto ipc_json_str(std::string_view s) -> std::string
@@ -196,9 +246,27 @@ auto ipc_json_str(std::string_view s) -> std::string
     auto result = std::string{};
     result.reserve(s.size() + 2U);
     result += '"';
-    for (auto const raw_ch : s)
+    for (auto index = std::size_t{0U}; index < s.size(); ++index)
     {
-        auto const ch = static_cast<unsigned char>(raw_ch);
+        auto const ch = static_cast<unsigned char>(s[index]);
+        if (ch >= 0x80U)
+        {
+            // The peer's parser rejects a frame that is not valid UTF-8 as a whole
+            // (ADR-0321), so a byte sequence that is not valid is replaced with U+FFFD,
+            // one replacement per bad byte, and never copied. Bytes that must survive
+            // exactly use the "<key>_b64" form instead (append_lossless_member).
+            auto const length = utf8_sequence_length(ch);
+            if (length > 0U && index + length <= s.size() && canonicaljson::utf8_is_valid(s.substr(index, length)))
+            {
+                result.append(s.substr(index, length));
+                index += length - 1U;
+            }
+            else
+            {
+                result += "\xEF\xBF\xBD";
+            }
+            continue;
+        }
         switch (ch)
         {
         case '"':
@@ -284,8 +352,11 @@ auto serialize_fed_request(homeserver::LocalHttpRequest const& request) -> std::
     body.reserve(512U + request.body.size());
     body += R"({"type":"fed_request","method":)";
     body += ipc_json_str(request.method);
-    body += R"(,"target":)";
-    body += ipc_json_str(request.target);
+    // The target, header values and body are bytes a remote server chose; the HTTP parser lets
+    // 0x80-0xFF through. Each is carried exactly (append_lossless_member), because a frame the
+    // worker's parser rejects would end its channel (F-35, ADR-0321).
+    body += ',';
+    append_lossless_member(body, "target", request.target);
     body += R"(,"remote_addr":)";
     body += ipc_json_str(request.remote_addr);
     // #323: the main process verifies the X-Matrix signature and forwards only
@@ -316,12 +387,12 @@ auto serialize_fed_request(homeserver::LocalHttpRequest const& request) -> std::
         first = false;
         body += R"({"n":)";
         body += ipc_json_str(hdr.name);
-        body += R"(,"v":)";
-        body += ipc_json_str(hdr.value);
+        body += ',';
+        append_lossless_member(body, "v", hdr.value);
         body += '}';
     }
-    body += R"(],"body":)";
-    body += ipc_json_str(request.body);
+    body += "],";
+    append_lossless_member(body, "body", request.body);
     body += '}';
     return body;
 }
@@ -336,13 +407,13 @@ auto deserialize_fed_request(std::string_view json) -> homeserver::LocalHttpRequ
         return request;
     }
     request.method = get_str(*obj, "method");
-    request.target = get_str(*obj, "target");
+    request.target = get_lossless_str(*obj, "target");
     request.remote_addr = get_str(*obj, "remote_addr");
     // #323: the worker receives the verified identity, not the raw credential.
     request.sig_verified = get_bool(*obj, "sig_verified");
     request.verified_origin = get_str(*obj, "verified_origin");
     request.verified_key_id = get_str(*obj, "verified_key_id");
-    request.body = get_str(*obj, "body");
+    request.body = get_lossless_str(*obj, "body");
     if (auto const* headers = get_array(*obj, "headers"))
     {
         extract_headers(*headers, request.headers);

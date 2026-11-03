@@ -461,6 +461,18 @@ separate process on the same host:
   unhealthy and the reader stops, so the supervisor replaces the worker instead
   of main buffering without limit. Every IPC socket has a 30 s send timeout, so
   a peer that stops reading cannot pin a writer.
+* **A remote server cannot end the channel, and a dead channel is replaced**
+  (F-35, F-09, F-08, [ADR-0321](adr/0321-every-ipc-frame-is-valid-utf-8-by-construction.md),
+  [ADR-0322](adr/0322-an-authenticated-frame-whose-payload-does-not-parse-fails-one-request.md),
+  [ADR-0323](adr/0323-the-supervisor-restarts-a-worker-whose-main-side-channel-failed.md)):
+  every frame a process writes is valid UTF-8 (`ipc_json_str` replaces bad bytes;
+  the `fed_request` target, header values and body carry non-UTF-8 bytes as
+  `<key>_b64`), so remote bytes cannot make a frame the peer's parser refuses.
+  Only a failed read (length, short read, AEAD authentication) ends a channel;
+  an authenticated frame whose payload does not parse is logged and dropped, and
+  the waiter of a response is released at once. If main's side of a channel does
+  fail while the worker is alive, the supervisor kills and respawns the worker
+  after the usual backoff.
 * **The worker cannot signal or re-limit other processes** (ISO-2,
   [ADR-0112](adr/0112-restrict-worker-signals-and-resource-limits.md)): the
   worker seccomp filter has no `kill`, `tkill`, `setrlimit` or `prlimit64`, and

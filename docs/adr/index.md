@@ -317,6 +317,9 @@
 * [0337 - Keep only what was asked of a server in a key claim answer](0337-keep-only-what-was-asked-of-a-server-in-a-key-claim-answer.md)
 * [0338 - Bound the shape and size of uploaded keys](0338-bound-the-shape-and-size-of-uploaded-keys.md)
 * [0339 - Bound account-data rows and the tags of a room](0339-bound-account-data-rows-and-the-tags-of-a-room.md)
+* [0321 - Every IPC frame is valid UTF-8 by construction, and request bytes cross it losslessly](0321-every-ipc-frame-is-valid-utf-8-by-construction.md)
+* [0322 - An authenticated IPC frame whose payload does not parse fails one request, not the channel](0322-an-authenticated-frame-whose-payload-does-not-parse-fails-one-request.md)
+* [0323 - The supervisor restarts a live worker whose main-side channel has failed](0323-the-supervisor-restarts-a-worker-whose-main-side-channel-failed.md)
 
 ## Proposed Records
 
