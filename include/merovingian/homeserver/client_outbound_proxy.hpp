@@ -63,6 +63,14 @@ struct ClientOutboundProxyPolicy final
     std::uint32_t worker_margin_seconds{2U};
     // Advertised in the 429 answer.
     std::uint32_t retry_after_ms{1000U};
+    // F-42 (ADR-0361): calls to the external trust-and-safety policy server in flight, across every surface
+    // (registration, createRoom, media, inbound federation). Each holds a request thread for the whole round
+    // trip, up to policy_server_timeout, and several surfaces are reached before authentication. A quarter of
+    // the main pool, so the rest stays free for requests that never leave this server.
+    std::uint32_t policy_server_global_cap{default_main_request_pool_threads / 4U};
+    // The share of those one surface may hold, so a flood of one (verified federation requests) cannot leave
+    // registration or room creation without a place.
+    std::uint32_t policy_server_per_surface_cap{default_main_request_pool_threads / 8U};
 };
 
 // The policy for a request pool of `pool_threads` threads.
@@ -72,6 +80,8 @@ struct ClientOutboundProxyPolicy final
     auto policy = ClientOutboundProxyPolicy{};
     // Never zero: a zero cap would refuse every remote lookup on a tiny pool.
     policy.global_cap = std::max(1U, pool_threads / 2U);
+    policy.policy_server_global_cap = std::max(2U, pool_threads / 4U);
+    policy.policy_server_per_surface_cap = std::max(1U, policy.policy_server_global_cap / 2U);
     return policy;
 }
 

@@ -382,6 +382,10 @@ struct HomeserverRuntime final
     // Test-only: see TestOnlyForcedOutboundResolution above. Always empty in
     // production; keyed by destination server_name.
     std::map<std::string, TestOnlyForcedOutboundResolution> test_forced_outbound_resolution{};
+    // Test-only: a PEM CA bundle the policy-server hook trusts in place of the system store, so a test can
+    // stand up a local TLS mock of the policy server (with a `discovery_network` that resolves its host to
+    // loopback). Always empty in production.
+    std::string test_policy_server_trusted_ca_pem{};
     // Test-only: see identity::TestForcedIdentityResolution. Always empty in
     // production; keyed by identity-server host. Consulted by
     // IdentityServerClient::perform() to pin a local mock IS + in-memory CA
@@ -497,6 +501,16 @@ struct HomeserverRuntime final
     // budget has its own mutex and is never held together with `mutex`. Held
     // through a unique_ptr so the address slots refer to survives a runtime move.
     std::unique_ptr<http::InFlightBudget> client_outbound_budget{std::make_unique<http::InFlightBudget>()};
+    // F-42 (ADR-0361): calls to the external policy server in flight, per surface. Its own budget, apart from
+    // client_outbound_budget, so that a flood of one cannot starve the other.
+    std::unique_ptr<http::InFlightBudget> policy_server_budget{std::make_unique<http::InFlightBudget>()};
+    // ADR-0362: room IDs a createRoom has chosen and not yet stored, so a creation that runs while another waits
+    // on the policy server (which releases `mutex`) cannot choose the same one. Guard every access with `mutex`.
+    std::set<std::string, std::less<>> rooms_being_created{};
+    // True only in a federation worker (ADR-0358): main has already judged the admin's federation policy rule and
+    // asked the policy server for every request it forwards, so the worker's own store (no rules on PostgreSQL, a
+    // start-up snapshot on SQLite) and its sandbox are not asked to decide it again.
+    bool federation_policy_decided_upstream{false};
     ClientOutboundProxyPolicy client_outbound_proxy_policy{default_client_outbound_proxy_policy()};
     // One fetch from the origin per remote media file at a time (ADR-0121). Its
     // mutex is a leaf: never waited on with `mutex` held. Held through a
@@ -837,6 +851,14 @@ auto reset_runtime_crypto_provider(HomeserverRuntime& runtime) -> void;
     -> std::optional<database::PersistentPolicyRule>;
 [[nodiscard]] auto resolve_policy_server_hook(HomeserverRuntime& runtime, trust_safety::PolicySurface surface,
                                               std::string_view entity) -> trust_safety::PolicyServerHook;
+// F-21 (ADR-0358): the decision on a verified inbound federation request from `origin`: the admin's
+// scope-"federation" policy rule (read under runtime.mutex) and, when `consult_policy_server` is set, the
+// external policy server (a network call, made with the mutex released). Main applies the rule in
+// FederationProxy::handle before any branch, and asks the policy server where the request is handed on: in the
+// proxy for a worker, in handle_federation_http_request for what main answers itself. The main-side relay
+// handlers pass false, since a relayed PDU is not a request worth a round trip to the policy server of its own.
+[[nodiscard]] auto evaluate_inbound_federation_policy(HomeserverRuntime& runtime, std::string_view origin,
+                                                      bool consult_policy_server) -> trust_safety::PolicyDecision;
 auto apply_runtime_membership(LocalDatabase& database, std::string_view room_id, std::string_view user_id,
                               std::string_view membership) -> void;
 

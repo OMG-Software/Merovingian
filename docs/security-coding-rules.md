@@ -576,6 +576,30 @@ quickly finding everything a given `AGENTS.md` file contributed.
   sender the room authorised (ADR-0071, `docs/threat-model.md` #450).
   Source: `src/homeserver/AGENTS.md`.
 
+- **Main decides the admin's federation policy and the room's server ACL for everything a worker relays or
+  receives.** `FederationProxy::handle` judges the verified origin's policy rule (and the policy server) before it forwards;
+  the `pdu_ingest`, `membership_ingest`, `invite_ingest` and `edu_ingest` handlers judge the rule again, and the first three
+  read the room's current `m.room.server_acl` from main's store for the transport origin and the verified sender's server.
+  A new relay does the same.
+  Why: a worker's store holds no policy rules (PostgreSQL) or a start-up snapshot (SQLite), and a room's ACL only
+  after `room_sync` reaches the shard that owns it; `/send` is routed by a room ID the sender chooses. Until 0.12.68 a denied
+  origin or server kept federating (F-21, F-24; ADR-0358, ADR-0359).
+  Source: `src/federation/AGENTS.md`, `src/federation_worker/AGENTS.md`.
+
+- **The worker reads its store only through the `StoreReadGuard`, and never waits on another process under it.** Store-reading
+  providers are wrapped in the shared lock before any provider that relays is installed; a reload reads the database with no
+  lock and takes the exclusive lock only for the in-memory swap; anything borrowed from a table (state-group views, state
+  indexes) is copied before the lock is released.
+  Why: the tables have no lock and a reload rewrites a room table by table, so an unguarded reader raced the writer and could
+  see a room with no ACL (F-27, ADR-0360).
+  Source: `src/federation_worker/AGENTS.md`, `src/database/AGENTS.md`.
+
+- **A call to the external policy server resolves its operator-configured host itself, in the lock-release scope, takes a place
+  in `policy_server_budget` first, and treats a refusal as "no decision".** Never call `OutboundClient::perform` without
+  pinned addresses; never run the call under `runtime.mutex`.
+  Why: each call holds a request thread for the round trip, on surfaces reachable before authentication (F-42, ADR-0361).
+  Source: `src/homeserver/AGENTS.md`.
+
 - **A federation worker re-reads only public signing keys, and only on a miss.** The one
   table a worker reads after start-up is `server_signing_keys`, through
   `federation::KeyMirrorRefresh::on_miss`, for the server whose signature it is verifying.

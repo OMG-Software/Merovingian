@@ -1317,6 +1317,8 @@ struct PersistentStoreOpenResult final
 // relation tables — see reconstruct_event_relations.
 struct RoomReloadSnapshot final
 {
+    // The room the rows belong to; load_room_snapshot sets it.
+    std::string room_id{};
     std::optional<PersistentRoom> room{};
     std::vector<PersistentMembership> memberships{};
     std::vector<PersistentInvite> invites{};
@@ -1329,6 +1331,8 @@ struct RoomReloadSnapshot final
     std::vector<PersistentStateGroup> state_groups{};
     std::vector<PersistentStateGroupStateEntry> state_group_state{};
     std::vector<PersistentEventStateGroup> event_state_groups{};
+    // A memory-backed store has no database to read: nothing to apply (apply_room_snapshot returns at once).
+    bool nothing_to_apply{false};
 };
 
 // Serialise a token expiry time_point to its TEXT column form (epoch-ms decimal
@@ -1461,6 +1465,14 @@ auto reconstruct_event_relations(PersistentStore& store) -> void;
 // that no longer exists is not an error — the room's stale rows are simply
 // removed from this store's copy.
 [[nodiscard]] auto reload_room(PersistentStore& store, std::string_view room_id) -> bool;
+// reload_room in its two halves (F-27, ADR-0358). `load_room_snapshot` is the database read: it
+// does not touch `store`'s rows, so a caller runs it with no lock held. `apply_room_snapshot` is
+// the in-memory swap: it replaces the room's rows with the snapshot's and needs exclusion from
+// every reader of the store, which is all a reader then waits for. nullopt from the load is the
+// connection/query failure reload_room reports as false; apply it never.
+[[nodiscard]] auto load_room_snapshot(PersistentStore const& store, std::string_view room_id)
+    -> std::optional<RoomReloadSnapshot>;
+auto apply_room_snapshot(PersistentStore& store, RoomReloadSnapshot snapshot) -> void;
 [[nodiscard]] auto store_membership(PersistentStore& store, PersistentMembership membership) -> MembershipStoreResult;
 [[nodiscard]] auto update_membership(PersistentStore& store, std::string_view room_id, std::string_view user_id,
                                      std::string_view new_membership, std::uint64_t stream_ordering) -> bool;

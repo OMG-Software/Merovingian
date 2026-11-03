@@ -13,6 +13,7 @@
 #include "merovingian/federation/transactions.hpp"
 #include "merovingian/federation_worker/db_uri_fd.hpp"
 #include "merovingian/federation_worker/ipc_key_fd.hpp"
+#include "merovingian/federation_worker/store_read_guard.hpp"
 #include "merovingian/homeserver/local_http_router.hpp"
 #include "merovingian/homeserver/runtime.hpp"
 #include "merovingian/homeserver/worker_ipc_limits.hpp"
@@ -229,6 +230,10 @@ namespace
         else if (status_str == "deferred")
         {
             result.status = federation::PduIngestionStatus::deferred;
+        }
+        else if (status_str == "rejected_acl")
+        {
+            result.status = federation::PduIngestionStatus::rejected_acl;
         }
         else if (status_str == "already_stored")
         {
@@ -673,6 +678,11 @@ auto WorkerEventLoop::run() -> void
                                                      max_frame_bytes);
     auto* channel_ptr = channel.get();
 
+    // F-27 (ADR-0360): the one lock between the request threads that read this process's store and the
+    // room_sync reloads that rewrite it. Declared before the runtime so it outlives every provider that
+    // refers to it.
+    auto store_guard = federation_worker::StoreReadGuard{};
+
     // Start a full HomeserverRuntime using the same config as main. The worker
     // has its own DB connection for remote key resolution and room-version
     // lookups. It does NOT write events — accepted PDUs are sent to main via
@@ -712,6 +722,13 @@ auto WorkerEventLoop::run() -> void
     }
     auto& runtime = started.runtime;
     homeserver::wire_federation_callbacks(runtime);
+    // Every provider below that reads this store (ACL, room version, state, state_ids, event_auth,
+    // get_missing_events, backfill, timestamp_to_event, hierarchy, the local make_leave/make_knock template)
+    // now holds the shared lock for its own call. This comes before the overrides that relay to main: a
+    // relay waits on another process and must hold no store lock while it does.
+    store_guard.wrap_store_readers(runtime.federation);
+    // Main judges the admin's federation policy before it forwards a request (ADR-0358).
+    runtime.federation_policy_decided_upstream = true;
 
     // ADR-0285: the wired probe answers from this process's own event snapshot, which is taken at
     // start-up and is not main's record of what is stored. Left in place it could call a PDU main
@@ -976,8 +993,8 @@ auto WorkerEventLoop::run() -> void
         shutdown_cv.notify_all();
     };
 
-    channel->set_request_handler([&runtime, channel_ptr, &local_pool, &relay_pool, signal_shutdown](std::uint64_t id,
-                                                                                                    std::string json) {
+    channel->set_request_handler([&runtime, &store_guard, channel_ptr, &local_pool, &relay_pool,
+                                  signal_shutdown](std::uint64_t id, std::string json) {
         auto const type = ipc::ipc_json_get_str(json, "type");
         if (type == "fed_request")
         {
@@ -1038,22 +1055,20 @@ auto WorkerEventLoop::run() -> void
             // otherwise frozen as of this worker's own startup (see
             // database::reload_room and docs/architecture.md, "Federation
             // worker room staleness"). Runs on the local pool, NOT inline on
-            // this handler: reload_room needs runtime.mutex, which a
-            // relay-pool transaction holds across its pdu_ingest round trips
-            // to main — and main sends this very notification (from its
-            // pdu_ingest handler's notify_room_changed) moments before the
-            // pdu_ingest response. Blocking the channel's dispatch thread on
-            // that mutex would park every later queued request behind a lock
-            // the in-flight transaction won't release for its whole duration.
-            // Concurrent reloads still serialize on runtime.mutex inside the
-            // task, and reload_room is a full fresh re-read, so pool
-            // scheduling order between two reloads of the same room is
-            // immaterial.
+            // this handler: the reload reads the database and then waits for
+            // the readers of the store (StoreReadGuard) to drain, and main
+            // sends this very notification (from its pdu_ingest handler's
+            // notify_room_changed) moments before the pdu_ingest response.
+            // Blocking the channel's dispatch thread on either would park
+            // every later queued request behind it. The database read takes
+            // no lock; only the in-memory swap excludes readers (F-27,
+            // ADR-0360). Concurrent reloads are serialised by the guard,
+            // and reload_room is a full fresh re-read, so pool scheduling
+            // order between two reloads of the same room is immaterial.
             auto const room_id = ipc::ipc_json_get_str(json, "room_id");
             auto const generation = ipc::ipc_json_get_u64(json, "generation");
-            auto const sync_enqueued = local_pool.submit([&runtime, channel_ptr, room_id, generation]() {
-                auto guard = std::unique_lock{runtime.mutex};
-                auto const ok = database::reload_room(runtime.database.persistent_store, room_id);
+            auto const sync_enqueued = local_pool.submit([&runtime, &store_guard, channel_ptr, room_id, generation]() {
+                auto const ok = store_guard.reload_room(runtime.database.persistent_store, room_id);
                 if (!ok)
                 {
                     LOG_WARNING("Federation worker: room_sync reload failed for room_id=" + room_id);

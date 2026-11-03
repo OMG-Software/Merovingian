@@ -2455,6 +2455,36 @@ namespace
                                             {std::string{user_id}, {}, "m.direct", serialized.output, 0U});
     }
 
+    // ADR-0362: holds a room ID a createRoom has chosen from the moment it chooses it until the request ends,
+    // whatever the outcome. The policy-server hook between choosing and storing releases runtime.mutex, so
+    // without this another creation could choose the same ID. The set it lives in is guarded by runtime.mutex.
+    class RoomIdReservation final
+    {
+    public:
+        // Reserves `room_id`; the caller holds runtime.mutex and has checked that it is free.
+        RoomIdReservation(HomeserverRuntime& runtime, std::string room_id)
+            : runtime_{runtime}
+            , room_id_{std::move(room_id)}
+        {
+            runtime_.rooms_being_created.insert(room_id_);
+        }
+
+        ~RoomIdReservation()
+        {
+            auto const guard = std::unique_lock<RuntimeMutex>{runtime_.mutex};
+            runtime_.rooms_being_created.erase(room_id_);
+        }
+
+        RoomIdReservation(RoomIdReservation const&) = delete;
+        auto operator=(RoomIdReservation const&) -> RoomIdReservation& = delete;
+        RoomIdReservation(RoomIdReservation&&) = delete;
+        auto operator=(RoomIdReservation&&) -> RoomIdReservation& = delete;
+
+    private:
+        HomeserverRuntime& runtime_;
+        std::string room_id_;
+    };
+
 } // namespace
 
 auto federate_accepted_membership_event(HomeserverRuntime& runtime, std::string_view room_id, std::string_view event_id,
@@ -3530,6 +3560,7 @@ auto ensure_crypto_provider_holds_key(HomeserverRuntime& runtime, std::string_vi
         return make_operation_result(false, {}, std::move(reason), 500U);
     };
     auto precomposed_create = std::optional<ComposedEvent>{};
+    auto reservation = std::optional<RoomIdReservation>{};
     if (create_defines_room_id)
     {
         // MSC4291: compose the create event (which carries no room_id) so the room ID can
@@ -3597,8 +3628,32 @@ auto ensure_crypto_provider_holds_key(HomeserverRuntime& runtime, std::string_vi
     }
     else
     {
-        room_id =
-            "!room" + std::to_string(runtime.database.rooms.size() + 1U) + ":" + runtime.config.server().server_name;
+        // The first "!room<N>" that no room holds and no creation in flight has chosen (ADR-0362). The count of
+        // rooms alone is not enough: a join can drop a room from the in-memory list while its row stays
+        // (F-82), and the policy-server hook below releases runtime.mutex, so a second creation can overlap.
+        auto const slots = runtime.database.rooms.size() + runtime.database.persistent_store.rooms.size() +
+                           runtime.rooms_being_created.size() + 1U;
+        auto number = runtime.database.rooms.size() + 1U;
+        for (auto attempt = std::size_t{0U}; attempt < slots; ++attempt, ++number)
+        {
+            auto candidate = "!room" + std::to_string(number) + ":" + runtime.config.server().server_name;
+            if (find_room(runtime.database, candidate) != nullptr ||
+                std::ranges::any_of(runtime.database.persistent_store.rooms,
+                                    [&candidate](database::PersistentRoom const& existing) {
+                                        return existing.room_id == candidate;
+                                    }) ||
+                runtime.rooms_being_created.contains(candidate))
+            {
+                continue;
+            }
+            room_id = std::move(candidate);
+            break;
+        }
+        if (room_id.empty())
+        {
+            return server_failure("no free room ID");
+        }
+        reservation.emplace(runtime, room_id);
     }
     auto const local_rule = find_policy_rule(runtime, "room", room_id);
     auto const held_for_review = local_rule.has_value() && local_rule->action == "quarantine";

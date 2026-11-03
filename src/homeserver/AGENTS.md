@@ -122,6 +122,19 @@ default-constructed and assigned in order to survive it.
 See [`docs/http-transport.md`](../../docs/http-transport.md) "Request lock and
 blocking network calls".
 
+## Federation policy and the policy server (F-21, F-42, ADR-0358, ADR-0361)
+
+`FederationProxy::handle` calls `evaluate_inbound_federation_policy` (rule only) after `verify_inbound_federation_signature` and
+before every branch, and again with the policy server just before it forwards to a worker; `handle_federation_http_request`
+judges what main answers itself, and skips it where `federation_policy_decided_upstream` is set (the worker). The worker never
+runs the hook. `resolve_policy_server_hook` takes a place in
+`policy_server_budget` (key: the surface name; no place is "no usable decision", so `policy_server_allow_without_result`
+decides), reads everything it needs from the runtime, then resolves the configured host with `discovery_network->lookup_addresses`
+(operator-trusted: no deny-list) and calls, all inside one `RuntimeLockRelease` scope and within what is left of
+`policy_server_timeout`. The caps derive from the request pool in `client_outbound_proxy_policy_for_pool`. A transport error is
+logged at warning level. A pre-v12 `create_room` holds a `RoomIdReservation` from choosing its `!room<N>` ID until it returns
+(ADR-0362): an identifier derived from state and used after a lock release is reserved before the release.
+
 ## Client requests that call another server
 
 `publicRooms?server=` (GET and POST), a remote room-alias lookup (`GET /directory/room/{alias}` and `POST /join/{#alias}`), a remote user's profile (`remote_profile_response`: relays only `displayname`/`avatar_url`), remote media download or

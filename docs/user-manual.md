@@ -1470,6 +1470,19 @@ If the policy server is unreachable, returns a non-2xx status, omits a
 usable decision, or sends malformed JSON, the guarded workflow is rejected
 unless `security.trust_safety.policy_server_allow_without_result=true`.
 
+The host in `policy_server_url` is resolved by this server, as it is for an
+application service: it is your own configuration, so a policy service on a
+private network or a loopback address works, and the usual private-address
+refusal for federation peers does not apply to it. The certificate must still
+be valid for the host name. A failed lookup or connection is logged at warning
+level (`Policy server call failed`). To protect the request threads, at most a
+quarter of `server.http.request_threads` (at least 2) policy calls are in
+flight at once, and half of that for any one kind of request (registration,
+room creation, media, federation). A call over that is not made and counts as
+"no usable decision": the workflow is rejected, or allowed with
+`policy_server_allow_without_result=true`, as for an unreachable server (log
+line `Policy server call not made: too many are in flight`).
+
 #### Logging redaction — `security.logging.*`
 
 | Key | Default | When to change |

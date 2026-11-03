@@ -67,6 +67,36 @@ The medium findings of security audit run 2 (ref 5e67d4e8).
   and every stored event under `runtime.mutex`. They now read by key through the state index and by room through the
   event table; `RestrictedJoinDecision::work` counts what a decision read. The template's `prev_events` are the room's
   stored tips, at most 20, with a depth taken from them, and a room with none is refused (PR #549, ADR-0318).
+- **An admin's federation policy rule now binds every inbound request, and what a worker relays (F-21, ADR-0358).** A
+  scope-`federation` deny or quarantine rule was looked up only in the process that handled the request. A worker's
+  store holds no rules on PostgreSQL and a start-up snapshot on SQLite, so a blocked origin kept federating. Main now
+  applies the verified origin's rule in `FederationProxy::handle` before any branch, including the forward to a worker, and
+  answers `403 M_FORBIDDEN`; the policy server is asked once, where the request is handed on, and never by a worker. The main-side `pdu_ingest`, `membership_ingest`,
+  `invite_ingest` and `edu_ingest` handlers judge the local rule again, so a rule added while a request was in flight holds.
+- **A worker can no longer get a PDU past a room's server ACL by choosing the shard (F-24, ADR-0359).** `/send` is
+  routed by the first PDU's room ID, which the sender picks, and only the owning shard learns of a room's later state,
+  so a stale shard allowed a denied server and main's relay handler never checked. Main now reads the room's current
+  `m.room.server_acl` for the transport origin and, once the event is verified, for its sender's server, on `pdu_ingest`,
+  `membership_ingest` and `invite_ingest`. A refused PDU is reported to the sender as an `error` entry for its event ID
+  (new `PduIngestionStatus::rejected_acl`), a refused membership or invite as 403. The ACL is read through the state
+  index, not a scan.
+- **The worker's store is read under a reader-writer lock, and a reload no longer exposes a room half-rewritten (F-27,
+  ADR-0360).** Request threads read the worker's store with no lock while `room_sync` erased and re-added a room's rows
+  on another thread, a data race in which a reader could see a room with no ACL and allow a denied server. `reload_room`
+  is split into `load_room_snapshot` (the database read, no lock) and `apply_room_snapshot` (the swap).
+  `federation_worker::StoreReadGuard` wraps the worker's ACL, room-version, state, state_ids, event_auth,
+  get_missing_events, backfill, timestamp_to_event, hierarchy and make_leave/make_knock providers in a shared lock and
+  takes the exclusive lock only for the swap. Main's providers are unchanged. The comment and rule 6 of the worker
+  `AGENTS.md` that said a relay transaction holds `runtime.mutex` are corrected.
+- **The policy server hook now reaches the policy server (F-42, ADR-0361, ADR-0362).** It never set the request's
+  pinned addresses, so `OutboundClient` refused every call before opening a socket: with the default
+  `policy_server_allow_without_result=false` every guarded workflow was refused, and with `true` the server was never
+  asked. The operator-configured host is now resolved inside the lock-release scope, without the SSRF deny-list (the
+  operator chose it, as for an appservice), with what is left of `policy_server_timeout`, and a transport error is
+  logged at warning level. Calls take a place in a new budget first (a quarter of the request pool across surfaces, half
+  of that per surface); no place counts as no decision, so `policy_server_allow_without_result` decides it as before. A
+  pre-v12 `createRoom` reserves its `!room<N>` ID across the hook and takes the first free number, so two creations
+  overlapping the hook no longer collide (500 "room persistence failed").
 - **One user can no longer use up the local media record cap (F-46, ADR-0340).** `security.media.max_records` was one
   budget for the whole server, and distinct tiny files or deduplicated re-uploads cost the per-user byte quota almost
   nothing, so one account could fill it and every user's upload was then refused until an operator raised it. New key

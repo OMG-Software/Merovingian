@@ -149,6 +149,26 @@ auto FederationProxy::handle(LocalHttpRequest const& request) -> LocalHttpRespon
         return {verification.error.status, verification.error.body};
     }
 
+    // F-21 (ADR-0358): main is authoritative for the admin's federation policy rules. A worker's store holds
+    // no rules (PostgreSQL) or a snapshot from its start (SQLite), so the rule is applied here, before any
+    // branch below, including the forward to a worker. The policy server is asked once, where the request is
+    // handed on: just before the worker below, or by handle_federation_http_request for what main answers.
+    {
+        auto const policy = evaluate_inbound_federation_policy(runtime_, verification.identity.origin, false);
+        if (!policy.allowed)
+        {
+            observability::log_diagnostic("federation_proxy", "federation_proxy.policy_denied",
+                                          {
+                                              {"target", observability::sanitized_http_target(request.target), false},
+                                              {"origin", verification.identity.origin,                         false},
+                                              {"reason", policy.reason.code,                                   false}
+            },
+                                          observability::LogEventSeverity::warning);
+            auto const body = policy.reason.public_summary.empty() ? policy.reason.code : policy.reason.public_summary;
+            return {403U, matrix_error("M_FORBIDDEN", body)};
+        }
+    }
+
     // Forward only the verified identity to the worker. Clear access_token so
     // no raw credential accompanies the request; the IPC serializer (#323)
     // also strips any Authorization/X-Matrix header from `headers`.
@@ -201,6 +221,13 @@ auto FederationProxy::handle(LocalHttpRequest const& request) -> LocalHttpRespon
                                           observability::LogEventSeverity::warning);
             return handle_federation_http_request(runtime_, verified_request);
         }
+    }
+    // The policy server is asked now, not earlier, so a request main answers itself is asked about once, by
+    // handle_federation_http_request. The rule is read again: it may have changed since the check above.
+    if (auto const policy = evaluate_inbound_federation_policy(runtime_, origin, true); !policy.allowed)
+    {
+        auto const body = policy.reason.public_summary.empty() ? policy.reason.code : policy.reason.public_summary;
+        return {403U, matrix_error("M_FORBIDDEN", body)};
     }
     auto response = pool_->handle(verified_request, room_id);
     if (!send_transaction_id.empty() && response.status == 200U)

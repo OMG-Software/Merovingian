@@ -18,6 +18,7 @@ because it is the process most exposed to hostile input, holds as little trust a
 | `ipc_key_fd.cpp` / `.hpp` | `read_ipc_auth_key`: reads the IPC auth key main wrote to the inherited key-fd, fail-closed on short/long/missing input; `clear_master_key_file`: empties the worker's config copy of `security.secrets.master_key_file` |
 | `db_uri_fd.cpp` / `.hpp` | ADR-0062 part 2. `read_worker_database_uri`: reads a separate, least-privilege database connection URI from the inherited db-uri-fd until EOF, fail-closed on empty/oversized (>4096 bytes) input; `apply_worker_database_uri`: sets the worker's config copy's `database.worker_conninfo_override` and clears `uri_file`/`runtime_role`/`migration_role` |
 | `main.cpp` (Landlock step) | ADR-0062 part 3. Calls `platform::apply_worker_landlock()` before the worker seccomp filter and before `WorkerEventLoop` starts — see "Rules" item 3 below |
+| `store_read_guard.cpp` | `StoreReadGuard`: the worker's reader-writer lock over its store (rule 6) |
 | `worker_event_loop.cpp` / `.hpp` | `WorkerEventLoop`: owns the `IpcChannel`, starts a `HomeserverRuntime` with `TableLoadProfile::federation_worker`, wires federation callbacks to relay over IPC, runs the two request thread pools |
 
 `worker_event_loop.hpp` sits next to its `.cpp` and is included with a bare relative include — the
@@ -88,10 +89,17 @@ one exception to the `merovingian/` include-path rule in `src/AGENTS.md`.
    serves endpoints that block on an IPC round trip or outbound HTTP.
    `federation::federation_endpoint_requires_main_relay` routes each request before a thread is
    committed, so slow relays cannot starve fast local reads.
-6. **`room_sync` notifications run on `local_pool`, never inline on the IPC dispatch thread.**
-   `database::reload_room` needs `runtime.mutex`, which a `relay_pool` transaction may hold across
-   its own round trip to main; running it on the dispatch thread risks the reader/dispatch
-   deadlock described in `docs/architecture.md`, "IPC reader/dispatch split".
+6. **`room_sync` notifications run on `local_pool`, never inline on the IPC dispatch thread, and reload
+   through the `StoreReadGuard` (F-27, ADR-0360).** The reload reads the database with no lock and takes
+   the guard's exclusive lock only to swap the room's rows in memory; every provider that reads the store
+   (ACL, room version, state, state_ids, event_auth, get_missing_events, backfill, timestamp_to_event,
+   hierarchy, the local make_leave/make_knock template) is wrapped by `wrap_store_readers` and holds the
+   shared lock for its own call, returning values it owns. A relay transaction does NOT hold
+   `runtime.mutex` across its round trips (`handle_federation_http_request` releases it before
+   dispatch), so that mutex excludes nothing here. Wrap before the overrides that relay to main, never
+   hold the lock across IPC, and copy anything a table lends you (state groups, state indexes, deferred
+   PDU awaits) before releasing it. Running the reload on the dispatch thread would block every later
+   frame behind the readers; see `docs/architecture.md`, "IPC reader/dispatch split".
 7. **Never call `channel->stop()` from inside a request handler.** `stop()` joins the dispatch
    thread and a thread cannot join itself. On `"shutdown"`, signal a condition variable and let the
    worker's main thread call `stop()`.
@@ -108,6 +116,10 @@ one exception to the `merovingian/` include-path rule in `src/AGENTS.md`.
     four backfill fetches (`OutboundAnswerTrust::signature_verified`); every other outbound call goes over main's own
     client. Do not move another call onto the tunnel here, and do not add a worker-to-main frame whose content main
     would act on without a signature check. The reply is validated in `WorkerPool::send_outbound_request`.
+10. **The worker's ACL and policy view is advisory (F-21, F-24, ADR-0358, ADR-0359).** It holds no
+   policy rules on PostgreSQL and a start-up snapshot on SQLite, and learns of a room only when it owns
+   its shard. Main judges the origin's rule and the room's ACL again on everything relayed, and the
+   worker does not run the policy-server hook: the proxy asked it once before forwarding.
 
 ## Hardening
 

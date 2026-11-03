@@ -6190,8 +6190,6 @@ auto wire_federation_callbacks(HomeserverRuntime& runtime) -> void
         return federation_method_not_allowed_response(*allow);
     }
     auto signed_request_opt = std::optional<federation::SignedFederationRequest>{};
-    auto held_for_review = false;
-    auto blocked_by_local_policy = false;
 
     {
         auto guard = std::unique_lock<RuntimeMutex>{runtime.mutex};
@@ -6279,28 +6277,26 @@ auto wire_federation_callbacks(HomeserverRuntime& runtime) -> void
             return response(502U, matrix_error("M_UNKNOWN", "malformed federation authorization"));
         }
 
-        auto const local_rule = find_policy_rule(runtime, "federation", signed_request_opt->origin);
-        held_for_review = local_rule.has_value() && local_rule->action == "quarantine";
-        blocked_by_local_policy =
-            local_rule.has_value() && local_rule->action != "allow" && local_rule->action != "quarantine";
     }
 
-    // #415: the policy-server hook (when trust_safety.enabled and a
-    // policy_server_url is configured) performs a synchronous outbound HTTP
-    // call via resolve_policy_server_hook() -> OutboundClient::perform(),
-    // which can block for up to policy_server_timeout. It MUST run outside
-    // runtime.mutex — that mutex guards runtime.started and most
-    // client-server dispatch paths that re-enter the runtime, so holding it
-    // across a network call to a slow or unreachable policy server would
-    // freeze the entire process, not just federation handling.
-    auto const decision = trust_safety::evaluate_federation_policy(
-        {signed_request_opt->origin, held_for_review, blocked_by_local_policy,
-         resolve_policy_server_hook(runtime, trust_safety::PolicySurface::federation, signed_request_opt->origin)});
-    if (!decision.allowed)
+    // F-21 (ADR-0358): a federation worker is not asked to judge a request: main applied the admin's policy
+    // rule and asked the policy server before forwarding it, and a worker's store holds no rules (PostgreSQL)
+    // or a start-up snapshot (SQLite). Main, or any process that answers a request itself, judges it here.
+    //
+    // #415: the policy-server hook (when trust_safety.enabled and a policy_server_url is configured)
+    // performs a synchronous outbound HTTP call, which can block for up to policy_server_timeout. It runs
+    // outside runtime.mutex: that mutex guards runtime.started and most client-server dispatch paths that
+    // re-enter the runtime, so holding it across a network call to a slow or unreachable policy server
+    // would freeze the entire process, not just federation handling.
+    if (!runtime.federation_policy_decided_upstream)
     {
-        auto const body =
-            decision.reason.public_summary.empty() ? decision.reason.code : decision.reason.public_summary;
-        return response(403U, matrix_error("M_FORBIDDEN", body));
+        auto const decision = evaluate_inbound_federation_policy(runtime, signed_request_opt->origin, true);
+        if (!decision.allowed)
+        {
+            auto const body =
+                decision.reason.public_summary.empty() ? decision.reason.code : decision.reason.public_summary;
+            return response(403U, matrix_error("M_FORBIDDEN", body));
+        }
     }
 
     // The federation core protects its own bookkeeping, and production

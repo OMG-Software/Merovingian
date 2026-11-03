@@ -4046,6 +4046,24 @@ SCENARIO("Main binds worker EDU origins to genuinely verified pending federation
                            row.content_json == marker_b && row.stream_id > after_forgery.watermark;
                 });
                 CHECK(fresh_b);
+                // F-21 (ADR-0358): the origin is genuinely verified and its parent is live, but an admin's
+                // federation policy rule added since still binds it, in main, for an EDU already in flight.
+                {
+                    auto guard = std::lock_guard{runtime.mutex};
+                    runtime.database.persistent_store.policy_rules.push_back(
+                        {"rule-fed12-f21", "federation", origin_a, "deny", ""});
+                }
+                auto const ruled =
+                    relay.relay(frame(parent_a->id, origin_a, content(origin_a, "fed12-ruled", marker_a)));
+                REQUIRE(ruled.has_value());
+                CHECK(bool{ipc::ipc_json_get_str(*ruled, "status") == "rejected_invalid"});
+                CHECK(same_rows(snapshot().rows, after_retry.rows));
+                {
+                    auto guard = std::lock_guard{runtime.mutex};
+                    std::erase_if(runtime.database.persistent_store.policy_rules, [](auto const& rule) {
+                        return rule.rule_id == "rule-fed12-f21";
+                    });
+                }
                 REQUIRE(relay.parent_is_pending(0U));
                 REQUIRE(relay.parent_is_pending(1U));
                 REQUIRE(relay.finish());
@@ -4059,6 +4077,129 @@ SCENARIO("Main binds worker EDU origins to genuinely verified pending federation
                 CHECK(same_rows(after_completion.rows, after_retry.rows));
                 CHECK(after_completion.watermark == after_retry.watermark);
                 CHECK(after_completion.notified == after_retry.notified);
+            }
+        }
+    }
+}
+
+// F-21 (ADR-0358): the admin's federation policy rules are main's to enforce. A worker's store holds no rules
+// (PostgreSQL) or a snapshot from its start (SQLite), so a rule added after the worker started never reached it
+// and a denied origin kept federating. Main now judges every verified request in FederationProxy::handle before
+// anything is forwarded.
+// Spec: docs/matrix-v1.19-spec/server-server-api.md "Request Authentication" (a 403 M_FORBIDDEN is the answer
+// to a server this one will not serve); the rule itself is the admin API's
+// PUT /_matrix/client/v3/admin/safety/policy_rules/federation/{server} (docs/trust-safety.md).
+SCENARIO("main refuses a signed request from an origin an admin denied after the worker started",
+         "[integration][federation][worker][send][policy_authority][f21]")
+{
+    using namespace merovingian;
+    using namespace merovingian::tests::remote_room;
+    GIVEN("a resident room served by one actual worker shard and a signed transaction from a relay origin")
+    {
+        auto const tmp = unique_temp_dir("merovingian-policy-authority-");
+        auto cleanup = Fed10TempDirectory{tmp};
+        auto config = make_federation_worker_config(tmp);
+        config.server().server_name = local_server;
+        config.federation_worker().shards = 1U;
+        auto const config_path = tmp / "worker.conf";
+        write_worker_config(config_path, config);
+        auto started = homeserver::start_client_server(config);
+        REQUIRE(started.started);
+        auto& client = started.runtime;
+        auto& runtime = client.homeserver;
+        homeserver::wire_federation_callbacks(runtime);
+        auto const room_id = std::string{"!policy-authority:"} + local_server;
+        fed10_persist_remote_room(runtime, room_id);
+        auto const relay_server = std::string{"203.0.113.22"};
+        auto const relay_member = std::string{"@relay:"} + relay_server;
+        REQUIRE(database::store_membership(runtime.database.persistent_store, {room_id, relay_member, "join"}) ==
+                database::MembershipStoreResult::stored);
+        auto relay = remote_runtime();
+        relay.server_name = relay_server;
+        relay.signing_key.server_name = relay_server;
+        relay.discovery.server_name = relay_server;
+        relay.discovery.resolved_host = relay_server;
+        relay.discovery.resolved_addresses = {relay_server};
+        REQUIRE(database::store_server_signing_key(
+            runtime.database.persistent_store,
+            {relay_server, relay.signing_key.key_id,
+             events::matrix_base64_from_bytes(relay.signing_key.public_key_bytes), relay.signing_key.valid_until_ts}));
+        auto const signed_pdu = make_remote_message_json(
+            room_id, {room_id + ":member"}, {room_id + ":create", room_id + ":pl", room_id + ":member:bob"}, 4, 50);
+        auto const envelope = federation::parse_inbound_pdu_envelope(signed_pdu, room_version);
+        REQUIRE(envelope.has_value());
+        auto const event_id = envelope->event_id;
+        auto const body = std::string{"{\"origin\":\""} + relay_server + "\",\"origin_server_ts\":50,\"pdus\":[" +
+                          signed_pdu + "],\"edus\":[]}";
+        auto const target = std::string{"/_matrix/federation/v1/send/policy-authority"};
+        auto call = federation::OutboundCall{};
+        call.transaction = federation::make_outbound_transaction(local_server, "PUT", target, relay_server, body);
+        call.key_id = remote_key_id;
+        call.secret_key = federation::test::secret_key_buffer(federation::test::keypair_from_seed(remote_key_seed));
+        auto const outbound = federation::build_outbound_request(call);
+        auto const authorization = std::ranges::find_if(outbound.headers, [](auto const& header) {
+            return header.name == "Authorization";
+        });
+        REQUIRE(authorization != outbound.headers.end());
+        auto const wire = "PUT " + target + " HTTP/1.1\r\nHost: localhost\r\nAuthorization: " + authorization->value +
+                          "\r\nContent-Type: application/json\r\nContent-Length: " + std::to_string(body.size()) +
+                          "\r\nConnection: close\r\n\r\n" + body;
+        runtime.federation.remotes = {relay};
+        runtime.federation.remote_key_resolver = genuine_key_resolver();
+        runtime.federation_proxy = std::make_unique<FederationProxy>(
+            config.federation_worker(), runtime, std::string{worker_binary_path()}, config_path.string());
+        auto const proxy_lifetime = Fed10ProxyLifetime{runtime};
+        std::ignore = proxy_lifetime;
+        REQUIRE(wait_for_healthy(*runtime.federation_proxy, std::chrono::seconds{15}));
+        auto listener = Fed10SocketListener{client};
+
+        // The worker is running and has loaded its store. The rule is added now, so only main can know it.
+        auto const add_rule = [&runtime](std::string const& server, std::string const& action) {
+            auto const guard = std::lock_guard{runtime.mutex};
+            runtime.database.persistent_store.policy_rules.push_back(
+                {"rule-" + server, "federation", server, action, ""});
+        };
+
+        WHEN("an admin deny rule is added for the origin")
+        {
+            add_rule(relay_server, "deny");
+            auto const refused = fed10_socket_request(listener.port(), wire);
+
+            THEN("the request is refused 403 M_FORBIDDEN and nothing is stored")
+            {
+                CHECK(refused.status == 403U);
+                CHECK(refused.body.find("M_FORBIDDEN") != std::string::npos);
+                auto guard = std::lock_guard{runtime.mutex};
+                CHECK(fed10_target_count(runtime.database.persistent_store, event_id) == 0U);
+                auto durable = database::open_sqlite_persistent_store(config.database().sqlite_path);
+                REQUIRE(durable.ok);
+                CHECK(fed10_target_count(durable.store, event_id) == 0U);
+            }
+        }
+
+        WHEN("an admin quarantine rule is added for the origin")
+        {
+            add_rule(relay_server, "quarantine");
+            auto const held = fed10_socket_request(listener.port(), wire);
+
+            THEN("the request is held back 403 M_FORBIDDEN and nothing is stored")
+            {
+                CHECK(held.status == 403U);
+                auto guard = std::lock_guard{runtime.mutex};
+                CHECK(fed10_target_count(runtime.database.persistent_store, event_id) == 0U);
+            }
+        }
+
+        WHEN("the rule names a different server")
+        {
+            add_rule("somebody-else.example.org", "deny");
+            auto const accepted = fed10_socket_request(listener.port(), wire);
+
+            THEN("the same request is served and stored, so the refusals above are the rule's and nothing else's")
+            {
+                CHECK(accepted.status == 200U);
+                auto guard = std::lock_guard{runtime.mutex};
+                CHECK(fed10_target_count(runtime.database.persistent_store, event_id) == 1U);
             }
         }
     }

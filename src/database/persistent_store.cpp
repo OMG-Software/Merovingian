@@ -1348,11 +1348,14 @@ auto reconstruct_event_relations(PersistentStore& store) -> void
     }
 }
 
-[[nodiscard]] auto reload_room(PersistentStore& store, std::string_view room_id) -> bool
+[[nodiscard]] auto load_room_snapshot(PersistentStore const& store, std::string_view room_id)
+    -> std::optional<RoomReloadSnapshot>
 {
     if (store.backend == PersistentStoreBackend::memory)
     {
-        return true;
+        auto unchanged = RoomReloadSnapshot{};
+        unchanged.nothing_to_apply = true;
+        return unchanged;
     }
     auto snapshot = detail::load_room_snapshot_from_backend(store, room_id);
     if (!snapshot.has_value())
@@ -1362,8 +1365,32 @@ auto reconstruct_event_relations(PersistentStore& store) -> void
                            {"room_id", std::string{room_id}, false}
         },
                        observability::LogEventSeverity::warning);
+    }
+    else
+    {
+        snapshot->room_id = std::string{room_id};
+    }
+    return snapshot;
+}
+
+[[nodiscard]] auto reload_room(PersistentStore& store, std::string_view room_id) -> bool
+{
+    auto snapshot = load_room_snapshot(store, room_id);
+    if (!snapshot.has_value())
+    {
         return false;
     }
+    apply_room_snapshot(store, std::move(*snapshot));
+    return true;
+}
+
+auto apply_room_snapshot(PersistentStore& store, RoomReloadSnapshot snapshot) -> void
+{
+    if (snapshot.nothing_to_apply)
+    {
+        return;
+    }
+    auto const& room_id = snapshot.room_id;
 
     // Replace this room's slice of the store: drop every existing row keyed
     // to room_id (rooms/memberships/invites/state and this room's own
@@ -1379,7 +1406,7 @@ auto reconstruct_event_relations(PersistentStore& store) -> void
             stale_event_ids.insert(event.event_id);
         }
     }
-    for (auto const& event : snapshot->events)
+    for (auto const& event : snapshot.events)
     {
         stale_event_ids.insert(event.event_id);
     }
@@ -1421,7 +1448,7 @@ auto reconstruct_event_relations(PersistentStore& store) -> void
             stale_group_ids.insert(group.state_group_id);
         }
     }
-    for (auto const& group : snapshot->state_groups)
+    for (auto const& group : snapshot.state_groups)
     {
         stale_group_ids.insert(group.state_group_id);
     }
@@ -1434,29 +1461,29 @@ auto reconstruct_event_relations(PersistentStore& store) -> void
     std::ignore = store.event_state_groups.erase_if([&](PersistentEventStateGroup const& m) {
         return stale_event_ids.contains(m.event_id);
     });
-    std::ignore = store.state_groups.insert_all(std::move(snapshot->state_groups));
-    store.state_group_state.insert_all(std::move(snapshot->state_group_state));
-    store.event_state_groups.insert_all(std::move(snapshot->event_state_groups));
+    std::ignore = store.state_groups.insert_all(std::move(snapshot.state_groups));
+    store.state_group_state.insert_all(std::move(snapshot.state_group_state));
+    store.event_state_groups.insert_all(std::move(snapshot.event_state_groups));
 
-    if (snapshot->room.has_value())
+    if (snapshot.room.has_value())
     {
-        store.rooms.push_back(std::move(*snapshot->room));
+        store.rooms.push_back(std::move(*snapshot.room));
     }
-    for (auto& membership : snapshot->memberships)
+    for (auto& membership : snapshot.memberships)
     {
         store.memberships.push_back(std::move(membership));
     }
-    for (auto& invite : snapshot->invites)
+    for (auto& invite : snapshot.invites)
     {
         store.invites.push_back(std::move(invite));
     }
-    for (auto& state : snapshot->state)
+    for (auto& state : snapshot.state)
     {
         store.state.push_back(std::move(state));
     }
     // The erase above shifted every later row; a pushed row alone would not repair the indexes.
     rebuild_state_index(store);
-    for (auto& event : snapshot->events)
+    for (auto& event : snapshot.events)
     {
         for (auto const& prev_id : event.prev_event_ids)
         {
@@ -1472,8 +1499,7 @@ auto reconstruct_event_relations(PersistentStore& store) -> void
                 {event.event_id, signature.server_name, signature.key_id, signature.signature});
         }
     }
-    std::ignore = store.events.insert_all(std::move(snapshot->events));
-    return true;
+    std::ignore = store.events.insert_all(std::move(snapshot.events));
 }
 
 namespace

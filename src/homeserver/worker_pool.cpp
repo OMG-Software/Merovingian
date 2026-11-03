@@ -14,6 +14,7 @@
 #include "merovingian/federation/inbound_request.hpp"
 #include "merovingian/federation/invite_room_state.hpp"
 #include "merovingian/federation/membership_endpoints.hpp"
+#include "merovingian/federation/server_acl.hpp"
 #include "merovingian/federation/transactions.hpp"
 #include "merovingian/homeserver/local_http_router.hpp"
 #include "merovingian/homeserver/request_lock.hpp"
@@ -31,6 +32,7 @@
 #include <cstdint>
 #include <fstream>
 #include <functional>
+#include <initializer_list>
 #include <memory>
 #include <optional>
 #include <span>
@@ -312,6 +314,9 @@ namespace
             break;
         case federation::PduIngestionStatus::already_stored:
             status_str = "already_stored";
+            break;
+        case federation::PduIngestionStatus::rejected_acl:
+            status_str = "rejected_acl";
             break;
         }
         auto body = std::string{R"({"type":"pdu_ingest_result","status":)"};
@@ -799,6 +804,61 @@ namespace
                     " event_id=" + std::string{event_id} + " reason=" + std::string{reason});
     }
 
+    // F-21 and F-24 (ADR-0358, ADR-0359): main, not a worker, decides what an admin's policy rule and a room's
+    // m.room.server_acl allow. A worker's store is a snapshot (PostgreSQL workers hold no policy rules at all, and
+    // only the shard that owns a room is told when it changes), and a worker is the process most exposed to hostile
+    // input, so a decision it made is not relied on: everything a worker relays is judged again here, against
+    // main's own store, for the transport origin (`origin`, the worker's own claim, which the proxy has already
+    // authenticated and judged) and, once the event is verified, for the server its sender belongs to.
+
+    // The reason a verified origin is refused by the admin's federation policy rule (deny, or quarantine), or empty
+    // when it is allowed. The policy server is not asked: that is made once per request by the proxy.
+    [[nodiscard]] auto relay_origin_policy_refusal(HomeserverRuntime& runtime, std::string_view origin) -> std::string
+    {
+        if (origin.empty())
+        {
+            return {};
+        }
+        auto const decision = evaluate_inbound_federation_policy(runtime, origin, false);
+        if (decision.allowed)
+        {
+            return {};
+        }
+        return decision.reason.public_summary.empty() ? decision.reason.code : decision.reason.public_summary;
+    }
+
+    // The reason `room_id`'s own m.room.server_acl, read under runtime.mutex from main's store, denies any of
+    // `servers`, or empty when none is denied. Spec: server-server-api.md "Server Access Control Lists (ACLs)".
+    [[nodiscard]] auto relay_room_acl_refusal(HomeserverRuntime& runtime, std::string_view room_id,
+                                              std::initializer_list<std::string_view> servers) -> std::string
+    {
+        if (room_id.empty())
+        {
+            return {};
+        }
+        auto const guard = std::unique_lock{runtime.mutex};
+        for (auto const server : servers)
+        {
+            if (!server.empty() &&
+                !federation::room_server_acl_allows(runtime.database.persistent_store, room_id, server))
+            {
+                return "server is denied by room ACL";
+            }
+        }
+        return {};
+    }
+
+    // Both checks that need only the frame: the policy rule for the transport origin, then the room ACL for it.
+    [[nodiscard]] auto relay_origin_refusal(HomeserverRuntime& runtime, std::string_view origin,
+                                            std::string_view room_id) -> std::string
+    {
+        if (auto policy = relay_origin_policy_refusal(runtime, origin); !policy.empty())
+        {
+            return policy;
+        }
+        return relay_room_acl_refusal(runtime, room_id, {origin});
+    }
+
 } // namespace
 
 auto federation_worker_shard_for(std::string_view room_id, std::uint32_t shards) noexcept -> std::size_t
@@ -826,6 +886,12 @@ auto handle_pdu_ingest_request(HomeserverRuntime& runtime, std::string_view requ
     {
         return {federation::PduIngestionStatus::internal_error, "pdu_sink not wired"};
     }
+    // F-21, F-24: the origin's policy rule and the room's ACL, in main's own store, before a key is looked up.
+    if (auto const refusal = relay_origin_refusal(runtime, frame.origin, frame.room_id); !refusal.empty())
+    {
+        log_relay_refused("pdu_ingest", frame.event_id, refusal);
+        return {federation::PduIngestionStatus::rejected_acl, refusal};
+    }
     // ADR-0285: an event main already stores was handled when it first arrived. Answered before
     // the signature is re-verified (no key lookup) and without touching pdu_sink, so a re-sent PDU
     // has no side effect here. The frame's claim cannot do harm: "stored" only ever suppresses work,
@@ -841,6 +907,15 @@ auto handle_pdu_ingest_request(HomeserverRuntime& runtime, std::string_view requ
         return {relayed.locally_denied ? federation::PduIngestionStatus::main_overloaded
                                        : federation::PduIngestionStatus::rejected_invalid,
                 relayed.refusal};
+    }
+    // F-24: the server the verified event's sender belongs to is judged too, so a denied server cannot relay
+    // its events through an allowed peer (and the worker's reading of the ACL cannot be what lets them in).
+    if (auto const refusal =
+            relay_room_acl_refusal(runtime, relayed.envelope->room_id, {server_name_of(relayed.envelope->sender)});
+        !refusal.empty())
+    {
+        log_relay_refused("pdu_ingest", frame.event_id, refusal);
+        return {federation::PduIngestionStatus::rejected_acl, refusal};
     }
     // The default sink reserves stream_ordering internally and returns it in
     // accepted_stream_ordering. It also publishes the sync notification, so the
@@ -866,6 +941,15 @@ auto handle_membership_ingest_request(HomeserverRuntime& runtime, std::string_vi
         result.reason = "membership_acceptor not wired";
         return serialize_membership_ingest_result(result);
     }
+    // F-21, F-24: spec "Server Access Control Lists (ACLs)" lists send_join, send_leave and send_knock among the
+    // endpoints an ACL protects; the origin's policy rule applies as to any request. Main's store decides.
+    if (auto const refusal = relay_origin_refusal(runtime, frame.origin, frame.room_id); !refusal.empty())
+    {
+        log_relay_refused("membership_ingest", frame.event_id, refusal);
+        result.status = 403U;
+        result.reason = refusal;
+        return serialize_membership_ingest_result(result);
+    }
     // TRUST BOUNDARY (ADR-0071): verified before the runtime lock is taken,
     // because resolving the sender's key may go to the network. A send_join
     // naming one of our users as its authorising user is co-signed by the
@@ -880,6 +964,15 @@ auto handle_membership_ingest_request(HomeserverRuntime& runtime, std::string_vi
         log_relay_refused("membership_ingest", frame.event_id, relayed.refusal);
         result.status = relayed.locally_denied ? 503U : 403U;
         result.reason = relayed.refusal;
+        return serialize_membership_ingest_result(result);
+    }
+    if (auto const refusal =
+            relay_room_acl_refusal(runtime, relayed.envelope->room_id, {server_name_of(relayed.envelope->sender)});
+        !refusal.empty())
+    {
+        log_relay_refused("membership_ingest", frame.event_id, refusal);
+        result.status = 403U;
+        result.reason = refusal;
         return serialize_membership_ingest_result(result);
     }
     // The worker's own copy of the request's omit_members is a hint about what the joining server
@@ -924,7 +1017,14 @@ auto handle_edu_ingest_request(HomeserverRuntime& runtime, std::string_view requ
             return serialize_edu_ingest_result({federation::EduDispositionStatus::rejected_invalid,
                                                 "edu_ingest has no matching live verified parent"});
         }
-        if (runtime.federation.edu_sink)
+        // F-21: the origin is the one main authenticated for this request (checked just above), so the admin's
+        // policy rule is applied to it here: a rule added while the request was in flight still holds.
+        if (auto const refusal = relay_origin_policy_refusal(runtime, envelope->origin); !refusal.empty())
+        {
+            result.status = federation::EduDispositionStatus::rejected_invalid;
+            result.reason = refusal;
+        }
+        else if (runtime.federation.edu_sink)
         {
             result = runtime.federation.edu_sink(*envelope);
         }
@@ -953,6 +1053,14 @@ auto handle_invite_ingest_request(HomeserverRuntime& runtime, std::string_view r
     {
         result.status = 501U;
         result.reason = "invite_handler not wired";
+        return serialize_invite_ingest_result(result);
+    }
+    // F-21, F-24: the origin's policy rule and the room's ACL (the invite endpoint is one an ACL protects).
+    if (auto const refusal = relay_origin_refusal(runtime, request.origin, request.room_id); !refusal.empty())
+    {
+        log_relay_refused("invite_ingest", request.event_id, refusal);
+        result.status = 403U;
+        result.reason = refusal;
         return serialize_invite_ingest_result(result);
     }
     // TRUST BOUNDARY (ADR-0071): verified before the runtime lock is taken.

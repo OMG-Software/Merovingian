@@ -1143,7 +1143,9 @@ Rules:
   `query_room_alias`, the identity-server `requestToken` routes, the
   trust-safety policy server) are not under this budget: the destination is
   chosen by the operator, not the caller. They still hold a thread for the round
-  trip.
+  trip. The policy server has a budget of its own (`policy_server_budget`, ADR-0361):
+  a quarter of the request pool, half of that per surface, with a refused call
+  treated as no decision.
 
 The alternative of a separate thread pool or an asynchronous proxy path was
 considered and rejected for now; see ADR-0079. For remote media it was later
@@ -1216,6 +1218,13 @@ touches runtime state. See `tests/integration/test_request_lock_contention_flow.
 for the regression coverage (registration, room creation, and media
 download, each gated on a blocking policy-server hook while an unrelated
 request is asserted to complete promptly).
+
+Since 0.12.68 (F-42, ADR-0361) the real call also resolves the configured host
+before `perform`, which resolves nothing: the lookup, the address pinning and the
+call all run in that one `RuntimeLockRelease` scope, within what is left of
+`policy_server_timeout`, and after the call has taken a place in
+`policy_server_budget`. Federation requests are judged by `FederationProxy::handle`
+in main (ADR-0358), so the worker never makes the call.
 
 ### One release primitive, and why it drains every level (0.12.1 - 0.12.6)
 
