@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+#include "merovingian/canonicaljson/parser.hpp"
 #include "merovingian/ipc/channel.hpp"
 #include "merovingian/ipc/federation_ipc_frames.hpp"
 
@@ -944,6 +945,114 @@ SCENARIO("room_sync_result notification carries room_id, state and generation", 
             {
                 REQUIRE(ipc_json_get_str(serialized, "state") == "failed");
                 REQUIRE(ipc_json_get_u64(serialized, "generation") == 0U);
+            }
+        }
+    }
+}
+
+// F-35 and F-08 (security audit run 2, ADR-0321): a frame this process produces is always valid
+// UTF-8, because the peer's parser rejects the whole frame otherwise.
+SCENARIO("ipc_json_str never emits invalid UTF-8", "[ipc][federation][json][f35][utf8]")
+{
+    GIVEN("strings holding each kind of invalid UTF-8 sequence")
+    {
+        auto const lone_continuation = std::string{"a\x80z"};
+        auto const lead_without_tail = std::string{"a\xC3z"};
+        auto const lone_ff = std::string{"\xFF"};
+        auto const overlong = std::string{"\xC0\x80"};
+        auto const surrogate = std::string{"\xED\xA0\x80"};
+        auto const beyond_unicode = std::string{"\xF4\x90\x80\x80"};
+        auto const truncated_at_end = std::string{"ok\xE2\x82"};
+
+        WHEN("each is escaped for an IPC frame")
+        {
+            THEN("the escaped string is valid UTF-8 and parses inside a JSON document")
+            {
+                for (auto const* raw : {&lone_continuation, &lead_without_tail, &lone_ff, &overlong, &surrogate,
+                                        &beyond_unicode, &truncated_at_end})
+                {
+                    auto const document = std::string{R"({"v":)"} + ipc_json_str(*raw) + "}";
+                    REQUIRE(merovingian::canonicaljson::utf8_is_valid(document));
+                    REQUIRE(merovingian::canonicaljson::parse_json(document).error ==
+                            merovingian::canonicaljson::ParseError::none);
+                }
+            }
+            AND_THEN("the valid characters around the bad bytes survive")
+            {
+                REQUIRE(ipc_json_get_str(std::string{R"({"v":)"} + ipc_json_str(lone_continuation) + "}", "v")
+                            .starts_with("a"));
+                REQUIRE(ipc_json_get_str(std::string{R"({"v":)"} + ipc_json_str(lone_continuation) + "}", "v")
+                            .ends_with("z"));
+            }
+        }
+    }
+
+    GIVEN("a string of valid multi-byte UTF-8")
+    {
+        auto const raw = std::string{"caf\xC3\xA9 \xE2\x82\xAC \xF0\x9F\x98\x80"};
+
+        WHEN("it is escaped for an IPC frame and read back")
+        {
+            auto const back = ipc_json_get_str(std::string{R"({"v":)"} + ipc_json_str(raw) + "}", "v");
+
+            THEN("it is unchanged")
+            {
+                REQUIRE(back == raw);
+            }
+        }
+    }
+}
+
+SCENARIO("fed_request frame carries non-UTF-8 request bytes losslessly and as valid UTF-8",
+         "[ipc][federation][frame][f35][utf8]")
+{
+    GIVEN("a request whose target, header value and body hold bytes that are not UTF-8")
+    {
+        auto original = LocalHttpRequest{};
+        original.method = "PUT";
+        original.target = std::string{"/_matrix/federation/v1/send/t?x="} + static_cast<char>(0xFF);
+        original.headers.push_back({"X-Pad", std::string{"a"} + static_cast<char>(0xFF) + "b"});
+        original.headers.push_back({"Content-Type", "application/json"});
+        original.body = std::string{"{\"k\":\""} + static_cast<char>(0xC0) + static_cast<char>(0x80) + "\"}";
+        original.remote_addr = "203.0.113.1";
+
+        WHEN("it is serialized")
+        {
+            auto const serialized = serialize_fed_request(original);
+
+            THEN("the frame is valid UTF-8 JSON the peer's parser accepts")
+            {
+                REQUIRE(merovingian::canonicaljson::utf8_is_valid(serialized));
+                REQUIRE(merovingian::canonicaljson::parse_json(serialized).error ==
+                        merovingian::canonicaljson::ParseError::none);
+            }
+            AND_THEN("deserializing returns every byte exactly")
+            {
+                auto const back = deserialize_fed_request(serialized);
+                REQUIRE(back.target == original.target);
+                REQUIRE(back.body == original.body);
+                REQUIRE(back.headers.size() == 2U);
+                REQUIRE(back.headers[0].value == original.headers[0].value);
+                REQUIRE(back.headers[1].value == "application/json");
+            }
+        }
+    }
+
+    GIVEN("a request whose fields are all valid UTF-8")
+    {
+        auto original = LocalHttpRequest{};
+        original.method = "GET";
+        original.target = "/_matrix/federation/v1/version";
+        original.body = "caf\xC3\xA9";
+
+        WHEN("it is serialized")
+        {
+            auto const serialized = serialize_fed_request(original);
+
+            THEN("the fields stay plain JSON strings, not a second encoding")
+            {
+                REQUIRE(serialized.find("_b64") == std::string::npos);
+                REQUIRE(deserialize_fed_request(serialized).body == original.body);
             }
         }
     }

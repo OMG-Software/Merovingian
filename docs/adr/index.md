@@ -302,6 +302,8 @@
 * [0318 - A membership template offers the room's stored forward extremities, and none is offered without them](0318-a-membership-template-offers-the-rooms-stored-forward-extremities.md)
 * [0319 - Report a failed device-list write where the client can retry, and finish where access is being revoked](0319-report-a-failed-device-list-write-where-the-client-can-retry.md)
 * [0320 - A join comes after the ancestors that share its depth](0320-a-join-comes-after-the-ancestors-that-share-its-depth.md)
+* [0321 - Every IPC frame is valid UTF-8 by construction, and request bytes cross it losslessly](0321-every-ipc-frame-is-valid-utf-8-by-construction.md)
+* [0322 - An authenticated IPC frame whose payload does not parse fails one request, not the channel](0322-an-authenticated-frame-whose-payload-does-not-parse-fails-one-request.md)
 
 ## Proposed Records
 
