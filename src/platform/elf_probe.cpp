@@ -15,6 +15,12 @@ namespace merovingian::platform
 namespace
 {
 
+    // OpenBSD's headers do not define PT_GNU_STACK, so it cannot come from <link.h>.
+    constexpr auto k_pt_gnu_stack = Elf64_Word{0x6474E551U};
+#ifdef PT_GNU_STACK
+    static_assert(k_pt_gnu_stack == PT_GNU_STACK);
+#endif
+
     void read_dynamic_section(dl_phdr_info const& info, Elf64_Phdr const& dynamic, ElfHardeningResult& result) noexcept
     {
         // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast,performance-no-int-to-ptr) — the loader maps it
@@ -57,7 +63,7 @@ namespace
             case PT_GNU_RELRO:
                 result.has_relro = true;
                 break;
-            case PT_GNU_STACK:
+            case k_pt_gnu_stack:
                 // PF_X set means executable stack — the linker flag is -z,noexecstack.
                 result.has_noexec_stack = (ph.p_flags & static_cast<Elf64_Word>(PF_X)) == 0U;
                 break;
