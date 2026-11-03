@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <cstdint>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -312,8 +313,8 @@ namespace
     auto const result = merovingian::media::fetch_remote_media(repository, request, now);
     if (result.admitted_new_record)
     {
-        auto const displaced = merovingian::media::plan_remote_media_admission(repository, request.origin_server,
-                                                                               request.media_id, result.size_bytes);
+        auto const displaced = merovingian::media::plan_remote_media_admission(
+            repository, request.origin_server, request.media_id, result.size_bytes, now);
         merovingian::media::apply_remote_media_admission(repository, request.origin_server, request.media_id,
                                                          result.local_media_id, now, displaced);
     }
@@ -514,8 +515,8 @@ SCENARIO("Remote media cache evicts the least-recently-used entry when it "
         {
             auto const* touched =
                 merovingian::media::find_cached_remote_media(repository, "remote.example.org", "mediaA", t0 + 2U);
-            auto const displaced =
-                merovingian::media::plan_remote_media_admission(repository, "remote.example.org", "mediaC", 9U);
+            auto const displaced = merovingian::media::plan_remote_media_admission(repository, "remote.example.org",
+                                                                                   "mediaC", 9U, t0 + 3U);
             auto const c =
                 admit(repository, remote_png_request("mediaC", std::string{"\x89PNG\r\n\x1a\x0a\x02", 9U}), t0 + 3U);
 
@@ -1121,7 +1122,7 @@ SCENARIO("Remote media cache evicts least-recently-used files to stay within its
         WHEN("a nine-byte file is planned for admission")
         {
             auto const displaced =
-                merovingian::media::plan_remote_media_admission(repository, "remote.example.org", "mediaB", 9U);
+                merovingian::media::plan_remote_media_admission(repository, "remote.example.org", "mediaB", 9U, t0);
 
             THEN("the eight-byte file is displaced, because together they would exceed the budget")
             {
@@ -1133,7 +1134,7 @@ SCENARIO("Remote media cache evicts least-recently-used files to stay within its
         WHEN("a four-byte file is planned for admission")
         {
             auto const displaced =
-                merovingian::media::plan_remote_media_admission(repository, "remote.example.org", "mediaB", 4U);
+                merovingian::media::plan_remote_media_admission(repository, "remote.example.org", "mediaB", 4U, t0);
 
             THEN("nothing is displaced: both fit")
             {
@@ -1493,6 +1494,329 @@ SCENARIO("Content for a reservation is admitted only from its creator, once", "[
                 auto const again = merovingian::media::upload_local_media(repository, "example.org", request);
                 REQUIRE_FALSE(again.ok);
                 REQUIRE(again.status == 409U);
+            }
+        }
+    }
+}
+
+// F-46 (security audit run-2), ADR-0340: the local record cap is one budget for
+// the whole server, so a single account that filled it denied every other
+// account. Each owner has a share of records too.
+namespace
+{
+
+[[nodiscard]] auto upload_as(merovingian::media::LocalMediaRepository& repository, std::string owner, std::string bytes)
+    -> merovingian::media::LocalMediaUploadResult
+{
+    return merovingian::media::upload_local_media(
+        repository, "example.org", {std::move(owner), "text/plain", "text/plain", std::move(bytes), true});
+}
+
+} // namespace
+
+SCENARIO("One user cannot use up the local media record cap for everyone else",
+         "[media][repository][security][f-46][record-share]")
+{
+    GIVEN("a repository that allows each user two records out of ten")
+    {
+        auto repository = test_repository();
+        repository.config.max_records = 10U;
+        repository.config.max_records_per_user = 2U;
+
+        WHEN("one user uploads three distinct files and a second user uploads one")
+        {
+            auto const first = upload_as(repository, "@alice:example.org", "one");
+            auto const second = upload_as(repository, "@alice:example.org", "two");
+            auto const third = upload_as(repository, "@alice:example.org", "three");
+            auto const bob = upload_as(repository, "@bob:example.org", "four");
+
+            THEN("the first user is refused at their share and the second user is unaffected")
+            {
+                REQUIRE(first.ok);
+                REQUIRE(second.ok);
+                REQUIRE_FALSE(third.ok);
+                REQUIRE(third.status == 507U);
+                REQUIRE(bob.ok);
+                REQUIRE(repository.records.size() == 3U);
+            }
+        }
+
+        WHEN("one user uploads the same bytes again after reaching their share")
+        {
+            auto const first = upload_as(repository, "@alice:example.org", "same");
+            auto const second = upload_as(repository, "@alice:example.org", "same");
+            auto const duplicate = upload_as(repository, "@alice:example.org", "same");
+
+            THEN("the deduplicated upload is charged a record like any other and is refused")
+            {
+                REQUIRE(first.ok);
+                REQUIRE(second.ok);
+                REQUIRE(second.deduplicated);
+                REQUIRE_FALSE(duplicate.ok);
+                REQUIRE(duplicate.status == 507U);
+                REQUIRE(repository.blobs.size() == 1U);
+            }
+        }
+    }
+
+    GIVEN("a repository whose per-user share is zero")
+    {
+        auto repository = test_repository();
+        repository.config.max_records = 100U;
+        repository.config.max_records_per_user = 0U;
+
+        WHEN("one user uploads many files")
+        {
+            auto all_ok = true;
+            for (auto const* bytes : {"a", "b", "c", "d", "e"})
+            {
+                all_ok = upload_as(repository, "@alice:example.org", bytes).ok && all_ok;
+            }
+
+            THEN("only the server-wide cap applies")
+            {
+                REQUIRE(all_ok);
+            }
+        }
+    }
+}
+
+SCENARIO("A removed or rolled-back record gives its slot back to its owner",
+         "[media][repository][security][f-46][record-share]")
+{
+    GIVEN("a user who has used their whole share of two records")
+    {
+        auto repository = test_repository();
+        repository.config.max_records = 10U;
+        repository.config.max_records_per_user = 2U;
+        auto const first = upload_as(repository, "@alice:example.org", "one");
+        auto const second = upload_as(repository, "@alice:example.org", "two");
+        REQUIRE(first.ok);
+        REQUIRE(second.ok);
+        REQUIRE_FALSE(upload_as(repository, "@alice:example.org", "three").ok);
+
+        WHEN("an administrator removes one of their files")
+        {
+            auto const removed = merovingian::media::remove_local_media(repository, first.media_id, "abuse");
+            auto const again = upload_as(repository, "@alice:example.org", "three");
+            auto const over = upload_as(repository, "@alice:example.org", "four");
+
+            THEN("they can upload exactly one more file")
+            {
+                REQUIRE(removed.ok);
+                REQUIRE(again.ok);
+                REQUIRE_FALSE(over.ok);
+            }
+
+            THEN("the removed record still counts against the server-wide cap, which bounds memory")
+            {
+                REQUIRE(repository.records.size() == 3U);
+            }
+        }
+
+        WHEN("an upload of theirs is rolled back")
+        {
+            REQUIRE(merovingian::media::rollback_local_media_upload(repository, second.media_id));
+            auto const again = upload_as(repository, "@alice:example.org", "three");
+
+            THEN("the slot is free again")
+            {
+                REQUIRE(again.ok);
+            }
+        }
+    }
+}
+
+SCENARIO("The record share is rebuilt from persisted records on start-up",
+         "[media][repository][security][f-46][record-share]")
+{
+    GIVEN("a repository restored with two live and one removed record of one user")
+    {
+        auto repository = test_repository();
+        repository.config.max_records = 10U;
+        repository.config.max_records_per_user = 2U;
+        auto records = std::vector<merovingian::media::LocalMediaRecord>{};
+        for (auto const* id : {"live1", "live2", "gone1"})
+        {
+            auto record = merovingian::media::LocalMediaRecord{};
+            record.media_id = id;
+            record.owner_user_id = "@alice:example.org";
+            record.size_bytes = 1U;
+            record.storage_id = std::string{"blob-"} + id;
+            record.state = std::string_view{id} == "gone1" ? merovingian::media::LocalMediaState::removed
+                                                           : merovingian::media::LocalMediaState::available;
+            records.push_back(std::move(record));
+        }
+        merovingian::media::restore_local_media_repository(repository, std::move(records), {});
+
+        WHEN("that user and another user each upload")
+        {
+            auto const alice = upload_as(repository, "@alice:example.org", "new");
+            auto const bob = upload_as(repository, "@bob:example.org", "new");
+
+            THEN("the restored live records count, the removed one does not, and the other user is unaffected")
+            {
+                REQUIRE_FALSE(alice.ok);
+                REQUIRE(alice.status == 507U);
+                REQUIRE(bob.ok);
+            }
+        }
+    }
+}
+
+SCENARIO("Cached remote media does not count against any user's record share",
+         "[media][repository][security][f-46][record-share][remote]")
+{
+    GIVEN("a repository that allows one record per user and holds three cached remote files")
+    {
+        auto repository = remote_cache_repository(100U, 3600U);
+        repository.config.max_records = 100U;
+        repository.config.max_records_per_user = 1U;
+        for (auto const* id : {"r1", "r2", "r3"})
+        {
+            REQUIRE(admit(repository, remote_png_request(id, std::string{"\x89PNG\r\n\x1a\n", 8U} + id), 1000U).ok);
+        }
+        REQUIRE(repository.records.size() == 3U);
+
+        WHEN("a local account named like the remote cache owner uploads, and so does an ordinary user")
+        {
+            auto const imitator = upload_as(repository, "@remote-media:remote.example.org", "mine");
+            auto const second = upload_as(repository, "@remote-media:remote.example.org", "mine too");
+            auto const alice = upload_as(repository, "@alice:example.org", "hers");
+
+            THEN("the imitator is charged only for its own local record")
+            {
+                REQUIRE(imitator.ok);
+                REQUIRE_FALSE(second.ok);
+                REQUIRE(alice.ok);
+            }
+        }
+    }
+}
+
+SCENARIO("The default per-user record share is well below the server-wide cap",
+         "[media][repository][security][f-46][record-share]")
+{
+    GIVEN("a runtime media config built from the default configuration")
+    {
+        auto const config = merovingian::media::make_runtime_media_config(merovingian::config::Config{});
+
+        WHEN("the record limits are inspected")
+        {
+            THEN("one user's share is a small fraction of the whole")
+            {
+                REQUIRE(config.max_records_per_user > 0U);
+                REQUIRE(config.max_records_per_user * 10U <= config.max_records);
+            }
+        }
+    }
+}
+
+// F-47 (security audit run-2), ADR-0341: planning an admission sized every cache
+// entry by scanning the whole record list, under the runtime lock. An entry now
+// carries its own size, and an expired entry is dropped instead of holding the
+// cap.
+SCENARIO("A cache entry carries the size of the file it points at", "[media][repository][remote][security][f-47]")
+{
+    GIVEN("a remote media cache holding one eight-byte file")
+    {
+        auto repository = remote_cache_repository(10U, 3600U);
+        auto const t0 = merovingian::media::remote_media_cache_now_ms();
+        auto const a = admit(repository, remote_png_request("mediaA"), t0);
+        REQUIRE(a.ok);
+
+        WHEN("the entry is read, and again after the cache is restored from its persisted form")
+        {
+            auto const admitted_size = repository.remote_media_cache.front().size_bytes;
+            auto persisted = repository.remote_media_cache;
+            for (auto& entry : persisted)
+            {
+                entry.size_bytes = 0U;
+            }
+            merovingian::media::restore_remote_media_cache(repository, std::move(persisted));
+
+            THEN("both carry the record's size")
+            {
+                REQUIRE(admitted_size == 8U);
+                REQUIRE(repository.remote_media_cache.size() == 1U);
+                REQUIRE(repository.remote_media_cache.front().size_bytes == 8U);
+            }
+        }
+    }
+}
+
+SCENARIO("Planning an admission sizes cache entries from the entries themselves",
+         "[media][repository][remote][security][f-47]")
+{
+    GIVEN("a cache of two entries that name no stored record, each declaring twelve bytes, and a sixteen-byte budget")
+    {
+        auto repository = remote_cache_repository(10U, 3600U);
+        repository.config.remote_media_cache_max_bytes = 16U;
+        auto const t0 = merovingian::media::remote_media_cache_now_ms();
+        repository.remote_media_cache.push_back(
+            {"remote.example.org", "old", "no-such-record-1", t0 + 100000U, t0, 12U});
+        repository.remote_media_cache.push_back(
+            {"remote.example.org", "newer", "no-such-record-2", t0 + 100000U, t0 + 1U, 12U});
+
+        WHEN("a four-byte file is planned for admission")
+        {
+            auto const displaced = merovingian::media::plan_remote_media_admission(repository, "remote.example.org",
+                                                                                   "incoming", 4U, t0 + 2U);
+
+            THEN("the least recently used entry goes, so the budget is met without looking at any record")
+            {
+                REQUIRE(displaced.size() == 1U);
+                REQUIRE(displaced.front().media_id == "old");
+            }
+        }
+    }
+}
+
+SCENARIO("An expired cache entry is dropped by the next admission instead of holding the cap",
+         "[media][repository][remote][security][f-47]")
+{
+    GIVEN("a cache of three entries that have all passed their lifetime")
+    {
+        auto repository = remote_cache_repository(10U, 1U);
+        auto const t0 = merovingian::media::remote_media_cache_now_ms();
+        for (auto const* id : {"mediaA", "mediaB", "mediaC"})
+        {
+            REQUIRE(admit(repository, remote_png_request(id, std::string{"\x89PNG\r\n\x1a\n", 8U} + id), t0).ok);
+        }
+        REQUIRE(repository.remote_media_cache.size() == 3U);
+        auto const later = t0 + 5000U;
+
+        WHEN("a new file is admitted although the cache has room")
+        {
+            auto const d =
+                admit(repository, remote_png_request("mediaD", std::string{"\x89PNG\r\n\x1a\nD", 9U}), later);
+
+            THEN("only the new entry remains and the expired files are forgotten")
+            {
+                REQUIRE(d.ok);
+                REQUIRE(cached_media_ids(repository) == std::vector<std::string>{"mediaD"});
+                REQUIRE(repository.records.size() == 1U);
+            }
+        }
+    }
+
+    GIVEN("a cache with one live entry and one expired entry")
+    {
+        auto repository = remote_cache_repository(10U, 100U);
+        auto const t0 = merovingian::media::remote_media_cache_now_ms();
+        REQUIRE(admit(repository, remote_png_request("mediaA"), t0).ok);
+        REQUIRE(admit(repository, remote_png_request("mediaB", std::string{"\x89PNG\r\n\x1a\nB", 9U}), t0 + 10U).ok);
+        repository.remote_media_cache.front().expires_at_ms = t0 + 1U;
+
+        WHEN("a third file is planned for admission")
+        {
+            auto const displaced = merovingian::media::plan_remote_media_admission(repository, "remote.example.org",
+                                                                                   "mediaC", 9U, t0 + 20U);
+
+            THEN("the plan names the expired entry and leaves the live one")
+            {
+                REQUIRE(displaced.size() == 1U);
+                REQUIRE(displaced.front().media_id == "mediaA");
             }
         }
     }

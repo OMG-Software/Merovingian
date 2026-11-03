@@ -86,7 +86,9 @@ current in-process runtime path.
   `security.media.remote_media_cache_ttl_seconds` are answered from the stored record without
   contacting the origin: its bytes when available, `451` when quarantined, `404` when removed. A
   re-fetch after the TTL replaces the stored copy, and when `security.media.remote_media_cache_max_entries`
-  is reached the least recently used remote copy is deleted, so stored remote media stays bounded.
+  is reached the least recently used remote copy is deleted, so stored remote media stays bounded. Each cache
+  entry carries its file's size, so planning an admission is one pass over the cache, and an admission also
+  drops up to 16 expired entries (ADR-0341).
   `remote_media_cache_max_entries = 0` disables the cache and keeps only the latest fetched copy;
   when fetching is off, downloads of a remote `serverName` answer 404 before any outbound work.
 - Media bytes are stored only in `media_blobs.bytes` and read for each download, thumbnail or
@@ -505,6 +507,11 @@ The local HTTP router preserves the media repository status code instead of flat
 - `415` for disallowed MIME types when policy rejects instead of quarantines (the client API answers
   `403 M_FORBIDDEN`, as the spec's upload routes do; likewise `507` for an exhausted quota).
 - `451` for quarantined media download attempts.
+- Local records have a server-wide cap (`max_records`, the memory bound) and each user a share of it
+  (`max_records_per_user`, ADR-0340). The share counts the user's live local records, a deduplicated upload
+  included, from an owner-to-count map kept in step on insert, erase, removal and hydration, so the check is O(1)
+  under the runtime lock. Removing a record frees the owner's slot, not the server-wide one; cached remote
+  media is never counted.
 - `502` when the remote media fetch transport is not available (outbound client or
   discovery network not configured in the runtime).
 

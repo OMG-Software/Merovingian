@@ -634,6 +634,10 @@ struct MediaSecurityConfig final
     std::string max_total_size{"250GiB"};
     std::string max_size_per_user{"10GiB"};
     std::uint64_t max_records{1000000U};
+    // F-46, ADR-0340: one user's share of max_records, so a single account
+    // cannot fill the server-wide cap and refuse every other user. Counts live
+    // local records, deduplicated or not. 0 means no per-user limit.
+    std::uint64_t max_records_per_user{20000U};
     std::vector<std::string> allowed_mime_types{};
     bool quarantine_unknown_mime{true};
     bool enable_av_scanner{true};

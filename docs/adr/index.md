@@ -302,6 +302,9 @@
 * [0318 - A membership template offers the room's stored forward extremities, and none is offered without them](0318-a-membership-template-offers-the-rooms-stored-forward-extremities.md)
 * [0319 - Report a failed device-list write where the client can retry, and finish where access is being revoked](0319-report-a-failed-device-list-write-where-the-client-can-retry.md)
 * [0320 - A join comes after the ancestors that share its depth](0320-a-join-comes-after-the-ancestors-that-share-its-depth.md)
+* [0340 - Each user has a share of the local media record cap](0340-each-user-has-a-share-of-the-local-media-record-cap.md)
+* [0341 - Remote media admission sizes cache entries from the entries and drops a few expired ones](0341-remote-media-admission-sizes-cache-entries-from-the-entries.md)
+* [0342 - An upgrade names the old room's last event by its forward extremity](0342-an-upgrade-names-the-old-rooms-last-event-by-its-forward-extremity.md)
 
 ## Proposed Records
 

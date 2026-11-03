@@ -9113,6 +9113,31 @@ namespace
         return std::nullopt;
     }
 
+    // The Event ID of the last known event in a room: the newest, by stream ordering, of its
+    // forward extremities (events no later event follows; rejected and soft-failed events are
+    // never one). LocalRoom::events holds event JSON, not IDs, so it cannot answer this (F-48,
+    // ADR-0342). Empty when the store holds no extremity for the room.
+    [[nodiscard]] auto last_known_event_id(database::PersistentStore const& store, std::string_view room_id)
+        -> std::optional<std::string>
+    {
+        auto newest = std::optional<std::string>{};
+        auto newest_ordering = std::uint64_t{0U};
+        for (auto const& event_id : database::find_forward_extremities(store, room_id))
+        {
+            auto const row = store.events.find_in_room(room_id, event_id);
+            if (row == store.events.end())
+            {
+                continue;
+            }
+            if (!newest.has_value() || row->stream_ordering > newest_ordering)
+            {
+                newest = event_id;
+                newest_ordering = row->stream_ordering;
+            }
+        }
+        return newest;
+    }
+
     // The replacement room's creation options for POST /rooms/{roomId}/upgrade (spec, "Server
     // behaviour" for room upgrades). The create event carries `predecessor`, the version and
     // the old room's `type`; additional creators are only those the request names, never the
@@ -9130,9 +9155,13 @@ namespace
         auto const index = build_state_index(store);
         auto predecessor = canonicaljson::Object{};
         predecessor.push_back(json_member("room_id", json_str(old_room.room_id)));
-        if (!new_policy.create_event_is_room_id && !old_room.events.empty())
+        if (!new_policy.create_event_is_room_id)
         {
-            predecessor.push_back(json_member("event_id", json_str(old_room.events.back())));
+            // "The event ID of the last known event in the old room, if known": omitted when none is.
+            if (auto const last_event_id = last_known_event_id(store, old_room.room_id); last_event_id.has_value())
+            {
+                predecessor.push_back(json_member("event_id", json_str(*last_event_id)));
+            }
         }
         options.creation_content.push_back(json_member("predecessor", json_obj(std::move(predecessor))));
         if (auto const old_create = current_state_content(store, index, old_room.room_id, "m.room.create");

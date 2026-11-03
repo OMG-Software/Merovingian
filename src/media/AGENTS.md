@@ -69,6 +69,16 @@ set from the upload request (only the remote fetch sets it) and rebuilt on hydra
 alone: a local account could imitate `@remote-media:` (ADR-0178), and the localpart `remote-media`
 is reserved (`auth::localpart_is_reserved`).
 
+## Record share and cache sizes (ADR-0340, ADR-0341)
+
+- `capacity_rejection_reason` charges each owner's live local records against `max_records_per_user` from
+  `LocalMediaRepository::owner_record_counts`, for deduplicated uploads too. Anything that adds, erases or
+  removes a local record keeps the map in step (`release_owner_slot`, the insert in `upload_local_media`,
+  `rebuild_owner_record_counts` on restore). Never count by scanning the records: the check runs under
+  `runtime.mutex`.
+- `RemoteMediaCacheEntry::size_bytes` is set at admission and hydration. `plan_remote_media_admission` sums
+  it and never looks a record up per entry; it drops at most 16 expired entries per admission.
+
 ## File names in Content-Disposition (ADR-0211)
 
 A file name (the `{fileName}` of a named download) is client-chosen text that lands in a

@@ -1191,6 +1191,13 @@ namespace
                 add_parse_finding(findings, std::string{key}, "expected non-negative integer");
             }
         }
+        else if (key == "security.media.max_records_per_user")
+        {
+            if (!parse_u64_value(value, security.media.max_records_per_user))
+            {
+                add_parse_finding(findings, std::string{key}, "expected non-negative integer");
+            }
+        }
         else if (key == "listeners.max_queued_connections")
         {
             if (!parse_u32_value(value, listeners.max_queued_connections))
