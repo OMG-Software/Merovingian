@@ -222,10 +222,12 @@ auto set_ignored_users(merovingian::homeserver::ClientServerRuntime& rt, std::st
 
 // ── Basic match shape ───────────────────────────────────────────────────────
 
-// Spec MUST: a search result carries `rank`, `result` (the matched
+// Spec MUST: a search result carries `rank` and `result` (the matched
 // ClientEvent, with its required event_id/type/sender/room_id/content
-// fields), and `context`.
-SCENARIO("a matching event is returned with rank, result, and context fields", "[search][conformance]")
+// fields). `context` is "Context for result, if requested": it is present when the request carried
+// `event_context` and absent otherwise (F-31, ADR-0333; before 0.12.68 it was always built).
+SCENARIO("a matching event is returned with rank and result fields, and context only when requested",
+         "[search][conformance]")
 {
     GIVEN("alice has sent a message in her own room")
     {
@@ -270,6 +272,21 @@ SCENARIO("a matching event is returned with rank, result, and context fields", "
                 REQUIRE(returned_room_id != nullptr);
                 REQUIRE(*returned_room_id == room_id);
 
+                // Spec: "context: Context for result, if requested." This request did not ask for it.
+                REQUIRE(object_member(*result_entry, "context") == nullptr);
+            }
+        }
+
+        WHEN("alice searches for the same word and asks for event_context")
+        {
+            auto const room_events = search(rt, alice, body_for_term("quick", "\"event_context\":{}"));
+
+            THEN("the result carries a context with its events and pagination tokens")
+            {
+                auto const* results = object_member_as_array(room_events, "results");
+                REQUIRE(results != nullptr);
+                auto const* result_entry = find_result(*results, event_id);
+                REQUIRE(result_entry != nullptr);
                 auto const* context = object_member_as_object(*result_entry, "context");
                 REQUIRE(context != nullptr); // Spec: "context: Context for result, if requested."
                 REQUIRE(object_member_as_array(*context, "events_before") != nullptr);
@@ -864,6 +881,288 @@ SCENARIO("a malformed search body is rejected", "[search][conformance]")
             THEN("the server responds 400")
             {
                 REQUIRE(resp.response.status == 400U); // Spec: search_term is Required
+            }
+        }
+    }
+}
+
+// ── Context across rooms (F-31, ADR-0333) ───────────────────────────────────
+
+// Spec: "context: Context for result, if requested", with events_before/events_after bounded by
+// event_context.before_limit/after_limit. A result's context is the neighbours in its own room, whichever
+// other rooms' events were stored between them.
+SCENARIO("each result's context holds the neighbours in its own room when several rooms match",
+         "[search][conformance][search-context]")
+{
+    GIVEN("two rooms whose messages were sent interleaved, each holding a matching message")
+    {
+        auto started = merovingian::homeserver::start_client_server(search_config());
+        REQUIRE(started.started);
+        auto& rt = started.runtime;
+
+        auto const alice = register_and_login(rt, "alice");
+        auto const room_one = create_room(rt, alice, "public_chat");
+        auto const room_two = create_room(rt, alice, "public_chat");
+        auto const one_before = send_text_message(rt, alice, room_one, "t1", "one before");
+        std::ignore = send_text_message(rt, alice, room_two, "t2", "two before");
+        auto const one_target = send_text_message(rt, alice, room_one, "t3", "one has the nebula");
+        auto const two_target = send_text_message(rt, alice, room_two, "t4", "two has the nebula");
+        auto const one_after = send_text_message(rt, alice, room_one, "t5", "one after");
+        auto const two_after = send_text_message(rt, alice, room_two, "t6", "two after");
+
+        WHEN("alice searches with before_limit=1 and after_limit=1")
+        {
+            auto const room_events =
+                search(rt, alice, body_for_term("nebula", "\"event_context\":{\"before_limit\":1,\"after_limit\":1}"));
+
+            THEN("each context names only events of the result's own room, the nearest on each side")
+            {
+                auto const* results = object_member_as_array(room_events, "results");
+                REQUIRE(results != nullptr);
+                REQUIRE(results->size() == 2U);
+
+                auto const only_id = [](merovingian::canonicaljson::Array const& events) -> std::string {
+                    REQUIRE(events.size() == 1U);
+                    auto const* event = std::get_if<merovingian::canonicaljson::Object>(&events[0].storage());
+                    REQUIRE(event != nullptr);
+                    auto const* id = string_member(*event, "event_id");
+                    REQUIRE(id != nullptr);
+                    return *id;
+                };
+
+                auto const* one = find_result(*results, one_target);
+                REQUIRE(one != nullptr);
+                auto const* one_context = object_member_as_object(*one, "context");
+                REQUIRE(one_context != nullptr);
+                REQUIRE(only_id(*object_member_as_array(*one_context, "events_before")) == one_before);
+                REQUIRE(only_id(*object_member_as_array(*one_context, "events_after")) == one_after);
+
+                auto const* two = find_result(*results, two_target);
+                REQUIRE(two != nullptr);
+                auto const* two_context = object_member_as_object(*two, "context");
+                REQUIRE(two_context != nullptr);
+                REQUIRE(only_id(*object_member_as_array(*two_context, "events_after")) == two_after);
+            }
+        }
+    }
+}
+
+// ── Term and list caps (F-28, F-29, F-30, F-34; ADR-0330, ADR-0332) ──────────
+
+// Spec: "search_term" (and "generic_search_term") have no stated length limit; M_TOO_LARGE is "The request or
+// entity was too large". The server refuses a term past `core::max_search_term_bytes` (1024 bytes) rather
+// than truncate it, because a truncated term would return the wrong results.
+SCENARIO("a search term over the cap is refused on all three search endpoints", "[search][conformance][search-cap]")
+{
+    GIVEN("a logged-in user")
+    {
+        auto started = merovingian::homeserver::start_client_server(search_config());
+        REQUIRE(started.started);
+        auto& rt = started.runtime;
+        auto const alice = register_and_login(rt, "alice");
+        auto const at_cap = std::string(1024U, 'a');
+        auto const over_cap = std::string(1025U, 'a');
+
+        auto const errcode_of = [](merovingian::homeserver::DispatchResult const& resp) -> std::string {
+            auto const body = parse_object(resp.response.body);
+            auto const* errcode = string_member(body, "errcode");
+            return errcode != nullptr ? *errcode : std::string{};
+        };
+        auto const post = [&](std::string const& path, std::string const& body) {
+            return merovingian::homeserver::handle_client_server_request(rt, {"POST", path, alice, body});
+        };
+
+        WHEN("POST /search is sent a term of 1025 bytes")
+        {
+            auto const resp = raw_search(rt, alice, body_for_term(over_cap));
+
+            THEN("it is refused 400 M_TOO_LARGE")
+            {
+                REQUIRE(resp.response.status == 400U);
+                REQUIRE(errcode_of(resp) == "M_TOO_LARGE");
+            }
+        }
+
+        WHEN("POST /search is sent a term of exactly 1024 bytes")
+        {
+            auto const resp = raw_search(rt, alice, body_for_term(at_cap));
+
+            THEN("it is searched")
+            {
+                REQUIRE(resp.response.status == 200U);
+            }
+        }
+
+        WHEN("POST /publicRooms is sent a generic_search_term of 1025 bytes")
+        {
+            auto const resp =
+                post("/_matrix/client/v3/publicRooms", R"({"filter":{"generic_search_term":")" + over_cap + R"("}})");
+
+            THEN("it is refused 400 M_TOO_LARGE")
+            {
+                REQUIRE(resp.response.status == 400U);
+                REQUIRE(errcode_of(resp) == "M_TOO_LARGE");
+            }
+        }
+
+        WHEN("POST /publicRooms is sent a generic_search_term of exactly 1024 bytes")
+        {
+            auto const resp =
+                post("/_matrix/client/v3/publicRooms", R"({"filter":{"generic_search_term":")" + at_cap + R"("}})");
+
+            THEN("it is searched")
+            {
+                REQUIRE(resp.response.status == 200U);
+            }
+        }
+
+        WHEN("POST /user_directory/search is sent a term of 1025 bytes")
+        {
+            auto const resp =
+                post("/_matrix/client/v3/user_directory/search", R"({"search_term":")" + over_cap + R"("})");
+
+            THEN("it is refused 400 M_TOO_LARGE")
+            {
+                REQUIRE(resp.response.status == 400U);
+                REQUIRE(errcode_of(resp) == "M_TOO_LARGE");
+            }
+        }
+
+        WHEN("POST /user_directory/search is sent a term of exactly 1024 bytes")
+        {
+            auto const resp =
+                post("/_matrix/client/v3/user_directory/search", R"({"search_term":")" + at_cap + R"("})");
+
+            THEN("it is searched")
+            {
+                REQUIRE(resp.response.status == 200U);
+            }
+        }
+    }
+}
+
+// Long text and a term built so that a quadratic matcher would take about a billion comparisons per field
+// give the right answers. Nothing here times anything: the matcher's step bound is asserted in the
+// FoldedSubstringMatcher unit tests; this holds the three endpoints to the same answers.
+SCENARIO("a near-matching term finds nothing in a long body, room name and display name",
+         "[search][conformance][search-cap]")
+{
+    GIVEN("a room named, a message sent and a display name set with 60000 a's")
+    {
+        auto started = merovingian::homeserver::start_client_server(search_config());
+        REQUIRE(started.started);
+        auto& rt = started.runtime;
+        auto const alice = register_and_login(rt, "alice");
+        auto const long_a = std::string(60000U, 'a');
+        auto const created = merovingian::homeserver::handle_client_server_request(
+            rt, {"POST", "/_matrix/client/v3/createRoom", alice,
+                 R"({"preset":"public_chat","visibility":"public","name":")" + long_a + R"("})"});
+        REQUIRE(created.response.status == 200U);
+        auto const room_id = *string_member(parse_object(created.response.body), "room_id");
+        std::ignore = send_text_message(rt, alice, room_id, "t1", long_a);
+        REQUIRE(merovingian::homeserver::handle_client_server_request(
+                    rt, {"PUT", "/_matrix/client/v3/profile/@alice:example.org/displayname", alice,
+                         R"({"displayname":")" + long_a + R"("})"})
+                    .response.status == 200U);
+        auto const nearly = std::string(900U, 'a') + "b";
+        auto const exactly = std::string(900U, 'a');
+
+        WHEN("each endpoint is searched for 900 a's then b")
+        {
+            auto const found_in_search = search(rt, alice, body_for_term(nearly));
+            auto const public_rooms = merovingian::homeserver::handle_client_server_request(
+                rt, {"POST", "/_matrix/client/v3/publicRooms", alice,
+                     R"({"filter":{"generic_search_term":")" + nearly + R"("}})"});
+            auto const directory = merovingian::homeserver::handle_client_server_request(
+                rt,
+                {"POST", "/_matrix/client/v3/user_directory/search", alice, R"({"search_term":")" + nearly + R"("})"});
+
+            THEN("none finds anything")
+            {
+                REQUIRE(*int_member(found_in_search, "count") == 0);
+                REQUIRE(public_rooms.response.status == 200U);
+                REQUIRE(object_member_as_array(parse_object(public_rooms.response.body), "chunk")->empty());
+                REQUIRE(directory.response.status == 200U);
+                REQUIRE(object_member_as_array(parse_object(directory.response.body), "results")->empty());
+            }
+        }
+
+        WHEN("each endpoint is searched for 900 a's")
+        {
+            auto const found_in_search = search(rt, alice, body_for_term(exactly));
+            auto const public_rooms = merovingian::homeserver::handle_client_server_request(
+                rt, {"POST", "/_matrix/client/v3/publicRooms", alice,
+                     R"({"filter":{"generic_search_term":")" + exactly + R"("}})"});
+            auto const directory = merovingian::homeserver::handle_client_server_request(
+                rt,
+                {"POST", "/_matrix/client/v3/user_directory/search", alice, R"({"search_term":")" + exactly + R"("})"});
+
+            THEN("each finds alice's data")
+            {
+                REQUIRE(*int_member(found_in_search, "count") >= 1);
+                REQUIRE(object_member_as_array(parse_object(public_rooms.response.body), "chunk")->size() == 1U);
+                REQUIRE(object_member_as_array(parse_object(directory.response.body), "results")->size() == 1U);
+            }
+        }
+    }
+}
+
+// Spec: the RoomEventFilter's `not_rooms` and `not_senders` lists and the search `keys` list have no stated
+// maximum, so a long list is a valid request and must give the answer a short one does.
+SCENARIO("very long filter and keys lists give the same results as short ones", "[search][conformance][search-cap]")
+{
+    GIVEN("a room holding a message, and lists of 20000 entries that do not name it")
+    {
+        auto started = merovingian::homeserver::start_client_server(search_config());
+        REQUIRE(started.started);
+        auto& rt = started.runtime;
+        auto const alice = register_and_login(rt, "alice");
+        auto const room_id = create_room(rt, alice, "public_chat");
+        auto const event_id = send_text_message(rt, alice, room_id, "t1", "a lone pulsar");
+
+        // A JSON array of 20000 strings, `prefix` + number + `tail`, plus any `extra` raw entries after them.
+        auto const list_of = [](std::string const& prefix, std::string const& tail, std::string const& extra = {}) {
+            auto out = std::string{"["};
+            for (auto i = 0; i < 20000; ++i)
+            {
+                out += (i == 0 ? "\"" : ",\"") + prefix + std::to_string(i) + tail + "\"";
+            }
+            return out + extra + "]";
+        };
+
+        WHEN("the search carries long not_rooms and not_senders lists and a keys list ending in content.body")
+        {
+            auto const filter = std::string{"\"filter\":{\"not_rooms\":"} + list_of("!none", ":x") +
+                                ",\"not_senders\":" + list_of("@none", ":x") + "}";
+            auto const keys = list_of("not.a.key", "", ",\"content.body\"");
+            auto const room_events = search(rt, alice, body_for_term("pulsar", filter + ",\"keys\":" + keys));
+
+            THEN("the message is still found")
+            {
+                REQUIRE(*int_member(room_events, "count") == 1);
+                REQUIRE(results_contain_event(*object_member_as_array(room_events, "results"), event_id));
+            }
+        }
+
+        WHEN("the not_rooms list names the room among 20000 others")
+        {
+            auto const list = list_of("!none", ":x", ",\"" + room_id + "\"");
+            auto const room_events =
+                search(rt, alice, body_for_term("pulsar", "\"filter\":{\"not_rooms\":" + list + "}"));
+
+            THEN("nothing is found")
+            {
+                REQUIRE(*int_member(room_events, "count") == 0);
+            }
+        }
+
+        WHEN("the keys list holds only unknown keys")
+        {
+            auto const room_events = search(rt, alice, body_for_term("pulsar", "\"keys\":" + list_of("not.a.key", "")));
+
+            THEN("nothing is found, as for a keys list that names no searchable field")
+            {
+                REQUIRE(*int_member(room_events, "count") == 0);
             }
         }
     }

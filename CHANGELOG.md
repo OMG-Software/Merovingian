@@ -16,6 +16,23 @@ The medium findings of security audit run 2 (ref 5e67d4e8).
 - **A room upgrade names a real event in `predecessor.event_id` (F-48, ADR-0342).** Upgrading to a version below 12 copied
   the old room's last event's whole JSON into the new room's create event, where every member could read it. It is now
   the ID of the old room's newest forward extremity, and is left out when there is none.
+- **The three search endpoints match in linear time and refuse a term over 1024 bytes (F-28, F-29, F-34, ADR-0330).**
+  `POST /publicRooms`, `POST /search` and `POST /user_directory/search` searched a room name, topic, message body or
+  display name with `std::search` or `find`, which cost text x term comparisons, about 9e8 for one 60 KB text and
+  2.5e11 for a 1 MiB display name, with the global lock held. One matcher (KMP over case-folded bytes) now takes at most
+  two steps per byte of text. A `search_term` or `generic_search_term` over 1024 bytes is answered `400 M_TOO_LARGE`
+  before any work (and before `?server=` forwards it), where it was searched before.
+- **`POST /search` filter and `keys` lists no longer multiply the scan (F-30, ADR-0332).** `keys` is resolved to the
+  three searchable keys at parse time, and `rooms`, `not_rooms`, `senders`, `not_senders`, `types` and `not_types` are
+  hashed once per request (type patterns are deduplicated and the covered ones dropped), so judging an event no longer
+  scans lists the client sized. Results are unchanged.
+- **`POST /search` builds result context only when asked, in one pass (F-31, ADR-0333).** Every match used to walk the
+  whole events table and sort its room, 100 times for a page of 100, even with no `event_context`. A result now carries
+  `context` only when the request has `event_context` (the spec: "if requested"), built from one walk of the events for
+  all the page's rooms and found by binary search.
+- **`POST /user_directory/search` reads the accounts once and caps its results (F-50, ADR-0334).** Each matching
+  profile rescanned every account for the deactivated flag, accounts squared for a term like `@`. The deactivated
+  accounts are now collected in one pass, and `limit` is clamped to 100 (`limited` is true when more matched).
 
 ## 0.12.67
 

@@ -12,7 +12,7 @@ Spec authority:
 | File | Responsibility |
 |---|---|
 | `stream_token.cpp` | Encode/decode stream ordering tokens; used for `since=` / `next_batch` / `from=` parameters |
-| `sync_filter.cpp` | Parse and apply sync filter arguments (event type filters, room filters, timeline limits) |
+| `sync_filter.cpp` | Parse and apply sync filter arguments (event type filters, room filters, timeline limits); `PreparedRoomEventFilter`, the same rules over hash sets and a sorted prefix list for a caller that judges many events (`POST /search`, ADR-0332). A change to the rules in `event_passes_filter` / `room_passes_filter` goes into both; `test_prepared_room_event_filter.cpp` holds them equal |
 | `sync_notifier.cpp` | Broadcasts new events to waiting long-poll sync requests; handles the `timeout=` wait |
 | `sliding_sync_parser.cpp` | Parses MSC4186 request body (list operators, range, required_state, etc.) |
 | `sliding_sync_room_list.cpp` | Builds the ordered room list for a sliding sync response |

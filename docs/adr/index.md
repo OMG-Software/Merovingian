@@ -305,6 +305,10 @@
 * [0340 - Each user has a share of the local media record cap](0340-each-user-has-a-share-of-the-local-media-record-cap.md)
 * [0341 - Remote media admission sizes cache entries from the entries and drops a few expired ones](0341-remote-media-admission-sizes-cache-entries-from-the-entries.md)
 * [0342 - An upgrade names the old room's last event by its forward extremity](0342-an-upgrade-names-the-old-rooms-last-event-by-its-forward-extremity.md)
+* [0330 - Search terms are matched in linear time and capped at 1024 bytes](0330-search-terms-are-matched-in-linear-time-and-capped-at-1024-bytes.md)
+* [0332 - Search filter lists are prepared once per request](0332-search-filter-lists-are-prepared-once-per-request.md)
+* [0333 - Search result context is built only when requested, from one pass over the events](0333-search-result-context-is-built-only-when-requested-from-one-pass.md)
+* [0334 - The user directory reads the accounts once and caps its results](0334-the-user-directory-reads-the-accounts-once-and-caps-its-results.md)
 
 ## Proposed Records
 

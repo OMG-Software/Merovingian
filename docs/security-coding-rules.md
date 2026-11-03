@@ -1280,6 +1280,17 @@ media-fetch-pool task.
   security audit run-1, ADR-0174).
   Source: `src/sync/AGENTS.md`.
 
+- **A client's search term is matched with `core::FoldedSubstringMatcher`, never `std::search`, `find` or
+  `string_view::find`, and a term over `core::max_search_term_bytes` (1024) is refused `400 M_TOO_LARGE`, not
+  truncated. A list a client sends and a request judges per event (`keys`, `rooms`, `senders`, `types`) is prepared
+  once per request (`sync::PreparedRoomEventFilter`, a key bit mask), and a whole-table walk happens once per
+  request, never per match or per matching row.**
+  Why: the standard-library searches are O(text x term) in the worst case, and the text (a 64 KiB body, name or
+  topic, or a display name) and the term are both chosen by one caller, with the runtime lock held; a list scanned
+  per event multiplies its length by the events scanned (CWE-407; security audit run-2 F-28..F-31, F-34, F-50,
+  ADR-0330, ADR-0332, ADR-0333, ADR-0334).
+  Source: `src/core/AGENTS.md`, `src/homeserver/AGENTS.md`, `src/sync/AGENTS.md`.
+
 ## Push notifications
 
 - **Glob matching for push rules is linear and never uses `std::regex`.** A pattern without
@@ -1476,7 +1487,7 @@ For finding everything a specific file contributed, without re-reading the whole
 |---|---|
 | root `AGENTS.md` | Memory safety and resource ownership |
 | `security/AGENTS.md`, `security/coding-rules.md` | Memory safety; Secrets and logging; Cryptography; Process |
-| `src/core/AGENTS.md` | Memory safety; Secrets and logging |
+| `src/core/AGENTS.md` | Memory safety; Secrets and logging; Sync |
 | `src/crypto/AGENTS.md` | Secrets and logging; Cryptography |
 | `src/canonicaljson/AGENTS.md` | Cryptography |
 | `src/auth/AGENTS.md` | Secrets and logging; Cryptography; Authentication and authorization; Database |
