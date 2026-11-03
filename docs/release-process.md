@@ -216,7 +216,7 @@ rolling `latest` GitHub prerelease, and uploads fresh package checksums:
 |---|---|
 | Ubuntu `.deb` | `deb` |
 | Debian trixie `.deb` | `debian-pkg` |
-| Fedora `.rpm` | `rpm` |
+| Fedora `.rpm`, one each for `fedora:44` and `fedora:latest` | `rpm` |
 | RHEL-compatible `.rpm` (AlmaLinux 10) | `rhel-rpm` |
 | OpenSUSE Tumbleweed `.rpm` | `opensuse-rpm` |
 | FreeBSD `.pkg` | `freebsd-pkg` |
@@ -237,7 +237,12 @@ built and run `scripts/check-startup-hardening-gate.sh` against the installed
 capability bounding set. The job fails unless every startup hardening check
 reports `enabled` and the server stops cleanly. The `docker-image` job does the
 same for the `Dockerfile`: it builds the image and runs the gate inside it with
-`--cap-drop=ALL --security-opt=no-new-privileges`. The image is not published;
+`--cap-drop=ALL --security-opt=no-new-privileges`. The `rpm` job does the same as
+the Debian jobs, on each Fedora image. The `freebsd-pkg` job installs its package
+with `pkg add` and runs the gate against `/usr/local/bin/merovingian-server` as
+`nobody`. On any system other than Linux the gate sets
+`federation.worker.apply_hardening=false`, because the worker's in-process sandbox
+exists only on Linux. The image is not published;
 the job is a gate on the recipe.
 
 The `Dockerfile` pins `debian:trixie-slim` by the digest of its

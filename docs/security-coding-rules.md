@@ -1169,6 +1169,17 @@ media-fetch-pool task.
   required.
   Source: `src/platform/AGENTS.md`.
 
+- **The ELF probe reads the running image with `dl_iterate_phdr` and opens no file.**
+  Why: the final self-check runs inside Capsicum, where a path cannot be opened, and OpenBSD
+  has no path to the executable at all (ADR-0378).
+  Source: `src/platform/AGENTS.md`.
+
+- **Do not clear NetBSD's seccomp self-check until its thumbnail decoder is confined.**
+  Why: the check is what stops a NetBSD server starting, and NetBSD has no pledge or Capsicum,
+  so clearing it would decode untrusted images with the server's whole syscall surface and its
+  read access to the master key and TLS keys (ADR-0378).
+  Source: `src/platform/AGENTS.md`.
+
 - **If a new syscall needs to be allowed by seccomp, add it to the allow-list — do not
   disable seccomp as a workaround.**
   Why: disabling the sandbox to unblock a syscall reopens the entire kernel attack surface

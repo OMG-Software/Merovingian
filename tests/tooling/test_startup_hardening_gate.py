@@ -17,6 +17,7 @@ import textwrap
 import time
 import unittest
 from pathlib import Path
+from unittest import mock
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -193,6 +194,28 @@ class StartupHardeningGateTests(unittest.TestCase):
         # THEN the config names it.
         config = (self.out / "config").read_text(encoding="utf-8")
         self.assertIn("federation.worker.binary=/opt/worker\n", config)
+
+    def test_waives_the_worker_sandbox_only_where_the_platform_has_none(self) -> None:
+        # GIVEN the worker's in-process sandbox exists only on Linux, and elsewhere the
+        # worker refuses to start unless the config accepts running without it (ADR-0041).
+        shims = self.workdir / "shims"
+        shims.mkdir()
+        uname = shims / "uname"
+
+        for system, waived in (("Linux", False), ("FreeBSD", True), ("OpenBSD", True), ("NetBSD", True)):
+            with self.subTest(system=system):
+                uname.write_text(f"#!/bin/sh\necho {system}\n", encoding="utf-8")
+                uname.chmod(0o755)
+
+                # WHEN the gate starts the server on that platform
+                path = f"{shims}{os.pathsep}{os.environ['PATH']}"
+                with mock.patch.dict(os.environ, {"PATH": path}):
+                    result = self.run_gate("ready")
+
+                # THEN it boots, and only a platform with no sandbox has it waived.
+                self.assertEqual(result.returncode, 0, result.stderr)
+                config = (self.out / "config").read_text(encoding="utf-8")
+                self.assertEqual("federation.worker.apply_hardening=false\n" in config, waived)
 
     def test_fails_when_the_server_refuses_to_start(self) -> None:
         # GIVEN a debug build whose FORTIFY_SOURCE check reports unknown.

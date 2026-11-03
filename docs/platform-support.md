@@ -49,7 +49,7 @@ The escape hatch for old or minimal Linux is the **static musl tarball**
 |---|---|---|---|---|
 | Ubuntu | Ubuntu 24.04 LTS | ≥ 2.39 | distro clang 18+ | `ubuntu-latest` (24.04) |
 | Debian | Debian 13 (trixie) | ≥ 2.39 | distro clang 18+ | `debian:trixie` |
-| Fedora | Fedora 40+ | ≥ 2.39 | dnf clang 18+ | `fedora:latest` |
+| Fedora | Fedora 40+ (source build); Fedora 44 or the current release for the RPM | ≥ 2.39 | dnf clang 18+ | `fedora:44`, `fedora:latest` |
 | RHEL-compatible | RHEL 10 / AlmaLinux 10 | ≥ 2.39 | dnf clang 18+ (AppStream) | `almalinux:10` |
 | OpenSUSE | Tumbleweed (rolling) | current | zypper clang 18+ | `opensuse/tumbleweed` |
 | FreeBSD | 14.1+ (base clang ≥ 18) | n/a (no glibc) | base clang | `vmactions/freebsd-vm@v1` (14.x) |
@@ -107,7 +107,7 @@ just cross-compiled. A regression on a Tier 1 platform blocks merge.
 |---|---|---|---|
 | Linux (glibc, Ubuntu) | `ubuntu-build-and-test` | clang | Reference platform |
 | Linux (Debian trixie) | `debian-build-and-test` | clang, container | apt-supplied libraries; `debian:trixie` |
-| Linux (Red Hat family, Fedora) | `fedora-build-and-test` | clang, container | dnf-supplied libraries |
+| Linux (Red Hat family, Fedora) | `fedora-build-and-test`, which requires `fedora-suite` to pass on each image | clang, container | dnf-supplied libraries; `fedora:44` and `fedora:latest` |
 | Linux (RHEL-compatible, AlmaLinux 10) | `rhel-build-and-test` | clang, container | dnf+EPEL 10-supplied libraries; `almalinux:10` |
 | Linux (OpenSUSE Tumbleweed) | `opensuse-build-and-test` | clang, container | zypper-supplied libraries; `opensuse/tumbleweed` |
 | FreeBSD | `freebsd-build-and-test` | clang (base) | `vmactions/freebsd-vm` |
@@ -128,7 +128,7 @@ runtime behaviour is covered transitively by the matching Tier 1 platform.
 |---|---|---|
 | Ubuntu `.deb` (`ubuntu:latest`) | `packages.yml` (`deb`) | Tier 1 Ubuntu |
 | Debian trixie `.deb` | `packages.yml` (`debian-pkg`) | Tier 1 Debian |
-| Fedora `.rpm` | `packages.yml` (`rpm`) | Tier 1 Fedora |
+| Fedora `.rpm`, one each for `fedora:44` and `fedora:latest` ([ADR-0376](adr/0376-build-an-rpm-for-fedora-44-and-for-fedora-latest.md)) | `packages.yml` (`rpm`) | Tier 1 Fedora |
 | RHEL-compatible `.rpm` (AlmaLinux 10) | `packages.yml` (`rhel-rpm`) | Tier 1 RHEL-compatible |
 | OpenSUSE Tumbleweed `.rpm` | `packages.yml` (`opensuse-rpm`) | Tier 1 OpenSUSE |
 | FreeBSD `.pkg` | `packages.yml` (`freebsd-pkg`) | Tier 1 FreeBSD |
@@ -182,7 +182,7 @@ Runtime hardening is platform-specific and reported by the startup self-check
 
 | Control | Linux | FreeBSD | OpenBSD | NetBSD |
 |---|---|---|---|---|
-| seccomp-bpf syscall filter | enabled | n/a | n/a | n/a |
+| seccomp-bpf syscall filter | enabled | n/a | n/a | blocks startup (ADR-0378) |
 | Landlock filesystem restriction (federation worker only) | enabled (wired 0.12.13, ADR-0062 part 3) | n/a | n/a | n/a |
 | ELF RELRO / BIND_NOW / noexec stack probe | enabled | enabled | enabled | enabled |
 | pledge / unveil | n/a | n/a | enabled (wired in 0.10.7) | n/a |

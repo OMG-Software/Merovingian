@@ -19,12 +19,43 @@ class CiWorkflowTests(unittest.TestCase):
         # THEN CI builds inside a Fedora container using dnf-provided packages.
         self.assertIn("fedora-build-and-test:", workflow)
         self.assertIn("container:", workflow)
-        self.assertIn("image: fedora:latest", workflow)
         self.assertIn("dnf install -y", workflow)
         self.assertIn("openssl-devel", workflow)
         self.assertIn("libsodium-devel", workflow)
         self.assertIn("libpq-devel", workflow)
         self.assertIn("sh scripts/build-linux.sh --builddir build-fedora", workflow)
+
+    def test_every_fedora_release_with_a_published_rpm_runs_the_suite(self) -> None:
+        # GIVEN the packages workflow publishes an RPM for Fedora 44 and for fedora:latest,
+        # and each links against its own release's libraries (Fedora 44 has OpenSSL 3,
+        # Fedora 45 has OpenSSL 4).
+        workflow = CI_WORKFLOW.read_text(encoding="utf-8")
+        job = workflow.split("  fedora-suite:")[1].split("\n  fedora-build-and-test:")[0]
+
+        # WHEN the Fedora build-and-test job's matrix is read
+        # THEN the full suite runs on both, and a failure on one still reports the other.
+        self.assertIn("image: ${{ matrix.image }}", job)
+        self.assertRegex(job, r"image: \[\s*fedora:44,\s*fedora:latest\s*\]")
+        self.assertIn("fail-fast: false", job)
+
+        # AND the two builds keep separate compiler caches.
+        self.assertIn("key: ccache-fedora-ci-${{ matrix.image }}-${{ github.run_id }}", job)
+        self.assertIn("restore-keys: ccache-fedora-ci-${{ matrix.image }}-", job)
+
+    def test_the_required_fedora_check_covers_every_image(self) -> None:
+        # GIVEN the main ruleset requires a check called fedora-build-and-test, and a matrix
+        # job reports one check per image, none of them with that name.
+        workflow = CI_WORKFLOW.read_text(encoding="utf-8")
+
+        # WHEN the job reporting the required name runs
+        job = workflow.split("\n  fedora-build-and-test:")[1].split("\n  # ── Debian")[0]
+
+        # THEN it reports under that name, even when a leg failed, and passes only when
+        # every leg succeeded.
+        self.assertIn("needs: fedora-suite", job)
+        self.assertIn("if: always()", job)
+        self.assertIn("${{ needs.fedora-suite.result }}", job)
+        self.assertIn('test "${RESULT}" = success', job)
 
     def test_ci_installs_os_supplied_dynamic_libraries_on_primary_platforms(self) -> None:
         # GIVEN the repository CI workflow.

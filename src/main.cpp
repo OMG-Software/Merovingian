@@ -63,7 +63,7 @@
 namespace
 {
 
-constexpr auto version = std::string_view{"0.12.67"};
+constexpr auto version = std::string_view{"0.12.69"};
 
 struct BootstrapConfigResult final
 {
@@ -1127,6 +1127,7 @@ struct ListenerBinding final
         }
         catch (std::exception const& ex)
         {
+            // Fatal on purpose, not a degrade to 503: this configuration can never work (ADR-0377).
             LOG_CRITICAL("Federation worker failed to start: " + std::string{ex.what()});
             return merovingian::bootstrap::to_int(merovingian::bootstrap::ExitCode::runtime_start_error);
         }
