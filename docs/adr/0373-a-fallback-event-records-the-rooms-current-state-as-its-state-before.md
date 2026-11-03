@@ -48,6 +48,7 @@ fork it happened to cite?
 * Keep the retired tips as forward extremities (ADR-0225's rejected option), bounding the repeated
   resolution another way.
 * Refuse the local event.
+* Cite every tip in `prev_events` while recording `current_state`.
 
 ## Decision Outcome
 
@@ -68,6 +69,13 @@ authorization check reads it too, so the event's auth events are now all in its 
 the old basis they could name an event its recorded state lacked. The log line
 `event.prev_events.fallback` gains `state_before` (`current_state` or `prev_event`).
 
+What this server answers has to be what it recorded. `state_before_event`, behind `/state`, `/state_ids` and
+the client `/context`, gives a state event with one `prev_event` its own group with its own key's entry taken
+from that `prev_event`'s group. An ordinary event's own group is the `prev_event`'s group plus the event, so
+the answer is that group; a fallback event's keeps the ban. A message's answer was already its own group. The
+one thing a group does not hold is the value the event replaced, so that one entry comes from the cited fork,
+and it can differ from the `current_state` row the event actually replaced. No marker on the event is needed.
+
 ### Positive Consequences
 
 * A fork that predates a ban or demotion cannot restore it through a local event, nor through the
@@ -79,9 +87,18 @@ the old basis they could name an event its recorded state lacked. The log line
 * The recorded state before no longer equals what a peer derives from `prev_events` alone. For the
   cited fork `C`, a peer computes state(C); this server records current_state plus the event. The two
   agree when `current_state` is the resolution of every extremity, and differ by exactly what the
-  retired tips (and unresolved writes) contributed. A server that fetches this event from us and
-  computes its own state before gets the fork's state; each server judges the event it receives by
-  its own computation, and the event is a local, valid message or state change under current state.
+  retired tips (and unresolved writes) contributed.
+* **A peer can reject a fallback event.** Step 5 of "Checks performed on receipt of a PDU" is "Passes
+  authorisation rules based on the state before the event, otherwise it is rejected", and a peer takes
+  that state from `prev_events`. When the sender's standing exists only on a retired tip (their join, or
+  a raised power level), the peer's state before lacks it and the peer rejects an event this server
+  accepted. A rejected event stays rejected there, so that peer's users never see it, and a rejected state
+  event does not apply there, so the two servers hold different state at that key until a later state
+  event settles it. It is not new here: ADR-0225 already cited one fork with `auth_events` from current
+  state. It is accepted because the event is valid under this room's current state, and the alternative
+  on offer is below.
+* A peer that asks `/state_ids` at a fallback event gets the recorded state, which it cannot derive from
+  `prev_events`. It holds a ban the cited fork lacks, so the answer errs toward a revocation.
 * `current_state` is itself a cache and, while a recompute is refused (ADR-0375), the accepted events'
   own rows. A fallback event inherits that. It does not make it worse than the room already was.
 * A local event stored on a retired fork's descendant (an inbound PDU citing the retired ban tip) is
@@ -108,6 +125,14 @@ the old basis they could name an event its recorded state lacked. The log line
 ### Refuse the local event
 
 * Bad, because it is the 500 on leave that ADR-0225 removed.
+
+### Cite every tip in `prev_events` while recording `current_state`
+
+* Good, because a peer's state before is then the resolution of every tip, so the sender's standing on
+  a tip this server would have retired counts, and a peer rejects the event less often.
+* Bad, because it replaces what ADR-0225 decided rather than the state the event records, and a peer
+  has to run the same resolution that failed here, under its own limits.
+* Offered on review of this fix and not taken; the rest of ADR-0225 stands until someone chooses it.
 
 ## Links
 

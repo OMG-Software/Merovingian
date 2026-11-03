@@ -388,6 +388,31 @@ SCENARIO("An event whose state this server never recorded is answered 404 and ne
         }
     }
 
+    GIVEN("a state event whose own recorded group is missing, though the group of its prev_event is intact")
+    {
+        auto store = room_with_creator();
+        ingest(store, name_event("$name_v1", {"$join"}, 3U));
+        ingest(store, name_event("$name_v2", {"$name_v1"}, 4U));
+        auto const before_erasing = state_ids_body(store, "$name_v2");
+        REQUIRE(before_erasing.has_value());
+        REQUIRE(names(*before_erasing, "$name_v1"));
+        auto const group = db::find_event_state_group(store, "$name_v2");
+        REQUIRE(group.has_value());
+        REQUIRE(store.state_groups.erase_if([&](db::PersistentStateGroup const& row) {
+            return row.state_group_id == *group;
+        }) == 1U);
+
+        WHEN("the state before it is requested")
+        {
+            auto const result = fed::build_state_ids_response(store, room_id, "$name_v2", origin);
+
+            THEN("it is not found rather than answered from the fork it cites")
+            {
+                REQUIRE(result.status == fed::RoomReadStatus::not_found);
+            }
+        }
+    }
+
     GIVEN("a recorded state that names an event the store lacks, or a rejected one")
     {
         auto store = room_with_creator();
@@ -489,7 +514,7 @@ SCENARIO("A room joined over federation answers state from the join onwards and 
     }
 }
 
-// F-26: the cost of a request is the state groups on one chain and the state returned, not the room's
+// F-26: the cost of a request is the state groups on at most two chains and the state returned, not the room's
 // history. The count is what `state_before_event` reports: the stored events whose JSON it parsed.
 SCENARIO("The state at an event costs the same however long the room's history is",
          "[federation][events][state][state-at-event][security]")

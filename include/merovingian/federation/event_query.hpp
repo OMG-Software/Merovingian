@@ -100,7 +100,9 @@ struct StateAtEvent final
 [[nodiscard]] auto state_read_resolution_limits() -> events::StateResolutionLimits;
 
 // The state before `at_event_id`: its own recorded group when it is not a state event or was rejected
-// (the state before equals the state after), otherwise the group of its single `prev_event`, otherwise
+// (the state before equals the state after), otherwise, with a single `prev_event`, its own group with
+// its own key's entry taken from the group of that `prev_event` (which is that group for any event but
+// one stored through the fallback, ADR-0373, and that group alone when it has none of its own), otherwise
 // the resolution of its several `prev_events` (`homeserver::compute_state_before` under a lowered
 // auth-walk budget). A rejected event is never in the answer; a soft-failed one is where resolution
 // admitted it. Holds no state of its own and returns owned data. Takes no lock: the caller guards `store`.

@@ -13,8 +13,10 @@ The medium findings of security audit run 2 (ref 5e67d4e8).
   state across a room's forward extremities cannot be resolved, a local event cites the newest tip and retires the
   others; its state before was that one fork's, so a fork from before a ban wrote the banned user's old join over the
   ban in current state, again on the next accepted PDU, and the banned user's next event was accepted. The event's state
-  before is now the room's current state, so its state group and later recomputes keep the ban. ADR-0225's state-before
-  and consequence wording is superseded.
+  before is now the room's current state, so its state group and later recomputes keep the ban, and `/state` and
+  `/state_ids` at such an event answer that state, not the cited fork's. A peer can still reject the event when the
+  sender's standing exists only on a retired tip, as it could before. ADR-0225's state-before and consequence wording is
+  superseded.
 - **A refused recomputation of current state is reported, and message floods no longer force it (F-49, ADR-0374,
   ADR-0375).** `recompute_current_state` returned true when it could not resolve the forward extremities, so more than
   `max_state_groups` tips left a demoted moderator's concurrent state change current. It now returns `resolved`,

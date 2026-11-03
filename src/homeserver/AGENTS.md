@@ -503,7 +503,9 @@ client, sender or remote server controls, and per-user rows that requests scan m
 - A fallback local event (ADR-0225) records the room's `current_state` as its state before, never the cited
   extremity's own state (ADR-0373, F-40): the extremity is picked by stream order and may predate a ban. Do not
   change `basis_for_new_event` to return the fork's state, or suppress only the diff in `store_event_with_bookkeeping`:
-  the next single-extremity `recompute_current_state` writes the recorded group.
+  the next single-extremity `recompute_current_state` writes the recorded group. A peer can reject such an event at
+  step 5 when the sender's standing exists only on a retired tip: accepted in the ADR, not a bug to fix by recording the
+  fork's state.
 - `recompute_current_state` returns a `CurrentStateRecompute`, not a bool: `refused` (the extremities could not be
   resolved) is logged and is not success (ADR-0375, F-49). Extremities in one state group are resolved as one state,
   and `ingest_pdu_event` does not make an accepted event with no `state_key` a tip once the room holds

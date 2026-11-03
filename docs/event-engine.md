@@ -704,7 +704,10 @@ event's state group, built from it, keeps the revocation, so neither the
 `recompute_current_state` that runs after every later accepted PDU restores the
 fork's older state. Its `auth_events` come from the same current state. The
 recorded state can differ from what a peer derives from the cited `prev_event`
-alone. Only when no extremity has a
+alone, and a peer can reject the event at step 5 of the receipt checks when the
+sender's standing exists only on a retired tip. `state_before_event` answers
+with the recorded state: for a state event with one `prev_event`, its own group
+with its own key's entry from that `prev_event`'s group. Only when no extremity has a
 readable state is the event refused (500, `event.prev_events.unresolvable`).
 Before 0.12.48 the failed resolution refused every local event in the room,
 with no log above debug.
@@ -1066,15 +1069,17 @@ the state prior to the changes that event itself induces. The answer is the stat
 this server *recorded* (ADR-0064 state groups), never a walk of the event graph
 (F-25, F-26, ADR-0363): `federation::state_before_event` reads the event's own group
 when the event is not a state event or was rejected (its state before equals its state
-after), the group of its single `prev_event` otherwise, and for a state event with
-several `prev_events` the resolution `compute_state_before` makes at ingestion, under a
+after); for a state event with one `prev_event`, its own group with its own key's entry
+from that `prev_event`'s group (which is that group for any event but a fallback one,
+ADR-0373, and that group alone for an event with no group of its own); and for a state
+event with several `prev_events` the resolution `compute_state_before` makes at ingestion, under a
 lower auth-walk budget (ADR-0365). A rejected event is therefore never in the answer, a
 soft-failed one is where resolution admitted it, and sender-chosen depth decides nothing.
 It fails closed: an event with no recorded state (an outlier, or the state before a
 federated join's own event), a broken group chain, a group naming an event this store lacks
 or a rejected one, or a resolution over its budget is answered `404 M_NOT_FOUND` ("the
 server doesn't know about the state at that event"). The cost of a request is the state
-groups on one chain plus the size of the state, not the length of the room's history. The
+groups on at most two chains plus the size of the state, not the length of the room's history. The
 auth chain is bounded at `max_state_auth_chain_events` (65536) and a longer one is refused
 with `502 M_TOO_LARGE`, never cut (ADR-0364).
 When `event_id` is absent the handler rejects the request with

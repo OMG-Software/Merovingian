@@ -17,6 +17,7 @@
 #include "merovingian/config/config.hpp"
 #include "merovingian/database/persistent_store.hpp"
 #include "merovingian/events/event_id.hpp"
+#include "merovingian/federation/event_query.hpp"
 #include "merovingian/federation/inbound_ingestion.hpp"
 #include "merovingian/homeserver/local_http_router.hpp"
 #include "merovingian/homeserver/runtime.hpp"
@@ -459,6 +460,82 @@ SCENARIO("A room below the forward-extremity limit keeps every fork as a tip and
                 REQUIRE(topic == PduIngestionStatus::accepted);
                 REQUIRE(room.tips() == std::vector<std::string>{"$m1", "$m2", "$t"});
                 REQUIRE(room.current("m.room.topic", "") == std::optional<std::string>{"$t"});
+            }
+        }
+
+        std::filesystem::remove(path);
+    }
+}
+
+// F-40, ADR-0373. What /state and /state_ids answer for a fallback event must be what this server
+// recorded for it, whether the event is a message or a state event. The state before a state event
+// is its own group without the event, not the group of the fork it cites, which predates the ban.
+SCENARIO("The state read at a fallback state event agrees with the state recorded for it",
+         "[pdu_ingestion][state_groups][fallback][f40]")
+{
+    GIVEN("a room with a topic, a ban tip and a newer fork that predates the ban, whose tips cannot be resolved")
+    {
+        auto const path = unique_sqlite_path();
+        std::filesystem::remove(path);
+        auto resolution = merovingian::config::FederationStateResolutionConfig{};
+        // Seven state entries per tip: two distinct tips need 14.
+        resolution.max_total_state_events = 13U;
+        auto started = merovingian::homeserver::start_runtime(config_with_sqlite(path, resolution));
+        REQUIRE(started.started);
+        merovingian::homeserver::wire_federation_callbacks(started.runtime);
+
+        auto room = Room{started.runtime, "!fallbackread:local.example.org"};
+        seed_history(room, {user_one, user_two}, base_power_levels);
+        auto const join_one = std::string{"$join_"} + user_one;
+        auto const join_two = std::string{"$join_"} + user_two;
+
+        auto const old_topic = room.pdu("$old_topic", "m.room.topic", std::string{}, admin, R"({"topic":"old"})",
+                                        {join_two}, {"$create", "$pl", "$join_admin"}, 90);
+        REQUIRE(room.ingest(old_topic) == PduIngestionStatus::accepted);
+        auto const ban = room.pdu("$ban", "m.room.member", std::string{user_one}, admin, R"({"membership":"ban"})",
+                                  {"$old_topic"}, {"$create", "$pl", "$join_admin", join_one}, 100);
+        REQUIRE(room.ingest(ban) == PduIngestionStatus::accepted);
+        auto const fork = room.pdu("$fork", "m.room.message", std::nullopt, user_two,
+                                   R"({"body":"x","msgtype":"m.text"})", {"$old_topic"}, {"$create", "$pl", join_two},
+                                   110);
+        REQUIRE(room.ingest(fork) == PduIngestionStatus::accepted);
+        REQUIRE(room.tips() == std::vector<std::string>{"$ban", "$fork"});
+
+        WHEN("a local state event is stored through the fallback")
+        {
+            auto const basis =
+                merovingian::homeserver::basis_for_new_event(room.store(), room.id(), room.policy(), room.limits());
+            REQUIRE(basis.ok);
+            REQUIRE(basis.prev_event_ids == std::vector<std::string>{"$fork"});
+
+            auto local = merovingian::database::PersistentEvent{};
+            local.event_id = "$local_topic";
+            local.room_id = room.id();
+            local.sender_user_id = admin;
+            local.json = std::string{R"({"type":"m.room.topic","state_key":"","sender":")"} + admin +
+                         R"(","content":{"topic":"new"}})";
+            local.depth = 60U;
+            local.prev_event_ids = basis.prev_event_ids;
+            REQUIRE(merovingian::homeserver::store_local_event(
+                room.store(), room.policy(), local,
+                merovingian::database::PersistentStateEvent{room.id(), "m.room.topic", "", "$local_topic"}, basis,
+                room.limits()));
+
+            auto const before = merovingian::federation::state_before_event(room.store(), room.id(), "$local_topic");
+            auto const holds = [&before](std::string const& event_id) {
+                return std::ranges::find(before.event_ids, event_id) != before.event_ids.end();
+            };
+
+            THEN("the state before it holds the ban the fork lacks, and the banned user's old join is gone")
+            {
+                REQUIRE(before.known);
+                REQUIRE(holds("$ban"));
+                REQUIRE_FALSE(holds(join_one));
+            }
+            AND_THEN("the event is not in its own state before, and the value it replaced is")
+            {
+                REQUIRE_FALSE(holds("$local_topic"));
+                REQUIRE(holds("$old_topic"));
             }
         }
 

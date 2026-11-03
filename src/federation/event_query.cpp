@@ -401,6 +401,33 @@ namespace
         return state_entries_event_ids(store, room_id, *full_state);
     }
 
+    // The state before a state event with one prev_event: its own group, whose entry at the event's
+    // own key is the event, with that entry taken from the prev_event's group. For an ordinary event
+    // the own group is the prev_event's group plus the event, so this is the prev_event's group. For
+    // one stored through the fallback it is the current state that was recorded (ADR-0373), which the
+    // cited fork may not hold. Either group that cannot be read leaves the state unknown.
+    [[nodiscard]] auto state_before_recorded_state_event(database::PersistentStore const& store,
+                                                         std::string_view room_id, StateIdentity const& identity,
+                                                         std::string_view own_group, std::string_view prev_group)
+        -> std::optional<std::vector<std::string>>
+    {
+        auto entries = database::read_state_group_full_state(store, own_group);
+        auto const prev_entries = database::read_state_group_full_state(store, prev_group);
+        if (!entries.has_value() || !prev_entries.has_value())
+        {
+            return std::nullopt;
+        }
+        auto const at_own_key = [&identity](database::PersistentStateGroupStateEntry const& entry) {
+            return entry.event_type == identity.type && entry.state_key == identity.state_key;
+        };
+        std::erase_if(*entries, at_own_key);
+        if (auto const replaced = std::ranges::find_if(*prev_entries, at_own_key); replaced != prev_entries->end())
+        {
+            entries->push_back(*replaced);
+        }
+        return state_entries_event_ids(store, room_id, *entries);
+    }
+
     // The room's current recorded state event IDs -- the fallback
     // `resolve_state_event_ids_at` (client-server context) uses when no event to
     // reconstruct against is given. The federation /state and /state_ids
@@ -765,10 +792,17 @@ auto state_before_event(database::PersistentStore const& store, std::string_view
     }
     if (prev_event_ids.size() == 1U)
     {
-        if (auto const group = store.event_state_groups.state_group_of(prev_event_ids.front()); group.has_value())
+        auto const prev_group = store.event_state_groups.state_group_of(prev_event_ids.front());
+        if (!prev_group.has_value())
         {
-            adopt(group_state_event_ids(store, room_id, *group));
+            return result;
         }
+        // No group of its own (an outlier) leaves the prev_event's. A group it has is what was recorded
+        // for it, and if that cannot be read the state is unknown, as above.
+        auto const own_group = store.event_state_groups.state_group_of(at->event_id);
+        adopt(own_group.has_value()
+                  ? state_before_recorded_state_event(store, room_id, identity, *own_group, *prev_group)
+                  : group_state_event_ids(store, room_id, *prev_group));
         return result;
     }
     auto const* policy = homeserver::stored_room_version_policy(store, room_id);

@@ -281,12 +281,14 @@ Federation is the highest-risk surface: **all input comes from untrusted remote 
    `/state`, `/state_ids` and the client `/context` `state` answer through `state_before_event` and
    `resolve_state_event_ids_at` (`event_query.cpp`). The state BEFORE an event is its own state group when the event is
    not a state event or was rejected (a group holds the state AFTER its event, and a rejected event is recorded with the
-   state before it), else the group of its single `prev_event`, else `compute_state_before` over several `prev_events`
-   under `state_read_resolution_limits` (a lowered auth-walk, ADR-0365). It fails closed with 404: no recorded group
-   (outlier, the events before a federated join's own event), a broken chain, a group naming an event the store lacks or
-   a rejected one. Never rebuild state from `prev_events` and `depth`: depth is the sender's, and a rejected state event
-   with the largest depth would win its key. A cost that grows with the room's history is the defect; the cost is one
-   group chain and the size of the state (`StateAtEvent::events_parsed`). The auth chain of `/state` and `/state_ids` is
+   state before it), else, with a single `prev_event`, its own group with its own key's entry from that `prev_event`'s
+   group (that group for any event but a fallback one, whose recorded state may hold a ban the cited fork lacks,
+   ADR-0373; that group alone for an event with no group of its own), else `compute_state_before` over several
+   `prev_events` under `state_read_resolution_limits` (a lowered auth-walk, ADR-0365). It fails closed with 404: no
+   recorded group for the `prev_event` (outlier, the events before a federated join's own event), a broken chain, a group
+   naming an event the store lacks or a rejected one. Never rebuild state from `prev_events` and `depth`: depth is the sender's, and a rejected state event
+   with the largest depth would win its key. A cost that grows with the room's history is the defect; the cost is at most
+   two group chains and the size of the state (`StateAtEvent::events_parsed`). The auth chain of `/state` and `/state_ids` is
    at most `max_state_auth_chain_events` (65536) and a longer one is 502 `M_TOO_LARGE`, never cut (ADR-0364). The
    functions hold no static state, take no lock and return owned data; the caller guards the store. Read current state
    with `find_current_state_event_id` and `for_each_room_state_row`, never a scan of `store.state` (ADR-0344).

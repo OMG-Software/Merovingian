@@ -2724,8 +2724,10 @@ nothing, all from trusting the worker's view or the hook's transport.
   banned user's old join, which was written over the ban in current state and again by the next accepted PDU, so the
   banned user's next event was accepted. **Mitigation:** the fallback event's state before is the room's current state,
   so its state group and every later single-extremity recompute keep the revocation (ADR-0373). Tests: `[f40]`.
-  **Residual risk:** the state recorded for a fallback event can differ from what a peer derives from its `prev_events`
-  alone; current state is itself last-accepted-writer-wins while a recomputation is refused (next entry).
+  `/state` and `/state_ids` at a fallback event answer that recorded state too. **Residual risk:** the state recorded for
+  a fallback event can differ from what a peer derives from its `prev_events` alone, and a peer can reject the event
+  (step 5 of the receipt checks) when the sender's standing exists only on a retired tip, so that peer's users never see
+  it; current state is itself last-accepted-writer-wins while a recomputation is refused (next entry).
 - **A refused recomputation of current state looked like success, and a message flood could force it (audit run-2
   F-49).** `recompute_current_state` returned true when the forward extremities could not be resolved; with more than
   `max_state_groups` tips (a member citing one old event from many messages) a state event resolution would have
