@@ -2663,3 +2663,81 @@ SCENARIO("a stopping retry job sends nothing and keeps every retry it had taken"
         }
     }
 }
+
+// The recipients' accounts are judged from one pass over the user table per event, not one scan per
+// recipient (ADR-0411): a deactivated recipient with a stored pusher is skipped, an active one is not.
+SCENARIO("one message reaches an active recipient's pusher and skips a deactivated recipient's",
+         "[integration][push][f80]")
+{
+    GIVEN("alice, bob and carol in a room, bob deactivated yet with a pusher stored, and carol with a working one")
+    {
+        auto started = merovingian::homeserver::start_client_server(push_test_config());
+        REQUIRE(started.started);
+        started.runtime.homeserver.config.server().push.enabled = true;
+        auto const alice = register_and_login(started.runtime, "alice");
+        auto const bob = register_and_login(started.runtime, "bob");
+        auto const carol = register_and_login(started.runtime, "carol");
+        auto const room_id = room_with_alice_and_bob(started.runtime, alice, bob);
+        REQUIRE(merovingian::homeserver::handle_client_server_request(
+                    started.runtime, {"POST", "/_matrix/client/v3/rooms/" + room_id + "/invite", alice,
+                                      R"({"user_id":"@carol:example.org"})"})
+                    .response.status == 200U);
+        REQUIRE(merovingian::homeserver::handle_client_server_request(
+                    started.runtime, {"POST", "/_matrix/client/v3/rooms/" + room_id + "/join", carol, "{}"})
+                    .response.status == 200U);
+        auto const bob_gateway = start_mock_gateway(started.runtime, "push-f80-two-bob.localhost.test");
+        auto const carol_gateway = start_mock_gateway(started.runtime, "push-f80-two-carol.localhost.test");
+        deactivate_account(started.runtime, bob, "bob");
+        auto stale = merovingian::database::PersistentPusher{};
+        stale.user_id = "@bob:example.org";
+        stale.app_id = "org.matrix.integration";
+        stale.pushkey = "bob-f80-two";
+        stale.kind = "http";
+        stale.data_url = bob_gateway->url;
+        REQUIRE(merovingian::database::store_pusher(started.runtime.homeserver.database.persistent_store, stale));
+        register_http_pusher(started.runtime, carol, "org.matrix.integration", "carol-f80-two", carol_gateway->url);
+
+        auto bob_connections = std::atomic<unsigned>{0U};
+        auto bob_thread = std::thread{[&] {
+            for (;;)
+            {
+                auto const client_fd = merovingian::tests::tls_mock::accept_loopback(bob_gateway->acceptor, 1500);
+                if (client_fd < 0)
+                {
+                    return;
+                }
+                auto const dropped = merovingian::core::SocketHandle{client_fd};
+                bob_connections.fetch_add(1U);
+            }
+        }};
+        auto const bob_join = merovingian::tests::tls_mock::ScopedThreadJoin{bob_thread};
+        auto carol_request = std::string{};
+        auto carol_thread = std::thread{[&] {
+            auto const accepted = merovingian::tests::tls_mock::json_http_response("200 OK", R"({"rejected":[]})");
+            merovingian::tests::tls_mock::run_one_shot_tls_server(carol_gateway->acceptor, *carol_gateway->tls.context,
+                                                                  accepted, &carol_request);
+        }};
+        auto const carol_join = merovingian::tests::tls_mock::ScopedThreadJoin{carol_thread};
+
+        WHEN("alice sends a message")
+        {
+            REQUIRE(send_text_message(started.runtime, alice, room_id, "txn-f80-two", "hello both").response.status ==
+                    200U);
+            wait_for_background_tasks(started.runtime.homeserver);
+            if (carol_thread.joinable())
+            {
+                carol_thread.join();
+            }
+            if (bob_thread.joinable())
+            {
+                bob_thread.join();
+            }
+
+            THEN("carol's gateway was notified and bob's was never contacted")
+            {
+                CHECK(carol_request.find("POST /_matrix/push/v1/notify") != std::string::npos);
+                CHECK(bob_connections.load() == 0U);
+            }
+        }
+    }
+}

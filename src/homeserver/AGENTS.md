@@ -552,6 +552,9 @@ client, sender or remote server controls, and per-user rows that requests scan m
   row by the index. `RestrictedJoinDecision::work` counts what a decision read. Never filter `store.state` or walk
   `store.events` for one room or one key in this path; `[f19]` in `tests/unit/test_send_join_answer.cpp` shows the cost
   is the same with unrelated rooms present.
+- `build_pending_push_deliveries` skips a deactivated recipient from a set of active users built once per call
+  (`active_local_user_ids`, on the first recipient with a pusher; ADR-0411). Never call `asserted_user_is_active`
+  per recipient there: it scans `database.users`.
 - Push delivery's badge count (`counts.unread`, `count_push_badge`) runs per recipient per event.
   It walks `store.events.in_stream_order()` newest first, stops once every joined room is settled,
   visits at most `push_badge_row_budget` (10000) rows, and saturates at `push_badge_unread_cap`

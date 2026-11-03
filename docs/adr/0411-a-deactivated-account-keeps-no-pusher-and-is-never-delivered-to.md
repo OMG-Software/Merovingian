@@ -46,8 +46,12 @@ Chosen option: the first.
 
 ### Negative Consequences
 
-* The recipient check is a scan of the user table, made once for a recipient who has at least one
-  pusher, so it is not made for the common recipient without one.
+* Building deliveries reads the user table once per event, on the first recipient who has a pusher
+  (a set of the users who exist and are not deactivated), not once per recipient: a per-recipient
+  `asserted_user_is_active` scan would be recipients times users under `runtime.mutex` on every
+  event of a large room. A recipient with no user row is not in the set, which is how
+  `asserted_user_is_active` treats one too. The retry check keeps `asserted_user_is_active`: one
+  lookup per retry, on the retry thread, bounded by the batch size.
 
 ## Links
 

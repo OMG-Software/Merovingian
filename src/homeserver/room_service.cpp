@@ -7859,6 +7859,35 @@ namespace
     // event_id_only field trim are computed per recipient/per pusher, so each
     // delivery gets its own PushGatewayNotification even though several may
     // share the same event).
+    // Hashes a string_view the same as the string it views, so a set of strings is searched without
+    // building one.
+    struct TransparentStringHash final
+    {
+        using is_transparent = void;
+
+        [[nodiscard]] auto operator()(std::string_view text) const noexcept -> std::size_t
+        {
+            return std::hash<std::string_view>{}(text);
+        }
+    };
+
+    // The local users who exist and are not deactivated: what asserted_user_is_active answers for
+    // each of them, from one pass over runtime.database.users. A user with no row is not in it,
+    // which is how asserted_user_is_active treats one too.
+    [[nodiscard]] auto active_local_user_ids(HomeserverRuntime const& runtime)
+        -> std::unordered_set<std::string, TransparentStringHash, std::equal_to<>>
+    {
+        auto active = std::unordered_set<std::string, TransparentStringHash, std::equal_to<>>{};
+        for (auto const& user : runtime.database.users)
+        {
+            if (!user.deactivated)
+            {
+                active.insert(user.user_id);
+            }
+        }
+        return active;
+    }
+
     struct PendingPushDelivery final
     {
         database::PersistentPusher pusher{};
@@ -8046,6 +8075,8 @@ namespace
             return membership != nullptr ? *membership : std::string{};
         }();
 
+        // Built on the first recipient with a pusher (see the check below).
+        auto active_users = std::optional<std::unordered_set<std::string, TransparentStringHash, std::equal_to<>>>{};
         auto recipients = room.members;
         for (auto const& extra : extra_recipients)
         {
@@ -8134,8 +8165,14 @@ namespace
             }
             // A deactivated account keeps no pusher (ADR-0411), and nobody can sign in to it to
             // remove one that survived, so it is never notified, as email_push.cpp does not mail it.
-            // Asked only for a recipient with a pusher: the check scans the user table.
-            if (!asserted_user_is_active(runtime, member))
+            // The users are read once per call, on the first recipient with a pusher, not once per
+            // recipient: this runs under runtime.mutex for every event. Recipients are local here
+            // (remote members were skipped above), and a user with no row is not active.
+            if (!active_users.has_value())
+            {
+                active_users = active_local_user_ids(runtime);
+            }
+            if (!active_users->contains(member))
             {
                 continue;
             }
