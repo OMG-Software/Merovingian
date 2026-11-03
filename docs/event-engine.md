@@ -688,10 +688,34 @@ fails (an extremity with no recorded state, an auth-chain event this server
 does not hold, the state-resolution budget), the event is built on the newest
 extremity, by this server's stream order, whose after-state reads alone, and
 storing it retires every other extremity. A warning
-(`event.prev_events.fallback`) names the reason. Only when no extremity has a
+(`event.prev_events.fallback`) names the reason. The event's state before is
+then the room's cached `current_state`, not that extremity's after-state
+(ADR-0373, F-40): a retired tip, or this fork's predecessors, may hold a ban or
+a demotion that the cited fork lacks, and current state still holds it. The
+event's state group, built from it, keeps the revocation, so neither the
+`current_state` diff written with the event nor the single-extremity
+`recompute_current_state` that runs after every later accepted PDU restores the
+fork's older state. Its `auth_events` come from the same current state. The
+recorded state can differ from what a peer derives from the cited `prev_event`
+alone. Only when no extremity has a
 readable state is the event refused (500, `event.prev_events.unresolvable`).
 Before 0.12.48 the failed resolution refused every local event in the room,
 with no log above debug.
+
+`recompute_current_state` returns a status (ADR-0375, F-49): `resolved`, `refused`
+or `write_failed`. A refusal (an extremity with no readable state, more distinct
+extremity states than `max_state_groups`, the state budget, a resolution that
+fails closed) leaves `current_state` as it was, logs `state.current.refused` at
+warning level, and is no longer reported as success; the caller still stores the
+event. Extremities that share a state group resolve as one state, so a flood of
+messages citing one event costs one state, not one per message (ADR-0374). An
+accepted event with no `state_key` that cites no current tip does not become a
+tip once the room holds `max_state_groups` of them
+(`forward_extremities_stay_bounded`); it is stored, delivered and placed
+normally. A state event is always a tip. While a refusal lasts each accepted
+state event still writes its own `current_state` row, so a ban applies; the
+residual is that a state event resolution would have reverted can stay current
+until the tips are back within budget.
 
 A federated join makes the join event the room's sole forward extremity: every
 extremity recorded before it, left from an earlier stay, is retired (0.12.48).

@@ -62,7 +62,13 @@ local send leaves its cause in a default log. All are module `rooms`, except
   could not be resolved, so the new local event cites only the newest one whose
   state can be read on its own (not necessarily the newest overall) and retires
   the rest (ADR-0225). Fields `room_id`, `extremities` (how many),
-  `prev_event` (the one cited), `retired` (how many) and `reason`.
+  `prev_event` (the one cited), `retired` (how many), `state_before`
+  (`current_state`: the event's state before is the room's current state, ADR-0373;
+  `prev_event`: a room with no current state) and `reason`.
+- `state.current.refused`: the room's forward extremities could not be resolved, so
+  current state was left as it was plus each accepted event's own row (ADR-0375).
+  Fields `room_id` and `reason`. Logged by `recompute_current_state` and
+  `store_event_with_bookkeeping`; the inbound PDU path adds a line naming the event.
 - `event.prev_events.unresolvable`: no forward extremity has a readable state;
   the local event is refused. Fields `room_id`, `extremities`, `reason`.
 - `event.store.failed`: `store_local_event` refused a local event, and wrote

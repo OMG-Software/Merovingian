@@ -651,6 +651,11 @@ not survive a restart. These limits are fixed. See
 | `max_mainline_auth_chain_depth` | `10000` | 1..100,000 |
 | `max_auth_chain_walk_events` | `131072` | 1..524,288 |
 
+`max_state_groups` is the most distinct forward-extremity states one room's current state is resolved from, and the
+most forward extremities a room holds before an accepted event with no `state_key` that cites none of them stops
+becoming one (ADR-0374). Extremities that share a state group count once. When a room's extremities cannot be
+resolved the server logs `state.current.refused` at warning level and keeps the current state it had (ADR-0375).
+
 `appservice.*`:
 
 | Key suffix | Default | Valid range |

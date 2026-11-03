@@ -322,6 +322,9 @@
 * [0323 - The supervisor restarts a live worker whose main-side channel has failed](0323-the-supervisor-restarts-a-worker-whose-main-side-channel-failed.md)
 * [0325 - The state-group tables own their rows and index them by key](0325-the-state-group-tables-own-their-rows-and-index-them.md)
 * [0326 - Retained PDUs are woken through an in-memory index of the events they are missing](0326-retained-pdus-are-woken-through-an-index-of-the-events-they-are-missing.md)
+* [0373 - A fallback event records the room's current state as its state before](0373-a-fallback-event-records-the-rooms-current-state-as-its-state-before.md) — Supersedes the state-before and consequence wording of ADR-0225
+* [0374 - Forward extremities are bounded for events that add no state](0374-forward-extremities-are-bounded-for-events-that-add-no-state.md)
+* [0375 - A refused recomputation of current state is a status, not a success](0375-a-refused-recomputation-of-current-state-is-a-status-not-a-success.md)
 
 ## Proposed Records
 
@@ -364,3 +367,4 @@
 * [0035 - Parse appservice registrations as a bounded YAML subset](0035-parse-appservice-registrations-as-a-bounded-yaml-subset.md) — Refined by ADR-0273: reverse-DNS namespaced keys and `push_ephemeral` are ignored with a warning; other unknown keys are still parse failures
 * [0356 - The authorising-signature helper decides by room version itself](0356-the-authorising-signature-helper-decides-by-room-version-itself.md) — Refines ADR-0171: the rule applies from room version 8 only
 * [0357 - A left room's /sync state is gated by room read access](0357-a-left-rooms-sync-state-is-gated-by-room-read-access.md) — Refines ADR-0084: a user who never joined is given only their own leave or ban
+* [0225 - A local event falls back to the newest forward extremity when their state cannot be resolved](0225-a-local-event-falls-back-to-the-newest-forward-extremity-when-their-state-cannot-be-resolved.md) — Partly superseded by ADR-0373: the fallback event's state before is the room's current state, not the cited extremity's, and the consequences about a retired fork's ban no longer hold

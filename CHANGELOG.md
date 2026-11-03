@@ -4,6 +4,19 @@ The medium findings of security audit run 2 (ref 5e67d4e8).
 
 ### Security
 
+- **A fork that predates a ban can no longer restore it through the ADR-0225 fallback (F-40, ADR-0373).** When the
+  state across a room's forward extremities cannot be resolved, a local event cites the newest tip and retires the
+  others; its state before was that one fork's, so a fork from before a ban wrote the banned user's old join over the
+  ban in current state, again on the next accepted PDU, and the banned user's next event was accepted. The event's state
+  before is now the room's current state, so its state group and later recomputes keep the ban. ADR-0225's state-before
+  and consequence wording is superseded.
+- **A refused recomputation of current state is reported, and message floods no longer force it (F-49, ADR-0374,
+  ADR-0375).** `recompute_current_state` returned true when it could not resolve the forward extremities, so more than
+  `max_state_groups` tips left a demoted moderator's concurrent state change current. It now returns `resolved`,
+  `refused` or `write_failed`, a refusal logs `state.current.refused` at warning level (and
+  `store_event_with_bookkeeping` reports `resolution_refused`), extremities that share a state group resolve as one,
+  and an accepted event with no `state_key` that cites no current tip is not made a tip once the room holds
+  `max_state_groups` of them. State events are always tips.
 - **A member event in a room of version 3 to 7 is no longer refused for naming an authorising server (F-38, ADR-0356).**
   `verify_join_authorising_server_signature` applied rooms/v8.md's rule 4.2.1 to every room version, so a member of a
   legacy room could send an ordinary member event with `join_authorised_via_users_server` naming a third server, which
