@@ -120,7 +120,7 @@ Thumbnail worker library libjpeg-turbo version not reported (dynamic, /lib/x86_6
 |---|---|
 | Ubuntu | 24.04 LTS |
 | Debian | 13 (trixie) |
-| Fedora | 40+ |
+| Fedora | 44 or the current release (RPM); 40+ (source build) |
 | RHEL-compatible | RHEL 10 / AlmaLinux 10 |
 | OpenSUSE | Tumbleweed |
 | FreeBSD | 14.1+ |
@@ -150,9 +150,17 @@ The rolling `latest` GitHub prerelease is rebuilt on every push to `main`.
 # Debian/Ubuntu example
 dpkg -i merovingian_0.10.38_amd64.deb
 
-# Fedora/RHEL example
-dnf install merovingian-0.10.38-1.fc40.x86_64.rpm
+# Fedora example: use the RPM whose .fcNN tag matches `rpm -E %fedora`
+dnf install merovingian-0.12.69-1.fc44.x86_64.rpm
+
+# FreeBSD example
+pkg add merovingian-0.12.69.pkg
 ```
+
+An RPM installs only on the Fedora release it was built on, because it links
+against that release's libraries. The rolling release has one RPM for Fedora 44
+and one for the current Fedora. On any other release, use the static tarball
+below or build from source.
 
 Packages create the `merovingian` system user and group, install the systemd
 unit, and stage the example configuration at `/etc/merovingian/

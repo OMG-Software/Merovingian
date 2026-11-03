@@ -123,9 +123,18 @@ jobs:
           retention-days: 30
 
   rpm:
-    name: Fedora RPM package
+    name: Fedora RPM package (${{ matrix.image }})
     runs-on: ubuntu-latest
-    container: fedora:latest
+    # An RPM installs only on the Fedora release it was built on (ADR-0376).
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - image: fedora:44
+            artifact: rpm-package-fc44
+          - image: fedora:latest
+            artifact: rpm-package-latest
+    container: ${{ matrix.image }}
     permissions:
       contents: read
       attestations: write
@@ -149,8 +158,8 @@ jobs:
       - name: Cache compiler output with ccache
         uses: hendrikmuhs/ccache-action@5ebbd400eff9e74630f759d94ddd7b6c26299639 # v1.2.20
         with:
-          key: ccache-rpm-${{ github.run_id }}
-          restore-keys: ccache-rpm-
+          key: ccache-rpm-${{ matrix.artifact }}-${{ github.run_id }}
+          restore-keys: ccache-rpm-${{ matrix.artifact }}-
       - name: Build .rpm
         run: sh scripts/build-rpm.sh
       # actions/attest-build-provenance occasionally fails with "InternalError:
@@ -186,7 +195,7 @@ jobs:
           subject-path: merovingian-*.rpm
       - uses: actions/upload-artifact@v4
         with:
-          name: rpm-package
+          name: ${{ matrix.artifact }}
           path: merovingian-*.rpm
           retention-days: 30
 
@@ -206,7 +215,14 @@ jobs:
           prepare: |
             pkg install -y meson ninja llvm catch2 pkgconf git perl5 bison flex \
               gmake openssl libsodium postgresql17-client python3 curl png libjpeg-turbo
-          run: sh scripts/build-freebsd-pkg.sh
+          # Install the package as an operator would and boot the installed server as
+          # an unprivileged user (OPS-5). pkg add needs root, the server refuses it.
+          run: |
+            set -e
+            sh scripts/build-freebsd-pkg.sh
+            pkg add ./merovingian-*.pkg
+            cp scripts/check-startup-hardening-gate.sh /tmp/check-startup-hardening-gate.sh
+            su -m nobody -c "sh /tmp/check-startup-hardening-gate.sh /usr/local/bin/merovingian-server"
       - name: Attest FreeBSD package
         uses: actions/attest-build-provenance@v2
         with:
@@ -734,9 +750,15 @@ jobs:
         with:
           name: static-linux-fallback-package
           path: packages/
+      # Each Fedora RPM carries its release's dist tag (.fc44, .fc45), so their
+      # file names are unique and can land directly in packages/.
       - uses: actions/download-artifact@v4
         with:
-          name: rpm-package
+          name: rpm-package-fc44
+          path: packages/
+      - uses: actions/download-artifact@v4
+        with:
+          name: rpm-package-latest
           path: packages/
       - uses: actions/download-artifact@v4
         with:

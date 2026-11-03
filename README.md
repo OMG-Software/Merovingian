@@ -93,8 +93,8 @@ Substitute the release version for `X.Y.Z` in the commands below:
 # Debian/Ubuntu example
 sudo dpkg -i merovingian_X.Y.Z_amd64.deb
 
-# Fedora/RHEL example
-sudo rpm -i merovingian-X.Y.Z.x86_64.rpm
+# Fedora example: use the RPM whose .fcNN tag matches `rpm -E %fedora`
+sudo dnf install merovingian-X.Y.Z-1.fc44.x86_64.rpm
 ```
 
 Merovingian is designed to sit behind a reverse proxy such as nginx, Apache httpd, Caddy, Traefik, or HAProxy. The proxy should own public TLS, while Merovingian stays bound to loopback listeners behind it. Worked examples for each proxy are in [docs/user-manual.md § Reverse proxy](docs/user-manual.md#reverse-proxy).

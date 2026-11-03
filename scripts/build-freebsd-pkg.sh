@@ -1,9 +1,9 @@
 #!/bin/sh
 # SPDX-License-Identifier: GPL-3.0-or-later
-# Build for merovingian 0.12.67.
+# Build for merovingian 0.12.69.
 set -e
 
-VERSION="0.12.67"
+VERSION="0.12.69"
 STAGING="staging-fbsd"
 
 # Clean any state (staged files, build dir) from cached FreeBSD VM runs.
@@ -49,11 +49,45 @@ MANIFEST="${PWD}/${STAGING}.manifest"
 sed "s/version: \"[^\"]*\"/version: \"${VERSION}\"/" \
     packaging/freebsd/+MANIFEST > "${MANIFEST}"
 
-# 7. Create the .pkg archive.
-#    No --plist: pkg(8) automatically packages all files found under --root-dir.
+# 7. Generate the packing list from the staged tree. pkg-create(8) packages only
+#    what a plist or the manifest lists: without one the result is a valid archive
+#    holding no files. Paths are relative to the manifest's prefix, and every file
+#    is owned by root, because an entry naming no owner keeps the build user's.
+PLIST="${PWD}/${STAGING}.plist"
+( cd "${STAGING}/usr/local" && find . -type f | sed 's|^\./||' | sort ) |
+    while read -r file; do
+        mode="$(stat -f '%Lp' "${STAGING}/usr/local/${file}")"
+        printf '@(root,wheel,%s) %s\n' "${mode}" "${file}"
+    done > "${PLIST}"
+
+echo "[debug] packing list:"
+cat "${PLIST}"
+
+# 8. Create the .pkg archive. The root directory is the staging root, not its
+#    usr/local: pkg appends the manifest's prefix to each plist path itself.
 pkg create \
     --manifest "${MANIFEST}" \
-    --root-dir "${PWD}/${STAGING}/usr/local" \
+    --plist "${PLIST}" \
+    --root-dir "${PWD}/${STAGING}" \
     --out-dir .
+
+# 9. Refuse a package that lacks anything an install needs.
+PACKAGE="merovingian-${VERSION}.pkg"
+LISTING="$(pkg info -l -F "${PACKAGE}")"
+for required in \
+    /usr/local/bin/merovingian-server \
+    /usr/local/bin/merovingian-db-migrate \
+    /usr/local/libexec/merovingian/merovingian-fed-worker \
+    /usr/local/libexec/merovingian/merovingian-thumbnail-worker \
+    /usr/local/etc/rc.d/merovingian \
+    /usr/local/etc/merovingian/merovingian.conf.sample; do
+    case "${LISTING}" in
+        *"${required}"*) ;;
+        *)
+            echo "${PACKAGE} does not contain ${required}" >&2
+            exit 1
+            ;;
+    esac
+done
 
 echo "Built FreeBSD package (static deps) for merovingian-${VERSION}"

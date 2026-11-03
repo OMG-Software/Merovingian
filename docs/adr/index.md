@@ -302,6 +302,7 @@
 * [0318 - A membership template offers the room's stored forward extremities, and none is offered without them](0318-a-membership-template-offers-the-rooms-stored-forward-extremities.md)
 * [0319 - Report a failed device-list write where the client can retry, and finish where access is being revoked](0319-report-a-failed-device-list-write-where-the-client-can-retry.md)
 * [0320 - A join comes after the ancestors that share its depth](0320-a-join-comes-after-the-ancestors-that-share-its-depth.md)
+* [0376 - Build an RPM for Fedora 44 and for fedora:latest](0376-build-an-rpm-for-fedora-44-and-for-fedora-latest.md)
 
 ## Proposed Records
 

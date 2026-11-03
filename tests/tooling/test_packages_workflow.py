@@ -234,6 +234,79 @@ class PackagesWorkflowTests(unittest.TestCase):
         self.assertIn("gmake openssl libsodium postgresql17-client python3", workflow)
         self.assertNotIn("postgresql17-client curl sqlite3 catch2", workflow)
 
+    def test_freebsd_package_lists_the_files_it_ships(self) -> None:
+        # GIVEN pkg-create(8) packages only what a plist or manifest lists, so a package
+        # built from a staged tree with neither is a valid archive holding no files: every
+        # FreeBSD package up to 0.12.67 was about 1 KB, and CI passed each of them.
+        script = (REPO_ROOT / "scripts" / "build-freebsd-pkg.sh").read_text(encoding="utf-8")
+        create = script.split("pkg create")[1].split("\n\n")[0]
+
+        # WHEN the script creates the package
+        # THEN it passes a plist generated from the staged tree, resolved from the staging
+        # root because pkg appends the manifest's /usr/local prefix itself.
+        self.assertIn('--plist "${PLIST}"', create)
+        self.assertIn('--root-dir "${PWD}/${STAGING}"', create)
+        self.assertNotIn('/usr/local"', create)
+        self.assertRegex(script, r"find \. -type f")
+
+        # AND each file is owned by root whoever ran the build, since an entry with no
+        # owner keeps the build user's.
+        self.assertIn("@(root,wheel,", script)
+
+        # AND the script fails when the built package lacks anything an install needs.
+        self.assertIn('pkg info -l -F "${PACKAGE}"', script)
+        for path in (
+            "/usr/local/bin/merovingian-server",
+            "/usr/local/bin/merovingian-db-migrate",
+            "/usr/local/libexec/merovingian/merovingian-fed-worker",
+            "/usr/local/libexec/merovingian/merovingian-thumbnail-worker",
+            "/usr/local/etc/rc.d/merovingian",
+            "/usr/local/etc/merovingian/merovingian.conf.sample",
+        ):
+            with self.subTest(path=path):
+                self.assertIn(path, script)
+
+    def test_freebsd_package_is_installed_and_booted_before_it_is_published(self) -> None:
+        # GIVEN the FreeBSD packaging job, whose package nothing has ever installed.
+        job = workflow_job(PACKAGES_WORKFLOW.read_text(encoding="utf-8"), "freebsd-pkg")
+        steps = job.split("- name: Attest FreeBSD package")[0]
+
+        # WHEN the VM has built the package
+        # THEN it installs that package as an operator would and boots the installed server
+        # through the startup hardening gate as an unprivileged user, before attesting it.
+        self.assertIn("set -e", steps)
+        self.assertIn("pkg add ./merovingian-*.pkg", steps)
+        self.assertIn(GATE_SCRIPT.rsplit("/", maxsplit=1)[-1], steps)
+        self.assertRegex(steps, r"su -m nobody -c .*/usr/local/bin/merovingian-server")
+
+    def test_fedora_rpm_is_built_for_each_supported_release(self) -> None:
+        # GIVEN an RPM installs only on the Fedora release it was built on, because its
+        # sonames come from that release: when fedora:latest moved to Fedora 45 and OpenSSL
+        # 4, the only RPM published stopped installing on Fedora 44 ("nothing provides
+        # libcrypto.so.4").
+        workflow = PACKAGES_WORKFLOW.read_text(encoding="utf-8")
+        job = workflow_job(workflow, "rpm")
+
+        # WHEN the job's matrix is read
+        # THEN it builds on a pinned Fedora 44 and on whatever fedora:latest is now.
+        self.assertIn("container: ${{ matrix.image }}", job)
+        self.assertIn("image: fedora:44", job)
+        self.assertIn("image: fedora:latest", job)
+
+        # AND one bad release does not cancel the other's build.
+        self.assertIn("fail-fast: false", job)
+
+        # AND the two builds keep separate compiler caches and separate artifacts.
+        self.assertIn("key: ccache-rpm-${{ matrix.artifact }}-${{ github.run_id }}", job)
+        self.assertIn("name: ${{ matrix.artifact }}", job)
+
+        # AND both reach the published assets, under distinct dist-tagged file names.
+        stage = workflow_job(workflow, "stage-package-assets")
+        for artifact in ("rpm-package-fc44", "rpm-package-latest"):
+            with self.subTest(artifact=artifact):
+                self.assertIn(f"artifact: {artifact}", job)
+                self.assertIn(f"name: {artifact}", stage)
+
     def test_every_packaging_script_configures_a_release_buildtype(self) -> None:
         # GIVEN Meson builds `debug` (-O0) when no buildtype is given, and
         # glibc only honours _FORTIFY_SOURCE when optimising, so a debug

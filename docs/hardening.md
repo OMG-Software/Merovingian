@@ -852,7 +852,9 @@ Hardening is exercised by automated tests:
   built `.deb` and run it as the `merovingian` user under
   `setpriv --bounding-set=-all`, and the `docker-image` job builds the
   `Dockerfile` and runs it inside the image with `--cap-drop=ALL
-  --security-opt=no-new-privileges`. The BSD package jobs do not run it yet.
+  --security-opt=no-new-privileges`. Since 0.12.69 the `freebsd-pkg` job installs
+  its package and runs it as `nobody`. The OpenBSD and NetBSD package jobs do not
+  run it yet.
 * The `complement-image` job (0.12.57, ADR-0233) builds `tests/complement/`
   from the trixie package and starts it as Complement does: no `--cap-drop`
   and no `no-new-privileges` flag. The image's root entrypoint drops both

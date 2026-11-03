@@ -1,3 +1,20 @@
+## 0.12.69
+
+### Fixed
+
+- **The FreeBSD package now contains Merovingian.** `pkg create` was given no packing list, so every `.pkg` up to
+  0.12.67 was a valid archive of about 1 KB holding no files. The script now lists the staged files and fails if the
+  package lacks a binary, the rc.d script or the sample config.
+- **Fedora 44 hosts can install the RPM again.** The only RPM was built on `fedora:latest`, and when that became
+  Fedora 45 with OpenSSL 4 the package stopped installing on Fedora 44 (`nothing provides libcrypto.so.4`). An RPM is
+  now published for Fedora 44 and for `fedora:latest` (ADR-0376).
+
+### CI
+
+- The FreeBSD package job installs the package it built and boots the installed server through the startup hardening
+  gate before attesting it.
+- `fedora-build-and-test` runs the full suite on both Fedora 44 and `fedora:latest`.
+
 ## 0.12.67
 
 The five high findings of security audit run 2 (ref 5e67d4e8).

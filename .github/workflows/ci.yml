@@ -205,8 +205,13 @@ jobs:
   # -- Fedora / Red Hat family -----------------------------------------------
   fedora-build-and-test:
     runs-on: ubuntu-latest
+    # Every Fedora release with a published RPM runs the suite (ADR-0376).
+    strategy:
+      fail-fast: false
+      matrix:
+        image: [fedora:44, fedora:latest]
     container:
-      image: fedora:latest
+      image: ${{ matrix.image }}
     env:
       CC: clang
       CXX: clang++
@@ -243,8 +248,8 @@ jobs:
       - name: Cache compiler output with ccache
         uses: hendrikmuhs/ccache-action@5ebbd400eff9e74630f759d94ddd7b6c26299639 # v1.2.20
         with:
-          key: ccache-fedora-ci-${{ github.run_id }}
-          restore-keys: ccache-fedora-ci-
+          key: ccache-fedora-ci-${{ matrix.image }}-${{ github.run_id }}
+          restore-keys: ccache-fedora-ci-${{ matrix.image }}-
 
       - name: Build and test
         run: sh scripts/build-linux.sh --builddir build-fedora
