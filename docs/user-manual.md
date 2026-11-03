@@ -1336,6 +1336,7 @@ Service API".
 | `security.media.max_total_size` | `250GiB` | Cap on stored local media bytes, in the database; cached remote media has its own budget below. Media is read from the database per request, so this bounds storage, not memory. Empty means no limit. |
 | `security.media.max_size_per_user` | `10GiB` | Per-user media quota in bytes. Keep it at or above `max_upload_size`. Empty means no limit. |
 | `security.media.max_records` | `1000000` | Cap on local media records. Each record's metadata is still held in memory (roughly 300-500 bytes), so this also bounds memory: 1,000,000 records is about 400 MB. `0` means no limit. |
+| `security.media.max_records_per_user` | `20000` | One user's share of `max_records`: the live local records they own, deduplicated uploads included. An upload past it is refused with 403 `M_FORBIDDEN` (internal 507), so one account cannot fill the server-wide cap. An admin-removed record frees its slot but still counts against `max_records`. Cached remote media is never counted. `0` means no per-user limit. |
 | `security.media.allowed_mime_types` | built-in list | Comma-separated allow-list; keep `application/octet-stream` so encrypted-room attachments are accepted. |
 | `security.media.quarantine_unknown_mime` | `true` | Quarantine uploads whose MIME type is not in the allow-list. |
 | `security.media.block_private_ip_fetches` | `true` | Block private/loopback origins when fetching remote media. |

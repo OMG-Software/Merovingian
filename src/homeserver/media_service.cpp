@@ -563,7 +563,7 @@ namespace
         auto const* blob = record == nullptr ? nullptr : media::find_local_media_blob(repository, record->storage_id);
         auto persisted = false;
         auto const displaced = media::plan_remote_media_admission(repository, origin_server, remote_media_id,
-                                                                  record == nullptr ? 0U : record->size_bytes);
+                                                                  record == nullptr ? 0U : record->size_bytes, now);
         if (blob != nullptr)
         {
             // Each blob's reference count once the displaced records are gone.

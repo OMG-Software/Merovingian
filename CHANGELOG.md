@@ -4,6 +4,19 @@ The medium findings of security audit run 2 (ref 5e67d4e8).
 
 ### Security
 
+- **One user can no longer use up the local media record cap (F-46, ADR-0340).** `security.media.max_records` was one
+  budget for the whole server, and distinct tiny files or deduplicated re-uploads cost the per-user byte quota almost
+  nothing, so one account could fill it and every user's upload was then refused until an operator raised it. New key
+  `security.media.max_records_per_user` (default 20000, `0` for no limit) caps each user's live local records, deduplicated
+  uploads included, in O(1) from an owner-to-count map. A removed record frees its owner's slot but still counts against
+  the server-wide cap. Cached remote media never counts against a user.
+- **Admitting remote media no longer scans every record per cache entry (F-47, ADR-0341).** `plan_remote_media_admission`
+  looked up each cache entry's record linearly, under the global lock, so one admission cost cache entries times records.
+  Each entry now carries its size, and an admission drops up to 16 expired entries so they stop holding the caps.
+- **A room upgrade names a real event in `predecessor.event_id` (F-48, ADR-0342).** Upgrading to a version below 12 copied
+  the old room's last event's whole JSON into the new room's create event, where every member could read it. It is now
+  the ID of the old room's newest forward extremity, and is left out when there is none.
+
 ## 0.12.67
 
 The five high findings of security audit run 2 (ref 5e67d4e8).

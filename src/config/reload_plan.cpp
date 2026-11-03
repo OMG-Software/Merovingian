@@ -424,6 +424,10 @@ auto build_reload_plan(Config const& current, Config const& next) -> ReloadPlan
     {
         add_change(plan, "security.media.max_records");
     }
+    if (current.security().media.max_records_per_user != next.security().media.max_records_per_user)
+    {
+        add_change(plan, "security.media.max_records_per_user");
+    }
     if (current.security().media.remote_media_cache_max_size != next.security().media.remote_media_cache_max_size)
     {
         add_change(plan, "security.media.remote_media_cache_max_size");

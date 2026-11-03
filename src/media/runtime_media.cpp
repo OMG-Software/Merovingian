@@ -46,6 +46,7 @@ auto make_runtime_media_config(config::Config const& config) -> RuntimeMediaConf
     return {
         upload_limit.valid ? upload_limit.bytes : 0U,
         config.security().media.max_records,
+        config.security().media.max_records_per_user,
         total_limit.valid ? total_limit.bytes : 0U,
         per_user_limit.valid ? per_user_limit.bytes : 0U,
         std::move(allowed_types),
@@ -97,6 +98,7 @@ auto media_summary(RuntimeMediaConfig const& config) -> std::string
            " max_total_bytes=" + std::to_string(config.max_total_bytes) +
            " max_bytes_per_user=" + std::to_string(config.max_bytes_per_user) +
            " max_records=" + std::to_string(config.max_records) +
+           " max_records_per_user=" + std::to_string(config.max_records_per_user) +
            " remote_media_cache_max_bytes=" + std::to_string(config.remote_media_cache_max_bytes) +
            " remote_media_cache_max_entries=" + std::to_string(config.remote_media_cache_max_entries) +
            " allowed_mime_types=" + std::to_string(config.allowed_mime_types.size()) +

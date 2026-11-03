@@ -27,6 +27,10 @@ struct RuntimeMediaConfig final
     // defaults are non-zero; an explicit empty config value still maps to 0,
     // preserving the pre-0.12.5 unbounded behaviour for operators who opt out.
     std::uint64_t max_records{0U};
+    // F-46, ADR-0340: each owner's share of max_records, counted over their
+    // live (not removed) local records whether or not the bytes were
+    // deduplicated. 0 means no per-user limit.
+    std::uint64_t max_records_per_user{0U};
     std::uint64_t max_total_bytes{0U};
     std::uint64_t max_bytes_per_user{0U};
     std::vector<std::string> allowed_mime_types{"image/png", "image/jpeg", "image/gif", "text/plain",

@@ -427,6 +427,10 @@ security.media.max_upload_size=50MiB
 security.media.max_total_size=250GiB
 security.media.max_size_per_user=10GiB
 security.media.max_records=1000000
+# One user's share of max_records (their live local records, deduplicated
+# uploads included), so one account cannot fill the server-wide cap. 0 means
+# no per-user limit.
+security.media.max_records_per_user=20000
 # Remote media admitted within the TTL is served from the stored copy without
 # contacting the origin again, also after a restart. When max_entries is
 # reached the least recently used remote file is deleted. max_entries=0
