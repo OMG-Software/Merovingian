@@ -2812,6 +2812,13 @@ auto verify_join_authorising_server_signature(canonicaljson::Value const& event,
                                               crypto::Ed25519Provider& provider,
                                               std::chrono::steady_clock::time_point deadline) -> FederationDecision
 {
+    // rooms/v8.md rule 4.2 introduced this rule ("New in this version"); in room versions 3 to 7 the
+    // property is ordinary content, and refusing an event for it would strand every descendant that
+    // the other servers accepted (F-38, ADR-0356).
+    if (!room_version.restricted_join_rule)
+    {
+        return make_decision(true, 200U, {});
+    }
     auto const signature_key = join_authorising_signature_key(event);
     if (!signature_key.has_value())
     {

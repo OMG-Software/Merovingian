@@ -191,7 +191,9 @@ Implemented now:
   path that admits a remote PDU verifies it cryptographically with
   `federation::verify_join_authorising_server_signature` first: `/send`,
   `send_join`, worker relay, backfill ingestion, and the `send_join` state this
-  server stores when it joins a remote room (0.12.31, ADR-0171).
+  server stores when it joins a remote room (0.12.31, ADR-0171). The rule is
+  new in room version 8 (rooms/v8.md rule 4.2); in versions 3 to 7 the property
+  is ordinary content and the helper accepts without checking (ADR-0356).
   The membership and power checks need the authorising user's
   `m.room.member` event in the auth map, which "Auth events selection"
   names for such a join. State resolution has always selected it; since

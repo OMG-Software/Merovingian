@@ -12,13 +12,16 @@
 // implementation; do not weaken the assertion.
 
 #include "../federation_signing_test_support.hpp"
+#include "merovingian/canonicaljson/parser.hpp"
 #include "merovingian/canonicaljson/serializer.hpp"
 #include "merovingian/canonicaljson/value.hpp"
 #include "merovingian/database/persistent_store.hpp"
 #include "merovingian/federation/inbound_request.hpp"
 #include "merovingian/federation/remote_key_cache.hpp"
+#include "merovingian/rooms/room_version_policy.hpp"
 
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/generators/catch_generators.hpp>
 
 #include <array>
 #include <cstdint>
@@ -220,6 +223,70 @@ SCENARIO("A cached remote signing key is trusted for at most seven days after it
                 REQUIRE(found.has_value());
                 // Spec MUST: the lesser of the two.
                 REQUIRE(found->valid_until_ts == response.valid_until_ts);
+            }
+        }
+    }
+}
+
+// Spec: Matrix Room Version 8 (rule 4.2, "New in this version"); room versions 3 to 7
+// Section: Authorisation rules
+// URL: ../../docs/matrix-v1.19-spec/rooms/v8.md#authorisation-rules
+//
+// Room version 8 added: "If `content` has a `join_authorised_via_users_server` property: If the
+// event is not validly signed by the homeserver of the user ID denoted by the key, reject."
+// Room versions 3 to 7 never mention the property, so there it is ordinary content that a
+// server must not judge an event by (F-38).
+SCENARIO("Only room versions 8 and later require the authorising server's signature on a member event",
+         "[federation][inbound][evt1][conformance][f38]")
+{
+    namespace cj = merovingian::canonicaljson;
+    GIVEN("a member event naming a third server in join_authorised_via_users_server, signed by nobody")
+    {
+        auto const parsed = cj::parse_lossless(
+            "{\"auth_events\":[],\"content\":{\"displayname\":\"x\","
+            "\"join_authorised_via_users_server\":\"@nobody:third.example\",\"membership\":\"join\"},"
+            "\"depth\":1,\"origin_server_ts\":1,\"prev_events\":[],\"room_id\":\"!room:remote.example.org\","
+            "\"sender\":\"@mallory:remote.example.org\",\"state_key\":\"@mallory:remote.example.org\","
+            "\"type\":\"m.room.member\"}");
+        REQUIRE(parsed.error == cj::ParseError::none);
+        auto resolver_calls = std::size_t{};
+        auto const resolver = merovingian::federation::AuthorisingKeyResolver{[&](std::string_view, std::string_view) {
+            ++resolver_calls;
+            return merovingian::federation::VerificationKeyResolution{};
+        }};
+
+        WHEN("the room is version 3, 4, 5, 6 or 7")
+        {
+            auto const version =
+                GENERATE(std::string{"3"}, std::string{"4"}, std::string{"5"}, std::string{"6"}, std::string{"7"});
+            CAPTURE(version);
+            auto const* policy = merovingian::rooms::find_room_version_policy(version);
+            REQUIRE(policy != nullptr);
+            auto const decision =
+                merovingian::federation::verify_join_authorising_server_signature(parsed.value, *policy, resolver);
+
+            THEN("the property is ordinary content and the event is not refused for it")
+            {
+                CHECK(decision.accepted);
+                CHECK(decision.status == 200U);
+                CHECK(resolver_calls == 0U);
+            }
+        }
+
+        WHEN("the room is version 8, 9, 10, 11 or 12")
+        {
+            auto const version =
+                GENERATE(std::string{"8"}, std::string{"9"}, std::string{"10"}, std::string{"11"}, std::string{"12"});
+            CAPTURE(version);
+            auto const* policy = merovingian::rooms::find_room_version_policy(version);
+            REQUIRE(policy != nullptr);
+            auto const decision =
+                merovingian::federation::verify_join_authorising_server_signature(parsed.value, *policy, resolver);
+
+            THEN("the event is refused because the authorising server did not sign it")
+            {
+                CHECK_FALSE(decision.accepted);
+                CHECK(decision.status == 403U);
             }
         }
     }

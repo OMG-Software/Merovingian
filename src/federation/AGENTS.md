@@ -26,6 +26,10 @@ Federation is the highest-risk surface: **all input comes from untrusted remote 
    through the resolver overload of `authorize_federation_pdu`, worker relay, backfill and the
    `send_join` state this server stores when it joins (`filter_verified_send_join_events`)
    directly (ADR-0171). A new ingestion path does the same.
+   The rule exists from room version 8 only (rooms/v8.md rule 4.2, "New in this version"; rooms
+   v3 to v7 never mention the property). The helper accepts when the policy has no
+   `restricted_join_rule`, so no caller tests the version, and a prefetch of authorising keys
+   skips those versions too (ADR-0356).
 
    Either signature is checked against every key ID the event lists for that server, not only
    the first. The sender check (`authorize_federation_pdu_sender`,
