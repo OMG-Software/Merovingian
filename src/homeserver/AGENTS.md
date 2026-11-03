@@ -556,6 +556,13 @@ client, sender or remote server controls, and per-user rows that requests scan m
   table a fixed number of times (`PushBadgeCount::table_walks`), whatever the number of rooms:
   nothing per room may walk a whole table.
 
+### A profile change sends a fixed share, and a job sends the rest (F-11, ADR-0353)
+
+`propagate_profile_change` sends to at most `profile_propagation_sends_per_request` rooms; the `profile-propagation`
+`PeriodicJob` in `main.cpp` runs `propagate_queued_profile`, one hold of `runtime.mutex` per room. Both go through
+`walk_rooms_for_profile`, which reads the profile and the user's membership in the hold that sends. Never queue a token or
+an event body: the queue holds a user ID and a position, and the job sends through `send_event_as_user`.
+
 ## A room's version comes from its create event, through one accessor (ADR-0179)
 
 Read a stored room's version only through `stored_room_version` / `stored_room_version_policy`

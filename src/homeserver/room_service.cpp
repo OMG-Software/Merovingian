@@ -1493,24 +1493,19 @@ namespace
             return {};
         }
         auto event_ids = std::vector<std::string>{};
-        for (auto const& state : store.state)
-        {
-            if (state.room_id != room_id)
-            {
-                continue;
-            }
+        database::for_each_room_state_row(store, room_id, [&](database::PersistentStateEvent const& state) {
             if (state.event_type == "m.room.create" && state.state_key.empty())
             {
                 if (!exclude_create)
                 {
                     event_ids.push_back(state.event_id);
                 }
-                continue;
+                return;
             }
             if (state.event_type == "m.room.power_levels" && state.state_key.empty())
             {
                 event_ids.push_back(state.event_id);
-                continue;
+                return;
             }
             if (state.event_type == "m.room.join_rules" && state.state_key.empty())
             {
@@ -1518,14 +1513,14 @@ namespace
                 {
                     event_ids.push_back(state.event_id);
                 }
-                continue;
+                return;
             }
             if (state.event_type == "m.room.member")
             {
                 if (event_type == "m.room.member" && state.state_key == target_state_key)
                 {
                     event_ids.push_back(state.event_id);
-                    continue;
+                    return;
                 }
                 if (state.state_key == sender)
                 {
@@ -1534,14 +1529,12 @@ namespace
                     {
                         event_ids.push_back(state.event_id);
                     }
-                    continue;
                 }
-                continue;
             }
             // All other state event types (history_visibility, guest_access,
             // encryption, canonical_alias, etc.) are NOT valid auth_events
             // for any event type per the Matrix spec.
-        }
+        });
         return event_ids;
     }
 
@@ -8474,6 +8467,165 @@ namespace
 } // namespace
 
 // NOLINTBEGIN(bugprone-easily-swappable-parameters)
+namespace
+{
+
+    // send_event once the sender is known. The profile propagation job (ADR-0353) calls it directly: it holds no token.
+    [[nodiscard]] auto send_event_as_user(HomeserverRuntime& runtime, std::string const& user_id,
+                                          std::string_view room_id, std::string_view event_json,
+                                          std::optional<std::int64_t> origin_server_ts) -> OperationResult
+    {
+        auto* room = find_room(runtime.database, room_id);
+        if (room == nullptr)
+        {
+            log_diagnostic("room.event.rejected", {
+                                                      {"actor",   user_id,              false},
+                                                      {"room_id", std::string{room_id}, false},
+                                                      {"reason",  "unknown room",       false}
+            });
+            return make_operation_result(false, {}, "unknown room");
+        }
+        if (!room_has_member(*room, user_id))
+        {
+            log_diagnostic("room.event.rejected", {
+                                                      {"actor",   user_id,              false},
+                                                      {"room_id", std::string{room_id}, false},
+                                                      {"reason",  "not joined",         false}
+            });
+            return make_operation_result(false, {}, "not joined", 403U);
+        }
+        if (event_json.empty())
+        {
+            log_diagnostic("room.event.rejected", {
+                                                      {"actor",   user_id,              false},
+                                                      {"room_id", std::string{room_id}, false},
+                                                      {"reason",  "empty event",        false}
+            });
+            return make_operation_result(false, {}, "empty event");
+        }
+
+        // CSAZ-11: a redaction must name the event it redacts. Without it there is nothing to compose.
+        if (request_is_redaction_without_target(event_json))
+        {
+            log_diagnostic("room.event.rejected", {
+                                                      {"actor",   user_id,                    false},
+                                                      {"room_id", std::string{room_id},       false},
+                                                      {"status",  "400",                      false},
+                                                      {"reason",  "redaction names no event", false}
+            });
+            return make_operation_result(false, {}, "m.room.redaction content must name the event in redacts", 400U);
+        }
+
+        auto const composition = compose_signed_event(runtime, room_id, user_id, event_json, origin_server_ts);
+        if (composition.failure == ComposeFailure::invalid_state_key)
+        {
+            return invalid_state_key_result();
+        }
+        if (composition.failure == ComposeFailure::too_large)
+        {
+            return event_too_large_result();
+        }
+        auto const& composed = composition.event;
+        if (!composed.has_value())
+        {
+            log_diagnostic("room.event.rejected", {
+                                                      {"actor",   user_id,                                 false},
+                                                      {"room_id", std::string{room_id},                    false},
+                                                      {"status",  "403",                                   false},
+                                                      {"reason",  "event authorization or signing failed", false}
+            });
+            return make_operation_result(false, {}, "event authorization or signing failed", 403U);
+        }
+        // CSAZ-11. Spec (Client-Server API, PUT /redact): a user may redact their own events, another
+        // user's only with the `redact` level, and a server administrator any event sent by a user on
+        // their server. Refusing here keeps a redaction that would not be applied out of the room.
+        if (composed->event_type == "m.room.redaction")
+        {
+            auto const sender_is_server_admin = [&] {
+                return std::ranges::any_of(runtime.database.users, [&](LocalUser const& user) {
+                    return user.user_id == user_id && user.admin;
+                });
+            };
+            auto const check = check_local_redaction(runtime.database.persistent_store, room_id, composed->json,
+                                                     sender_is_server_admin(), runtime.config.server().server_name);
+            if (check != LocalRedactionCheck::permitted)
+            {
+                auto const missing = check == LocalRedactionCheck::target_unknown;
+                log_diagnostic(
+                    "room.event.rejected",
+                    {
+                        {"actor",   user_id,                                                          false},
+                        {"room_id", std::string{room_id},                                             false},
+                        {"status",  missing ? "404" : "403",                                          false},
+                        {"reason",  missing ? "redaction target unknown" : "redaction not permitted", false}
+                });
+                return missing
+                           ? make_operation_result(false, {}, "the event to redact was not found in this room", 404U)
+                           : make_operation_result(false, {}, "you may not redact that event", 403U);
+            }
+        }
+        // ADR-0064 phase B1: route through the same choke point every other
+        // local event path uses, rather than duplicating the raw store call —
+        // this is the client-facing send/state-send/redaction endpoint, so it
+        // was the one local path most likely to be hit by a real client.
+        if (!persist_composed_event(runtime, room_id, user_id, *composed))
+        {
+            log_diagnostic("room.event.rejected", {
+                                                      {"actor",      user_id,                    false},
+                                                      {"room_id",    std::string{room_id},       false},
+                                                      {"event_id",   composed->event_id,         false},
+                                                      {"event_type", composed->event_type,       false},
+                                                      {"status",     "500",                      false},
+                                                      {"reason",     "event persistence failed", false}
+            });
+            return make_operation_result(false, {}, "event persistence failed", 500U);
+        }
+        room->events.push_back(composed->json);
+        append_local_audit(runtime.database, observability::AuditCategory::admin, "room.event_sent", user_id, room_id,
+                           "stored");
+        log_diagnostic("room.event.accepted",
+                       {
+                           {"actor",       user_id,                                         false},
+                           {"room_id",     std::string{room_id},                            false},
+                           {"event_id",    composed->event_id,                              false},
+                           {"event_type",  composed->event_type,                            false},
+                           {"depth",       std::to_string(composed->depth),                 false},
+                           {"prev_events", std::to_string(composed->prev_event_ids.size()), false},
+                           {"auth_events", std::to_string(composed->auth_event_ids.size()), false}
+        });
+        if (runtime.sync_notifier != nullptr)
+        {
+            runtime.sync_notifier->publish(visible_stream_position(runtime.database),
+                                           runtime.database.persistent_store.next_sync_stream_id);
+        }
+        // Refresh any federation worker's snapshot of this room the same way the
+        // 7 membership-mutating calls already do (create_room, join_room,
+        // leave_room, invite_user, ban_user, kick_user, unban_user) — see
+        // docs/architecture.md, "Federation worker room staleness". Without
+        // this, an ordinary message never reaches a worker's own PersistentStore
+        // (pdu_sink for inbound-relayed events, and this function for
+        // locally-sent ones, both write only through main), so
+        // backfill/event/state/state_ids/get_missing_events served by a worker
+        // for this room could omit every message sent since the room's last
+        // membership-triggered reload.
+        notify_room_changed(runtime, room_id);
+        federate_local_event(runtime, room_id, *room, *composed);
+        // Push delivery: evaluate push rules for every local, joined recipient,
+        // record GET /_matrix/client/v3/notifications history for every
+        // notify-worthy one (regardless of push.enabled/pushers — see
+        // build_pending_push_deliveries's doc comment), and fire the Push Gateway
+        // API notifications off the request path for those with push.enabled and
+        // a registered pusher (see dispatch_push_deliveries above).
+        if (auto deliveries = build_pending_push_deliveries(runtime, *room, *composed, user_id); !deliveries.empty())
+        {
+            dispatch_push_deliveries(runtime, std::move(deliveries));
+        }
+        queue_event_for_appservices(runtime, *room, *composed, user_id);
+        return make_operation_result(true, composed->event_id);
+    }
+
+} // namespace
+
 [[nodiscard]] auto send_event(HomeserverRuntime& runtime, std::string_view access_token, std::string_view room_id,
                               std::string_view event_json, std::optional<std::int64_t> origin_server_ts)
     -> OperationResult
@@ -8494,148 +8646,7 @@ namespace
         return make_operation_result(false, {}, "unauthenticated", 401U);
     }
 
-    auto* room = find_room(runtime.database, room_id);
-    if (room == nullptr)
-    {
-        log_diagnostic("room.event.rejected", {
-                                                  {"actor",   *user_id,             false},
-                                                  {"room_id", std::string{room_id}, false},
-                                                  {"reason",  "unknown room",       false}
-        });
-        return make_operation_result(false, {}, "unknown room");
-    }
-    if (!room_has_member(*room, *user_id))
-    {
-        log_diagnostic(
-            "room.event.rejected",
-            {
-                {"actor",   *user_id,             false},
-                {"room_id", std::string{room_id}, false},
-                {"reason",  "not joined",         false}
-        });
-        return make_operation_result(false, {}, "not joined", 403U);
-    }
-    if (event_json.empty())
-    {
-        log_diagnostic("room.event.rejected", {
-                                                  {"actor",   *user_id,             false},
-                                                  {"room_id", std::string{room_id}, false},
-                                                  {"reason",  "empty event",        false}
-        });
-        return make_operation_result(false, {}, "empty event");
-    }
-
-    // CSAZ-11: a redaction must name the event it redacts. Without it there is nothing to compose.
-    if (request_is_redaction_without_target(event_json))
-    {
-        log_diagnostic("room.event.rejected", {
-                                                  {"actor",   *user_id,                   false},
-                                                  {"room_id", std::string{room_id},       false},
-                                                  {"status",  "400",                      false},
-                                                  {"reason",  "redaction names no event", false}
-        });
-        return make_operation_result(false, {}, "m.room.redaction content must name the event in redacts", 400U);
-    }
-
-    auto const composition = compose_signed_event(runtime, room_id, *user_id, event_json, origin_server_ts);
-    if (composition.failure == ComposeFailure::invalid_state_key)
-    {
-        return invalid_state_key_result();
-    }
-    if (composition.failure == ComposeFailure::too_large)
-    {
-        return event_too_large_result();
-    }
-    auto const& composed = composition.event;
-    if (!composed.has_value())
-    {
-        log_diagnostic("room.event.rejected", {
-                                                  {"actor",   *user_id,                                false},
-                                                  {"room_id", std::string{room_id},                    false},
-                                                  {"status",  "403",                                   false},
-                                                  {"reason",  "event authorization or signing failed", false}
-        });
-        return make_operation_result(false, {}, "event authorization or signing failed", 403U);
-    }
-    // CSAZ-11. Spec (Client-Server API, PUT /redact): a user may redact their own events, another
-    // user's only with the `redact` level, and a server administrator any event sent by a user on
-    // their server. Refusing here keeps a redaction that would not be applied out of the room.
-    if (composed->event_type == "m.room.redaction")
-    {
-        auto const check = check_local_redaction(runtime.database.persistent_store, room_id, composed->json,
-                                                 authenticated_admin_user(runtime, access_token).has_value(),
-                                                 runtime.config.server().server_name);
-        if (check != LocalRedactionCheck::permitted)
-        {
-            auto const missing = check == LocalRedactionCheck::target_unknown;
-            log_diagnostic("room.event.rejected",
-                           {
-                               {"actor",   *user_id,                                                         false},
-                               {"room_id", std::string{room_id},                                             false},
-                               {"status",  missing ? "404" : "403",                                          false},
-                               {"reason",  missing ? "redaction target unknown" : "redaction not permitted", false}
-            });
-            return missing ? make_operation_result(false, {}, "the event to redact was not found in this room", 404U)
-                           : make_operation_result(false, {}, "you may not redact that event", 403U);
-        }
-    }
-    // ADR-0064 phase B1: route through the same choke point every other
-    // local event path uses, rather than duplicating the raw store call —
-    // this is the client-facing send/state-send/redaction endpoint, so it
-    // was the one local path most likely to be hit by a real client.
-    if (!persist_composed_event(runtime, room_id, *user_id, *composed))
-    {
-        log_diagnostic("room.event.rejected", {
-                                                  {"actor",      *user_id,                   false},
-                                                  {"room_id",    std::string{room_id},       false},
-                                                  {"event_id",   composed->event_id,         false},
-                                                  {"event_type", composed->event_type,       false},
-                                                  {"status",     "500",                      false},
-                                                  {"reason",     "event persistence failed", false}
-        });
-        return make_operation_result(false, {}, "event persistence failed", 500U);
-    }
-    room->events.push_back(composed->json);
-    append_local_audit(runtime.database, observability::AuditCategory::admin, "room.event_sent", *user_id, room_id,
-                       "stored");
-    log_diagnostic("room.event.accepted", {
-                                              {"actor",       *user_id,                                        false},
-                                              {"room_id",     std::string{room_id},                            false},
-                                              {"event_id",    composed->event_id,                              false},
-                                              {"event_type",  composed->event_type,                            false},
-                                              {"depth",       std::to_string(composed->depth),                 false},
-                                              {"prev_events", std::to_string(composed->prev_event_ids.size()), false},
-                                              {"auth_events", std::to_string(composed->auth_event_ids.size()), false}
-    });
-    if (runtime.sync_notifier != nullptr)
-    {
-        runtime.sync_notifier->publish(visible_stream_position(runtime.database),
-                                       runtime.database.persistent_store.next_sync_stream_id);
-    }
-    // Refresh any federation worker's snapshot of this room the same way the
-    // 7 membership-mutating calls already do (create_room, join_room,
-    // leave_room, invite_user, ban_user, kick_user, unban_user) — see
-    // docs/architecture.md, "Federation worker room staleness". Without
-    // this, an ordinary message never reaches a worker's own PersistentStore
-    // (pdu_sink for inbound-relayed events, and this function for
-    // locally-sent ones, both write only through main), so
-    // backfill/event/state/state_ids/get_missing_events served by a worker
-    // for this room could omit every message sent since the room's last
-    // membership-triggered reload.
-    notify_room_changed(runtime, room_id);
-    federate_local_event(runtime, room_id, *room, *composed);
-    // Push delivery: evaluate push rules for every local, joined recipient,
-    // record GET /_matrix/client/v3/notifications history for every
-    // notify-worthy one (regardless of push.enabled/pushers — see
-    // build_pending_push_deliveries's doc comment), and fire the Push Gateway
-    // API notifications off the request path for those with push.enabled and
-    // a registered pusher (see dispatch_push_deliveries above).
-    if (auto deliveries = build_pending_push_deliveries(runtime, *room, *composed, *user_id); !deliveries.empty())
-    {
-        dispatch_push_deliveries(runtime, std::move(deliveries));
-    }
-    queue_event_for_appservices(runtime, *room, *composed, *user_id);
-    return make_operation_result(true, composed->event_id);
+    return send_event_as_user(runtime, *user_id, room_id, event_json, origin_server_ts);
 }
 // NOLINTEND(bugprone-easily-swappable-parameters)
 
@@ -8647,14 +8658,12 @@ namespace
     [[nodiscard]] auto current_member_content(database::PersistentStore const& store, std::string_view room_id,
                                               std::string_view user_id) -> std::optional<canonicaljson::Object>
     {
-        auto const state_it = std::ranges::find_if(store.state, [&](database::PersistentStateEvent const& state) {
-            return state.room_id == room_id && state.event_type == "m.room.member" && state.state_key == user_id;
-        });
-        if (state_it == store.state.end())
+        auto const event_id = database::find_current_state_event_id(store, room_id, "m.room.member", user_id);
+        if (!event_id.has_value())
         {
             return std::nullopt;
         }
-        auto const event_it = store.events.find(state_it->event_id);
+        auto const event_it = store.events.find(*event_id);
         if (event_it == store.events.end())
         {
             return std::nullopt;
@@ -8686,6 +8695,89 @@ namespace
                content_string(content, "avatar_url") == wanted_avatar_url;
     }
 
+    // What one hold of runtime.mutex may do towards one user's profile change (ADR-0353).
+    struct ProfileWalkBudget final
+    {
+        std::size_t rooms{0U};
+        std::size_t member_events{0U};
+        std::size_t sends{0U};
+    };
+
+    struct ProfileWalkOutcome final
+    {
+        // The index in database.rooms to resume from, when not finished.
+        std::size_t next_room{0U};
+        bool finished{false};
+        std::size_t sent{0U};
+        std::size_t failed{0U};
+    };
+
+    // Walks database.rooms from `first_room`, sending the user's current profile to each room whose current state holds
+    // them joined without it, until the rooms end or the budget does. Whether to send is decided here, under the same
+    // hold as the send, and the profile is read here: a room the user has left is never sent a join that would rejoin
+    // them, and a profile changed twice is sent once.
+    [[nodiscard]] auto walk_rooms_for_profile(HomeserverRuntime& runtime, std::string const& user_id,
+                                              std::size_t first_room, ProfileWalkBudget budget) -> ProfileWalkOutcome
+    {
+        auto const& store = runtime.database.persistent_store;
+        auto const profile = database::find_profile(store, user_id);
+        auto const event_json = serialize_own_join_event_json(store, user_id);
+        auto outcome = ProfileWalkOutcome{};
+        for (outcome.next_room = first_room; outcome.next_room < runtime.database.rooms.size(); ++outcome.next_room)
+        {
+            if (budget.rooms == 0U || budget.member_events == 0U || budget.sends == 0U)
+            {
+                return outcome;
+            }
+            --budget.rooms;
+            auto const& room = runtime.database.rooms[outcome.next_room];
+            auto const room_id = room.room_id;
+            // A room is one the user "is a member of" when its current m.room.member state for them is a join. The
+            // runtime member list alone is not enough: it can name a user the room's state says has left (ADR-0182),
+            // and in a public room the join sent here would then rejoin them.
+            if (!database::find_current_state_event_id(store, room_id, "m.room.member", user_id).has_value() ||
+                !room_has_member(room, user_id))
+            {
+                continue;
+            }
+            --budget.member_events;
+            auto const content = current_member_content(store, room_id, user_id);
+            if (!content.has_value() || content_string(*content, "membership") != "join")
+            {
+                log_diagnostic("profile.propagation.not_member",
+                               {
+                                   {"actor",   user_id, false},
+                                   {"room_id", room_id, false}
+                });
+                continue;
+            }
+            if (member_content_carries_profile(*content, profile))
+            {
+                continue;
+            }
+            --budget.sends;
+            auto const result = event_json.has_value()
+                                    ? send_event_as_user(runtime, user_id, room_id, *event_json, std::nullopt)
+                                    : make_operation_result(false, {}, "membership serialization failed");
+            if (result.ok)
+            {
+                ++outcome.sent;
+                continue;
+            }
+            ++outcome.failed;
+            log_diagnostic("profile.propagation.room_failed",
+                           {
+                               {"actor",   user_id,                       false},
+                               {"room_id", room_id,                       false},
+                               {"status",  std::to_string(result.status), false},
+                               {"reason",  result.reason,                 false}
+            },
+                           observability::LogEventSeverity::warning);
+        }
+        outcome.finished = true;
+        return outcome;
+    }
+
 } // namespace
 
 [[nodiscard]] auto propagate_profile_change(HomeserverRuntime& runtime, std::string_view access_token)
@@ -8697,57 +8789,26 @@ namespace
     {
         return make_operation_result(false, {}, "profile propagation requires authentication", 401U);
     }
-    auto const& store = runtime.database.persistent_store;
-    auto const profile = database::find_profile(store, *user_id);
-    auto const event_json = serialize_own_join_event_json(store, *user_id);
-    // Copied first: send_event appends to each room's events while this walks the rooms. A room
-    // is one the user "is a member of" when its current m.room.member state for them is a join.
-    // The runtime member list alone is not enough: it can name a user the room's state says has
-    // left (ADR-0182), and in a public room the join sent here would then rejoin them.
-    auto pending_rooms = std::vector<std::string>{};
-    for (auto const& room : runtime.database.rooms)
+    // The request's share (ADR-0353). Starting from the first room, not from any queued position: rooms already passed
+    // hold the profile before this change, and the walk skips rooms already current.
+    auto const walked = walk_rooms_for_profile(runtime, *user_id, 0U,
+                                               {profile_propagation_rooms_walked_per_hold,
+                                                profile_propagation_member_events_read_per_hold,
+                                                profile_propagation_sends_per_request});
+    if (walked.finished)
     {
-        if (!room_has_member(room, *user_id))
+        runtime.profile_propagation_pending.erase(*user_id);
+    }
+    else
+    {
+        runtime.profile_propagation_pending.insert_or_assign(*user_id, walked.next_room);
+        if (runtime.profile_propagation_wake)
         {
-            continue;
-        }
-        auto const content = current_member_content(store, room.room_id, *user_id);
-        if (!content.has_value() || content_string(*content, "membership") != "join")
-        {
-            log_diagnostic("profile.propagation.not_member",
-                           {
-                               {"actor",   *user_id,     false},
-                               {"room_id", room.room_id, false}
-            });
-            continue;
-        }
-        if (!member_content_carries_profile(*content, profile))
-        {
-            pending_rooms.push_back(room.room_id);
+            runtime.profile_propagation_wake();
         }
     }
-    auto sent = std::size_t{0U};
-    auto failed = std::size_t{0U};
-    for (auto const& room_id : pending_rooms)
-    {
-        auto const result = event_json.has_value()
-                                ? send_event(runtime, access_token, room_id, *event_json)
-                                : make_operation_result(false, {}, "membership serialization failed");
-        if (result.ok)
-        {
-            ++sent;
-            continue;
-        }
-        ++failed;
-        log_diagnostic("profile.propagation.room_failed",
-                       {
-                           {"actor",   *user_id,                      false},
-                           {"room_id", room_id,                       false},
-                           {"status",  std::to_string(result.status), false},
-                           {"reason",  result.reason,                 false}
-        },
-                       observability::LogEventSeverity::warning);
-    }
+    auto const sent = walked.sent;
+    auto const failed = walked.failed;
     // The second mechanism: "an m.presence presence status update is sent, again containing the
     // new values of the displayname and avatar_url keys, in addition to the required presence key
     // containing the current presence state of the user". Storing the user's presence again gives
@@ -8780,13 +8841,64 @@ namespace
     auto const complete = failed == 0U && presence_sent;
     log_diagnostic("profile.propagation.completed",
                    {
-                       {"actor",    *user_id,                          false},
-                       {"rooms",    std::to_string(sent),              false},
-                       {"failed",   std::to_string(failed),            false},
-                       {"presence", presence_sent ? "sent" : "failed", false}
+                       {"actor",    *user_id,                           false},
+                       {"rooms",    std::to_string(sent),               false},
+                       {"failed",   std::to_string(failed),             false},
+                       {"presence", presence_sent ? "sent" : "failed",  false},
+                       {"queued",   walked.finished ? "false" : "true", false}
     },
                    complete ? observability::LogEventSeverity::debug : observability::LogEventSeverity::warning);
     return make_operation_result(true, {});
+}
+
+auto propagate_queued_profile(HomeserverRuntime& runtime) -> std::chrono::milliseconds
+{
+    auto const guard = std::unique_lock<RuntimeMutex>{runtime.mutex};
+    auto& pending = runtime.profile_propagation_pending;
+    if (pending.empty())
+    {
+        return profile_propagation_idle_delay;
+    }
+    // In turn, so that one user's many rooms do not hold up another user's few.
+    auto next = pending.upper_bound(runtime.profile_propagation_last_user);
+    if (next == pending.end())
+    {
+        next = pending.begin();
+    }
+    auto const user_id = next->first;
+    auto const first_room = next->second;
+    runtime.profile_propagation_last_user = user_id;
+
+    // Spec, "Account suspension": changing profile data is among the actions recommended forbidden, and a locked
+    // account cannot be used. The request was allowed; what it left is not sent once the account has been stopped.
+    auto const user = std::ranges::find_if(runtime.database.users, [&](LocalUser const& candidate) {
+        return candidate.user_id == user_id;
+    });
+    if (user == runtime.database.users.end() || user->locked || user->suspended || user->deactivated)
+    {
+        pending.erase(user_id);
+        log_diagnostic("profile.propagation.abandoned", {
+                                                            {"actor", user_id, false}
+        });
+    }
+    else
+    {
+        auto const walked = walk_rooms_for_profile(
+            runtime, user_id, first_room,
+            {profile_propagation_rooms_walked_per_hold, profile_propagation_member_events_read_per_hold, 1U});
+        if (walked.finished)
+        {
+            pending.erase(user_id);
+            log_diagnostic("profile.propagation.queue_finished", {
+                                                                     {"actor", user_id, false}
+            });
+        }
+        else
+        {
+            pending.insert_or_assign(user_id, walked.next_room);
+        }
+    }
+    return pending.empty() ? std::chrono::milliseconds{profile_propagation_idle_delay} : profile_propagation_pace;
 }
 
 // See the doc comment in room_service.hpp. Builds a ComposedEvent-shaped

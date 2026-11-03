@@ -2826,3 +2826,12 @@ nothing, all from trusting the worker's view or the hook's transport.
   with no known state-before gets no such check; it has no state group, so read paths do not show it, but one that gains a
   group later is checked only then. Honest history from a sender who can no longer send is withheld too, as in `/send`. Tests:
   `[f16]`.
+
+### A profile change fanning out under the runtime lock (0.12.68, F-11)
+
+- **One user could hold the runtime lock for as long as they had rooms (F-11, ADR-0353).** The join sent to each room on a
+  profile change ran under one hold, one database commit per room, and alternating two names repeated it. A request now sends
+  to at most `profile_propagation_sends_per_request` rooms and the `profile-propagation` job takes the lock per room for the
+  rest. The queue holds a user ID and a position, never a token. **Residual risk:** an attacker alternating names can keep the
+  job busy and delay other users' changes, though not other requests; rooms queued at a restart wait for the next change; the
+  number of rooms a user may join stays uncapped, as the spec sets no limit. Tests: `[f11]`.

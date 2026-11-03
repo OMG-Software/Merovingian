@@ -411,19 +411,35 @@ struct SendJoinStateIngestResult final
 // Spec (Client-Server API, "Events on Change of Profile Information"): when a user changes their
 // display name or avatar URL, "an m.room.member event (with a join membership) is sent to every
 // room the user is a member of, to update the displayname and avatar_url". Sends that event,
-// carrying the user's current profile, through send_event to each room whose current m.room.member
-// state for `access_token`'s user is a join that does not already carry it. A room the runtime
-// member list names but whose state does not hold the user as joined is skipped, never joined
-// (ADR-0182). A room that refuses the event (its auth rules, room version, size limits or a storage
-// failure) is logged as a warning; the others still get theirs. Then sends the section's
-// m.presence update: the user's current presence (offline if
-// never set) is stored again at a new sync stream position, and /sync adds the display name and
-// avatar URL to it. Called after the profile is stored, so it succeeds whatever the rooms and
-// presence do: only an unauthenticated token fails it (401). A room left behind is sent the next
-// profile update, without duplicate membership events to rooms already current. Takes
-// runtime.mutex (recursive).
+// carrying the user's current profile, to each room whose current m.room.member state for
+// `access_token`'s user is a join that does not already carry it. A room the runtime member list
+// names but whose state does not hold the user as joined is skipped, never joined (ADR-0182). A
+// room that refuses the event (its auth rules, room version, size limits or a storage failure) is
+// logged as a warning; the others still get theirs. Sends to at most
+// profile_propagation_sends_per_request rooms under this hold, and queues the user for
+// propagate_queued_profile when rooms may remain (F-11, ADR-0353). Then sends the section's
+// m.presence update: the user's current presence (offline if never set) is stored again at a new
+// sync stream position, and /sync adds the display name and avatar URL to it. Called after the
+// profile is stored, so it succeeds whatever the rooms and presence do: only an unauthenticated
+// token fails it (401). A room left behind is sent the next profile update, without duplicate
+// membership events to rooms already current. Takes runtime.mutex (recursive).
 [[nodiscard]] auto propagate_profile_change(HomeserverRuntime& runtime, std::string_view access_token)
     -> OperationResult;
+// What one hold of runtime.mutex may do towards a profile change (F-11, ADR-0353): the rooms it may
+// look at, the user's member events it may read and, for a request, the rooms it may send to. The job
+// sends to one room per hold.
+inline constexpr auto profile_propagation_rooms_walked_per_hold = std::size_t{1024U};
+inline constexpr auto profile_propagation_member_events_read_per_hold = std::size_t{64U};
+inline constexpr auto profile_propagation_sends_per_request = std::size_t{16U};
+// How long the job leaves the lock free between holds, and how long it sleeps with nothing queued
+// (queueing a user wakes it).
+inline constexpr auto profile_propagation_pace = std::chrono::milliseconds{5};
+inline constexpr auto profile_propagation_idle_delay = std::chrono::hours{1};
+// The "profile-propagation" job's body (main.cpp; tests call it directly): one hold of runtime.mutex
+// on behalf of the next queued user, in turn. The profile and the user's membership are read in that
+// hold. A user who is now locked, suspended or deactivated is dropped from the queue. Returns how long
+// to wait before the next call. Takes runtime.mutex; never makes a network call under it.
+[[nodiscard]] auto propagate_queued_profile(HomeserverRuntime& runtime) -> std::chrono::milliseconds;
 // Evaluates push rules and dispatches push notifications (and GET
 // /notifications history rows) for `envelope`, an event that was just
 // accepted through federation ingestion (ingest_pdu_event) rather than

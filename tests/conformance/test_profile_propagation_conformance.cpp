@@ -18,15 +18,22 @@
 #include "../support/master_key.hpp"
 #include "../support/registration_token.hpp"
 #include "merovingian/homeserver/client_server.hpp"
+#include "merovingian/homeserver/periodic_job.hpp"
+#include "merovingian/homeserver/room_service.hpp"
+#include "merovingian/homeserver/runtime_mutex.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/generators/catch_generators.hpp>
 
 #include <algorithm>
+#include <chrono>
 #include <cstddef>
+#include <mutex>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <tuple>
+#include <vector>
 
 namespace
 {
@@ -738,6 +745,357 @@ SCENARIO("membership events this server emits for its own users carry their prof
                 REQUIRE(avatar_url != nullptr);
                 // Spec SHOULD: Bob's membership event carries his avatar URL.
                 REQUIRE(*avatar_url == "mxc://example.org/bob");
+            }
+        }
+    }
+}
+
+namespace
+{
+
+// A member event's content field, read from the store so that it works for a user with no session.
+[[nodiscard]] auto current_member_field(merovingian::homeserver::ClientServerRuntime const& runtime,
+                                        std::string const& room_id, std::string const& user_id, std::string_view field)
+    -> std::string
+{
+    auto const& store = runtime.homeserver.database.persistent_store;
+    auto const event_id = merovingian::database::find_current_state_event_id(store, room_id, "m.room.member", user_id);
+    // Fixture: every room in these scenarios holds the user's membership.
+    REQUIRE(event_id.has_value());
+    auto const event = store.events.find(*event_id);
+    // Fixture: the current state names a stored event.
+    REQUIRE(event != store.events.end());
+    auto const body = parse_object(event->json);
+    auto const* content = object_member_as_object(body, "content");
+    // Fixture: a member event has content.
+    REQUIRE(content != nullptr);
+    auto const* value = string_member(*content, field);
+    return value != nullptr ? *value : std::string{};
+}
+
+[[nodiscard]] auto rooms_showing_displayname(merovingian::homeserver::ClientServerRuntime const& runtime,
+                                             std::vector<std::string> const& rooms, std::string const& user_id,
+                                             std::string const& displayname) -> std::vector<std::string>
+{
+    auto showing = std::vector<std::string>{};
+    std::ranges::copy_if(rooms, std::back_inserter(showing), [&](std::string const& room_id) {
+        return current_member_field(runtime, room_id, user_id, "displayname") == displayname;
+    });
+    return showing;
+}
+
+[[nodiscard]] auto rooms_not_showing_displayname(merovingian::homeserver::ClientServerRuntime const& runtime,
+                                                 std::vector<std::string> const& rooms, std::string const& user_id,
+                                                 std::string const& displayname) -> std::vector<std::string>
+{
+    auto others = std::vector<std::string>{};
+    std::ranges::copy_if(rooms, std::back_inserter(others), [&](std::string const& room_id) {
+        return current_member_field(runtime, room_id, user_id, "displayname") != displayname;
+    });
+    return others;
+}
+
+// Runs the job body until nothing is queued. The bound stops a job that makes no progress from hanging the suite.
+auto run_job_until_idle(merovingian::homeserver::ClientServerRuntime& runtime) -> void
+{
+    for (auto run = std::size_t{0U}; run < std::size_t{100000U}; ++run)
+    {
+        std::ignore = merovingian::homeserver::propagate_queued_profile(runtime.homeserver);
+        if (runtime.homeserver.profile_propagation_pending.empty())
+        {
+            return;
+        }
+    }
+    FAIL("the profile propagation job made no progress");
+}
+
+auto create_rooms(merovingian::homeserver::ClientServerRuntime& runtime, std::string const& token, std::size_t count)
+    -> std::vector<std::string>
+{
+    auto rooms = std::vector<std::string>{};
+    for (auto index = std::size_t{0U}; index < count; ++index)
+    {
+        rooms.push_back(create_public_room(runtime, token));
+    }
+    return rooms;
+}
+
+} // namespace
+
+// Spec: Matrix Client-Server API v1.19, "Events on Change of Profile Information"
+// URL: ../../docs/matrix-v1.19-spec/client-server-api.md#events-on-change-of-profile-information
+//
+// "an m.room.member event (with a join membership) is sent to every room the user is a member of" says what is sent,
+// and sets no time by which it must have been. How much of that happens under the runtime lock is this server's own
+// rule (F-11, ADR-0353): the work one request holds the lock for does not grow with how many rooms the user has.
+SCENARIO("a profile change reaches every room without holding the lock for all of them",
+         "[f11][conformance][client-server][profile][profile-propagation]")
+{
+    GIVEN("Alice is a member of more rooms than one request may send to")
+    {
+        auto started = merovingian::homeserver::start_client_server(conformance_config());
+        // Fixture: the server must start before profile propagation can be tested.
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        auto const alice_token = logged_in_token(runtime, "alice");
+        auto const alice = std::string{"@alice:example.org"};
+        auto const rooms =
+            create_rooms(runtime, alice_token, merovingian::homeserver::profile_propagation_sends_per_request + 8U);
+
+        WHEN("she sets her display name")
+        {
+            put_profile_field(runtime, alice_token, alice, "displayname", "Alice");
+
+            THEN("the request sends only its own share, and the rest are queued")
+            {
+                // Project rule (ADR-0353): the lock is held for a fixed number of rooms.
+                REQUIRE(rooms_showing_displayname(runtime, rooms, alice, "Alice").size() ==
+                        merovingian::homeserver::profile_propagation_sends_per_request);
+                // Project rule (ADR-0353): what the request left is owed by the job.
+                REQUIRE(runtime.homeserver.profile_propagation_pending.contains(alice));
+            }
+
+            THEN("the job reaches every room, once each")
+            {
+                run_job_until_idle(runtime);
+                // Spec SHOULD: the event is sent to every room the user is a member of.
+                REQUIRE(rooms_showing_displayname(runtime, rooms, alice, "Alice").size() == rooms.size());
+                for (auto const& room_id : rooms)
+                {
+                    // Project policy: one membership event for the change, on top of the join.
+                    REQUIRE(timeline_membership(runtime, alice_token, room_id, alice).count == 2U);
+                }
+            }
+        }
+
+        WHEN("she changes it again before the job has run")
+        {
+            put_profile_field(runtime, alice_token, alice, "displayname", "First");
+            put_profile_field(runtime, alice_token, alice, "displayname", "Second");
+            auto const unreached = rooms_not_showing_displayname(runtime, rooms, alice, "Second");
+            // Fixture: the second request cannot have reached every room.
+            REQUIRE_FALSE(unreached.empty());
+            run_job_until_idle(runtime);
+
+            THEN("a room the requests did not reach is sent only the latest profile")
+            {
+                for (auto const& room_id : unreached)
+                {
+                    auto const seen = timeline_membership(runtime, alice_token, room_id, alice);
+                    // Project policy: repeated changes coalesce, so the older name is never sent.
+                    REQUIRE(seen.count == 2U);
+                    // Spec SHOULD: the event carries the user's current display name.
+                    REQUIRE(seen.last_displayname == "Second");
+                }
+                // Spec SHOULD: the event is sent to every room the user is a member of.
+                REQUIRE(rooms_showing_displayname(runtime, rooms, alice, "Second").size() == rooms.size());
+            }
+        }
+
+        WHEN("she leaves a room the job has not reached yet")
+        {
+            put_profile_field(runtime, alice_token, alice, "displayname", "Alice");
+            auto const unreached = rooms_not_showing_displayname(runtime, rooms, alice, "Alice");
+            // Fixture: the request cannot have reached every room.
+            REQUIRE_FALSE(unreached.empty());
+            auto const& left_room = unreached.front();
+            auto const left = merovingian::homeserver::handle_client_server_request(
+                runtime, {"POST", "/_matrix/client/v3/rooms/" + left_room + "/leave", alice_token, "{}"});
+            // Fixture: the leave must succeed before the job runs.
+            REQUIRE(left.response.status == 200U);
+            run_job_until_idle(runtime);
+
+            THEN("the job does not rejoin her, and the other rooms still get the event")
+            {
+                // Spec SHOULD: the event goes only to rooms the user is a member of. These rooms are public, so a join
+                // sent here would succeed.
+                REQUIRE(current_member_field(runtime, left_room, alice, "membership") == "leave");
+                REQUIRE(rooms_showing_displayname(runtime, rooms, alice, "Alice").size() == rooms.size() - 1U);
+            }
+        }
+
+        WHEN("she logs out before the job has run")
+        {
+            put_profile_field(runtime, alice_token, alice, "displayname", "Alice");
+            auto const logged_out = merovingian::homeserver::handle_client_server_request(
+                runtime, {"POST", "/_matrix/client/v3/logout", alice_token, "{}"});
+            // Fixture: the logout must succeed before the job runs.
+            REQUIRE(logged_out.response.status == 200U);
+            run_job_until_idle(runtime);
+
+            THEN("the change she made while logged in still reaches every room")
+            {
+                // Spec SHOULD: logging out does not take back a profile field that was set.
+                REQUIRE(rooms_showing_displayname(runtime, rooms, alice, "Alice").size() == rooms.size());
+            }
+        }
+
+        WHEN("an administrator suspends or locks her before the job has run")
+        {
+            put_profile_field(runtime, alice_token, alice, "displayname", "Alice");
+            auto const unreached = rooms_not_showing_displayname(runtime, rooms, alice, "Alice");
+            // Fixture: the request cannot have reached every room.
+            REQUIRE_FALSE(unreached.empty());
+            auto const locked = GENERATE(false, true);
+            auto& users = runtime.homeserver.database.users;
+            auto const user = std::ranges::find_if(users, [&](auto const& candidate) {
+                return candidate.user_id == alice;
+            });
+            // Fixture: Alice's account is held in the runtime.
+            REQUIRE(user != users.end());
+            (locked ? user->locked : user->suspended) = true;
+            run_job_until_idle(runtime);
+
+            THEN("no more events are sent as her")
+            {
+                // Spec SHOULD: "Changing profile data" is among the actions recommended forbidden while suspended.
+                REQUIRE(rooms_not_showing_displayname(runtime, rooms, alice, "Alice") == unreached);
+            }
+        }
+
+        WHEN("a room cannot take the event while the job runs")
+        {
+            put_profile_field(runtime, alice_token, alice, "displayname", "Alice");
+            merovingian::database::force_persist_failure_for_statement(runtime.homeserver.database.persistent_store,
+                                                                       "insert_event");
+            run_job_until_idle(runtime);
+
+            THEN("the other rooms still get the event, and the next change repairs that one")
+            {
+                // Project policy (ADR-0182): one room's failure stops only that room.
+                REQUIRE(rooms_showing_displayname(runtime, rooms, alice, "Alice").size() == rooms.size() - 1U);
+                put_profile_field(runtime, alice_token, alice, "displayname", "Alice");
+                run_job_until_idle(runtime);
+                // Project policy (ADR-0182): the next change sends to every room not yet carrying the profile.
+                REQUIRE(rooms_showing_displayname(runtime, rooms, alice, "Alice").size() == rooms.size());
+            }
+        }
+
+        WHEN("the job is running on its own thread")
+        {
+            auto& homeserver = runtime.homeserver;
+            auto job = merovingian::homeserver::PeriodicJob{
+                "profile-propagation", [&homeserver](merovingian::homeserver::StopFlag const&) {
+                    return merovingian::homeserver::propagate_queued_profile(homeserver);
+                }};
+            {
+                auto const guard = std::unique_lock<merovingian::homeserver::RuntimeMutex>{homeserver.mutex};
+                homeserver.profile_propagation_wake = [&job]() {
+                    job.wake();
+                };
+            }
+            // Fixture: the job's thread must start for this scenario to mean anything.
+            REQUIRE(job.start());
+            auto const stop_job = [&]() {
+                {
+                    auto const guard = std::unique_lock<merovingian::homeserver::RuntimeMutex>{homeserver.mutex};
+                    homeserver.profile_propagation_wake = nullptr;
+                }
+                job.stop();
+            };
+
+            AND_WHEN("the server shuts down with work still queued")
+            {
+                put_profile_field(runtime, alice_token, alice, "displayname", "Alice");
+                stop_job();
+
+                THEN("the job stops, and what it left can still be finished")
+                {
+                    // Project rule (ADR-0353): shutdown abandons the queue; it does not wait for it.
+                    REQUIRE_FALSE(job.running());
+                    // Spec MUST: the field is set whatever became of the fan-out.
+                    REQUIRE(current_member_field(runtime, rooms.front(), alice, "displayname") == "Alice");
+                    run_job_until_idle(runtime);
+                    REQUIRE(rooms_showing_displayname(runtime, rooms, alice, "Alice").size() == rooms.size());
+                }
+            }
+
+            AND_WHEN("nothing stops it")
+            {
+                put_profile_field(runtime, alice_token, alice, "displayname", "Alice");
+                auto const give_up = std::chrono::steady_clock::now() + std::chrono::seconds{60};
+                auto finished = false;
+                while (!finished && std::chrono::steady_clock::now() < give_up)
+                {
+                    {
+                        auto const guard = std::unique_lock<merovingian::homeserver::RuntimeMutex>{homeserver.mutex};
+                        finished = homeserver.profile_propagation_pending.empty();
+                    }
+                    std::this_thread::sleep_for(std::chrono::milliseconds{5});
+                }
+                stop_job();
+
+                THEN("it reaches every room by itself")
+                {
+                    // Project rule (ADR-0353): the request's wake is all the job needs.
+                    REQUIRE(finished);
+                    REQUIRE(rooms_showing_displayname(runtime, rooms, alice, "Alice").size() == rooms.size());
+                }
+            }
+
+            stop_job();
+        }
+    }
+
+    GIVEN("the server holds more rooms than one lock hold may walk, ahead of Alice's")
+    {
+        auto started = merovingian::homeserver::start_client_server(conformance_config());
+        // Fixture: the server must start before profile propagation can be tested.
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        auto const alice_token = logged_in_token(runtime, "alice");
+        auto const alice = std::string{"@alice:example.org"};
+        for (auto index = std::size_t{0U}; index < merovingian::homeserver::profile_propagation_rooms_walked_per_hold;
+             ++index)
+        {
+            auto room = merovingian::homeserver::LocalRoom{};
+            room.room_id = "!other" + std::to_string(index) + ":example.org";
+            runtime.homeserver.database.rooms.push_back(std::move(room));
+        }
+        auto const room_id = create_public_room(runtime, alice_token);
+
+        WHEN("she sets her display name")
+        {
+            put_profile_field(runtime, alice_token, alice, "displayname", "Alice");
+
+            THEN("the request stops walking, and the job finishes the walk")
+            {
+                // Project rule (ADR-0353): the walk is bounded per hold too.
+                REQUIRE(current_member_field(runtime, room_id, alice, "displayname").empty());
+                run_job_until_idle(runtime);
+                // Spec SHOULD: the event is sent to every room the user is a member of.
+                REQUIRE(current_member_field(runtime, room_id, alice, "displayname") == "Alice");
+            }
+        }
+    }
+
+    GIVEN("Alice is a member of more rooms than one lock hold may read her membership of, all already current")
+    {
+        auto started = merovingian::homeserver::start_client_server(conformance_config());
+        // Fixture: the server must start before profile propagation can be tested.
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        auto const alice_token = logged_in_token(runtime, "alice");
+        auto const alice = std::string{"@alice:example.org"};
+        auto const rooms = create_rooms(runtime, alice_token,
+                                        merovingian::homeserver::profile_propagation_member_events_read_per_hold + 1U);
+        put_profile_field(runtime, alice_token, alice, "displayname", "Alice");
+        run_job_until_idle(runtime);
+
+        WHEN("she sets the same display name again")
+        {
+            put_profile_field(runtime, alice_token, alice, "displayname", "Alice");
+
+            THEN("the request stops reading, and finishing the walk sends nothing more")
+            {
+                // Project rule (ADR-0353): reading a member event is bounded per hold as well as sending one.
+                REQUIRE(runtime.homeserver.profile_propagation_pending.contains(alice));
+                run_job_until_idle(runtime);
+                for (auto const& room_id : rooms)
+                {
+                    // Project policy (ADR-0182): a room already current gets no duplicate.
+                    REQUIRE(timeline_membership(runtime, alice_token, room_id, alice).count == 2U);
+                }
             }
         }
     }

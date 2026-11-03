@@ -4,6 +4,7 @@ The medium findings of security audit run 2 (ref 5e67d4e8).
 
 ### Security
 
+- **A profile change no longer holds the runtime lock for every room the user is in (F-11, ADR-0353).** One request sends to at most 16 rooms; a background job takes the lock per room for the rest, sends only the latest profile, and skips a room the user has left. Rooms still queued at a restart get the profile at the user's next change. Composing an event also no longer walks the whole state table.
 - **An event fetched to fill a gap is checked against the room's current state (F-16, ADR-0371).** A banned user's server could send a message on a pre-ban branch and have it fetched through `/get_missing_events`, and local clients were shown it. It is now stored soft failed, as it would be if it arrived in `/send`.
 - **A PDU parked during a federated join is judged under the room version its create event declares (F-44, ADR-0370).** It was replayed under a guess of version 12, so a creator of an older room could have an event accepted that the room's rules reject, and honest events were refused. Ingestion now also refuses a PDU verified under any other version than the stored create's.
 - **A joining server applies the receipt checks to a resident's `send_join` answer (F-45, ADR-0369).** An event whose content hash does not match is stored redacted. An event the auth rules refuse, or that names an event the answer does not hold or that was refused, is dropped. The join is refused with 502 when the answer's state holds no single valid create event or does not authorise the join.

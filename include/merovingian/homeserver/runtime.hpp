@@ -426,6 +426,19 @@ struct HomeserverRuntime final
     // on another thread (PeriodicJob::wake does neither). Cleared under runtime.mutex at shutdown
     // before the thread is stopped.
     std::function<void()> typing_expiry_wake{};
+    // Users whose profile change has rooms left to reach, with the index in database.rooms to
+    // resume from (F-11, ADR-0353). No token and no event body: the job sends as the user and reads
+    // the profile when it sends. In memory only: a restart leaves those rooms for the next profile
+    // change (ADR-0182). Guarded by `mutex`.
+    std::map<std::string, std::size_t, std::less<>> profile_propagation_pending{};
+    // The user the job served last, so a user with many rooms takes turns with the others. Guarded
+    // by `mutex`.
+    std::string profile_propagation_last_user{};
+    // Wakes the "profile-propagation" job. Set by the process entry point once that thread exists;
+    // null in tests, which call propagate_queued_profile directly. Called with runtime.mutex held,
+    // so it must not block or wait for runtime.mutex on another thread (PeriodicJob::wake does
+    // neither). Cleared under runtime.mutex at shutdown before the thread is stopped.
+    std::function<void()> profile_propagation_wake{};
     // The drainer's retry state per appservice, keyed by registration id. In memory only: after
     // a restart the first attempt is immediate. Guarded by `mutex`.
     std::map<std::string, AppserviceDeliveryBackoff, std::less<>> appservice_delivery_backoff{};
