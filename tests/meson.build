@@ -322,6 +322,7 @@ shell = find_program('sh')
       'unit/test_security_audit_db_4.cpp',
       'unit/test_security_audit_iso_7.cpp',
       'unit/test_push_gateway_circuit_breaker.cpp',
+      'unit/test_push_gateway_in_flight_limiter.cpp',
       'unit/test_media_thumbnail_cache.cpp',
       'unit/test_security_audit_fed_10_shards.cpp',
       'unit/test_security_audit_log_controls.cpp',

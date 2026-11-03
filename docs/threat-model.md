@@ -2561,7 +2561,14 @@ Security audit run-1 (2026-10-20) found six LOW issues, all fixed in 0.12.34.
   their event content, until they are sent. **Mitigation:** a bounded in-memory queue (1024
   notifications, 32 per recipient) that drops rather than blocks, eight retries at most, one job
   thread that sends them one at a time, and no `runtime.mutex` across the network call
-  (ADR-0206). Residual risk: a recipient's failing gateway can fill that recipient's share.
+  (ADR-0206). A run of that thread stops starting attempts after 30 s, takes retries one
+  recipient at a time in turn and waits at most 10 s for a gateway, so one account's slow gateway
+  cannot hold it for a whole batch (ADR-0410). A gateway that answers just inside the timeout
+  counts against its circuit, a recipient batch queues the pushers it has not reached after
+  twice the timeout, and requests in flight per gateway host and per resolved address are capped
+  (ADR-0409). Residual risk: a recipient's failing gateway can fill that recipient's share, and
+  several recipients with slow gateways on several addresses can still collectively fill the
+  delivery budget for the batch deadline.
 
 ### Media: header injection, asynchronous uploads and URL previews (0.12.41)
 

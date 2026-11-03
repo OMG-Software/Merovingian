@@ -29,6 +29,7 @@
 #include "merovingian/platform/hardening_self_check.hpp"
 #include "merovingian/push/email_digest_queue.hpp"
 #include "merovingian/push/gateway_circuit_breaker.hpp"
+#include "merovingian/push/gateway_in_flight_limiter.hpp"
 #include "merovingian/push/push_gateway_client.hpp"
 #include "merovingian/push/push_retry_queue.hpp"
 #include "merovingian/sync/sliding_sync.hpp"
@@ -638,6 +639,11 @@ struct HomeserverRuntime final
     // locked; shared by every delivery task. Behind a pointer so the runtime
     // stays movable (its mutex is not).
     std::unique_ptr<push::GatewayCircuitBreaker> push_gateway_breaker_{std::make_unique<push::GatewayCircuitBreaker>()};
+    // F-79, ADR-0409: requests in flight to each push gateway host and resolved address, capped so
+    // many subdomains of one server cannot hold the delivery budget. Internally locked; shared by
+    // the delivery tasks and the retry job. Behind a pointer so the runtime stays movable.
+    std::unique_ptr<push::GatewayInFlightLimiter> push_gateway_in_flight_{
+        std::make_unique<push::GatewayInFlightLimiter>()};
     // R14, ADR-0206: notifications waiting to be sent again after a failed attempt. Internally
     // locked; delivery tasks fill it and the push retry job (main.cpp) drains it through
     // retry_due_push_deliveries. In memory only: a restart forgets pending retries. Behind a

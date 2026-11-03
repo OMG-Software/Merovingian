@@ -3,6 +3,7 @@
 
 #include "merovingian/homeserver/push_retry.hpp"
 
+#include "merovingian/homeserver/auth_service.hpp"
 #include "merovingian/homeserver/runtime.hpp"
 #include "merovingian/observability/logger.hpp"
 
@@ -68,6 +69,12 @@ namespace
     [[nodiscard]] auto pusher_still_registered(HomeserverRuntime& runtime, push::PushRetry const& delivery) -> bool
     {
         auto const guard = std::unique_lock<RuntimeMutex>{runtime.mutex};
+        // A deactivated account keeps no pusher, and a retry queued before it was deactivated must
+        // not outlive it (F-80), as email_push.cpp's prepare_email does not mail one.
+        if (!asserted_user_is_active(runtime, delivery.user_id))
+        {
+            return false;
+        }
         auto const pushers = database::list_pushers_for_user(runtime.database.persistent_store, delivery.user_id);
         return std::ranges::any_of(pushers, [&delivery](database::PersistentPusher const& pusher) {
             return pusher.app_id == delivery.app_id && pusher.pushkey == delivery.pushkey &&
@@ -76,6 +83,34 @@ namespace
     }
 
 } // namespace
+
+auto push_batch_deadline(config::PushConfig const& config) noexcept -> std::chrono::seconds
+{
+    return std::chrono::seconds{config.total_timeout_seconds} * 2;
+}
+
+auto push_retry_config(config::PushConfig config) noexcept -> config::PushConfig
+{
+    config.total_timeout_seconds =
+        std::min(config.total_timeout_seconds, static_cast<std::uint32_t>(push_retry_total_timeout.count()));
+    config.connect_timeout_seconds =
+        std::min(config.connect_timeout_seconds, static_cast<std::uint32_t>(push_retry_connect_timeout.count()));
+    return config;
+}
+
+auto defer_push_delivery(HomeserverRuntime& runtime, push::PushRetry delivery,
+                         std::chrono::steady_clock::time_point now) -> void
+{
+    auto const user_id = delivery.user_id;
+    auto const admission = runtime.push_retry_queue_ == nullptr
+                               ? push::PushRetryAdmission::queue_full
+                               : runtime.push_retry_queue_->schedule(std::move(delivery), now);
+    log_push(admission == push::PushRetryAdmission::queued ? "push.delivery.deferred" : "push.delivery.retry_dropped",
+             {
+                 {"recipient", user_id, false}
+    },
+             observability::LogEventSeverity::warning);
+}
 
 auto attempt_push_delivery(HomeserverRuntime& runtime, push::PushGatewayClient& client, push::PushRetry delivery,
                            std::chrono::steady_clock::time_point now) -> void
@@ -106,12 +141,26 @@ auto attempt_push_delivery(HomeserverRuntime& runtime, push::PushGatewayClient& 
         return;
     }
     auto const result = client.notify(delivery.gateway_url, delivery.notification);
-    // ADR-0151: only an unreachable host counts toward its circuit; any HTTP answer, a 5xx included,
-    // shows the shared host is reachable.
-    if (auto const outcome = push::gateway_circuit_outcome(result);
+    // ADR-0151: an unreachable host counts toward its circuit, and an HTTP answer, a 5xx included,
+    // shows the shared host is reachable. ADR-0409 (F-79): unless the answer was slow, taking more
+    // than half the total timeout. Such a host holds a delivery slot as long as one that never
+    // answers, and a hostile gateway can answer just inside the timeout for ever; unlike a 5xx, one
+    // user's pusher data cannot easily make a shared host slow.
+    auto const elapsed =
+        std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - attempt_started);
+    if (auto const outcome = push::gateway_circuit_outcome(result, elapsed, client.total_timeout());
         host.has_value() && runtime.push_gateway_breaker_ != nullptr &&
         outcome != push::GatewayCircuitOutcome::not_attempted)
     {
+        if (outcome == push::GatewayCircuitOutcome::slow_answer)
+        {
+            log_push("push.delivery.slow_gateway",
+                     {
+                         {"gateway_host", *host,                           false},
+                         {"elapsed_ms",   std::to_string(elapsed.count()), false}
+            },
+                     observability::LogEventSeverity::warning);
+        }
         runtime.push_gateway_breaker_->record(*host, outcome == push::GatewayCircuitOutcome::reachable,
                                               std::chrono::steady_clock::now(), breaker_policy);
     }
@@ -137,7 +186,8 @@ auto attempt_push_delivery(HomeserverRuntime& runtime, push::PushGatewayClient& 
 }
 
 auto retry_due_push_deliveries(HomeserverRuntime& runtime, StopFlag const& stop,
-                               std::chrono::steady_clock::time_point now) -> std::chrono::milliseconds
+                               std::chrono::steady_clock::time_point now, std::chrono::milliseconds budget)
+    -> std::chrono::milliseconds
 {
     auto const idle = std::chrono::milliseconds{push_retry_idle_delay};
     if (runtime.push_retry_queue_ == nullptr)
@@ -152,16 +202,30 @@ auto retry_due_push_deliveries(HomeserverRuntime& runtime, StopFlag const& stop,
     auto const current = [&now, batch_started]() {
         return now + (std::chrono::steady_clock::now() - batch_started);
     };
-    if (!due.empty() && runtime.outbound_client != nullptr && runtime.cached_discovery != nullptr)
+    if (!due.empty() && (runtime.outbound_client == nullptr || runtime.cached_discovery == nullptr))
     {
-        auto client =
-            push::PushGatewayClient{*runtime.outbound_client, *runtime.cached_discovery, runtime.config.server().push,
-                                    &runtime.test_forced_push_gateway_resolution};
+        // Nothing can be sent from here: keep what was taken.
         for (auto& delivery : due)
         {
-            if (stop.stop_requested())
+            runtime.push_retry_queue_->return_untried(std::move(delivery));
+        }
+    }
+    else if (!due.empty())
+    {
+        // F-81 (ADR-0410): a retry waits no longer than push_retry_total_timeout, so a gateway that
+        // answers slowly costs the one retry thread a few seconds an attempt, not 30.
+        auto const retry_config = push_retry_config(runtime.config.server().push);
+        auto client = push::PushGatewayClient{*runtime.outbound_client, *runtime.cached_discovery, retry_config,
+                                              &runtime.test_forced_push_gateway_resolution,
+                                              std::ref(*runtime.push_gateway_in_flight_)};
+        for (auto& delivery : due)
+        {
+            // Out of time, or stopping: no more attempts start, and the retries not reached stay
+            // queued (not lost) for the next call, which takes them again, earliest due first.
+            if (stop.stop_requested() || std::chrono::steady_clock::now() - batch_started >= budget)
             {
-                break;
+                runtime.push_retry_queue_->return_untried(std::move(delivery));
+                continue;
             }
             if (!pusher_still_registered(runtime, delivery))
             {

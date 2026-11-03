@@ -54,6 +54,11 @@ Push retries (R14, ADR-0206) log under the `rooms` logger, never with a gateway 
 `retry_abandoned` carries `reason`, and the other three `attempts` (attempts made so far).
 `push.delivery.circuit_open` (warning) carries `gateway_host` and `recipient` when a delivery or
 retry is skipped because the gateway's circuit is open; the skipped notification is retried.
+`push.delivery.slow_gateway` (warning, `gateway_host` and `elapsed_ms`) marks an answer slower than
+half the total timeout, counted against the circuit (ADR-0409); `push.delivery.deferred` (warning,
+`recipient`) marks a pusher a batch queued unattempted after its deadline;
+`account.deactivated.pusher_removal_failed` (warning, `user_id`) a pusher of a deactivated account that
+could not be deleted (ADR-0411).
 
 Email pushers (ADR-0219, ADR-0220) log under the `rooms` logger with `recipient` (the user ID),
 never the email address, the relay URL or credentials: `push.email.sent` (debug, with `unread`);

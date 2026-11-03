@@ -14,11 +14,17 @@
 
 #include "merovingian/canonicaljson/parser.hpp"
 #include "merovingian/push/push_gateway_client.hpp"
+#include "merovingian/push/push_retry_queue.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <chrono>
+#include <cstddef>
+#include <functional>
 #include <string>
+#include <utility>
 #include <variant>
+#include <vector>
 
 namespace
 {
@@ -408,6 +414,124 @@ SCENARIO("PushGatewayClient::notify fails closed on attacker-influenced private 
                 REQUIRE_FALSE(result.ok);
                 REQUIRE_FALSE(result.disabled);
                 REQUIRE(result.status == 0U);
+            }
+        }
+    }
+}
+
+// F-79 (ADR-0409): requests in flight to one gateway host are capped.
+SCENARIO("PushGatewayClient::notify holds back a request while its gateway host is at the in-flight cap",
+         "[push][push-gateway][f79]")
+{
+    GIVEN("a client with a limiter whose host is already full")
+    {
+        auto outbound = merovingian::http::OutboundClient{};
+        auto network = CountingDiscoveryNetwork{};
+        auto discovery = merovingian::federation::CachedServerDiscovery{network, 60000U, []() -> std::uint64_t {
+                                                                            return 0U;
+                                                                        }};
+        auto config = merovingian::config::PushConfig{};
+        config.enabled = true;
+        auto limiter = merovingian::push::GatewayInFlightLimiter{};
+        auto const host_key = std::vector<std::string>{"host:push.example.org:443"};
+        auto held = std::vector<merovingian::push::GatewayInFlightLimiter::Slot>{};
+        for (auto i = std::size_t{0U}; i < merovingian::push::push_gateway_host_in_flight_cap(config); ++i)
+        {
+            auto slot = limiter.try_acquire(host_key, merovingian::push::push_gateway_host_in_flight_cap(config));
+            REQUIRE(slot.has_value());
+            held.push_back(std::move(*slot));
+        }
+        auto client = merovingian::push::PushGatewayClient{outbound, discovery, config, nullptr, std::ref(limiter)};
+
+        WHEN("notify is called for that host")
+        {
+            auto const result = client.notify("https://push.example.org/_matrix/push/v1/notify",
+                                              merovingian::push::PushGatewayNotification{});
+
+            THEN("it is refused as busy, with no lookup, and is retried without counting against the host")
+            {
+                CHECK(result.busy);
+                CHECK_FALSE(result.ok);
+                CHECK(network.lookup_calls == 0U);
+                CHECK(merovingian::push::gateway_circuit_outcome(result) ==
+                      merovingian::push::GatewayCircuitOutcome::not_attempted);
+                CHECK(merovingian::push::push_delivery_should_retry(result));
+            }
+        }
+    }
+}
+
+SCENARIO("an answer slower than half the total timeout counts against the gateway's circuit",
+         "[push][push-gateway][f79]")
+{
+    GIVEN("a gateway that answered 200")
+    {
+        auto answered = merovingian::push::PushGatewayResult{};
+        answered.ok = true;
+        answered.status = 200U;
+        using namespace std::chrono_literals;
+
+        WHEN("it answered promptly")
+        {
+            THEN("the host is reachable")
+            {
+                CHECK(merovingian::push::gateway_circuit_outcome(answered, 100ms, 30s) ==
+                      merovingian::push::GatewayCircuitOutcome::reachable);
+                CHECK(merovingian::push::gateway_circuit_outcome(answered, 15000ms, 30s) ==
+                      merovingian::push::GatewayCircuitOutcome::reachable);
+            }
+        }
+
+        WHEN("it answered after more than half the timeout")
+        {
+            THEN("the answer is slow, whatever its status")
+            {
+                CHECK(merovingian::push::gateway_circuit_outcome(answered, 15001ms, 30s) ==
+                      merovingian::push::GatewayCircuitOutcome::slow_answer);
+                answered.status = 500U;
+                CHECK(merovingian::push::gateway_circuit_outcome(answered, 29000ms, 30s) ==
+                      merovingian::push::GatewayCircuitOutcome::slow_answer);
+            }
+        }
+
+        WHEN("delivery was not attempted")
+        {
+            auto refused = merovingian::push::PushGatewayResult{};
+            refused.disabled = true;
+
+            THEN("elapsed time changes nothing")
+            {
+                CHECK(merovingian::push::gateway_circuit_outcome(refused, 29000ms, 30s) ==
+                      merovingian::push::GatewayCircuitOutcome::not_attempted);
+            }
+        }
+    }
+}
+
+SCENARIO("the per-host and per-address in-flight caps are shares of the delivery budget", "[push][push-gateway][f79]")
+{
+    GIVEN("push configurations with different delivery budgets")
+    {
+        auto config = merovingian::config::PushConfig{};
+
+        WHEN("the budget is the default 256")
+        {
+            THEN("a host may have an eighth and an address a quarter")
+            {
+                CHECK(merovingian::push::push_gateway_host_in_flight_cap(config) == 32U);
+                CHECK(merovingian::push::push_gateway_address_in_flight_cap(config) == 64U);
+            }
+        }
+
+        WHEN("the budget is as small as two, or one")
+        {
+            THEN("neither cap serialises it below the budget")
+            {
+                config.max_in_flight_deliveries = 2U;
+                CHECK(merovingian::push::push_gateway_host_in_flight_cap(config) == 2U);
+                CHECK(merovingian::push::push_gateway_address_in_flight_cap(config) == 2U);
+                config.max_in_flight_deliveries = 1U;
+                CHECK(merovingian::push::push_gateway_host_in_flight_cap(config) == 1U);
             }
         }
     }

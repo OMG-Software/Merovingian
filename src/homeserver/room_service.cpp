@@ -8132,6 +8132,13 @@ namespace
             {
                 continue;
             }
+            // A deactivated account keeps no pusher (ADR-0411), and nobody can sign in to it to
+            // remove one that survived, so it is never notified, as email_push.cpp does not mail it.
+            // Asked only for a recipient with a pusher: the check scans the user table.
+            if (!asserted_user_is_active(runtime, member))
+            {
+                continue;
+            }
             if (pushers.size() > max_pushers_per_delivery)
             {
                 // Mirrors dispatch_push_deliveries's push.delivery.dropped log
@@ -8242,9 +8249,15 @@ namespace
     // its response to the client.
     auto run_pending_push_deliveries(HomeserverRuntime& runtime, std::vector<PendingPushDelivery> deliveries) -> void
     {
-        auto client =
-            push::PushGatewayClient{*runtime.outbound_client, *runtime.cached_discovery, runtime.config.server().push,
-                                    &runtime.test_forced_push_gateway_resolution};
+        auto client = push::PushGatewayClient{
+            *runtime.outbound_client, *runtime.cached_discovery, runtime.config.server().push,
+            &runtime.test_forced_push_gateway_resolution, std::ref(*runtime.push_gateway_in_flight_)};
+        // F-79 (ADR-0409): this batch holds one of the in-flight slots until the loop ends, and each
+        // attempt can take the whole timeout. Past the deadline the pushers not yet reached are
+        // queued for retry instead of being contacted now, so the slot is held for the deadline and
+        // one attempt, not for as many timeouts as the recipient has pushers.
+        auto const batch_started = std::chrono::steady_clock::now();
+        auto const batch_deadline = push_batch_deadline(runtime.config.server().push);
         for (auto& delivery : deliveries)
         {
             auto attempt = push::PushRetry{};
@@ -8253,6 +8266,11 @@ namespace
             attempt.pushkey = delivery.pusher.pushkey;
             attempt.gateway_url = delivery.pusher.data_url;
             attempt.notification = std::move(delivery.notification);
+            if (std::chrono::steady_clock::now() - batch_started >= batch_deadline)
+            {
+                defer_push_delivery(runtime, std::move(attempt), std::chrono::steady_clock::now());
+                continue;
+            }
             attempt_push_delivery(runtime, client, std::move(attempt), std::chrono::steady_clock::now());
         }
     }

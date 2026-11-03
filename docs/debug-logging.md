@@ -32,7 +32,11 @@ Retries of failed notifications (ADR-0206) log `push.delivery.retry_scheduled` a
 `push.delivery.gave_up` (last retry failed) at warning. Each carries `recipient`;
 `retry_abandoned` carries `reason`, and the others `attempts`. `push.delivery.circuit_open` is a
 warning with `gateway_host` and `recipient`, logged when a delivery or retry skips a gateway whose
-circuit is open.
+circuit is open. `push.delivery.slow_gateway` (warning, `gateway_host` and `elapsed_ms`) is logged
+when a gateway answered after more than half the total timeout and was counted against its circuit
+(ADR-0409), and `push.delivery.deferred` (warning, `recipient`) when a recipient batch ran past its
+deadline and queued a pusher unattempted. `account.deactivated.pusher_removal_failed` (warning,
+`user_id`) is logged when a pusher of a deactivated account could not be deleted.
 
 ## Room creation failures
 

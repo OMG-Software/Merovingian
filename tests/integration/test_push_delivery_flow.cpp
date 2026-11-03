@@ -2265,3 +2265,401 @@ SCENARIO("a slow gateway's error is retried one full backoff after it answers", 
         }
     }
 }
+
+namespace
+{
+
+// A gateway the test can point pushers at: a TLS certificate for `host`, a bound loopback
+// acceptor, and the URL of its notify endpoint. The host resolves to loopback through the
+// test seam, never through DNS.
+struct MockGateway final
+{
+    std::string host;
+    merovingian::tests::tls_mock::TlsTestCertificate cert;
+    merovingian::homeserver::TlsServerContextResult tls;
+    merovingian::net::TcpAcceptor acceptor;
+    std::string url;
+};
+
+[[nodiscard]] auto start_mock_gateway(merovingian::homeserver::ClientServerRuntime& runtime, std::string host)
+    -> std::unique_ptr<MockGateway>
+{
+    auto cert = merovingian::tests::tls_mock::write_test_tls_certificate(host);
+    auto tls = merovingian::homeserver::make_tls_server_context(cert.certificate_file, cert.private_key_file);
+    REQUIRE(tls.ok());
+    auto acceptor = merovingian::net::TcpAcceptor{};
+    REQUIRE(acceptor.bind("127.0.0.1", 0U).ok);
+    REQUIRE(acceptor.bound_port() > 0U);
+    auto url = "https://" + host + ":" + std::to_string(acceptor.bound_port()) + "/_matrix/push/v1/notify";
+    runtime.homeserver.test_forced_push_gateway_resolution[host] =
+        merovingian::push::TestForcedPushGatewayResolution{{"127.0.0.1"}, cert.certificate_pem};
+    return std::make_unique<MockGateway>(std::move(host), std::move(cert), std::move(tls), std::move(acceptor),
+                                         std::move(url));
+}
+
+// POST /account/deactivate with the password UIA stage in the same request.
+auto deactivate_account(merovingian::homeserver::ClientServerRuntime& runtime, std::string const& token,
+                        std::string const& localpart) -> void
+{
+    auto const body = std::string{R"({"auth":{"type":"m.login.password","identifier":{"type":"m.id.user","user":"@)"} +
+                      localpart + R"(:example.org"},"password":"CorrectHorse7!"}})";
+    auto const response = merovingian::homeserver::handle_client_server_request(
+        runtime, {"POST", "/_matrix/client/v3/account/deactivate", token, body});
+    REQUIRE(response.response.status == 200U);
+}
+
+[[nodiscard]] auto retry_for_pusher(std::string user, std::string app_id, std::string pushkey, std::string url,
+                                    std::string event_id) -> merovingian::push::PushRetry
+{
+    auto retry = merovingian::push::PushRetry{};
+    retry.user_id = std::move(user);
+    retry.app_id = std::move(app_id);
+    retry.pushkey = std::move(pushkey);
+    retry.gateway_url = std::move(url);
+    retry.notification.event_id = std::move(event_id);
+    retry.notification.room_id = "!room:example.org";
+    retry.failed_attempts = 1U;
+    return retry;
+}
+
+} // namespace
+
+// Project rule (email_push.cpp): a deactivated account keeps no way to be notified, because nobody
+// can sign in to turn a pusher off. The Matrix spec says nothing of pushers on deactivation.
+SCENARIO("a deactivated account's pushers are removed and nothing more is sent to them", "[integration][push][f80]")
+{
+    GIVEN("alice and bob in a room, bob's pusher on a working gateway, and a retry queued for it")
+    {
+        auto started = merovingian::homeserver::start_client_server(push_test_config());
+        REQUIRE(started.started);
+        started.runtime.homeserver.config.server().push.enabled = true;
+        auto const alice = register_and_login(started.runtime, "alice");
+        auto const bob = register_and_login(started.runtime, "bob");
+        auto const room_id = room_with_alice_and_bob(started.runtime, alice, bob);
+        auto const gateway = start_mock_gateway(started.runtime, "push-f80.localhost.test");
+        register_http_pusher(started.runtime, bob, "org.matrix.integration", "bob-f80", gateway->url);
+        auto& queue = *started.runtime.homeserver.push_retry_queue_;
+        REQUIRE(queue.schedule(
+                    retry_for_pusher("@bob:example.org", "org.matrix.integration", "bob-f80", gateway->url, "$queued"),
+                    std::chrono::steady_clock::now()) == merovingian::push::PushRetryAdmission::queued);
+
+        // Counts connections: accepts each and closes it, stopping once nobody connects.
+        auto connections = std::atomic<unsigned>{0U};
+        auto server_thread = std::thread{[&] {
+            for (;;)
+            {
+                auto const client_fd = merovingian::tests::tls_mock::accept_loopback(gateway->acceptor, 1500);
+                if (client_fd < 0)
+                {
+                    return;
+                }
+                auto const dropped = merovingian::core::SocketHandle{client_fd};
+                connections.fetch_add(1U);
+            }
+        }};
+        auto const server_join = merovingian::tests::tls_mock::ScopedThreadJoin{server_thread};
+
+        WHEN("bob deactivates his account and alice then sends a message")
+        {
+            deactivate_account(started.runtime, bob, "bob");
+            REQUIRE(send_text_message(started.runtime, alice, room_id, "txn-f80", "hello bob").response.status == 200U);
+            wait_for_background_tasks(started.runtime.homeserver);
+            if (server_thread.joinable())
+            {
+                server_thread.join();
+            }
+
+            THEN("bob has no pusher, no retry waits for him, and the gateway was never contacted")
+            {
+                CHECK(merovingian::database::list_pushers_for_user(started.runtime.homeserver.database.persistent_store,
+                                                                   "@bob:example.org")
+                          .empty());
+                CHECK(queue.size() == 0U);
+                CHECK(connections.load() == 0U);
+            }
+        }
+
+        WHEN("bob deactivates and a pusher of his is nevertheless found stored, and alice sends a message")
+        {
+            deactivate_account(started.runtime, bob, "bob");
+            auto pusher = merovingian::database::PersistentPusher{};
+            pusher.user_id = "@bob:example.org";
+            pusher.app_id = "org.matrix.integration";
+            pusher.pushkey = "bob-f80-stale";
+            pusher.kind = "http";
+            pusher.data_url = gateway->url;
+            REQUIRE(merovingian::database::store_pusher(started.runtime.homeserver.database.persistent_store, pusher));
+            REQUIRE(queue.schedule(retry_for_pusher("@bob:example.org", "org.matrix.integration", "bob-f80-stale",
+                                                    gateway->url, "$stale"),
+                                   std::chrono::steady_clock::now()) == merovingian::push::PushRetryAdmission::queued);
+            REQUIRE(
+                send_text_message(started.runtime, alice, room_id, "txn-f80-stale", "hello again").response.status ==
+                200U);
+            wait_for_background_tasks(started.runtime.homeserver);
+            std::ignore = merovingian::homeserver::retry_due_push_deliveries(
+                started.runtime.homeserver, merovingian::homeserver::StopFlag{},
+                std::chrono::steady_clock::now() + std::chrono::hours{1});
+            if (server_thread.joinable())
+            {
+                server_thread.join();
+            }
+
+            THEN("no delivery is built and the queued retry is abandoned without a connection")
+            {
+                CHECK(connections.load() == 0U);
+                CHECK(queue.size() == 0U);
+            }
+        }
+    }
+}
+
+// A gateway that answers just inside the timeout holds a delivery slot as long as one that never
+// answers (F-79, ADR-0409), so a slow answer counts against the host's circuit.
+SCENARIO("a push gateway that answers slowly has its circuit opened", "[integration][push][f79]")
+{
+    GIVEN("a gateway that answers 200 after 1.5 s against a 2 s total timeout, and a threshold of one")
+    {
+        auto started = merovingian::homeserver::start_client_server(push_test_config());
+        REQUIRE(started.started);
+        auto& push_config = started.runtime.homeserver.config.server().push;
+        push_config.enabled = true;
+        push_config.total_timeout_seconds = 2U;
+        push_config.gateway_failure_threshold = 1U;
+        auto const alice = register_and_login(started.runtime, "alice");
+        auto const bob = register_and_login(started.runtime, "bob");
+        auto const room_id = room_with_alice_and_bob(started.runtime, alice, bob);
+        auto const gateway = start_mock_gateway(started.runtime, "push-f79-slow.localhost.test");
+        register_http_pusher(started.runtime, bob, "org.matrix.integration", "bob-f79-slow", gateway->url);
+        auto const policy = merovingian::push::GatewayCircuitBreakerPolicy{1U, std::chrono::seconds{300}};
+        auto const host_key = merovingian::push::push_gateway_host(gateway->url);
+        REQUIRE(host_key.has_value());
+
+        WHEN("a message is delivered through the slow gateway")
+        {
+            auto state = merovingian::tests::tls_mock::StallingTlsServerState{};
+            auto const accepted = merovingian::tests::tls_mock::json_http_response("200 OK", R"({"rejected":[]})");
+            {
+                auto server_thread = std::thread{[&] {
+                    merovingian::tests::tls_mock::run_stalling_tls_server(
+                        gateway->acceptor, *gateway->tls.context, state, accepted, std::chrono::milliseconds{1500});
+                }};
+                auto const server_join = merovingian::tests::tls_mock::ScopedThreadJoin{server_thread};
+                REQUIRE(
+                    send_text_message(started.runtime, alice, room_id, "txn-f79-slow", "hello bob").response.status ==
+                    200U);
+                wait_for_background_tasks(started.runtime.homeserver);
+            }
+
+            THEN("the host is skipped, though every answer was a 200")
+            {
+                REQUIRE(started.runtime.homeserver.push_gateway_breaker_ != nullptr);
+                CHECK_FALSE(started.runtime.homeserver.push_gateway_breaker_->allow(
+                    *host_key, std::chrono::steady_clock::now(), policy));
+            }
+        }
+
+        WHEN("a message is delivered through a gateway that answers at once")
+        {
+            auto const accepted = merovingian::tests::tls_mock::json_http_response("200 OK", R"({"rejected":[]})");
+            {
+                auto server_thread = std::thread{[&] {
+                    merovingian::tests::tls_mock::run_one_shot_tls_server(gateway->acceptor, *gateway->tls.context,
+                                                                          accepted);
+                }};
+                auto const server_join = merovingian::tests::tls_mock::ScopedThreadJoin{server_thread};
+                REQUIRE(
+                    send_text_message(started.runtime, alice, room_id, "txn-f79-fast", "hello bob").response.status ==
+                    200U);
+                wait_for_background_tasks(started.runtime.homeserver);
+            }
+
+            THEN("the host stays open")
+            {
+                CHECK(started.runtime.homeserver.push_gateway_breaker_->allow(
+                    *host_key, std::chrono::steady_clock::now(), policy));
+            }
+        }
+    }
+}
+
+// F-79 (ADR-0409): a recipient batch holds one delivery slot, and its time there is bounded by a
+// deadline, not by the number of pushers times the timeout.
+SCENARIO("a recipient batch past its deadline queues the pushers it has not reached", "[integration][push][f79]")
+{
+    GIVEN("bob with three pushers on a gateway that never answers and a fourth on a working one")
+    {
+        auto started = merovingian::homeserver::start_client_server(push_test_config());
+        REQUIRE(started.started);
+        auto& push_config = started.runtime.homeserver.config.server().push;
+        push_config.enabled = true;
+        // One second to answer, so the batch deadline is two seconds; a high threshold keeps the
+        // circuit closed, so only the deadline can hold back the fourth pusher.
+        push_config.total_timeout_seconds = 1U;
+        push_config.gateway_failure_threshold = 100U;
+        auto const alice = register_and_login(started.runtime, "alice");
+        auto const bob = register_and_login(started.runtime, "bob");
+        auto const room_id = room_with_alice_and_bob(started.runtime, alice, bob);
+        auto const stalled = start_mock_gateway(started.runtime, "push-f79-stalled.localhost.test");
+        auto const working = start_mock_gateway(started.runtime, "push-f79-working.localhost.test");
+        register_http_pusher(started.runtime, bob, "org.matrix.integration", "bob-f79-1", stalled->url);
+        register_http_pusher(started.runtime, bob, "org.matrix.integration", "bob-f79-2", stalled->url);
+        register_http_pusher(started.runtime, bob, "org.matrix.integration", "bob-f79-3", stalled->url);
+        register_http_pusher(started.runtime, bob, "org.matrix.integration", "bob-f79-4", working->url);
+
+        auto state = merovingian::tests::tls_mock::StallingTlsServerState{};
+        auto const never = merovingian::tests::tls_mock::json_http_response("200 OK", R"({"rejected":[]})");
+        auto stalled_thread = std::thread{[&] {
+            merovingian::tests::tls_mock::run_stalling_tls_server(stalled->acceptor, *stalled->tls.context, state,
+                                                                  never, std::chrono::milliseconds{4500});
+        }};
+        auto const stalled_join = merovingian::tests::tls_mock::ScopedThreadJoin{stalled_thread};
+        auto working_connections = std::atomic<unsigned>{0U};
+        auto working_thread = std::thread{[&] {
+            auto const client_fd = merovingian::tests::tls_mock::accept_loopback(working->acceptor, 5000);
+            if (client_fd >= 0)
+            {
+                auto const dropped = merovingian::core::SocketHandle{client_fd};
+                working_connections.fetch_add(1U);
+            }
+        }};
+        auto const working_join = merovingian::tests::tls_mock::ScopedThreadJoin{working_thread};
+
+        WHEN("a message notifies bob and his batch has run past the deadline")
+        {
+            REQUIRE(
+                send_text_message(started.runtime, alice, room_id, "txn-f79-deadline", "hello bob").response.status ==
+                200U);
+            wait_for_background_tasks(started.runtime.homeserver);
+            auto queued = started.runtime.homeserver.push_retry_queue_->take_due(
+                std::chrono::steady_clock::now() + std::chrono::hours{1}, 32U);
+            auto const fourth = std::ranges::find_if(queued, [](merovingian::push::PushRetry const& retry) {
+                return retry.pushkey == "bob-f79-4";
+            });
+
+            THEN("the fourth pusher was queued unattempted, not contacted, and the slot was freed")
+            {
+                CHECK(working_connections.load() == 0U);
+                REQUIRE(fourth != queued.end());
+                CHECK(fourth->failed_attempts == 0U);
+                CHECK(started.runtime.homeserver.push_delivery_in_flight_.load() == 0U);
+            }
+        }
+    }
+}
+
+// F-81 (ADR-0410): the one retry thread is not held by one account's slow gateway.
+SCENARIO("one account's slow-failing gateway does not hold up another account's retry", "[integration][push][f81]")
+{
+    GIVEN("mallory with four retries to a gateway that fails after 1.2 s, and the victim with one to a working one")
+    {
+        auto started = merovingian::homeserver::start_client_server(push_test_config());
+        REQUIRE(started.started);
+        started.runtime.homeserver.config.server().push.enabled = true;
+        auto const mallory = register_and_login(started.runtime, "mallory");
+        auto const victim = register_and_login(started.runtime, "victim");
+        auto const slow = start_mock_gateway(started.runtime, "push-f81-slow.localhost.test");
+        auto const fast = start_mock_gateway(started.runtime, "push-f81-fast.localhost.test");
+        register_http_pusher(started.runtime, mallory, "org.matrix.integration", "mallory-f81", slow->url);
+        register_http_pusher(started.runtime, victim, "org.matrix.integration", "victim-f81", fast->url);
+        auto& queue = *started.runtime.homeserver.push_retry_queue_;
+        auto const queued_at = std::chrono::steady_clock::now();
+        for (auto i = 0; i < 4; ++i)
+        {
+            REQUIRE(queue.schedule(retry_for_pusher("@mallory:example.org", "org.matrix.integration", "mallory-f81",
+                                                    slow->url, "$m" + std::to_string(i)),
+                                   queued_at + std::chrono::milliseconds{i}) ==
+                    merovingian::push::PushRetryAdmission::queued);
+        }
+        REQUIRE(queue.schedule(
+                    retry_for_pusher("@victim:example.org", "org.matrix.integration", "victim-f81", fast->url, "$v0"),
+                    queued_at + std::chrono::seconds{2}) == merovingian::push::PushRetryAdmission::queued);
+
+        // The slow gateway serves two connections, each answered 500 after 1.2 s. A third attempt
+        // would find nobody to answer it and wait out the retry timeout, so the count is exact.
+        auto slow_served = std::atomic<unsigned>{0U};
+        auto slow_thread = std::thread{[&] {
+            auto const failure = merovingian::tests::tls_mock::json_http_response("500 Internal Server Error", "{}");
+            for (auto i = 0; i < 2; ++i)
+            {
+                auto state = merovingian::tests::tls_mock::StallingTlsServerState{};
+                merovingian::tests::tls_mock::run_stalling_tls_server(slow->acceptor, *slow->tls.context, state,
+                                                                      failure, std::chrono::milliseconds{1200});
+                slow_served.fetch_add(1U);
+            }
+        }};
+        auto const slow_join = merovingian::tests::tls_mock::ScopedThreadJoin{slow_thread};
+        auto victim_request = std::string{};
+        auto fast_thread = std::thread{[&] {
+            auto const accepted = merovingian::tests::tls_mock::json_http_response("200 OK", R"({"rejected":[]})");
+            merovingian::tests::tls_mock::run_one_shot_tls_server(fast->acceptor, *fast->tls.context, accepted,
+                                                                  &victim_request);
+        }};
+        auto const fast_join = merovingian::tests::tls_mock::ScopedThreadJoin{fast_thread};
+
+        WHEN("the retry job runs with a two-second budget")
+        {
+            std::ignore = merovingian::homeserver::retry_due_push_deliveries(
+                started.runtime.homeserver, merovingian::homeserver::StopFlag{},
+                std::chrono::steady_clock::now() + std::chrono::hours{1}, std::chrono::milliseconds{2000});
+            if (slow_thread.joinable())
+            {
+                slow_thread.join();
+            }
+            if (fast_thread.joinable())
+            {
+                fast_thread.join();
+            }
+
+            THEN("the victim's retry was sent after one of mallory's, and the two not reached are still queued")
+            {
+                CHECK(victim_request.find("POST /_matrix/push/v1/notify") != std::string::npos);
+                CHECK(slow_served.load() == 2U);
+                // Two of mallory's failed again and were rescheduled, two were put back untried.
+                CHECK(queue.size() == 4U);
+                auto const waiting = queue.take_due(std::chrono::steady_clock::now() + std::chrono::hours{1}, 32U);
+                CHECK(std::ranges::count_if(waiting, [](merovingian::push::PushRetry const& retry) {
+                          return retry.failed_attempts == 1U;
+                      }) == 2);
+                CHECK(std::ranges::count_if(waiting, [](merovingian::push::PushRetry const& retry) {
+                          return retry.user_id == "@victim:example.org";
+                      }) == 0);
+            }
+        }
+    }
+}
+
+SCENARIO("a stopping retry job sends nothing and keeps every retry it had taken", "[integration][push][f81]")
+{
+    GIVEN("two retries queued and a stop already requested")
+    {
+        auto started = merovingian::homeserver::start_client_server(push_test_config());
+        REQUIRE(started.started);
+        started.runtime.homeserver.config.server().push.enabled = true;
+        auto const bob = register_and_login(started.runtime, "bob");
+        auto const gateway = start_mock_gateway(started.runtime, "push-f81-stop.localhost.test");
+        register_http_pusher(started.runtime, bob, "org.matrix.integration", "bob-f81", gateway->url);
+        auto& queue = *started.runtime.homeserver.push_retry_queue_;
+        for (auto i = 0; i < 2; ++i)
+        {
+            REQUIRE(queue.schedule(retry_for_pusher("@bob:example.org", "org.matrix.integration", "bob-f81",
+                                                    gateway->url, "$e" + std::to_string(i)),
+                                   std::chrono::steady_clock::now()) == merovingian::push::PushRetryAdmission::queued);
+        }
+        auto stop = merovingian::homeserver::StopFlag{};
+        stop.request_stop();
+
+        WHEN("the retry job runs")
+        {
+            auto const started_at = std::chrono::steady_clock::now();
+            std::ignore = merovingian::homeserver::retry_due_push_deliveries(
+                started.runtime.homeserver, stop, std::chrono::steady_clock::now() + std::chrono::hours{1});
+            auto const took = std::chrono::steady_clock::now() - started_at;
+
+            THEN("it returns at once and both retries are still queued")
+            {
+                CHECK(took < std::chrono::seconds{1});
+                CHECK(queue.size() == 2U);
+            }
+        }
+    }
+}

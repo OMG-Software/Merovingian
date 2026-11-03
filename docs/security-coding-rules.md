@@ -1391,14 +1391,25 @@ media-fetch-pool task.
 - **Unread counts, the push badge included, count only events the user may see, from their current
   join.** Every counted event passes `sync::HistoryVisibility::can_see` (`unread.visible()`,
   `classifier.visible()`); the join boundary alone does not exclude a backfilled pre-join event,
-  which is ordered after the join. Why: the user's rules decide what counts, so a keyword rule
-  counted over history they may not see would disclose whether it contains a word (CWE-203,
-  ADR-0205).
+  which is ordered after the join; nor does a non-state event from a sender the user has ignored
+  (`m.ignored_user_list`, resolved once by the classifier). Why: the user's rules decide what counts,
+  so a keyword rule counted over history they may not see would disclose whether it contains a word
+  (CWE-203, ADR-0205), and an ignored sender must not raise an indicator for an event the client is
+  never sent.
   Source: `src/sync/AGENTS.md`.
 - **Failed push notifications are retried only from the bounded queue, on the retry job.** Never
   sleep in a delivery task, never hold `runtime.mutex` across `notify`, and drop past the queue's
-  bounds rather than block. Why: a failing gateway must not hold delivery slots, threads or
-  unbounded memory (CWE-400, ADR-0206).
+  bounds rather than block. The one retry thread starts no attempt past a time budget, takes retries
+  one recipient at a time in turn, and sends with a shorter timeout, putting back what it did not
+  reach. A recipient batch holds its slot for a deadline, not for pushers times the timeout, and
+  requests in flight per gateway host and address are capped; an answer slower than half the timeout
+  counts against the host's circuit. Why: a failing or slow gateway must not hold delivery slots,
+  threads or unbounded memory (CWE-400, ADR-0206, ADR-0409, ADR-0410).
+  Source: `src/push/AGENTS.md`.
+- **A deactivated account keeps no pusher and is never delivered to.** Deactivation deletes its
+  pushers and queued retries, and delivery and the retry check refuse the recipient. Why: nobody can
+  sign in to remove a pusher a compromised session registered, and it would keep receiving the
+  account's room messages (CWE-200, ADR-0411).
   Source: `src/push/AGENTS.md`.
 - **An email pusher mails only an email 3PID the account holds, re-checked before every send.**
   Registration refuses any other `pushkey`; the email job deletes a pusher whose address has left

@@ -1,6 +1,6 @@
 # Cap pusher registration and break the circuit to failing gateways
 
-* Status: accepted
+* Status: accepted (the promptness assumption in its negative consequences is superseded by [ADR-0409](0409-count-a-slow-gateway-answer-as-a-failure-and-bound-a-delivery-batch.md))
 * Date: 2026-10-15
 
 Technical Story: 29 September 2026 security audit, finding OUT-3 (one user's stalled push gateways
@@ -61,3 +61,7 @@ Chosen option: both caps, as configuration with these defaults.
   cooldown misses those notifications.
 * A gateway that answers every request with a 5xx still holds a delivery slot for each request. It
   answers promptly, so the slot is short; a gateway that stalls ends in a timeout, which counts.
+  *Superseded in part by [ADR-0409](0409-count-a-slow-gateway-answer-as-a-failure-and-bound-a-delivery-batch.md)
+  and [ADR-0410](0410-bound-the-push-retry-thread-by-time-and-take-retries-in-turn.md): a gateway need not
+  answer promptly, and one that answers just inside the timeout never times out. An answer slower than
+  half the total timeout now counts against the circuit; a prompt 5xx still does not.*

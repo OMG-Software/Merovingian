@@ -288,3 +288,111 @@ SCENARIO("Delivery threads and the retry job share the queue safely", "[push][pu
         }
     }
 }
+
+// F-81 (ADR-0410): the single retry thread takes due retries one recipient at a time in turn, so
+// one account's backlog does not stand in front of everyone else's.
+SCENARIO("take_due serves each recipient in turn, not one recipient's backlog first", "[push][push_retry][f81]")
+{
+    GIVEN("a recipient with four due retries queued before another recipient's one")
+    {
+        auto queue = PushRetryQueue{};
+        for (auto i = 0; i < 4; ++i)
+        {
+            REQUIRE(queue.schedule(retry_for("@mallory:example.org", "m" + std::to_string(i)), t0 + seconds{i}) ==
+                    PushRetryAdmission::queued);
+        }
+        REQUIRE(queue.schedule(retry_for("@victim:example.org", "v0"), t0 + seconds{10}) == PushRetryAdmission::queued);
+
+        WHEN("three retries are taken once they are all due")
+        {
+            auto const taken = queue.take_due(t0 + std::chrono::hours{1}, 3U);
+
+            THEN("the victim's is among them, after the first of mallory's")
+            {
+                REQUIRE(taken.size() == 3U);
+                CHECK(taken[0].user_id == "@mallory:example.org");
+                CHECK(taken[0].pushkey == "m0");
+                CHECK(taken[1].user_id == "@victim:example.org");
+                CHECK(taken[2].user_id == "@mallory:example.org");
+                CHECK(taken[2].pushkey == "m1");
+            }
+            AND_THEN("what was not taken is still queued")
+            {
+                CHECK(queue.size() == 2U);
+            }
+        }
+    }
+}
+
+SCENARIO("take_due keeps one recipient's retries in due order", "[push][push_retry][f81]")
+{
+    GIVEN("one recipient with three retries queued out of order")
+    {
+        auto queue = PushRetryQueue{};
+        REQUIRE(queue.schedule(retry_for("@a:example.org", "late"), t0 + seconds{30}) == PushRetryAdmission::queued);
+        REQUIRE(queue.schedule(retry_for("@a:example.org", "early"), t0 + seconds{1}) == PushRetryAdmission::queued);
+        REQUIRE(queue.schedule(retry_for("@a:example.org", "middle"), t0 + seconds{10}) == PushRetryAdmission::queued);
+
+        WHEN("they are all taken")
+        {
+            auto const taken = queue.take_due(t0 + std::chrono::hours{1}, 32U);
+
+            THEN("they come earliest due first and the queue is empty")
+            {
+                REQUIRE(taken.size() == 3U);
+                CHECK(taken[0].pushkey == "early");
+                CHECK(taken[1].pushkey == "middle");
+                CHECK(taken[2].pushkey == "late");
+                CHECK(queue.size() == 0U);
+            }
+        }
+    }
+}
+
+SCENARIO("a retry taken but not attempted can be put back unchanged", "[push][push_retry][f81]")
+{
+    GIVEN("a queued retry that has been taken")
+    {
+        auto queue = PushRetryQueue{};
+        REQUIRE(queue.schedule(retry_for("@a:example.org", "k", 3U), t0) == PushRetryAdmission::queued);
+        auto taken = queue.take_due(t0 + std::chrono::hours{1}, 32U);
+        REQUIRE(taken.size() == 1U);
+        auto const due = taken.front().due;
+
+        WHEN("it is returned untried")
+        {
+            queue.return_untried(std::move(taken.front()));
+
+            THEN("it is queued again with the same due time and attempt count, ready to be taken")
+            {
+                REQUIRE(queue.size() == 1U);
+                CHECK(queue.next_due() == due);
+                auto const again = queue.take_due(due, 32U);
+                REQUIRE(again.size() == 1U);
+                CHECK(again.front().failed_attempts == 3U);
+            }
+        }
+    }
+}
+
+SCENARIO("drop_pusher drops one user's retries to one pusher only", "[push][push_retry][f80]")
+{
+    GIVEN("two users with a pusher of the same app ID and pushkey, and one more pusher of the first")
+    {
+        auto queue = PushRetryQueue{};
+        REQUIRE(queue.schedule(retry_for("@a:example.org", "shared"), t0) == PushRetryAdmission::queued);
+        REQUIRE(queue.schedule(retry_for("@b:example.org", "shared"), t0) == PushRetryAdmission::queued);
+        REQUIRE(queue.schedule(retry_for("@a:example.org", "other"), t0) == PushRetryAdmission::queued);
+
+        WHEN("the first user's shared pusher is dropped")
+        {
+            auto const dropped = queue.drop_pusher("@a:example.org", "org.example.app", "shared");
+
+            THEN("only that retry goes")
+            {
+                CHECK(dropped == 1U);
+                CHECK(queue.size() == 2U);
+            }
+        }
+    }
+}

@@ -1934,6 +1934,47 @@ auto logout_all_local_user(HomeserverRuntime& runtime, std::string_view access_t
     return make_operation_result(true, session->user_id);
 }
 
+namespace
+{
+
+    // Deletes pushers of `user_id`, forgetting each one's email-digest entry and dropping its queued
+    // retries. With `kept_device_id`, only the pushers that a device other than it set go: a password
+    // change that revokes those devices' tokens ends their notifications with them (Complement
+    // TestChangePasswordPushers; the spec says nothing of pushers), and a pusher with no recorded
+    // device is kept. With none, every pusher goes: a deactivated account keeps no pusher, because
+    // nobody can sign in to remove one (the rule email_push.cpp applies to email pushers). Returns
+    // false when one could not be deleted. Call under runtime.mutex.
+    [[nodiscard]] auto delete_pushers_of_user(HomeserverRuntime& runtime, std::string_view user_id,
+                                              std::optional<std::string_view> kept_device_id) -> bool
+    {
+        auto& store = runtime.database.persistent_store;
+        auto all_deleted = true;
+        // A copy: delete_pusher erases from the store's mirror.
+        for (auto const& pusher : database::list_pushers_for_user(store, user_id))
+        {
+            if (kept_device_id.has_value() && (pusher.device_id.empty() || pusher.device_id == *kept_device_id))
+            {
+                continue;
+            }
+            if (!database::delete_pusher(store, user_id, pusher.app_id, pusher.pushkey))
+            {
+                all_deleted = false;
+                continue;
+            }
+            if (runtime.email_digest_queue_ != nullptr)
+            {
+                runtime.email_digest_queue_->forget(push::EmailDigestKey{std::string{user_id}, pusher.pushkey});
+            }
+            if (runtime.push_retry_queue_ != nullptr)
+            {
+                std::ignore = runtime.push_retry_queue_->drop_pusher(user_id, pusher.app_id, pusher.pushkey);
+            }
+        }
+        return all_deleted;
+    }
+
+} // namespace
+
 // Permanently deactivates the caller's account (spec: POST
 // /_matrix/client/v3/account/deactivate). Irreversible by design.
 //
@@ -1990,6 +2031,18 @@ auto deactivate_local_user(HomeserverRuntime& runtime, std::string_view access_t
             candidate.revoked = true;
         }
     }
+    // Every pusher goes too, with its queued retries: nobody can sign in to remove one, and a pusher
+    // that an earlier compromised session registered would keep receiving the account's room
+    // messages. Delivery also refuses a deactivated recipient, so a pusher that could not be deleted
+    // sends nothing.
+    if (!delete_pushers_of_user(runtime, session->user_id, std::nullopt))
+    {
+        log_diagnostic("account.deactivated.pusher_removal_failed",
+                       {
+                           {"user_id", session->user_id, false}
+        },
+                       observability::LogEventSeverity::warning);
+    }
     // The password hash is replaced with a value no password can produce, so a
     // credential leak predating deactivation cannot be replayed even if a future
     // change were to soften the login gate.
@@ -2035,40 +2088,6 @@ auto delete_local_device(HomeserverRuntime& runtime, std::string_view user_id, s
                        "deleted");
     return make_operation_result(true, std::string{device_id});
 }
-
-namespace
-{
-
-    // Deletes the pushers of `user_id` that a device other than `kept_device_id` set. A password
-    // change that revokes those devices' tokens ends their notifications with them (Complement
-    // TestChangePasswordPushers); the spec says nothing of pushers. A pusher with no recorded
-    // device is kept. Returns false when one could not be deleted. Call under runtime.mutex.
-    [[nodiscard]] auto delete_pushers_of_other_devices(HomeserverRuntime& runtime, std::string_view user_id,
-                                                       std::string_view kept_device_id) -> bool
-    {
-        auto& store = runtime.database.persistent_store;
-        auto all_deleted = true;
-        // A copy: delete_pusher erases from the store's mirror.
-        for (auto const& pusher : database::list_pushers_for_user(store, user_id))
-        {
-            if (pusher.device_id.empty() || pusher.device_id == kept_device_id)
-            {
-                continue;
-            }
-            if (!database::delete_pusher(store, user_id, pusher.app_id, pusher.pushkey))
-            {
-                all_deleted = false;
-                continue;
-            }
-            if (runtime.email_digest_queue_ != nullptr)
-            {
-                runtime.email_digest_queue_->forget(push::EmailDigestKey{std::string{user_id}, pusher.pushkey});
-            }
-        }
-        return all_deleted;
-    }
-
-} // namespace
 
 auto change_local_user_password(HomeserverRuntime& runtime, std::string_view access_token,
                                 std::string_view new_password, bool logout_devices) -> OperationResult
@@ -2127,7 +2146,7 @@ auto change_local_user_password(HomeserverRuntime& runtime, std::string_view acc
     // written: a failure here then commits no credential change and the client can retry with its old
     // password. A failure after some deletions only ends notifications early for devices that were
     // about to lose them.
-    if (logout_devices && !delete_pushers_of_other_devices(runtime, user_id, session->device_id))
+    if (logout_devices && !delete_pushers_of_user(runtime, user_id, session->device_id))
     {
         return make_operation_result(false, {}, "pusher removal persistence failed", 500U);
     }
