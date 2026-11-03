@@ -1382,6 +1382,8 @@ namespace
         bool invalid_message_type{false};
         // (origin, sender, message_id) was already recorded in the replay window: whole EDU dropped.
         bool replay{false};
+        // Messages dropped because their content is over the to-device message limit (F-14).
+        std::size_t dropped_oversized{0U};
         // Target entries skipped because the user is not a local, active account.
         std::size_t skipped_non_local{0U};
         // True when the per-EDU delivery cap was reached and the rest dropped.
@@ -1558,6 +1560,13 @@ namespace
                 auto const serialized = canonicaljson::serialize_canonical(*device_entry.value);
                 if (serialized.error != canonicaljson::CanonicalJsonError::none)
                 {
+                    continue;
+                }
+                // F-14, ADR-0335: a message over the size limit is dropped alone; the sender cannot be told
+                // which one, and the rest of the EDU is still delivered.
+                if (!database::to_device_content_fits(runtime.database.persistent_store, serialized.output))
+                {
+                    ++result.dropped_oversized;
                     continue;
                 }
                 // Each device a wildcard expands to is one delivery against
@@ -2022,6 +2031,15 @@ namespace
             case federation::EduType::direct_to_device: {
                 auto const enqueue_result =
                     enqueue_direct_to_device_messages(*rt, envelope.origin, envelope.content_json);
+                if (enqueue_result.dropped_oversized > 0U)
+                {
+                    log_diagnostic("federation.edu.direct_to_device.oversized_dropped",
+                                   {
+                                       {"origin",  envelope.origin,                                  false},
+                                       {"dropped", std::to_string(enqueue_result.dropped_oversized), false}
+                    },
+                                   observability::LogEventSeverity::warning);
+                }
                 if (enqueue_result.sender_not_on_origin || enqueue_result.invalid_message_id ||
                     enqueue_result.invalid_message_type)
                 {

@@ -86,7 +86,8 @@ Federation is the highest-risk surface: **all input comes from untrusted remote 
 
 6. **Never relay a remote server's answer about users unfiltered.** Keep only the users that
    server was asked about, and only records that describe the user they are filed under. For
-   E2EE keys use `accept_remote_key_query_response()` (`key_query.hpp`). Merge uploaded key
+   E2EE keys use `accept_remote_key_query_response()` and, for a `/keys/claim` answer,
+   `accept_remote_key_claim_response()` (`key_query.hpp`, ADR-0337). Merge uploaded key
    signatures only through `key_signatures.hpp`, passing `std::nullopt` as the viewer for
    anything sent to another server (ADR-0060).
 
@@ -127,7 +128,8 @@ Federation is the highest-risk surface: **all input comes from untrusted remote 
    (`database::enqueue_to_device_messages`), so a failed store never makes the resend look like
    a replay (ADR-0166). Our own outbound `message_id` is `derive_direct_to_device_message_id`
    (sender, event type, txn id), never the raw client txn id. One EDU queues at most
-   `max_inbound_direct_to_device_deliveries` messages. A `m.device_list_update` /
+   `max_inbound_direct_to_device_deliveries` messages, and a message whose content is over `max_to_device_message_bytes`
+   is dropped alone, not the EDU (ADR-0335). A `m.device_list_update` /
    `m.signing_key_update` writes a `device_list_changes` row only for local users who share a
    joined room with the subject, as one batch (`record_device_list_changes`), one row per
    (observer, subject). A remote user's own membership change reaches the same table through

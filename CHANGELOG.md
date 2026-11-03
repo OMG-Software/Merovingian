@@ -4,6 +4,34 @@ The medium findings of security audit run 2 (ref 5e67d4e8).
 
 ### Security
 
+- **Room tags and account-data rows are bounded (F-12, ADR-0339).** `PUT .../tags/{tag}` read-modified-wrote one
+  `m.tag` row with no limit, so a user could grow it past any request body and every later tag request and `/sync`
+  parsed it whole under the global lock. A tag name over the spec's 255 bytes is now refused (400 `M_INVALID_PARAM`),
+  a room holds at most 100 tags of at most 1 KiB each (400 `M_TOO_LARGE`; changing a held tag is always allowed), and
+  any account-data row, including the ones the server writes itself and the generic account-data `PUT`, is refused
+  past 256 KiB (400 `M_TOO_LARGE`).
+- **A `sendToDevice` batch costs one pass over the queue, and one request names a bounded number of devices (F-13,
+  ADR-0336).** Each message used to walk the whole shared queue and scan the batch's evictions for every row, so a
+  request naming many full devices cost queue x devices squared under the global lock. A batch now gathers its
+  recipients' queues in one pass, evictions and acknowledgements remove rows through a hash, and the devices a
+  request addresses come from one pass over the device table. A request addressing more than 1,000 local devices
+  (a `*` counts one per device) is refused with 413 `M_TOO_LARGE`, nothing queued.
+- **The to-device queue is bounded in bytes (F-14, ADR-0335).** A message over `max_to_device_message_bytes` (default
+  64 KiB) is refused with 413 `M_TOO_LARGE`, or dropped alone from an inbound `m.direct_to_device` EDU, and a
+  recipient whose queue would pass `max_to_device_bytes_per_user_device` (default 16 MiB) loses its oldest rows first.
+  Both are new `server.client_api` keys. The byte total is computed from the rows, so it is right after eviction,
+  acknowledgement and a restart.
+- **A remote server can no longer corrupt or blank a client's key claim (F-36, ADR-0337).** `POST /keys/claim` copied
+  every user a remote server named into the response; naming a user the client also asked a local answer for made a
+  duplicate member that the serialiser refused, so the client got an empty 200 after its local one-time keys were
+  spent. The answer is now kept only for the users and devices asked of that server, an unusable answer is recorded
+  as a failure of that server, and a response that cannot be serialised is a 500, never an empty 200.
+- **Uploaded keys have a shape and a size (F-37, ADR-0338).** `/keys/upload` accepted any non-null value for an
+  unsigned one-time or fallback key, so one key could be the size of the 1 MiB body. A key is now a string of at most
+  256 bytes or a key object (`key`, `signatures`, `fallback`) of at most 4 KiB, refused with 400 `M_BAD_JSON` before
+  anything is stored. `device_keys`, each cross-signing key and each signed key of a signature upload are refused
+  past 16 KiB with 400 `M_TOO_LARGE`.
+
 ## 0.12.67
 
 The five high findings of security audit run 2 (ref 5e67d4e8).

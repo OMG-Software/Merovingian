@@ -302,6 +302,11 @@
 * [0318 - A membership template offers the room's stored forward extremities, and none is offered without them](0318-a-membership-template-offers-the-rooms-stored-forward-extremities.md)
 * [0319 - Report a failed device-list write where the client can retry, and finish where access is being revoked](0319-report-a-failed-device-list-write-where-the-client-can-retry.md)
 * [0320 - A join comes after the ancestors that share its depth](0320-a-join-comes-after-the-ancestors-that-share-its-depth.md)
+* [0335 - Bound the to-device queue in bytes per recipient](0335-bound-the-to-device-queue-in-bytes-per-recipient.md)
+* [0336 - Enqueue a to-device batch in one pass, and cap a request's deliveries](0336-enqueue-a-to-device-batch-in-one-pass-and-cap-a-requests-deliveries.md)
+* [0337 - Keep only what was asked of a server in a key claim answer](0337-keep-only-what-was-asked-of-a-server-in-a-key-claim-answer.md)
+* [0338 - Bound the shape and size of uploaded keys](0338-bound-the-shape-and-size-of-uploaded-keys.md)
+* [0339 - Bound account-data rows and the tags of a room](0339-bound-account-data-rows-and-the-tags-of-a-room.md)
 
 ## Proposed Records
 

@@ -67,6 +67,14 @@ struct RegistrationValidationSession final
     std::string identity_access_token{};
 };
 
+// Security audit run-2 F-12 (ADR-0339). The spec bounds a tag's name (255 bytes) and nothing else about
+// room tags; the server bounds the rest. A user's tags on one room hold at most `max_tags_per_room`
+// entries, each tag's JSON value at most `max_tag_value_bytes`; the whole m.tag row is bounded by
+// database::max_account_data_row_bytes as well. Over either, PUT .../tags/{tag} answers 400 M_TOO_LARGE.
+inline constexpr std::size_t max_tag_name_bytes{255U};
+inline constexpr std::size_t max_tags_per_room{100U};
+inline constexpr std::size_t max_tag_value_bytes{1024U};
+
 struct ClientApiLimits final
 {
     // The body limit is snapshotted from server.client_api.max_body_size at startup.
@@ -112,6 +120,9 @@ struct ClientApiLimits final
     // Security audit run-2 (ADR-0316): entries of one POST /createRoom; over -> M_TOO_LARGE.
     std::uint32_t max_create_room_invites{100U};
     std::uint32_t max_create_room_initial_state{100U};
+    // Security audit run-2 F-13 (ADR-0336): local deliveries (a "*" counts one per device) of one
+    // PUT /sendToDevice; over -> 413 M_TOO_LARGE, nothing queued. Inbound EDUs have their own cap.
+    std::uint32_t max_send_to_device_deliveries{1000U};
     sync::SlidingSyncLimits sliding_sync{500U, 1024U, 1024U};
     std::uint32_t sliding_sync_connections_per_device{16U};
 };

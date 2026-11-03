@@ -327,6 +327,78 @@ auto accept_remote_key_query_response(std::string_view origin, std::string_view 
     return accepted;
 }
 
+auto accept_remote_key_claim_response(std::string_view origin, std::string_view response_body,
+                                      std::vector<std::pair<std::string, std::vector<std::string>>> const& requested)
+    -> std::optional<RemoteKeyClaimKeys>
+{
+    auto const response = parsed_value(response_body);
+    auto const* root = response.has_value() ? std::get_if<canonicaljson::Object>(&response->storage()) : nullptr;
+    auto const* claimed = root == nullptr ? nullptr : as_object(member_value(*root, "one_time_keys"));
+    if (claimed == nullptr)
+    {
+        log_diagnostic("remote_key_claim.rejected",
+                       {
+                           {"origin", std::string{origin},                                         false},
+                           {"reason", "response is not a JSON object with a one_time_keys object", false}
+        },
+                       observability::LogEventSeverity::warning);
+        return std::nullopt;
+    }
+
+    auto accepted = RemoteKeyClaimKeys{};
+    auto dropped = std::size_t{0U};
+    for (auto const& user_member : *claimed)
+    {
+        auto const wanted = std::ranges::find_if(requested, [&user_member](auto const& entry) {
+            return entry.first == user_member.key;
+        });
+        auto const* devices =
+            user_member.value == nullptr ? nullptr : std::get_if<canonicaljson::Object>(&user_member.value->storage());
+        // A user that was not asked of this server, or is named twice, is not this server's to speak for.
+        if (wanted == requested.end() || devices == nullptr || has_member(accepted.one_time_keys, user_member.key))
+        {
+            ++dropped;
+            continue;
+        }
+        auto user_devices = canonicaljson::Object{};
+        for (auto const& device_member : *devices)
+        {
+            auto const* keys = device_member.value == nullptr
+                                   ? nullptr
+                                   : std::get_if<canonicaljson::Object>(&device_member.value->storage());
+            // Spec (POST /keys/claim): a device maps `<algorithm>:<key_id>` to `string|KeyObject`.
+            auto const well_formed = keys != nullptr && !keys->empty() &&
+                                     std::ranges::all_of(*keys, [](canonicaljson::ObjectMember const& key) {
+                                         return key.value != nullptr &&
+                                                (std::get_if<std::string>(&key.value->storage()) != nullptr ||
+                                                 std::get_if<canonicaljson::Object>(&key.value->storage()) != nullptr);
+                                     });
+            if (!well_formed || std::ranges::find(wanted->second, device_member.key) == wanted->second.end() ||
+                has_member(user_devices, device_member.key))
+            {
+                ++dropped;
+                continue;
+            }
+            user_devices.push_back(device_member);
+        }
+        if (!user_devices.empty())
+        {
+            accepted.one_time_keys.push_back(
+                canonicaljson::make_member(user_member.key, canonicaljson::Value{std::move(user_devices)}));
+        }
+    }
+    if (dropped > 0U)
+    {
+        log_diagnostic("remote_key_claim.entries_dropped",
+                       {
+                           {"origin",  std::string{origin},     false},
+                           {"dropped", std::to_string(dropped), false}
+        },
+                       observability::LogEventSeverity::warning);
+    }
+    return accepted;
+}
+
 auto build_signing_key_update_content(database::PersistentStore const& store, std::string_view user_id)
     -> std::optional<std::string>
 {

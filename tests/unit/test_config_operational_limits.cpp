@@ -350,3 +350,66 @@ SCENARIO("The per-appservice outbox cap defaults to 100000 and is tunable",
         }
     }
 }
+
+// Security audit run-2 F-14 (ADR-0335): the to-device queue is bounded in bytes as well as rows, and
+// both byte limits are operator-tunable within a validated range.
+SCENARIO("The to-device byte limits default to bounded values, can be tuned and reject unusable values",
+         "[config][operational-limits][security][run2][f14]")
+{
+    GIVEN("a configuration that does not mention the byte limits")
+    {
+        auto const parsed = merovingian::config::parse_key_value_config("");
+
+        THEN("the defaults are 64 KiB per message and 16 MiB per device, and valid")
+        {
+            REQUIRE(parsed.config.server().client_api.max_to_device_message_bytes == 65536U);
+            REQUIRE(parsed.config.server().client_api.max_to_device_bytes_per_user_device == 16777216U);
+            REQUIRE(merovingian::config::validate(parsed.config).empty());
+        }
+    }
+
+    GIVEN("a configuration that overrides both byte limits")
+    {
+        auto const parsed =
+            merovingian::config::parse_key_value_config("server.client_api.max_to_device_message_bytes=1000\n"
+                                                        "server.client_api.max_to_device_bytes_per_user_device=5000\n");
+
+        WHEN("it is parsed and validated, and a reload plan is built against the defaults")
+        {
+            auto const findings = merovingian::config::validate(parsed.config);
+            auto const plan = merovingian::config::build_reload_plan(merovingian::config::Config{}, parsed.config);
+
+            THEN("the overrides are applied without findings and each is a restart-required change")
+            {
+                REQUIRE(parsed.findings.empty());
+                REQUIRE(findings.empty());
+                REQUIRE(parsed.config.server().client_api.max_to_device_message_bytes == 1000U);
+                REQUIRE(parsed.config.server().client_api.max_to_device_bytes_per_user_device == 5000U);
+                REQUIRE(plan.changes().size() == 2U);
+                REQUIRE(plan.restart_required_change_count() == 2U);
+            }
+        }
+    }
+
+    GIVEN("an unusable override")
+    {
+        auto const input = GENERATE("server.client_api.max_to_device_message_bytes=0\n",
+                                    "server.client_api.max_to_device_message_bytes=16777217\n",
+                                    "server.client_api.max_to_device_message_bytes=big\n",
+                                    "server.client_api.max_to_device_bytes_per_user_device=0\n",
+                                    "server.client_api.max_to_device_bytes_per_user_device=1073741825\n",
+                                    "server.client_api.max_to_device_message_bytes=2000\nserver.client_api.max_to_"
+                                    "device_bytes_per_user_device=1000\n");
+
+        WHEN("the configuration is parsed and validated")
+        {
+            auto const parsed = merovingian::config::parse_key_value_config(input);
+            auto const findings = merovingian::config::validate(parsed.config);
+
+            THEN("the operator gets an error instead of a limit the queue could not honour")
+            {
+                REQUIRE((!parsed.findings.empty() || !findings.empty()));
+            }
+        }
+    }
+}
