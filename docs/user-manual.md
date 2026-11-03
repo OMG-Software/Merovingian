@@ -190,10 +190,13 @@ merovingian.conf.example`.
 
 The FreeBSD package creates the same user and group, and installs an rc.d script
 that reads `/usr/local/etc/merovingian/merovingian.conf`. It stages only a sample,
-so create the file and enable the service:
+whose secret file settings still point at `/etc/merovingian`. Create the file, move
+those paths, and enable the service:
 
 ```sh
 cp /usr/local/etc/merovingian/merovingian.conf.sample \
+   /usr/local/etc/merovingian/merovingian.conf
+sed -i '' 's|/etc/merovingian/|/usr/local/etc/merovingian/|' \
    /usr/local/etc/merovingian/merovingian.conf
 sysrc merovingian_enable=YES
 ```

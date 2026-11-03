@@ -23,8 +23,8 @@ namespace
 
     void read_dynamic_section(dl_phdr_info const& info, Elf64_Phdr const& dynamic, ElfHardeningResult& result) noexcept
     {
-        // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast,performance-no-int-to-ptr) — the loader maps it
-        // here
+        // The loader maps the dynamic section at dlpi_addr + p_vaddr.
+        // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast,performance-no-int-to-ptr)
         auto const* const first = reinterpret_cast<Elf64_Dyn const*>(info.dlpi_addr + dynamic.p_vaddr);
 
         // DT_BIND_NOW and DF_BIND_NOW in DT_FLAGS both encode the -z,now linker
