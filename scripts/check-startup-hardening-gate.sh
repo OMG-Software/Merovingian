@@ -143,6 +143,13 @@ chmod 0400 "$master_key"
     # applied to the worker wherever the kernel (or container seccomp profile)
     # offers it; this only stops its absence failing the boot (ADR-0062).
     echo "federation.worker.allow_without_landlock=true"
+    # The worker's in-process sandbox exists only on Linux, and elsewhere the
+    # worker refuses to start until the config accepts that (ADR-0041). The worker
+    # stays enabled, so a pass still proves the package installed it and it runs.
+    case "$(uname -s)" in
+        Linux) ;;
+        *) echo "federation.worker.apply_hardening=false" ;;
+    esac
     if [ -n "$federation_worker" ]; then
         echo "federation.worker.binary=${federation_worker}"
     fi

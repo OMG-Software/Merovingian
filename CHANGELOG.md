@@ -12,7 +12,8 @@
 ### CI
 
 - The FreeBSD package job and the Fedora RPM job each install the package they built and boot the installed server
-  through the startup hardening gate before attesting it.
+  through the startup hardening gate before attesting it. Off Linux, the gate accepts a federation worker with no
+  in-process sandbox, since that sandbox exists only on Linux.
 - The full suite runs on both Fedora 44 and `fedora:latest`, as `fedora-suite`. The required `fedora-build-and-test` and
   `Fedora RPM package` checks now come from jobs that pass only when every image passed.
 
