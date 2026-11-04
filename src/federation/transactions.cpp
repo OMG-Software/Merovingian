@@ -401,33 +401,6 @@ auto validate_federation_transaction(FederationTransaction const& transaction, s
     return result;
 }
 
-auto edu_is_allowed(FederationEdu const& edu) -> FederationTransactionDecision
-{
-    auto result = [&]() -> FederationTransactionDecision {
-        if (!server_name_is_valid(edu.origin))
-        {
-            return {false, "invalid EDU origin"};
-        }
-        if (edu.edu_type.empty())
-        {
-            return {false, "EDU type is required"};
-        }
-        if (!edu.ephemeral)
-        {
-            return {false, "EDUs must remain ephemeral"};
-        }
-        return {true, {}};
-    }();
-    log_diagnostic(
-        result.accepted ? "edu.allowed" : "edu.rejected",
-        {
-            {"origin",   edu.origin,    false},
-            {"edu_type", edu.edu_type,  false},
-            {"reason",   result.reason, false}
-    });
-    return result;
-}
-
 auto federation_route_audit_event(FederationRoute const& route, std::string_view origin) -> std::string
 {
     return "federation." + std::string{federation_endpoint_name(route.endpoint)} + " origin=" + std::string{origin};

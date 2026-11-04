@@ -500,10 +500,6 @@ auto build_reload_plan(Config const& current, Config const& next) -> ReloadPlan
     {
         add_change(plan, "security.logging.redact_event_content");
     }
-    if (current.security().logging.structured != next.security().logging.structured)
-    {
-        add_change(plan, "security.logging.structured");
-    }
 
     // #421: the blocks below previously produced no diff at all, so an edit
     // to any of these keys was reported as "no changes" and silently dropped.
@@ -558,10 +554,6 @@ auto build_reload_plan(Config const& current, Config const& next) -> ReloadPlan
     if (current.server().identity_server.trusted_servers != next.server().identity_server.trusted_servers)
     {
         add_change(plan, "server.identity_server.trusted_servers");
-    }
-    if (current.server().identity_server.default_server != next.server().identity_server.default_server)
-    {
-        add_change(plan, "server.identity_server.default_server");
     }
     if (current.server().identity_server.allowed_bind_domains != next.server().identity_server.allowed_bind_domains)
     {

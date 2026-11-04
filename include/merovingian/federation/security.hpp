@@ -102,7 +102,6 @@ struct RemoteTrustDecision final
 [[nodiscard]] auto verify_federation_event_signatures(std::vector<events::EventSignature> const& signatures,
                                                       std::string_view expected_server)
     -> FederationVerificationDecision;
-[[nodiscard]] auto federation_remote_rate_limit() noexcept -> http::RateLimitPolicy;
 // `now` is a seam for tests; production callers use the default. The
 // consecutive-failure backoff is ignored once `remote_backoff_decay_window` has
 // elapsed since `last_failure_at`. Quarantine, an open circuit and low

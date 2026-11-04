@@ -70,11 +70,6 @@ struct RateLimitPolicy final
     [[nodiscard]] auto operator==(RateLimitPolicy const& other) const noexcept -> bool = default;
 };
 
-struct RateLimitState final
-{
-    std::uint32_t requests_seen{0U};
-    std::uint32_t window_elapsed_seconds{0U};
-};
 
 // Explicit client-server route tiers. The classification lives in
 // rate_limit_tier_for() (src/http/rate_limit.cpp) as one greppable prefix
@@ -112,7 +107,6 @@ enum class RateLimitTier // no `final`: clang <= 18 rejects `final` on enums (C+
 [[nodiscard]] auto rate_limit_tier_default(RateLimitTier tier) noexcept -> RateLimitPolicy;
 
 [[nodiscard]] auto rate_limit_policy_is_valid(RateLimitPolicy const& policy) noexcept -> bool;
-[[nodiscard]] auto request_is_rate_limited(RateLimitState state, RateLimitPolicy policy) -> bool;
 [[nodiscard]] auto endpoint_default_rate_limit(std::string_view method, std::string_view target) noexcept
     -> RateLimitPolicy;
 [[nodiscard]] auto rate_limit_summary(RateLimitPolicy const& policy) -> std::string;

@@ -537,11 +537,6 @@ auto verify_federation_event_signatures(std::vector<events::EventSignature> cons
     return {true, {}};
 }
 
-auto federation_remote_rate_limit() noexcept -> http::RateLimitPolicy
-{
-    return {120U, 60U};
-}
-
 namespace
 {
 

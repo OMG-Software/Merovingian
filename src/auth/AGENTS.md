@@ -7,9 +7,8 @@ Spec authority: ../../docs/matrix-v1.19-spec/client-server-api.md
 
 | File | Responsibility |
 |---|---|
-| `client_server_api.cpp` | Registration, login and logout routing and policy |
-| `session.cpp` | Client-auth endpoint policy: which endpoints need an access token or mutate a session, registration policy, session-active decisions, audit-event construction |
-| `token.cpp` | Token entropy checks, token hashing (`hash_access_token_v2/v3/v4`), constant-time comparison, log redaction |
+| `session.cpp` | Registration policy (enabled, token required). Whether a session is live is decided by `find_session` and the `revoked` flag in `src/homeserver/auth_service.cpp`, not here |
+| `token.cpp` | Token hashing (`hash_access_token_v2/v3/v4`), constant-time comparison |
 | `identity.cpp` | Validation of user IDs, localparts, device IDs and server names; login policy |
 | `password.cpp` | Argon2id hashing and verification of passwords and registration tokens |
 | `oidc_discovery.cpp` | OIDC / RFC 8414 authorisation-server metadata built from `config::OidcConfig` |

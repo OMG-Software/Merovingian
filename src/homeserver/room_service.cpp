@@ -7646,6 +7646,14 @@ namespace
     {
         return make_operation_result(false, {}, "identity server is not trusted", 403U);
     }
+    if (!merovingian::identity::threepid_bind_domain_permitted(identity_config.allowed_bind_domains, medium, address))
+    {
+        auto denied = make_operation_result(
+            false, {}, "this server does not permit that third-party identifier to be sent to an identity server",
+            403U);
+        denied.errcode = "M_THREEPID_DENIED";
+        return denied;
+    }
     auto const base_url = std::string{*trusted_match};
 
     // The IS store-invite round trip is network-bound and runs with

@@ -177,7 +177,6 @@ SCENARIO("Config enables media and logging protections by default", "[config][se
                 REQUIRE_FALSE(trust_safety.policy_server_allow_without_result);
                 REQUIRE(logging.redact_tokens);
                 REQUIRE(logging.redact_event_content);
-                REQUIRE(logging.structured);
             }
         }
     }

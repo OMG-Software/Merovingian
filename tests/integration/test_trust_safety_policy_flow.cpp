@@ -6,22 +6,17 @@
 
 #include <string>
 
-SCENARIO("Integrated trust and safety flow blocks restricted accounts and records reports",
+SCENARIO("Integrated trust and safety flow records reports and audits an account restriction",
          "[trust-safety][integration]")
 {
-    GIVEN("a locked account, an invite request, and a valid report")
+    GIVEN("a lock decision for an account and a valid report")
     {
-        auto const reason = merovingian::trust_safety::enforcement_reason("account_review", "account restricted",
-                                                                          "account locked by admin review");
-        auto account_record = merovingian::trust_safety::AccountEnforcementRecord{};
-        account_record.user_id = "@alice:example.org";
-        account_record.locked = true;
-        account_record.reason = reason;
-
-        auto invite = merovingian::trust_safety::InvitePolicyRequest{};
-        invite.sender_user_id = "@alice:example.org";
-        invite.target_user_id = "@bob:example.org";
-        invite.room_id = "!room:example.org";
+        auto account_decision = merovingian::trust_safety::PolicyDecision{};
+        account_decision.allowed = false;
+        account_decision.surface = merovingian::trust_safety::PolicySurface::account;
+        account_decision.action = merovingian::trust_safety::PolicyAction::lock_account;
+        account_decision.reason = merovingian::trust_safety::enforcement_reason("account_review", "account restricted",
+                                                                                "account locked by admin review");
 
         auto report = merovingian::trust_safety::SafetyReportRequest{};
         report.reporter_user_id = "@bob:example.org";
@@ -30,21 +25,14 @@ SCENARIO("Integrated trust and safety flow blocks restricted accounts and record
         report.reason = "policy violation";
         report.score = 25;
 
-        WHEN("account, invite, and report policy decisions are evaluated")
+        WHEN("the report is validated and the restriction is audited")
         {
-            auto const account_decision =
-                merovingian::trust_safety::evaluate_account_policy({"@alice:example.org", account_record});
-            auto const invite_decision =
-                account_decision.allowed ? merovingian::trust_safety::evaluate_invite_policy(invite) : account_decision;
             auto const report_decision = merovingian::trust_safety::validate_safety_report(report);
             auto const audit = merovingian::trust_safety::make_safety_audit_event(
                 "@bob:example.org", "@alice:example.org", account_decision);
 
-            THEN("the restricted account blocks the invite while reporting and audit surfaces remain available")
+            THEN("reporting stays available and the audit event names the restriction")
             {
-                REQUIRE_FALSE(account_decision.allowed);
-                REQUIRE(account_decision.action == merovingian::trust_safety::PolicyAction::lock_account);
-                REQUIRE_FALSE(invite_decision.allowed);
                 REQUIRE(report_decision.allowed);
                 REQUIRE(report_decision.action == merovingian::trust_safety::PolicyAction::accept_report);
                 REQUIRE(audit.event_type == "trust_safety.account.lock_account");

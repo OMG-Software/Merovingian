@@ -84,9 +84,7 @@ durability distinction:
 - **Never log secret material.** No tokens, passwords, private keys, or full request bodies. Do
   not truncate a secret to a "safe prefix" for logging — a prefix of the real secret is still
   live secret material. Use automatic redaction (fields flagged sensitive, or matched by
-  `log_field_is_sensitive`, render as `<redacted>` via `redact_log_value`/`redact_log_message`)
-  or a purpose-built one-way summary such as `auth::redacted_token_for_log` (`src/auth/token.cpp`),
-  which buckets token length into coarse size classes instead of disclosing length or bytes.
+  `log_field_is_sensitive`, render as `<redacted>` via `redact_log_value`/`redact_log_message`).
 - Log the `user_id` and `device_id` (not the token) for authenticated request traces.
 - **An audit event that an unauthenticated client can trigger on every request must not write one
   durable row per request.** `access_token.rejected`, `rate_limit.exceeded`, `request.rejected`,

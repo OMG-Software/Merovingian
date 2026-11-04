@@ -581,7 +581,6 @@ public:
     auto install(Runtime& runtime) const -> void
     {
         auto& identity_server = runtime.homeserver.config.server().identity_server;
-        identity_server.default_server = base_url();
         identity_server.trusted_servers = {base_url()};
         runtime.homeserver.test_forced_identity_resolution[host_] =
             merovingian::identity::TestForcedIdentityResolution{{"127.0.0.1"}, certificate_.certificate_pem};

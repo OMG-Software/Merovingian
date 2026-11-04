@@ -2629,12 +2629,6 @@ auto operator_policy_refusal(FederationRuntimeState const& runtime, std::string_
     return runtime.server_policy_refusal_provider ? runtime.server_policy_refusal_provider(server_name) : std::string{};
 }
 
-auto federation_remote_is_known(FederationRuntimeState const& runtime, std::string_view server_name) -> bool
-{
-    auto guard = federation_guard(runtime);
-    return find_remote(runtime, server_name) != nullptr;
-}
-
 auto authorize_federation_pdu(FederationPdu const& pdu, std::string_view expected_origin) -> FederationDecision
 {
     return authorize_federation_pdu(pdu, expected_origin, std::nullopt);

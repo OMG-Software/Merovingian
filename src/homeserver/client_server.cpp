@@ -2474,6 +2474,9 @@ namespace
     // recorded locally; any failure leaves the account untouched. A bind to an
     // identity server this server does not trust is refused rather than recorded:
     // no identity server was asked, so nothing was bound.
+    constexpr auto threepid_domain_denied_message =
+        std::string_view{"this server does not permit that third-party identifier to be sent to an identity server"};
+
     [[nodiscard]] auto bind_validated_threepid(LocalHttpRequest const& req, ClientServerRuntime& rt,
                                                std::string const& user_id, std::string_view sid,
                                                std::string_view client_secret, std::string_view id_server,
@@ -2496,6 +2499,12 @@ namespace
         if (!trusted_base.has_value())
         {
             return dispatch_err(req, rt, 400U, "M_SERVER_NOT_TRUSTED", "identity server is not trusted");
+        }
+        if (!merovingian::identity::threepid_bind_domain_permitted(
+                rt.homeserver.config.server().identity_server.allowed_bind_domains, validated.medium,
+                validated.address))
+        {
+            return dispatch_err(req, rt, 403U, "M_THREEPID_DENIED", threepid_domain_denied_message);
         }
         if (rt.homeserver.outbound_client == nullptr || rt.homeserver.cached_discovery == nullptr)
         {
@@ -12023,6 +12032,14 @@ namespace
                                         core::percent_decode_path_component(suffix.substr(separator + 1U))};
     }
 
+    // The scopes something reads: registration (auth_service), federation (inbound requests), media (media_service)
+    // and room (room_service), the last three also written by the admin review route. A rule in any other scope
+    // would be stored and never consulted (ADR-0500).
+    [[nodiscard]] auto is_enforced_policy_rule_scope(std::string_view scope) noexcept -> bool
+    {
+        return scope == "registration" || scope == "federation" || scope == "media" || scope == "room";
+    }
+
     [[nodiscard]] auto is_valid_policy_rule_action(std::string_view action) noexcept -> bool
     {
         return action == "allow" || action == "deny" || action == "quarantine" || action == "lock_account" ||
@@ -13147,6 +13164,11 @@ namespace
             {
                 return err(400U, "M_BAD_JSON",
                            "policy rule action must be allow, deny, quarantine, lock_account, or suspend_account");
+            }
+            if (!is_enforced_policy_rule_scope(path->scope))
+            {
+                return err(400U, "M_INVALID_PARAM",
+                           "policy rule scope must be registration, federation, media, or room");
             }
             auto const rule = database::PersistentPolicyRule{
                 path->scope + ':' + path->entity, path->scope, path->entity, body->action, body->reason,
@@ -14395,6 +14417,11 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             {
                 return dispatch_err(req, rt, 403U, "M_UNRECOGNIZED", "identity server is not trusted");
             }
+            if (!merovingian::identity::threepid_bind_domain_permitted(
+                    rt.homeserver.config.server().identity_server.allowed_bind_domains, "email", body->email))
+            {
+                return dispatch_err(req, rt, 403U, "M_THREEPID_DENIED", threepid_domain_denied_message);
+            }
             auto const normalized_address = normalize_threepid_address("email", body->email);
             auto const email = std::string{body->email};
             auto const client_secret = std::string{body->client_secret};
@@ -15342,6 +15369,11 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             if (!trusted_base.has_value())
             {
                 return dispatch_err(req, rt, 403U, "M_UNRECOGNIZED", "identity server is not trusted");
+            }
+            if (!merovingian::identity::threepid_bind_domain_permitted(
+                    rt.homeserver.config.server().identity_server.allowed_bind_domains, "email", body->email))
+            {
+                return dispatch_err(req, rt, 403U, "M_THREEPID_DENIED", threepid_domain_denied_message);
             }
             auto const email = std::string{body->email};
             auto const client_secret = std::string{body->client_secret};
