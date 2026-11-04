@@ -60,3 +60,9 @@ not found`, the media routes), never a Matrix `errcode` object, and a result wit
 and review routes). The new routes keep that: they are not Matrix endpoints and no client library reads them. The
 review route's shared implementation returns a status and a message; the client route renders them as Matrix errors and
 the operator route as text. Oversized account bodies are `413`; every other malformed body is `400`.
+
+## Changed answers
+
+A media moderation path with an extra segment (`/media/remove/../id`) or an empty identifier (`/media/release/`) is now
+`404`, not `400 invalid media id`: it matches no row. `tests/integration/test_media_repository_security.cpp` was updated
+to say so; the media item is untouched either way.
