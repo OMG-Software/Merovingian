@@ -563,6 +563,8 @@ SCENARIO("A long-poll reruns its sync only for changes that concern its user", "
             {
                 for (auto round = 0; round < 20; ++round)
                 {
+                    // Every round builds a fresh notifier and poll thread and repeats the race 20 times, since a
+                    // wake-up that is missed only shows up under some interleavings.
                     auto notifier = SyncNotifier{};
                     auto probe = PollProbe{};
                     auto poll = PollThread{notifier,
@@ -575,19 +577,26 @@ SCENARIO("A long-poll reruns its sync only for changes that concern its user", "
                                            [](int) {
                                                return true;
                                            }};
+                    // Wait for the poll to complete a slice, so the publishes below happen while it is asleep
+                    // rather than before it starts.
                     while (probe.idle_slices.load() < 1)
                     {
                         std::this_thread::yield();
                     }
+                    // Both stream positions advance, but the publish is scoped to bob, so alice's poll must stay
+                    // asleep.
                     auto const bobs = users({bob});
                     notifier.publish(7U, 7U, bobs);
                     auto const seen = probe.idle_slices.load();
+                    // Three further slices pass, each a chance for an unscoped wake-up. The rerun count must still
+                    // be zero.
                     while (probe.idle_slices.load() < seen + 3)
                     {
                         std::this_thread::yield();
                     }
                     REQUIRE(probe.reruns.load() == 0);
 
+                    // A publish scoped to alice is the only thing that may rerun the sync, and it does so once.
                     auto const alices = users({alice});
                     notifier.publish(8U, 8U, alices);
                     poll.join();
@@ -608,6 +617,8 @@ SCENARIO("A long-poll reruns its sync only for changes that concern its user", "
                 {
                     auto notifier = SyncNotifier{};
                     auto probe = PollProbe{};
+                    // The publish is made from inside the idle check, between one slice ending and the next wait.
+                    // The cursor taken at the start of the wait must still see it.
                     auto const alices = users({alice});
                     auto poll = PollThread{notifier,
                                            probe,
@@ -641,6 +652,7 @@ SCENARIO("A long-poll reruns its sync only for changes that concern its user", "
                 {
                     auto notifier = SyncNotifier{};
                     auto probe = PollProbe{};
+                    // The same race with a broadcast, which names no user and so wakes every poll.
                     auto poll = PollThread{notifier,
                                            probe,
                                            alice,
@@ -672,10 +684,13 @@ SCENARIO("A long-poll reruns its sync only for changes that concern its user", "
                 for (auto round = 0; round < 20; ++round)
                 {
                     auto notifier = SyncNotifier{};
+                    // The stream is already ahead of the poll's position, so the first sync runs at once. The
+                    // publish for bob moves nothing for alice.
                     auto const bobs = users({bob});
                     notifier.publish(1U, 0U, bobs);
                     auto probe = PollProbe{};
                     auto const alices = users({alice});
+                    // The first rerun reports the sync as pending at position 2, as if it had not yet caught up.
                     auto poll = PollThread{notifier,
                                            probe,
                                            alice,
@@ -706,6 +721,7 @@ SCENARIO("A long-poll reruns its sync only for changes that concern its user", "
         {
             THEN("it reruns, as every long-poll once did")
             {
+                // An empty user name stands for a poll that cannot be scoped, which every publish wakes.
                 auto notifier = SyncNotifier{};
                 auto probe = PollProbe{};
                 auto poll = PollThread{notifier,
@@ -736,6 +752,8 @@ SCENARIO("A long-poll reruns its sync only for changes that concern its user", "
         {
             THEN("it stops without rerunning")
             {
+                // The idle check returns false, the way a disconnected client is reported, so the poll gives up
+                // after its first slice.
                 auto notifier = SyncNotifier{};
                 auto probe = PollProbe{};
                 auto poll = PollThread{notifier,

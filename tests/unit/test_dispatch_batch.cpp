@@ -66,9 +66,13 @@ SCENARIO("a batch of destinations is queued in one durable commit", "[federation
 {
     GIVEN("a worker with a persistent store and an idle queue")
     {
+        // A real persistent store, so the rows and committed transactions the batch produces can be
+        // counted directly.
         auto opened = merovingian::database::open_persistent_store();
         REQUIRE(opened.ok);
         auto client = merovingian::http::OutboundClient{};
+        // The resolver always finds nothing, so no transaction can be delivered while the test runs: what is
+        // counted is only what was queued.
         auto worker = merovingian::federation::DispatchWorker{
             batch_config(),
             client,
@@ -81,6 +85,8 @@ SCENARIO("a batch of destinations is queued in one durable commit", "[federation
 
         WHEN("an event is queued to eight servers at once")
         {
+            // The commit count is read before and after, because one shared commit, not eight, is the point of a
+            // batch.
             auto const commits_before = merovingian::database::committed_transaction_count(opened.store);
             auto const accepted = worker.enqueue_batch(destinations(8U));
 
@@ -102,6 +108,7 @@ SCENARIO("a batch of destinations is queued in one durable commit", "[federation
 
         WHEN("the commit of a batch fails")
         {
+            // The next persist fails. A batch has one commit, so that single failure must undo every row of it.
             merovingian::database::force_next_persist_failures(opened.store, 1U);
             auto const accepted = worker.enqueue_batch(destinations(3U));
 
@@ -120,6 +127,7 @@ SCENARIO("a batch of destinations is queued in one durable commit", "[federation
         WHEN("a batch holds a malformed transaction beside good ones")
         {
             auto batch = destinations(3U);
+            // An empty body makes the middle transaction invalid, while its neighbours stay valid.
             batch[1].body.clear();
             auto const accepted = worker.enqueue_batch(std::move(batch));
 
@@ -135,6 +143,7 @@ SCENARIO("a batch of destinations is queued in one durable commit", "[federation
 
         WHEN("a batch is larger than the room left in the queue")
         {
+            // The queue depth is 16 in batch_config, so four of the twenty cannot fit.
             auto const accepted = worker.enqueue_batch(destinations(20U));
 
             THEN("the queue depth bound still holds, counting the batch's own earlier members")
@@ -152,6 +161,7 @@ SCENARIO("a batch of destinations is queued in one durable commit", "[federation
         auto opened = merovingian::database::open_persistent_store();
         REQUIRE(opened.ok);
         auto config = batch_config();
+        // One queued transaction per destination, so a second to the same server in one batch must be refused.
         config.max_pending_per_destination = 1U;
         auto client = merovingian::http::OutboundClient{};
         auto worker = merovingian::federation::DispatchWorker{
@@ -167,6 +177,8 @@ SCENARIO("a batch of destinations is queued in one durable commit", "[federation
         WHEN("a batch names the same destination twice")
         {
             auto batch = std::vector<merovingian::federation::OutboundTransaction>{};
+            // Both transactions in the batch go to one destination. The share has to count the batch's own
+            // earlier members, since the second is judged in the same call as the first.
             batch.push_back(batch_transaction("a", "same.org"));
             batch.push_back(batch_transaction("b", "same.org"));
             auto const accepted = worker.enqueue_batch(std::move(batch));

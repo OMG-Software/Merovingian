@@ -125,6 +125,8 @@ SCENARIO("a cross-signing upload is judged before anything is stored",
         INFO(first.body);
         REQUIRE(first.status == 200U);
         REQUIRE(held_cross_signing_keys(rt) == 3U);
+        // The master key is the one every other key is signed by, so checking it survives shows a refused upload
+        // stored nothing: a replaced master key would show here even if the key count stayed at three.
         auto const holds_original_master = [&rt, &set] {
             auto const& keys = rt.homeserver.database.persistent_store.cross_signing_keys;
             return std::ranges::any_of(keys, [&set](merovingian::database::PersistentCrossSigningKey const& key) {
@@ -132,6 +134,7 @@ SCENARIO("a cross-signing upload is judged before anything is stored",
             });
         };
 
+        // Ownership: the spec makes a key for any other user "not authorised", which is a 403 rather than a 400.
         WHEN("a key names another user")
         {
             auto const other = generate_cross_signing_key_pair();
@@ -148,6 +151,7 @@ SCENARIO("a cross-signing upload is judged before anything is stored",
             }
         }
 
+        // The key is signed and owned correctly, so only its declared usage is wrong. That must still be refused.
         WHEN("a self-signing key is uploaded with the usage of a master key")
         {
             auto const other = generate_cross_signing_key_pair();
@@ -165,6 +169,7 @@ SCENARIO("a cross-signing upload is judged before anything is stored",
             }
         }
 
+        // Both shapes break the "exactly one property" rule, and each is sent as its own request.
         WHEN("a key's keys object is empty or holds two properties")
         {
             auto const empty =
@@ -201,6 +206,8 @@ SCENARIO("a cross-signing upload is judged before anything is stored",
             }
         }
 
+        // The master key is valid on its own. Its survival unchanged shows the keys are judged as a set before any
+        // is written.
         WHEN("a valid master key is uploaded beside a user-signing key for another user")
         {
             auto const new_master = generate_cross_signing_key_pair();
@@ -222,6 +229,8 @@ SCENARIO("a cross-signing upload is judged before anything is stored",
             }
         }
 
+        // A write failure after validation passed: the three keys are written together, so none may be left
+        // replaced.
         WHEN("the store fails while the keys are written")
         {
             rt.homeserver.database.persistent_store.force_failure_statement_names.emplace("upsert_cross_signing_key");
@@ -237,6 +246,7 @@ SCENARIO("a cross-signing upload is judged before anything is stored",
         }
     }
 
+    // Separate user, so no master key is held to fall back on.
     GIVEN("a user with no master key")
     {
         auto started = merovingian::homeserver::start_client_server(upload_config());
@@ -289,6 +299,8 @@ SCENARIO("a cross-signing upload's signatures are verified before anything is st
             }
             return std::string{};
         };
+        // A snapshot taken before each request. "Nothing is stored" is then checked as equality with the snapshot,
+        // including the device-list changes a stored upload would record.
         auto const before_master = stored_json("master");
         auto const before_self = stored_json("self_signing");
         auto const before_changes = store.device_list_changes.size();
@@ -296,6 +308,8 @@ SCENARIO("a cross-signing upload's signatures are verified before anything is st
             return stored_json("master") == before_master && stored_json("self_signing") == before_self &&
                    store.cross_signing_keys.size() == 3U && store.device_list_changes.size() == before_changes;
         };
+        // Builds a self-signing key for the key under test, signed by the given key as the given user, so each
+        // scenario varies only the signer or the user the signature is filed under.
         auto const fresh_self_key = [&user](CrossSigningKeyPair const& signer, std::string const& signing_user,
                                             CrossSigningKeyPair const& key) {
             return sign_cross_signing_key_json(unsigned_cross_signing_key_json(user, "self_signing", key.public_key),
@@ -303,6 +317,7 @@ SCENARIO("a cross-signing upload's signatures are verified before anything is st
         };
         auto const key = generate_cross_signing_key_pair();
 
+        // No master key in the request, so the signature is checked against the held master key.
         WHEN("a new self-signing key signed by the stored master key is uploaded with no master key")
         {
             auto const reply = upload_keys(rt, token, R"("self_signing_key":)" + fresh_self_key(set.master, user, key));
@@ -333,6 +348,8 @@ SCENARIO("a cross-signing upload's signatures are verified before anything is st
             }
         }
 
+        // The rotation is set up first with a master key alone, which needs no signature. The old key must no
+        // longer verify.
         WHEN("the master key has been replaced and a self-signing key signed by the old master key is uploaded")
         {
             auto const new_master = generate_cross_signing_key_pair();
@@ -366,6 +383,7 @@ SCENARIO("a cross-signing upload's signatures are verified before anything is st
             }
         }
 
+        // Both requests carry a signature from a key the user never uploaded as master.
         WHEN("a self-signing key is signed by a key that is not the master key")
         {
             auto const stranger = generate_cross_signing_key_pair();
@@ -388,6 +406,7 @@ SCENARIO("a cross-signing upload's signatures are verified before anything is st
             }
         }
 
+        // The signature covers the key as signed, so any later change to its content must break verification.
         WHEN("a signed self-signing key is changed after it was signed")
         {
             auto tampered = fresh_self_key(set.master, user, key);
@@ -404,6 +423,7 @@ SCENARIO("a cross-signing upload's signatures are verified before anything is st
             }
         }
 
+        // The signature itself was made by the master key. Only the user it is filed under differs.
         WHEN("the master key's signature is filed under another user's name")
         {
             auto const reply = upload_keys(
@@ -433,6 +453,8 @@ SCENARIO("a cross-signing upload's signatures are verified before anything is st
             }
         }
 
+        // Ed25519 public keys are 32 bytes, so a shorter key or a different algorithm name cannot be a cross-
+        // signing key.
         WHEN("a key is not 32 bytes long or names an algorithm other than ed25519")
         {
             auto const short_key = std::string{"AAAAAAAAAAAAAAAAAAAAAA"}; // 16 bytes, unpadded
@@ -472,6 +494,7 @@ SCENARIO("a cross-signing upload's signatures are verified before anything is st
             }
         }
 
+        // Signing JSON leaves out `unsigned`, so adding it after signing must not invalidate the signature.
         WHEN("a signed self-signing key carries an unsigned member")
         {
             auto with_unsigned = fresh_self_key(set.master, user, key);

@@ -571,10 +571,13 @@ SCENARIO("A key once listed as retired stays retired and keeps the earliest expi
     GIVEN("a store holding a current key")
     {
         auto scratch = DatabaseScratch{};
+        // A file-backed store rather than the in-memory one, so a retirement can be shown to survive closing and
+        // reopening it.
         auto const path = (scratch.path / "store.db").string();
         auto opened = merovingian::database::open_sqlite_persistent_store(path);
         REQUIRE(opened.ok);
         auto const key = fresh_public_key_base64();
+        // A second key, so a response that retires the first still lists a current key.
         auto const other = fresh_public_key_base64();
         REQUIRE(merovingian::federation::cache_remote_server_keys(opened.store,
                                                                   response_with(
@@ -583,8 +586,10 @@ SCENARIO("A key once listed as retired stays retired and keeps the earliest expi
         },
                                                                       {}),
                                                                   now_ms));
+        // Precondition: the key starts out current, so the retired flag seen later was set by a response.
         REQUIRE_FALSE(cached(opened.store, "ed25519:k")->retired);
 
+        // The response moves the key from verify_keys to old_verify_keys with an expired_ts of 5000.
         WHEN("a later response lists that key under old_verify_keys")
         {
             REQUIRE(merovingian::federation::cache_remote_server_keys(opened.store,
@@ -605,6 +610,8 @@ SCENARIO("A key once listed as retired stays retired and keeps the earliest expi
             }
         }
 
+        // Three responses in a row, expiries 5000, 9000 and 3000: only the last may change the stored expiry, and
+        // it lowers it.
         WHEN("it is retired, then listed again with a later and then an earlier expiry")
         {
             REQUIRE(merovingian::federation::cache_remote_server_keys(opened.store,
@@ -621,6 +628,7 @@ SCENARIO("A key once listed as retired stays retired and keeps the earliest expi
             },
                                                                           {{"ed25519:k", key, 9000U}}),
                                                                       now_ms));
+            // Read after each response, since the final value alone would not show that 9000 was ignored.
             auto const after_later = cached(opened.store, "ed25519:k");
             REQUIRE(merovingian::federation::cache_remote_server_keys(opened.store,
                                                                       response_with(
@@ -630,6 +638,8 @@ SCENARIO("A key once listed as retired stays retired and keeps the earliest expi
                                                                           {{"ed25519:k", key, 3000U}}),
                                                                       now_ms));
             auto const after_earlier = cached(opened.store, "ed25519:k");
+            // Reopening the store reads the rows back from disk: the lowered expiry has to be durable, not just
+            // cached.
             auto reopened = merovingian::database::open_sqlite_persistent_store(path);
             REQUIRE(reopened.ok);
             auto const reloaded = cached(reopened.store, "ed25519:k");
@@ -643,6 +653,7 @@ SCENARIO("A key once listed as retired stays retired and keeps the earliest expi
             }
         }
 
+        // A stale or hostile response that lists the retired key as current must not bring it back.
         WHEN("it is retired and a later response lists it under verify_keys again")
         {
             REQUIRE(merovingian::federation::cache_remote_server_keys(opened.store,
@@ -660,6 +671,7 @@ SCENARIO("A key once listed as retired stays retired and keeps the earliest expi
             },
                                                                           {}),
                                                                       now_ms));
+            // Both views are read: the in-memory record and the row reloaded from disk.
             auto const in_memory = cached(opened.store, "ed25519:k");
             auto reopened = merovingian::database::open_sqlite_persistent_store(path);
             REQUIRE(reopened.ok);
@@ -674,6 +686,8 @@ SCENARIO("A key once listed as retired stays retired and keeps the earliest expi
             }
         }
 
+        // A row with sealed secret material is this server's own signing key, not a cached remote key. Giving it
+        // an expiry through this path is refused.
         WHEN("a retirement is written for a row that holds this server's own secret")
         {
             auto own = merovingian::database::PersistentServerSigningKey{"remote.example.org", "ed25519:own", key,
@@ -682,6 +696,8 @@ SCENARIO("A key once listed as retired stays retired and keeps the earliest expi
             auto retirement =
                 merovingian::database::PersistentServerSigningKey{"remote.example.org", "ed25519:own", key, 5000U};
             retirement.expired_ts = 5000U;
+            // The second attempt keeps the secret but uses a different key ID, so the refusal cannot be due to the
+            // key ID matching.
             auto with_secret = own;
             with_secret.key_id = "ed25519:own2";
             with_secret.expired_ts = 5000U;
