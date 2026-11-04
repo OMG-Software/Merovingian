@@ -4,6 +4,8 @@
 // Third-party invite bodies are chosen by whoever sends them (ADR-0484): what the parsers refuse or drop, and where the
 // two endpoints are answered.
 
+#include "merovingian/canonicaljson/parser.hpp"
+#include "merovingian/canonicaljson/value.hpp"
 #include "merovingian/federation/third_party_invite.hpp"
 #include "merovingian/homeserver/federation_request_routing.hpp"
 #include "merovingian/homeserver/local_http_router.hpp"
@@ -11,6 +13,8 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <string>
+#include <string_view>
+#include <variant>
 #include <vector>
 
 namespace
@@ -144,6 +148,61 @@ SCENARIO("An exchange_third_party_invite body is accepted only when every field 
     }
 }
 
+// Spec: Server-Server API v1.19, PUT /exchange_third_party_invite/{roomId}: `content.third_party_invite.display_name`
+// is "Required: A name which can be displayed to represent the user instead of their third-party identifier".
+SCENARIO("The exchange body this server sends carries every field the spec requires", "[federation][3pid][parsing]")
+{
+    GIVEN("an exchange to be requested from the inviting server")
+    {
+        auto const exchange =
+            fed::parse_third_party_invite_exchange(exchange_body(signed_ok), "!r:example.org").exchange;
+        REQUIRE(exchange.has_value());
+
+        WHEN("the request body is built")
+        {
+            auto const body = fed::build_third_party_invite_exchange_body(*exchange);
+            auto const parsed = merovingian::canonicaljson::parse_json(body);
+
+            THEN("the third_party_invite holds a string display_name (empty: onbind supplies none) and the signed object")
+            {
+                REQUIRE(parsed.error == merovingian::canonicaljson::ParseError::none);
+                auto const* root = std::get_if<merovingian::canonicaljson::Object>(&parsed.value.storage());
+                REQUIRE(root != nullptr);
+                auto const object_in = [](merovingian::canonicaljson::Object const& parent, std::string_view key) {
+                    for (auto const& member : parent)
+                    {
+                        if (member.key == key)
+                        {
+                            return std::get_if<merovingian::canonicaljson::Object>(&member.value->storage());
+                        }
+                    }
+                    return static_cast<merovingian::canonicaljson::Object const*>(nullptr);
+                };
+                auto const* content = object_in(*root, "content");
+                REQUIRE(content != nullptr);
+                auto const* invite = object_in(*content, "third_party_invite");
+                REQUIRE(invite != nullptr);
+                auto display_name = static_cast<std::string const*>(nullptr);
+                for (auto const& member : *invite)
+                {
+                    if (member.key == "display_name")
+                    {
+                        display_name = std::get_if<std::string>(&member.value->storage());
+                    }
+                }
+                REQUIRE(display_name != nullptr);
+                REQUIRE(display_name->empty());
+                REQUIRE(object_in(*invite, "signed") != nullptr);
+            }
+
+            THEN("the receiving side's parser accepts it")
+            {
+                REQUIRE(fed::parse_third_party_invite_exchange(body, "!r:example.org").exchange.has_value());
+            }
+        }
+    }
+}
+
 SCENARIO("A 3pid onbind body is bounded and an entry that is not about the bound user is dropped",
          "[federation][3pid][parsing][onbind]")
 {
@@ -166,7 +225,7 @@ SCENARIO("A 3pid onbind body is bounded and an entry that is not about the bound
         }
     }
 
-    GIVEN("a body with more invites than the bound")
+    GIVEN("a body with one invite more than the bound")
     {
         auto invites = std::string{};
         for (auto index = 0U; index <= fed::max_third_party_bind_invites; ++index)
@@ -176,9 +235,15 @@ SCENARIO("A 3pid onbind body is bounded and an entry that is not about the bound
 
         WHEN("it is parsed")
         {
-            THEN("it is refused whole")
+            auto const parsed = fed::parse_third_party_bind_notification(bind_body(invites));
+
+            THEN("the first invites up to the bound are kept and the rest counted as dropped")
             {
-                REQUIRE_FALSE(fed::parse_third_party_bind_notification(bind_body(invites)).notification.has_value());
+                // The spec gives no status for too many invites, and refusing the body would lose every invite the
+                // identity server holds for the user.
+                REQUIRE(parsed.notification.has_value());
+                REQUIRE(parsed.notification->invites.size() == fed::max_third_party_bind_invites);
+                REQUIRE(parsed.notification->dropped == 1U);
             }
         }
     }
