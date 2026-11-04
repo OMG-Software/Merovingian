@@ -60,6 +60,7 @@
 #include "merovingian/observability/observability.hpp"
 #include "merovingian/push/push_gateway_client.hpp"
 #include "merovingian/push/push_rules.hpp"
+#include "merovingian/rooms/encryption_policy.hpp"
 #include "merovingian/rooms/room_version_policy.hpp"
 #include "merovingian/sync/history_visibility.hpp"
 #include "merovingian/sync/room_read_access.hpp"
@@ -773,6 +774,25 @@ namespace
         auto result = make_operation_result(false, {}, std::move(reason), 400U);
         result.errcode = "M_INVALID_ROOM_STATE";
         return result;
+    }
+
+    // The inputs of rooms::room_creation_encryption_policy (ADR-0445), which alone decides.
+    // An unknown preset is private, as its join rules and guest access already are (ADR-0447).
+    // A room can federate when this server federates and `m.federate` is not boolean false,
+    // which is what the create-event auth rule reads.
+    [[nodiscard]] auto creation_encryption_request(HomeserverRuntime const& runtime, CreateRoomOptions const& options)
+        -> rooms::RoomCreationEncryptionRequest
+    {
+        auto const preset = options.preset == "public_chat"            ? rooms::RoomPreset::public_chat
+                            : options.preset == "trusted_private_chat" ? rooms::RoomPreset::trusted_private_chat
+                                                                       : rooms::RoomPreset::private_chat;
+        auto const* federate = object_member(options.creation_content, "m.federate");
+        auto const* federate_flag = federate == nullptr ? nullptr : std::get_if<bool>(&federate->storage());
+        auto const can_federate =
+            runtime.config.security().federation.enabled && (federate_flag == nullptr || *federate_flag);
+        return {preset, options.is_direct, can_federate,
+                rooms::encryption_request_from_initial_state(options.initial_state),
+                runtime.config.security().encryption};
     }
 
     // Room version 12: the creation options must imply valid initial state. Each of the
@@ -3484,6 +3504,21 @@ auto ensure_crypto_provider_holds_key(HomeserverRuntime& runtime, std::string_vi
             return invalid_room_state_result("power_level_content_override: " + problem);
         }
     }
+    // Spec (createRoom, 400 M_INVALID_ROOM_STATE): "The initial state implied by the parameters
+    // to the createRoom request is invalid". Judged before anything is stored (ADR-0445).
+    auto const encryption_request = creation_encryption_request(runtime, options);
+    auto const encryption_decision = rooms::room_creation_encryption_policy(encryption_request);
+    if (!encryption_decision.allowed)
+    {
+        log_diagnostic(
+            "room.create.rejected",
+            {
+                {"actor",  *user_id,                   false},
+                {"status", "400",                      false},
+                {"reason", encryption_decision.reason, false}
+        });
+        return invalid_room_state_result(encryption_decision.reason);
+    }
     if (auto refusal = v12_creation_refusal(options, *user_id); refusal.has_value())
     {
         log_diagnostic("room.create.rejected",
@@ -3908,7 +3943,6 @@ auto ensure_crypto_provider_holds_key(HomeserverRuntime& runtime, std::string_vi
     auto client_provided_join_rules = false;
     auto client_provided_history_visibility = false;
     auto client_provided_guest_access = false;
-    auto client_provided_encryption = false;
     for (auto const& item : options.initial_state)
     {
         auto const* state_obj = std::get_if<canonicaljson::Object>(&item.storage());
@@ -3932,10 +3966,6 @@ auto ensure_crypto_provider_holds_key(HomeserverRuntime& runtime, std::string_vi
         else if (*type_str == "m.room.guest_access")
         {
             client_provided_guest_access = true;
-        }
-        else if (*type_str == "m.room.encryption")
-        {
-            client_provided_encryption = true;
         }
     }
 
@@ -3970,12 +4000,12 @@ auto ensure_crypto_provider_holds_key(HomeserverRuntime& runtime, std::string_vi
         return server_failure("preset room state event generation failed");
     }
 
-    // Emit m.room.encryption for private room presets. Per the Matrix spec,
-    // private_chat and trusted_private_chat rooms SHOULD enable encryption by
-    // default. Skip if the client already included m.room.encryption in
-    // initial_state to avoid emitting a duplicate state event.
-    auto const encryption_preset = options.preset == "private_chat" || options.preset == "trusted_private_chat";
-    if (encryption_preset && !client_provided_encryption)
+    // Emit the default m.room.encryption when the policy says the room is encrypted and the
+    // client gave no effective entry. With an effective entry (the last one under the empty
+    // state key) the initial_state loop below stores exactly the entry the policy judged, and an
+    // entry under another state key never replaces the default (ADR-0445).
+    if (encryption_decision.encryption_enabled &&
+        encryption_request.encryption == rooms::RoomEncryptionRequest::unspecified)
     {
         auto encryption_content = canonicaljson::Object{};
         encryption_content.push_back(
