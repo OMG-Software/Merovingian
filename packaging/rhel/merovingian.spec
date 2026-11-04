@@ -1,5 +1,5 @@
 Name:           merovingian
-Version:        0.12.73
+Version:        0.12.76
 Release:        1%{?dist}
 Summary:        Secure Matrix Protocol homeserver
 
@@ -97,6 +97,9 @@ fi
 %{_sysconfdir}/merovingian/merovingian.conf.example
 
 %changelog
+* Wed Nov 04 2026 James Chapman <claude@ping.me.uk> - 0.12.76-1
+- Fix the medium findings of the November project analysis
+
 * Wed Nov 04 2026 James Chapman <claude@ping.me.uk> - 0.12.73-1
 - Lazy-load room members on /sync and /context
 

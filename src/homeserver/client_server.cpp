@@ -5025,6 +5025,9 @@ namespace
             // The user's current membership, a leave, is already in `state`: no earlier member event of their own
             // may follow it, or a client applying `state` in order would show them joined again.
             bool exclude_own{false};
+            // A user who has left reads the room only as of the event that ended their join: nothing later goes in
+            // `state`, whichever read found it (ADR-0450).
+            std::optional<std::uint64_t> newest_readable{};
         };
 
         LazyRoomSelector(LazySyncRequest& request, std::string_view room_id, Plan plan)
@@ -5043,6 +5046,10 @@ namespace
         [[nodiscard]] auto keep(database::PersistentEvent const& event, std::string_view state_key) -> bool
         {
             if (plan_.exclude_own && state_key == plan_.own_user_id)
+            {
+                return false;
+            }
+            if (plan_.newest_readable.has_value() && event.stream_ordering > *plan_.newest_readable)
             {
                 return false;
             }
@@ -5937,6 +5944,10 @@ namespace
             senders.assign(plan.senders.begin(), plan.senders.end());
             plan.own_user_id = std::string{request.user_id};
             plan.exclude_own = leave_in_state;
+            if (request.access.kind == sync::RoomReadKind::as_of)
+            {
+                plan.newest_readable = request.access.boundary_ordering;
+            }
             if (request.since_ordering.has_value())
             {
                 // An incremental left room's state is a delta: only the members the rules above name.
@@ -6007,8 +6018,10 @@ namespace
             // that ended their join, however late the timeline's first event is: a ban after the leave must not show
             // who joined since.
             auto const as_of = request.access.kind == sync::RoomReadKind::as_of;
-            auto const limited_members = [&]() -> canonicaljson::Array {
-                if (as_of && (*window_begin)->stream_ordering > request.access.boundary_ordering)
+            auto const starts_past_boundary =
+                as_of && (*window_begin)->stream_ordering > request.access.boundary_ordering;
+            auto const members_from_state = [&]() -> canonicaljson::Array {
+                if (starts_past_boundary)
                 {
                     if (auto const ids =
                             sync::room_state_event_ids(store, request.room_id, request.access, std::nullopt);
@@ -6027,8 +6040,9 @@ namespace
                 return build_state_events_at_position(store, filter.room.state, request.room_id, position, lazy_ref);
             };
             auto lazy_members =
-                limited ? limited_members()
-                        : build_lazy_sender_members(store, filter.room.state, **window_begin, senders, *selector);
+                limited || starts_past_boundary
+                    ? std::invoke(members_from_state)
+                    : build_lazy_sender_members(store, filter.room.state, **window_begin, senders, *selector);
             for (auto& member : lazy_members)
             {
                 auto const* member_event = std::get_if<canonicaljson::Object>(&member.storage());

@@ -1,3 +1,15 @@
+## 0.12.76
+
+The medium severity findings of the November project analysis.
+
+### Security
+
+- **A left room's lazy-loaded `state` never reads past the event that ended the user's join (ADR-0450).** A user banned after leaving could be sent the member event of the person who banned them, from after they left. The same limit now holds whichever read finds the event, including the current-event fallback used when a state group cannot be read.
+
+### Changed
+
+- `AGENTS.md`: use `std::invoke` instead of trailing parenthesis.
+
 ## 0.12.73
 
 Lazy-loading of room members on `/sync` and `/context`.
