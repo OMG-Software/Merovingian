@@ -303,10 +303,13 @@ Not implemented yet:
   `homeserver::invite_user_by_threepid`, 0.12.6) and `third_party_signed`
   validation on `/join` (`verify_third_party_signed`) are implemented and
   covered by `tests/conformance/test_3pid_invite_conformance.cpp`
-- room versions 1 and 2 event handling: both are registered in
-  `room_version_policy.cpp`, but `EventFormat::room_v1_v2` is never consumed and
-  `EventIdFormat` has only `reference_hash`, so the `$localpart:server` event-ID
-  format those versions use is not implemented (see `docs/todos/capability-gaps.md`)
+- room versions 1 and 2: deliberately unsupported (ADR-0076). The registry in
+  `room_version_policy.cpp` holds room versions 3 to 12 only, and
+  `find_room_version_policy()` returns no policy for 1 and 2, so every path
+  (createRoom, joins, invites, PDUs) refuses them. `EventFormat` has the single
+  value `room_v3_plus` and `EventIdFormat` the single value `reference_hash`, so the
+  `$localpart:server` event-ID format, the event-ID-domain signature and state
+  resolution v1 those versions need do not exist in the code
 
 ## Runtime wiring
 

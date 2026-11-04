@@ -360,8 +360,8 @@ quickly finding everything a given `AGENTS.md` file contributed.
   Source: `src/events/AGENTS.md`.
 
 - **Never construct an event ID manually — always use `event_id.hpp`.** Event ID format is
-  room-version-dependent (legacy `$localpart:server` for v1–v2, reference-hash-derived for
-  v3+).
+  room-version-dependent (legacy `$localpart:server` for v1–v2, which this server does not support
+  (ADR-0076); reference-hash-derived for v3+).
   Why: a hand-constructed event ID that doesn't match the room version's actual derivation
   algorithm breaks the integrity link between an event's ID and its content — federation
   partners computing the ID correctly will disagree with yours, and (for v3+) an ID that
