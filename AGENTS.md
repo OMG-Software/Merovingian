@@ -15,8 +15,9 @@ A Matrix homeserver built with security as the top priority: secure by design, i
 - RAII is non negotiable, use it.
 - Prefer references over pointers.
 - No raw pointers, use smart pointers.
-- No calls to new/delete, malloc/free etc. 
+- No calls to new/delete, malloc/free etc.
 - Use std::ignore rather than (void) casting.
+- Use std::invoke instead of trailing parenthesis.
 - Format C++ code with clang-format using the .clang-format file in the project root.
 - If something is ambiguous, ask clarifying questions, never assume.
 - Prefer simple, readable solutions over clever ones.
