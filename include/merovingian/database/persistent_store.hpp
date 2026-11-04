@@ -2100,6 +2100,11 @@ enum class CappedAccountDataStore
 // hydrating the rows: ORDER BY on the TEXT columns is neither numeric nor,
 // on PostgreSQL, byte-wise.
 auto sort_appservice_outbox(PersistentStore& store) -> void;
+// Puts the in-memory to-device queue back in numeric stream_id order. The
+// column is TEXT, so ORDER BY puts "10" before "9" on both backends; the loaders
+// call this after hydrating, and everything that pages through the queue relies
+// on the order (a continuation position acknowledges every row at or below it).
+auto sort_to_device_messages(PersistentStore& store) -> void;
 // Records that the transaction carrying stream_ordering `delivered_stream_
 // ordering` has been dealt with (acknowledged, vacuously acknowledged by a
 // url:null appservice, or dropped as unreadable). In ONE backend transaction:

@@ -1660,6 +1660,7 @@ auto open_sqlite_persistent_store(std::string const& path, TableLoadProfile prof
     }
     std::ignore = store.events.insert_all(std::move(hydrated_events));
     sort_appservice_outbox(store);
+    sort_to_device_messages(store);
     reconstruct_event_relations(store);
     rebuild_state_transition_index(store);
     rebuild_state_index(store);

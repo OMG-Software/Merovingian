@@ -2329,6 +2329,7 @@ auto open_postgresql_persistent_store(std::string_view conninfo, std::string_vie
         return {false, "unable to hydrate PostgreSQL persistent rows", {}};
     }
     sort_appservice_outbox(store);
+    sort_to_device_messages(store);
     reconstruct_event_relations(store);
     rebuild_state_transition_index(store);
     rebuild_state_index(store);

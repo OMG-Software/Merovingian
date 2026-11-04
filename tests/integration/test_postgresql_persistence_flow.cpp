@@ -239,6 +239,59 @@ SCENARIO("PostgreSQL user profiles survive an open/close/reopen cycle", "[databa
     }
 }
 
+// HF-B S1: stream_id is a TEXT column, so ORDER BY puts "10" before "9" and
+// "100" before "99". The queue must come back in numeric order after a restart.
+SCENARIO("PostgreSQL to-device messages reload in numeric stream-id order across a digit boundary",
+         "[database][postgresql][integration][restart][to-device-order]")
+{
+    GIVEN("a live PostgreSQL store holding queued to-device messages whose ids cross a power of ten")
+    {
+        auto const uri = postgresql_uri_from_environment();
+        if (uri.empty())
+        {
+            SUCCEED("skipped: MEROVINGIAN_TEST_POSTGRESQL_URI is not set");
+            return;
+        }
+        auto opened = merovingian::database::open_postgresql_persistent_store(uri);
+        REQUIRE(opened.ok);
+        auto const recipient = "@pg-todevice-" + unique_test_suffix() + ":example.org";
+        // Skip ahead to just below the next power of ten (ids are only ever skipped, never reused).
+        auto boundary = std::uint64_t{10U};
+        while (boundary < opened.store.next_sync_stream_id + 4U)
+        {
+            boundary *= 10U;
+        }
+        opened.store.next_sync_stream_id = boundary - 3U;
+        for (auto ordinal = 0; ordinal < 4; ++ordinal)
+        {
+            REQUIRE(merovingian::database::enqueue_to_device_message(
+                opened.store, {0U, "@alice:example.org", recipient, "DEVICE", "m.test.message", "{}"}));
+        }
+
+        WHEN("the store is closed and opened again")
+        {
+            opened = {};
+            auto reopened = merovingian::database::open_postgresql_persistent_store(uri);
+
+            THEN("the whole queue is in numeric stream-id order and the four rows are in sequence")
+            {
+                REQUIRE(reopened.ok);
+                REQUIRE(std::ranges::is_sorted(reopened.store.to_device_messages, {},
+                                               &merovingian::database::PersistentToDeviceMessage::stream_id));
+                auto ids = std::vector<std::uint64_t>{};
+                for (auto const& row : reopened.store.to_device_messages)
+                {
+                    if (row.target_user_id == recipient)
+                    {
+                        ids.push_back(row.stream_id);
+                    }
+                }
+                REQUIRE(ids == std::vector<std::uint64_t>{boundary - 2U, boundary - 1U, boundary, boundary + 1U});
+            }
+        }
+    }
+}
+
 SCENARIO("PostgreSQL users tokens rooms and events survive an open/close/reopen cycle",
          "[database][postgresql][integration][restart]")
 {

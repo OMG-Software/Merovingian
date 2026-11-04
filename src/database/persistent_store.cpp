@@ -4856,6 +4856,9 @@ namespace
             drained.push_back(message);
         }
     }
+    // Callers page through the result and acknowledge up to the last row they
+    // sent, so it is ascending in stream_id whatever order the store holds.
+    std::ranges::stable_sort(drained, {}, &PersistentToDeviceMessage::stream_id);
     // CSAZ-10: purge TTL-expired and acknowledged rows together in one
     // transaction, so a failed durable delete leaves the in-memory mirror
     // unchanged rather than dropping rows the client has not yet acknowledged.
@@ -5816,6 +5819,11 @@ auto sort_appservice_outbox(PersistentStore& store) -> void
                       [](PersistentAppserviceOutboxEntry const& left, PersistentAppserviceOutboxEntry const& right) {
                           return outbox_entry_precedes(left, right.appservice_id, right.stream_ordering);
                       });
+}
+
+auto sort_to_device_messages(PersistentStore& store) -> void
+{
+    std::ranges::stable_sort(store.to_device_messages, {}, &PersistentToDeviceMessage::stream_id);
 }
 
 [[nodiscard]] auto complete_appservice_delivery(PersistentStore& store, std::string_view appservice_id,

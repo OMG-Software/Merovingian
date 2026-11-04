@@ -826,6 +826,10 @@ value. Test fixtures that do not exercise persistence select it through
   startup. Handlers check the table before processing and store the result after
   a successful send, allowing clients to safely retry `PUT /rooms/{roomId}/send`
   and `PUT /sendToDevice` requests.
+- `to_device_messages.stream_id` is TEXT, so `ORDER BY stream_id` sorts "10" before "9". Both backends call
+  `database::sort_to_device_messages` after hydrating to restore numeric order, and `drain_to_device_messages` and the
+  sliding sync `to_device` extension sort what they return, so `next_batch` never acknowledges a row that was not sent
+  (ADR-0426).
 - `PUT /sendToDevice` writes its local `to_device_messages` rows and its
   `client_txn_ids` row in ONE backend transaction
   (`database::enqueue_to_device_messages_with_client_txn`, R02, ADR-0164). The
