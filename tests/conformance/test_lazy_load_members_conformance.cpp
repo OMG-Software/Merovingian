@@ -79,10 +79,10 @@ struct Reply final
 [[nodiscard]] auto login_device(ClientServerRuntime& rt, std::string const& localpart, std::string const& device)
     -> std::string
 {
-    auto const login = call(rt, "POST", "/_matrix/client/v3/login", {},
-                            R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":")" +
-                                user_id(localpart) + R"("},"password":"CorrectHorse7!","device_id":")" + device +
-                                R"("})");
+    auto const login =
+        call(rt, "POST", "/_matrix/client/v3/login", {},
+             R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":")" + user_id(localpart) +
+                 R"("},"password":"CorrectHorse7!","device_id":")" + device + R"("})");
     REQUIRE(login.status == 200U);
     return *string_member(parse_object(login.body), "access_token");
 }
@@ -104,10 +104,9 @@ auto join_room(ClientServerRuntime& rt, std::string const& token, std::string co
                        std::string const& text) -> std::string
 {
     static auto counter = std::uint64_t{0U};
-    auto const sent = call(rt, "PUT",
-                           "/_matrix/client/v3/rooms/" + room_id + "/send/m.room.message/lz" +
-                               std::to_string(++counter),
-                           token, R"({"msgtype":"m.text","body":")" + text + R"("})");
+    auto const sent =
+        call(rt, "PUT", "/_matrix/client/v3/rooms/" + room_id + "/send/m.room.message/lz" + std::to_string(++counter),
+             token, R"({"msgtype":"m.text","body":")" + text + R"("})");
     REQUIRE(sent.status == 200U);
     return *string_member(parse_object(sent.body), "event_id");
 }
@@ -121,7 +120,8 @@ struct Synced final
 [[nodiscard]] auto sync(ClientServerRuntime& rt, std::string const& token, std::string_view filter,
                         std::string const& since = {}, std::string const& extra = {}) -> Synced
 {
-    auto target = std::string{"/_matrix/client/v3/sync?filter="} + merovingian::core::percent_encode_path_component(filter);
+    auto target =
+        std::string{"/_matrix/client/v3/sync?filter="} + merovingian::core::percent_encode_path_component(filter);
     if (!since.empty())
     {
         target += "&since=" + merovingian::core::percent_encode_path_component(since);
@@ -275,8 +275,7 @@ SCENARIO("An initial sync with lazy-loading returns the timeline senders' and th
         }
         WHEN("lazy_load_members is set on the timeline filter only")
         {
-            auto const synced =
-                sync(rt, dave, R"({"room":{"timeline":{"limit":1,"lazy_load_members":true}}})");
+            auto const synced = sync(rt, dave, R"({"room":{"timeline":{"limit":1,"lazy_load_members":true}}})");
 
             THEN("it does nothing for /sync: the spec supports lazy-loading only on the state filter")
             {
@@ -374,7 +373,8 @@ SCENARIO("An incremental sync sends a sender's membership once, unless redundant
 // Spec: GET /sync note. "When a sync is limited, the server MUST return membership events for events in
 // the gap (between since and the start of the returned timeline), regardless as to whether or not they
 // are redundant."
-SCENARIO("A limited incremental sync returns the membership changes in the gap", "[conformance][client-server][sync][lazy-sync]")
+SCENARIO("A limited incremental sync returns the membership changes in the gap",
+         "[conformance][client-server][sync][lazy-sync]")
 {
     GIVEN("carol has synced with bob's membership already sent to her")
     {
@@ -486,7 +486,8 @@ SCENARIO("The user's own membership is sent when they join in the window and whe
 
 // Spec: Lazy-loading room members: it is valid for a server to send redundant members, so a lost response
 // must never lose one. The tracker acknowledges by the `since` token (ADR-0450).
-SCENARIO("A member sent in a response the client never received is sent again", "[conformance][client-server][sync][lazy-sync]")
+SCENARIO("A member sent in a response the client never received is sent again",
+         "[conformance][client-server][sync][lazy-sync]")
 {
     GIVEN("carol has synced, and bob has since spoken")
     {
@@ -584,7 +585,8 @@ SCENARIO("Streams are tracked apart by filter and by device", "[conformance][cli
     }
 }
 
-SCENARIO("A sender whose event was not delivered contributes no membership", "[conformance][client-server][sync][lazy-sync]")
+SCENARIO("A sender whose event was not delivered contributes no membership",
+         "[conformance][client-server][sync][lazy-sync]")
 {
     GIVEN("a room where carol spoke and then bob spoke last")
     {
@@ -712,8 +714,9 @@ SCENARIO("Lazy-loading applies to rooms the user has left, and leaves invites al
                 auto const* plain_invite = room_section(plain, "invite", private_room);
                 REQUIRE(lazy_invite != nullptr);
                 REQUIRE(plain_invite != nullptr);
-                REQUIRE(object_member_as_array(*object_member_as_object(*lazy_invite, "invite_state"), "events")->size() ==
-                        object_member_as_array(*object_member_as_object(*plain_invite, "invite_state"), "events")->size());
+                REQUIRE(
+                    object_member_as_array(*object_member_as_object(*lazy_invite, "invite_state"), "events")->size() ==
+                    object_member_as_array(*object_member_as_object(*plain_invite, "invite_state"), "events")->size());
             }
         }
     }
@@ -782,6 +785,54 @@ SCENARIO("GET /context with lazy-loading returns only the senders' membership ev
             {
                 REQUIRE(member_keys(state).contains(user_id("dave")));
                 REQUIRE(state.size() > 4U);
+            }
+        }
+    }
+}
+
+// Spec: Lazy-loading room members, "expected pattern": a client with display-name tab-completion "should call
+// /members ... with an ?at parameter set to the /sync response's from token". The roster must be complete for the
+// tokens a lazy-loaded /sync hands out (its next_batch, and the timeline's prev_batch).
+SCENARIO("GET /members?at= returns the whole roster for the tokens of a lazy-loaded sync",
+         "[conformance][client-server][sync][lazy-sync]")
+{
+    GIVEN("dave has lazy-synced a room of four where only bob spoke last")
+    {
+        auto started = merovingian::homeserver::start_client_server(lazy_config());
+        REQUIRE(started.started);
+        auto& rt = started.runtime;
+        auto const alice = register_user(rt, "alice");
+        auto const bob = register_user(rt, "bob");
+        auto const carol = register_user(rt, "carol");
+        auto const dave = register_user(rt, "dave");
+        auto const room = create_room(rt, alice, "public_chat");
+        join_room(rt, bob, room);
+        join_room(rt, carol, room);
+        join_room(rt, dave, room);
+        std::ignore = say(rt, bob, room, "hello");
+        auto const synced = sync(rt, dave, k_lazy_one_event);
+        auto const* timeline = object_member_as_object(*room_section(synced, "join", room), "timeline");
+        auto const prev_batch = *string_member(*timeline, "prev_batch");
+
+        auto const roster_at = [&](std::string const& token) {
+            auto const reply = call(rt, "GET",
+                                    "/_matrix/client/v3/rooms/" + room +
+                                        "/members?at=" + merovingian::core::percent_encode_path_component(token),
+                                    dave);
+            REQUIRE(reply.status == 200U);
+            auto const body = parse_object(reply.body);
+            auto const* chunk = object_member_as_array(body, "chunk");
+            REQUIRE(chunk != nullptr);
+            return member_keys(events_of_array(*chunk));
+        };
+
+        WHEN("the roster is read at the sync's next_batch or at the timeline's prev_batch")
+        {
+            THEN("all four members are returned")
+            {
+                auto const everyone = Keys{user_id("alice"), user_id("bob"), user_id("carol"), user_id("dave")};
+                REQUIRE(roster_at(synced.next_batch) == everyone);
+                REQUIRE(roster_at(prev_batch) == everyone);
             }
         }
     }

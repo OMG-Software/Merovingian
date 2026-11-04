@@ -17,7 +17,8 @@ namespace
 using merovingian::sync::LazyMemberTracker;
 using merovingian::sync::StreamToken;
 
-[[nodiscard]] auto key_for(std::string_view device = "DEV", std::string_view filter = "F") -> LazyMemberTracker::StreamKey
+[[nodiscard]] auto key_for(std::string_view device = "DEV", std::string_view filter = "F")
+    -> LazyMemberTracker::StreamKey
 {
     return {"@alice:example.org", device, filter};
 }
@@ -26,7 +27,9 @@ auto record_one(LazyMemberTracker& tracker, LazyMemberTracker::StreamKey const& 
                 std::string_view user, std::string_view event, StreamToken next, std::optional<StreamToken> since)
     -> void
 {
-    auto const sent = std::array{LazyMemberTracker::SentMember{user, event}};
+    auto const sent = std::array{
+        LazyMemberTracker::SentMember{user, event}
+    };
     tracker.record(key, room, sent, next, since);
 }
 
@@ -293,8 +296,7 @@ SCENARIO("Every cap holds and eviction leads to a resend, never an omission", "[
     }
 }
 
-SCENARIO("Driving the tracker from several threads keeps its counts within the caps",
-         "[sync][lazy-sync][lazy-tracker]")
+SCENARIO("Driving the tracker from several threads keeps its counts within the caps", "[sync][lazy-sync][lazy-tracker]")
 {
     GIVEN("a small tracker and four threads that record and check members")
     {
@@ -319,8 +321,8 @@ SCENARIO("Driving the tracker from several threads keeps its counts within the c
                         auto const user = "@u" + std::to_string(round % 6U) + ":x";
                         auto const room = "!r" + std::to_string(round % 3U) + ":x";
                         tracker.begin_request(key, StreamToken{round, round, round});
-                        if (tracker.is_acknowledged(key, room, user, "$e", StreamToken{round + 1U, round + 1U,
-                                                                                         round + 1U}))
+                        if (tracker.is_acknowledged(key, room, user, "$e",
+                                                    StreamToken{round + 1U, round + 1U, round + 1U}))
                         {
                             ++hits[index];
                         }

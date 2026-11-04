@@ -6108,8 +6108,9 @@ namespace
         auto const full_state = request.full_state.value_or(false);
         auto const lazy_on = filter.present && filter.room.state.lazy_load_members;
         auto const may_omit = lazy_on && !filter.room.state.include_redundant_members;
-        auto lazy = LazySyncRequest{*rt.lazy_member_tracker, user, device_id, request.filter.value_or(std::string{}),
-                                    since_token, lazy_on, may_omit && !full_state, may_omit};
+        auto lazy = LazySyncRequest{
+            *rt.lazy_member_tracker, user,    device_id, request.filter.value_or(std::string{}), since_token, lazy_on,
+            may_omit && !full_state, may_omit};
         lazy.begin();
 
         auto const sync_stream_upper_bound = store.next_sync_stream_id;
@@ -6291,16 +6292,16 @@ namespace
                                     ? build_state_events_at_timeline_start(store, filter.room.state, room.room_id,
                                                                            **window_begin, lazy_ref)
                                     : std::nullopt;
-                state_events = at_start.has_value() ? std::move(*at_start)
-                                                    : build_state_events_at_position(store, filter.room.state,
-                                                                                     room.room_id, sync_position,
-                                                                                     lazy_ref);
+                state_events = at_start.has_value()
+                                   ? std::move(*at_start)
+                                   : build_state_events_at_position(store, filter.room.state, room.room_id,
+                                                                    sync_position, lazy_ref);
             }
             else if (selector.has_value())
             {
                 // Nothing else is sent, so the lazy members are the whole of `state`: no state is built or scanned.
-                state_events = build_lazy_sender_members(store, filter.room.state, **window_begin, lazy_senders,
-                                                         *selector);
+                state_events =
+                    build_lazy_sender_members(store, filter.room.state, **window_begin, lazy_senders, *selector);
             }
             auto ephemeral_events = build_room_ephemeral_events_array(
                 rt.homeserver, room.room_id, user, since_sync_stream_id, max_observed_sync_stream_id, ignored_senders);

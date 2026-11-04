@@ -28,7 +28,6 @@ struct GroupLookupResult final
 // `absent`) when a group on the chain is missing. It scans each group on the chain once, so it costs the
 // chain's rows, not the room's events.
 [[nodiscard]] auto lookup_state_in_group(database::PersistentStore const& store, std::string_view group_id,
-                                         std::string_view event_type, std::string_view state_key)
-    -> GroupLookupResult;
+                                         std::string_view event_type, std::string_view state_key) -> GroupLookupResult;
 
 } // namespace merovingian::sync

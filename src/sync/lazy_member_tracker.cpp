@@ -13,140 +13,141 @@ namespace merovingian::sync
 namespace
 {
 
-// Whether a client holding `since` has received the response whose `next_batch` is `token`.
-[[nodiscard]] auto covers(StreamToken since, StreamToken token) noexcept -> bool
-{
-    return since.event_ordering >= token.event_ordering && since.membership_ordering >= token.membership_ordering &&
-           since.sync_stream_id >= token.sync_stream_id;
-}
-
-[[nodiscard]] auto component_max(StreamToken left, StreamToken right) noexcept -> StreamToken
-{
-    return {std::max(left.event_ordering, right.event_ordering),
-            std::max(left.membership_ordering, right.membership_ordering),
-            std::max(left.sync_stream_id, right.sync_stream_id)};
-}
-
-[[nodiscard]] auto same_token(StreamToken left, StreamToken right) noexcept -> bool
-{
-    return left.event_ordering == right.event_ordering && left.membership_ordering == right.membership_ordering &&
-           left.sync_stream_id == right.sync_stream_id;
-}
-
-// A string-keyed map whose entries are kept in order of use, most recent first. Not thread safe: the
-// tracker's mutex covers every use.
-template <typename Value> class LruMap final
-{
-public:
-    using Item = std::pair<std::string, Value>;
-    using List = std::list<Item>;
-
-    [[nodiscard]] auto find(std::string const& key) -> Value*
+    // Whether a client holding `since` has received the response whose `next_batch` is `token`.
+    [[nodiscard]] auto covers(StreamToken since, StreamToken token) noexcept -> bool
     {
-        auto const found = index_.find(key);
-        if (found == index_.end())
+        return since.event_ordering >= token.event_ordering && since.membership_ordering >= token.membership_ordering &&
+               since.sync_stream_id >= token.sync_stream_id;
+    }
+
+    [[nodiscard]] auto component_max(StreamToken left, StreamToken right) noexcept -> StreamToken
+    {
+        return {std::max(left.event_ordering, right.event_ordering),
+                std::max(left.membership_ordering, right.membership_ordering),
+                std::max(left.sync_stream_id, right.sync_stream_id)};
+    }
+
+    [[nodiscard]] auto same_token(StreamToken left, StreamToken right) noexcept -> bool
+    {
+        return left.event_ordering == right.event_ordering && left.membership_ordering == right.membership_ordering &&
+               left.sync_stream_id == right.sync_stream_id;
+    }
+
+    // A string-keyed map whose entries are kept in order of use, most recent first. Not thread safe: the
+    // tracker's mutex covers every use.
+    template <typename Value>
+    class LruMap final
+    {
+    public:
+        using Item = std::pair<std::string, Value>;
+        using List = std::list<Item>;
+
+        [[nodiscard]] auto find(std::string const& key) -> Value*
         {
-            return nullptr;
+            auto const found = index_.find(key);
+            if (found == index_.end())
+            {
+                return nullptr;
+            }
+            items_.splice(items_.begin(), items_, found->second);
+            return &found->second->second;
         }
-        items_.splice(items_.begin(), items_, found->second);
-        return &found->second->second;
-    }
 
-    // The entry for `key`, created empty (and made most recent) when absent.
-    [[nodiscard]] auto get_or_create(std::string const& key) -> Value&
-    {
-        if (auto* existing = find(key); existing != nullptr)
+        // The entry for `key`, created empty (and made most recent) when absent.
+        [[nodiscard]] auto get_or_create(std::string const& key) -> Value&
         {
-            return *existing;
+            if (auto* existing = find(key); existing != nullptr)
+            {
+                return *existing;
+            }
+            items_.emplace_front(key, Value{});
+            index_.emplace(key, items_.begin());
+            return items_.front().second;
         }
-        items_.emplace_front(key, Value{});
-        index_.emplace(key, items_.begin());
-        return items_.front().second;
-    }
 
-    auto erase(std::string const& key) -> void
-    {
-        auto const found = index_.find(key);
-        if (found == index_.end())
+        auto erase(std::string const& key) -> void
         {
-            return;
+            auto const found = index_.find(key);
+            if (found == index_.end())
+            {
+                return;
+            }
+            items_.erase(found->second);
+            index_.erase(found);
         }
-        items_.erase(found->second);
-        index_.erase(found);
-    }
 
-    // Removes and returns the least recently used entry.
-    [[nodiscard]] auto pop_oldest() -> Item
-    {
-        auto item = std::move(items_.back());
-        index_.erase(item.first);
-        items_.pop_back();
-        return item;
-    }
-
-    [[nodiscard]] auto size() const noexcept -> std::size_t
-    {
-        return items_.size();
-    }
-
-    [[nodiscard]] auto empty() const noexcept -> bool
-    {
-        return items_.empty();
-    }
-
-    [[nodiscard]] auto items() noexcept -> List&
-    {
-        return items_;
-    }
-
-    [[nodiscard]] auto items() const noexcept -> List const&
-    {
-        return items_;
-    }
-
-    auto rebuild_index() -> void
-    {
-        index_.clear();
-        for (auto it = items_.begin(); it != items_.end(); ++it)
+        // Removes and returns the least recently used entry.
+        [[nodiscard]] auto pop_oldest() -> Item
         {
-            index_.emplace(it->first, it);
+            auto item = std::move(items_.back());
+            index_.erase(item.first);
+            items_.pop_back();
+            return item;
         }
+
+        [[nodiscard]] auto size() const noexcept -> std::size_t
+        {
+            return items_.size();
+        }
+
+        [[nodiscard]] auto empty() const noexcept -> bool
+        {
+            return items_.empty();
+        }
+
+        [[nodiscard]] auto items() noexcept -> List&
+        {
+            return items_;
+        }
+
+        [[nodiscard]] auto items() const noexcept -> List const&
+        {
+            return items_;
+        }
+
+        auto rebuild_index() -> void
+        {
+            index_.clear();
+            for (auto it = items_.begin(); it != items_.end(); ++it)
+            {
+                index_.emplace(it->first, it);
+            }
+        }
+
+    private:
+        List items_{};
+        std::unordered_map<std::string, typename List::iterator> index_{};
+    };
+
+    struct MemberEntry final
+    {
+        std::string event_id{};
+        StreamToken token{};
+    };
+
+    using RoomMembers = LruMap<MemberEntry>;
+
+    struct StreamState final
+    {
+        LruMap<RoomMembers> rooms{};
+        // The component-wise maximum of every token recorded and still held (never lowered on eviction, so it
+        // can only make a request scan when it need not). A `since` that covers it covers every entry.
+        StreamToken highest{};
+        std::size_t members{0U};
+    };
+
+    // Length-prefixed, so no (user, device, filter) triple can collide with another.
+    [[nodiscard]] auto stream_key(LazyMemberTracker::StreamKey const& key) -> std::string
+    {
+        auto out = std::string{};
+        out.reserve(key.user_id.size() + key.device_id.size() + key.filter.size() + 24U);
+        out.append(std::to_string(key.user_id.size())).push_back(':');
+        out.append(key.user_id);
+        out.append(std::to_string(key.device_id.size())).push_back(':');
+        out.append(key.device_id);
+        out.append(key.filter);
+        return out;
     }
-
-private:
-    List items_{};
-    std::unordered_map<std::string, typename List::iterator> index_{};
-};
-
-struct MemberEntry final
-{
-    std::string event_id{};
-    StreamToken token{};
-};
-
-using RoomMembers = LruMap<MemberEntry>;
-
-struct StreamState final
-{
-    LruMap<RoomMembers> rooms{};
-    // The component-wise maximum of every token recorded and still held (never lowered on eviction, so it
-    // can only make a request scan when it need not). A `since` that covers it covers every entry.
-    StreamToken highest{};
-    std::size_t members{0U};
-};
-
-// Length-prefixed, so no (user, device, filter) triple can collide with another.
-[[nodiscard]] auto stream_key(LazyMemberTracker::StreamKey const& key) -> std::string
-{
-    auto out = std::string{};
-    out.reserve(key.user_id.size() + key.device_id.size() + key.filter.size() + 24U);
-    out.append(std::to_string(key.user_id.size())).push_back(':');
-    out.append(key.user_id);
-    out.append(std::to_string(key.device_id.size())).push_back(':');
-    out.append(key.device_id);
-    out.append(key.filter);
-    return out;
-}
 
 } // namespace
 
@@ -255,9 +256,8 @@ auto LazyMemberTracker::begin_request(StreamKey const& key, std::optional<Stream
     }
 }
 
-auto LazyMemberTracker::is_acknowledged(StreamKey const& key, std::string_view room_id,
-                                        std::string_view member_user_id, std::string_view event_id, StreamToken since)
-    -> bool
+auto LazyMemberTracker::is_acknowledged(StreamKey const& key, std::string_view room_id, std::string_view member_user_id,
+                                        std::string_view event_id, StreamToken since) -> bool
 {
     auto const lock = std::scoped_lock{mutex_};
     if (!state_->trackable(key))
