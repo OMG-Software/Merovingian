@@ -1113,9 +1113,21 @@ SCENARIO("GET /profile/{userId} for a user of another server relays m.tz and val
             "200 OK",
             R"({"displayname":"Bob","m.tz":"Europe/London","org.example.x":{"a":1},"Bad Key":"no","m.unknown":"no","org.example.n":null})");
         auto const tz_only = merovingian::tests::tls_mock::json_http_response("200 OK", R"({"m.tz":"Asia/Tokyo"})");
+        // A remote answer of about 120 KiB of valid custom fields: more than a profile may hold.
+        auto big_object = std::string{"{"};
+        for (auto index = 0; index < 2000; ++index)
+        {
+            auto number = std::to_string(index);
+            number.insert(0U, 4U - number.size(), '0');
+            big_object += (index == 0 ? "" : ",") + std::string{R"("org.example.k)"} + number + R"(":")" +
+                          std::string(40U, 'v') + R"(")";
+        }
+        big_object += "}";
+        auto const big_profile = merovingian::tests::tls_mock::json_http_response("200 OK", big_object);
         auto const responses = std::vector<std::pair<std::string, std::string>>{
-            {"user_id=%40bob%3Aremote.example.net&field=m.tz", tz_only   },
-            {"user_id=%40bob%3Aremote.example.net",            ok_profile},
+            {"user_id=%40bob%3Aremote.example.net&field=m.tz", tz_only    },
+            {"user_id=%40bob%3Aremote.example.net",            ok_profile },
+            {"user_id=%40big%3Aremote.example.net",            big_profile},
         };
         auto captured = std::vector<std::string>{};
         auto server_thread = std::thread{[&]() {
@@ -1136,6 +1148,20 @@ SCENARIO("GET /profile/{userId} for a user of another server relays m.tz and val
                 REQUIRE(response.response.body.find("Bad Key") == std::string::npos);
                 REQUIRE(response.response.body.find("m.unknown") == std::string::npos);
                 REQUIRE(response.response.body.find("org.example.n") == std::string::npos);
+            }
+        }
+
+        WHEN("a client reads the profile of a user whose answer is larger than a profile may be")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                rt, {"GET", "/_matrix/client/v3/profile/%40big%3Aremote.example.net", {}, {}});
+
+            THEN("the relayed profile is kept under 64 KiB, with as many fields as fit")
+            {
+                REQUIRE(response.response.status == 200U);
+                REQUIRE(response.response.body.size() < 65536U);
+                REQUIRE(response.response.body.size() > 60000U);
+                REQUIRE(response.response.body.find("org.example.k0000") != std::string::npos);
             }
         }
 

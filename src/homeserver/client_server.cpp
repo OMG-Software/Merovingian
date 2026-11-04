@@ -11860,6 +11860,15 @@ namespace
         // The extended fields (v1.16): `m.tz` must be a string, a custom key must meet the key grammar and
         // hold a non-null value (null means "unset" over federation). The total is held under the profile
         // limit, so a remote server cannot make this one relay an unbounded answer.
+        // `relayed_bytes` is the size of the profile built so far, kept as a running total: each member is
+        // measured once, so the work is linear in the answer. It is done with runtime.mutex held (the
+        // RuntimeLockRelease scope above has ended), on a body a remote server chose, bounded by the outbound
+        // response limit; it stops at the first member that would take the profile to 64 KiB.
+        auto const* const relayed_name = string_member(*parsed, "displayname");
+        auto const* const relayed_avatar = string_member(*parsed, "avatar_url");
+        auto relayed_bytes =
+            profile_size_bytes(relayed_name != nullptr ? std::string_view{*relayed_name} : std::string_view{},
+                               relayed_avatar != nullptr ? std::string_view{*relayed_avatar} : std::string_view{}, {});
         for (auto const& member : *parsed)
         {
             if (member.key == "displayname" || member.key == "avatar_url" ||
@@ -11869,11 +11878,17 @@ namespace
             {
                 continue;
             }
-            object.push_back(json_member(member.key, *member.value));
-            if (profile_size_bytes({}, {}, object) >= max_profile_bytes)
+            auto entry = canonicaljson::Object{};
+            entry.push_back(json_member(member.key, *member.value));
+            auto const text = json_serialize_checked(json_obj(std::move(entry)));
+            // "{" + member + "}" is the member's text plus two; a member after the first adds a comma.
+            auto const added = text.has_value() ? text->size() - 2U + 1U : max_profile_bytes;
+            if (relayed_bytes + added >= max_profile_bytes)
             {
-                object.pop_back();
+                break;
             }
+            relayed_bytes += added;
+            object.push_back(json_member(member.key, *member.value));
         }
         if (!field.empty() && object.empty())
         {
@@ -14079,8 +14094,12 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
     // Spec: POST /account/password/email/requestToken ("Requires authentication: No") "may" answer
     // M_THREEPID_NOT_FOUND for an address no account holds. This server never does: it answers every well-formed
     // request alike, 200 with a fresh `sid`, and emails the code only when an active account holds the address, so
-    // the endpoint tells a caller nothing about who has an account. The code is sent from a background task so the
-    // answer is not slower for an address that has one. Runs under runtime.mutex; the send holds no lock.
+    // the endpoint tells a caller nothing about who has an account. The SMTP exchange runs in a background task, off
+    // this thread; building the message and starting the task still happen only for an address with an account
+    // (a small local difference, and requestToken is rate limited). One email per address per
+    // password_reset_address_interval_ms across all sessions: a throttled request answers the same 200 with its
+    // `sid`, keeps an existing session's code and tries, and gives a new session no code. Runs under runtime.mutex;
+    // the scan is over registration_validation_sessions, which is capped; the send holds no lock.
     if (req.method == "POST" && request_path == "/_matrix/client/v3/account/password/email/requestToken")
     {
         auto const body = parse_register_email_request_body(req.body);
@@ -14111,15 +14130,22 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             holder != store.account_threepids.end() && asserted_user_is_active(rt.homeserver, holder->user_id)
                 ? std::optional<std::string>{holder->user_id}
                 : std::nullopt;
-        prune_registration_validation_sessions(rt, wall_clock_milliseconds());
+        auto const now_ms = wall_clock_milliseconds();
+        prune_registration_validation_sessions(rt, now_ms);
         auto* session = static_cast<RegistrationValidationSession*>(nullptr);
+        auto throttled = false;
         for (auto& candidate : rt.registration_validation_sessions)
         {
-            if (candidate.purpose == password_reset_purpose && candidate.address == address &&
+            if (candidate.purpose != password_reset_purpose || candidate.address != address)
+            {
+                continue;
+            }
+            throttled = throttled || (candidate.reset_sent_at_ms != 0U &&
+                                      now_ms - candidate.reset_sent_at_ms < password_reset_address_interval_ms);
+            if (session == nullptr &&
                 crypto::constant_time_equal_variable_length(candidate.client_secret, body->client_secret))
             {
                 session = &candidate;
-                break;
             }
         }
         // Spec (send_attempt): the server "will only send an email if the send_attempt is a number greater than the
@@ -14140,6 +14166,9 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                 return dispatch_err(req, rt, 429U, "M_LIMIT_EXCEEDED", "too many outstanding validation sessions",
                                     60000U);
             }
+            // A new session is born throttled or not; either way it records the owner, and a throttled one has
+            // no code, so it fails like a wrong code.
+            session->user_id = owner;
             send_code = true;
         }
         else if (body->send_attempt > session->send_attempt)
@@ -14147,7 +14176,7 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             session->send_attempt = body->send_attempt;
             send_code = session->validated_at_ms == 0U;
         }
-        if (send_code)
+        if (send_code && !throttled)
         {
             session->user_id = owner;
             session->reset_token.clear();
@@ -14158,9 +14187,11 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                 if (token.has_value() && send_password_reset_email(rt.homeserver, address, *token))
                 {
                     session->reset_token = std::move(*token);
+                    session->reset_sent_at_ms = now_ms;
                 }
             }
         }
+
         auto base = rt.homeserver.config.server().public_baseurl;
         while (!base.empty() && base.back() == '/')
         {
@@ -14223,7 +14254,11 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
         }
         if (session->token_attempts >= password_reset_max_token_attempts)
         {
-            consume_registration_validation_session(rt, password_reset_purpose, *sid, *client_secret);
+            // Over its tries the session is dead, but it stays until it ages out: it carries the time its code was
+            // sent, which the per-address throttle reads. Its code goes now.
+            core::secure_zero(
+                std::as_writable_bytes(std::span{session->reset_token.data(), session->reset_token.size()}));
+            session->reset_token.clear();
             return dispatch_err(req, rt, 400U, "M_SESSION_EXPIRED", "too many wrong codes; request a new one");
         }
         ++session->token_attempts;
@@ -14286,6 +14321,20 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                 uia_failure_body(challenge, "M_SESSION_NOT_VALIDATED", "the email address is not validated"));
         }
         auto const user_id = *session->user_id;
+        // The session names the account that held the address when the code was sent, up to 15 minutes ago. If the
+        // address has left that account since, whoever held it before must not reset it: the session is spent and
+        // the answer is the one an unvalidated session gets.
+        auto const& bindings = rt.homeserver.database.persistent_store.account_threepids;
+        auto const still_bound = std::ranges::any_of(bindings, [&](database::PersistentThreePidBinding const& binding) {
+            return binding.user_id == user_id && binding.medium == "email" && binding.address == session->address;
+        });
+        if (!still_bound)
+        {
+            consume_registration_validation_session(rt, password_reset_purpose, *sid, *secret);
+            return dispatch_resp(
+                req, rt, 401U,
+                uia_failure_body(challenge, "M_SESSION_NOT_VALIDATED", "the email address is not validated"));
+        }
         auto const* const logout_devices_member = boolean_member(*object, "logout_devices");
         auto const result = reset_local_user_password(rt.homeserver, user_id, *new_password,
                                                       logout_devices_member == nullptr || *logout_devices_member);

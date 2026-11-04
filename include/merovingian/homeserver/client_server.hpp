@@ -62,6 +62,9 @@ struct RegistrationValidationSession final
     // wiped with the session, never logged.
     std::string reset_token{};
     std::uint8_t token_attempts{0U};
+    // When this session's code was last emailed (wall-clock ms), zero if never: the per-address throttle reads it
+    // from every session of the address, so it survives the session that used up its tries.
+    std::uint64_t reset_sent_at_ms{0U};
 };
 
 // Security audit run-2 F-12 (ADR-0339). The spec bounds a tag's name (255 bytes) and nothing else about

@@ -1895,7 +1895,11 @@ namespace
         // the runtime lock for a long time cannot make a probe wait. It is not rate-limited and needs no token.
         auto result =
             is_health_probe(local_request)
-                ? DispatchResult{DispatchResult::Status::complete, health_probe_response(ctx.dispatcher->running()), {}}
+                ? DispatchResult{DispatchResult::Status::complete,
+                                 // A connection served without a dispatcher (serve_one_http_connection) has none to
+                                 // ask, and is by definition being served.
+                                 health_probe_response(ctx.dispatcher == nullptr || ctx.dispatcher->running()),
+                                 {}}
                 : route_request(ctx.runtime, local_request, ctx.dispatch_mode,
                                 ctx.media_fetch_pool != nullptr ? RemoteMediaFetchMode::defer
                                                                 : RemoteMediaFetchMode::inline_fetch);

@@ -11,6 +11,7 @@
 #include "merovingian/observability/logger.hpp"
 
 #include <algorithm>
+#include <atomic>
 #include <cctype>
 #include <chrono>
 #include <exception>
@@ -37,6 +38,46 @@ namespace
         },
                                       severity);
     }
+
+    // One slot of HomeserverRuntime::password_reset_sends_in_flight_. Released by the destructor, so every exit path
+    // of a send (completion, an exception, a launch that never ran) gives the slot back.
+    class SendPermit final
+    {
+    public:
+        // Takes a slot, or leaves `counter` as it was and owns nothing when `cap` are already taken.
+        static auto acquire(std::atomic<std::size_t>& counter, std::size_t cap) -> std::optional<SendPermit>
+        {
+            if (counter.fetch_add(1U) >= cap)
+            {
+                counter.fetch_sub(1U);
+                return std::nullopt;
+            }
+            return SendPermit{counter};
+        }
+        SendPermit(SendPermit&& other) noexcept
+            : m_counter{other.m_counter}
+            , m_owns{std::exchange(other.m_owns, false)}
+        {
+        }
+        SendPermit(SendPermit const&) = delete;
+        auto operator=(SendPermit const&) -> SendPermit& = delete;
+        auto operator=(SendPermit&&) -> SendPermit& = delete;
+        ~SendPermit()
+        {
+            if (m_owns)
+            {
+                m_counter.fetch_sub(1U);
+            }
+        }
+
+    private:
+        explicit SendPermit(std::atomic<std::size_t>& counter)
+            : m_counter{counter}
+        {
+        }
+        std::atomic<std::size_t>& m_counter;
+        bool m_owns{true};
+    };
 
 } // namespace
 
@@ -96,25 +137,30 @@ auto send_password_reset_email(HomeserverRuntime& runtime, std::string recipient
     }
     try
     {
-        auto const orphan_lock = std::lock_guard{runtime.orphan_futures_mutex_};
-        reap_completed_futures(runtime.orphan_futures_);
-        if (at_background_task_capacity(runtime.orphan_futures_.size(), password_reset_max_sends_in_flight))
+        auto permit = SendPermit::acquire(runtime.password_reset_sends_in_flight_, password_reset_max_sends_in_flight);
+        if (!permit.has_value())
         {
             log_reset("password_reset.mail_dropped", "too many sends in flight",
                       observability::LogEventSeverity::warning);
             return false;
         }
+        auto const orphan_lock = std::lock_guard{runtime.orphan_futures_mutex_};
+        reap_completed_futures(runtime.orphan_futures_);
         // Reserve before launching, as dispatch_push_deliveries does: a failed allocation after the launch
-        // would wait on the running task while this request owns runtime.mutex.
+        // would wait on the running task while this request owns runtime.mutex. (The permit is released by its
+        // destructor if this throws.)
         runtime.orphan_futures_.reserve(runtime.orphan_futures_.size() + 1U);
-        auto send = std::async(std::launch::async, [settings = std::move(*settings), recipient = std::move(recipient),
-                                                    message = std::move(*message)]() {
-            auto const outcome = email::send_smtp_message(settings, recipient, message);
-            if (outcome.result != email::SmtpSendResult::sent)
-            {
-                log_reset("password_reset.mail_failed", outcome.detail, observability::LogEventSeverity::warning);
-            }
-        });
+        auto send =
+            std::async(std::launch::async, [settings = std::move(*settings), recipient = std::move(recipient),
+                                            message = std::move(*message), permit = std::move(*permit)]() mutable {
+                // The slot goes back when the send ends, not when the future's retained closure is destroyed.
+                auto const completion = std::move(permit);
+                auto const outcome = email::send_smtp_message(settings, recipient, message);
+                if (outcome.result != email::SmtpSendResult::sent)
+                {
+                    log_reset("password_reset.mail_failed", outcome.detail, observability::LogEventSeverity::warning);
+                }
+            });
         runtime.orphan_futures_.push_back(std::move(send));
     }
     catch (std::exception const&)

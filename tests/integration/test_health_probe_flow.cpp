@@ -167,3 +167,50 @@ SCENARIO("The health probe answers 503 with a fixed body when the server is not 
         }
     }
 }
+
+// A connection served with no dispatcher (serve_one_http_connection, which tests and embeds use) has no dispatcher
+// to ask whether the server is running; the probe must answer, as serving, and not dereference it.
+SCENARIO("The health probe is answered on a connection served without a dispatcher", "[homeserver][http][health]")
+{
+    GIVEN("a started runtime and a connected socket pair")
+    {
+        auto runtime_result = merovingian::homeserver::start_client_server(probe_config());
+        REQUIRE(runtime_result.started);
+        auto runtime = std::move(runtime_result.runtime);
+        auto stats = merovingian::homeserver::HttpServeStats{};
+        int fds[2]{-1, -1};
+        REQUIRE(::socketpair(AF_UNIX, SOCK_STREAM, 0, fds) == 0);
+        auto const timeout = timeval{5, 0};
+        ::setsockopt(fds[0], SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
+        auto const request =
+            std::string_view{"GET /_merovingian/health HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n"};
+        REQUIRE(::send(fds[0], request.data(), request.size(), 0) == static_cast<ssize_t>(request.size()));
+
+        WHEN("the one connection is served")
+        {
+            std::ignore = merovingian::homeserver::serve_one_http_connection(
+                fds[1], runtime, stats, merovingian::homeserver::HttpDispatchMode::client_server, nullptr, "127.0.0.1",
+                nullptr);
+            ::shutdown(fds[1], SHUT_WR);
+            auto response = std::string{};
+            auto buffer = std::array<char, 4096U>{};
+            while (true)
+            {
+                auto const received = ::recv(fds[0], buffer.data(), buffer.size(), 0);
+                if (received <= 0)
+                {
+                    break;
+                }
+                response.append(buffer.data(), static_cast<std::size_t>(received));
+            }
+            ::close(fds[0]);
+            ::close(fds[1]);
+
+            THEN("it answers 200 ok")
+            {
+                REQUIRE(response.starts_with("HTTP/1.1 200"));
+                REQUIRE(response.ends_with("\r\n\r\nok"));
+            }
+        }
+    }
+}

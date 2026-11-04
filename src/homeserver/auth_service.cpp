@@ -2306,10 +2306,10 @@ auto reset_local_user_password(HomeserverRuntime& runtime, std::string_view user
     {
         return argon2id_admission_refusal();
     }
-    auto const new_hash = [&]() {
+    auto const new_hash = std::invoke([&]() {
         auto const released = merovingian::homeserver::RuntimeLockRelease{};
         return auth::hash_password(new_password);
-    }();
+    });
     if (!new_hash.has_value())
     {
         return make_operation_result(false, {}, "password hashing failed", 500U);

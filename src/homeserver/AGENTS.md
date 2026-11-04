@@ -90,8 +90,18 @@ is `declared_mime|sniffed_mime|scanner_clean|bytes` — the pipe-delimited wrapp
 `POST /account/password/email/requestToken`, the submit step and `POST /account/password` with `m.login.email.identity`
 and no access token are answered before the authentication gate. Rules for changing them:
 
-- **Answer every well-formed requestToken alike.** Never `M_THREEPID_NOT_FOUND`, never a different status, body shape or
-  speed for an address with an account. The send is a background task for that reason; do not make it inline.
+- **Answer every well-formed requestToken alike.** Never `M_THREEPID_NOT_FOUND`, never a different status or body
+  shape for an address with an account. The SMTP exchange is a background task for that reason; do not make it inline.
+  Drawing a code, building the message and starting the task do run only for an address with an account (a small local
+  difference, bounded by the rate limit); do not add more work there.
+- **One reset email per address per 60 seconds (`password_reset_address_interval_ms`), across sessions**, read from
+  `reset_sent_at_ms` on the sessions of the address (the list is capped). A throttled request answers as usual, keeps an
+  existing session's code and tries, and gives a new session no code. A session out of tries stays until it ages out
+  so the throttle record survives it.
+- **Reset sends are counted by `password_reset_sends_in_flight_`, never by `orphan_futures_.size()`**, which holds
+  unrelated background tasks. The permit releases the slot on every exit path.
+- **Completion re-checks that `account_threepids` still binds the address to the session's user**; otherwise it spends
+  the session and answers `M_SESSION_NOT_VALIDATED`.
 - **A session exists for an unknown address too**, with an empty `reset_token`. The submit step compares against a
   fixed dummy then, so it does the same work and gives the same `M_TOKEN_INCORRECT`.
 - **Constant-time comparison** (`crypto::constant_time_equal_variable_length`) is used for the code and for the

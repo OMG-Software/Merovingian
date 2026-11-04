@@ -627,6 +627,11 @@ struct HomeserverRuntime final
     // at_background_task_capacity() and k_max_in_flight_push_deliveries in
     // room_service.cpp.
     std::atomic<std::size_t> push_delivery_in_flight_{0U};
+    // Password-reset emails being sent (send_password_reset_email, ADR-0481), counted apart from
+    // orphan_futures_ so unrelated background tasks (make_join race losers, push deliveries) cannot use up the
+    // reset sends. Incremented under runtime.mutex before a task starts; the task's permit decrements it on every
+    // exit path.
+    std::atomic<std::size_t> password_reset_sends_in_flight_{0U};
     // Dispatcher-side lookup/admission/reaping is guarded by
     // orphan_futures_mutex_. Tasks retain a shared atomic counter and release
     // it without any completion-time lock. Zero entries are swept on dispatch;
