@@ -2257,7 +2257,8 @@ membership. No whole-finding or release acceptance is claimed. See proposed
   `tests/integration/test_sliding_sync_flow.cpp`.
 - **Residual risk:** history stored before state groups existed has no recorded state, so
   its visibility at the time cannot be proved: it is visible only to users who were joined when
-  it was sent (rule 2 from their own membership timeline, undeterminable means denied), and
+  it was sent (rule 2 from their own membership timeline, undeterminable means denied; an outlier
+  fetched as history with no state group is denied, ADR-0415), and
   `shared` or `world_readable` history from that period is not shown to later joiners or
   peekers until state is recorded for it. The unread counts
   (`notification_count`, `highlight_count`, the `by_notification_count` room ordering and the push

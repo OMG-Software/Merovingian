@@ -180,9 +180,36 @@ auto room_read_access_for(database::PersistentStore const& store, std::string_vi
     return {RoomReadKind::as_of, (*boundary)->event_id, (*boundary)->stream_ordering};
 }
 
+auto state_anchor_event(database::PersistentStore const& store, std::string_view room_id, RoomReadAccess const& access,
+                        std::optional<std::uint64_t> at) -> database::PersistentEvent const*
+{
+    if (access.kind == RoomReadKind::none)
+    {
+        return nullptr;
+    }
+    auto limit = at.value_or(std::numeric_limits<std::uint64_t>::max());
+    if (access.kind == RoomReadKind::as_of)
+    {
+        limit = std::min(limit, access.boundary_ordering);
+    }
+    database::PersistentEvent const* newest = nullptr;
+    for (auto const& event : store.events)
+    {
+        if (event.room_id != room_id || event.stream_ordering > limit || event_is_withheld(event))
+        {
+            continue;
+        }
+        if (newest == nullptr || event.stream_ordering > newest->stream_ordering)
+        {
+            newest = &event;
+        }
+    }
+    return newest;
+}
+
 auto room_state_event_ids(database::PersistentStore const& store, std::string_view room_id,
-                          RoomReadAccess const& access,
-                          std::optional<std::uint64_t> at) -> std::optional<std::vector<std::string>>
+                          RoomReadAccess const& access, std::optional<std::uint64_t> at)
+    -> std::optional<std::vector<std::string>>
 {
     if (access.kind == RoomReadKind::none)
     {
@@ -201,28 +228,18 @@ auto room_state_event_ids(database::PersistentStore const& store, std::string_vi
         return ids;
     }
 
-    auto limit = at.value_or(std::numeric_limits<std::uint64_t>::max());
-    if (access.kind == RoomReadKind::as_of)
-    {
-        limit = std::min(limit, access.boundary_ordering);
-    }
-    database::PersistentEvent const* newest = nullptr;
-    for (auto const& event : store.events)
-    {
-        if (event.room_id != room_id || event.stream_ordering > limit || event_is_withheld(event))
-        {
-            continue;
-        }
-        if (newest == nullptr || event.stream_ordering > newest->stream_ordering)
-        {
-            newest = &event;
-        }
-    }
+    auto const* const newest = state_anchor_event(store, room_id, access, at);
     if (newest == nullptr)
     {
         return std::vector<std::string>{}; // before the room's first event there is no state
     }
-    auto const group_id = database::find_event_state_group(store, newest->event_id);
+    return state_event_ids_after(store, *newest);
+}
+
+auto state_event_ids_after(database::PersistentStore const& store, database::PersistentEvent const& event)
+    -> std::optional<std::vector<std::string>>
+{
+    auto const group_id = database::find_event_state_group(store, event.event_id);
     if (!group_id.has_value())
     {
         return std::nullopt;

@@ -17671,7 +17671,21 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                     // The roster as of a point in the room's history: the user's departure for
                     // someone who left (never later, whatever `at` says), or the requested
                     // position. Read from the state recorded at that point (ADR-0064).
-                    auto const state_ids = sync::room_state_event_ids(store, room_id, access, at_position);
+                    // The roster at a position is the state recorded for the newest event at or before it,
+                    // and state is readable only where the event is: a position from before the caller's
+                    // window (a `joined` room's history before their join) is refused, not answered with
+                    // the members of that time (ADR-0414). One scan finds the event and one visibility
+                    // check judges it; the members are not judged one by one, which would cost a lookup
+                    // for each under runtime.mutex.
+                    auto const* const anchor = sync::state_anchor_event(store, room_id, access, at_position);
+                    if (anchor != nullptr && at_position.has_value() &&
+                        !sync::HistoryVisibility{store, *user}.can_see(*anchor))
+                    {
+                        return dispatch_err(req, rt, 403U, "M_FORBIDDEN",
+                                            "that point in the room is not visible to you");
+                    }
+                    auto const state_ids = anchor == nullptr ? std::optional<std::vector<std::string>>{std::in_place}
+                                                             : sync::state_event_ids_after(store, *anchor);
                     if (!state_ids.has_value())
                     {
                         return dispatch_err(req, rt, 403U, "M_FORBIDDEN", "user is not a member of this room");

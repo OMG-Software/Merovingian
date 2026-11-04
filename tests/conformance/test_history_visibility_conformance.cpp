@@ -19,7 +19,9 @@
 #include "../support/registration_token.hpp"
 #include "merovingian/canonicaljson/serializer.hpp"
 #include "merovingian/config/config.hpp"
+#include "merovingian/database/persistent_store.hpp"
 #include "merovingian/homeserver/client_server.hpp"
+#include "merovingian/sync/history_visibility.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -669,6 +671,124 @@ SCENARIO("GET /members honours the at token", "[history-visibility][csaz-2][conf
             {
                 REQUIRE(reply.status == 400U);
                 REQUIRE(string_field(reply.body, "errcode") == "M_INVALID_PARAM");
+            }
+        }
+    }
+}
+
+// Spec: Matrix Client-Server API v1.19, Room History Visibility and GET /rooms/{roomId}/members.
+// URL: ../../docs/matrix-v1.19-spec/client-server-api.md#room-history-visibility
+// `joined`: "Events are accessible to newly joined members from the point they joined the room onwards."
+// `at` names "the point in time (pagination token) to return members for", and the roster at a point is made of
+// the m.room.member events up to it, so a point from before the caller's window is not one they may be given
+// (ADR-0414). A caller asking at a point they could see still gets the roster, and a user who left is still
+// capped at their leave (ADR-0084).
+SCENARIO("GET /members?at= refuses a point from before the caller could see the room",
+         "[history-visibility][csaz-2][security][conformance][members-at-lower-bound]")
+{
+    GIVEN("a joined-visibility room where carol joined, then bob joined later")
+    {
+        auto started = merovingian::homeserver::start_client_server(visibility_config());
+        REQUIRE(started.started);
+        auto& rt = started.runtime;
+        auto const alice = register_and_login(rt, "alice");
+        auto const bob = register_and_login(rt, "bob");
+        auto const carol = register_and_login(rt, "carol");
+        auto const dave = register_and_login(rt, "dave");
+        auto const room_id = create_room_with_visibility(rt, alice, "joined");
+        invite_and_join(rt, alice, room_id, "carol", carol);
+        std::ignore = send_text(rt, alice, room_id, "before-bob");
+        auto const before_bob = string_field(messages(rt, alice, room_id, "?dir=b&limit=1").body, "start");
+        REQUIRE_FALSE(before_bob.empty());
+        invite_and_join(rt, alice, room_id, "bob", bob);
+        std::ignore = send_text(rt, alice, room_id, "after-bob-joined");
+        auto const after_bob_joined = string_field(messages(rt, alice, room_id, "?dir=b&limit=1").body, "start");
+        REQUIRE_FALSE(after_bob_joined.empty());
+        auto const members_url = "/_matrix/client/v3/rooms/" + room_id + "/members?at=";
+
+        WHEN("bob asks for the members at the token from before he joined")
+        {
+            auto const reply = call(rt, "GET", members_url + before_bob, bob);
+
+            THEN("he is refused and is given none of the member events from before his join")
+            {
+                // Spec MUST: "Events are accessible to newly joined members from the point they joined".
+                REQUIRE(reply.status == 403U);
+                REQUIRE(string_field(reply.body, "errcode") == "M_FORBIDDEN");
+                REQUIRE(member_events_by_user(reply.body, "chunk").empty());
+            }
+        }
+
+        WHEN("bob asks for the members at a token from after he joined")
+        {
+            auto const reply = call(rt, "GET", members_url + after_bob_joined, bob);
+
+            THEN("he is given the roster as it was then")
+            {
+                REQUIRE(reply.status == 200U);
+                auto const members = member_events_by_user(reply.body, "chunk");
+                REQUIRE(membership_of(members, user_id("alice")) == std::optional<std::string>{"join"});
+                REQUIRE(membership_of(members, user_id("carol")) == std::optional<std::string>{"join"});
+                REQUIRE(membership_of(members, user_id("bob")) == std::optional<std::string>{"join"});
+            }
+        }
+
+        WHEN("alice, who was joined throughout, asks for the members at the token from before bob joined")
+        {
+            auto const reply = call(rt, "GET", members_url + before_bob, alice);
+
+            THEN("she is given that roster, without bob")
+            {
+                REQUIRE(reply.status == 200U);
+                auto const members = member_events_by_user(reply.body, "chunk");
+                REQUIRE(membership_of(members, user_id("carol")) == std::optional<std::string>{"join"});
+                REQUIRE(membership_of(members, user_id("bob")) == std::nullopt);
+            }
+        }
+
+        WHEN("bob leaves, dave joins, and bob asks for the members at a position far in the future")
+        {
+            leave(rt, bob, room_id);
+            invite_and_join(rt, alice, room_id, "dave", dave);
+            auto const reply = call(rt, "GET", members_url + "999999999", bob);
+
+            THEN("he is given the roster as of his leave and nothing after it")
+            {
+                // ADR-0084: a departed user's `at` is capped at their leave.
+                REQUIRE(reply.status == 200U);
+                auto const members = member_events_by_user(reply.body, "chunk");
+                REQUIRE(membership_of(members, user_id("carol")) == std::optional<std::string>{"join"});
+                REQUIRE(membership_of(members, user_id("dave")) == std::nullopt);
+            }
+        }
+    }
+
+    GIVEN("a shared-visibility room where bob joined after carol")
+    {
+        auto started = merovingian::homeserver::start_client_server(visibility_config());
+        REQUIRE(started.started);
+        auto& rt = started.runtime;
+        auto const alice = register_and_login(rt, "alice");
+        auto const bob = register_and_login(rt, "bob");
+        auto const carol = register_and_login(rt, "carol");
+        auto const room_id = create_room_with_visibility(rt, alice, "shared");
+        invite_and_join(rt, alice, room_id, "carol", carol);
+        std::ignore = send_text(rt, alice, room_id, "before-bob");
+        auto const before_bob = string_field(messages(rt, alice, room_id, "?dir=b&limit=1").body, "start");
+        REQUIRE_FALSE(before_bob.empty());
+        invite_and_join(rt, alice, room_id, "bob", bob);
+
+        WHEN("bob asks for the members at the token from before he joined")
+        {
+            auto const reply =
+                call(rt, "GET", "/_matrix/client/v3/rooms/" + room_id + "/members?at=" + before_bob, bob);
+
+            THEN("he is given that roster, because the room's history is shared")
+            {
+                REQUIRE(reply.status == 200U);
+                auto const members = member_events_by_user(reply.body, "chunk");
+                REQUIRE(membership_of(members, user_id("carol")) == std::optional<std::string>{"join"});
+                REQUIRE(membership_of(members, user_id("bob")) == std::nullopt);
             }
         }
     }
@@ -1354,6 +1474,90 @@ SCENARIO("History stored without a state group is visible only to users who were
             {
                 REQUIRE(contains(ids, while_joined));
                 REQUIRE_FALSE(contains(ids, after_dave_left));
+            }
+        }
+    }
+}
+
+// Spec: Room History Visibility, `joined`: "Events are accessible to newly joined members from the point they joined
+// the room onwards." An outlier with no recorded state was fetched as history (ADR-0069, ADR-0070): this server cannot
+// say where in the room it sits, and the order it was stored in is only when it was fetched. It is therefore never
+// shown by its stream ordering, whatever the visibility; the user's own membership outlier (ADR-0304) is the one
+// exception (ADR-0415, which amends ADR-0084).
+SCENARIO("An outlier with no recorded state is not delivered by its fetch order",
+         "[history-visibility][csaz-3][security][conformance][stateless-outlier]")
+{
+    GIVEN("a joined-visibility room where bob joined, and an older event fetched afterwards as a stateless outlier")
+    {
+        auto started = merovingian::homeserver::start_client_server(visibility_config());
+        REQUIRE(started.started);
+        auto& rt = started.runtime;
+        auto const alice = register_and_login(rt, "alice");
+        auto const bob = register_and_login(rt, "bob");
+        auto const room_id = create_room_with_visibility(rt, alice, "joined");
+        invite_and_join(rt, alice, room_id, "bob", bob);
+        auto const accepted_id = send_text(rt, alice, room_id, "sent-while-bob-was-joined");
+        auto& store = rt.homeserver.database.persistent_store;
+        auto newest = std::uint64_t{0U};
+        for (auto const& event : store.events)
+        {
+            newest = std::max(newest, event.stream_ordering);
+        }
+
+        auto const topic_outlier_id = std::string{"$outlier_topic"};
+        auto topic = merovingian::database::PersistentEvent{};
+        topic.event_id = topic_outlier_id;
+        topic.room_id = room_id;
+        topic.sender_user_id = user_id("alice");
+        topic.json = R"({"type":"m.room.topic","state_key":"","sender":")" + user_id("alice") + R"(","room_id":")" +
+                     room_id + R"(","origin_server_ts":1,"content":{"topic":"superseded"}})";
+        topic.depth = 1U; // older in the room than bob's join, which is what a fetch of history brings
+        topic.stream_ordering = newest + 10U; // but stored after it
+        topic.status = "outlier";
+        store.events.push_back(std::move(topic));
+
+        auto const own_invite_id = std::string{"$outlier_own_invite"};
+        auto own_invite = merovingian::database::PersistentEvent{};
+        own_invite.event_id = own_invite_id;
+        own_invite.room_id = room_id;
+        own_invite.sender_user_id = user_id("alice");
+        own_invite.json = R"({"type":"m.room.member","state_key":")" + user_id("bob") + R"(","sender":")" +
+                          user_id("alice") + R"(","room_id":")" + room_id +
+                          R"(","origin_server_ts":1,"content":{"membership":"invite"}})";
+        own_invite.depth = 1U;
+        own_invite.stream_ordering = newest + 11U;
+        own_invite.status = "outlier";
+        store.events.push_back(std::move(own_invite));
+
+        WHEN("bob reads /sync, /messages and asks the visibility filter")
+        {
+            auto visibility = merovingian::sync::HistoryVisibility{store, user_id("bob")};
+            auto const topic_row = store.events.find(topic_outlier_id);
+            auto const own_row = store.events.find(own_invite_id);
+            REQUIRE(topic_row != store.events.end());
+            REQUIRE(own_row != store.events.end());
+            auto const timeline = sync_timeline_ids(rt, bob, room_id);
+            auto const paged_reply = messages(rt, bob, room_id);
+            CAPTURE(paged_reply.status, paged_reply.body);
+            REQUIRE(paged_reply.status == 200U);
+            auto const paged = event_ids_in(paged_reply.body, "chunk");
+            auto const fetched =
+                call(rt, "GET", "/_matrix/client/v3/rooms/" + room_id + "/event/" + topic_outlier_id, bob);
+
+            THEN("the outlier is shown nowhere, and the accepted event still is")
+            {
+                // Spec MUST: events before the join are not accessible under `joined`.
+                REQUIRE_FALSE(visibility.can_see(*topic_row));
+                REQUIRE_FALSE(contains(timeline, topic_outlier_id));
+                REQUIRE_FALSE(contains(paged, topic_outlier_id));
+                REQUIRE(fetched.status == 404U);
+                REQUIRE(contains(timeline, accepted_id));
+                REQUIRE(contains(paged, accepted_id));
+            }
+
+            THEN("bob's own membership outlier is still his to see")
+            {
+                REQUIRE(visibility.can_see(*own_row));
             }
         }
     }

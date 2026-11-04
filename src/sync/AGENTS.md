@@ -243,8 +243,11 @@ nothing else decides what a user may see** (ADR-0084; audit CSAZ-2, CSAZ-3).
   replace it with a local depth: after a federated join the join's predecessors are not held (ADR-0311).
 - It fails closed. A broken group chain, a group naming an event the store lacks, or a
   rejected or soft-failed event means not visible. Never substitute the room's current state.
-  An event with no state group (pre-ADR-0064 history) is judged by rule 2 alone from the user's
-  own membership timeline; an undeterminable timeline denies.
+  An event with no state group that is not an outlier (pre-ADR-0064 history, stored `accepted`) is judged by rule 2
+  alone from the user's own membership timeline; an undeterminable timeline denies.
+  An outlier with no state group was fetched as history (ADR-0069, ADR-0070): its place in the room is unknown and
+  its stream ordering is the fetch time, so it is denied (ADR-0415) until a snapshot gives it a state group, when
+  the ordinary check applies. Do not judge a group-less outlier by rule 2.
   The one exception is the user's own `m.room.member` event held as an outlier with no state group
   (a received invite, the leave that rejected it): it is visible to that user, who was sent it already
   (ADR-0304). Do not widen it to other events or other users.
@@ -252,7 +255,11 @@ nothing else decides what a user may see** (ADR-0084; audit CSAZ-2, CSAZ-3).
   may this user read?": `current` (joined), `as_of` (was joined and left, was kicked or banned:
   the state recorded at the event that ended the join, `boundary_event_id`), or `none` (knock,
   invite, declined invite, never joined, forgotten). `room_state_event_ids()` returns the state
-  for it, optionally at an `at` position, never later than the boundary. It gates `initialSync`,
+  for it, optionally at an `at` position, never later than the boundary. The state at a position is the state
+  recorded for `state_anchor_event()`, the newest accepted event at or before it, and is readable only where that
+  event is: a client-chosen `at` whose anchor `can_see` rejects is `403 M_FORBIDDEN` (ADR-0414, the lower bound
+  ADR-0084 lacked). Judge the anchor, never the members one by one: a roster holds members who joined before the
+  caller, and a lookup per member under `runtime.mutex` is the F-10 cost. It gates `initialSync`,
   `/members`, `/joined_members` (current only), `/state`, `/state/{type}/{key}` and the `state` of
   `/sync`'s `rooms.leave` (ADR-0357).
 - A user with no read access may still peek events (not `/members` or `/state`) when the

@@ -52,6 +52,22 @@ struct RoomReadAccess final
 [[nodiscard]] auto room_read_access_for(database::PersistentStore const& store, std::string_view room_id,
                                         std::string_view user_id) -> RoomReadAccess;
 
+// The event whose recorded state `room_state_event_ids` returns for `access` and `at`: the newest
+// accepted event of the room whose stream ordering is at or before `at`, and for `as_of` never later
+// than the boundary event. Null when `access` is `none` or the room has no such event (the position is
+// before its first event). One scan of the store, not one per member.
+//
+// The state at an event is state the user may read only if they may see the event itself, so a caller
+// that takes `at` from a client judges this event with `HistoryVisibility::can_see` (ADR-0414).
+[[nodiscard]] auto state_anchor_event(database::PersistentStore const& store, std::string_view room_id,
+                                      RoomReadAccess const& access, std::optional<std::uint64_t> at)
+    -> database::PersistentEvent const*;
+
+// The IDs of the state events recorded (ADR-0064 state group) for `event`, or nullopt when it has no
+// state group or the group cannot be read (fail closed). The caller has decided the user may read it.
+[[nodiscard]] auto state_event_ids_after(database::PersistentStore const& store, database::PersistentEvent const& event)
+    -> std::optional<std::vector<std::string>>;
+
 // The IDs of the state events `access` entitles the user to read, or nullopt when `access` is
 // `none` or the state cannot be determined (fail closed).
 //
