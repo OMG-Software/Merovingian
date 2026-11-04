@@ -456,8 +456,10 @@ auto compute_room_list(homeserver::HomeserverRuntime const& rt, std::string_view
     auto joined_room_ids = std::vector<std::string>{};
     for (auto const& room : store.rooms)
     {
-        auto const joined = std::ranges::any_of(store.memberships, [&](database::PersistentMembership const& m) {
-            return m.room_id == room.room_id && m.user_id == user && m.membership == "join";
+        // The room's own membership rows (ADR-0437): the whole list costs the memberships once, not once per room.
+        auto joined = false;
+        database::for_each_room_membership_row(store, room.room_id, [&](database::PersistentMembership const& m) {
+            joined = joined || (m.user_id == user && m.membership == "join");
         });
         if (joined)
         {

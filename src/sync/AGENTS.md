@@ -126,7 +126,7 @@ receipts and typing `rooms` arrays are de-duplicated by the parser and capped at
 
 The `account_data` extension sends a global row when it changed after `since`, and a room row when it changed after `since`
 or when the room is new to the connection (`initial_room_ids`: built with `is_initial`, so not in `conn.rooms_seen`): such a
-room has been sent nothing, so all of its room account data goes down (ADR-0493). MSC4186 is not in v1.19; the reading is in
+room has been sent nothing, so all of its room account data goes down (ADR-0493). Neither v1.19 nor MSC4186 states this rule; it is this server's reading, set out in
 that ADR. A room in the response is found through a hash set of `response_room_ids`, never a scan per row.
 
 A room's timeline is built newest first and stops at `timeline_limit + 1` events (ADR-0494); a filter added to that walk is a

@@ -157,3 +157,10 @@ rows, show them read-only, and keep a hash index over them. Look up with `event_
 (`find_missing_event_references`, also what ingestion backfills by). `upsert_deferred_pdu` and `remove_deferred_pdu` keep it
 current; hydration calls `rebuild_deferred_pdu_awaits`. Find the rows waiting for an event with
 `take_deferred_pdus_awaiting`; never search `pdu_json` for an ID.
+
+## A room's newest `origin_server_ts` (ADR-0497)
+
+`EventTable::room_latest_origin_server_ts(room_id)` is the greatest positive `origin_server_ts` among the room's rows of every
+status (sliding sync's room `timestamp`). `insert` and `insert_all` raise it, `erase_if` and `modify` recompute the affected
+rooms from their rows, `clear` and `extract` empty it, so a writer that bypasses them does not compile. Do not parse a room's
+events to find it.

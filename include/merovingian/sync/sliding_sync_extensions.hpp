@@ -32,7 +32,8 @@ namespace merovingian::sync
 //                            ignored user are withheld from the receipts/typing extensions.
 // `initial_room_ids`      — the rooms of `response_room_ids` this connection has not been sent before.
 //                            The account_data extension sends all of such a room's account data,
-//                            whatever its age against `since_sync_stream_id` (MSC4186).
+//                            whatever its age against `since_sync_stream_id`. No text
+//                            states this rule (not v1.19, not MSC4186); it is this server's reading (ADR-0493).
 //
 // `store` is mutable because the to_device extension drains delivered messages via
 // drain_to_device_messages, which removes them from the in-memory queue.

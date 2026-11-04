@@ -56,11 +56,6 @@ namespace
         return std::get_if<std::string>(&v.storage());
     }
 
-    [[nodiscard]] auto as_int(canonicaljson::Value const& v) noexcept -> std::int64_t const*
-    {
-        return std::get_if<std::int64_t>(&v.storage());
-    }
-
     // Convert a stored persistent event's signed wire JSON into the
     // client-facing event shape by injecting the "event_id" field. Room
     // event formats do not carry event_id on the wire (it is derived from a
@@ -440,38 +435,12 @@ namespace
         return heroes;
     }
 
-    // Latest origin_server_ts in the room's timeline.
+    // Latest origin_server_ts of any event of the room (every status), kept by the event table as rows come and go,
+    // so this costs one lookup, not a parse of the room's history (ADR-0497).
     [[nodiscard]] auto latest_timestamp(database::PersistentStore const& store, std::string_view room_id) noexcept
         -> std::uint64_t
     {
-        auto ts = std::uint64_t{0U};
-        for (auto const& ev : store.events.room_in_stream_order(room_id))
-        {
-            auto const parsed = canonicaljson::parse_lossless(ev.json);
-            if (parsed.error != canonicaljson::ParseError::none)
-            {
-                continue;
-            }
-            auto const* root = as_object(parsed.value);
-            if (root == nullptr)
-            {
-                continue;
-            }
-            auto const* ots_val = find_member(*root, "origin_server_ts");
-            if (ots_val == nullptr)
-            {
-                continue;
-            }
-            if (auto const* n = as_int(*ots_val); n != nullptr && *n > 0)
-            {
-                auto const uts = static_cast<std::uint64_t>(*n);
-                if (uts > ts)
-                {
-                    ts = uts;
-                }
-            }
-        }
-        return ts;
+        return static_cast<std::uint64_t>(store.events.room_latest_origin_server_ts(room_id));
     }
 
 } // namespace
@@ -749,7 +718,7 @@ auto build_room_response(homeserver::HomeserverRuntime const& rt, std::string_vi
     // The row behind each timeline entry, in the same order, for the bundled aggregations below.
     auto timeline_rows = std::vector<std::reference_wrapper<database::PersistentEvent const>>{};
     // Newest first, and only until the window and one more event that proves it is limited are held: the events
-    // older than that are never built (ADR-0493). The kept window is the newest `limit` events that pass, as when
+    // older than that are never built (ADR-0494). The kept window is the newest `limit` events that pass, as when
     // every event of the room was built and the oldest dropped.
     auto const limit = static_cast<std::size_t>(sub.timeline_limit);
     for (auto const& ev : store.events.room_in_stream_order(room_id) | std::views::reverse)
@@ -773,7 +742,9 @@ auto build_room_response(homeserver::HomeserverRuntime const& rt, std::string_vi
         }
         if (timeline_has_floor && ev.stream_ordering <= room_since_event_ordering)
         {
-            continue;
+            // The walk is newest first and `room_in_stream_order` is ascending in stream_ordering, so every row that
+            // follows is at or below the floor too: an incremental build of a room with nothing new ends here.
+            break;
         }
         // m.room.history_visibility (CSAZ-3): an event the user may not see is not part of
         // their timeline, however recently the room was synced.

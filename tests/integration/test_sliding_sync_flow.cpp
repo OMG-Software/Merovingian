@@ -2735,10 +2735,10 @@ SCENARIO("MSC4186 sliding sync delivers an m.tag order in the HTTP response",
     }
 }
 
-// MSC4186 (not part of Matrix v1.19; this server's reading of it is in src/sync/AGENTS.md): the
-// account_data extension sends a room's account data for the rooms in the response, and a room that
-// enters the response for the first time on a connection has not been sent anything yet, so all of its
-// account data goes down whatever its age against the request's `pos`. A room the connection has already
+// No spec text states this rule (Matrix v1.19 has no sliding sync, and MSC4186 defines no account_data extension): it
+// is this server's reading (ADR-0493). The account_data extension sends a room's account data for the rooms in the
+// response, and a room that enters the response for the first time on a connection has not been sent anything yet, so
+// all of its account data goes down whatever its age against the request's `pos`. A room the connection has already
 // been sent gets only what changed since.
 SCENARIO("MSC4186 sliding sync sends a newly listed room all of its account data", "[sliding-sync][account-data][s2]")
 {
@@ -2847,6 +2847,163 @@ SCENARIO("MSC4186 sliding sync member counts and heroes follow joins and leaves"
             THEN("the shared room counts one joined and shows no hero")
             {
                 REQUIRE(counts_of(shared_room) == std::pair{std::int64_t{1}, std::size_t{0U}});
+            }
+        }
+    }
+}
+
+namespace
+{
+
+// PUT one m.room.message with its own transaction ID; returns the status.
+[[nodiscard]] auto put_message(merovingian::homeserver::ClientServerRuntime& rt, std::string const& token,
+                               std::string const& room_id, std::string const& transaction, std::string const& body)
+    -> unsigned
+{
+    return merovingian::homeserver::handle_client_server_request(
+               rt, {"PUT", "/_matrix/client/v3/rooms/" + room_id + "/send/m.room.message/" + transaction, token,
+                    R"({"msgtype":"m.text","body":")" + body + "\"}"})
+        .response.status;
+}
+
+// The `body` of each timeline event of `room_id` in a sliding sync response, in order.
+[[nodiscard]] auto timeline_bodies(std::string const& response_body, std::string const& room_id)
+    -> std::vector<std::string>
+{
+    auto bodies = std::vector<std::string>{};
+    auto const rooms = rooms_object(response_body);
+    auto const* room = object_member_as_object(rooms, room_id);
+    if (room == nullptr)
+        return bodies;
+    auto const* timeline = object_member_as_array(*room, "timeline");
+    if (timeline == nullptr)
+        return bodies;
+    for (auto const& event : *timeline)
+    {
+        auto const* object = std::get_if<merovingian::canonicaljson::Object>(&event.storage());
+        auto const* content = object == nullptr ? nullptr : object_member_as_object(*object, "content");
+        auto const* text = content == nullptr ? nullptr : string_member(*content, "body");
+        if (text != nullptr)
+            bodies.push_back(*text);
+    }
+    return bodies;
+}
+
+} // namespace
+
+// P11 pin (ADR-0494): an incremental build of a room walks newest first and stops at the delta floor. It must return
+// exactly the events above the floor, in order, and nothing when there are none.
+SCENARIO("MSC4186 sliding sync returns exactly the events above the floor", "[sliding-sync][timeline][p11]")
+{
+    GIVEN("a room with three messages already sent on the connection")
+    {
+        auto const config = sliding_sync_config();
+        auto started = merovingian::homeserver::start_client_server(config);
+        REQUIRE(started.started);
+        auto& rt = started.runtime;
+        auto const token = register_and_login(rt, "alice", "CorrectHorse7!", "ALICE");
+        auto const room_id = create_room(rt, token);
+        for (auto const* text : {"m1", "m2", "m3"})
+        {
+            REQUIRE(put_message(rt, token, room_id, text, text) == 200U);
+        }
+        auto const body = std::string{
+            R"({"conn_id":"inc","lists":{"all":{"ranges":[[0,9]],"required_state":[],"timeline_limit":10}}})"};
+        auto const first = sliding_sync(rt, token, body);
+        REQUIRE(first.response.status == 200U);
+        REQUIRE(timeline_bodies(first.response.body, room_id) == std::vector<std::string>{"m1", "m2", "m3"});
+
+        WHEN("two more are sent and the connection polls again")
+        {
+            REQUIRE(put_message(rt, token, room_id, "m4", "m4") == 200U);
+            REQUIRE(put_message(rt, token, room_id, "m5", "m5") == 200U);
+            auto const second = sliding_sync(rt, token, body, sliding_sync_pos(first.response.body));
+            REQUIRE(second.response.status == 200U);
+
+            THEN("the timeline is exactly the two new events, oldest first")
+            {
+                REQUIRE(timeline_bodies(second.response.body, room_id) == std::vector<std::string>{"m4", "m5"});
+            }
+        }
+
+        WHEN("nothing is sent and the connection polls again")
+        {
+            auto const second = sliding_sync(rt, token, body, sliding_sync_pos(first.response.body));
+            REQUIRE(second.response.status == 200U);
+
+            THEN("the room has no timeline events")
+            {
+                REQUIRE(timeline_bodies(second.response.body, room_id).empty());
+            }
+        }
+    }
+}
+
+// P9 pin (ADR-0496): membership is read from the hashed roster and rooms from the verified index. A join and a leave
+// made through the API must be seen at once by `/joined_rooms` and by the send gate.
+SCENARIO("A join and a leave are seen by the roster lookups", "[homeserver][rooms][p9]")
+{
+    GIVEN("alice's room with bob invited")
+    {
+        auto const config = sliding_sync_config();
+        auto started = merovingian::homeserver::start_client_server(config);
+        REQUIRE(started.started);
+        auto& rt = started.runtime;
+        auto const alice_token = register_and_login(rt, "alice", "CorrectHorse7!", "ALICE");
+        auto const bob_token = register_and_login(rt, "bob", "CorrectHorse7!", "BOB");
+        auto const room_id = create_room(rt, alice_token);
+        REQUIRE(merovingian::homeserver::handle_client_server_request(
+                    rt, {"POST", "/_matrix/client/v3/rooms/" + room_id + "/invite", alice_token,
+                         R"({"user_id":"@bob:example.org"})"})
+                    .response.status == 200U);
+        auto const bob_joined_rooms = [&]() {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                rt, {"GET", "/_matrix/client/v3/joined_rooms", bob_token, {}});
+            REQUIRE(response.response.status == 200U);
+            auto const parsed = parse_object(response.response.body);
+            auto const* rooms = object_member_as_array(parsed, "joined_rooms");
+            REQUIRE(rooms != nullptr);
+            auto ids = std::vector<std::string>{};
+            for (auto const& value : *rooms)
+            {
+                if (auto const* id = std::get_if<std::string>(&value.storage()); id != nullptr)
+                    ids.push_back(*id);
+            }
+            return ids;
+        };
+
+        WHEN("bob is invited but has not joined")
+        {
+            THEN("he has no joined rooms and cannot send")
+            {
+                REQUIRE(bob_joined_rooms().empty());
+                REQUIRE(put_message(rt, bob_token, room_id, "t0", "x") == 403U);
+            }
+        }
+
+        WHEN("bob joins")
+        {
+            REQUIRE(merovingian::homeserver::handle_client_server_request(
+                        rt, {"POST", "/_matrix/client/v3/rooms/" + room_id + "/join", bob_token, "{}"})
+                        .response.status == 200U);
+
+            THEN("he is listed and can send")
+            {
+                REQUIRE(bob_joined_rooms() == std::vector<std::string>{room_id});
+                REQUIRE(put_message(rt, bob_token, room_id, "t1", "x") == 200U);
+            }
+
+            AND_WHEN("he leaves")
+            {
+                REQUIRE(merovingian::homeserver::handle_client_server_request(
+                            rt, {"POST", "/_matrix/client/v3/rooms/" + room_id + "/leave", bob_token, "{}"})
+                            .response.status == 200U);
+
+                THEN("he is no longer listed and cannot send")
+                {
+                    REQUIRE(bob_joined_rooms().empty());
+                    REQUIRE(put_message(rt, bob_token, room_id, "t2", "x") == 403U);
+                }
             }
         }
     }
