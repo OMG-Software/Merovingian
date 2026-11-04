@@ -669,6 +669,7 @@ shell = find_program('sh')
       'integration/test_worker_policy_authority_flow.cpp',
       'integration/test_policy_server_hook_flow.cpp',
       'integration/test_state_groups_flow.cpp',
+      'integration/test_lazy_load_left_room_flow.cpp',
       'integration/test_sliding_sync_flow.cpp',
       'integration/test_sync_complement_fixture.cpp',
       'integration/test_trust_safety_policy_flow.cpp',
