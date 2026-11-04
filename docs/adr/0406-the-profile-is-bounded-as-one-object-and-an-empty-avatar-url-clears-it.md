@@ -30,7 +30,9 @@ Chosen option: "measure the serialised profile object". The server stores exactl
 `{"avatar_url": ..., "displayname": ...}` with the new value in place of the old one, and a size of 65536 bytes or
 more is `400 M_PROFILE_TOO_LARGE` with nothing stored. Measuring the object is what the spec's "total" means and it
 is what `GET /profile` serves; it also covers a request that is small on its own but pushes the other field over.
-Replacing a value with a smaller one is always allowed.
+Replacing a value with a smaller one is always allowed. A profile whose stored field cannot be serialised (ADR-0182
+keeps such a profile usable) is measured as the raw byte lengths of both fields plus the 34 bytes of the object, so
+that field never makes an unrelated update fail.
 
 A non-MXC `avatar_url` is `400 M_INVALID_PARAM`: the spec's table has no code for it and `M_INVALID_PARAM` is the
 common code for a parameter with the wrong value. The check is `media::mxc_uri_is_valid` (the spec grammar:

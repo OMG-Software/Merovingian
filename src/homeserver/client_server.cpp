@@ -15902,17 +15902,20 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             // 400 M_PROFILE_TOO_LARGE. The profile this server stores is these two fields (it has no
             // `m.tz` or custom fields), so the size is that of the profile object with the new value.
             auto const existing = database::find_profile(store, *user);
-            auto const kept_displayname = existing.has_value() ? existing->displayname : std::string{};
-            auto const kept_avatar_url = existing.has_value() ? existing->avatar_url : std::string{};
+            auto const displayname_after =
+                is_displayname ? std::string{value} : (existing.has_value() ? existing->displayname : std::string{});
+            auto const avatar_url_after =
+                is_avatar_url ? std::string{value} : (existing.has_value() ? existing->avatar_url : std::string{});
             auto const profile_json = json_serialize_checked(json_obj({
-                json_member("avatar_url", json_str(is_avatar_url ? std::string{value} : kept_avatar_url)),
-                json_member("displayname", json_str(is_displayname ? std::string{value} : kept_displayname)),
+                json_member("avatar_url", json_str(avatar_url_after)),
+                json_member("displayname", json_str(displayname_after)),
             }));
-            if (!profile_json.has_value())
-            {
-                return dispatch_err(req, rt, 400U, "M_BAD_JSON", "profile value cannot be serialised");
-            }
-            if (profile_json->size() >= max_profile_bytes)
+            // A stored field the serialiser refuses (ADR-0182 keeps such a profile usable) cannot be measured
+            // as JSON; its raw length plus the object's fixed overhead is then the size counted.
+            auto const profile_bytes = profile_json.has_value()
+                                           ? profile_json->size()
+                                           : displayname_after.size() + avatar_url_after.size() + 34U;
+            if (profile_bytes >= max_profile_bytes)
             {
                 return dispatch_err(req, rt, 400U, "M_PROFILE_TOO_LARGE",
                                     "the profile would exceed its maximum allowed size of 64 KiB");
