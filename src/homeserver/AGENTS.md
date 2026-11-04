@@ -527,6 +527,7 @@ client, sender or remote server controls, and per-user rows that requests scan m
 - `POST /room_keys/version` takes its number from `database::create_key_backup_version` (never from a scan of the
   versions held), and `DELETE /room_keys/version/{version}` deletes the version's sessions in the same transaction
   (ADR-0384).
+- `POST /keys/upload` judges its whole body (device keys, then every one-time and fallback key's signature) before it stores or announces anything: a refused request leaves no key and no device-list change. A new check goes in the judging part, never after a write.
 - `POST /keys/upload` checks the shape and size of every one-time and fallback key before storing anything
   (`uploaded_key_shape_refusal`, 400 `M_BAD_JSON`), and `device_keys`, each cross-signing key and each signed key of
   a signature upload are at most `max_uploaded_key_document_bytes` (400 `M_TOO_LARGE`, ADR-0338). A new key upload

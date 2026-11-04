@@ -818,7 +818,7 @@ namespace
     // identical, so it lives here once rather than being duplicated.
     // NOLINTBEGIN(bugprone-easily-swappable-parameters)
     [[nodiscard]] auto complete_login(HomeserverRuntime& runtime, LocalUser& user, std::string_view device_id,
-                                      bool with_ttl) -> OperationResult
+                                      bool with_ttl, std::string_view display_name) -> OperationResult
     {
         if (!auth::device_id_is_valid(device_id))
         {
@@ -913,7 +913,7 @@ namespace
         auto device = std::optional<database::PersistentDevice>{};
         if (!device_exists)
         {
-            device = database::PersistentDevice{user.user_id, std::string{device_id}, std::string{device_id}};
+            device = database::PersistentDevice{user.user_id, std::string{device_id}, std::string{display_name}};
         }
         // Only honour the configured TTL when the client opted into refresh tokens.
         // Spec §5.6.2: servers SHOULD NOT expire tokens without co-issuing a refresh token.
@@ -1150,7 +1150,8 @@ auto register_appservice_user(HomeserverRuntime& runtime, std::string_view local
 
 // NOLINTBEGIN(bugprone-easily-swappable-parameters)
 auto login_local_user(HomeserverRuntime& runtime, std::string_view user_id, std::string_view password,
-                      std::string_view device_id, bool with_ttl, std::string_view client_source) -> OperationResult
+                      std::string_view device_id, bool with_ttl, std::string_view client_source,
+                      std::string_view display_name) -> OperationResult
 {
     log_diagnostic("login.started",
                    {
@@ -1246,7 +1247,7 @@ auto login_local_user(HomeserverRuntime& runtime, std::string_view user_id, std:
     // legitimate login attempt cannot accumulate toward a lockout. The
     // per-account ceiling is deliberately left alone.
     clear_failed_logins(runtime, user->user_id, client_source);
-    return login_local_user_by_id(runtime, user->user_id, device_id, with_ttl);
+    return login_local_user_by_id(runtime, user->user_id, device_id, with_ttl, display_name);
 }
 // NOLINTEND(bugprone-easily-swappable-parameters)
 
@@ -1261,7 +1262,7 @@ auto login_local_user(HomeserverRuntime& runtime, std::string_view user_id, std:
 // answers "should this account be allowed a new session, and if so, issue
 // one."
 auto login_local_user_by_id(HomeserverRuntime& runtime, std::string_view user_id, std::string_view device_id,
-                            bool with_ttl) -> OperationResult
+                            bool with_ttl, std::string_view display_name) -> OperationResult
 {
     auto* user = find_user(runtime.database, user_id);
     if (user == nullptr)
@@ -1366,7 +1367,7 @@ auto login_local_user_by_id(HomeserverRuntime& runtime, std::string_view user_id
     auto device = std::optional<database::PersistentDevice>{};
     if (!device_exists)
     {
-        device = database::PersistentDevice{user->user_id, std::string{device_id}, std::string{device_id}};
+        device = database::PersistentDevice{user->user_id, std::string{device_id}, std::string{display_name}};
     }
     // Only honour the configured TTL when the client opted into refresh tokens.
     // Spec §5.6.2: servers SHOULD NOT expire tokens without co-issuing a refresh token.
@@ -1410,8 +1411,8 @@ auto login_local_user_by_id(HomeserverRuntime& runtime, std::string_view user_id
 // calling this — the same division of responsibility as
 // register_appservice_user below. Locked/suspended accounts are still
 // rejected: masquerading does not bypass account-state moderation.
-auto login_appservice_user(HomeserverRuntime& runtime, std::string_view user_id, std::string_view device_id)
-    -> OperationResult
+auto login_appservice_user(HomeserverRuntime& runtime, std::string_view user_id, std::string_view device_id,
+                           std::string_view display_name) -> OperationResult
 {
     log_diagnostic("login.appservice.started",
                    {
@@ -1432,7 +1433,7 @@ auto login_appservice_user(HomeserverRuntime& runtime, std::string_view user_id,
                              "login.rejected", std::string{user_id}, std::string{device_id}, "403:unknown user");
         return make_operation_result(false, {}, "invalid login", 403U);
     }
-    return complete_login(runtime, *user, device_id, false);
+    return complete_login(runtime, *user, device_id, false, display_name);
 }
 
 auto issue_refresh_token_for_session(HomeserverRuntime& runtime, std::string_view user_id, std::string_view device_id)
