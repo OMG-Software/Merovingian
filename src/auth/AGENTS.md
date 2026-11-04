@@ -31,6 +31,11 @@ UIAA and `/whoami` are implemented in `src/homeserver/client_server.cpp`, not in
 5. **Validate all user IDs** against the identifier grammar before accepting registration.
 6. **Revocation is one-way.** Never restore a revoked token; revoke more narrowly instead
    (e.g. `revoke_tokens_for_user_except_device`). See ADR-0052.
+   A revocation that spans several commits revokes first, verifies against the store, marks the
+   in-memory sessions, and only then performs the step a repeat reports as "already done" (the
+   device-row delete answers 404 when repeated): a failure must leave the call retryable, and a
+   session is marked revoked only after the durable writes succeed (ADR-0407). An account's
+   OpenID tokens are revoked with it (ADR-0408).
 
 7. **Split identifiers on the FIRST `:`.** A user ID's, room ID's or alias's server name is
    everything after the first `:` (`user_id_server_name`, `identifier_server_name`): no localpart

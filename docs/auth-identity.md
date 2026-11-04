@@ -89,6 +89,14 @@ production-gated.
   logout was cosmetic. `logout_all`, device deletion, and password change
   already revoked refresh tokens; single-device logout was the one path that
   did not.
+  **Device deletion and single-device logout are retryable (F-67, ADR-0407).**
+  `delete_local_device` revokes the device's access and refresh tokens,
+  verifies that against the store, marks the sessions revoked, answers 404 if
+  there was no device row, and only then deletes the row (500 if that fails).
+  A failure leaves the device present, a retry converges, and a repeat for a
+  device that is already gone still revokes any token an earlier failure
+  stranded. `logout_local_user` marks the session revoked only after its
+  persists succeed.
   **Password change with `logout_devices: true` revokes every other device
   directly, rather than revoking everything and restoring one (fixed
   0.12.7).** The prior sequence — revoke every token for the user, then
@@ -151,7 +159,9 @@ production-gated.
   `sender_localpart` user by default, or as the user named by `?user_id=`
   when that user falls within one of the appservice's `users` namespaces
   (`403` otherwise); `?device_id=` must name a device already known to
-  belong to the asserted user (`400 M_UNKNOWN_DEVICE` otherwise). This
+  belong to the asserted user (`400 M_UNKNOWN_DEVICE` otherwise; the device
+  list is read under `runtime.mutex`, which this prologue takes for that read
+  alone, F-66). This
   masquerade is resolved exactly once, at the top of
   `handle_client_server_request_impl`, by substituting `req.access_token`
   with an internal token (`appservice::encode_masquerade_token`,
@@ -491,6 +501,13 @@ so it has its own, deliberately separate, lifecycle:
 - **Retention.** `store_openid_token` sweeps every already-expired row
   (across all users) on each insert, so `openid_tokens` cannot grow without
   bound — see `docs/database-persistence.md`.
+- **Revocation (F-77, ADR-0408).** `database::revoke_openid_tokens_for_user`
+  deletes a user's rows from the table and the in-memory list.
+  `deactivate_local_user`, `logout_all_local_user` and
+  `change_local_user_password` with `logout_devices` call it and answer 500 if
+  it fails. `federation_openid_userinfo` also returns nothing for a user that
+  is missing or deactivated. Single-device logout and device deletion leave
+  OpenID tokens alone: a token is not tied to a device.
 
 See `docs/threat-model.md` ("OpenID token confusion") for the
 privilege-escalation risk this separation exists to prevent.
