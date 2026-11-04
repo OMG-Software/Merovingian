@@ -6002,11 +6002,32 @@ namespace
         }
         if (request.since_ordering.has_value() && selector.has_value() && window_begin != matched.end())
         {
-            // ADR-0450: the lazy members of an incremental left room, besides the leave itself.
+            // ADR-0450: the lazy members of an incremental left room, besides the leave itself. A limited timeline also
+            // owes the member changes of the gap, so it reads whole state. The user reads the room only as of the event
+            // that ended their join, however late the timeline's first event is: a ban after the leave must not show
+            // who joined since.
+            auto const as_of = request.access.kind == sync::RoomReadKind::as_of;
+            auto const limited_members = [&]() -> canonicaljson::Array {
+                if (as_of && (*window_begin)->stream_ordering > request.access.boundary_ordering)
+                {
+                    if (auto const ids =
+                            sync::room_state_event_ids(store, request.room_id, request.access, std::nullopt);
+                        ids.has_value())
+                    {
+                        return build_state_events_array_for_ids(store, filter.room.state, *ids, lazy_ref);
+                    }
+                }
+                else if (auto at_start = build_state_events_at_timeline_start(store, filter.room.state, request.room_id,
+                                                                              **window_begin, lazy_ref);
+                         at_start.has_value())
+                {
+                    return std::move(*at_start);
+                }
+                auto const position = as_of ? std::min(upper_bound, request.access.boundary_ordering) : upper_bound;
+                return build_state_events_at_position(store, filter.room.state, request.room_id, position, lazy_ref);
+            };
             auto lazy_members =
-                limited ? build_state_events_at_timeline_start(store, filter.room.state, request.room_id,
-                                                               **window_begin, lazy_ref)
-                              .value_or(canonicaljson::Array{})
+                limited ? limited_members()
                         : build_lazy_sender_members(store, filter.room.state, **window_begin, senders, *selector);
             for (auto& member : lazy_members)
             {

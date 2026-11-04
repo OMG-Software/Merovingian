@@ -40,6 +40,14 @@ not carry bob, and the sent set still says he was sent. Bob next speaks in a res
   sends is still recorded: a client may discard a room on leave, so after a rejoin it may no longer hold a member the
   tracker says it does.
 
+A left room's limited timeline owes the member changes of the gap, so it reads whole state, and that read stops at the
+event that ended the user's join (`RoomReadAccess::boundary_ordering`). A user banned after leaving has the ban in the
+timeline, and the state before the ban names people who joined after they left, so a timeline that starts past the
+boundary is answered from the state at the boundary. If the state at the timeline's start cannot be rebuilt, the answer
+is the room's state as of the same limit, never an empty list and never the sender-only `build_lazy_sender_members`,
+which would lose the gap's changes. The joined-room fallback's `sync_position` must not be copied here: it would read
+past the leave.
+
 The first version accepted a `since` "at or past" the stored token. That fails when a client aborts a long-poll and
 retries the same `since` while the first request still runs. Request B begins at S0. Request A (also S0) records Bob at
 R1 and answers a dead connection. B answers at R2 >= R1 with Bob pushed out of its timeline into the gap by `limit`, so B

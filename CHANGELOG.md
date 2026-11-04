@@ -26,6 +26,7 @@ Lazy-loading of room members on `/sync` and `/context`.
 - **`GET /sync` honours `full_state=true` (ADR-0453).** It was parsed and ignored. A joined room's `state` is now the state
   at the start of the timeline whatever `since` says.
 - **A left room's lazy-loaded `state` no longer ends with the user's older join.** When an incremental sync puts the leave in `state` (the timeline filter excludes `m.room.member`) and the user also sent an event in the window, their earlier join was added after the leave, so a client applying `state` in order showed them joined. No own member event is added beside the leave now. The `LruMap` behind the lazy-member tracker erases entries with `erase_at` instead of rebuilding its index on every request.
+- **A left room's lazy-loaded `state` stops at the event that ended the user's join (ADR-0450).** A user banned after leaving, whose limited timeline held only the ban, was told about members who joined after they left. When the state at the timeline's start cannot be rebuilt, the senders and the gap's member changes now come from the state as of that limit instead of being dropped.
 
 ### CI
 
