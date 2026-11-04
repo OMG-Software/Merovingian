@@ -976,6 +976,8 @@ struct PersistentStore final
         , rooms{other.rooms}
         , memberships{other.memberships}
         , invites{other.invites}
+        , membership_room_index{other.membership_room_index}
+        , membership_indexed_rows{other.membership_indexed_rows}
         , events{other.events}
         , redactions{other.redactions}
         , redaction_observer{other.redaction_observer}
@@ -1081,6 +1083,8 @@ struct PersistentStore final
         rooms = other.rooms;
         memberships = other.memberships;
         invites = other.invites;
+        membership_room_index = other.membership_room_index;
+        membership_indexed_rows = other.membership_indexed_rows;
         events = other.events;
         redactions = other.redactions;
         redaction_observer = other.redaction_observer;
@@ -1192,6 +1196,13 @@ struct PersistentStore final
     std::vector<PersistentRoom> rooms{};
     std::vector<PersistentMembership> memberships{};
     std::vector<PersistentInvite> invites{};
+    // Positions in `memberships` of each room's rows (ADR-0437), so a reader of one room's members does not scan
+    // every room's. Maintained by every writer in persistent_store.cpp and rebuilt after hydration and
+    // `reload_room`; only trusted while `membership_indexed_rows == memberships.size()` and each position it
+    // names holds a row of the room, otherwise a reader scans `memberships`. A caller that edits the vector
+    // directly (a test) thereby loses speed, never correctness. A row's room never changes in place.
+    std::unordered_map<std::string, std::vector<std::size_t>> membership_room_index{};
+    std::size_t membership_indexed_rows{0U};
     // The `events` table, indexed by event ID and by stream order (ADR-0215).
     EventTable events{};
     RedactionState redactions{};
@@ -1762,6 +1773,15 @@ auto for_each_room_state_row(PersistentStore const& store, std::string_view room
 // Rebuilds the in-memory state indexes from `state`. Called after SQLite/PostgreSQL hydration,
 // after `reload_room` and after any direct edit of the vector that should be fast again.
 auto rebuild_state_index(PersistentStore& store) -> void;
+
+// Calls `visit` with every row of `memberships` that belongs to `room_id`, in storage order. Walks only that
+// room's rows while the index is in step with `memberships` (ADR-0437). `visit` must not change `memberships`.
+auto for_each_room_membership_row(PersistentStore const& store, std::string_view room_id,
+                                  std::function<void(PersistentMembership const&)> const& visit) -> void;
+
+// Rebuilds the per-room membership index from `memberships`. Called after SQLite/PostgreSQL hydration,
+// after `reload_room`, after a row is erased, and after any direct edit of the vector that should be fast again.
+auto rebuild_membership_index(PersistentStore& store) -> void;
 
 // Rebuilds the in-memory client transaction indexes from `client_txn_ids`. Called after
 // SQLite/PostgreSQL hydration.

@@ -99,6 +99,14 @@ has no order (rows are erased by moving the last into the gap): use `list_notifi
 notifications are written by `store_notifications` and its outbound transactions by `store_federation_transactions`,
 each in one transaction with the mirror changed after the commit. Tests prove cost with `committed_transaction_count`
 and the `*_rows_examined` counters, not time.
+## The membership index (ADR-0437)
+
+`PersistentStore::membership_room_index` holds the positions in `memberships` of each room's rows behind
+`for_each_room_membership_row`. Like the state index it is trusted only while `membership_indexed_rows ==
+memberships.size()` and each position names a row of the room; otherwise a reader scans. Every code path that appends
+to `memberships` calls `note_membership_row_appended` (`store_membership`, `apply_membership_projection`, the room
+creation writer), every one that erases calls `rebuild_membership_index` (`delete_membership`, `apply_room_snapshot`),
+and both hydration paths rebuild it after loading. A row's room never changes in place. A new writer does the same.
 
 ## Backend selection
 

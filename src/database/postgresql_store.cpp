@@ -2338,6 +2338,7 @@ auto open_postgresql_persistent_store(std::string_view conninfo, std::string_vie
     reconstruct_event_relations(store);
     rebuild_state_transition_index(store);
     rebuild_state_index(store);
+    rebuild_membership_index(store);
     rebuild_client_txn_index(store);
     rebuild_account_data_index(store);
     rebuild_notification_index(store);

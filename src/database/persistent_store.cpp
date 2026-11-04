@@ -1610,6 +1610,7 @@ auto apply_room_snapshot(PersistentStore& store, RoomReloadSnapshot snapshot) ->
     }
     // The erase above shifted every later row; a pushed row alone would not repair the indexes.
     rebuild_state_index(store);
+    rebuild_membership_index(store);
     for (auto& event : snapshot.events)
     {
         for (auto const& prev_id : event.prev_event_ids)
@@ -1757,6 +1758,20 @@ namespace
         return true;
     }
 
+    // Adds the row just appended to `memberships` to the per-room index, if the index was in step before it. If it
+    // was not (something edited the vector behind the store's back) it stays out of step, so readers scan, until
+    // the next rebuild.
+    auto note_membership_row_appended(PersistentStore& store) -> void
+    {
+        if (store.memberships.empty() || store.membership_indexed_rows + 1U != store.memberships.size())
+        {
+            return;
+        }
+        auto const position = store.memberships.size() - 1U;
+        store.membership_room_index[store.memberships[position].room_id].push_back(position);
+        store.membership_indexed_rows = store.memberships.size();
+    }
+
     // Mirrors committed projection statements into the in-memory rows.
     auto apply_membership_projection(PersistentStore& store, std::string_view room_id,
                                      MembershipProjection const& projection) -> void
@@ -1768,6 +1783,7 @@ namespace
         {
             store.memberships.push_back(
                 {std::string{room_id}, projection.user_id, projection.membership, projection.stream_ordering});
+            note_membership_row_appended(store);
         }
         else
         {
@@ -1993,6 +2009,7 @@ namespace
                                                {"stream_ordering", std::to_string(membership.stream_ordering), false}
     });
     store.memberships.push_back(std::move(membership));
+    note_membership_row_appended(store);
     return MembershipStoreResult::stored;
 }
 
@@ -2078,6 +2095,8 @@ namespace
         return false;
     }
     store.memberships.erase(it);
+    // The erase shifted every later row.
+    rebuild_membership_index(store);
     log_diagnostic("membership.deleted",
                    {
                        {"room_id", std::string{room_id}, false},
@@ -2250,6 +2269,7 @@ namespace
     });
     store.rooms.push_back(std::move(room));
     store.memberships.push_back(std::move(membership));
+    note_membership_row_appended(store);
     return true;
 }
 
@@ -2386,6 +2406,47 @@ auto for_each_room_state_row(PersistentStore const& store, std::string_view room
         }
     }
     for (auto const& row : store.state)
+    {
+        if (row.room_id == room_id)
+        {
+            visit(row);
+        }
+    }
+}
+
+auto rebuild_membership_index(PersistentStore& store) -> void
+{
+    store.membership_room_index.clear();
+    for (auto position = std::size_t{0U}; position < store.memberships.size(); ++position)
+    {
+        store.membership_room_index[store.memberships[position].room_id].push_back(position);
+    }
+    store.membership_indexed_rows = store.memberships.size();
+}
+
+auto for_each_room_membership_row(PersistentStore const& store, std::string_view room_id,
+                                  std::function<void(PersistentMembership const&)> const& visit) -> void
+{
+    if (store.membership_indexed_rows == store.memberships.size())
+    {
+        auto const entry = store.membership_room_index.find(std::string{room_id});
+        if (entry == store.membership_room_index.end())
+        {
+            return;
+        }
+        auto const names_the_room = [&](std::size_t position) {
+            return position < store.memberships.size() && store.memberships[position].room_id == room_id;
+        };
+        if (std::ranges::all_of(entry->second, names_the_room))
+        {
+            for (auto const position : entry->second)
+            {
+                visit(store.memberships[position]);
+            }
+            return;
+        }
+    }
+    for (auto const& row : store.memberships)
     {
         if (row.room_id == room_id)
         {

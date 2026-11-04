@@ -2549,13 +2549,13 @@ auto sync_audience_of_room(database::PersistentStore const& store, std::string_v
             audience.emplace_back(user);
         }
     };
-    for (auto const& membership : store.memberships)
-    {
-        if (membership.room_id == room_id && (membership.membership == "join" || membership.membership == "invite"))
+    // The room's own rows (ADR-0437), not every room's.
+    database::for_each_room_membership_row(store, room_id, [&add](database::PersistentMembership const& membership) {
+        if (membership.membership == "join" || membership.membership == "invite")
         {
             add(membership.user_id);
         }
-    }
+    });
     for (auto const user : also)
     {
         add(user);
