@@ -228,42 +228,6 @@ auto policy_server_hook_allows(PolicyServerHook const& hook) -> PolicyDecision
     return decision;
 }
 
-auto evaluate_invite_policy(InvitePolicyRequest const& request) -> PolicyDecision
-{
-    auto result = [&]() -> PolicyDecision {
-        if (!matrix_id_is_valid(request.sender_user_id) || !matrix_id_is_valid(request.target_user_id) ||
-            request.room_id.empty())
-        {
-            return deny(PolicySurface::invite,
-                        enforcement_reason("invalid_invite_policy_input", "invite cannot be processed",
-                                           "invite policy input is incomplete"));
-        }
-        if (request.blocked_by_local_policy)
-        {
-            return deny(PolicySurface::invite, enforcement_reason("invite_blocked", "invite blocked by server policy",
-                                                                  "local invite policy blocked the request"));
-        }
-        auto external = policy_server_hook_allows(request.policy_server);
-        if (!external.allowed)
-        {
-            external.surface = PolicySurface::invite;
-            return external;
-        }
-        auto decision = allow(PolicySurface::invite);
-        decision.policy_server_rule_id = external.policy_server_rule_id;
-        return decision;
-    }();
-    log_diagnostic(result.allowed ? "policy.invite.allowed" : "policy.invite.denied",
-                   {
-                       {"sender",  request.sender_user_id,                         false},
-                       {"target",  request.target_user_id,                         false},
-                       {"room_id", request.room_id,                                false},
-                       {"action",  std::string{policy_action_name(result.action)}, false},
-                       {"reason",  result.reason.code,                             false}
-    });
-    return result;
-}
-
 auto evaluate_registration_policy(RegistrationPolicyRequest const& request) -> PolicyDecision
 {
     auto result = [&]() -> PolicyDecision {
@@ -299,38 +263,6 @@ auto evaluate_registration_policy(RegistrationPolicyRequest const& request) -> P
                    {
                        {"user_id", request.requested_user_id,                      false},
                        {"address", request.requester_address,                      false},
-                       {"action",  std::string{policy_action_name(result.action)}, false},
-                       {"reason",  result.reason.code,                             false}
-    });
-    return result;
-}
-
-auto evaluate_account_policy(AccountPolicyRequest const& request) -> PolicyDecision
-{
-    auto result = [&]() -> PolicyDecision {
-        if (!matrix_id_is_valid(request.user_id))
-        {
-            return deny(PolicySurface::account,
-                        enforcement_reason("invalid_account_policy_input", "account cannot be processed",
-                                           "account policy input is incomplete"));
-        }
-        if (request.enforcement.suspended)
-        {
-            return deny(PolicySurface::account,
-                        reason_or_default(request.enforcement.reason, "account_suspended", "account is suspended"),
-                        PolicyAction::suspend_account);
-        }
-        if (request.enforcement.locked)
-        {
-            return deny(PolicySurface::account,
-                        reason_or_default(request.enforcement.reason, "account_locked", "account is locked"),
-                        PolicyAction::lock_account);
-        }
-        return allow(PolicySurface::account);
-    }();
-    log_diagnostic(result.allowed ? "policy.account.allowed" : "policy.account.denied",
-                   {
-                       {"user_id", request.user_id,                                false},
                        {"action",  std::string{policy_action_name(result.action)}, false},
                        {"reason",  result.reason.code,                             false}
     });

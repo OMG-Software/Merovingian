@@ -484,8 +484,6 @@ struct FederationResponse final
                                                     FederationKeyRecord const& key) -> FederationDecision;
 [[nodiscard]] auto make_federation_runtime_state(RuntimeFederationConfig config) -> FederationRuntimeState;
 auto upsert_remote(FederationRuntimeState& runtime, FederationRemoteRuntime remote) -> void;
-[[nodiscard]] auto federation_remote_is_known(FederationRuntimeState const& runtime, std::string_view server_name)
-    -> bool;
 // Why the operator's policy refuses what `server_name` wrote, empty when it does not (ADR-0390): denied_servers,
 // the default_policy=deny allow list and the admin's rules, whichever server carried the event here. This server
 // is never refused its own events, and an empty name is left to the check that rejects a malformed sender. May take

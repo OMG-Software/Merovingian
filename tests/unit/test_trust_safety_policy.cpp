@@ -94,17 +94,10 @@ SCENARIO("Policy server hooks apply explicit remote moderation decisions", "[tru
     }
 }
 
-SCENARIO("Invite and registration policies block local denials and malformed input", "[trust-safety][policy]")
+SCENARIO("Registration policy blocks local denials and malformed input", "[trust-safety][policy]")
 {
-    GIVEN("invite and registration requests")
+    GIVEN("registration requests")
     {
-        auto invite = merovingian::trust_safety::InvitePolicyRequest{};
-        invite.sender_user_id = "@alice:example.org";
-        invite.target_user_id = "@bob:example.org";
-        invite.room_id = "!room:example.org";
-        auto blocked_invite = invite;
-        blocked_invite.blocked_by_local_policy = true;
-
         auto registration = merovingian::trust_safety::RegistrationPolicyRequest{};
         registration.requested_user_id = "@carol:example.org";
         registration.requester_address = "203.0.113.10";
@@ -114,17 +107,12 @@ SCENARIO("Invite and registration policies block local denials and malformed inp
 
         WHEN("policy is evaluated")
         {
-            auto const invite_allowed = merovingian::trust_safety::evaluate_invite_policy(invite);
-            auto const invite_blocked = merovingian::trust_safety::evaluate_invite_policy(blocked_invite);
             auto const registration_allowed = merovingian::trust_safety::evaluate_registration_policy(registration);
             auto const registration_blocked =
                 merovingian::trust_safety::evaluate_registration_policy(disabled_registration);
 
             THEN("safe inputs pass and blocked inputs fail closed")
             {
-                REQUIRE(invite_allowed.allowed);
-                REQUIRE_FALSE(invite_blocked.allowed);
-                REQUIRE(invite_blocked.reason.code == "invite_blocked");
                 REQUIRE(registration_allowed.allowed);
                 REQUIRE_FALSE(registration_blocked.allowed);
                 REQUIRE(registration_blocked.reason.code == "registration_disabled");
@@ -133,7 +121,7 @@ SCENARIO("Invite and registration policies block local denials and malformed inp
     }
 }
 
-SCENARIO("Account suspension and locking integrate with account enforcement records", "[trust-safety][account]")
+SCENARIO("Account enforcement records can be persisted through prepared statements", "[trust-safety][account]")
 {
     GIVEN("account enforcement records")
     {
@@ -143,24 +131,13 @@ SCENARIO("Account suspension and locking integrate with account enforcement reco
         suspended.user_id = "@alice:example.org";
         suspended.suspended = true;
         suspended.reason = reason;
-        auto locked = suspended;
-        locked.suspended = false;
-        locked.locked = true;
 
-        WHEN("account policy and statements are generated")
+        WHEN("statements are generated")
         {
-            auto const suspended_decision =
-                merovingian::trust_safety::evaluate_account_policy({"@alice:example.org", suspended});
-            auto const locked_decision =
-                merovingian::trust_safety::evaluate_account_policy({"@alice:example.org", locked});
             auto const statements = merovingian::trust_safety::account_enforcement_statements(suspended);
 
-            THEN("account state fails closed and can be persisted through prepared statements")
+            THEN("the record can be persisted through a valid prepared statement")
             {
-                REQUIRE_FALSE(suspended_decision.allowed);
-                REQUIRE(suspended_decision.action == merovingian::trust_safety::PolicyAction::suspend_account);
-                REQUIRE_FALSE(locked_decision.allowed);
-                REQUIRE(locked_decision.action == merovingian::trust_safety::PolicyAction::lock_account);
                 REQUIRE(statements.size() == 1U);
                 REQUIRE(statements.front().name == "trust_safety_update_account_enforcement");
                 REQUIRE(merovingian::database::prepared_statement_is_valid(statements.front()).valid);

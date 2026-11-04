@@ -78,15 +78,6 @@ struct AccountEnforcementRecord final
     EnforcementReason reason{};
 };
 
-struct InvitePolicyRequest final
-{
-    std::string sender_user_id{};
-    std::string target_user_id{};
-    std::string room_id{};
-    bool blocked_by_local_policy{false};
-    PolicyServerHook policy_server{};
-};
-
 struct RegistrationPolicyRequest final
 {
     std::string requested_user_id{};
@@ -94,12 +85,6 @@ struct RegistrationPolicyRequest final
     bool registrations_enabled{false};
     bool blocked_by_local_policy{false};
     PolicyServerHook policy_server{};
-};
-
-struct AccountPolicyRequest final
-{
-    std::string user_id{};
-    AccountEnforcementRecord enforcement{};
 };
 
 struct FederationPolicyRequest final
@@ -175,9 +160,7 @@ struct SafetyAuditEvent final
 [[nodiscard]] auto enforcement_reason(std::string_view code, std::string_view public_summary,
                                       std::string_view admin_detail) -> EnforcementReason;
 [[nodiscard]] auto policy_server_hook_allows(PolicyServerHook const& hook) -> PolicyDecision;
-[[nodiscard]] auto evaluate_invite_policy(InvitePolicyRequest const& request) -> PolicyDecision;
 [[nodiscard]] auto evaluate_registration_policy(RegistrationPolicyRequest const& request) -> PolicyDecision;
-[[nodiscard]] auto evaluate_account_policy(AccountPolicyRequest const& request) -> PolicyDecision;
 [[nodiscard]] auto evaluate_federation_policy(FederationPolicyRequest const& request) -> PolicyDecision;
 [[nodiscard]] auto evaluate_media_policy(MediaPolicyRequest const& request) -> PolicyDecision;
 [[nodiscard]] auto evaluate_room_policy(RoomPolicyRequest const& request) -> PolicyDecision;

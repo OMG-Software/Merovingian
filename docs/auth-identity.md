@@ -141,10 +141,11 @@ production-gated.
   mode and owner; an insecure or missing file cannot reuse a cache entry.
   Every returned copy has its own locked allocation. Allocation failure
   returns no keys rather than throwing through credential issuance.
-- `redacted_token_for_log()` (issue #437) discloses only a coarse size bucket
-  (`tiny`/`short`/`medium`/`long`), never the exact byte length — the precise
-  length was a minor side channel that let an observer of logs distinguish
-  token versions and valid- from invalid-length presented tokens.
+- Tokens are never logged, not even in part: the logger renders a field flagged
+  sensitive (or matched by `log_field_is_sensitive`) as `<redacted>`, so no
+  length, prefix or size class of a token reaches a log. The former
+  `redacted_token_for_log()` helper, which disclosed a coarse size bucket
+  (issue #437), had no caller and was removed.
 - Client-server auth/device/key actions append durable audit rows without
   logging plaintext credentials, bearer tokens, or key payloads.
 - `GET /_matrix/client/v1/auth_metadata` (MSC2965 OIDC discovery) returns RFC 8414 / Matrix v1.19 authorisation server metadata when `server.oidc.*` is configured; returns `404 M_UNRECOGNIZED` when OIDC is not configured. No OAuth 2.0 authorization-code / token / revocation flow is implemented yet.

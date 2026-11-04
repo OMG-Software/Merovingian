@@ -5,7 +5,10 @@ This capability note describes runtime-wired trust-and-safety behavior.
 ## Included now
 
 - Registration policy checks in the runtime registration path.
-- Account lock/suspension policy checks in the runtime login path.
+- Account lock/suspension enforcement: the request-path gate in `client_server.cpp` (`M_USER_LOCKED` on all but
+  logout, `M_USER_SUSPENDED` outside the spec's allowlist) and the lock check in `/refresh` (`auth_service.cpp`). The
+  engine's `evaluate_account_policy` and `evaluate_invite_policy` had no caller and were removed; there is no
+  invite-scope policy.
 - Room policy checks in the runtime room creation path.
 - Media policy checks in the runtime client and federation download paths and
   persisted moderation rules in the admin workflow. Federation's production

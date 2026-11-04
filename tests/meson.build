@@ -203,7 +203,6 @@ shell = find_program('sh')
       'unit/test_appservice_masquerade_token.cpp',
       'unit/test_appservice_registration.cpp',
       'unit/test_auth.cpp',
-      'unit/test_auth_client_server_api.cpp',
       'unit/test_auth_oidc_discovery.cpp',
       'unit/test_auth_session.cpp',
       'unit/test_audit_filter.cpp',

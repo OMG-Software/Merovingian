@@ -72,12 +72,6 @@ struct FederationRouteMatch final
     std::string reason{};
 };
 
-struct FederationEdu final
-{
-    std::string edu_type{};
-    std::string origin{};
-    bool ephemeral{true};
-};
 
 [[nodiscard]] auto federation_endpoint_name(FederationEndpoint endpoint) noexcept -> char const*;
 // True when handling this endpoint can block a federation worker thread on a
@@ -100,7 +94,6 @@ struct FederationEdu final
     FederationTransaction const& transaction, std::size_t max_transaction_bytes,
     std::uint32_t max_transaction_pdus = max_federation_transaction_pdus,
     std::uint32_t max_transaction_edus = max_federation_transaction_edus) -> FederationTransactionDecision;
-[[nodiscard]] auto edu_is_allowed(FederationEdu const& edu) -> FederationTransactionDecision;
 [[nodiscard]] auto federation_route_audit_event(FederationRoute const& route, std::string_view origin) -> std::string;
 
 } // namespace merovingian::federation

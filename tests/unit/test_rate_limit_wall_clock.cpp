@@ -257,8 +257,7 @@ SCENARIO("Wall-clock rate limiter: default /register cap is 20/60s, not the lega
 // allowed=true whenever both the per-IP and per-user policies resolved to
 // nullopt (e.g. an operator-configured default_per_ip with
 // window_seconds > 3600, which rate_limit_policy_is_valid() rejects). A
-// security-first homeserver must fail closed on an unusable policy, matching
-// the standalone request_is_rate_limited() helper.
+// security-first homeserver must fail closed on an unusable policy.
 SCENARIO("Wall-clock rate limiter: an unresolvable policy fails closed, not open",
          "[homeserver][client-server][rate-limit][wall-clock][security]")
 {
