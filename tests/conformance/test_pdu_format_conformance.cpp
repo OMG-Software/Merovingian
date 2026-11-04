@@ -446,11 +446,14 @@ SCENARIO("A PDU whose depth is missing, negative or not an integer is refused", 
                     CAPTURE(label);
                     // Spec MUST: depth is required and an integer.
                     REQUIRE_FALSE(merovingian::federation::parse_inbound_pdu_envelope(json, "11").has_value());
+                    // A number past 2^53 - 1 may not parse as Canonical JSON at all, which refuses it earlier still.
                     auto const parsed = merovingian::canonicaljson::parse_lossless(json);
-                    REQUIRE(parsed.error == merovingian::canonicaljson::ParseError::none);
-                    auto const* policy = merovingian::rooms::find_room_version_policy("11");
-                    REQUIRE(policy != nullptr);
-                    REQUIRE_FALSE(merovingian::federation::pdu_format_violation(parsed.value, *policy).empty());
+                    if (parsed.error == merovingian::canonicaljson::ParseError::none)
+                    {
+                        auto const* policy = merovingian::rooms::find_room_version_policy("11");
+                        REQUIRE(policy != nullptr);
+                        REQUIRE_FALSE(merovingian::federation::pdu_format_violation(parsed.value, *policy).empty());
+                    }
                 }
             }
         }

@@ -1610,16 +1610,14 @@ auto authorize_event_against_auth_events(canonicaljson::Value const& event, room
         // only adds bounds on top of it: without it a moderator at state_default
         // could rewrite a room whose events entry reserves the event for admins.
         //
-        // Deliberately stricter than spec rule 9.4, which allows any event when the
-        // room has no previous m.room.power_levels. Our AuthEventMap is built from
-        // this server's own resolved state rather than from the event's declared
-        // auth_events, so "no previous power_levels" can also mean "we have not
-        // got that state yet" — under which a blanket allow would be a fail-open.
-        // Requiring the default state_default (50) instead keeps the room-creation
-        // bootstrap working (the creator resolves to 100, or infinite under v12)
-        // while denying an ordinary joined member. This is pre-existing behaviour,
-        // retained knowingly; it can only reject where the spec would allow, never
-        // the reverse. See docs/event-engine.md.
+        // With no previous m.room.power_levels event the required level is the default `state_default` of 50
+        // (client-server API, m.room.power_levels: "If there is no `state_default` in the `m.room.power_levels` event,
+        // or there is no `m.room.power_levels` event, the `state_default` is 50"), and the sender's level is the
+        // creator's 100 (infinite from room version 12) or the default 0. So the spec's own rule 7/8 already leaves the
+        // first power-levels event to the creator; rule 9.4 ("If there is no previous m.room.power_levels event in the
+        // room, allow") only lifts the bounds on WHAT that first event sets, and is reached after this check. This is
+        // not stricter than the spec. The auth map is built from the event's declared auth_events on the federation
+        // paths, so a missing event there is the sender's claim, which the spec judges the same way.
         auto const required_power_level = [&]() -> std::int64_t {
             if (!value_has_content(auth_events.power_levels))
             {
