@@ -633,6 +633,7 @@ shell = find_program('sh')
       'integration/test_media_thumbnail_revalidation_flow.cpp',
       'integration/test_security_audit_remote_media.cpp',
       'integration/test_observability_flow.cpp',
+      'integration/test_operator_admin_flow.cpp',
       'integration/test_pdu_ingestion_backfill_flow.cpp',
       'integration/test_persistent_homeserver_flow.cpp',
       'integration/test_database_upgrade_flow.cpp',
