@@ -432,3 +432,4 @@
 * [0445 - Room creation encryption is decided only by room_creation_encryption_policy](0445-room-creation-encryption-is-decided-only-by-the-encryption-policy.md)
 * [0446 - The encryption settings apply to room creation only](0446-the-encryption-settings-apply-to-room-creation-only.md)
 * [0447 - Unknown presets and a non-boolean m.federate fail towards the stricter encryption policy](0447-unknown-presets-and-non-boolean-m-federate-fail-towards-the-stricter-policy.md)
+* [0448 - A client PUT of m.room.encryption must carry the listed algorithm](0448-a-client-put-of-m-room-encryption-must-carry-the-listed-algorithm.md)

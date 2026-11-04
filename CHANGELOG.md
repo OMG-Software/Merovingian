@@ -11,6 +11,10 @@ instruction, and full lazy-loading follows on its own branch.
   with `allow_unencrypted_public_rooms=false`, is now encrypted by default. An `m.room.encryption` entry under a
   non-empty `state_key` no longer cancels the default encryption of a private room. The settings apply to rooms this
   server creates; joins are not refused for a room's encryption.
+- **`PUT /rooms/{roomId}/state/m.room.encryption` refuses a body without a valid `algorithm` (ADR-0448).** `{}`, a
+  non-string `algorithm` or any value but `m.megolm.v1.aes-sha2` is 400 `M_BAD_JSON` and stores nothing, so a member can
+  no longer switch a room's encryption off with an empty body. A sender without the power still gets 403. Events
+  arriving over federation are not checked, so a remote server can still send such an event.
 - **`POST /keys/device_signing/upload` validates and verifies before any write (ADR-0421).** It checks `user_id`, `usage`
   and `keys`, and stores the keys in one transaction. A self-signing or user-signing key must be signed by the
   accompanying master key, or by the held master key if the request has none. A missing or wrong signature is 400
