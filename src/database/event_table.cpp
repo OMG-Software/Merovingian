@@ -582,3 +582,14 @@ auto EventTable::reserve(size_type capacity) -> void
 }
 
 } // namespace merovingian::database
+
+namespace merovingian::database
+{
+
+auto EventTable::room_latest_origin_server_ts(std::string_view room_id) const -> std::int64_t
+{
+    std::ignore = room_id;
+    return 0;
+}
+
+} // namespace merovingian::database

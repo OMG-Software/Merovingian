@@ -150,6 +150,10 @@ public:
         });
     }
 
+    // The greatest `origin_server_ts` among the rows of room `room_id`, of every status, counting only a positive
+    // integer member of the event's own JSON; 0 when the room has none (ADR-0497).
+    [[nodiscard]] auto room_latest_origin_server_ts(std::string_view room_id) const -> std::int64_t;
+
     // The row nearest `ts` in room `room_id`, looking `direction` from it, that `accept` takes:
     // forwards, the first row in (origin_server_ts, depth, stream_ordering) order with
     // origin_server_ts >= ts; backwards, the last with origin_server_ts <= ts (the boundary is
