@@ -21,6 +21,11 @@ namespace merovingian::config
 class Config;
 }
 
+namespace merovingian::email
+{
+struct SmtpSettings;
+}
+
 namespace merovingian::homeserver
 {
 
@@ -41,6 +46,10 @@ inline constexpr auto email_push_idle_delay = std::chrono::minutes{5};
 // Whether this server sends email at all: server.email.smtp_url is set. Without it POST
 // /pushers/set refuses kind "email".
 [[nodiscard]] auto email_push_configured(config::Config const& config) -> bool;
+
+// The relay settings the configured `server.email.*` describes, or nullopt when the relay URL does not parse.
+// Shared with the password-reset email (ADR-0481).
+[[nodiscard]] auto email_smtp_settings(HomeserverRuntime const& runtime) -> std::optional<email::SmtpSettings>;
 
 // The address an email pusher with `pushkey` may send to for `user_id`: the user's own email 3PID
 // that `pushkey` names (compared case-insensitively, as 3PID addresses are stored lower-case), and

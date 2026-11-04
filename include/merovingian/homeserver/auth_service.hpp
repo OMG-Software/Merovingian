@@ -101,6 +101,13 @@ struct AdminAuthResult
 [[nodiscard]] auto change_local_user_password(HomeserverRuntime& runtime, std::string_view access_token,
                                               std::string_view new_password, bool logout_devices = true)
     -> OperationResult;
+// Sets a new password for `user_id` after the account's owner proved they hold an email address bound to it
+// (POST /account/password with m.login.email.identity, ADR-0481). There is no calling device, so with
+// `logout_devices` (the spec default) every access token, refresh token and pusher of the account goes; without it
+// none does. Refuses a weak password (M_WEAK_PASSWORD), an Argon2id budget with no free slot (429) and an account
+// that is no longer active.
+[[nodiscard]] auto reset_local_user_password(HomeserverRuntime& runtime, std::string_view user_id,
+                                             std::string_view new_password, bool logout_devices) -> OperationResult;
 // Result of verifying a password during re-authentication (UIA). `ok` is true
 // only when the password is correct AND the account is not currently locked
 // out. `retry_after_ms` is non-zero when this device's UIA password-failure

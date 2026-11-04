@@ -1023,7 +1023,13 @@ auto validate(Config const& config) -> std::vector<ConfigValidationFinding>
     // A partially populated turn block (e.g. only a username) is rejected
     // because it would advertise a broken relay to clients.
     auto const& turn = config.server().turn;
-    if (!turn.server.empty())
+    if (!turn.shared_secret_file.empty() && (!turn.username.empty() || !turn.password.empty()))
+    {
+        // Two ways to issue credentials would leave it unclear which one clients get (ADR-0480).
+        findings.push_back(
+            {"server.turn.shared_secret_file", "set either shared_secret_file or username and password, not both"});
+    }
+    else if (!turn.server.empty() && turn.shared_secret_file.empty())
     {
         if (turn.username.empty())
         {
@@ -1034,7 +1040,8 @@ auto validate(Config const& config) -> std::vector<ConfigValidationFinding>
             findings.push_back({"server.turn.password", "TURN server configured but password is missing"});
         }
     }
-    else if (!turn.username.empty() || !turn.password.empty())
+    else if (turn.server.empty() &&
+             (!turn.username.empty() || !turn.password.empty() || !turn.shared_secret_file.empty()))
     {
         findings.push_back({"server.turn.server", "TURN credentials supplied but no server URI is configured"});
     }

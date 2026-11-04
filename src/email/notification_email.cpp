@@ -84,7 +84,50 @@ namespace
                two_digits(fields.tm_min) + ":" + two_digits(fields.tm_sec) + " +0000";
     }
 
+    [[nodiscard]] auto is_reset_token(std::string_view token) noexcept -> bool
+    {
+        constexpr auto min_bytes = std::size_t{8U};
+        constexpr auto max_bytes = std::size_t{32U};
+        return token.size() >= min_bytes && token.size() <= max_bytes && std::ranges::all_of(token, [](char byte) {
+                   return (byte >= 'A' && byte <= 'Z') || (byte >= '2' && byte <= '9');
+               });
+    }
+
 } // namespace
+
+auto build_password_reset_email(PasswordResetEmail const& email) -> std::optional<std::string>
+{
+    if (!is_safe_mailbox_address(email.from) || !is_safe_mailbox_address(email.to) ||
+        !is_header_safe_server_name(email.server_name) || !is_lower_hex(email.message_id_token) ||
+        !is_reset_token(email.token))
+    {
+        return std::nullopt;
+    }
+    auto const host = host_of(email.server_name);
+    auto const date = rfc5322_date(email.sent_at);
+    if (host.empty() || date.empty())
+    {
+        return std::nullopt;
+    }
+    auto message = std::string{};
+    message += "From: " + email.from + "\r\n";
+    message += "To: " + email.to + "\r\n";
+    message += "Subject: Password reset on " + email.server_name + "\r\n";
+    message += "Date: " + date + "\r\n";
+    message += "Message-ID: <" + email.message_id_token + "@" + std::string{host} + ">\r\n";
+    message += "MIME-Version: 1.0\r\n";
+    message += "Content-Type: text/plain; charset=us-ascii\r\n";
+    message += "Content-Transfer-Encoding: 7bit\r\n";
+    message += "Auto-Submitted: auto-generated\r\n";
+    message += "\r\n";
+    message += "Your password reset code on " + email.server_name + " is:\r\n";
+    message += "\r\n";
+    message += "    " + email.token + "\r\n";
+    message += "\r\n";
+    message += "Enter it in your Matrix client to continue. If you did not ask to reset a password,\r\n";
+    message += "ignore this email: nothing changes unless the code is entered.\r\n";
+    return message;
+}
 
 auto build_unread_notification_email(UnreadNotificationEmail const& email) -> std::optional<std::string>
 {

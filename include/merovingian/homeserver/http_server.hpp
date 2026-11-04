@@ -191,6 +191,10 @@ private:
 auto serve_http(net::TcpAcceptor& acceptor, HttpConnectionDispatcher& dispatcher, net::ShutdownSignal& shutdown,
                 HttpDispatchMode dispatch_mode) -> void;
 
+// The answer to `GET /_merovingian/health` (ADR-0479): 200 with the fixed body `ok` while the server serves
+// requests, 503 with the fixed body `unavailable` once it has stopped accepting them. Nothing else is ever in it.
+[[nodiscard]] auto health_probe_response(bool serving) -> LocalHttpResponse;
+
 // TLS variant. The handshake runs on a worker, once the ClientHello bytes are
 // readable, bounded by the handshake timeout and counted against the client's
 // share of workers like any request.

@@ -159,6 +159,14 @@ struct SafetyReportRequest final
     std::int32_t score{0};
 };
 
+// A report about a user (CS API `POST /users/{userId}/report`, v1.14).
+struct UserReportRequest final
+{
+    std::string reporter_user_id{};
+    std::string reported_user_id{};
+    std::string reason{};
+};
+
 struct SafetyAuditEvent final
 {
     std::string event_type{};
@@ -188,6 +196,7 @@ struct SafetyAuditEvent final
 [[nodiscard]] auto match_reporting_api_route(std::string_view method, std::string_view target)
     -> ReportingApiRouteMatch;
 [[nodiscard]] auto validate_safety_report(SafetyReportRequest const& request) -> PolicyDecision;
+[[nodiscard]] auto validate_user_report(UserReportRequest const& request) -> PolicyDecision;
 [[nodiscard]] auto make_safety_audit_event(std::string_view actor, std::string_view entity,
                                            PolicyDecision const& decision) -> SafetyAuditEvent;
 [[nodiscard]] auto safety_audit_summary(SafetyAuditEvent const& event) -> std::string;

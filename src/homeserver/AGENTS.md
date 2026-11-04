@@ -38,6 +38,8 @@ This is the largest and most complex module — read this file carefully before 
 | `push_rule_unread_classifier.cpp` | `PushRuleUnreadClassifier`: counts unread events by the user's push rules, from the start of their current join (R15, ADR-0205) |
 | `presence_service.cpp` | Presence (CS API "Presence", SS API `m.presence`): `read_presence` (GET), `apply_sync_presence` (the `/sync` `set_presence` parameter), `build_sync_presence_events` (`presence.events`), `accept_inbound_presence` (the EDU sink's presence case) and `record_presence`, the one place a presence row is stored. `presence.enabled=false` turns every entry point into a no-op. Sending the EDU stays in `client_server.cpp` (`broadcast_presence_edu`), beside the other outbound EDUs |
 | `push_retry.cpp` | `attempt_push_delivery` (every push attempt: circuit breaker, rejected pushkeys, scheduling retries) and `PushRetryJob`, the one thread that sends retries (R14, ADR-0206); a run is bounded by a time budget, takes retries one recipient at a time in turn and sends with a shorter timeout (ADR-0410), and a slow answer counts against the gateway's circuit (ADR-0409) |
+| `password_reset.cpp` | Password reset by email (ADR-0481): `make_password_reset_token` (8 characters, 40 bits), `normalize_password_reset_token`, `send_password_reset_email` (a background task parked in `orphan_futures_`, at most 8 in flight, no lock held while it sends). The endpoints are in `client_server.cpp` before the auth gate; `reset_local_user_password` is in `auth_service.cpp` |
+| `turn_credentials.cpp` | `make_turn_credentials`: the coturn REST API username and password for `GET /voip/turnServer` (ADR-0480) |
 | `email_push.cpp` | Kind `"email"` pushers (ADR-0219, ADR-0220): `owned_email_pusher_address` (the pushkey must be the account's own email 3PID), `remove_email_pushers_for_address`, and `EmailPushJob`, the one thread that sends due digests through `send_due_email_notifications`. It re-reads the pusher, the 3PID, the account and the badge count under `runtime.mutex`, then sends with the mutex released |
 | `runtime_signing_key_store.cpp` | Production `SigningKeyStore` over the persisted server signing-key rows |
 | `federation_proxy.cpp` | Forwards inbound federation requests to the out-of-process federation worker over encrypted IPC; `GET /_matrix/key/v2/server` stays local |
@@ -82,6 +84,28 @@ is `declared_mime|sniffed_mime|scanner_clean|bytes` — the pipe-delimited wrapp
    before authentication). A path the matcher cannot place is answered
    `404 M_UNRECOGNIZED` before authentication (`client_route_is_known`, ADR-0230), so
    a route missing there is unreachable for every caller
+
+## Password reset by email (ADR-0481)
+
+`POST /account/password/email/requestToken`, the submit step and `POST /account/password` with `m.login.email.identity`
+and no access token are answered before the authentication gate. Rules for changing them:
+
+- **Answer every well-formed requestToken alike.** Never `M_THREEPID_NOT_FOUND`, never a different status, body shape or
+  speed for an address with an account. The send is a background task for that reason; do not make it inline.
+- **A session exists for an unknown address too**, with an empty `reset_token`. The submit step compares against a
+  fixed dummy then, so it does the same work and gives the same `M_TOKEN_INCORRECT`.
+- **Constant-time comparison** (`crypto::constant_time_equal_variable_length`) is used for the code and for the
+  `client_secret`. The `sid` is looked up with a plain comparison: it is sent to the client and useless without the
+  secret. A code is wrong five times at most (`password_reset_max_token_attempts`), then the session is dropped.
+- A session is consumed only by a successful reset, never by a refusal such as a weak password.
+- The code is never logged and never put in a response; `scrub_session_credentials` wipes it with the session.
+- The unauthenticated form of `POST /account/password` is served only with no access token and only when
+  `server.email.smtp_url` is set; otherwise the request reaches the authenticated handler and its `M_MISSING_TOKEN`.
+
+## The health probe (ADR-0479)
+
+`GET /_merovingian/health` is answered in `http_server.cpp` before `route_request`, from `ctx.dispatcher->running()`. It
+must never take `runtime.mutex` or any other lock, never read the database and never put anything in the body.
 
 ## Routes match the path, not the target (ADR-0420)
 

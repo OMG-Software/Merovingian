@@ -3,6 +3,7 @@ crypto_sources = files(
   'ed25519.cpp',
   'encoding.cpp',
   'generic_hash.cpp',
+  'hmac_sha1.cpp',
   'ipc_auth_key.cpp',
   'ipc_stream_cipher.cpp',
   'library_versions.cpp',
@@ -20,5 +21,5 @@ crypto_lib = static_library(
   'merovingian-crypto',
   crypto_sources,
   include_directories: inc,
-  dependencies: [libsodium_dep],
+  dependencies: [libsodium_dep, openssl_dep],
 )

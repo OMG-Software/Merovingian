@@ -5471,8 +5471,8 @@ SCENARIO("POST /account/3pid/msisdn/requestToken is unauthenticated and returns 
 
 // --- POST /_matrix/client/v3/account/password/msisdn/requestToken ------------
 // Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#post_matrixclientv3accountpasswordmsisdnrequesttoken
-// IMPLEMENTATION GAP: password reset MSISDN token not yet implemented.
-SCENARIO("POST /account/password/msisdn/requestToken returns 404 M_UNRECOGNIZED (implementation gap)",
+// This server has no SMS, so the medium is not supported (ADR-0481); it was a 404 gap before.
+SCENARIO("POST /account/password/msisdn/requestToken returns 400 M_THREEPID_MEDIUM_NOT_SUPPORTED",
          "[conformance][client-server][account]")
 {
     GIVEN("a running client-server")
@@ -5488,14 +5488,13 @@ SCENARIO("POST /account/password/msisdn/requestToken returns 404 M_UNRECOGNIZED 
                 {"POST", "/_matrix/client/v3/account/password/msisdn/requestToken", token,
                  R"({"client_secret":"s","country":"GB","phone_number":"07700000000","send_attempt":1})"});
 
-            THEN("the server returns 404 M_UNRECOGNIZED until the endpoint is implemented")
+            THEN("the server returns 400 M_THREEPID_MEDIUM_NOT_SUPPORTED")
             {
-                // IMPLEMENTATION GAP: password reset MSISDN token not supported.
-                REQUIRE(response.response.status == 404U);
+                REQUIRE(response.response.status == 400U);
                 auto const body = parse_object(response.response.body);
                 auto const* errcode = string_member(body, "errcode");
                 REQUIRE(errcode != nullptr);
-                REQUIRE(*errcode == "M_UNRECOGNIZED");
+                REQUIRE(*errcode == "M_THREEPID_MEDIUM_NOT_SUPPORTED");
             }
         }
     }
@@ -13314,8 +13313,9 @@ SCENARIO("POST /rooms/{roomId}/report returns 404 M_UNRECOGNIZED (implementation
 
 // --- POST /_matrix/client/v3/users/{userId}/report ---------------------------
 // Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#post_matrixclientv3usersuseridreport
-// IMPLEMENTATION GAP: user reporting not yet implemented.
-SCENARIO("POST /users/{userId}/report returns 404 M_UNRECOGNIZED (implementation gap)",
+// User reporting is implemented (ADR-0482): a local user nobody holds is 404 M_NOT_FOUND (it was M_UNRECOGNIZED,
+// the route being absent).
+SCENARIO("POST /users/{userId}/report returns 404 M_NOT_FOUND for an unknown local user",
          "[conformance][client-server][reporting]")
 {
     GIVEN("a running client-server and a logged-in user")
@@ -13330,14 +13330,14 @@ SCENARIO("POST /users/{userId}/report returns 404 M_UNRECOGNIZED (implementation
                 started.runtime,
                 {"POST", "/_matrix/client/v3/users/%40bob%3Aexample.org/report", token, R"({"reason":"user report"})"});
 
-            THEN("the server returns 404 M_UNRECOGNIZED until the endpoint is implemented")
+            THEN("the server returns 404 M_NOT_FOUND")
             {
-                // IMPLEMENTATION GAP: user reporting not supported.
+                // Spec: "404: The user was not found on the homeserver."
                 REQUIRE(response.response.status == 404U);
                 auto const body = parse_object(response.response.body);
                 auto const* errcode = string_member(body, "errcode");
                 REQUIRE(errcode != nullptr);
-                REQUIRE(*errcode == "M_UNRECOGNIZED");
+                REQUIRE(*errcode == "M_NOT_FOUND");
             }
         }
     }
@@ -13833,6 +13833,8 @@ SCENARIO("POST /rooms/{roomId}/report conformance")
     }
 }
 
+// The endpoint was a gap (404 M_UNRECOGNIZED) until ADR-0482; this scenario now holds the answer for a user that
+// exists. The fuller coverage is test_user_report_conformance.cpp.
 SCENARIO("POST /users/{userId}/report conformance")
 {
     GIVEN("a started homeserver with an authenticated user")
@@ -13847,14 +13849,11 @@ SCENARIO("POST /users/{userId}/report conformance")
                 started.runtime, {"POST", "/_matrix/client/v3/users/%40alice%3Aexample.org/report", token,
                                   R"({"reason":"abusive user"})"});
 
-            THEN("the server returns 404 M_UNRECOGNIZED")
+            THEN("the server returns 200 {} for the existing user")
             {
-                // IMPLEMENTATION GAP: user reporting not implemented
-                REQUIRE(response.response.status == 404);
-                auto const body = parse_object(response.response.body);
-                auto const* err = string_member(body, "errcode");
-                REQUIRE(err != nullptr);
-                REQUIRE(*err == "M_UNRECOGNIZED");
+                // Spec: "200: The user has been reported successfully".
+                REQUIRE(response.response.status == 200);
+                REQUIRE(response.response.body == "{}");
             }
         }
     }

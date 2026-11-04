@@ -57,6 +57,11 @@ struct RegistrationValidationSession final
     // erased as soon as the 3PID is added or bound); never persisted or logged.
     std::string identity_server_base_url{};
     std::string identity_access_token{};
+    // Password reset by email only (ADR-0481): the code this server emailed, empty when none was sent (the address
+    // belongs to no account) or once the session is validated, and the wrong codes tried so far. In memory only,
+    // wiped with the session, never logged.
+    std::string reset_token{};
+    std::uint8_t token_attempts{0U};
 };
 
 // Security audit run-2 F-12 (ADR-0339). The spec bounds a tag's name (255 bytes) and nothing else about

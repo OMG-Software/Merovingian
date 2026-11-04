@@ -402,6 +402,8 @@ SCENARIO("HTTP-3 gives every implemented dynamic client route its own coalesced 
         // ADR-0478: extended profile fields (`m.tz` and custom keys) share one bucket whatever the key.
         {"/_matrix/client/v3/profile/{userId}/{keyName}",                           "/_matrix/client/v3/profile/%40a%3Aexample.org/m.tz",
          "/_matrix/client/v3/profile/%40b%3Aexample.org/org.example.x"                                                                                                                                                                         },
+        {"/_matrix/client/v3/users/{userId}/report",                                "/_matrix/client/v3/users/%40a%3Aexample.org/report",
+         "/_matrix/client/v3/users/%40b%3Aexample.org/report"                                                                                                                                                                                  },
         // ADR-0212: the reserved-ID upload.
         {"/_matrix/media/v3/upload/{server}/{mediaId}",                             "/_matrix/media/v3/upload/example.org/one",
          "/_matrix/media/v3/upload/example.org/two"                                                                                                                                                                                            },

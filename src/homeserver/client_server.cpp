@@ -46,6 +46,7 @@
 #include "merovingian/homeserver/local_http_router.hpp"
 #include "merovingian/homeserver/local_services.hpp"
 #include "merovingian/homeserver/media_service.hpp"
+#include "merovingian/homeserver/password_reset.hpp"
 #include "merovingian/homeserver/presence_service.hpp"
 #include "merovingian/homeserver/push_rule_unread_classifier.hpp"
 #include "merovingian/homeserver/remote_media_fetch_scope.hpp"
@@ -59,6 +60,7 @@
 #include "merovingian/homeserver/state_bookkeeping.hpp"
 #include "merovingian/homeserver/stored_push_rules.hpp"
 #include "merovingian/homeserver/stored_room_version.hpp"
+#include "merovingian/homeserver/turn_credentials.hpp"
 #include "merovingian/homeserver/url_preview_service.hpp"
 #include "merovingian/homeserver/user_directory_search.hpp"
 #include "merovingian/http/rate_limit.hpp"
@@ -68,6 +70,7 @@
 #include "merovingian/observability/bounded_text.hpp"
 #include "merovingian/observability/logger.hpp"
 #include "merovingian/observability/observability.hpp"
+#include "merovingian/platform/file_metadata.hpp"
 #include "merovingian/push/user_push_rules.hpp"
 #include "merovingian/rooms/encryption_policy.hpp"
 #include "merovingian/rooms/room_version_policy.hpp"
@@ -2027,6 +2030,8 @@ namespace
     }
 
     auto constexpr registration_validation_session_ttl_ms = std::uint64_t{15U * 60U * 1000U};
+    // The purpose of a validation session opened by POST /account/password/email/requestToken (ADR-0481).
+    constexpr auto password_reset_purpose = std::string_view{"password-reset"};
 
     [[nodiscard]] auto wall_clock_milliseconds() -> std::uint64_t
     {
@@ -2043,6 +2048,8 @@ namespace
         core::secure_zero(std::as_writable_bytes(
             std::span{session.identity_access_token.data(), session.identity_access_token.size()}));
         session.identity_access_token.clear();
+        core::secure_zero(std::as_writable_bytes(std::span{session.reset_token.data(), session.reset_token.size()}));
+        session.reset_token.clear();
     }
 
     auto prune_registration_validation_sessions(ClientServerRuntime& rt, std::uint64_t now_ms) -> void
@@ -3314,6 +3321,19 @@ namespace
                 return out;
             }
         }
+        auto constexpr users_prefix = std::string_view{"/_matrix/client/v3/users/"};
+        if (starts_with(out, users_prefix))
+        {
+            // /users/{userId}/report (v1.14), one identifier segment.
+            auto const rest = std::string_view{out}.substr(users_prefix.size());
+            auto constexpr report_suffix = std::string_view{"/report"};
+            if (rest.size() > report_suffix.size() && rest.ends_with(report_suffix) &&
+                has_one_segment(rest.substr(0U, rest.size() - report_suffix.size())))
+            {
+                return std::string{users_prefix} + "{userId}/report";
+            }
+            return std::string{unmatched};
+        }
         auto constexpr device_prefix = std::string_view{"/_matrix/client/v3/devices/"};
         if (starts_with(out, device_prefix))
         {
@@ -3811,6 +3831,9 @@ namespace
             "/_matrix/client/v1/auth_metadata",
             "/_matrix/client/v3/account/3pid/email/requestToken",
             "/_matrix/client/v3/account/3pid/msisdn/requestToken",
+            "/_matrix/client/v3/account/password/email/requestToken",
+            "/_matrix/client/v3/account/password/msisdn/requestToken",
+            "/_matrix/client/unstable/org.merovingian/account/password/email/submitToken",
             "/_matrix/client/v3/account/whoami",
             "/_matrix/client/v3/account/password",
             "/_matrix/client/v3/account/deactivate",
@@ -3880,66 +3903,69 @@ namespace
             std::string_view allow;
         };
         static constexpr auto routes = std::to_array<StaticRouteMethods>({
-            {"/_matrix/client/v3/admin/safety/reports",                         "GET, POST"       },
-            {"/_matrix/client/v3/admin/safety/policy_rules",                    "GET, POST, PUT"  },
-            {"/_matrix/client/v3/pushrules/",                                   "GET"             },
-            {"/_matrix/client/v3/pushrules/global/",                            "GET"             },
-            {"/_matrix/client/v3/sync",                                         "GET"             },
-            {"/_matrix/client/v4/sync",                                         "GET, POST"       },
-            {"/_matrix/client/unstable/org.matrix.msc4186/sync",                "GET, POST"       },
-            {"/_matrix/client/unstable/org.matrix.simplified_msc3575/sync",     "GET, POST"       },
-            {"/_matrix/client/v3/publicRooms",                                  "GET, POST"       },
-            {"/_matrix/client/v3/register/available",                           "GET"             },
-            {"/_matrix/client/v1/register/m.login.registration_token/validity", "GET"             },
-            {"/_matrix/client/v3/register/email/requestToken",                  "POST"            },
-            {"/_matrix/client/v3/register/msisdn/requestToken",                 "POST"            },
-            {"/_matrix/client/v3/register",                                     "POST"            },
-            {"/_matrix/client/v3/login",                                        "GET, POST"       },
-            {"/_matrix/client/v3/login/sso/redirect",                           "GET"             },
-            {"/_matrix/client/v3/refresh",                                      "POST"            },
-            {"/_matrix/client/v3/logout",                                       "POST"            },
-            {"/_matrix/client/v3/logout/all",                                   "POST"            },
-            {"/_matrix/client/v1/auth_metadata",                                "GET"             },
-            {"/_matrix/client/v3/account/3pid/email/requestToken",              "POST"            },
-            {"/_matrix/client/v3/account/3pid/msisdn/requestToken",             "POST"            },
-            {"/_matrix/client/v3/account/whoami",                               "GET"             },
-            {"/_matrix/client/v3/account/password",                             "POST"            },
-            {"/_matrix/client/v3/account/deactivate",                           "POST"            },
-            {"/_matrix/client/v3/account/3pid",                                 "GET, POST"       },
-            {"/_matrix/client/v3/account/3pid/add",                             "POST"            },
-            {"/_matrix/client/v3/account/3pid/bind",                            "POST"            },
-            {"/_matrix/client/v3/account/3pid/unbind",                          "POST"            },
-            {"/_matrix/client/v3/account/3pid/delete",                          "POST"            },
-            {"/_matrix/client/v3/pushers",                                      "GET"             },
-            {"/_matrix/client/v3/pushers/set",                                  "POST"            },
-            {"/_matrix/client/v3/notifications",                                "GET"             },
-            {"/_matrix/client/v3/capabilities",                                 "GET"             },
-            {"/_matrix/client/v3/keys/changes",                                 "GET"             },
-            {"/_matrix/client/v3/keys/claim",                                   "POST"            },
-            {"/_matrix/client/v3/keys/device_signing/upload",                   "POST"            },
-            {"/_matrix/client/v3/keys/query",                                   "POST"            },
-            {"/_matrix/client/v3/keys/signatures/upload",                       "POST"            },
-            {"/_matrix/client/v3/keys/upload",                                  "POST"            },
-            {"/_matrix/client/v3/thirdparty/protocols",                         "GET"             },
-            {"/_matrix/client/v3/thirdparty/location",                          "GET"             },
-            {"/_matrix/client/v3/thirdparty/user",                              "GET"             },
-            {"/_matrix/media/v3/config",                                        "GET"             },
-            {"/_matrix/media/v3/upload",                                        "POST"            },
-            {"/_matrix/media/v1/create",                                        "POST"            },
-            {"/_matrix/media/v3/preview_url",                                   "GET"             },
-            {"/_matrix/client/v1/media/config",                                 "GET"             },
-            {"/_matrix/client/v1/media/upload",                                 "POST"            },
-            {"/_matrix/client/v1/media/preview_url",                            "GET"             },
-            {"/_matrix/client/v3/voip/turnServer",                              "GET"             },
-            {"/_matrix/client/v3/room_keys/version",                            "GET, POST"       },
-            {"/_matrix/client/v3/room_keys/keys",                               "DELETE, GET, PUT"},
-            {"/_matrix/client/v3/devices",                                      "GET"             },
-            {"/_matrix/client/v3/delete_devices",                               "POST"            },
-            {"/_matrix/client/v3/createRoom",                                   "POST"            },
-            {"/_matrix/client/v3/joined_rooms",                                 "GET"             },
-            {"/_matrix/client/v1/mutual_rooms",                                 "GET"             },
-            {"/_matrix/client/v3/user_directory/search",                        "POST"            },
-            {"/_matrix/client/v3/search",                                       "POST"            },
+            {"/_matrix/client/v3/admin/safety/reports",                                     "GET, POST"       },
+            {"/_matrix/client/v3/admin/safety/policy_rules",                                "GET, POST, PUT"  },
+            {"/_matrix/client/v3/pushrules/",                                               "GET"             },
+            {"/_matrix/client/v3/pushrules/global/",                                        "GET"             },
+            {"/_matrix/client/v3/sync",                                                     "GET"             },
+            {"/_matrix/client/v4/sync",                                                     "GET, POST"       },
+            {"/_matrix/client/unstable/org.matrix.msc4186/sync",                            "GET, POST"       },
+            {"/_matrix/client/unstable/org.matrix.simplified_msc3575/sync",                 "GET, POST"       },
+            {"/_matrix/client/v3/publicRooms",                                              "GET, POST"       },
+            {"/_matrix/client/v3/register/available",                                       "GET"             },
+            {"/_matrix/client/v1/register/m.login.registration_token/validity",             "GET"             },
+            {"/_matrix/client/v3/register/email/requestToken",                              "POST"            },
+            {"/_matrix/client/v3/register/msisdn/requestToken",                             "POST"            },
+            {"/_matrix/client/v3/register",                                                 "POST"            },
+            {"/_matrix/client/v3/login",                                                    "GET, POST"       },
+            {"/_matrix/client/v3/login/sso/redirect",                                       "GET"             },
+            {"/_matrix/client/v3/refresh",                                                  "POST"            },
+            {"/_matrix/client/v3/logout",                                                   "POST"            },
+            {"/_matrix/client/v3/logout/all",                                               "POST"            },
+            {"/_matrix/client/v1/auth_metadata",                                            "GET"             },
+            {"/_matrix/client/v3/account/3pid/email/requestToken",                          "POST"            },
+            {"/_matrix/client/v3/account/3pid/msisdn/requestToken",                         "POST"            },
+            {"/_matrix/client/v3/account/password/email/requestToken",                      "POST"            },
+            {"/_matrix/client/v3/account/password/msisdn/requestToken",                     "POST"            },
+            {"/_matrix/client/unstable/org.merovingian/account/password/email/submitToken", "POST"            },
+            {"/_matrix/client/v3/account/whoami",                                           "GET"             },
+            {"/_matrix/client/v3/account/password",                                         "POST"            },
+            {"/_matrix/client/v3/account/deactivate",                                       "POST"            },
+            {"/_matrix/client/v3/account/3pid",                                             "GET, POST"       },
+            {"/_matrix/client/v3/account/3pid/add",                                         "POST"            },
+            {"/_matrix/client/v3/account/3pid/bind",                                        "POST"            },
+            {"/_matrix/client/v3/account/3pid/unbind",                                      "POST"            },
+            {"/_matrix/client/v3/account/3pid/delete",                                      "POST"            },
+            {"/_matrix/client/v3/pushers",                                                  "GET"             },
+            {"/_matrix/client/v3/pushers/set",                                              "POST"            },
+            {"/_matrix/client/v3/notifications",                                            "GET"             },
+            {"/_matrix/client/v3/capabilities",                                             "GET"             },
+            {"/_matrix/client/v3/keys/changes",                                             "GET"             },
+            {"/_matrix/client/v3/keys/claim",                                               "POST"            },
+            {"/_matrix/client/v3/keys/device_signing/upload",                               "POST"            },
+            {"/_matrix/client/v3/keys/query",                                               "POST"            },
+            {"/_matrix/client/v3/keys/signatures/upload",                                   "POST"            },
+            {"/_matrix/client/v3/keys/upload",                                              "POST"            },
+            {"/_matrix/client/v3/thirdparty/protocols",                                     "GET"             },
+            {"/_matrix/client/v3/thirdparty/location",                                      "GET"             },
+            {"/_matrix/client/v3/thirdparty/user",                                          "GET"             },
+            {"/_matrix/media/v3/config",                                                    "GET"             },
+            {"/_matrix/media/v3/upload",                                                    "POST"            },
+            {"/_matrix/media/v1/create",                                                    "POST"            },
+            {"/_matrix/media/v3/preview_url",                                               "GET"             },
+            {"/_matrix/client/v1/media/config",                                             "GET"             },
+            {"/_matrix/client/v1/media/upload",                                             "POST"            },
+            {"/_matrix/client/v1/media/preview_url",                                        "GET"             },
+            {"/_matrix/client/v3/voip/turnServer",                                          "GET"             },
+            {"/_matrix/client/v3/room_keys/version",                                        "GET, POST"       },
+            {"/_matrix/client/v3/room_keys/keys",                                           "DELETE, GET, PUT"},
+            {"/_matrix/client/v3/devices",                                                  "GET"             },
+            {"/_matrix/client/v3/delete_devices",                                           "POST"            },
+            {"/_matrix/client/v3/createRoom",                                               "POST"            },
+            {"/_matrix/client/v3/joined_rooms",                                             "GET"             },
+            {"/_matrix/client/v1/mutual_rooms",                                             "GET"             },
+            {"/_matrix/client/v3/user_directory/search",                                    "POST"            },
+            {"/_matrix/client/v3/search",                                                   "POST"            },
         });
         auto const row = std::ranges::find(routes, path, &StaticRouteMethods::path);
         return row == routes.end() ? std::string_view{} : row->allow;
@@ -12940,6 +12966,55 @@ namespace
         return resp(200U, "{}");
     }
 
+    // POST /_matrix/client/v3/users/{userId}/report (spec v1.14). "The caller is not required to be joined to any
+    // rooms that the reported user is joined to." A local user ID nobody holds is 404 M_NOT_FOUND (the spec lets a
+    // server answer 200 instead; this one does not, as GET /profile already answers 404 for it, ADR-0482). A user of
+    // another server cannot be checked here and is accepted. Stored as the event report is: one audit row per
+    // reporter and reported user, so a repeat is acknowledged without a second row. Rate-limited like any
+    // authenticated route. Runs under runtime.mutex, reads `store.users` once and does no network call.
+    [[nodiscard]] auto handle_user_report(ClientServerRuntime& rt, std::string_view user, LocalHttpRequest const& req)
+        -> LocalHttpResponse
+    {
+        auto constexpr prefix = std::string_view{"/_matrix/client/v3/users/"};
+        auto constexpr suffix = std::string_view{"/report"};
+        auto const path = target_path(req.target);
+        auto const reported = core::percent_decode_path_component(
+            path.substr(prefix.size(), path.size() - prefix.size() - suffix.size()));
+        auto const body = parse_safety_report_body(req.body);
+        if (!body.has_value())
+        {
+            return err(400U, "M_BAD_JSON", "report body must be a JSON object with an optional string reason");
+        }
+        if (!auth::user_id_is_valid_federated(reported))
+        {
+            return err(400U, "M_INVALID_PARAM", "userId is not a valid user ID");
+        }
+        auto const& store = rt.homeserver.database.persistent_store;
+        if (server_name_from_user_id(reported) == rt.homeserver.config.server().server_name &&
+            std::ranges::none_of(store.users, [&reported](database::PersistentUser const& candidate) {
+                return candidate.user_id == reported;
+            }))
+        {
+            return err(404U, "M_NOT_FOUND", "The user was not found.");
+        }
+        auto const decision = trust_safety::validate_user_report({std::string{user}, reported, body->reason});
+        if (!decision.allowed)
+        {
+            return err(400U, "M_BAD_REQUEST", decision.reason.public_summary);
+        }
+        auto const audit = trust_safety::make_safety_audit_event(user, reported, decision);
+        auto const recent =
+            database::load_audit_events_by_type_prefix(store, audit.event_type, rt.limits.max_safety_report_rows);
+        auto const already_reported = std::ranges::any_of(recent, [&](database::PersistentAuditEvent const& row) {
+            return row.event_type == audit.event_type && row.actor == audit.actor && row.target == audit.entity;
+        });
+        if (!already_reported)
+        {
+            append_policy_audit(rt, audit);
+        }
+        return resp(200U, "{}");
+    }
+
     [[nodiscard]] auto handle_admin_safety_route(ClientServerRuntime& rt, std::string_view admin_user,
                                                  LocalHttpRequest const& req) -> LocalHttpResponse
     {
@@ -13904,6 +13979,239 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
         }();
         return dispatch_resp(req, rt, 200U,
                              json_serialize(json_obj({json_member("valid", canonicaljson::Value{valid})})));
+    }
+
+    // ---- Password reset by email (ADR-0481) --------------------------------------------------------------------
+    // Spec: POST /account/password/email/requestToken ("Requires authentication: No") "may" answer
+    // M_THREEPID_NOT_FOUND for an address no account holds. This server never does: it answers every well-formed
+    // request alike, 200 with a fresh `sid`, and emails the code only when an active account holds the address, so
+    // the endpoint tells a caller nothing about who has an account. The code is sent from a background task so the
+    // answer is not slower for an address that has one. Runs under runtime.mutex; the send holds no lock.
+    if (req.method == "POST" && request_path == "/_matrix/client/v3/account/password/email/requestToken")
+    {
+        auto const body = parse_register_email_request_body(req.body);
+        if (!body.has_value())
+        {
+            return dispatch_err(req, rt, 400U, "M_BAD_JSON",
+                                "email validation body must contain client_secret, email, and send_attempt");
+        }
+        if (!client_secret_is_valid(body->client_secret))
+        {
+            return dispatch_err(req, rt, 400U, "M_BAD_JSON", "client_secret must match the Matrix grammar");
+        }
+        if (!email_address_is_valid(body->email))
+        {
+            return dispatch_err(req, rt, 400U, "M_BAD_JSON", "email must be a plausible address");
+        }
+        if (!email_push_configured(rt.homeserver.config))
+        {
+            return dispatch_err(req, rt, 400U, "M_THREEPID_MEDIUM_NOT_SUPPORTED",
+                                "this server cannot send email, so it cannot reset a password by email");
+        }
+        auto const address = normalize_threepid_address("email", body->email);
+        auto const& store = rt.homeserver.database.persistent_store;
+        auto const holder = std::ranges::find_if(store.account_threepids, [&address](auto const& binding) {
+            return binding.medium == "email" && binding.address == address;
+        });
+        auto const owner =
+            holder != store.account_threepids.end() && asserted_user_is_active(rt.homeserver, holder->user_id)
+                ? std::optional<std::string>{holder->user_id}
+                : std::nullopt;
+        prune_registration_validation_sessions(rt, wall_clock_milliseconds());
+        auto* session = static_cast<RegistrationValidationSession*>(nullptr);
+        for (auto& candidate : rt.registration_validation_sessions)
+        {
+            if (candidate.purpose == password_reset_purpose && candidate.address == address &&
+                crypto::constant_time_equal_variable_length(candidate.client_secret, body->client_secret))
+            {
+                session = &candidate;
+                break;
+            }
+        }
+        // Spec (send_attempt): the server "will only send an email if the send_attempt is a number greater than the
+        // most recent one"; otherwise it "should respond with success but not resend".
+        auto send_code = false;
+        if (session == nullptr)
+        {
+            auto sid = crypto::secure_random_hex(16U);
+            if (!sid.has_value())
+            {
+                return dispatch_err(req, rt, 500U, "M_UNKNOWN", "no randomness for a session ID");
+            }
+            session = record_identity_validation_session(rt, std::string{password_reset_purpose}, "email", address,
+                                                         body->client_secret, req.remote_addr, body->send_attempt, *sid,
+                                                         {}, {});
+            if (session == nullptr)
+            {
+                return dispatch_err(req, rt, 429U, "M_LIMIT_EXCEEDED", "too many outstanding validation sessions",
+                                    60000U);
+            }
+            send_code = true;
+        }
+        else if (body->send_attempt > session->send_attempt)
+        {
+            session->send_attempt = body->send_attempt;
+            send_code = session->validated_at_ms == 0U;
+        }
+        if (send_code)
+        {
+            session->user_id = owner;
+            session->reset_token.clear();
+            session->token_attempts = 0U;
+            if (owner.has_value())
+            {
+                auto token = make_password_reset_token();
+                if (token.has_value() && send_password_reset_email(rt.homeserver, address, *token))
+                {
+                    session->reset_token = std::move(*token);
+                }
+            }
+        }
+        auto base = rt.homeserver.config.server().public_baseurl;
+        while (!base.empty() && base.back() == '/')
+        {
+            base.pop_back();
+        }
+        return dispatch_resp(
+            req, rt, 200U,
+            json_serialize(json_obj({
+                json_member("sid", json_str(session->sid)),
+                json_member(
+                    "submit_url",
+                    json_str(base + "/_matrix/client/unstable/org.merovingian/account/password/email/submitToken")),
+            })));
+    }
+
+    // Spec: POST /account/password/msisdn/requestToken. This server has no way to send an SMS, so the medium is not
+    // supported; M_THREEPID_MEDIUM_NOT_SUPPORTED is the errcode the CS API defines for that.
+    if (req.method == "POST" && request_path == "/_matrix/client/v3/account/password/msisdn/requestToken")
+    {
+        auto const body = parse_register_msisdn_request_body(req.body);
+        if (!body.has_value())
+        {
+            return dispatch_err(
+                req, rt, 400U, "M_BAD_JSON",
+                "msisdn validation body must contain client_secret, country, phone_number, and send_attempt");
+        }
+        if (!client_secret_is_valid(body->client_secret))
+        {
+            return dispatch_err(req, rt, 400U, "M_BAD_JSON", "client_secret must match the Matrix grammar");
+        }
+        return dispatch_err(req, rt, 400U, "M_THREEPID_MEDIUM_NOT_SUPPORTED",
+                            "this server cannot send SMS, so it cannot reset a password by phone number");
+    }
+
+    // The `submit_url` requestToken returns: the identity-server shape (POST /validate/email/submitToken, ADR-0481).
+    // A code is judged against the session by constant-time comparison; a session takes
+    // password_reset_max_token_attempts wrong codes and is then dropped. A session opened for an address no account
+    // holds has no code and fails exactly as a wrong code does, so this endpoint leaks nothing either.
+    if (req.method == "POST" &&
+        request_path == "/_matrix/client/unstable/org.merovingian/account/password/email/submitToken")
+    {
+        auto const object = parsed_json_object(req.body);
+        auto const* const sid = object.has_value() ? string_member(*object, "sid") : nullptr;
+        auto const* const client_secret = object.has_value() ? string_member(*object, "client_secret") : nullptr;
+        auto const* const token = object.has_value() ? string_member(*object, "token") : nullptr;
+        if (sid == nullptr || client_secret == nullptr || token == nullptr)
+        {
+            return dispatch_err(req, rt, 400U, "M_INVALID_PARAM", "sid, client_secret and token are required strings");
+        }
+        prune_registration_validation_sessions(rt, wall_clock_milliseconds());
+        auto* const session =
+            find_registration_validation_session_by_sid(rt, password_reset_purpose, *sid, *client_secret);
+        if (session == nullptr)
+        {
+            return dispatch_err(req, rt, 400U, "M_SESSION_EXPIRED", "the validation session does not exist or expired");
+        }
+        if (session->validated_at_ms != 0U)
+        {
+            return dispatch_resp(req, rt, 200U, R"({"success":true})");
+        }
+        if (session->token_attempts >= password_reset_max_token_attempts)
+        {
+            consume_registration_validation_session(rt, password_reset_purpose, *sid, *client_secret);
+            return dispatch_err(req, rt, 400U, "M_SESSION_EXPIRED", "too many wrong codes; request a new one");
+        }
+        ++session->token_attempts;
+        // An empty stored code (no account) is compared like any other, so the work does not depend on it.
+        auto const typed = normalize_password_reset_token(*token);
+        auto const stored =
+            session->reset_token.empty() ? std::string(password_reset_token_length, '-') : session->reset_token;
+        auto const matches =
+            crypto::constant_time_equal_variable_length(typed, stored) && !session->reset_token.empty();
+        if (!matches)
+        {
+            return dispatch_err(req, rt, 400U, "M_TOKEN_INCORRECT", "the code is not correct");
+        }
+        session->validated_at_ms = wall_clock_milliseconds();
+        core::secure_zero(std::as_writable_bytes(std::span{session->reset_token.data(), session->reset_token.size()}));
+        session->reset_token.clear();
+        return dispatch_resp(req, rt, 200U, R"({"success":true})");
+    }
+
+    // Spec: POST /account/password with User-Interactive Authentication by `m.login.email.identity`: the way a
+    // user who cannot sign in resets the password. Served only for a request with no access token, and only when the
+    // server can send the code (an authenticated change keeps its m.login.password stage below). The auth dict
+    // names a session whose code the owner of the address submitted; that proves the address, and the address
+    // names the account. The session is consumed by a successful change only, so a weak password can be retried.
+    if (req.method == "POST" && request_path == "/_matrix/client/v3/account/password" && req.access_token.empty() &&
+        email_push_configured(rt.homeserver.config))
+    {
+        auto const object = parsed_json_object(req.body);
+        if (!object.has_value())
+        {
+            return dispatch_err(req, rt, 400U, "M_BAD_JSON", "password change body must be JSON");
+        }
+        auto const* new_password = string_member(*object, "new_password");
+        if (new_password == nullptr || new_password->empty())
+        {
+            return dispatch_err(req, rt, 400U, "M_BAD_JSON", "new_password is required");
+        }
+        auto const challenge = json_serialize(json_obj({
+            json_member("flows",
+                        json_arr({json_obj({json_member("stages", json_arr({json_str("m.login.email.identity")}))})})),
+            json_member("params", json_obj({})),
+            json_member("session", json_str("password_reset")),
+        }));
+        auto const* const auth = object_member_object(*object, "auth");
+        auto const* const auth_type = auth != nullptr ? string_member(*auth, "type") : nullptr;
+        auto const* const creds = auth != nullptr ? object_member_object(*auth, "threepid_creds") : nullptr;
+        auto const* const sid = creds != nullptr ? string_member(*creds, "sid") : nullptr;
+        auto const* const secret = creds != nullptr ? string_member(*creds, "client_secret") : nullptr;
+        if (auth_type == nullptr || *auth_type != "m.login.email.identity" || sid == nullptr || secret == nullptr)
+        {
+            return dispatch_resp(req, rt, 401U, challenge);
+        }
+        prune_registration_validation_sessions(rt, wall_clock_milliseconds());
+        auto const* const session =
+            find_registration_validation_session_by_sid(rt, password_reset_purpose, *sid, *secret);
+        if (session == nullptr || session->validated_at_ms == 0U || !session->user_id.has_value())
+        {
+            return dispatch_resp(
+                req, rt, 401U,
+                uia_failure_body(challenge, "M_SESSION_NOT_VALIDATED", "the email address is not validated"));
+        }
+        auto const user_id = *session->user_id;
+        auto const* const logout_devices_member = boolean_member(*object, "logout_devices");
+        auto const result = reset_local_user_password(rt.homeserver, user_id, *new_password,
+                                                      logout_devices_member == nullptr || *logout_devices_member);
+        if (!result.ok)
+        {
+            if (result.status == 429U)
+            {
+                return dispatch_err(req, rt, 429U, "M_LIMIT_EXCEEDED", result.reason, result.retry_after_ms);
+            }
+            if (!result.errcode.empty())
+            {
+                return dispatch_err(req, rt, result.status, result.errcode, result.reason);
+            }
+            return dispatch_err(req, rt, result.status, "M_FORBIDDEN", result.reason);
+        }
+        consume_registration_validation_session(rt, password_reset_purpose, *sid, *secret);
+        log_diagnostic("password_reset.completed", {
+                                                       {"user_id", user_id, false}
+        });
+        return dispatch_resp(req, rt, 200U, "{}");
     }
 
     if (req.method == "POST" && request_path == "/_matrix/client/v3/register/email/requestToken")
@@ -17315,11 +17623,38 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
         {
             return dispatch_resp(req, rt, 200U, "{}");
         }
+        auto username = turn.username;
+        auto password = turn.password;
+        if (!turn.shared_secret_file.empty())
+        {
+            // ADR-0480: per-user, time-limited credentials from the coturn shared secret. The file is read for
+            // this request into a SecretBuffer that is wiped when it goes out of scope; the secret is never
+            // copied into a string, logged or compared (the TURN server, not this one, checks the MAC).
+            constexpr auto max_turn_secret_bytes = std::size_t{4096U};
+            auto const secret = platform::read_secure_secret_line(turn.shared_secret_file, max_turn_secret_bytes);
+            auto const bytes =
+                secret.has_value() ? std::span<std::uint8_t const>{secret->bytes()} : std::span<std::uint8_t const>{};
+            auto const now_seconds = static_cast<std::uint64_t>(
+                std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch())
+                    .count());
+            auto credentials = make_turn_credentials(bytes, *user, now_seconds, turn.ttl_seconds);
+            if (!credentials.has_value())
+            {
+                log_diagnostic("turn.credentials_unavailable",
+                               {
+                                   {"reason", "shared secret file unreadable or empty", false}
+                },
+                               observability::LogEventSeverity::error);
+                return dispatch_err(req, rt, 500U, "M_UNKNOWN", "TURN credentials are unavailable");
+            }
+            username = std::move(credentials->username);
+            password = std::move(credentials->password);
+        }
         auto uris = canonicaljson::Array{};
         uris.push_back(json_str(turn.server));
         auto const body = json_serialize(json_obj({
-            json_member("username", json_str(turn.username)),
-            json_member("password", json_str(turn.password)),
+            json_member("username", json_str(username)),
+            json_member("password", json_str(password)),
             json_member("ttl", json_int(static_cast<std::int64_t>(turn.ttl_seconds))),
             json_member("uris", json_arr(std::move(uris))),
         }));
@@ -17492,6 +17827,10 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
         if (safety_route.route.requires_admin && !authenticated_admin_user(rt.homeserver, req.access_token).has_value())
         {
             return dispatch_err(req, rt, 403U, "M_FORBIDDEN", "admin authentication required");
+        }
+        if (safety_route.route.path_template == "/_matrix/client/v3/users/{userId}/report")
+        {
+            return complete(handle_user_report(rt, *user, req));
         }
         return complete(safety_route.route.requires_admin ? handle_admin_safety_route(rt, *user, req)
                                                           : handle_safety_report(rt, *user, req));

@@ -60,7 +60,8 @@ auto rate_limit_tier_for(std::string_view target) noexcept -> RateLimitTier
     // so it is matched by suffix.
     if (starts_with(target, "/_matrix/client/v3/login") || starts_with(target, "/_matrix/client/v3/refresh") ||
         starts_with(target, "/_matrix/client/v3/register") || starts_with(target, "/_matrix/client/v1/register") ||
-        target.find("/requestToken") != std::string_view::npos)
+        target.find("/requestToken") != std::string_view::npos ||
+        target.find("/submitToken") != std::string_view::npos)
     {
         return RateLimitTier::auth_sensitive;
     }

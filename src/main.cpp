@@ -237,6 +237,17 @@ struct BootstrapConfigResult final
         }
     }
 
+    // server.turn.shared_secret_file holds the TURN shared secret: owner-only like every other secret.
+    if (!config.server().turn.shared_secret_file.empty())
+    {
+        auto turn_secret_validation = validate_existing_secret_file_metadata(config.server().turn.shared_secret_file,
+                                                                             "server.turn.shared_secret_file", false);
+        if (!turn_secret_validation.parsed.findings.empty())
+        {
+            return turn_secret_validation;
+        }
+    }
+
     auto database_validation =
         validate_existing_secret_file_metadata(config.database().uri_file, "database.uri_file", true);
     if (!database_validation.parsed.findings.empty())

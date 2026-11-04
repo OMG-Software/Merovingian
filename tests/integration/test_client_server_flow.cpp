@@ -1024,7 +1024,7 @@ SCENARIO("GET /profile/{userId} for a user of another server asks that server ov
                 "localhost", acceptor.bound_port(), {"127.0.0.1"}, certificate.certificate_pem};
 
         auto const ok_profile = merovingian::tests::tls_mock::json_http_response(
-            "200 OK", R"({"displayname":"Bob","avatar_url":"mxc://remote.example.net/a","evil":"ignored"})");
+            "200 OK", R"({"displayname":"Bob","avatar_url":"mxc://remote.example.net/a","Evil Key":"ignored"})");
         auto const not_found = merovingian::tests::tls_mock::json_http_response(
             "404 Not Found", R"({"errcode":"M_NOT_FOUND","error":"no such user"})");
         auto const responses = std::vector<std::pair<std::string, std::string>>{
@@ -1048,8 +1048,9 @@ SCENARIO("GET /profile/{userId} for a user of another server asks that server ov
                 REQUIRE(response.response.status == 200U);
                 REQUIRE(response.response.body.find("\"displayname\":\"Bob\"") != std::string::npos);
                 REQUIRE(response.response.body.find("mxc://remote.example.net/a") != std::string::npos);
-                // Rule 6: a remote answer is relayed only in its spec fields.
-                REQUIRE(response.response.body.find("evil") == std::string::npos);
+                // Rule 6: a remote answer is relayed only in its spec fields. Since v1.16 those include
+                // additional keys that meet the key grammar (ADR-0478, covered below); "Evil Key" does not.
+                REQUIRE(response.response.body.find("Evil") == std::string::npos);
                 REQUIRE(captured.size() == 1U);
                 REQUIRE(captured[0].find("GET /_matrix/federation/v1/query/profile?user_id=") == 0U);
             }

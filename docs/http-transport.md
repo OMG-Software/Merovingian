@@ -888,6 +888,13 @@ Non-`/send` traffic is counted only against `per_origin_request_rate` and
 `/send` only against the weighted trio, so a transaction and its contents are
 never double-counted.
 
+### The health probe (ADR-0479)
+
+`GET /_merovingian/health` is answered by the connection handler before the request reaches the dispatcher, on every
+listener: `200` with the body `ok` while the dispatcher is running, `503` with `unavailable` after shutdown begins. It
+needs no token, is not rate-limited, reads one atomic flag and takes no lock (not `runtime.mutex`), so a long request
+cannot delay it. It says nothing of the database or the federation worker; `/_merovingian/admin/health` does.
+
 ### Admin routes
 
 `/_merovingian/admin/*` (health, metrics, audit, media moderation) is served on

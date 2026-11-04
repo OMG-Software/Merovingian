@@ -541,6 +541,10 @@ auto build_reload_plan(Config const& current, Config const& next) -> ReloadPlan
     {
         add_change(plan, "server.turn.password");
     }
+    if (current.server().turn.shared_secret_file != next.server().turn.shared_secret_file)
+    {
+        add_change(plan, "server.turn.shared_secret_file");
+    }
     if (current.server().turn.ttl_seconds != next.server().turn.ttl_seconds)
     {
         add_change(plan, "server.turn.ttl_seconds");

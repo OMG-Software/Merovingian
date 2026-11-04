@@ -105,11 +105,14 @@ server.http.ipv6_client_prefix_length=64
 # TURN server for VoIP relay (optional)
 # When server.turn.server is empty, GET /_matrix/client/v3/voip/turnServer
 # returns an empty object so clients gracefully disable relay support.
-# Shared-secret, time-limited usernames are not yet implemented; only supply
-# credentials that are acceptable for all users of this homeserver.
+# Either static credentials, issued to every user (only supply credentials that
+# are acceptable for all users of this homeserver), or a coturn shared secret
+# (use-auth-secret): each user then gets time-limited credentials of their own.
+# Set one or the other; both is refused.
 # server.turn.server=turn:turn.example.org:3478?transport=udp
 # server.turn.username=merovingian
 # server.turn.password=set-in-owner-only-secret-file
+# server.turn.shared_secret_file=/etc/merovingian/turn-secret
 # server.turn.ttl_seconds=86400
 
 # Listener exposure

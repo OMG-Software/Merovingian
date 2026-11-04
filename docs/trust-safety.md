@@ -35,6 +35,10 @@ This capability note describes runtime-wired trust-and-safety behavior.
   found or you are not joined to the room where the event resides"). A repeat report
   of the same event by the same reporter is acknowledged without a second audit row
   (CSAZ-12, ADR-0127).
+- User reporting through `POST /_matrix/client/v3/users/{userId}/report` (v1.14,
+  ADR-0482): an unknown local user is 404, a user of another server is accepted,
+  and one audit row (`trust_safety.account.accept_report`) is kept per reporter
+  and reported user. The reason text is validated, not stored.
 - Admin report listing through
   `GET /_matrix/client/v3/admin/safety/reports`.
 - Admin review actions through
@@ -92,8 +96,6 @@ event content.
 - Moderator queues beyond the current audit/admin action summaries.
 - Multipart or streaming moderation inputs beyond the current request-local
   transport contract.
-- User reporting, `POST /_matrix/client/v3/users/{userId}/report` (Matrix
-  v1.19 CS API). Only event reporting is routed.
 
 ### What ignoring a user does NOT protect against
 

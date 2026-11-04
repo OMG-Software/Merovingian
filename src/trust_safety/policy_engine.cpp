@@ -103,6 +103,21 @@ namespace
         return !event_id.empty() && event_id.find('/') == std::string_view::npos;
     }
 
+    [[nodiscard]] auto matches_user_report_route(std::string_view target) noexcept -> bool
+    {
+        auto constexpr prefix = std::string_view{"/_matrix/client/v3/users/"};
+        auto constexpr suffix = std::string_view{"/report"};
+        if (!starts_with(target, prefix))
+        {
+            return false;
+        }
+        auto const path =
+            target.substr(prefix.size(), target.find('?') == std::string_view::npos ? std::string_view::npos
+                                                                                    : target.find('?') - prefix.size());
+        return path.size() > suffix.size() && path.ends_with(suffix) &&
+               path.substr(0U, path.size() - suffix.size()).find('/') == std::string_view::npos;
+    }
+
     [[nodiscard]] auto matches_admin_review_route(std::string_view target) noexcept -> bool
     {
         auto constexpr prefix = std::string_view{"/_matrix/client/v3/admin/safety/review/"};
@@ -493,6 +508,7 @@ auto reporting_api_routes() -> std::vector<ReportingApiRoute>
 {
     return {
         route("POST", "/_matrix/client/v3/rooms/{roomId}/report/{eventId}", false),
+        route("POST", "/_matrix/client/v3/users/{userId}/report", false),
         route("GET", "/_matrix/client/v3/admin/safety/reports", true),
         route("POST", "/_matrix/client/v3/admin/safety/review/{targetType}/{targetId}", true),
         route("GET", "/_matrix/client/v3/admin/safety/policy_rules", true),
@@ -515,6 +531,10 @@ auto match_reporting_api_route(std::string_view method, std::string_view target)
         }
         if (candidate.path_template == "/_matrix/client/v3/rooms/{roomId}/report/{eventId}" &&
             matches_report_route(target))
+        {
+            return {true, candidate, {}};
+        }
+        if (candidate.path_template == "/_matrix/client/v3/users/{userId}/report" && matches_user_report_route(target))
         {
             return {true, candidate, {}};
         }
@@ -541,6 +561,16 @@ auto validate_safety_report(SafetyReportRequest const& request) -> PolicyDecisio
                                                             "report is missing reporter, room, or event"));
     }
     return {true, PolicySurface::room, PolicyAction::accept_report, {}, false, {}};
+}
+
+auto validate_user_report(UserReportRequest const& request) -> PolicyDecision
+{
+    if (!matrix_id_is_valid(request.reporter_user_id) || !matrix_id_is_valid(request.reported_user_id))
+    {
+        return deny(PolicySurface::account, enforcement_reason("invalid_report", "report cannot be processed",
+                                                               "report is missing reporter or reported user"));
+    }
+    return {true, PolicySurface::account, PolicyAction::accept_report, {}, false, {}};
 }
 
 auto make_safety_audit_event(std::string_view actor, std::string_view entity, PolicyDecision const& decision)

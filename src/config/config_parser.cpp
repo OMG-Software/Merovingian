@@ -885,6 +885,10 @@ namespace
         {
             server.turn.password = std::string{value};
         }
+        else if (key == "server.turn.shared_secret_file")
+        {
+            server.turn.shared_secret_file = std::string{value};
+        }
         else if (key == "server.turn.ttl_seconds")
         {
             try

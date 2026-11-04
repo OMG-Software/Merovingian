@@ -741,13 +741,18 @@ support.
 | `server.turn.server` | (empty) | TURN server URI advertised to clients, e.g. `turn:turn.example.org:3478?transport=udp`. Leave empty to keep the endpoint returning `{}`. |
 | `server.turn.username` | (empty) | Static username issued to authenticated clients. Required when `server.turn.server` is set. |
 | `server.turn.password` | (empty) | Static password issued alongside the username. Required when `server.turn.server` is set. |
-| `server.turn.ttl_seconds` | `86400` | Credential lifetime advertised in the response. |
+| `server.turn.shared_secret_file` | (empty) | Path to an owner-read-only file (mode `0400`, as every secret file) holding the TURN server's `static-auth-secret`, for coturn run with `use-auth-secret`. Each client then gets its own credentials: username `<expiry>:<user_id>`, password the base64 HMAC-SHA1 of that username under the secret (the coturn REST API), valid for `ttl_seconds`. Cannot be combined with `username` and `password`: the configuration is refused if both are set. |
+| `server.turn.ttl_seconds` | `86400` | Credential lifetime advertised in the response, and with `shared_secret_file` the time until the username's expiry. |
 
-> **Security note.** Shared-secret, time-limited TURN usernames are not yet
-> implemented; the current implementation issues the configured static
-> credentials to every authenticated client. Only supply credentials that are
-> acceptable for all users of this homeserver, or run a TURN server that does not
-> require authentication.
+> **Security note.** With `server.turn.username` and `server.turn.password` the
+> configured static credentials go to every authenticated client: only supply
+> credentials that are acceptable for all users of this homeserver, or run a TURN
+> server that does not require authentication. With `shared_secret_file` the
+> secret never leaves the server; clients receive credentials that expire. The
+> file is read on each request, wiped from memory after use and never logged;
+> an unreadable or empty file makes the endpoint answer `500` and log an error.
+> Set the same value as coturn's `static-auth-secret`, and keep
+> `server.turn.ttl_seconds` at or below coturn's own limits.
 
 #### OIDC discovery — `server.oidc.*`
 
@@ -826,6 +831,12 @@ of the server that sent it who shares a joined room with a user of this server, 
 100 entries are looked at.
 
 #### Email notifications — `server.email.*`
+
+The same relay sends the **password-reset code** (ADR-0481): with `server.email.smtp_url` set, a user who cannot sign
+in can reset the password from their client (`m.login.email.identity`, an 8-character code emailed to an address on the
+account). The message holds the code and the server name only, and the endpoint answers alike whether or not an account
+holds the address. Without a relay `POST /account/password/email/requestToken` is `400 M_THREEPID_MEDIUM_NOT_SUPPORTED`.
+Phone-number reset is not supported (no SMS).
 
 Email pushers (`kind: "email"` in `POST /pushers/set`) are **refused unless
 `server.email.smtp_url` is set**; the section is independent of
@@ -2761,6 +2772,7 @@ a non-admin user returns `403`. Implemented routes:
 | Method | Path | Purpose |
 |---|---|---|
 | `GET` | `/_merovingian/admin/health` | Health summary. |
+| `GET` | `/_merovingian/health` | Not an admin route: no token. The probe for a load balancer or orchestrator. `200` with the body `ok` while the server serves requests, `503` with `unavailable` once it has stopped accepting them (shutdown). It reveals nothing else (no version, counts or configuration), is not rate-limited, and takes no lock a slow request can hold: it reads one atomic flag, so a busy server still answers it. It is served on every listener, so a probe may use the client or the federation port. |
 | `GET` | `/_merovingian/admin/metrics` | Prometheus-format server metrics. |
 | `GET` | `/_merovingian/admin/media/metrics` | Media-repository metrics. |
 | `GET` | `/_merovingian/admin/audit` | Audit log query (`?category=`, `?event_type=`); a JSON object with an `entries` array. |
