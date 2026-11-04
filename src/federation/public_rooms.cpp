@@ -7,6 +7,7 @@
 #include "merovingian/canonicaljson/serializer.hpp"
 #include "merovingian/core/folded_substring.hpp"
 
+#include <algorithm>
 #include <charconv>
 #include <cstddef>
 #include <cstdint>
@@ -267,8 +268,11 @@ auto serialize_public_rooms_request(PublicRoomsRequest const& request) -> std::s
     }
     if (request.limit.has_value())
     {
-        body.push_back(
-            canonicaljson::make_member("limit", canonicaljson::Value{static_cast<std::int64_t>(*request.limit)}));
+        // A GET's limit can be any size_t, but a JSON integer stops at 2^53 - 1. The limit is a maximum, and
+        // the operator's page size is far below that, so holding it there answers the same page.
+        auto constexpr max_json_integer = std::size_t{9007199254740991U};
+        body.push_back(canonicaljson::make_member(
+            "limit", canonicaljson::Value{static_cast<std::int64_t>(std::min(*request.limit, max_json_integer))}));
     }
     if (request.since_offset > 0U)
     {

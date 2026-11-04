@@ -16,6 +16,7 @@
 #include <optional>
 #include <string>
 #include <utility>
+#include <variant>
 #include <vector>
 
 namespace
@@ -127,6 +128,30 @@ SCENARIO("A worker relays a directory request as a frame main reads back with th
                 REQUIRE(read.has_value());
                 REQUIRE(read->filter.room_types.has_value());
                 REQUIRE(read->filter.room_types->empty());
+            }
+        }
+    }
+
+    // A GET's `limit` and `since` can be any size_t, but a JSON integer stops at 2^53 - 1. Refusing the frame
+    // would turn a request main answers into a 503 on a server with workers.
+    GIVEN("a GET whose limit and since are the largest values the parser accepts")
+    {
+        auto const parsed =
+            merovingian::federation::parse_public_rooms_query("18446744073709551615", "18446744073709551615", {}, {});
+        REQUIRE(std::holds_alternative<PublicRoomsRequest>(parsed));
+        auto const& request = std::get<PublicRoomsRequest>(parsed);
+
+        WHEN("it crosses the relay frame")
+        {
+            auto const read = merovingian::ipc::deserialize_public_rooms_ingest(
+                merovingian::ipc::serialize_public_rooms_ingest(request));
+
+            THEN("main reads a request, with since unchanged and the limit still above any page size")
+            {
+                REQUIRE(read.has_value());
+                REQUIRE(read->since_offset == request.since_offset);
+                REQUIRE(read->limit.has_value());
+                REQUIRE(*read->limit == std::size_t{9007199254740991U});
             }
         }
     }
