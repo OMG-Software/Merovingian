@@ -652,3 +652,263 @@ SCENARIO("A user idle past the presence threshold is set unavailable", "[integra
         }
     }
 }
+
+// Spec: Matrix Client-Server API v1.19, Presence, "Last active ago": "A pro-active event may be sending a message
+// to a room or changing presence state to `online`." A user who keeps sending is active, so the idle sweep must not
+// set them unavailable (ADR-0492).
+SCENARIO("A user who keeps sending messages is not set unavailable", "[integration][presence][idle][c11]")
+{
+    GIVEN("alice is online and has a room")
+    {
+        REQUIRE(sodium_init() >= 0);
+        auto started = merovingian::homeserver::start_client_server(presence_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        auto const token = register_alice(runtime);
+        REQUIRE(put_alice_presence(runtime, token, R"({"presence":"online"})").status == 200U);
+        auto const created =
+            call(runtime, "POST", "/_matrix/client/v3/createRoom", token, R"({"preset":"private_chat"})");
+        REQUIRE(created.status == 200U);
+        auto const room_body = parse_object(created.body);
+        auto const* room_id = string_member(room_body, "room_id");
+        REQUIRE(room_id != nullptr);
+        auto const send = [&](int number) {
+            return call(runtime, "PUT",
+                        "/_matrix/client/v3/rooms/" + *room_id + "/send/m.room.message/t" + std::to_string(number),
+                        token, R"({"msgtype":"m.text","body":"hi"})");
+        };
+
+        WHEN("she sends a message every four minutes for twelve minutes, with the idle sweep running")
+        {
+            for (auto number = 1; number <= 3; ++number)
+            {
+                age_presence(runtime, local_alice, 4 * minute_ms);
+                REQUIRE(send(number).status == 200U);
+                std::ignore = merovingian::homeserver::run_presence_idle_sweep(runtime);
+            }
+
+            THEN("she is still online and currently active")
+            {
+                REQUIRE(read_alice_presence(runtime, token) == "online");
+                auto const row = stored_presence(runtime, local_alice);
+                REQUIRE(row.has_value());
+                REQUIRE(row->currently_active);
+            }
+        }
+
+        WHEN("she is unavailable by her own choice and sends a message")
+        {
+            REQUIRE(put_alice_presence(runtime, token, R"({"presence":"unavailable"})").status == 200U);
+            REQUIRE(send(1).status == 200U);
+
+            THEN("she is still unavailable: a send does not change a state she chose")
+            {
+                REQUIRE(read_alice_presence(runtime, token) == "unavailable");
+            }
+        }
+    }
+
+    GIVEN("a user who has never had a presence row")
+    {
+        REQUIRE(sodium_init() >= 0);
+        auto started = merovingian::homeserver::start_client_server(presence_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        auto const token = register_alice(runtime);
+        auto const created =
+            call(runtime, "POST", "/_matrix/client/v3/createRoom", token, R"({"preset":"private_chat"})");
+        REQUIRE(created.status == 200U);
+        auto const room_body = parse_object(created.body);
+        auto const* room_id = string_member(room_body, "room_id");
+        REQUIRE(room_id != nullptr);
+
+        WHEN("she sends a message")
+        {
+            REQUIRE(call(runtime, "PUT", "/_matrix/client/v3/rooms/" + *room_id + "/send/m.room.message/t1", token,
+                         R"({"msgtype":"m.text","body":"hi"})")
+                        .status == 200U);
+
+            THEN("no presence row is made for her")
+            {
+                REQUIRE_FALSE(stored_presence(runtime, local_alice).has_value());
+            }
+        }
+    }
+}
+
+// After a restart a row loaded from the database has `observed_at_ms` 0, so its stored `last_active_ago` is never
+// advanced. The sweep starts that clock the first time it sees such a row (ADR-0492).
+SCENARIO("An online user loaded without an observation time is swept once the clock has run",
+         "[integration][presence][idle][c11]")
+{
+    GIVEN("a local user stored online with last_active_ago 0 and no observation time, as after a restart")
+    {
+        REQUIRE(sodium_init() >= 0);
+        auto started = merovingian::homeserver::start_client_server(presence_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        auto row = merovingian::database::PersistentPresence{};
+        row.user_id = std::string{local_alice};
+        row.presence = "online";
+        row.currently_active = true;
+        REQUIRE(merovingian::database::upsert_presence(runtime.homeserver.database.persistent_store, row));
+        REQUIRE(stored_presence(runtime, local_alice)->observed_at_ms == 0);
+
+        WHEN("a sweep runs")
+        {
+            std::ignore = merovingian::homeserver::run_presence_idle_sweep(runtime);
+
+            THEN("it leaves her online and starts her clock")
+            {
+                REQUIRE(stored_presence(runtime, local_alice)->presence == "online");
+                REQUIRE(stored_presence(runtime, local_alice)->observed_at_ms > 0);
+            }
+
+            AND_WHEN("six minutes then pass and another sweep runs")
+            {
+                age_presence(runtime, local_alice, 6 * minute_ms);
+                std::ignore = merovingian::homeserver::run_presence_idle_sweep(runtime);
+
+                THEN("she is unavailable")
+                {
+                    REQUIRE(stored_presence(runtime, local_alice)->presence == "unavailable");
+                }
+            }
+        }
+    }
+}
+
+// A pass is bounded by presence_idle_max_per_pass because each user costs a commit and a scan of the rooms under
+// runtime.mutex; what a pass leaves, the next one takes after a short sleep (ADR-0492).
+SCENARIO("A pass of the idle sweep is bounded and the rest follow", "[integration][presence][idle][c11]")
+{
+    GIVEN("more online local users than one pass may set unavailable, all idle")
+    {
+        REQUIRE(sodium_init() >= 0);
+        auto started = merovingian::homeserver::start_client_server(presence_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        auto const total = merovingian::homeserver::presence_idle_max_per_pass + 5U;
+        for (auto number = std::size_t{0U}; number < total; ++number)
+        {
+            auto row = merovingian::database::PersistentPresence{};
+            row.user_id = "@idle" + std::to_string(number) + ":example.org";
+            row.presence = "online";
+            row.observed_at_ms = merovingian::homeserver::presence_now_ms() - 10 * minute_ms;
+            REQUIRE(merovingian::database::upsert_presence(runtime.homeserver.database.persistent_store, row));
+        }
+        auto const unavailable_count = [&runtime] {
+            return static_cast<std::size_t>(
+                std::ranges::count_if(runtime.homeserver.database.persistent_store.presence_states, [](auto const& s) {
+                    return s.presence == "unavailable";
+                }));
+        };
+        auto const ordinary_sleep = std::chrono::duration_cast<std::chrono::milliseconds>(
+            merovingian::homeserver::presence_idle_sweep_interval);
+
+        WHEN("the sweep runs once")
+        {
+            auto const first_sleep = merovingian::homeserver::run_presence_idle_sweep(runtime);
+
+            THEN("it sets at most the bound and asks to come back sooner than the ordinary interval")
+            {
+                REQUIRE(unavailable_count() == merovingian::homeserver::presence_idle_max_per_pass);
+                REQUIRE(first_sleep < ordinary_sleep);
+            }
+
+            AND_WHEN("it runs again")
+            {
+                auto const second_sleep = merovingian::homeserver::run_presence_idle_sweep(runtime);
+
+                THEN("the rest are set and it sleeps the ordinary interval")
+                {
+                    REQUIRE(unavailable_count() == total);
+                    REQUIRE(second_sleep == ordinary_sleep);
+                }
+            }
+        }
+    }
+}
+
+// MSC4186, request body: `set_presence`, "Same as in /v3/sync, controls whether the client is automatically marked as
+// online by polling this API". Omitted marks the user online; an unknown value is 400 M_INVALID_PARAM. The proposal's
+// changelog calls it a URL parameter, so both are read and the body takes precedence (ADR-0495).
+SCENARIO("Sliding sync honours set_presence", "[integration][presence][sliding-sync][c11]")
+{
+    GIVEN("a registered user with no presence row")
+    {
+        REQUIRE(sodium_init() >= 0);
+        auto started = merovingian::homeserver::start_client_server(presence_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        auto const token = register_alice(runtime);
+        auto const poll = [&](std::string const& query, std::string const& body) {
+            return call(runtime, "POST", "/_matrix/client/unstable/org.matrix.msc4186/sync" + query, token, body);
+        };
+        auto const state = [&runtime]() -> std::string {
+            auto const row = stored_presence(runtime, local_alice);
+            return row.has_value() ? row->presence : std::string{"none"};
+        };
+
+        WHEN("set_presence is omitted")
+        {
+            REQUIRE(poll("", "{}").status == 200U);
+            THEN("she is marked online")
+            {
+                REQUIRE(state() == "online");
+            }
+        }
+        WHEN("the body says unavailable")
+        {
+            REQUIRE(poll("", R"({"set_presence":"unavailable"})").status == 200U);
+            THEN("she is marked unavailable")
+            {
+                REQUIRE(state() == "unavailable");
+            }
+        }
+        WHEN("the body says offline")
+        {
+            REQUIRE(poll("", R"({"set_presence":"offline"})").status == 200U);
+            THEN("her presence is not touched")
+            {
+                REQUIRE(state() == "none");
+            }
+        }
+        WHEN("only the URL says unavailable")
+        {
+            REQUIRE(poll("?set_presence=unavailable", "{}").status == 200U);
+            THEN("she is marked unavailable")
+            {
+                REQUIRE(state() == "unavailable");
+            }
+        }
+        WHEN("the URL says unavailable and the body says offline")
+        {
+            REQUIRE(poll("?set_presence=unavailable", R"({"set_presence":"offline"})").status == 200U);
+            THEN("the body wins and her presence is not touched")
+            {
+                REQUIRE(state() == "none");
+            }
+        }
+        WHEN("the body names a value that is not a presence mode")
+        {
+            auto const response = poll("", R"({"set_presence":"busy"})");
+            THEN("the answer is 400 M_INVALID_PARAM and nothing is stored")
+            {
+                REQUIRE(response.status == 400U);
+                auto const body = parse_object(response.body);
+                auto const* errcode = string_member(body, "errcode");
+                REQUIRE(errcode != nullptr);
+                REQUIRE(*errcode == "M_INVALID_PARAM");
+                REQUIRE(state() == "none");
+            }
+        }
+        WHEN("the URL names a value that is not a presence mode")
+        {
+            THEN("the answer is 400")
+            {
+                REQUIRE(poll("?set_presence=busy", "{}").status == 400U);
+            }
+        }
+    }
+}

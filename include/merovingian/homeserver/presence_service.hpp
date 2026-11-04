@@ -39,6 +39,14 @@ inline constexpr auto presence_idle_timeout_ms = std::int64_t{5 * 60 * 1000};
 // crossing the threshold (ADR-0492).
 inline constexpr auto presence_idle_sweep_interval = std::chrono::seconds{30};
 
+// The most users one pass of the idle sweep sets unavailable. Each costs a commit, an appservice queue entry and a scan
+// of the rooms for the servers to tell, all under runtime.mutex, so a mass disconnect or a long downtime is taken in
+// passes (ADR-0492).
+inline constexpr auto presence_idle_max_per_pass = std::size_t{100U};
+
+// How long the job sleeps after a pass that hit the bound: the lock is free in between, and the rest follow.
+inline constexpr auto presence_idle_catch_up_interval = std::chrono::seconds{1};
+
 // Spec: "One of: [online, offline, unavailable]".
 [[nodiscard]] auto presence_state_is_valid(std::string_view state) noexcept -> bool;
 
