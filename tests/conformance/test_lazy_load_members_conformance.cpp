@@ -544,6 +544,14 @@ SCENARIO("A member sent in a response the client never received is sent again",
     }
 }
 
+// Spec: Matrix Client-Server API v1.19
+// Endpoint / Section: Lazy-loading room members; GET /sync
+// URL: ../../docs/matrix-v1.19-spec/client-server-api.md#lazy-loading-room-members
+//
+// Skipping redundant members is permitted, not required: "the server MAY assume that clients will remember
+// membership events they have already been sent". Which sync stream a client's memory belongs to is this
+// server's choice, not a spec rule: it keeps one record per user, device and filter, so a second device or a
+// different filter, which may hold nothing, is never told that a member was already sent.
 SCENARIO("Streams are tracked apart by filter and by device", "[conformance][client-server][sync][lazy-sync]")
 {
     GIVEN("carol syncs a room with two filters and from two devices, all up to date")
@@ -585,6 +593,13 @@ SCENARIO("Streams are tracked apart by filter and by device", "[conformance][cli
     }
 }
 
+// Spec: Matrix Client-Server API v1.19
+// Endpoint / Section: Lazy-loading room members; GET /sync
+// URL: ../../docs/matrix-v1.19-spec/client-server-api.md#lazy-loading-room-members
+//
+// The server "will only return membership events for the `sender` of events in the timeline". An event the
+// timeline filter drops, or that the user ignores and so is never delivered, is not in the timeline, so its
+// sender's membership is not returned on its account.
 SCENARIO("A sender whose event was not delivered contributes no membership",
          "[conformance][client-server][sync][lazy-sync]")
 {
@@ -630,6 +645,13 @@ SCENARIO("A sender whose event was not delivered contributes no membership",
     }
 }
 
+// Spec: Matrix Client-Server API v1.19
+// Endpoint / Section: GET /sync, RoomFilter state; Lazy-loading room members
+// URL: ../../docs/matrix-v1.19-spec/client-server-api.md#get_matrixclientv3sync
+//
+// The spec has lazy-loading enabled by `lazy_load_members` on a RoomEventFilter, the type of the /sync
+// `state` filter. That the same filter's `types`, `not_types` and `senders` then also decide which member
+// events are returned, the user's own included, is this server's reading, not a quoted rule.
 SCENARIO("The state filter applies to lazy-loaded members on /sync", "[conformance][client-server][sync][lazy-sync]")
 {
     GIVEN("a room where bob spoke last")
@@ -670,6 +692,13 @@ SCENARIO("The state filter applies to lazy-loaded members on /sync", "[conforman
     }
 }
 
+// Spec: Matrix Client-Server API v1.19
+// Endpoint / Section: GET /sync, rooms.leave and rooms.invite; Lazy-loading room members
+// URL: ../../docs/matrix-v1.19-spec/client-server-api.md#get_matrixclientv3sync
+//
+// Lazy-loading limits `state` for the rooms a /sync returns, and a left room's `state` is likewise only the
+// timeline's senders' members plus the user's own. Applying it to rooms.leave is this server's reading; the
+// spec names no section. An invite carries `invite_state` (stripped state), not `state`, and is not touched.
 SCENARIO("Lazy-loading applies to rooms the user has left, and leaves invites alone",
          "[conformance][client-server][sync][lazy-sync]")
 {
@@ -717,6 +746,86 @@ SCENARIO("Lazy-loading applies to rooms the user has left, and leaves invites al
                 REQUIRE(
                     object_member_as_array(*object_member_as_object(*lazy_invite, "invite_state"), "events")->size() ==
                     object_member_as_array(*object_member_as_object(*plain_invite, "invite_state"), "events")->size());
+            }
+        }
+    }
+}
+
+// Spec: Matrix Client-Server API v1.19
+// Endpoint / Section: GET /sync, rooms.leave; Lazy-loading room members
+// URL: ../../docs/matrix-v1.19-spec/client-server-api.md#get_matrixclientv3sync
+//
+// A left room's `state` is "The state updates for the room up to the **start** of the timeline". That this server
+// also carries the user's own leave there, when the timeline filter keeps it out of the timeline, is its own
+// choice, and it makes the leave the last word on their membership. Lazy-loading adds the timeline senders' member
+// events, but the user's own earlier join must not follow the leave, or a client applying `state` in order shows
+// them as joined.
+SCENARIO("A left room's state ends with the user's leave, not an earlier join of theirs",
+         "[conformance][client-server][sync][lazy-sync]")
+{
+    GIVEN("dave, bob and alice in a room, dave synced, then bob and dave speak and dave leaves")
+    {
+        auto started = merovingian::homeserver::start_client_server(lazy_config());
+        REQUIRE(started.started);
+        auto& rt = started.runtime;
+        auto const alice = register_user(rt, "alice");
+        auto const bob = register_user(rt, "bob");
+        auto const dave = register_user(rt, "dave");
+        auto const room = create_room(rt, alice, "public_chat");
+        join_room(rt, bob, room);
+        join_room(rt, dave, room);
+        auto const initial = sync(rt, dave, k_lazy_state);
+        std::ignore = say(rt, bob, room, "b1");
+        std::ignore = say(rt, bob, room, "b2");
+        std::ignore = say(rt, dave, room, "d1");
+        std::ignore = say(rt, bob, room, "b3");
+        REQUIRE(call(rt, "POST", "/_matrix/client/v3/rooms/" + room + "/leave", dave, "{}").status == 200U);
+
+        // The leave is not a timeline event for this filter, so it travels in `state`.
+        auto const left_room = [&](std::string_view timeline_limit) {
+            auto const filter = std::string{R"({"room":{"include_leave":true,"timeline":{"limit":)"} +
+                                std::string{timeline_limit} +
+                                R"(,"not_types":["m.room.member"]},"state":{"lazy_load_members":true}}})";
+            auto const synced = sync(rt, dave, filter, initial.next_batch);
+            auto const* section = room_section(synced, "leave", room);
+            REQUIRE(section != nullptr);
+            return events_of(*section, "state");
+        };
+        // The membership of every m.room.member event naming `member` in `state`, in order.
+        auto const memberships_of = [](std::vector<merovingian::canonicaljson::Object> const& state,
+                                       std::string const& member) {
+            auto out = std::vector<std::string>{};
+            for (auto const& event : state)
+            {
+                auto const* key = string_member(event, "state_key");
+                auto const* type = string_member(event, "type");
+                auto const* content = object_member_as_object(event, "content");
+                if (type != nullptr && *type == "m.room.member" && key != nullptr && *key == member)
+                {
+                    out.push_back(*string_member(*content, "membership"));
+                }
+            }
+            return out;
+        };
+
+        WHEN("the incremental sync's timeline holds every event")
+        {
+            auto const state = left_room("50");
+
+            THEN("dave's membership appears once, as the leave, and bob's member event is still sent")
+            {
+                REQUIRE(memberships_of(state, user_id("dave")) == std::vector<std::string>{"leave"});
+                REQUIRE(member_keys(state).contains(user_id("bob")));
+            }
+        }
+        WHEN("the incremental sync's timeline is limited but still holds dave's message")
+        {
+            auto const state = left_room("2");
+
+            THEN("dave's membership appears once, as the leave, and bob's member event is still sent")
+            {
+                REQUIRE(memberships_of(state, user_id("dave")) == std::vector<std::string>{"leave"});
+                REQUIRE(member_keys(state).contains(user_id("bob")));
             }
         }
     }
