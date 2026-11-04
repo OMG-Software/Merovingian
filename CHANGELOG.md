@@ -54,6 +54,13 @@ instruction, and full lazy-loading follows on its own branch.
 - **Start-up builds the roster in linear time, and the event table is the only copy of a room's events (ADR-0442).**
   `LocalRoom::events` is removed.
 
+### CI
+
+- **The live PostgreSQL job now covers this version's batch writers.** `store_notifications`,
+  `store_federation_transactions`, `store_cross_signing_keys` and `store_key_backup_sessions` each write a batch, reopen
+  the store and compare every field, then upsert and reopen again. A key backup batch naming a version that does not
+  exist is refused whole, and neither the mirror nor the database keeps any of it.
+
 ### Documentation
 
 - Removed the 2026-09-29 security audit report and the 2026-10-17 conformance audit report with their site navigation
