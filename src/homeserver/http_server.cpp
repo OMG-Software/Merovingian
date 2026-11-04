@@ -1525,7 +1525,7 @@ namespace
                 }
                 if (handoff.notifier.wait_for_change(wait_params.since_stream_ordering,
                                                      wait_params.since_sync_stream_id,
-                                                     std::min(remaining, poll_interval)))
+                                                     std::min(remaining, poll_interval), wait_params.user_id))
                 {
                     auto interim = rerun_waiting_sync(runtime, handoff.request, true);
                     if (interim.status == DispatchResult::Status::complete)
@@ -1972,7 +1972,8 @@ namespace
                         {
                             break;
                         }
-                        if (notifier->wait_for_change(wait.since_stream_ordering, wait.since_sync_stream_id, remaining))
+                        if (notifier->wait_for_change(wait.since_stream_ordering, wait.since_sync_stream_id, remaining,
+                                                      wait.user_id))
                         {
                             auto interim = rerun_waiting_sync(ctx.runtime, local_request, true);
                             if (interim.status == DispatchResult::Status::complete)
@@ -2230,7 +2231,8 @@ auto dispatch_local_http_request(ClientServerRuntime& runtime, LocalHttpRequest 
                 {
                     break;
                 }
-                if (notifier->wait_for_change(wait.since_stream_ordering, wait.since_sync_stream_id, remaining))
+                if (notifier->wait_for_change(wait.since_stream_ordering, wait.since_sync_stream_id, remaining,
+                                              wait.user_id))
                 {
                     auto interim = rerun_waiting_sync(runtime, request, true);
                     if (interim.status == DispatchResult::Status::complete)

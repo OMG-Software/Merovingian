@@ -1621,11 +1621,19 @@ namespace
                     // find nothing it may be given yet and wake again at once. Read under
                     // runtime.mutex, which ingest_pdu_event no longer holds here; no room
                     // stripe is held either, so this keeps the stripe-then-global order.
+                    // ADR-0437: an accepted PDU concerns the room's joined and invited members and, for a
+                    // membership event, the user it is about. The set is read in the same hold as the position.
+                    auto audience = std::vector<std::string>{};
                     auto const visible = [&] {
                         auto const lock = std::unique_lock<RuntimeMutex>{rt->mutex};
+                        audience = sync_audience_of_room(
+                            rt->database.persistent_store, envelope.room_id,
+                            {envelope.event_type == "m.room.member" && envelope.state_key.has_value()
+                                 ? std::string_view{*envelope.state_key}
+                                 : std::string_view{}});
                         return visible_stream_position(rt->database);
                     }();
-                    rt->sync_notifier->publish(visible, result.accepted_sync_stream_id);
+                    rt->sync_notifier->publish(visible, result.accepted_sync_stream_id, audience);
                 }
                 // #479 P1 fix: this is the single convergence point for every
                 // accepted federation PDU — both the direct main-process path

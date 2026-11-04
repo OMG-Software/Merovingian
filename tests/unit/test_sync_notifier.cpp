@@ -1,14 +1,21 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+#include "merovingian/database/persistent_store.hpp"
+#include "merovingian/homeserver/room_service.hpp"
 #include "merovingian/sync/sync_notifier.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <chrono>
+#include <cstddef>
 #include <mutex>
+#include <string>
 #include <thread>
+#include <utility>
+#include <vector>
 
 SCENARIO("SyncNotifier returns immediately when the sync stream id has already advanced", "[sync][notifier]")
 {
@@ -277,6 +284,219 @@ SCENARIO("SyncNotifier counts the callers blocked in a wait", "[sync][notifier][
             {
                 REQUIRE(changed);
                 REQUIRE(notifier.waiting() == 0U);
+            }
+        }
+    }
+}
+
+namespace
+{
+
+using merovingian::sync::SyncNotifier;
+
+// Parks a waiter for `user` on a thread; the result is read after join() on the main thread only.
+class ParkedWaiter final
+{
+public:
+    ParkedWaiter(SyncNotifier& notifier, std::string user, std::size_t expected_waiting)
+        : thread_{[this, &notifier, user = std::move(user)] {
+            woke_.store(notifier.wait_for_change(0U, 0U, std::chrono::seconds{60}, user));
+        }}
+    {
+        // Wait for it to park, by yielding rather than by sleeping.
+        while (notifier.waiting() < expected_waiting)
+        {
+            std::this_thread::yield();
+        }
+    }
+    ParkedWaiter(ParkedWaiter const&) = delete;
+    auto operator=(ParkedWaiter const&) -> ParkedWaiter& = delete;
+    ~ParkedWaiter()
+    {
+        if (thread_.joinable())
+        {
+            thread_.join();
+        }
+    }
+    [[nodiscard]] auto join() -> bool
+    {
+        thread_.join();
+        return woke_.load();
+    }
+
+private:
+    std::atomic<bool> woke_{false};
+    std::thread thread_;
+};
+
+[[nodiscard]] auto users(std::vector<std::string> names) -> std::vector<std::string>
+{
+    return names;
+}
+
+} // namespace
+
+// ADR-0437: a long-poll is woken for its own user, not for every event on the server.
+SCENARIO("SyncNotifier wakes a waiter only for publishes that concern its user", "[sync][notifier][scoped]")
+{
+    GIVEN("a waiter for alice parked on the notifier, repeated to catch a race")
+    {
+        WHEN("an event scoped to bob is published, then one scoped to alice")
+        {
+            THEN("alice is signalled by the second only, and wakes with the change")
+            {
+                for (auto round = 0; round < 200; ++round)
+                {
+                    auto notifier = SyncNotifier{};
+                    auto waiter = ParkedWaiter{notifier, "@alice:example.org", 1U};
+
+                    auto const bobs = users({"@bob:example.org"});
+                    notifier.publish(1U, 0U, bobs);
+                    REQUIRE(notifier.signals_sent() == 0U);
+                    REQUIRE(notifier.waiting() == 1U);
+
+                    auto const alices = users({"@bob:example.org", "@alice:example.org"});
+                    notifier.publish(2U, 0U, alices);
+                    REQUIRE(waiter.join());
+                    REQUIRE(notifier.signals_sent() == 1U);
+                }
+            }
+        }
+    }
+
+    GIVEN("a waiter for alice and a publish that names no scope")
+    {
+        WHEN("the publish is made")
+        {
+            THEN("alice wakes")
+            {
+                for (auto round = 0; round < 200; ++round)
+                {
+                    auto notifier = SyncNotifier{};
+                    auto waiter = ParkedWaiter{notifier, "@alice:example.org", 1U};
+
+                    notifier.publish(1U, 0U);
+                    REQUIRE(waiter.join());
+                    REQUIRE(notifier.signals_sent() == 1U);
+                }
+            }
+        }
+    }
+
+    GIVEN("a waiter for alice and an invite to her, to a room she was not in")
+    {
+        WHEN("an event scoped to the inviter and the invitee is published")
+        {
+            THEN("alice wakes")
+            {
+                for (auto round = 0; round < 200; ++round)
+                {
+                    auto notifier = SyncNotifier{};
+                    auto waiter = ParkedWaiter{notifier, "@alice:example.org", 1U};
+
+                    auto const audience = users({"@bob:example.org", "@alice:example.org"});
+                    notifier.publish(1U, 0U, audience);
+                    REQUIRE(waiter.join());
+                }
+            }
+        }
+    }
+
+    GIVEN("a waiter that named no user and a waiter for bob")
+    {
+        auto notifier = SyncNotifier{};
+        auto anyone = ParkedWaiter{notifier, "", 1U};
+        auto bob = ParkedWaiter{notifier, "@bob:example.org", 2U};
+
+        WHEN("an event scoped to bob is published")
+        {
+            auto const bobs = users({"@bob:example.org"});
+            notifier.publish(1U, 0U, bobs);
+
+            THEN("both wake, the one with no user as every waiter always did")
+            {
+                REQUIRE(anyone.join());
+                REQUIRE(bob.join());
+                REQUIRE(notifier.signals_sent() == 2U);
+            }
+        }
+    }
+
+    GIVEN("a publish scoped to bob made before alice began to wait")
+    {
+        auto notifier = SyncNotifier{};
+        auto const bobs = users({"@bob:example.org"});
+        notifier.publish(5U, 0U, bobs);
+
+        WHEN("alice waits from before it")
+        {
+            auto const woke = notifier.wait_for_change(0U, 0U, std::chrono::milliseconds{0}, "@alice:example.org");
+
+            THEN("she is told at once, as the stream is ahead of her")
+            {
+                REQUIRE(woke);
+            }
+        }
+        WHEN("alice waits from the position it reached")
+        {
+            auto const woke = notifier.wait_for_change(5U, 0U, std::chrono::milliseconds{0}, "@alice:example.org");
+
+            THEN("nothing is pending")
+            {
+                REQUIRE_FALSE(woke);
+            }
+        }
+    }
+
+    GIVEN("a waiter racing a publish scoped to it")
+    {
+        WHEN("the publish may land before, or after, the waiter parks")
+        {
+            THEN("the change is never lost")
+            {
+                for (auto round = 0; round < 200; ++round)
+                {
+                    auto notifier = SyncNotifier{};
+                    auto woke = std::atomic<bool>{false};
+                    auto waiter = std::thread{[&] {
+                        woke.store(notifier.wait_for_change(0U, 0U, std::chrono::seconds{60}, "@alice:example.org"));
+                    }};
+                    auto const alices = users({"@alice:example.org"});
+
+                    notifier.publish(1U, 0U, alices);
+                    waiter.join();
+                    REQUIRE(woke.load());
+                }
+            }
+        }
+    }
+}
+
+// ADR-0437: the users an event in a room is published to.
+SCENARIO("A room event's sync audience is its joined and invited members, its sender and the user it is about",
+         "[sync][notifier][scoped]")
+{
+    GIVEN("a room with joined, invited, knocking, left and banned users")
+    {
+        auto store = merovingian::database::PersistentStore{};
+        store.memberships.push_back({"!room:example.org", "@joined:example.org", "join", 1U});
+        store.memberships.push_back({"!room:example.org", "@invited:example.org", "invite", 2U});
+        store.memberships.push_back({"!room:example.org", "@knocking:example.org", "knock", 3U});
+        store.memberships.push_back({"!room:example.org", "@left:example.org", "leave", 4U});
+        store.memberships.push_back({"!room:example.org", "@banned:example.org", "ban", 5U});
+        store.memberships.push_back({"!other:example.org", "@elsewhere:example.org", "join", 6U});
+
+        WHEN("the audience of an event sent by a member who kicked another is built")
+        {
+            auto const audience = merovingian::homeserver::sync_audience_of_room(
+                store, "!room:example.org", {"@joined:example.org", "@kicked:example.org", ""});
+
+            THEN("it holds each joined and invited user once, the sender and the removed user, and no one else")
+            {
+                auto sorted = audience;
+                std::ranges::sort(sorted);
+                REQUIRE(sorted ==
+                        std::vector<std::string>{"@invited:example.org", "@joined:example.org", "@kicked:example.org"});
             }
         }
     }

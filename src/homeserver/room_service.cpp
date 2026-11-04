@@ -1471,7 +1471,11 @@ namespace
         auto const sync_stream_id = database::allocate_sync_stream_id(runtime.database.persistent_store);
         if (runtime.sync_notifier != nullptr)
         {
-            runtime.sync_notifier->publish(visible_stream_position(runtime.database), sync_stream_id);
+            // ADR-0437: the room's joined and invited members, the sender, and the user whose membership
+            // changed, who may have just left it (kick, ban, leave).
+            auto const audience =
+                sync_audience_of_room(runtime.database.persistent_store, room_id, {sender_user_id, target_user_id});
+            runtime.sync_notifier->publish(visible_stream_position(runtime.database), sync_stream_id, audience);
         }
         // Push delivery: covers invite/ban/kick/leave/knock, all funneled
         // through this one function. `target_user_id` is passed as an extra
@@ -2532,6 +2536,31 @@ auto federate_accepted_membership_event(HomeserverRuntime& runtime, std::string_
         return;
     }
     queue_event_to_room_servers(runtime, room_id, room->members, event_id, event_json, {}, requesting_server);
+}
+
+auto sync_audience_of_room(database::PersistentStore const& store, std::string_view room_id,
+                           std::initializer_list<std::string_view> also) -> std::vector<std::string>
+{
+    auto audience = std::vector<std::string>{};
+    auto seen = std::unordered_set<std::string>{};
+    auto const add = [&](std::string_view user) {
+        if (!user.empty() && seen.emplace(user).second)
+        {
+            audience.emplace_back(user);
+        }
+    };
+    for (auto const& membership : store.memberships)
+    {
+        if (membership.room_id == room_id && (membership.membership == "join" || membership.membership == "invite"))
+        {
+            add(membership.user_id);
+        }
+    }
+    for (auto const user : also)
+    {
+        add(user);
+    }
+    return audience;
 }
 
 // The one place a membership change reaches the live roster and the device lists. The roster is always
@@ -8751,8 +8780,15 @@ namespace
         });
         if (runtime.sync_notifier != nullptr)
         {
+            // ADR-0437: an event in a room concerns the room's joined and invited members, its sender and, for
+            // a membership event, the user it is about (a kick or ban removes them from the room's members).
+            auto const member_target = composed->event_type == "m.room.member" && composed->state_key.has_value()
+                                           ? std::string_view{*composed->state_key}
+                                           : std::string_view{};
+            auto const audience = sync_audience_of_room(runtime.database.persistent_store, room_id,
+                                                        {std::string_view{user_id}, member_target});
             runtime.sync_notifier->publish(visible_stream_position(runtime.database),
-                                           runtime.database.persistent_store.next_sync_stream_id);
+                                           runtime.database.persistent_store.next_sync_stream_id, audience);
         }
         // Refresh any federation worker's snapshot of this room the same way the
         // 7 membership-mutating calls already do (create_room, join_room,
