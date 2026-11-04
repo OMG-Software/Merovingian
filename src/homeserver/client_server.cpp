@@ -11491,6 +11491,8 @@ namespace
         auto const bad = [](std::string message) {
             return KeyUploadRefusal{400U, "M_BAD_JSON", std::move(message)};
         };
+        // What is kept of each accepted key until every key has been judged: nothing is stored here, so a
+        // refusal on a later key cannot leave an earlier one half applied.
         struct SuppliedKey final
         {
             std::string_view name;
@@ -11500,6 +11502,8 @@ namespace
         };
         auto supplied = std::vector<SuppliedKey>{};
         auto master_public_key = std::optional<std::string>{};
+        // The three key types are fixed by the spec. Each present one is checked for shape, owner and usage
+        // here; none of these checks reads stored state.
         for (auto const& [key_type, usage] : {
                  std::pair<std::string_view, std::string_view>{"master_key",       "master"      },
                  std::pair<std::string_view, std::string_view>{"self_signing_key", "self_signing"},
@@ -11516,6 +11520,8 @@ namespace
             {
                 return bad(std::string{key_type} + " must be an object");
             }
+            // The owner is compared with the authenticated user before the key material is read, so a key for
+            // another account is refused with 403 whatever else is wrong with it.
             auto const* key_user = string_member(*key, "user_id");
             if (key_user == nullptr)
             {
@@ -11532,6 +11538,8 @@ namespace
             {
                 return bad(std::string{key_type} + " must have a usage array");
             }
+            // The usage array must name the role the key is filed under, so a self-signing slot cannot hold a key
+            // that declares itself something else.
             auto const has_usage = std::ranges::any_of(*usages, [usage](canonicaljson::Value const& entry) {
                 auto const* text = std::get_if<std::string>(&entry.storage());
                 return text != nullptr && *text == usage;
@@ -11546,18 +11554,21 @@ namespace
                 return bad(std::string{key_type} +
                            " keys must be one ed25519:<public key> property whose value is that 32-byte public key");
             }
+            // A master key in this request is the one the other keys are checked against, not any held earlier.
             if (usage == "master")
             {
                 master_public_key = std::move(public_key);
             }
             supplied.push_back({key_type, usage != "master", value, key});
         }
+        // A master key alone has no signature requirement, so there is nothing further to check.
         if (std::ranges::none_of(supplied, [](SuppliedKey const& key) {
                 return key.signed_by_master;
             }))
         {
             return std::nullopt;
         }
+        // No master key in the request: fall back to the held one, otherwise there is nothing to verify against.
         if (!master_public_key.has_value())
         {
             // The user's most recently uploaded master key is the one held: an upload replaces it.
@@ -11576,6 +11587,8 @@ namespace
         {
             return KeyUploadRefusal{400U, "M_MISSING_PARAM", "no master signing key is available"};
         }
+        // Signatures are verified last, after every shape and ownership check has passed, so a malformed or
+        // foreign key is refused with its own error rather than as a bad signature.
         for (auto const& key : supplied)
         {
             if (key.signed_by_master &&

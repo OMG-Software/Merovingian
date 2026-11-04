@@ -883,6 +883,7 @@ SCENARIO("An event table lists the children of an event without scanning its row
         REQUIRE(table.insert(make_event("$parent", 1U)));
         REQUIRE(table.insert(make_related_event("$reply", 2U, "$parent", "m.thread")));
         REQUIRE(table.insert(make_related_event("$edit", 3U, "$parent", "m.replace")));
+        // The unrelated event has no relation, so it must never appear as a child of anything.
         REQUIRE(table.insert(make_event("$other", 4U)));
 
         WHEN("the children of the parent are visited")
@@ -899,6 +900,7 @@ SCENARIO("An event table lists the children of an event without scanning its row
 
         WHEN("the walk is capped below the number of children")
         {
+            // A third thread reply is added so the cap of one is below the number of thread children.
             auto walk = EventTable::RelationWalk{};
             auto visited = std::size_t{0U};
             REQUIRE(table.insert(make_related_event("$reply2", 5U, "$parent", "m.thread")));
@@ -919,6 +921,8 @@ SCENARIO("An event table lists the children of an event without scanning its row
 
         WHEN("a child is redacted, so its JSON no longer carries the relation")
         {
+            // Redaction strips `m.relates_to` from the stored JSON. The index is built from that JSON, so the edit
+            // has to drop out of the list.
             table.modify(table.find("$edit"), [](PersistentEvent& row) {
                 row.json = R"({"type":"m.room.message","content":{}})";
             });
@@ -932,6 +936,8 @@ SCENARIO("An event table lists the children of an event without scanning its row
         WHEN("a child's status changes")
         {
             table.modify(table.find("$reply"), [](PersistentEvent& row) {
+                // Status is not part of the relation, so the index leaves the row listed and the caller decides
+                // what to do with a rejected child.
                 row.status = "rejected";
             });
 
@@ -943,6 +949,8 @@ SCENARIO("An event table lists the children of an event without scanning its row
 
         WHEN("an earlier row is erased")
         {
+            // Erasing the first row shifts the later rows down, so any position the index held for them would now
+            // be wrong.
             REQUIRE(table.erase_if([](PersistentEvent const& row) {
                 return row.event_id == "$parent";
             }) == 1U);
@@ -966,6 +974,7 @@ SCENARIO("An event table lists the children of an event without scanning its row
         }
     }
 
+    // Hydration loads the store through insert_all rather than insert, which must index relations the same way.
     GIVEN("events added in one batch, as at hydration")
     {
         auto table = EventTable{};
@@ -975,6 +984,8 @@ SCENARIO("An event table lists the children of an event without scanning its row
         batch.push_back(make_related_event("$ref", 3U, "$parent", "m.reference"));
         batch.push_back(make_related_event("$react", 4U, "$parent", "m.annotation"));
         batch.push_back(make_related_event("$odd", 5U, "$parent", "org.example.custom"));
+        // The reaction and the custom relation type are stored but not indexed. Only thread, replace and reference
+        // children are listed.
         REQUIRE(table.insert_all(std::move(batch)) == 5U);
 
         WHEN("the children of the parent are visited")
@@ -988,6 +999,8 @@ SCENARIO("An event table lists the children of an event without scanning its row
         }
     }
 
+    // The edit is inserted before ten replies, so an edit walk limited by the cap must not be crowded out by the
+    // thread replies.
     GIVEN("a thread with more replies than a window holds, and one edit")
     {
         auto table = EventTable{};
@@ -1010,6 +1023,7 @@ SCENARIO("An event table lists the children of an event without scanning its row
         }
     }
 
+    // An empty target and a 300-byte target are both unusable as an index key.
     GIVEN("an event whose relation names no usable target")
     {
         auto table = EventTable{};
