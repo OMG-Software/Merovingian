@@ -279,10 +279,12 @@ SCENARIO("A client transaction ID and event type over 255 bytes are refused on e
             auto const to_device =
                 call(rt, "PUT", "/_matrix/client/v3/sendToDevice/" + long_part + "/1", token, R"({"messages":{}})");
 
-            THEN("send and sendToDevice answer 400 M_INVALID_PARAM")
+            // A room event's type is under the spec's size limits, which this server answers with 413 M_TOO_LARGE
+            // (test_event_size_limits_conformance.cpp). A to-device type is not a room event's.
+            THEN("send answers 413 M_TOO_LARGE, and sendToDevice answers 400 M_INVALID_PARAM")
             {
-                REQUIRE(sent.status == 400U);
-                REQUIRE(member(sent, "errcode") == "M_INVALID_PARAM");
+                REQUIRE(sent.status == 413U);
+                REQUIRE(member(sent, "errcode") == "M_TOO_LARGE");
                 REQUIRE(to_device.status == 400U);
                 REQUIRE(member(to_device, "errcode") == "M_INVALID_PARAM");
             }

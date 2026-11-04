@@ -17151,10 +17151,14 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                     return dispatch_err(req, rt, 400U, "M_INVALID_PARAM",
                                         "ts must be an integer origin_server_ts in milliseconds");
                 }
-                if (client_txn_part_is_too_long(path->event_type) || client_txn_part_is_too_long(path->txn_id))
+                // A room event's type is under the size limits, answered as they all are, 413 M_TOO_LARGE.
+                if (client_txn_part_is_too_long(path->event_type))
                 {
-                    return dispatch_err(req, rt, 400U, "M_INVALID_PARAM",
-                                        "the event type and the transaction ID are at most 255 bytes each");
+                    return dispatch_err(req, rt, 413U, "M_TOO_LARGE", "the event type is at most 255 bytes");
+                }
+                if (client_txn_part_is_too_long(path->txn_id))
+                {
+                    return dispatch_err(req, rt, 400U, "M_INVALID_PARAM", "the transaction ID is at most 255 bytes");
                 }
                 // CS API §10.5.1: idempotent send — replay the original response to the same device (F-52,
                 // ADR-0380): a transaction ID is scoped to a device, so another device's is another request.

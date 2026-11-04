@@ -36,8 +36,9 @@ Chosen option: "delete to-device records older than 7 days, and bound the key pa
 * The `client-txn-prune` `PeriodicJob` runs `homeserver::prune_client_transactions` at start and then every hour. The sweep
   takes `runtime.mutex` for one linear pass over the table, and for the index rebuild only when it removed something. It is
   linear in the rows the server holds, not in anything a request chooses, and the interval keeps it to once an hour.
-* `eventType` and `txnId` over 255 bytes are refused with `400 M_INVALID_PARAM` on `/send`, `/redact` (its `txnId`) and
-  `/sendToDevice`, before the idempotency lookup.
+* `txnId` over 255 bytes is refused with `400 M_INVALID_PARAM` on `/send`, `/redact` and `/sendToDevice`, as is
+  `eventType` on `/sendToDevice`, before the idempotency lookup. `eventType` on `/send` is a room event's type, under the
+  spec's size limits, and keeps the `413 M_TOO_LARGE` already decided for those.
 
 ### Positive Consequences
 
