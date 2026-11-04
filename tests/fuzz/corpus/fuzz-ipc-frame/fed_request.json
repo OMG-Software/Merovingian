@@ -1,0 +1,1 @@
+{"method":"GET","target":"/_matrix/federation/v1/version","origin":"a.org","headers":[["Authorization","X-Matrix x"]],"body":""}

@@ -675,6 +675,7 @@ shell = find_program('sh')
       'integration/test_security_audit_federated_to_device_flow.cpp',
       'integration/test_security_audit_worker_snapshot_flow.cpp',
       'integration/test_postgresql_persistence_flow.cpp',
+      'integration/test_postgresql_store_behaviour_flow.cpp',
       'integration/test_postgresql_diagnostic_flow.cpp',
       'integration/test_security_audit_postgresql_reload_flow.cpp',
       'integration/test_security_audit_postgresql_media_flow.cpp',

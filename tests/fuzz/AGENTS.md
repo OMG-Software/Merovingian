@@ -14,6 +14,16 @@ Built only when `-Dbuild_fuzz=true` is passed to Meson.
 | `fuzz_stream_token.cpp` | Stream token decoder (`decode_stream_token`) |
 | `fuzz_query_params.cpp` | Query-string parser and percent-decoder |
 | `fuzz_srv_record.cpp` | Portable DNS SRV record parser (`parse_srv_records`) |
+| `fuzz_multipart_upload.cpp` | multipart/mixed parser for a remote's federation media download (`parse_federation_media_multipart`); bytes before the first NUL are the Content-Type |
+| `fuzz_url_preview_html.cpp` | URL preview HTML/OpenGraph extractor, content-type check and reference resolver |
+| `fuzz_x_matrix_header.cpp` | `Authorization: X-Matrix` header parser (`parse_x_matrix_authorization_header`) |
+| `fuzz_inbound_pdu.cpp` | Inbound PDU envelope parsers; first byte picks the room version |
+| `fuzz_ipc_frame.cpp` | Federation worker IPC frame body decoders and JSON field extractors (not `IpcChannel::read_frame`, which needs a socket and key exchange) |
+| `fuzz_appservice_yaml.cpp` | Application service registration YAML and JSON parsers |
+| `fuzz_push_glob.cpp` | Push rule glob matcher, through `evaluate_push_rules`; bytes before the first NUL are the pattern |
+
+`fuzz_input.hpp` holds the helpers that turn the byte buffer into strings and split it at the first NUL.
+A target that takes two strings splits on NUL; keep to that so the seeds stay readable.
 
 ## Adding a new target
 

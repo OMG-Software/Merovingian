@@ -592,7 +592,6 @@ jobs:
   # unit/integration/smoke tests) on OpenBSD itself.
   openbsd-build-and-test:
     runs-on: ubuntu-latest
-    continue-on-error: true
 
     steps:
       - uses: actions/checkout@v4
@@ -642,7 +641,6 @@ jobs:
   # Tier 1 platform. Same full build+test path as the other BSDs.
   netbsd-build-and-test:
     runs-on: ubuntu-latest
-    continue-on-error: true
 
     steps:
       - uses: actions/checkout@v4

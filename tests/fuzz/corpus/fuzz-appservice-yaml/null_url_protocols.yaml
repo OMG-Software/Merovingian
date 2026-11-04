@@ -1,0 +1,12 @@
+id: b
+url: null
+as_token: a
+hs_token: h
+sender_localpart: s
+rate_limited: false
+protocols:
+  - irc
+namespaces:
+  users:
+    - exclusive: false
+      regex: "@x:.*"
