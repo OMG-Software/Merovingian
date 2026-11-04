@@ -61,7 +61,7 @@ treats warnings as errors.
   already true when this document's "Deliberately not included" list below
   claimed otherwise (audited 0.12.1, corrected here). `.github/workflows/fuzz.yml`
   triggers on `push`/`pull_request` (not just the weekly schedule), and
-  `scripts/run-fuzz-targets.sh` runs each of the seven fuzz targets under
+  `scripts/run-fuzz-targets.sh` runs each of the fourteen fuzz targets under
   `set -eu` with `-error_exitcode=77`, so any crash, leak, or UBSan finding
   fails the job — there is no `continue-on-error`.
 - **Build-time link-time hardening enforcement** (0.12.1) —

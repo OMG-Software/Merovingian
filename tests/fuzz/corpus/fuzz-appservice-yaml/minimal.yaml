@@ -1,0 +1,11 @@
+id: bridge
+url: http://localhost:9000
+as_token: astoken
+hs_token: hstoken
+sender_localpart: _bridge
+namespaces:
+  users:
+    - exclusive: true
+      regex: "@_bridge_.*:example.org"
+  aliases: []
+  rooms: []
