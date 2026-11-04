@@ -238,11 +238,6 @@ auto evaluate_server_acl(std::string_view server_name, ServerAclEvent const& acl
         }
     }
 
-    if (acl.allow.empty())
-    {
-        return {ServerAclDecision::allow, "empty_allow",
-                "allow list is empty and server name did not match any deny list entry; allowing"};
-    }
     return {ServerAclDecision::deny, "allow", "server name did not match any allow list entry"};
 }
 

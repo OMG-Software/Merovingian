@@ -429,22 +429,26 @@ namespace
     // allow_remote=false (spec: the server "should not attempt to fetch the media
     // if it is deemed remote"). Counted, and logged; not audited: any
     // unauthenticated client can trigger this, so it must not write a durable
-    // row per request (ADR-0080).
+    // row per request (ADR-0080). So too for a server the operator's federation policy excludes (ADR-0391).
     [[nodiscard]] auto remote_media_refusal(HomeserverRuntime& runtime, std::string_view origin_server,
                                             std::string_view media_id, RemoteMediaRequestContext const& remote)
         -> std::optional<OperationResult>
     {
         auto const enabled = runtime.media_repository.config.remote_fetch_enabled;
-        if (enabled && remote.allow_remote)
+        auto const policy = federation::federation_server_policy(runtime.federation.config, origin_server);
+        if (enabled && remote.allow_remote && policy.allowed)
         {
             return std::nullopt;
         }
         ++runtime.media_repository.metrics.remote_fetch_rejections;
-        log_diagnostic("remote_fetch.refused",
-                       {
-                           {"origin_server", std::string{origin_server},                                    false},
-                           {"media_id",      std::string{media_id},                                         false},
-                           {"reason",        enabled ? "allow_remote=false" : "remote_fetch_enabled=false", false}
+        log_diagnostic("remote_fetch.refused", {
+                                                   {"origin_server", std::string{origin_server}, false},
+                                                   {"media_id",      std::string{media_id},      false},
+                                                   {"reason",
+                                                    !enabled               ? std::string{"remote_fetch_enabled=false"}
+                                                    : !remote.allow_remote ? std::string{"allow_remote=false"}
+                                                                           : policy.reason,
+                                                    false                                             }
         });
         return make_operation_result(false, {}, "media not found", 404U);
     }

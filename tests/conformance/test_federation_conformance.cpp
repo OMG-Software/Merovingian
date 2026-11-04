@@ -33,6 +33,7 @@
 #include "merovingian/federation/key_query.hpp"
 #include "merovingian/federation/membership_endpoints.hpp"
 #include "merovingian/federation/runtime_federation.hpp"
+#include "merovingian/federation/server_acl.hpp"
 #include "merovingian/homeserver/federation_request_routing.hpp"
 #include "merovingian/homeserver/local_http_router.hpp"
 #include "merovingian/homeserver/runtime.hpp"
@@ -3853,6 +3854,61 @@ SCENARIO("GET /timestamp_to_event/{roomId} answers an authenticated server throu
             THEN("the answer is 501 Not Implemented, as for every unwired route")
             {
                 REQUIRE(response.status == 501U);
+            }
+        }
+    }
+}
+
+// Client-Server API > Server Access Control Lists (ACLs) for rooms
+// (client-server-api.md, m.room.server_acl): the ACLs are applied in order, and the
+// last step is "5. Otherwise, deny." `allow` "defaults to an empty list when not
+// provided, effectively disallowing every server."
+SCENARIO("A server ACL without an allow entry disallows every server", "[conformance][federation][acl][acl-order]")
+{
+    using merovingian::federation::evaluate_server_acl;
+    using merovingian::federation::parse_server_acl;
+    using merovingian::federation::ServerAclDecision;
+
+    auto const acl_of = [](std::string_view const content) {
+        auto const parsed = merovingian::canonicaljson::parse_json(content);
+        REQUIRE(parsed.error == merovingian::canonicaljson::ParseError::none);
+        return parse_server_acl(parsed.value);
+    };
+
+    GIVEN("server ACL content that gives no allow list")
+    {
+        auto const only_deny = acl_of(R"({"deny":["evil.example"]})");
+        auto const nothing = acl_of("{}");
+        auto const empty_allow = acl_of(R"({"allow":[]})");
+
+        WHEN("a server that no list names is evaluated")
+        {
+            auto const under_only_deny = evaluate_server_acl("good.example", only_deny);
+            auto const under_nothing = evaluate_server_acl("good.example", nothing);
+            auto const under_empty_allow = evaluate_server_acl("good.example:8448", empty_allow);
+
+            THEN("the server is denied by the final step")
+            {
+                REQUIRE(under_only_deny.decision == ServerAclDecision::deny);
+                REQUIRE(under_nothing.decision == ServerAclDecision::deny);
+                REQUIRE(under_empty_allow.decision == ServerAclDecision::deny);
+            }
+        }
+    }
+
+    GIVEN("server ACL content that allows every server and denies one")
+    {
+        auto const acl = acl_of(R"({"allow":["*"],"deny":["evil.example"]})");
+
+        WHEN("each is evaluated")
+        {
+            auto const allowed = evaluate_server_acl("good.example", acl);
+            auto const denied = evaluate_server_acl("evil.example", acl);
+
+            THEN("only the server matching the allow list and not the deny list is allowed")
+            {
+                REQUIRE(allowed.decision == ServerAclDecision::allow);
+                REQUIRE(denied.decision == ServerAclDecision::deny);
             }
         }
     }

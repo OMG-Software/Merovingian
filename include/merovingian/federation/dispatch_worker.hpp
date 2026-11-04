@@ -72,6 +72,10 @@ struct DispatchWorkerConfig final
     // fetches what it missed itself once it is reachable (prev_events, /get_missing_events).
     // Zero derives it from max_queue_depth: see effective_max_pending_per_destination.
     std::size_t max_pending_per_destination{0U};
+    // Why the operator's policy excludes a destination, empty when it does not (ADR-0391). Enqueue refuses such a
+    // transaction and replay drops its durable row, so nothing queued can reach one: the policy cannot change
+    // while the process runs. Unset excludes nothing.
+    std::function<std::string(std::string_view destination)> destination_refusal{};
     // Maximum number of retry attempts before a transaction is dropped and
     // recorded as terminally failed. Matches the federation backoff curve.
     std::uint32_t max_retries{8U};

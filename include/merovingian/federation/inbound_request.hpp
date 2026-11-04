@@ -269,6 +269,9 @@ using RoomVersionResolver = std::function<std::string(std::string_view room_id)>
 // true when the server is allowed to participate in the room, or when the
 // room has no m.room.server_acl event. When unset, ACL checks are skipped.
 using RoomServerAclProvider = std::function<bool(std::string_view room_id, std::string_view server_name)>;
+// Why rules held outside the config refuse a server (an admin's scope-federation policy rule), empty when
+// they do not. See operator_policy_refusal.
+using ServerPolicyRefusalProvider = std::function<std::string(std::string_view server_name)>;
 // Optional probe for a PDU this server already stored (any status) in `room_id` (ADR-0285). The
 // transaction handler asks it before verifying a PDU's signatures, so a re-sent PDU costs no key lookup,
 // and answers a hit as handled without invoking pdu_sink. Unset means every PDU goes on to the sink,
@@ -411,6 +414,9 @@ struct FederationRuntimeState final
     // Optional provider for per-room server ACL enforcement (MSC4436).
     // When unset, ACL checks are skipped (e.g. in low-level unit tests).
     RoomServerAclProvider room_server_acl_provider{};
+    // Optional admin rules for operator_policy_refusal. A worker has no authority over them: its answer is empty
+    // and main judges what it relays (ADR-0358, ADR-0390).
+    ServerPolicyRefusalProvider server_policy_refusal_provider{};
     PduStoredProbe pdu_already_stored{};
 };
 
@@ -473,6 +479,12 @@ struct FederationResponse final
 auto upsert_remote(FederationRuntimeState& runtime, FederationRemoteRuntime remote) -> void;
 [[nodiscard]] auto federation_remote_is_known(FederationRuntimeState const& runtime, std::string_view server_name)
     -> bool;
+// Why the operator's policy refuses what `server_name` wrote, empty when it does not (ADR-0390): denied_servers,
+// the default_policy=deny allow list and the admin's rules, whichever server carried the event here. This server
+// is never refused its own events, and an empty name is left to the check that rejects a malformed sender. May take
+// runtime.mutex through the provider, so never call it from a task whose parent holds that mutex and waits.
+[[nodiscard]] auto operator_policy_refusal(FederationRuntimeState const& runtime, std::string_view server_name)
+    -> std::string;
 [[nodiscard]] auto authorize_federation_pdu(FederationPdu const& pdu, std::string_view expected_origin)
     -> FederationDecision;
 [[nodiscard]] auto authorize_federation_pdu(FederationPdu const& pdu, std::string_view expected_origin,

@@ -19,20 +19,29 @@
 #include "../support/registration_token.hpp"
 #include "merovingian/canonicaljson/parser.hpp"
 #include "merovingian/config/config.hpp"
+#include "merovingian/federation/dispatch_worker.hpp"
 #include "merovingian/federation/inbound_request.hpp"
 #include "merovingian/federation/security.hpp"
 #include "merovingian/homeserver/client_server.hpp"
 #include "merovingian/homeserver/local_http_router.hpp"
+#include "merovingian/homeserver/room_service.hpp"
 #include "merovingian/homeserver/runtime.hpp"
+#include "merovingian/rooms/room_version_policy.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <atomic>
 #include <chrono>
 #include <cstdint>
 #include <filesystem>
+#include <functional>
+#include <memory>
+#include <mutex>
 #include <optional>
 #include <string>
 #include <string_view>
+#include <utility>
+#include <vector>
 
 namespace
 {
@@ -185,6 +194,51 @@ auto constexpr local_server_name = std::string_view{"example.org"};
     return std::string{"{\"origin\":\""} + origin +
            "\",\"origin_server_ts\":1000,\"pdus\":[],\"edus\":[{\"edu_type\":\"m.typing\",\"content\":" + content +
            "}]}";
+}
+
+// The ACL fixture under an operator policy: `allowed` empty keeps default_policy=allow.
+[[nodiscard]] auto operator_policy_config(std::vector<std::string> denied, std::vector<std::string> allowed = {})
+    -> merovingian::config::Config
+{
+    auto config = acl_test_config();
+    config.security().federation.denied_servers = std::move(denied);
+    if (!allowed.empty())
+    {
+        config.security().federation.default_policy = "deny";
+        config.security().federation.allowed_servers = std::move(allowed);
+    }
+    return config;
+}
+
+// Counts what would have gone to the network for `watched`. It answers with the key the fixtures sign with.
+[[nodiscard]] auto counting_key_resolver(
+    std::shared_ptr<std::atomic<int>> lookups, // SHARED_PTR: reviewed — the test and the resolver both read the count
+    std::string watched, std::string key_seed)
+    -> std::function<std::optional<merovingian::federation::FederationRemoteRuntime>(std::string_view,
+                                                                                     std::string_view)>
+{
+    return [lookups = std::move(lookups), watched = std::move(watched), key_seed = std::move(key_seed)](
+               std::string_view server_name,
+               std::string_view key_id) -> std::optional<merovingian::federation::FederationRemoteRuntime> {
+        if (server_name == watched)
+        {
+            ++*lookups;
+        }
+        return remote_for(std::string{server_name}, std::string{key_id}, key_seed);
+    };
+}
+
+// The error /send reports for the one PDU it was given, or empty when it reports none.
+[[nodiscard]] auto single_pdu_error(std::string const& response_body) -> std::string
+{
+    auto const pdus = pdu_errors_object(response_body);
+    if (!pdus.has_value() || pdus->empty())
+    {
+        return {};
+    }
+    auto const* entry = std::get_if<merovingian::canonicaljson::Object>(&pdus->front().value->storage());
+    auto const* error_text = entry == nullptr ? nullptr : string_member(*entry, "error");
+    return error_text == nullptr ? std::string{} : *error_text;
 }
 
 } // namespace
@@ -443,7 +497,7 @@ SCENARIO("Server ACL is enforced through the local router's federation Authoriza
 
         auto const token = register_and_login(runtime, "aclauth", "CorrectHorse7!", "ACL_AUTH");
         auto const room_id = create_room(runtime, token);
-        REQUIRE(set_server_acl(runtime, token, room_id, R"({"deny":["evil.org"]})"));
+        REQUIRE(set_server_acl(runtime, token, room_id, R"({"allow":["*"],"deny":["evil.org"]})"));
 
         auto const origin = std::string{"evil.org"};
         auto const key_id = std::string{"ed25519:auto"};
@@ -463,6 +517,262 @@ SCENARIO("Server ACL is enforced through the local router's federation Authoriza
                 REQUIRE(response.status == 403U);
                 auto const parsed = parse_object(response.body);
                 REQUIRE(*string_member(parsed, "errcode") == "M_FORBIDDEN");
+            }
+        }
+    }
+}
+
+// --- The operator's own federation policy, for the server that wrote an event --
+// The spec defines no operator-level server deny, so these are this project's rules (ADR-0390, ADR-0391):
+// security.federation.denied_servers, default_policy=deny and an admin's scope-federation rule hold for what a
+// server wrote however it reaches us, and nothing is sent to or fetched from a server they exclude.
+SCENARIO("A relayed PDU whose sender's server the operator excludes is refused without a key lookup",
+         "[integration][federation][security][operator-policy]")
+{
+    auto const allowed_origin = std::string{"matrix.ping.me.uk"};
+    auto const key_id = std::string{"ed25519:auto"};
+    auto const key_seed = std::string{"operator-policy-key"};
+
+    auto const send_relayed = [&](merovingian::homeserver::ClientServerRuntime& runtime, std::string const& token,
+                                  std::string const& sender_server, std::string const& txn) {
+        auto const room_id = create_room(runtime, token);
+        merovingian::federation::upsert_remote(runtime.homeserver.federation,
+                                               remote_for(allowed_origin, key_id, key_seed));
+        auto const pdu_json = signed_message_pdu(room_id, "someone", sender_server, key_id, key_seed);
+        auto const body = std::string{"{\"origin\":\""} + allowed_origin + "\",\"origin_server_ts\":1000,\"pdus\":[" +
+                          pdu_json + "]}";
+        return make_federation_request(runtime.homeserver, "PUT", "/_matrix/federation/v1/send/" + txn, body,
+                                       allowed_origin, key_id);
+    };
+
+    GIVEN("a server that lists evil.org in denied_servers")
+    {
+        auto started = merovingian::homeserver::start_client_server(operator_policy_config({"evil.org"}));
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        merovingian::homeserver::wire_federation_callbacks(runtime.homeserver);
+        auto const lookups = std::make_shared<std::atomic<int>>(0);
+        runtime.homeserver.federation.remote_key_resolver = counting_key_resolver(lookups, "evil.org", key_seed);
+        auto const token = register_and_login(runtime, "opdeny", "CorrectHorse7!", "OP_DENY");
+
+        WHEN("an allowed peer relays a PDU that a user on evil.org wrote")
+        {
+            auto const response = send_relayed(runtime, token, "evil.org", "txn-op-denied");
+
+            THEN("the transaction succeeds, the PDU is refused, and no key is fetched for evil.org")
+            {
+                REQUIRE(response.status == 200U);
+                REQUIRE(single_pdu_error(response.body).find("operator policy") != std::string::npos);
+                REQUIRE(lookups->load() == 0);
+            }
+        }
+
+        WHEN("an allowed peer relays a PDU that a user on another server wrote")
+        {
+            auto const response = send_relayed(runtime, token, "other.example.net", "txn-op-other");
+
+            THEN("the operator's policy is not what refuses it")
+            {
+                REQUIRE(response.status == 200U);
+                REQUIRE(single_pdu_error(response.body).find("operator policy") == std::string::npos);
+            }
+        }
+    }
+
+    GIVEN("a server federating only with an allow list")
+    {
+        auto started = merovingian::homeserver::start_client_server(operator_policy_config({}, {allowed_origin}));
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        merovingian::homeserver::wire_federation_callbacks(runtime.homeserver);
+        auto const lookups = std::make_shared<std::atomic<int>>(0);
+        runtime.homeserver.federation.remote_key_resolver =
+            counting_key_resolver(lookups, "unlisted.example", key_seed);
+        auto const token = register_and_login(runtime, "opallow", "CorrectHorse7!", "OP_ALLOW");
+
+        WHEN("a listed peer relays a PDU that a user on an unlisted server wrote")
+        {
+            auto const response = send_relayed(runtime, token, "unlisted.example", "txn-op-unlisted");
+
+            THEN("the PDU is refused and no key is fetched for the unlisted server")
+            {
+                REQUIRE(response.status == 200U);
+                REQUIRE(single_pdu_error(response.body).find("operator policy") != std::string::npos);
+                REQUIRE(lookups->load() == 0);
+            }
+        }
+    }
+
+    GIVEN("a server with an admin's federation deny rule for evil.org")
+    {
+        auto started = merovingian::homeserver::start_client_server(acl_test_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        merovingian::homeserver::wire_federation_callbacks(runtime.homeserver);
+        auto const lookups = std::make_shared<std::atomic<int>>(0);
+        runtime.homeserver.federation.remote_key_resolver = counting_key_resolver(lookups, "evil.org", key_seed);
+        auto const token = register_and_login(runtime, "oprule", "CorrectHorse7!", "OP_RULE");
+        {
+            auto const guard = std::lock_guard{runtime.homeserver.mutex};
+            runtime.homeserver.database.persistent_store.policy_rules.push_back(
+                {"rule-evil", "federation", "evil.org", "deny", ""});
+        }
+
+        WHEN("an allowed peer relays a PDU that a user on evil.org wrote")
+        {
+            auto const response = send_relayed(runtime, token, "evil.org", "txn-op-rule");
+
+            THEN("the PDU is refused and no key is fetched for evil.org")
+            {
+                REQUIRE(response.status == 200U);
+                REQUIRE(single_pdu_error(response.body).find("operator policy") != std::string::npos);
+                REQUIRE(lookups->load() == 0);
+            }
+        }
+    }
+}
+
+SCENARIO("Operator policy never refuses this server's own events", "[integration][federation][operator-policy]")
+{
+    GIVEN("federation state on an allow list that does not name this server")
+    {
+        auto config = merovingian::federation::RuntimeFederationConfig{};
+        config.enabled = true;
+        config.default_policy = "deny";
+        config.allowed_servers = {"listed.example"};
+        config.server_name = "self.example";
+        auto const state = merovingian::federation::make_federation_runtime_state(std::move(config));
+
+        WHEN("each kind of server name is judged")
+        {
+            auto const own = merovingian::federation::operator_policy_refusal(state, "self.example");
+            auto const listed = merovingian::federation::operator_policy_refusal(state, "listed.example");
+            auto const unlisted = merovingian::federation::operator_policy_refusal(state, "unlisted.example");
+
+            THEN("only the server off the list is refused")
+            {
+                REQUIRE(own.empty());
+                REQUIRE(listed.empty());
+                REQUIRE_FALSE(unlisted.empty());
+            }
+        }
+    }
+}
+
+SCENARIO("A send_join answer loses what an excluded server wrote and fetches no key for it",
+         "[integration][federation][security][operator-policy]")
+{
+    GIVEN("a joining server that lists evil.org in denied_servers, and an answer from two servers")
+    {
+        auto started = merovingian::homeserver::start_client_server(operator_policy_config({"evil.org"}));
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        merovingian::homeserver::wire_federation_callbacks(runtime.homeserver);
+        auto const key_id = std::string{"ed25519:auto"};
+        auto const key_seed = std::string{"operator-policy-join-key"};
+        auto const lookups = std::make_shared<std::atomic<int>>(0);
+        runtime.homeserver.federation.cached_pdu_key_lookup = {};
+        runtime.homeserver.federation.remote_key_resolver = counting_key_resolver(lookups, "evil.org", key_seed);
+
+        auto const room_id = std::string{"!joining:good.example"};
+        auto const event_of = [&](std::string const& server) {
+            return merovingian::canonicaljson::parse_lossless(
+                       signed_message_pdu(room_id, "someone", server, key_id, key_seed))
+                .value;
+        };
+        auto answer = merovingian::canonicaljson::Array{};
+        answer.push_back(event_of("evil.org"));
+        answer.push_back(event_of("good.example"));
+        auto const* policy = merovingian::rooms::find_room_version_policy("12");
+        REQUIRE(policy != nullptr);
+
+        WHEN("the answer is filtered")
+        {
+            auto const kept = merovingian::homeserver::filter_verified_send_join_events(runtime.homeserver, answer,
+                                                                                        *policy, local_server_name);
+
+            THEN("only the allowed server's event is kept and evil.org is never asked for a key")
+            {
+                REQUIRE(kept.size() == 1U);
+                REQUIRE(lookups->load() == 0);
+            }
+        }
+    }
+}
+
+SCENARIO("A signed outbound call to a server the operator excludes is not made",
+         "[integration][federation][security][operator-policy]")
+{
+    GIVEN("a server that lists evil.org in denied_servers and allows only friend.example otherwise")
+    {
+        auto started =
+            merovingian::homeserver::start_client_server(operator_policy_config({"evil.org"}, {"friend.example"}));
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        merovingian::homeserver::wire_federation_callbacks(runtime.homeserver);
+        auto const signing_key = merovingian::homeserver::ensure_runtime_server_signing_key(runtime.homeserver);
+        REQUIRE(signing_key.has_value());
+        auto const call_to = [&](std::string const& destination) {
+            auto const transaction = merovingian::federation::make_outbound_transaction(
+                destination, "GET", "/_matrix/federation/v1/version", local_server_name, {});
+            return merovingian::homeserver::perform_sync_outbound_call(
+                runtime.homeserver, merovingian::homeserver::OutboundAnswerTrust::unverified, {}, transaction,
+                signing_key->key_id,
+                merovingian::core::SecretBuffer{runtime.homeserver.database.signing_secret_key.bytes()},
+                "test.operator_policy", 5U);
+        };
+
+        WHEN("a call is attempted to a denied server and to one off the allow list")
+        {
+            auto const [denied_ok, denied_body] = call_to("evil.org");
+            auto const [unlisted_ok, unlisted_body] = call_to("unlisted.example");
+
+            THEN("neither is made and each answer names the policy")
+            {
+                REQUIRE_FALSE(denied_ok);
+                REQUIRE(denied_body == "remote server is denied");
+                REQUIRE_FALSE(unlisted_ok);
+                REQUIRE(unlisted_body == "remote server is not in federation allow list");
+            }
+        }
+    }
+}
+
+SCENARIO("sendToDevice answers 200 and queues nothing for a server the operator excludes",
+         "[integration][federation][security][operator-policy]")
+{
+    GIVEN("a server that lists evil.org in denied_servers, with its dispatch worker not started")
+    {
+        auto started = merovingian::homeserver::start_client_server(operator_policy_config({"evil.org"}));
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        merovingian::homeserver::wire_federation_callbacks(runtime.homeserver);
+        REQUIRE(runtime.homeserver.outbound_client != nullptr);
+        auto worker_config = merovingian::federation::DispatchWorkerConfig{};
+        worker_config.origin = runtime.homeserver.config.server().server_name;
+        worker_config.key_id = "ed25519:test";
+        runtime.homeserver.dispatch_worker = std::make_unique<merovingian::federation::DispatchWorker>(
+            std::move(worker_config), *runtime.homeserver.outbound_client,
+            [](std::string_view) {
+                return std::optional<merovingian::federation::ServerDiscoveryResult>{};
+            },
+            merovingian::federation::DispatchClock{}, merovingian::federation::DispatchSleep{},
+            &runtime.homeserver.database.persistent_store);
+        auto const token = register_and_login(runtime, "opdevice", "CorrectHorse7!", "OP_DEVICE");
+
+        WHEN("a user sends a to-device message to one user on evil.org and one elsewhere")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                runtime, {"PUT", "/_matrix/client/v3/sendToDevice/m.test/op1", token,
+                          R"({"messages":{"@x:evil.org":{"*":{}},"@y:good.example":{"*":{}}}})"});
+
+            THEN("the request succeeds and only the other server has a transaction queued")
+            {
+                REQUIRE(response.response.status == 200U);
+                auto const guard = std::lock_guard{runtime.homeserver.mutex};
+                auto const& queued = runtime.homeserver.database.persistent_store.federation_transactions;
+                REQUIRE(queued.size() == 1U);
+                REQUIRE(queued.front().server_name == "good.example");
             }
         }
     }

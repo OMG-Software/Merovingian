@@ -1123,3 +1123,73 @@ SCENARIO("A slow success grows the destination's backoff", "[f20][federation][di
         }
     }
 }
+
+// The operator's federation policy reaches outbound traffic (ADR-0391): a destination it excludes is sent
+// nothing, whether the transaction is new or a row persisted before the policy changed.
+SCENARIO("Dispatch worker sends nothing to a destination the operator's policy excludes",
+         "[federation][dispatch-worker][operator-policy]")
+{
+    GIVEN("a worker whose policy excludes excluded.example.org")
+    {
+        auto store = merovingian::database::PersistentStore{};
+        auto client = merovingian::http::OutboundClient{};
+        auto resolver_calls = std::make_shared<std::atomic<int>>(0);
+        auto resolver = merovingian::federation::DispatchResolver{[resolver_calls](std::string_view) {
+            ++*resolver_calls;
+            return std::optional<merovingian::federation::ServerDiscoveryResult>{};
+        }};
+        auto config = worker_config();
+        config.destination_refusal = [](std::string_view destination) -> std::string {
+            return destination == "excluded.example.org" ? "remote server is denied" : "";
+        };
+
+        WHEN("a transaction for that destination is enqueued")
+        {
+            auto worker =
+                merovingian::federation::DispatchWorker{std::move(config), client, std::move(resolver), {}, {}, &store};
+            auto const accepted = worker.enqueue(sample_transaction("excluded.example.org"));
+            auto const other_accepted = worker.enqueue(sample_transaction("allowed.example.org"));
+
+            THEN("it is refused and leaves no durable row, while another destination is queued")
+            {
+                REQUIRE_FALSE(accepted);
+                REQUIRE(other_accepted);
+                REQUIRE(worker.summary().enqueued == 1U);
+                REQUIRE(store.federation_transactions.size() == 1U);
+                REQUIRE(store.federation_transactions.front().server_name == "allowed.example.org");
+            }
+        }
+
+        WHEN("a row for that destination was persisted before the policy excluded it, and the worker replays")
+        {
+            auto row = merovingian::database::PersistentFederationTransaction{};
+            row.transaction_id = "txn-excluded";
+            row.server_name = "excluded.example.org";
+            row.method = "PUT";
+            row.target = "/_matrix/federation/v1/send/txn-excluded";
+            row.origin = "origin.example.org";
+            row.body = R"({"pdus":[]})";
+            store.federation_transactions.push_back(row);
+            row.transaction_id = "txn-allowed";
+            row.server_name = "allowed.example.org";
+            row.target = "/_matrix/federation/v1/send/txn-allowed";
+            store.federation_transactions.push_back(row);
+
+            auto worker =
+                merovingian::federation::DispatchWorker{std::move(config), client, std::move(resolver), {}, {}, &store};
+            auto const replayed = worker.replay_pending();
+            auto const ran = worker.run_once();
+
+            THEN("that row is dropped without an attempt and only the other destination is resolved")
+            {
+                REQUIRE(replayed == 1U);
+                REQUIRE(ran);
+                REQUIRE(worker.summary().dropped == 1U);
+                REQUIRE(resolver_calls->load() == 1);
+                REQUIRE(std::ranges::none_of(store.federation_transactions, [](auto const& kept) {
+                    return kept.server_name == "excluded.example.org";
+                }));
+            }
+        }
+    }
+}

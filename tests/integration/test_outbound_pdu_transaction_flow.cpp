@@ -684,3 +684,57 @@ SCENARIO("A membership event accepted as the resident is queued for an intereste
         }
     }
 }
+
+// ADR-0391: a room's fan-out skips a server the operator's policy excludes, though it has members there.
+SCENARIO("A room event is not sent to a server the operator's policy excludes",
+         "[integration][federation][operator-policy]")
+{
+    GIVEN("alice's room with members on an excluded server and on another server")
+    {
+        REQUIRE(sodium_init() >= 0);
+        auto started = merovingian::homeserver::start_client_server(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        runtime.homeserver.federation.config.denied_servers = {"evil.example.org"};
+        install_unstarted_dispatch_worker(runtime);
+        auto const registration = call(runtime, "POST", "/_matrix/client/v3/register", {},
+                                       merovingian::tests::registration_json("alice", "CorrectHorse7!"));
+        REQUIRE(registration.response.status == 200U);
+        auto const registration_body = parse_object(registration.response.body);
+        auto const token = std::string{*string_member(registration_body, "access_token")};
+        auto const created =
+            call(runtime, "POST", "/_matrix/client/v3/createRoom", token, R"({"preset":"public_chat"})");
+        REQUIRE(created.response.status == 200U);
+        auto const created_body = parse_object(created.response.body);
+        auto const room_id = std::string{*string_member(created_body, "room_id")};
+        {
+            auto const lock = std::lock_guard{runtime.homeserver.mutex};
+            auto const room =
+                std::ranges::find_if(runtime.homeserver.database.rooms, [&room_id](auto const& candidate) {
+                    return candidate.room_id == room_id;
+                });
+            REQUIRE(room != runtime.homeserver.database.rooms.end());
+            room->members.emplace_back("@bob:remote.example.org");
+            room->members.emplace_back("@eve:evil.example.org");
+        }
+
+        WHEN("alice sends a message")
+        {
+            auto const sent = call(runtime, "PUT", "/_matrix/client/v3/rooms/" + room_id + "/send/m.room.message/t1",
+                                   token, R"({"msgtype":"m.text","body":"hello"})");
+            REQUIRE(sent.response.status == 200U);
+
+            THEN("the other server has a transaction and the excluded server has none")
+            {
+                auto const lock = std::lock_guard{runtime.homeserver.mutex};
+                auto const& queued = runtime.homeserver.database.persistent_store.federation_transactions;
+                REQUIRE(std::ranges::any_of(queued, [](auto const& transaction) {
+                    return transaction.server_name == "remote.example.org";
+                }));
+                REQUIRE(std::ranges::none_of(queued, [](auto const& transaction) {
+                    return transaction.server_name == "evil.example.org";
+                }));
+            }
+        }
+    }
+}

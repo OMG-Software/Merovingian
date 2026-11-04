@@ -687,6 +687,7 @@ namespace
         std::string event_id{};
         std::string refusal{};
         bool locally_denied{false};
+        bool policy_refused{false};
     };
 
     // `authorised_here` is this server's name when the relay is a send_join
@@ -710,6 +711,12 @@ namespace
         if (sender_server.empty() || federation::signature_key_ids_for_server(pdu.signatures, sender_server).empty())
         {
             return {{}, "relayed event has no signature from its sender's server"};
+        }
+        // ADR-0390: the operator's policy for the server that wrote it, before any of its keys is looked up.
+        if (auto const policy_refusal = federation::operator_policy_refusal(runtime.federation, sender_server);
+            !policy_refusal.empty())
+        {
+            return {{}, "server is denied by operator policy", false, true};
         }
         // No trustworthy client address travels in these relay frames. All
         // main relay misses share the bounded unknown-source bucket; never let
@@ -766,6 +773,7 @@ namespace
         std::optional<federation::InboundPduEnvelope> envelope{};
         std::string refusal{};
         bool locally_denied{false};
+        bool policy_refused{false};
     };
 
     // Rebuilds the envelope from the verified event JSON rather than taking
@@ -781,7 +789,7 @@ namespace
         auto const signature = verify_relayed_event_signature(runtime, frame.json, room_version, authorised_here);
         if (!signature.refusal.empty())
         {
-            return {std::nullopt, signature.refusal, signature.locally_denied};
+            return {std::nullopt, signature.refusal, signature.locally_denied, signature.policy_refused};
         }
         auto envelope = federation::parse_inbound_pdu_envelope(frame.json, room_version);
         if (!envelope.has_value())
@@ -904,8 +912,9 @@ auto handle_pdu_ingest_request(HomeserverRuntime& runtime, std::string_view requ
     if (!relayed.envelope.has_value())
     {
         log_relay_refused("pdu_ingest", frame.event_id, relayed.refusal);
-        return {relayed.locally_denied ? federation::PduIngestionStatus::main_overloaded
-                                       : federation::PduIngestionStatus::rejected_invalid,
+        return {relayed.policy_refused   ? federation::PduIngestionStatus::rejected_acl
+                : relayed.locally_denied ? federation::PduIngestionStatus::main_overloaded
+                                         : federation::PduIngestionStatus::rejected_invalid,
                 relayed.refusal};
     }
     // F-24: the server the verified event's sender belongs to is judged too, so a denied server cannot relay

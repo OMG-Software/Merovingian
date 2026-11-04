@@ -1000,6 +1000,70 @@ SCENARIO("ingest_pdu_event backfills a missing prev_event from the sending serve
     }
 }
 
+// ADR-0390: an event fetched to fill a gap is held to the operator's policy for the server that wrote it, as one
+// received in /send is. The spec defines no operator-level server deny.
+SCENARIO("A backfilled event written by a server under an admin's deny rule is not stored",
+         "[pdu_ingestion][backfill][operator-policy]")
+{
+    GIVEN("a room with a gap, an admin deny rule for the server that wrote the missing event, and a peer serving it")
+    {
+        auto const path = unique_sqlite_path();
+        std::filesystem::remove(path);
+        auto started = merovingian::homeserver::start_runtime(config_with_sqlite(path));
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        merovingian::homeserver::wire_federation_callbacks(runtime);
+        auto const room_id = std::string{"!backfill-policy:local.example.org"};
+        seed_room_with_genesis_state_group(runtime, room_id);
+        runtime.database.persistent_store.policy_rules.push_back(
+            {"rule-backfill", "federation", std::string{remote_server}, "deny", ""});
+
+        auto const auth_event_ids =
+            std::vector<std::string>{room_id + ":create", room_id + ":pl", room_id + ":member:bob"};
+        auto const missing_event = make_remote_message_pdu(room_id, {room_id + ":member"}, auth_event_ids, 3, 10);
+        auto const pdu = make_remote_message_pdu(room_id, {missing_event.event_id}, auth_event_ids, 4, 20);
+
+        auto certificate = merovingian::tests::tls_mock::write_test_tls_certificate("localhost");
+        auto tls_context_result = merovingian::homeserver::make_tls_server_context(certificate.certificate_file,
+                                                                                   certificate.private_key_file);
+        REQUIRE(tls_context_result.ok());
+        auto tls_context = std::move(*tls_context_result.context);
+        auto acceptor = merovingian::net::TcpAcceptor{};
+        REQUIRE(acceptor.bind("127.0.0.1", 0U).ok);
+        auto const port = acceptor.bound_port();
+        REQUIRE(port > 0U);
+        runtime.test_forced_outbound_resolution[remote_server] =
+            merovingian::homeserver::TestOnlyForcedOutboundResolution{
+                "localhost", port, {"127.0.0.1"}, certificate.certificate_pem};
+        runtime.federation.remote_key_resolver =
+            [](std::string_view, std::string_view) -> std::optional<merovingian::federation::FederationRemoteRuntime> {
+            return remote_runtime();
+        };
+        auto captured_request = std::string{};
+        auto const http_response =
+            merovingian::tests::tls_mock::json_http_response("200 OK", get_missing_events_response(missing_event.json));
+        auto server_thread = std::thread{[&]() {
+            run_body_aware_tls_server(acceptor, tls_context, http_response, &captured_request);
+        }};
+        auto const join_server = merovingian::tests::tls_mock::ScopedThreadJoin{server_thread};
+        std::ignore = join_server;
+
+        WHEN("the event that needs it is ingested")
+        {
+            std::ignore = merovingian::homeserver::ingest_pdu_event(runtime, pdu);
+
+            THEN("the fetched event is not stored")
+            {
+                REQUIRE(std::ranges::none_of(runtime.database.persistent_store.events, [&](auto const& event) {
+                    return event.event_id == missing_event.event_id;
+                }));
+            }
+        }
+
+        std::filesystem::remove(path);
+    }
+}
+
 // Spec: Matrix Server-Server API v1.19
 // Endpoint / Section: Checks performed on receipt of a PDU, step 5
 // URL: ../../docs/matrix-v1.19-spec/server-server-api.md#checks-performed-on-receipt-of-a-pdu

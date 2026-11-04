@@ -1321,6 +1321,11 @@ namespace
                 auto refused = std::vector<std::string>{};
                 for (auto const& destination : remote_servers)
                 {
+                    // ADR-0391: not a refusal to report; the operator said this server gets nothing.
+                    if (!federation::federation_server_policy(runtime.federation.config, destination).allowed)
+                    {
+                        continue;
+                    }
                     auto const tx_id = federation::make_federation_transaction_id();
                     auto target = "/_matrix/federation/v1/send/" + tx_id;
                     auto transaction =
@@ -2585,6 +2590,18 @@ auto apply_membership_to_roster(HomeserverRuntime& runtime, std::string_view roo
                                              {"reason", "deadline exceeded", false}
         });
         return {false, "deadline exceeded"};
+    }
+    // ADR-0391: every signed call this process makes goes through here, so a server the operator excludes is
+    // not called, by a join, a query or a proxied worker call. The caller answers as for any server that failed.
+    if (auto policy = federation::federation_server_policy(runtime.federation.config, transaction.destination);
+        !policy.allowed)
+    {
+        log_diagnostic(diagnostic_event,
+                       {
+                           {"destination", transaction.destination, false},
+                           {"reason",      policy.reason,           false}
+        });
+        return {false, std::move(policy.reason)};
     }
     // Test-only: bypass discover_server() entirely when the destination has a
     // forced resolution wired (see TestOnlyForcedOutboundResolution in
@@ -4538,6 +4555,19 @@ auto filter_verified_send_join_events(HomeserverRuntime& runtime, canonicaljson:
     {
         return {};
     }
+    // ADR-0390: the operator's policy for each server that wrote part of the answer. Asked once per server, since
+    // a large room's answer has thousands of events and the admin's rules are read under runtime.mutex.
+    auto policy_refused_servers = std::map<std::string, bool, std::less<>>{};
+    auto const refused_by_policy = [&runtime, &policy_refused_servers](std::string_view server) {
+        auto const known = policy_refused_servers.find(server);
+        if (known != policy_refused_servers.end())
+        {
+            return known->second;
+        }
+        auto const refused = !federation::operator_policy_refusal(runtime.federation, server).empty();
+        policy_refused_servers.emplace(std::string{server}, refused);
+        return refused;
+    };
     // Pre-resolve distinct (sender_domain, key_id) pairs in parallel so a state
     // array carrying one m.room.member per room member (thousands for a large
     // room) does not pay N serial key discovery+fetch round trips. Mirrors the
@@ -4564,7 +4594,8 @@ auto filter_verified_send_join_events(HomeserverRuntime& runtime, canonicaljson:
             // without restricted joins has no such rule to check (ADR-0356).
             if (auto const authorising =
                     policy.restricted_join_rule ? federation::join_authorising_signature_key(entry) : std::nullopt;
-                authorising.has_value() && authorising->server_name != our_server)
+                authorising.has_value() && authorising->server_name != our_server &&
+                !refused_by_policy(authorising->server_name))
             {
                 for (auto const& authorising_key_id : authorising->key_ids)
                 {
@@ -4576,7 +4607,7 @@ auto filter_verified_send_join_events(HomeserverRuntime& runtime, canonicaljson:
                 }
             }
             auto const dom = sender_domain_from_user_id(parsed.event.sender);
-            if (dom.empty() || dom == our_server)
+            if (dom.empty() || dom == our_server || refused_by_policy(dom))
             {
                 continue;
             }
@@ -4653,6 +4684,16 @@ auto filter_verified_send_join_events(HomeserverRuntime& runtime, canonicaljson:
         auto const dom = sender_domain_from_user_id(parsed.event.sender);
         if (dom.empty())
         {
+            continue;
+        }
+        if (refused_by_policy(dom))
+        {
+            log_diagnostic("room.join.state_event_rejected",
+                           {
+                               {"sender_domain", std::string{dom},                      false},
+                               {"reason",        "server is denied by operator policy", false}
+            },
+                           observability::LogEventSeverity::warning);
             continue;
         }
         if (federation::signature_key_ids_for_server(parsed.event.signatures, dom).empty())

@@ -3138,6 +3138,21 @@ namespace
             return federation::room_server_acl_allows(rt->database.persistent_store, room_id, server_name);
         };
 
+        // ADR-0390: an admin's rule for the server that wrote an event. Read at call time because a worker sets
+        // the flag after wiring: its store is no authority over rules, and main judges what it relays.
+        runtime.federation.server_policy_refusal_provider = [rt](std::string_view server_name) -> std::string {
+            if (rt->federation_policy_decided_upstream)
+            {
+                return {};
+            }
+            auto const decision = evaluate_inbound_federation_policy(*rt, server_name, false);
+            if (decision.allowed)
+            {
+                return {};
+            }
+            return decision.reason.public_summary.empty() ? decision.reason.code : decision.reason.public_summary;
+        };
+
         if (outbound && discovery)
         {
             // Prefer the TTL-bounded discovery cache so repeated key resolutions
@@ -3188,6 +3203,19 @@ namespace
                     runtime.database.persistent_store, *outbound, *discovery, timeout, key_clock,
                     runtime.config.server().server_name, mirror_refresh);
             }
+            // ADR-0391: a key fetch is outbound traffic like any other, so a server the operator excludes is not
+            // asked for one on any path. Only the config is read here: this runs on key-resolution tasks, which
+            // must not wait for runtime.mutex (ADR-0390 judges the admin's rules before they start).
+            runtime.federation.remote_key_resolver =
+                [policy = runtime.federation.config, resolver = std::move(runtime.federation.remote_key_resolver)](
+                    std::string_view server_name,
+                    std::string_view key_id) -> std::optional<federation::FederationRemoteRuntime> {
+                if (!federation::federation_server_policy(policy, server_name).allowed)
+                {
+                    return std::nullopt;
+                }
+                return resolver(server_name, key_id);
+            };
             auto key = ensure_runtime_server_signing_key(runtime);
             auto constexpr expected_secret_bytes = crypto::ed25519_secret_key_bytes;
             if (!key.has_value() || runtime.database.signing_secret_key.bytes().size() != expected_secret_bytes)
@@ -3203,6 +3231,9 @@ namespace
             dispatch_config.max_retries = runtime.federation.config.outbound_max_retries;
             dispatch_config.delivery_threads = runtime.federation.config.outbound_delivery_threads;
             dispatch_config.key_id = key->key_id;
+            dispatch_config.destination_refusal = [policy = runtime.federation.config](std::string_view destination) {
+                return federation::federation_server_policy(policy, destination).reason;
+            };
             // Move the signing key into the worker's own mlocked, zeroised
             // SecretBuffer rather than an unpinned std::string. The runtime
             // retains its own SecretBuffer; both are wiped independently.
@@ -3885,6 +3916,22 @@ namespace
             {
                 return true;
             }
+        }
+
+        // ADR-0390: the operator's policy holds for the server that wrote the event, whichever peer served it, and
+        // before any of its keys is looked up. An event we already hold has been answered above.
+        if (auto const refusal =
+                federation::operator_policy_refusal(runtime.federation, sender_domain_from_user_id(pdu.sender));
+            !refusal.empty())
+        {
+            log_diagnostic(
+                "backfill.policy_rejected",
+                {
+                    {"event_id", pdu.event_id, false},
+                    {"room_id",  pdu.room_id,  false},
+                    {"reason",   refusal,      false}
+            });
+            return false;
         }
 
         auto effective_pdu = parsed.value;

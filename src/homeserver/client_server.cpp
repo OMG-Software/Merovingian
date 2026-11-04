@@ -414,6 +414,12 @@ namespace
     auto dispatch_edu_to_server(HomeserverRuntime& runtime, std::string_view destination, std::string_view edu_type,
                                 std::string_view edu_content_json) -> bool
     {
+        // ADR-0391: nothing goes to a server the operator excludes, and that is not a failure of the caller's
+        // request. PUT /sendToDevice lists no error for it, so a message to such a server is answered 200.
+        if (!federation::federation_server_policy(runtime.federation.config, destination).allowed)
+        {
+            return true;
+        }
         wire_federation_callbacks(runtime);
         if (runtime.dispatch_worker == nullptr)
         {

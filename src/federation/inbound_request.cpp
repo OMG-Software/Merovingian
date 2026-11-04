@@ -2489,6 +2489,20 @@ auto upsert_remote(FederationRuntimeState& runtime, FederationRemoteRuntime remo
     runtime.remotes.push_back(std::move(remote));
 }
 
+auto operator_policy_refusal(FederationRuntimeState const& runtime, std::string_view server_name) -> std::string
+{
+    if (server_name.empty() || server_name == runtime.config.server_name)
+    {
+        return {};
+    }
+    auto policy = federation_server_policy(runtime.config, server_name);
+    if (!policy.allowed)
+    {
+        return std::move(policy.reason);
+    }
+    return runtime.server_policy_refusal_provider ? runtime.server_policy_refusal_provider(server_name) : std::string{};
+}
+
 auto federation_remote_is_known(FederationRuntimeState const& runtime, std::string_view server_name) -> bool
 {
     auto guard = federation_guard(runtime);
@@ -3696,6 +3710,16 @@ namespace
         // not the peer's fault, but a transaction carrying one is still no evidence of good behaviour.
         auto pdu_verification_failures = std::size_t{0U};
         auto local_key_resolution_denied = false;
+        // The operator's policy for each server that wrote a PDU here (ADR-0390), judged once per transaction.
+        auto policy_refusals = std::map<std::string, std::string, std::less<>>{};
+        auto const policy_refusal_for = [&runtime, &policy_refusals](std::string_view server) -> std::string const& {
+            auto const known = policy_refusals.find(server);
+            if (known != policy_refusals.end())
+            {
+                return known->second;
+            }
+            return policy_refusals.emplace(std::string{server}, operator_policy_refusal(runtime, server)).first->second;
+        };
         // Pre-resolve distinct relayed sender-domain signing keys in parallel so a
         // large inbound transaction carrying PDUs from many senders does not pay N
         // serial discovery+fetch round-trips. Each task writes a disjoint slot in
@@ -3715,6 +3739,11 @@ namespace
                 auto const pdu = parse_federation_pdu(encoded_pdu, runtime.room_version_resolver);
                 auto const dom = std::string{sender_domain(pdu.sender)};
                 if (dom.empty() || dom == request.origin)
+                {
+                    continue;
+                }
+                // ADR-0390: refused in the loop below, and no key is fetched from that server.
+                if (!policy_refusal_for(dom).empty())
                 {
                     continue;
                 }
@@ -3799,6 +3828,25 @@ namespace
                                           canonicaljson::make_member("error", canonicaljson::Value{reason})}}));
                     continue;
                 }
+            }
+
+            // ADR-0390: the operator's policy holds for the server that wrote the PDU, whichever peer carried it.
+            // Like the ACL above this says nothing about the peer, so it is charged nothing.
+            if (auto const& refusal = policy_refusal_for(pdu_sender_dom); !refusal.empty())
+            {
+                auto const reason = std::string{"server is denied by operator policy"};
+                log_diagnostic("pdu.policy_rejected", {
+                                                          {"origin",         request.origin,              false},
+                                                          {"transaction_id", transaction.transaction_id,  false},
+                                                          {"event_id",       pdu.event_id,                false},
+                                                          {"sender_server",  std::string{pdu_sender_dom}, false},
+                                                          {"reason",         refusal,                     false}
+                });
+                audit_federation(runtime, "federation.policy_rejected", request.origin, request.target, refusal);
+                pdu_errors.push_back(canonicaljson::make_member(
+                    pdu.event_id, canonicaljson::Value{canonicaljson::Object{
+                                      canonicaljson::make_member("error", canonicaljson::Value{reason})}}));
+                continue;
             }
 
             // A PDU this server already stored (in any status) was handled when it first
