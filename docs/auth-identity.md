@@ -274,7 +274,7 @@ production-gated.
   /devices/{deviceId}` sends an `m.device_list_update` for the renamed device to every server
   that shares a room with the user, and the EDU and every published copy of the device's keys
   carry its current display name (`unsigned.device_display_name`), not the name it had when the
-  keys were uploaded. A deleted or logged-out device is announced the same way
+  keys were uploaded; a device given no name has none (the field is omitted, ADR-0472), and `initial_device_display_name` is persisted with the device. Deleting a device deletes the to-device rows addressed to it in the same transaction (ADR-0471). A deleted or logged-out device is announced the same way
   (`announce_deleted_devices()`): `DELETE /devices/{deviceId}`, `POST /delete_devices`,
   `POST /logout` and `POST /logout/all` each send one `m.device_list_update` per removed device and
   server, with `deleted: true`, no keys, a `stream_id` of its own from the sync counter, and the

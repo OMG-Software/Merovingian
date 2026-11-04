@@ -166,6 +166,16 @@ using EduSink = std::function<EduDispositionResult(InboundEduEnvelope const&)>;
 // Why a received event is outside its room version's event format, empty when it is not: the canonical size limit,
 // prev_events and auth_events as arrays within their caps, and no event_id from room version 3 on. One check for
 // every path that takes events from another server, including those that hold them as parsed values (ADR-0399).
+// The largest `depth` Canonical JSON can carry (2^53 - 1; rooms/v6.md on: "Must be less than the maximum value for an
+// integer (2^53 - 1)"; before room version 6 the spec says 2^63 - 1, which no signed event can reach).
+inline constexpr auto max_event_depth = std::int64_t{9007199254740991};
+
+// Empty when `event` has a `depth` that is an integer from 0 to `max_event_depth`; otherwise why not. The spec makes
+// `depth` required in every room version's event format, so a missing, negative, fractional or string depth is a
+// malformed PDU, never a depth of 0. `pdu_format_violation` includes this; a path that does not call it (an invite's
+// event) calls this one.
+[[nodiscard]] auto pdu_depth_violation(canonicaljson::Value const& event) -> std::string;
+
 [[nodiscard]] auto pdu_format_violation(canonicaljson::Value const& event, rooms::RoomVersionPolicy const& policy)
     -> std::string;
 

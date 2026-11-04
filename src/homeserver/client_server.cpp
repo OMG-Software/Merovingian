@@ -4155,6 +4155,19 @@ namespace
         return session.has_value() ? session->device_id : std::string{};
     }
 
+    // A device's `device_id`, and its `display_name` only when the user set one: the spec has the field "absent if no
+    // name has been set" (ADR-0472).
+    [[nodiscard]] auto device_members(ClientDevice const& device) -> canonicaljson::Object
+    {
+        auto members = canonicaljson::Object{};
+        members.push_back(json_member("device_id", json_str(device.device_id)));
+        if (!device.display_name.empty())
+        {
+            members.push_back(json_member("display_name", json_str(device.display_name)));
+        }
+        return members;
+    }
+
     [[nodiscard]] auto devices_json(ClientServerRuntime const& rt, std::string_view user) -> std::string
     {
         auto devices = canonicaljson::Array{};
@@ -4164,20 +4177,14 @@ namespace
             {
                 continue;
             }
-            devices.push_back(json_obj({
-                json_member("device_id", json_str(d.device_id)),
-                json_member("display_name", json_str(d.display_name)),
-            }));
+            devices.push_back(json_obj(device_members(d)));
         }
         return json_serialize(json_obj({json_member("devices", json_arr(std::move(devices)))}));
     }
 
     [[nodiscard]] auto device_json(ClientDevice const& device) -> std::string
     {
-        return json_serialize(json_obj({
-            json_member("device_id", json_str(device.device_id)),
-            json_member("display_name", json_str(device.display_name)),
-        }));
+        return json_serialize(json_obj(device_members(device)));
     }
 
     // User-Interactive Authentication API: "If the homeserver decides that an attempt on a stage
@@ -8413,42 +8420,8 @@ namespace
             {
                 return err(400U, refusal.errcode, refusal.reason);
             }
-            auto normalized_device_keys = *device_keys_object;
-            normalize_device_key_object_for_client(rt, normalized_device_keys, user, device_id);
-            auto const serialized =
-                canonicaljson::serialize_canonical(canonicaljson::Value{std::move(normalized_device_keys)});
-            if (serialized.error == canonicaljson::CanonicalJsonError::none &&
-                serialized.output.size() > max_uploaded_key_document_bytes)
-            {
-                return err(400U, "M_TOO_LARGE",
-                           "device_keys may be at most " + std::to_string(max_uploaded_key_document_bytes) + " bytes");
-            }
-            if (serialized.error != canonicaljson::CanonicalJsonError::none ||
-                !database::sync_stream_has_write_reserve(store) ||
-                !database::store_device_key(store, {std::string{user}, std::string{device_id}, serialized.output}))
-            {
-                return err(500U, "M_UNKNOWN", "device key persistence failed");
-            }
         }
-        // Device key uploads change the device identity that other users
-        // track; notify every local user who shares a room with this user.
-        // Also notify the uploading user's own devices. Cross-device
-        // verification (e.g. Element X verifying a new login from an
-        // existing device) relies on each device learning about new or
-        // updated devices via device_lists.changed and then querying
-        // /keys/query.
-        if (device_keys_object != nullptr)
-        {
-            auto const recorded = record_shared_room_device_changes(rt, user, NotifyOwnDevices::yes);
-
-            // Notify remote servers so they can fetch the updated keys and
-            // deliver room keys to this device (spec v1.19 SS4.1).
-            broadcast_device_list_updates(rt, user, remote_servers_for_user(rt.homeserver, user));
-            if (!recorded)
-            {
-                return err(500U, "M_UNKNOWN", device_list_change_unrecorded);
-            }
-        }
+        // C4: the whole body is judged before any of it is stored or announced.
         // Reject any one-time / fallback key that is not signed by the
         // device's own ed25519 identity. The Matrix v1.19 spec requires
         // every SignedKey to be signed by the device's signing key; an
@@ -8473,10 +8446,6 @@ namespace
                 return err(400U, "M_INVALID_SIGNATURE",
                            "one-time key " + reason + " (device signing key " + device_signing_key_id + ")");
             }
-            if (!store_key_object_members(rt, user, device_id, *keys, false))
-            {
-                return err(500U, "M_UNKNOWN", "one-time key persistence failed");
-            }
         }
         if (auto const* keys = object_member_object(*object, "fallback_keys"); keys != nullptr)
         {
@@ -8486,9 +8455,57 @@ namespace
                 return err(400U, "M_INVALID_SIGNATURE",
                            "fallback key " + reason + " (device signing key " + device_signing_key_id + ")");
             }
+        }
+        if (device_keys_object != nullptr)
+        {
+            auto normalized_device_keys = *device_keys_object;
+            normalize_device_key_object_for_client(rt, normalized_device_keys, user, device_id);
+            auto const serialized =
+                canonicaljson::serialize_canonical(canonicaljson::Value{std::move(normalized_device_keys)});
+            if (serialized.error == canonicaljson::CanonicalJsonError::none &&
+                serialized.output.size() > max_uploaded_key_document_bytes)
+            {
+                return err(400U, "M_TOO_LARGE",
+                           "device_keys may be at most " + std::to_string(max_uploaded_key_document_bytes) + " bytes");
+            }
+            if (serialized.error != canonicaljson::CanonicalJsonError::none ||
+                !database::sync_stream_has_write_reserve(store) ||
+                !database::store_device_key(store, {std::string{user}, std::string{device_id}, serialized.output}))
+            {
+                return err(500U, "M_UNKNOWN", "device key persistence failed");
+            }
+        }
+        if (auto const* keys = object_member_object(*object, "one_time_keys"); keys != nullptr)
+        {
+            if (!store_key_object_members(rt, user, device_id, *keys, false))
+            {
+                return err(500U, "M_UNKNOWN", "one-time key persistence failed");
+            }
+        }
+        if (auto const* keys = object_member_object(*object, "fallback_keys"); keys != nullptr)
+        {
             if (!store_key_object_members(rt, user, device_id, *keys, true))
             {
                 return err(500U, "M_UNKNOWN", "fallback key persistence failed");
+            }
+        }
+        // Device key uploads change the device identity that other users
+        // track; notify every local user who shares a room with this user.
+        // Also notify the uploading user's own devices. Cross-device
+        // verification (e.g. Element X verifying a new login from an
+        // existing device) relies on each device learning about new or
+        // updated devices via device_lists.changed and then querying
+        // /keys/query.
+        if (device_keys_object != nullptr)
+        {
+            auto const recorded = record_shared_room_device_changes(rt, user, NotifyOwnDevices::yes);
+
+            // Notify remote servers so they can fetch the updated keys and
+            // deliver room keys to this device (spec v1.19 SS4.1).
+            broadcast_device_list_updates(rt, user, remote_servers_for_user(rt.homeserver, user));
+            if (!recorded)
+            {
+                return err(500U, "M_UNKNOWN", device_list_change_unrecorded);
             }
         }
         auto const counts = one_time_key_counts(rt, user, device_id);
@@ -10117,6 +10134,45 @@ namespace
         return options;
     }
 
+    // The old room's power levels after an upgrade (spec, "Room Upgrades", "Server behaviour"): "the power levels
+    // in the old room should also be modified to prevent sending of events and inviting new users. For example,
+    // setting `events_default` and `invite` to the greater of `50` and `users_default + 1`." Both are only ever
+    // raised: a room that already asks for more keeps it. Nullopt when the room has no power levels event or
+    // holds a value this cannot compute with (a pre-version-10 string level), so nothing is sent (ADR-0476).
+    [[nodiscard]] auto closed_power_levels_content(database::PersistentStore const& store, std::string_view room_id)
+        -> std::optional<std::string>
+    {
+        auto const index = build_state_index(store);
+        auto content = current_state_content(store, index, room_id, "m.room.power_levels");
+        if (!content.has_value())
+        {
+            return std::nullopt;
+        }
+        auto const level_of = [&content](std::string_view key, std::int64_t fallback) -> std::optional<std::int64_t> {
+            if (object_member(*content, key) == nullptr)
+            {
+                return fallback;
+            }
+            auto const* value = integer_member(*content, key);
+            return value == nullptr ? std::nullopt : std::optional<std::int64_t>{*value};
+        };
+        auto const users_default = level_of("users_default", 0);
+        auto const events_default = level_of("events_default", 0);
+        auto const invite = level_of("invite", 0);
+        if (!users_default.has_value() || !events_default.has_value() || !invite.has_value())
+        {
+            return std::nullopt;
+        }
+        auto const closed_level = std::max<std::int64_t>(50, *users_default + 1);
+        std::erase_if(*content, [](canonicaljson::ObjectMember const& member) {
+            return member.key == "events_default" || member.key == "invite";
+        });
+        content->push_back(
+            json_member("events_default", canonicaljson::Value{std::max(closed_level, *events_default)}));
+        content->push_back(json_member("invite", canonicaljson::Value{std::max(closed_level, *invite)}));
+        return json_serialize(json_obj(std::move(*content)));
+    }
+
     // May this user reach an endpoint that returns room events? Spec (Room History Visibility):
     // "In all cases except `world_readable`, a user needs to join a room to view events in that
     // room." A user who was joined keeps the events they were allowed to see (`as_of`), and a
@@ -10167,6 +10223,21 @@ namespace
             }
             return std::nullopt;
         }();
+        // `to` is "the token to stop returning events at" (ADR-0470), in the forms `from` takes. The stream
+        // ordering at which the walk stops: a plain token T stops at the event T; a /sync next_batch names the
+        // position just after its newest event N, so backward stops at N and forward at N + 1.
+        auto const to_boundary = [&]() -> std::optional<std::uint64_t> {
+            auto const to_text = messages_query_value(target, "to");
+            if (auto const plain = parse_u64(to_text); plain.has_value())
+            {
+                return plain;
+            }
+            if (auto const decoded = sync::decode_stream_token(to_text); decoded.has_value())
+            {
+                return backwards ? decoded->event_ordering : decoded->event_ordering + 1U;
+            }
+            return std::nullopt;
+        }();
         // The request's RoomEventFilter selects the returned events (`filter`: "A JSON
         // RoomEventFilter to filter returned events with") and drives lazy-loaded members.
         auto const room_filter =
@@ -10214,6 +10285,9 @@ namespace
         auto start_token = std::string{};
         auto end_token = std::string{};
         auto examined = std::size_t{0U};
+        // True when the walk stopped with an event still to consider (page full, or examination budget
+        // spent); only then is there an `end` token to continue from (ADR-0470).
+        auto more_events = false;
         // Senders appearing in the chunk, for lazy-loaded membership state below.
         auto chunk_senders = std::unordered_set<std::string>{};
         // Returns false once the page is complete (full, or out of examination budget).
@@ -10244,8 +10318,13 @@ namespace
                 {
                     continue;
                 }
+                if (to_boundary.has_value() && (*it)->stream_ordering <= *to_boundary)
+                {
+                    break;
+                }
                 if (!consider(**it))
                 {
+                    more_events = true;
                     break;
                 }
             }
@@ -10258,8 +10337,13 @@ namespace
                 {
                     continue;
                 }
+                if (to_boundary.has_value() && event->stream_ordering >= *to_boundary)
+                {
+                    break;
+                }
                 if (!consider(*event))
                 {
+                    more_events = true;
                     break;
                 }
             }
@@ -10278,12 +10362,17 @@ namespace
                                    store, event_filter.lazy_load_members ? sync::EventTypeFilter{} : event_filter,
                                    room_id, sync::room_read_access_for(store, room_id, user_id)))
                          : canonicaljson::Array{};
-        return json_serialize(json_obj({
-            json_member("chunk", json_arr(std::move(chunk))),
-            json_member("start", json_str(start_token)),
-            json_member("end", json_str(end_token)),
-            json_member("state", json_arr(std::move(state))),
-        }));
+        auto members = canonicaljson::Object{};
+        members.push_back(json_member("chunk", json_arr(std::move(chunk))));
+        members.push_back(json_member("start", json_str(start_token)));
+        // "If no further events are available ... this property is omitted": an empty token would be read back
+        // as no `from` at all.
+        if (more_events && !end_token.empty())
+        {
+            members.push_back(json_member("end", json_str(end_token)));
+        }
+        members.push_back(json_member("state", json_arr(std::move(state))));
+        return json_serialize(json_obj(std::move(members)));
     }
 
     // Builds the GET /rooms/{roomId}/context/{eventId} response body.
@@ -10760,11 +10849,16 @@ namespace
             {
                 if (auto const profile = database::find_profile(store, sender); profile.has_value())
                 {
-                    profile_info.push_back(
-                        json_member(sender, json_obj({
-                                                json_member("avatar_url", json_str(profile->avatar_url)),
-                                                json_member("displayname", json_str(profile->displayname)),
-                                            })));
+                    auto info = canonicaljson::Object{};
+                    if (!profile->avatar_url.empty())
+                    {
+                        info.push_back(json_member("avatar_url", json_str(profile->avatar_url)));
+                    }
+                    if (!profile->displayname.empty())
+                    {
+                        info.push_back(json_member("displayname", json_str(profile->displayname)));
+                    }
+                    profile_info.push_back(json_member(sender, json_obj(std::move(info))));
                 }
             }
             members.push_back(json_member("profile_info", json_obj(std::move(profile_info))));
@@ -14509,7 +14603,10 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             auto const* device_id_value = string_member(*registration_object, "device_id");
             auto const reg_device_id =
                 (device_id_value == nullptr || device_id_value->empty()) ? generate_device_id() : *device_id_value;
-            auto const session = login_appservice_user(rt.homeserver, full_user_id, reg_device_id);
+            auto const* display_name_value = string_member(*registration_object, "initial_device_display_name");
+            auto const registration_display_name = display_name_value == nullptr ? std::string{} : *display_name_value;
+            auto const session =
+                login_appservice_user(rt.homeserver, full_user_id, reg_device_id, registration_display_name);
             if (!session.ok)
             {
                 return dispatch_resp(req, rt, 200U,
@@ -14517,7 +14614,7 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             }
             if (find_device(rt, full_user_id, reg_device_id) == nullptr)
             {
-                rt.devices.push_back({full_user_id, reg_device_id, reg_device_id});
+                rt.devices.push_back({full_user_id, reg_device_id, registration_display_name});
             }
             return dispatch_resp(req, rt, 200U,
                                  json_serialize(json_obj({
@@ -14654,17 +14751,17 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
         }
         // Use the client-supplied device_id when provided; generate one otherwise.
         auto const reg_device_id = body->device_id.empty() ? generate_device_id() : body->device_id;
-        auto const session = login_local_user(rt.homeserver, full_user_id, body->password, reg_device_id, false,
-                                              rate_limit_client_key(req, rt.homeserver.config.server()));
+        auto const session =
+            login_local_user(rt.homeserver, full_user_id, body->password, reg_device_id, false,
+                             rate_limit_client_key(req, rt.homeserver.config.server()), body->display_name);
         if (!session.ok)
         {
             return dispatch_resp(req, rt, 200U,
                                  json_serialize(json_obj({json_member("user_id", json_str(full_user_id))})));
         }
-        auto const reg_display_name = body->display_name.empty() ? reg_device_id : body->display_name;
         if (find_device(rt, full_user_id, reg_device_id) == nullptr)
         {
-            rt.devices.push_back({full_user_id, reg_device_id, reg_display_name});
+            rt.devices.push_back({full_user_id, reg_device_id, body->display_name});
         }
         return dispatch_resp(req, rt, 200U,
                              json_serialize(json_obj({
@@ -14833,15 +14930,15 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                 return dispatch_err(req, rt, 403U, "M_EXCLUSIVE",
                                     "user is reserved by another application service's exclusive namespace");
             }
-            auto const as_result = login_appservice_user(rt.homeserver, body->user_id, body->device_id);
+            auto const as_result =
+                login_appservice_user(rt.homeserver, body->user_id, body->device_id, body->display_name);
             if (!as_result.ok)
             {
                 return dispatch_err(req, rt, as_result.status, "M_FORBIDDEN", as_result.reason);
             }
             if (find_device(rt, body->user_id, body->device_id) == nullptr)
             {
-                auto const dn = body->display_name.empty() ? body->device_id : body->display_name;
-                rt.devices.push_back({body->user_id, body->device_id, dn});
+                rt.devices.push_back({body->user_id, body->device_id, body->display_name});
                 auto const self_change = database::PersistentDeviceListChange{0U, std::string{body->user_id},
                                                                               std::string{body->user_id}, "changed"};
                 std::ignore = record_device_list_change(rt, self_change);
@@ -14855,10 +14952,11 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
         }
         auto const result =
             body->type == "m.login.token"
-                ? login_local_user_by_id(rt.homeserver, body->user_id, body->device_id, body->supports_refresh_tokens)
+                ? login_local_user_by_id(rt.homeserver, body->user_id, body->device_id, body->supports_refresh_tokens,
+                                         body->display_name)
                 : login_local_user(rt.homeserver, body->user_id, body->password, body->device_id,
                                    body->supports_refresh_tokens,
-                                   rate_limit_client_key(req, rt.homeserver.config.server()));
+                                   rate_limit_client_key(req, rt.homeserver.config.server()), body->display_name);
         if (!result.ok)
         {
             // A throttled login is a rate-limit outcome, not a credential
@@ -14873,8 +14971,7 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
         }
         if (find_device(rt, body->user_id, body->device_id) == nullptr)
         {
-            auto const dn = body->display_name.empty() ? body->device_id : body->display_name;
-            rt.devices.push_back({body->user_id, body->device_id, dn});
+            rt.devices.push_back({body->user_id, body->device_id, body->display_name});
             // A new login creates a new device identity. Record a self
             // device-list-change so the user's other devices see the user in
             // device_lists.changed and re-query /keys/query, AND so this new
@@ -15117,14 +15214,21 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
         auto profile_fields = stored_profile_fields(profile);
         if (field.empty())
         {
-            auto whole = canonicaljson::Object{};
-            whole.push_back(json_member("displayname", json_str(displayname)));
-            whole.push_back(json_member("avatar_url", json_str(avatar_url)));
+            // "otherwise not present": a field the user has not set is left out, never sent as "".
+            auto members = canonicaljson::Object{};
+            if (!displayname.empty())
+            {
+                members.push_back(json_member("displayname", json_str(displayname)));
+            }
+            if (!avatar_url.empty())
+            {
+                members.push_back(json_member("avatar_url", json_str(avatar_url)));
+            }
             for (auto& extended : profile_fields)
             {
-                whole.push_back(std::move(extended));
+                members.push_back(std::move(extended));
             }
-            return dispatch_resp(req, rt, 200U, json_serialize(json_obj(std::move(whole))));
+            return dispatch_resp(req, rt, 200U, json_serialize(json_obj(std::move(members))));
         }
         // getProfileField returns only the requested key; an unset or unknown
         // field is reported as 404 M_NOT_FOUND per the Matrix spec.
@@ -17893,7 +17997,9 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             auto const* array = value == nullptr ? nullptr : std::get_if<canonicaljson::Array>(&value->storage());
             return array == nullptr ? 0U : array->size();
         };
-        if (entries_in("invite") > rt.limits.max_create_room_invites ||
+        // `invite_3pid` entries are invites too (ADR-0474): each costs an identity-server round trip and a
+        // stored event, so they share the cap with `invite`.
+        if (entries_in("invite") + entries_in("invite_3pid") > rt.limits.max_create_room_invites ||
             entries_in("initial_state") > rt.limits.max_create_room_initial_state)
         {
             return dispatch_err(req, rt, 400U, "M_TOO_LARGE", "too many invite or initial_state entries");
@@ -17922,6 +18028,49 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
         if (rooms::find_room_version_policy(room_version) == nullptr)
         {
             return dispatch_err(req, rt, 400U, "M_UNSUPPORTED_ROOM_VERSION", "unsupported room version");
+        }
+        // Spec (createRoom, `invite_3pid`): a list of {id_server, medium, address, id_access_token}. All of it that
+        // can be judged without the identity server is judged before the room exists (ADR-0474).
+        struct ThreepidInvite final
+        {
+            std::string id_server{};
+            std::string medium{};
+            std::string address{};
+            std::string id_access_token{};
+        };
+        auto threepid_invites = std::vector<ThreepidInvite>{};
+        if (auto const* raw = object_member(body, "invite_3pid"); raw != nullptr)
+        {
+            auto const* entries = std::get_if<canonicaljson::Array>(&raw->storage());
+            if (entries == nullptr)
+            {
+                return dispatch_err(req, rt, 400U, "M_BAD_JSON", "invite_3pid must be a list");
+            }
+            for (auto const& value : *entries)
+            {
+                auto const* object = std::get_if<canonicaljson::Object>(&value.storage());
+                auto const* id_server = object == nullptr ? nullptr : string_member(*object, "id_server");
+                auto const* medium = object == nullptr ? nullptr : string_member(*object, "medium");
+                auto const* address = object == nullptr ? nullptr : string_member(*object, "address");
+                if (id_server == nullptr || id_server->empty() || medium == nullptr || medium->empty() ||
+                    address == nullptr || address->empty())
+                {
+                    return dispatch_err(req, rt, 400U, "M_BAD_JSON",
+                                        "each invite_3pid entry needs id_server, medium and address");
+                }
+                auto const* token = string_member(*object, "id_access_token");
+                if (object_member(*object, "id_access_token") != nullptr &&
+                    (token == nullptr || !merovingian::identity::id_access_token_is_valid(*token)))
+                {
+                    return dispatch_err(req, rt, 400U, "M_INVALID_PARAM", invalid_id_access_token_message);
+                }
+                if (!resolve_trusted_identity_base_url(rt.homeserver.config.server().identity_server, *id_server)
+                         .has_value())
+                {
+                    return dispatch_err(req, rt, 400U, "M_SERVER_NOT_TRUSTED", "identity server is not trusted");
+                }
+                threepid_invites.push_back({*id_server, *medium, *address, token == nullptr ? std::string{} : *token});
+            }
         }
         auto const* room_alias_name = string_member(body, "room_alias_name");
         if (room_alias_name != nullptr && !room_alias_name->empty())
@@ -18011,8 +18160,9 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             auto const server = server_name_from_user_id(invitee);
             return !server.empty() && server != rt.homeserver.config.server().server_name;
         });
-        auto const invite_slot = any_remote_invitee ? admit_client_proxy_waiting(rt, req, guard, invite_deadline)
-                                                    : std::optional<http::InFlightBudget::Slot>{};
+        auto const invite_slot = any_remote_invitee || !threepid_invites.empty()
+                                     ? admit_client_proxy_waiting(rt, req, guard, invite_deadline)
+                                     : std::optional<http::InFlightBudget::Slot>{};
         for (auto const& invitee : invitees)
         {
             auto const invitee_server = server_name_from_user_id(invitee);
@@ -18087,6 +18237,31 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                                                                  {"invitee", invitee,         false},
                                                                  {"reason",  delivery.reason, false}
                 });
+            }
+        }
+        // Each identity-server store-invite is a blocking call on this thread: they share the slot and the
+        // deadline above, and each is given at most what is left of it. An entry the slot or the time does not
+        // cover, or the identity server fails, is logged and skipped; the room stays (ADR-0474).
+        for (auto const& threepid : threepid_invites)
+        {
+            auto const seconds_left = invite_deadline.remaining_seconds();
+            auto const stored =
+                invite_slot.has_value() && seconds_left != 0U
+                    ? merovingian::homeserver::invite_user_by_threepid(
+                          rt.homeserver, req.access_token, room_id, threepid.id_server, threepid.medium,
+                          threepid.address, threepid.id_access_token, seconds_left)
+                    : merovingian::homeserver::make_operation_result(false, {}, "no slot or time left", 504U);
+            if (!stored.ok)
+            {
+                log_diagnostic("room.create.invite_3pid_failed",
+                               {
+                                   {"actor",   *user,                         false},
+                                   {"room_id", room_id,                       false},
+                                   {"medium",  threepid.medium,               false},
+                                   {"status",  std::to_string(stored.status), false},
+                                   {"reason",  stored.reason,                 false}
+                },
+                               observability::LogEventSeverity::warning);
             }
         }
         log_diagnostic("room.create.accepted", {
@@ -19909,6 +20084,55 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                 });
                 return dispatch_err(req, rt, tombstone.status, error_code_for(tombstone), tombstone.body);
             }
+            // Spec: "Moves any local aliases to the new room." The tombstone is already sent, so a failed
+            // write is reported as a server fault rather than a success that leaves an alias on the old room.
+            auto const aliases_to_move = std::invoke([&] {
+                auto moved = std::vector<std::string>{};
+                for (auto const& alias : rt.homeserver.database.persistent_store.room_aliases)
+                {
+                    if (alias.room_id == room_id)
+                    {
+                        moved.push_back(alias.room_alias);
+                    }
+                }
+                return moved;
+            });
+            for (auto const& alias : aliases_to_move)
+            {
+                if (!database::reassign_room_alias(rt.homeserver.database.persistent_store, alias, new_room_id))
+                {
+                    log_diagnostic("room.upgrade.alias_not_moved", {
+                                                                       {"actor",       *user,       false},
+                                                                       {"old_room_id", room_id,     false},
+                                                                       {"new_room_id", new_room_id, false},
+                                                                       {"alias",       alias,       false}
+                    });
+                    return dispatch_err(req, rt, 500U, "M_UNKNOWN", "failed to move a room alias to the new room");
+                }
+                append_local_audit(rt.homeserver.database, observability::AuditCategory::admin, "room_alias.moved",
+                                   *user, alias, new_room_id);
+            }
+            // Spec: "If possible, the power levels in the old room should also be modified". Sent as the
+            // upgrader; a refusal (they may not change power levels there) leaves the old room as it was and
+            // does not fail the upgrade.
+            if (auto const closed = closed_power_levels_content(rt.homeserver.database.persistent_store, room_id);
+                closed.has_value())
+            {
+                auto closing_req = req;
+                closing_req.method = "POST";
+                closing_req.target = "/_matrix/client/v3/rooms/" + room_id + "/send";
+                closing_req.body =
+                    event_body_from_content("m.room.power_levels", *closed, std::string{""}).value_or("");
+                if (auto const closing = call_local(closing_req); closing.status != 200U)
+                {
+                    log_diagnostic("room.upgrade.old_room_power_levels_unchanged",
+                                   {
+                                       {"actor",       *user,                          false},
+                                       {"old_room_id", room_id,                        false},
+                                       {"status",      std::to_string(closing.status), false}
+                    });
+                }
+            }
             log_diagnostic("room.upgrade.accepted", {
                                                         {"actor",       *user,            false},
                                                         {"old_room_id", room_id,          false},
@@ -19974,8 +20198,15 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                 }
                 auto user_obj = canonicaljson::Object{};
                 user_obj.push_back(json_member("user_id", json_str(profile.user_id)));
-                user_obj.push_back(json_member("display_name", json_str(profile.displayname)));
-                user_obj.push_back(json_member("avatar_url", json_str(profile.avatar_url)));
+                // "if one exists": an unset display name or avatar is left out.
+                if (!profile.displayname.empty())
+                {
+                    user_obj.push_back(json_member("display_name", json_str(profile.displayname)));
+                }
+                if (!profile.avatar_url.empty())
+                {
+                    user_obj.push_back(json_member("avatar_url", json_str(profile.avatar_url)));
+                }
                 results.push_back(canonicaljson::Value{std::move(user_obj)});
             }
         }

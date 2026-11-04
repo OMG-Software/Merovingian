@@ -202,7 +202,7 @@ the room ID and attempt count.
 `audit_federation()` (`src/federation/inbound_request.cpp`) appends every
 `federation.*` audit event — `federation.accepted`, `federation.rejected`,
 `federation.rate_limited` (also emitted when a source address exhausts its bad-X-Matrix-signature budget, ADR-0081), `federation.duplicate`,
-`federation.membership_rejected`, `federation.pdu_rejected_auth`,
+`federation.membership_rejected`, `federation.pdu_rejected`,
 `federation.acl_rejected`, and the rest of that family — to
 `FederationRuntimeState::audit_events`, a bounded in-memory deque. It never
 calls `database::append_audit_event`. This is a different code path from

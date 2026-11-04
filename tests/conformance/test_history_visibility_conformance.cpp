@@ -1214,6 +1214,110 @@ SCENARIO("World-readable history is readable without joining, and only while it 
     }
 }
 
+// Spec: GET /rooms/{roomId}/relations/{eventId}: "404 The parent event was not found or the user does
+// not have permission to read this event (it might be contained in history that is not accessible to
+// the user)." and GET /rooms/{roomId}/threads: "403 The user cannot view or peek on the room."
+// Room History Visibility: a user who left keeps the events they were allowed to see, and a
+// world_readable room may be read without joining.
+// URL: ../../docs/matrix-v1.19-spec/client-server-api.md#get_matrixclientv1roomsroomidrelationseventid
+SCENARIO("GET /relations and /threads serve a user who left what they could see", "[history-visibility][conformance]")
+{
+    GIVEN("a thread in which bob took part before he left, and a reply that came after")
+    {
+        auto started = merovingian::homeserver::start_client_server(visibility_config());
+        REQUIRE(started.started);
+        auto& rt = started.runtime;
+        auto const alice = register_and_login(rt, "alice");
+        auto const bob = register_and_login(rt, "bob");
+        auto const room_id = create_room(rt, alice);
+        invite_and_join(rt, alice, room_id, "bob", bob);
+        auto const root = send_text(rt, alice, room_id, "thread-root");
+        auto const before = send_thread_reply(rt, alice, room_id, root, "reply-while-bob-was-in");
+        leave(rt, bob, room_id);
+        auto const after = send_thread_reply(rt, alice, room_id, root, "reply-after-bob-left");
+        auto const relations_path = "/_matrix/client/v1/rooms/" + room_id + "/relations/" + root;
+
+        WHEN("bob, who has left, asks for the relations of the root")
+        {
+            auto const reply = call(rt, "GET", relations_path, bob);
+
+            THEN("he is given the child he could see and not the one sent after he left")
+            {
+                REQUIRE(reply.status == 200U);
+                auto const ids = event_ids_in(reply.body, "chunk");
+                REQUIRE(contains(ids, before));
+                REQUIRE_FALSE(contains(ids, after));
+            }
+        }
+
+        WHEN("bob, who has left, lists the room's threads")
+        {
+            auto const reply = call(rt, "GET", "/_matrix/client/v1/rooms/" + room_id + "/threads", bob);
+
+            THEN("the thread is listed, since its root was visible to him")
+            {
+                REQUIRE(reply.status == 200U);
+                REQUIRE(contains(event_ids_in(reply.body, "chunk"), root));
+            }
+        }
+
+        WHEN("a user who never joined asks for the same relations and threads")
+        {
+            auto const mallory = register_and_login(rt, "mallory");
+            auto const relations = call(rt, "GET", relations_path, mallory);
+            auto const threads = call(rt, "GET", "/_matrix/client/v1/rooms/" + room_id + "/threads", mallory);
+
+            THEN("the relations are 404 and the threads 403")
+            {
+                REQUIRE(relations.status == 404U);
+                REQUIRE(threads.status == 403U);
+            }
+        }
+    }
+}
+
+SCENARIO("GET /relations and /threads can be read without joining while the room is world readable",
+         "[history-visibility][conformance]")
+{
+    GIVEN("a world-readable room with a thread, and a user who never joined")
+    {
+        auto started = merovingian::homeserver::start_client_server(visibility_config());
+        REQUIRE(started.started);
+        auto& rt = started.runtime;
+        auto const alice = register_and_login(rt, "alice");
+        auto const mallory = register_and_login(rt, "mallory");
+        auto const room_id = create_room_with_visibility(rt, alice, "world_readable");
+        auto const root = send_text(rt, alice, room_id, "public-root");
+        auto const reply_id = send_thread_reply(rt, alice, room_id, root, "public-reply");
+        auto const relations_path = "/_matrix/client/v1/rooms/" + room_id + "/relations/" + root;
+
+        WHEN("mallory asks for the relations and the threads")
+        {
+            auto const relations = call(rt, "GET", relations_path, mallory);
+            auto const threads = call(rt, "GET", "/_matrix/client/v1/rooms/" + room_id + "/threads", mallory);
+
+            THEN("both are served from the public history")
+            {
+                REQUIRE(relations.status == 200U);
+                REQUIRE(contains(event_ids_in(relations.body, "chunk"), reply_id));
+                REQUIRE(threads.status == 200U);
+                REQUIRE(contains(event_ids_in(threads.body, "chunk"), root));
+            }
+        }
+
+        WHEN("alice makes the room joined-only")
+        {
+            set_visibility(rt, alice, room_id, "joined");
+
+            THEN("mallory is refused again")
+            {
+                REQUIRE(call(rt, "GET", relations_path, mallory).status == 404U);
+                REQUIRE(call(rt, "GET", "/_matrix/client/v1/rooms/" + room_id + "/threads", mallory).status == 403U);
+            }
+        }
+    }
+}
+
 // Spec: "For m.room.history_visibility events themselves, the user should be allowed to see
 // the event if the history_visibility before or after the event would allow them to see it."
 SCENARIO("A history_visibility event is visible if the visibility before or after it allows",

@@ -81,6 +81,14 @@ auto FederationProxy::handle(LocalHttpRequest const& request) -> LocalHttpRespon
         return handle_federation_http_request(runtime_, request);
     }
 
+    // PUT /_matrix/federation/v1/3pid/onbind is called by an identity server, which has no server signing key: the spec
+    // marks it unauthenticated. Main answers it (ADR-0484); it names no room to shard by and acts through main's
+    // store and signing key.
+    if (request.method == "PUT" && is_federation_3pid_onbind_endpoint(request.target))
+    {
+        return handle_federation_http_request(runtime_, request);
+    }
+
     // #323: verify the inbound X-Matrix signature in the main process before
     // forwarding to the worker. Only the verified peer identity crosses the
     // (authenticated) IPC channel; the raw peer Authorization header — which

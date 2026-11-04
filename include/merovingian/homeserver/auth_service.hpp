@@ -19,6 +19,8 @@ namespace merovingian::homeserver
     -> OperationResult;
 [[nodiscard]] auto bootstrap_admin_user(HomeserverRuntime& runtime, std::string_view localpart,
                                         std::string_view password) -> OperationResult;
+// `display_name` is the client's `initial_device_display_name`, stored with a device this login creates (ignored for
+// a known device) and empty when the client chose none: a device ID is never stored as a name (ADR-0472).
 // `client_source` is the rate-limit client key of the caller
 // (`rate_limit_client_key`, which honours server.trusted_proxies). Failed
 // password logins are counted per (account, client_source) and per account;
@@ -27,7 +29,8 @@ namespace merovingian::homeserver
 // registration auto-login) gets.
 [[nodiscard]] auto login_local_user(HomeserverRuntime& runtime, std::string_view user_id, std::string_view password,
                                     std::string_view device_id, bool with_ttl = false,
-                                    std::string_view client_source = {}) -> OperationResult;
+                                    std::string_view client_source = {}, std::string_view display_name = {})
+    -> OperationResult;
 // Grants a session for an already-authenticated `user_id` -- the second
 // half of login_local_user (device-id validation, account lock/suspend
 // gate, token issuance/persistence, session bookkeeping) without a password
@@ -35,7 +38,8 @@ namespace merovingian::homeserver
 // exchange (POST /login after redeem_login_token has already established
 // the caller's identity via a redeemed SSO login token).
 [[nodiscard]] auto login_local_user_by_id(HomeserverRuntime& runtime, std::string_view user_id,
-                                          std::string_view device_id, bool with_ttl = false) -> OperationResult;
+                                          std::string_view device_id, bool with_ttl = false,
+                                          std::string_view display_name = {}) -> OperationResult;
 // Application Service API (Matrix v1.19): see the .cpp definitions for the
 // full spec citation. The caller MUST have already verified the presented
 // as_token and that the target user_id/localpart is within the appservice's
@@ -43,7 +47,8 @@ namespace merovingian::homeserver
 // — neither function re-derives that check itself.
 [[nodiscard]] auto register_appservice_user(HomeserverRuntime& runtime, std::string_view localpart) -> OperationResult;
 [[nodiscard]] auto login_appservice_user(HomeserverRuntime& runtime, std::string_view user_id,
-                                         std::string_view device_id) -> OperationResult;
+                                         std::string_view device_id, std::string_view display_name = {})
+    -> OperationResult;
 [[nodiscard]] auto issue_refresh_token_for_session(HomeserverRuntime& runtime, std::string_view user_id,
                                                    std::string_view device_id) -> OperationResult;
 [[nodiscard]] auto refresh_local_session(HomeserverRuntime& runtime, std::string_view refresh_token)

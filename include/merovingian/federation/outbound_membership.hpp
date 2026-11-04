@@ -40,6 +40,13 @@ namespace merovingian::federation
                                         std::string_view signed_invite_event_json,
                                         std::vector<std::string> const& invite_room_state_json) -> OutboundTransaction;
 
+// Outbound `PUT /_matrix/federation/v1/exchange_third_party_invite/{roomId}` (ADR-0484): asks the inviting server to
+// issue the invite for a third-party invite this server's user has just bound. `body` is
+// `build_third_party_invite_exchange_body`.
+[[nodiscard]] auto make_outbound_exchange_third_party_invite(std::string_view destination, std::string_view origin,
+                                                             std::string_view room_id, std::string_view body)
+    -> OutboundTransaction;
+
 // Outbound backfill GET. `event_ids` are sent as repeated `v=` query
 // parameters; `limit` is appended when non-zero.
 [[nodiscard]] auto make_outbound_backfill(std::string_view destination, std::string_view origin,

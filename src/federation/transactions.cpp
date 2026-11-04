@@ -115,6 +115,8 @@ auto federation_endpoint_name(FederationEndpoint endpoint) noexcept -> char cons
         return "media_download";
     case FederationEndpoint::media_thumbnail:
         return "media_thumbnail";
+    case FederationEndpoint::exchange_third_party_invite:
+        return "exchange_third_party_invite";
     }
 
     return "unknown";
@@ -155,6 +157,10 @@ auto federation_endpoint_requires_main_relay(FederationEndpoint endpoint) noexce
     case FederationEndpoint::media_download:
     case FederationEndpoint::media_thumbnail:
         return false;
+    // Signs an invite for this server, which only main can do; the proxy answers it in main without a worker
+    // (ADR-0484), so it is never relayed.
+    case FederationEndpoint::exchange_third_party_invite:
+        return false;
     }
     return false;
 }
@@ -189,6 +195,8 @@ auto federation_routes() -> std::vector<FederationRoute>
         route("GET", "/_matrix/federation/v1/timestamp_to_event/{roomId}", FederationEndpoint::timestamp_to_event),
         route("GET", "/_matrix/federation/v1/media/download/{mediaId}", FederationEndpoint::media_download),
         route("GET", "/_matrix/federation/v1/media/thumbnail/{mediaId}", FederationEndpoint::media_thumbnail),
+        route("PUT", "/_matrix/federation/v1/exchange_third_party_invite/{roomId}",
+              FederationEndpoint::exchange_third_party_invite),
     };
 }
 
@@ -320,6 +328,11 @@ auto match_federation_route(std::string_view method, std::string_view target) ->
         }
         if (candidate.endpoint == FederationEndpoint::media_download &&
             dynamic_suffix_has_segments(target_path, "/_matrix/federation/v1/media/download/", 1U))
+        {
+            return {true, candidate, {}};
+        }
+        if (candidate.endpoint == FederationEndpoint::exchange_third_party_invite &&
+            dynamic_suffix_has_segments(target_path, "/_matrix/federation/v1/exchange_third_party_invite/", 1U))
         {
             return {true, candidate, {}};
         }

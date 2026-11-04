@@ -1069,6 +1069,9 @@ auto write_connections_opened(PersistentStore const& store) -> std::uint64_t
     // A deleted device's identity, one-time and fallback keys go with it, in the same transaction:
     // /keys/query returns "the current devices and identity keys", and a key left behind has
     // clients encrypting to a device that no longer exists (to-device messages for it are dropped).
+    // The to-device messages addressed to this device go too, or a later login that reuses the device ID
+    // receives room keys sent to the old one (ADR-0471). Broadcast rows (empty or `*` target device) belong to
+    // all of the user's devices and stay.
     auto const parameters = std::vector<BoundValue>{public_value(user_id), public_value(device_id)};
     auto const statements = std::vector<PreparedStatement>{
         record_statement("delete_device", "DELETE FROM devices WHERE user_id = $1 AND device_id = $2", parameters),
@@ -1078,6 +1081,9 @@ auto write_connections_opened(PersistentStore const& store) -> std::uint64_t
                          "DELETE FROM one_time_keys WHERE user_id = $1 AND device_id = $2", parameters),
         record_statement("delete_fallback_keys_of_device",
                          "DELETE FROM fallback_keys WHERE user_id = $1 AND device_id = $2", parameters),
+        record_statement("delete_to_device_messages_of_device",
+                         "DELETE FROM to_device_messages WHERE target_user_id = $1 AND target_device_id = $2",
+                         parameters),
     };
     if (!commit_persistent_transaction(store, statements))
     {
@@ -1090,6 +1096,9 @@ auto write_connections_opened(PersistentStore const& store) -> std::uint64_t
     std::erase_if(store.device_keys, of_device);
     std::erase_if(store.one_time_keys, of_device);
     std::erase_if(store.fallback_keys, of_device);
+    std::erase_if(store.to_device_messages, [user_id, device_id](PersistentToDeviceMessage const& message) {
+        return message.target_user_id == user_id && message.target_device_id == device_id;
+    });
     return true;
 }
 
@@ -5447,6 +5456,26 @@ namespace
         return false;
     }
     store.room_aliases.erase(it);
+    return true;
+}
+
+[[nodiscard]] auto reassign_room_alias(PersistentStore& store, std::string_view room_alias,
+                                       std::string_view new_room_id) -> bool
+{
+    auto const it = std::ranges::find_if(store.room_aliases, [room_alias](PersistentRoomAlias const& alias) {
+        return alias.room_alias == room_alias;
+    });
+    if (it == store.room_aliases.end() || !room_exists(store, std::string{new_room_id}))
+    {
+        return false;
+    }
+    if (!record_and_persist(
+            store, record_statement("reassign_room_alias", "UPDATE room_aliases SET room_id = $2 WHERE room_alias = $1",
+                                    {public_value(std::string{room_alias}), public_value(std::string{new_room_id})})))
+    {
+        return false;
+    }
+    it->room_id = std::string{new_room_id};
     return true;
 }
 

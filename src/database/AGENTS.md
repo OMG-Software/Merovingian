@@ -118,7 +118,7 @@ table to find the children of an event.
 
 ## Backend selection
 
-The backend is chosen at startup from config (`database.engine = sqlite | postgresql`).
+The backend is chosen at startup from config (`database.backend = sqlite | postgresql`).
 All higher-level modules receive a `PersistentStore&` — they must not downcast to a backend type.
 
 ## Migration rules

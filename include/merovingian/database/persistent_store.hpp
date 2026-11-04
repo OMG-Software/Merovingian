@@ -1869,6 +1869,10 @@ auto apply_store_event_with_state(PersistentStore& store, PreparedStateUpdate co
     -> std::optional<PersistentRoomAlias>;
 // Removes the alias. False when it does not exist or the backend refuses.
 [[nodiscard]] auto delete_room_alias(PersistentStore& store, std::string_view room_alias) -> bool;
+// Points the alias at `new_room_id` in one statement, keeping its creator. False when the alias does not exist,
+// `new_room_id` names no room, or the backend refuses; the alias then still names its old room.
+[[nodiscard]] auto reassign_room_alias(PersistentStore& store, std::string_view room_alias,
+                                       std::string_view new_room_id) -> bool;
 [[nodiscard]] auto store_device_key(PersistentStore& store, PersistentDeviceKey key) -> bool;
 [[nodiscard]] auto find_device_key(PersistentStore const& store, std::string_view user_id, std::string_view device_id)
     -> std::optional<PersistentDeviceKey>;

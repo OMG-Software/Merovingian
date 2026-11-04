@@ -154,11 +154,12 @@ Ignore these dirs:
 - build-*/
 
 ## Project Layout
-Source headers (`include/merovingian/`) and implementations (`src/`) mirror each other by module.
-The one exception is `bootstrap/`, which is header-only.
+Source headers (`include/merovingian/`) and implementations (`src/`) mirror each other by module and file name.
+Some headers have no `.cpp` (header-only types, such as all of `bootstrap/`), and two sources have no header of the
+same name: `src/database/sqlite_store.cpp` and `src/federation_worker/main.cpp`.
 
 ```
-├── include/merovingian/   # Public headers (1:1 with src/, except bootstrap/)
+├── include/merovingian/   # Public headers (same module dirs as src/)
 │   ├── appservice/        #   Application Service registration, namespaces, outbound client
 │   ├── auth/              #   Password hashing, session tokens, identity, key API, OIDC discovery
 │   ├── bootstrap/         #   Process exit codes (header-only)

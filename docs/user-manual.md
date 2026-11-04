@@ -456,7 +456,7 @@ change them.
 
 | Key | Default | When to change |
 |---|---|---|
-| `server.name` | `example.org` | **Required.** The Matrix server name used in user IDs and federation. Must match the host part served by your reverse proxy. The shipped `config/merovingian.conf.example` sets `example.org`. |
+| `server.name` | `example.org` | **Required.** The Matrix server name used in user IDs and federation. Must match the host part served by your reverse proxy. The shipped `config/merovingian.conf.example` sets `matrix.example.org`. |
 | `server.public_baseurl` | `https://matrix.example.org` | **Required.** The HTTPS URL clients use. Must be HTTPS. |
 | `server.trusted_proxies` | (empty) | **Required behind a reverse proxy.** Comma-separated list of proxy IPs whose `X-Forwarded-For` header is trusted for rate limiting. Without this, every client shares one per-IP bucket. The client is the rightmost `X-Forwarded-For` entry that is not itself a trusted proxy (ADR-0073), so a proxy may append to the header or overwrite it; list every proxy hop you control. The shipped example sets `127.0.0.1`. |
 
@@ -1866,8 +1866,15 @@ and cannot be selected in the config file.
 `merovingian-db-migrate` plans schema migrations without starting the runtime:
 
 ```sh
-merovingian-db-migrate --plan 1 2 --migrations migrations/
+merovingian-db-migrate --plan 0 1 --migrations migrations/
 ```
+
+The schema is at version 1 and `migrations/` holds only `001_initial_schema.sql`,
+so `--plan 0 1` is the plan that matches it. With `--migrations`, the steps come
+from the files, and the plan is rejected (exit 78) unless their versions run
+contiguously from `<current-version> + 1` to `<target-version>`; without
+`--migrations`, the plan is built from the steps this build carries. A plan to a
+version this build does not have, such as `--plan 1 2`, is rejected.
 
 The live server applies pending migrations automatically on startup.
 
@@ -2954,6 +2961,12 @@ startup and client checks for your deployment before relying on a backup.
 6. Start the server.
 
 Schema migrations are applied automatically on startup.
+
+A database whose `schema_migrations` ledger records a migration this build does
+not have is refused at open, and the server does not start. That covers a
+database written by a newer build and a pre-1.0 database from before the 0.12.47
+schema collapse (ledger rows 2 to 26). There are no upgrade or downgrade steps
+for it: such a database must be recreated (`migrations/AGENTS.md`).
 
 ### Version and release metadata
 

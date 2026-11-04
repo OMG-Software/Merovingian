@@ -204,6 +204,11 @@ auto federation_request_should_bypass_worker(LocalHttpRequest const& request) ->
     {
         return true;
     }
+    // Issuing an invite for a third-party invite signs an event for this server, which only main can do (ADR-0484).
+    if (request.method == "PUT" && request.target.starts_with("/_matrix/federation/v1/exchange_third_party_invite/"))
+    {
+        return true;
+    }
     // Media download needs the local media repository, which lives only in the
     // main process. The worker has no access to local blobs, so keep this route
     // on main even when the federation worker pool is active.
@@ -259,6 +264,13 @@ auto is_federation_version_endpoint(std::string_view target) noexcept -> bool
     return path == "/_matrix/federation/v1/version";
 }
 
+auto is_federation_3pid_onbind_endpoint(std::string_view target) noexcept -> bool
+{
+    auto const query_pos = target.find('?');
+    auto const path = target.substr(0U, query_pos);
+    return path == "/_matrix/federation/v1/3pid/onbind";
+}
+
 auto federation_unsupported_method_allow(std::string_view method, std::string_view target) -> std::optional<std::string>
 {
     auto const path = target.substr(0U, target.find('?'));
@@ -267,6 +279,10 @@ auto federation_unsupported_method_allow(std::string_view method, std::string_vi
         path == "/_matrix/federation/v1/openid/userinfo")
     {
         return method == "GET" ? std::nullopt : std::optional<std::string>{"GET"};
+    }
+    if (path == "/_matrix/federation/v1/3pid/onbind")
+    {
+        return method == "PUT" ? std::nullopt : std::optional<std::string>{"PUT"};
     }
     if (federation::match_federation_route(method, target).matched)
     {

@@ -2788,6 +2788,15 @@ namespace
                     std::move(answer_plan.servers_in_room)};
         };
 
+        runtime.federation.third_party_invite_exchanger =
+            [rt](federation::ThirdPartyInviteExchange const& exchange,
+                 std::string const& origin) -> federation::ThirdPartyInviteExchangeResult {
+            // The caller is an authenticated server (X-Matrix), so its name is a bounded key for the ADR-0079 budget
+            // the offer to the invited user's server draws on. exchange_third_party_invite takes the runtime mutex.
+            auto const result = exchange_third_party_invite(*rt, exchange, "federation-3pid:" + origin);
+            return {result.ok, result.status, result.reason};
+        };
+
         runtime.federation.invite_handler =
             [rt](federation::InviteRequest const& invite) -> federation::InviteAcceptResult {
             // Locking: same reasoning as runtime.federation.membership_acceptor
@@ -6250,6 +6259,7 @@ auto wire_federation_callbacks(HomeserverRuntime& runtime) -> void
         return federation_method_not_allowed_response(*allow);
     }
     auto signed_request_opt = std::optional<federation::SignedFederationRequest>{};
+    auto onbind_request = false;
 
     {
         auto guard = std::unique_lock<RuntimeMutex>{runtime.mutex};
@@ -6273,12 +6283,20 @@ auto wire_federation_callbacks(HomeserverRuntime& runtime) -> void
                 std::string{"{\"server\":{\"name\":\"Merovingian\",\"version\":\""} + MEROVINGIAN_VERSION + "\"}}";
             return response(200U, body);
         }
-        if (!starts_with(request.target, "/_matrix/federation/"))
+        if (request.method == "PUT" && is_federation_3pid_onbind_endpoint(request.target))
+        {
+            onbind_request = true;
+        }
+        else if (!starts_with(request.target, "/_matrix/federation/"))
         {
             return response(404U, matrix_error("M_UNRECOGNIZED", "route not found"));
         }
 
-        if (request.sig_verified)
+        if (onbind_request)
+        {
+            // Unauthenticated by the spec: handled below, outside this lock and with no signed request.
+        }
+        else if (request.sig_verified)
         {
             // #323: the main process already verified the X-Matrix signature and
             // forwarded only the verified identity over the authenticated IPC
@@ -6329,13 +6347,33 @@ auto wire_federation_callbacks(HomeserverRuntime& runtime) -> void
                 signed_request_opt = std::move(req);
             }
         }
-        if (!signed_request_opt.has_value())
+        if (!onbind_request && !signed_request_opt.has_value())
         {
             // 502 rather than 401: Synapse propagates 401 from federation
             // responses to the client, triggering an automatic logout. Returning
             // 502 signals a server-side failure instead.
             return response(502U, matrix_error("M_UNKNOWN", "malformed federation authorization"));
         }
+    }
+
+    if (onbind_request)
+    {
+        // Spec: PUT /_matrix/federation/v1/3pid/onbind (identity server -> invited user's homeserver; no
+        // authentication). The body is parsed and bounded, then acted on by notify_third_party_bind, which holds the
+        // lock only while it reads or writes runtime state (ADR-0484).
+        auto const parsed = federation::parse_third_party_bind_notification(request.body);
+        if (!parsed.notification.has_value())
+        {
+            return response(400U, matrix_error("M_BAD_JSON", parsed.reason));
+        }
+        auto const result = notify_third_party_bind(runtime, *parsed.notification,
+                                                    rate_limit_client_key(request, runtime.config.server()));
+        if (!result.ok)
+        {
+            return response(result.status,
+                            matrix_error(result.status == 429U ? "M_LIMIT_EXCEEDED" : "M_UNKNOWN", result.reason));
+        }
+        return response(200U, "{}");
     }
 
     // F-21 (ADR-0358): a federation worker is not asked to judge a request: main applied the admin's policy

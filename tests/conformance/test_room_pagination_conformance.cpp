@@ -35,8 +35,10 @@
 #include <cstddef>
 #include <cstdint>
 #include <map>
+#include <optional>
 #include <string>
 #include <string_view>
+#include <tuple>
 #include <utility>
 #include <variant>
 #include <vector>
@@ -181,6 +183,14 @@ struct Reply final
         }
     }
     return escaped;
+}
+
+[[nodiscard]] auto string_field(Reply const& reply, std::string_view name) -> std::optional<std::string>
+{
+    REQUIRE(reply.status == 200U);
+    auto const body = parse_object(reply.body);
+    auto const* value = string_member(body, name);
+    return value == nullptr ? std::nullopt : std::optional<std::string>{*value};
 }
 
 } // namespace
@@ -459,6 +469,129 @@ SCENARIO("/members lists every current member once, whatever the room's size and
             THEN("every joined member is listed once")
             {
                 REQUIRE(counts.size() == 1U + state_backed + row_only);
+            }
+        }
+    }
+}
+
+// Spec: Matrix Client-Server API v1.19, GET /rooms/{roomId}/messages
+// URL:  ../../docs/matrix-v1.19-spec/client-server-api.md#get_matrixclientv3roomsroomidmessages
+//
+// `end`: "A token corresponding to the end of `chunk`. ... If no further events are available (either because we
+// have reached the start of the timeline, or because the user does not have permission to see any more events),
+// this property is omitted from the response." `chunk`: "Clients should continue to paginate until no `end`
+// property is returned."
+SCENARIO("/messages omits end when no further events are available",
+         "[conformance][client-server][messages][pagination][messages-end]")
+{
+    GIVEN("a room with several events")
+    {
+        auto started = merovingian::homeserver::start_client_server(pagination_config());
+        REQUIRE(started.started);
+        auto& rt = started.runtime;
+        auto const token = register_and_login(rt, "alice");
+        auto const room_id = create_room(rt, token);
+        for (auto i = 0; i < 4; ++i)
+        {
+            std::ignore = send(rt, token, room_id, "t" + std::to_string(i), text("m" + std::to_string(i)));
+        }
+        auto const base = "/_matrix/client/v3/rooms/" + room_id + "/messages?dir=b";
+        auto const everything = chunk_event_ids(call(rt, "GET", base + "&limit=100", token));
+        REQUIRE(everything.size() > 3U);
+
+        WHEN("one request returns the whole timeline")
+        {
+            auto const reply = call(rt, "GET", base + "&limit=100", token);
+
+            THEN("the response has no end token")
+            {
+                REQUIRE(string_field(reply, "end") == std::nullopt);
+            }
+        }
+
+        WHEN("a client pages backward through the room until no end is returned")
+        {
+            auto collected = std::vector<std::string>{};
+            auto from = std::string{};
+            auto pages = std::size_t{0U};
+            auto ended = false;
+            while (pages < everything.size() + 3U)
+            {
+                ++pages;
+                auto const reply = call(rt, "GET", base + "&limit=2" + (from.empty() ? "" : "&from=" + from), token);
+                for (auto const& id : chunk_event_ids(reply))
+                {
+                    collected.push_back(id);
+                }
+                auto const end = string_field(reply, "end");
+                if (!end.has_value())
+                {
+                    ended = true;
+                    break;
+                }
+                REQUIRE_FALSE(end->empty());
+                from = *end;
+            }
+
+            THEN("it stops, having seen each event once and in the same order as one large page")
+            {
+                REQUIRE(ended);
+                REQUIRE(collected == everything);
+            }
+        }
+    }
+}
+
+// Spec: Matrix Client-Server API v1.19, GET /rooms/{roomId}/messages
+// URL:  ../../docs/matrix-v1.19-spec/client-server-api.md#get_matrixclientv3roomsroomidmessages
+//
+// `to`: "The token to stop returning events at. This token can be obtained from a `prev_batch` or `next_batch`
+// token returned by the `/sync` endpoint, or from an `end` token returned by a previous request to this endpoint."
+SCENARIO("/messages stops returning events at the to token",
+         "[conformance][client-server][messages][pagination][messages-to]")
+{
+    GIVEN("a room with several events and the end token of a two-event page")
+    {
+        auto started = merovingian::homeserver::start_client_server(pagination_config());
+        REQUIRE(started.started);
+        auto& rt = started.runtime;
+        auto const token = register_and_login(rt, "alice");
+        auto const room_id = create_room(rt, token);
+        for (auto i = 0; i < 4; ++i)
+        {
+            std::ignore = send(rt, token, room_id, "t" + std::to_string(i), text("m" + std::to_string(i)));
+        }
+        auto const base = "/_matrix/client/v3/rooms/" + room_id + "/messages?limit=100&dir=";
+        auto const backward_page =
+            call(rt, "GET", "/_matrix/client/v3/rooms/" + room_id + "/messages?limit=2&dir=b", token);
+        auto const backward_ids = chunk_event_ids(backward_page);
+        auto const backward_end = string_field(backward_page, "end");
+        REQUIRE(backward_end.has_value());
+        auto const forward_page =
+            call(rt, "GET", "/_matrix/client/v3/rooms/" + room_id + "/messages?limit=2&dir=f", token);
+        auto const forward_ids = chunk_event_ids(forward_page);
+        auto const forward_end = string_field(forward_page, "end");
+        REQUIRE(forward_end.has_value());
+
+        WHEN("the newest events are requested backward with to set to that end token")
+        {
+            auto const reply = call(rt, "GET", base + "b&to=" + *backward_end, token);
+
+            THEN("only the events newer than the token are returned, and no end follows")
+            {
+                REQUIRE(chunk_event_ids(reply) == std::vector<std::string>{backward_ids.front()});
+                REQUIRE(string_field(reply, "end") == std::nullopt);
+            }
+        }
+
+        WHEN("the oldest events are requested forward with to set to that end token")
+        {
+            auto const reply = call(rt, "GET", base + "f&to=" + *forward_end, token);
+
+            THEN("only the events older than the token are returned, and no end follows")
+            {
+                REQUIRE(chunk_event_ids(reply) == std::vector<std::string>{forward_ids.front()});
+                REQUIRE(string_field(reply, "end") == std::nullopt);
             }
         }
     }

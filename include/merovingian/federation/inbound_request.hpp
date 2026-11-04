@@ -10,6 +10,7 @@
 #include "merovingian/federation/room_read_result.hpp"
 #include "merovingian/federation/runtime_federation.hpp"
 #include "merovingian/federation/security.hpp"
+#include "merovingian/federation/third_party_invite.hpp"
 #include "merovingian/federation/transactions.hpp"
 #include "merovingian/media/repository.hpp"
 #include "merovingian/media/thumbnailer.hpp"
@@ -387,6 +388,8 @@ struct FederationRuntimeState final
     MembershipTemplateProvider membership_template_provider{};
     MembershipAcceptor membership_acceptor{};
     InviteHandler invite_handler{};
+    // Issues the invite for an `exchange_third_party_invite` (ADR-0484). Unset (a worker): the endpoint answers 501.
+    ThirdPartyInviteExchanger third_party_invite_exchanger{};
     BackfillProvider backfill_provider{};
     // Optional resolver for inbound `query/directory`. When unset the handler
     // responds 501 Not Implemented.

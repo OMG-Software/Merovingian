@@ -36,6 +36,7 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <optional>
@@ -1017,6 +1018,158 @@ SCENARIO("GET /rooms/{roomId}/threads ignores a thread relation whose target is 
             THEN("only the real thread is listed, with only its own reply counted")
             {
                 REQUIRE(listed == std::vector<std::string>{root});
+            }
+        }
+    }
+}
+
+namespace
+{
+
+// Sends a reaction-free relation event: `rel_type` ("m.reference" or "m.thread") from a new event to `target`.
+[[nodiscard]] auto send_related(merovingian::homeserver::ClientServerRuntime& runtime, std::string const& token,
+                                std::string const& room_id, std::string const& target, std::string const& rel_type,
+                                std::string const& txn_id) -> std::string
+{
+    auto const body = std::string{R"({"msgtype":"m.text","body":"related","m.relates_to":{"rel_type":")"} + rel_type +
+                      R"(","event_id":")" + target + R"("}})";
+    auto const resp = merovingian::homeserver::handle_client_server_request(
+        runtime, {"PUT", "/_matrix/client/v3/rooms/" + room_id + "/send/m.room.message/" + txn_id, token, body});
+    REQUIRE(resp.response.status == 200U);
+    auto const parsed = parse_object(resp.response.body);
+    auto const* event_id = string_member(parsed, "event_id");
+    REQUIRE(event_id != nullptr);
+    return *event_id;
+}
+
+struct RelationsAnswer final
+{
+    std::uint16_t status{0U};
+    std::vector<std::string> ids{};
+    std::optional<std::int64_t> recursion_depth{};
+};
+
+[[nodiscard]] auto get_relations(merovingian::homeserver::ClientServerRuntime& runtime, std::string const& token,
+                                 std::string const& room_id, std::string const& event_id, std::string const& tail)
+    -> RelationsAnswer
+{
+    auto const resp = merovingian::homeserver::handle_client_server_request(
+        runtime, {"GET", "/_matrix/client/v1/rooms/" + room_id + "/relations/" + event_id + tail, token, {}});
+    auto answer = RelationsAnswer{static_cast<std::uint16_t>(resp.response.status), {}, std::nullopt};
+    if (answer.status != 200U)
+    {
+        return answer;
+    }
+    auto const parsed = parse_object(resp.response.body);
+    auto const* chunk = object_member_as_array(parsed, "chunk");
+    REQUIRE(chunk != nullptr);
+    for (auto const& value : *chunk)
+    {
+        auto const* event = std::get_if<merovingian::canonicaljson::Object>(&value.storage());
+        REQUIRE(event != nullptr);
+        auto const* id = string_member(*event, "event_id");
+        REQUIRE(id != nullptr);
+        answer.ids.push_back(*id);
+    }
+    if (auto const* depth = int_member(parsed, "recursion_depth"); depth != nullptr)
+    {
+        answer.recursion_depth = *depth;
+    }
+    return answer;
+}
+
+} // namespace
+
+// Spec: Matrix Client-Server API v1.19 — GET /rooms/{roomId}/relations/{eventId}
+// URL: ../../docs/matrix-v1.19-spec/client-server-api.md#get_matrixclientv1roomsroomidrelationseventid
+//
+// `recurse`: "events which have an indirect relation with the given event will be included additionally up
+// to a certain depth level. Homeservers SHOULD traverse at least 3 levels of relationships." and
+// `recursion_depth`: "If the recurse parameter was supplied by the client, this response field is mandatory
+// and gives the actual depth to which the server recursed. If the client did not specify the recurse
+// parameter, this field must be absent."
+SCENARIO("GET /relations with recurse=true includes events related through intermediate events",
+         "[event-relationships][conformance][relations][recurse]")
+{
+    GIVEN("a chain of three relations, each pointing at the one before, from a root")
+    {
+        auto started = merovingian::homeserver::start_client_server(conformance_config());
+        REQUIRE(started.started);
+        auto& rt = started.runtime;
+        auto const token = logged_in_token(rt);
+        auto const room_id = create_room(rt, token);
+        auto const root = send_text_message(rt, token, room_id, "txn_root");
+        auto const level1 = send_related(rt, token, room_id, root, "m.reference", "txn_l1");
+        auto const level2 = send_related(rt, token, room_id, level1, "m.reference", "txn_l2");
+        auto const level3 = send_related(rt, token, room_id, level2, "m.reference", "txn_l3");
+
+        WHEN("the relations are fetched with recurse=true")
+        {
+            auto const answer = get_relations(rt, token, room_id, root, "?recurse=true");
+
+            THEN("all three levels are returned and recursion_depth says the server went at least 3 deep")
+            {
+                REQUIRE(answer.status == 200U);
+                REQUIRE(std::ranges::count(answer.ids, level1) == 1);
+                REQUIRE(std::ranges::count(answer.ids, level2) == 1);
+                REQUIRE(std::ranges::count(answer.ids, level3) == 1);
+                REQUIRE(answer.recursion_depth.has_value());
+                REQUIRE(*answer.recursion_depth >= 3);
+            }
+        }
+
+        WHEN("the relations are fetched with recurse=false")
+        {
+            auto const answer = get_relations(rt, token, room_id, root, "?recurse=false");
+
+            THEN("only the direct relation is returned")
+            {
+                REQUIRE(answer.status == 200U);
+                REQUIRE(answer.ids == std::vector<std::string>{level1});
+                REQUIRE(answer.recursion_depth.has_value());
+            }
+        }
+
+        WHEN("the relations are fetched without the recurse parameter")
+        {
+            auto const answer = get_relations(rt, token, room_id, root, "");
+
+            THEN("only the direct relation is returned and recursion_depth is absent")
+            {
+                REQUIRE(answer.ids == std::vector<std::string>{level1});
+                REQUIRE_FALSE(answer.recursion_depth.has_value());
+            }
+        }
+    }
+}
+
+// Spec: same section: "Filters specified via event_type or rel_type will be applied to all events returned,
+// whether direct or indirect relations. Events that would match the filter, but whose only relation to the
+// original given event is through a non-matching intermediate event, will not be included."
+SCENARIO("GET /relations with recurse=true applies the rel_type filter to intermediate events",
+         "[event-relationships][conformance][relations][recurse]")
+{
+    GIVEN("a reference to the root, a thread reply to that reference, and a reference to the thread reply")
+    {
+        auto started = merovingian::homeserver::start_client_server(conformance_config());
+        REQUIRE(started.started);
+        auto& rt = started.runtime;
+        auto const token = logged_in_token(rt);
+        auto const room_id = create_room(rt, token);
+        auto const root = send_text_message(rt, token, room_id, "txn_root");
+        auto const reference = send_related(rt, token, room_id, root, "m.reference", "txn_ref");
+        auto const thread_reply = send_related(rt, token, room_id, reference, "m.thread", "txn_thr");
+        auto const via_thread = send_related(rt, token, room_id, thread_reply, "m.reference", "txn_via");
+
+        WHEN("the m.reference relations of the root are fetched with recurse=true")
+        {
+            auto const answer = get_relations(rt, token, room_id, root, "/m.reference?recurse=true");
+
+            THEN("the matching reference is returned, and the one reached only through the thread reply is not")
+            {
+                REQUIRE(answer.status == 200U);
+                REQUIRE(answer.ids == std::vector<std::string>{reference});
+                REQUIRE(std::ranges::count(answer.ids, via_thread) == 0);
             }
         }
     }
