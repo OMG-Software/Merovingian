@@ -154,3 +154,41 @@ SCENARIO("Sessions that can no longer authenticate are erased and the rest stay 
         }
     }
 }
+
+SCENARIO("An index hit is only a candidate: the caller's constant-time confirmation decides",
+         "[homeserver][session_table][p7][security]")
+{
+    GIVEN("a table with a revoked session and a session whose hash was changed behind the index")
+    {
+        auto table = SessionTable{};
+        fill(table, 10U);
+        (table.begin() + 3)->revoked = true;
+        (table.begin() + 5)->access_token_hash = "token-hash:v4:written-behind-the-index";
+        auto const live_and_matching = [](LocalSession const& session, std::string const& hash) {
+            return session.access_token_hash == hash && !session.revoked;
+        };
+
+        WHEN("the revoked session's hash is looked up")
+        {
+            auto const* found = table.find(std::vector<std::string>{hash_of(3U)}, live_and_matching);
+
+            THEN("it is a candidate the confirmation refuses")
+            {
+                REQUIRE(found == nullptr);
+            }
+        }
+
+        WHEN("the hash the changed session had when it was indexed is looked up")
+        {
+            auto const* old_hash = table.find(std::vector<std::string>{hash_of(5U)}, live_and_matching);
+            auto const* new_hash =
+                table.find(std::vector<std::string>{"token-hash:v4:written-behind-the-index"}, live_and_matching);
+
+            THEN("the lookup fails closed: neither the stale digest nor the unindexed hash authenticates")
+            {
+                REQUIRE(old_hash == nullptr);
+                REQUIRE(new_hash == nullptr);
+            }
+        }
+    }
+}
