@@ -1477,6 +1477,33 @@ namespace
             runtime, request, ClientServerDispatchOptions{.can_wait = can_wait, .rate_limit_admitted = true});
     }
 
+    // The long-poll of the transports with no sync pool: one wait for the whole timeout, no peer peek. True when
+    // a rerun completed and left its answer in `result`.
+    [[nodiscard]] auto wait_for_sync(sync::SyncNotifier& notifier, ClientServerRuntime& runtime,
+                                     LocalHttpRequest const& request, SyncWaitParams const& wait,
+                                     DispatchResult& result) -> bool
+    {
+        auto const outcome = sync::long_poll_wait(
+            notifier, wait.user_id, wait.since_stream_ordering, wait.since_sync_stream_id,
+            std::chrono::steady_clock::now() + wait.timeout, std::chrono::milliseconds{wait.timeout},
+            [] {
+                return true;
+            },
+            [&] {
+                auto interim = rerun_waiting_sync(runtime, request, true);
+                if (interim.status == DispatchResult::Status::complete)
+                {
+                    result = std::move(interim);
+                    return sync::LongPollStep{true, 0U, 0U};
+                }
+                return sync::LongPollStep{false, interim.wait.since_stream_ordering, interim.wait.since_sync_stream_id};
+            },
+            [] {
+                return true;
+            });
+        return outcome.dispatched;
+    }
+
     // A long-poll handed to the sync pool. It owns the connection from the
     // moment it is submitted; everything it needs is held by value, since the
     // round that created it may be gone by the time it runs.
@@ -1513,30 +1540,25 @@ namespace
             // connection within one slice, and to bound shutdown
             // (request_stop()) to one slice regardless of the client timeout.
             constexpr auto poll_interval = std::chrono::milliseconds{1000U};
-            auto wait_params = handoff.wait;
+            auto const wait_params = handoff.wait;
             auto const deadline = std::chrono::steady_clock::now() + wait_params.timeout;
-            while (sync_pool->running())
-            {
-                auto const remaining =
-                    std::chrono::duration_cast<std::chrono::milliseconds>(deadline - std::chrono::steady_clock::now());
-                if (remaining.count() <= 0)
-                {
-                    break;
-                }
-                if (handoff.notifier.wait_for_change(wait_params.since_stream_ordering,
-                                                     wait_params.since_sync_stream_id,
-                                                     std::min(remaining, poll_interval), wait_params.user_id))
-                {
+            auto const outcome = sync::long_poll_wait(
+                handoff.notifier, wait_params.user_id, wait_params.since_stream_ordering,
+                wait_params.since_sync_stream_id, deadline, poll_interval,
+                [sync_pool] {
+                    return sync_pool->running();
+                },
+                [&] {
                     auto interim = rerun_waiting_sync(runtime, handoff.request, true);
                     if (interim.status == DispatchResult::Status::complete)
                     {
                         dispatched_result = std::move(interim);
-                        break;
+                        return sync::LongPollStep{true, 0U, 0U};
                     }
-                    wait_params = interim.wait;
-                }
-                else
-                {
+                    return sync::LongPollStep{false, interim.wait.since_stream_ordering,
+                                              interim.wait.since_sync_stream_id};
+                },
+                [fd] {
                     // Notifier did not fire (poll-slice timeout). Check whether
                     // the peer is still connected via a non-blocking peek: when
                     // the client closes (FIN or RST), recv returns 0 or a
@@ -1546,13 +1568,9 @@ namespace
                     // loop abandoning one long-poll every ~90 ms).
                     auto peek_buf = std::array<char, 1>{};
                     auto const n = ::recv(fd, peek_buf.data(), 1U, MSG_PEEK | MSG_DONTWAIT);
-                    if (n == 0 || (n < 0 && errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR))
-                    {
-                        client_gone = true;
-                        break;
-                    }
-                }
-            }
+                    return !(n == 0 || (n < 0 && errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR));
+                });
+            client_gone = outcome.client_gone;
         }
         catch (...)
         {
@@ -1959,38 +1977,11 @@ namespace
             // events arrive or the timeout expires. The re-wait loop mirrors
             // the sync-pool path.
             {
-                auto wait = result.wait;
-                auto deadline = std::chrono::steady_clock::now() + wait.timeout;
+                auto const wait = result.wait;
                 auto dispatched = false;
                 try
                 {
-                    while (!dispatched)
-                    {
-                        auto const remaining = std::chrono::duration_cast<std::chrono::milliseconds>(
-                            deadline - std::chrono::steady_clock::now());
-                        if (remaining.count() <= 0)
-                        {
-                            break;
-                        }
-                        if (notifier->wait_for_change(wait.since_stream_ordering, wait.since_sync_stream_id, remaining,
-                                                      wait.user_id))
-                        {
-                            auto interim = rerun_waiting_sync(ctx.runtime, local_request, true);
-                            if (interim.status == DispatchResult::Status::complete)
-                            {
-                                result = std::move(interim);
-                                dispatched = true;
-                            }
-                            else
-                            {
-                                wait = interim.wait;
-                            }
-                        }
-                        else
-                        {
-                            break; // timeout
-                        }
-                    }
+                    dispatched = wait_for_sync(*notifier, ctx.runtime, local_request, wait, result);
                 }
                 catch (...)
                 {
@@ -2218,38 +2209,11 @@ auto dispatch_local_http_request(ClientServerRuntime& runtime, LocalHttpRequest 
         // by an event not relevant to this connection (e.g. another user uploading
         // device keys).  The handler advances wait.since_sync_stream_id past the
         // irrelevant bump, preventing an immediate re-fire.
-        auto wait = result.wait;
-        auto deadline = std::chrono::steady_clock::now() + wait.timeout;
+        auto const wait = result.wait;
         auto dispatched = false;
         try
         {
-            while (!dispatched)
-            {
-                auto const remaining =
-                    std::chrono::duration_cast<std::chrono::milliseconds>(deadline - std::chrono::steady_clock::now());
-                if (remaining.count() <= 0)
-                {
-                    break;
-                }
-                if (notifier->wait_for_change(wait.since_stream_ordering, wait.since_sync_stream_id, remaining,
-                                              wait.user_id))
-                {
-                    auto interim = rerun_waiting_sync(runtime, request, true);
-                    if (interim.status == DispatchResult::Status::complete)
-                    {
-                        result = std::move(interim);
-                        dispatched = true;
-                    }
-                    else
-                    {
-                        wait = interim.wait;
-                    }
-                }
-                else
-                {
-                    break; // timeout
-                }
-            }
+            dispatched = wait_for_sync(*notifier, runtime, request, wait, result);
         }
         catch (...)
         {

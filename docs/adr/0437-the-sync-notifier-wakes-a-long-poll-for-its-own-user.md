@@ -24,25 +24,33 @@ one room woke every parked `/sync`, each of which then rebuilt its response unde
 
 ## Decision Outcome
 
-Chosen option 2. `publish(stream_ordering, sync_stream_id, scope)`: with no scope it is a broadcast (every waiter wakes);
-with a scope, only the waiters of the named users (and any waiter that named no user) wake. A waiter passes its user to
-`wait_for_change`. The positions, the per-user generations and the waiters are one mutex's state, and the entry check
-against `since` and the waiter's registration happen in one hold of it, so no publish can fall between them. The scope is
-passed in as data: the notifier never reads room membership.
+Chosen option 2. `publish(stream_ordering, sync_stream_id, scope)`: with no scope it is a broadcast (the broadcast
+generation moves and every waiter wakes); with a scope, the generation of each named user moves and only that user's
+waiters (and any waiter that named no user) wake. The notifier never reads room membership: the scope is passed in as
+data, taken by the caller under `runtime.mutex` at the publish site.
+
+A long-poll for a user holds a cursor (`observe(user)`: the user's generation and the broadcast generation, taken under
+the notifier's mutex) and waits on it (`wait_for_change(cursor, timeout)`), which returns true when either generation has
+moved past the cursor, whether the move happened during the wait or between two waits, and ignores the positions.
+A user's generation is kept for the notifier's life, not erased when the last waiter leaves, so a publish landing between
+two 1 s slices is not lost; the map is bounded by the local users who long-poll. `long_poll_wait` is the one sequence all
+three transports run: (a) take the cursor; (b) if the positions are already past `since`, rerun once (its snapshot is
+after the cursor); (c) loop: wait on the cursor for a slice, and on a change take a new cursor and THEN rerun, so a publish
+between the two causes at most one harmless extra rerun, never a lost one; on a quiet slice the transport's idle check
+(the peer peek) runs. Shutdown (`running`) and the 1 s slice are the transport's. A waiter that names no user keeps the
+position behaviour and wakes on every publish.
 
 Only a publish whose affected set is certain is scoped (`sync_audience_of_room`: the room's joined and invited members, the
 sender, and the user whose membership the event changes, including one it removes): `send_event_as_user`,
 `store_composed_membership` and the federation PDU sink. Receipts, typing, presence, device lists, account data, to-device,
 joins, leaves, forgets, knocks, room creation and profile changes stay broadcasts. A new publish site stays a broadcast until
-someone can show the set exactly.
-
-An out-of-scope waiter is not woken, but its next `wait_for_change` starts from the same `since`, so it returns at once if
-a position moved while it slept (the immediate return that makes a publish made before the wait correct). Its handler then
-finds nothing and re-waits, as before; it is at most once per slice, not once per event.
+someone can show the set exactly. The audience reads the room's membership rows through a per-room index of
+`PersistentStore::memberships` (`for_each_room_membership_row`), so an event send does not scan every room's memberships.
 
 ### Consequences
 
+* A waiter whose positions were overtaken by publishes for other users is not rerun; it runs the sync again only for a
+  change that concerns it, a broadcast, or the deadline.
 * A waiter that names no user wakes on every publish, as before.
-* `signals_sent()` counts waiters signalled, so a test proves a wake-up was withheld without sleeping.
-* Advancing the long-poll cursor after a quiet slice (so the immediate return does not fire for out-of-scope events) is a
-  possible follow-up; it needs the notifier to return its positions.
+* `signals_sent()` counts waiters signalled (users with a parked waiter), so a test proves a wake-up was withheld
+  without sleeping.

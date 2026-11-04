@@ -319,9 +319,12 @@ themselves (spec: a server may add a user to `changed` when they share a new roo
 those users' waiters, a publish with no scope wakes everyone. Scope a publish only when the affected set is certain
 (`sync_audience_of_room`: the room's joined and invited members, the sender, the user a membership event is about);
 receipts, typing, presence, device lists, account data, to-device, joins, leaves and the rest stay broadcasts. Never
-read membership after publishing to decide whom to wake. A waiter not in a publish's scope is not woken, but its next
-wait starts from the same `since` and returns at once when the stream moved, so it may run a sync that finds nothing
-(once per slice, not once per event).
+read membership after publishing to decide whom to wake. A long-poll for a user takes a cursor (`observe`) and waits on
+it; it is rerun only when its user's generation or the broadcast generation moved, never for the positions moving. All
+three transports run `long_poll_wait`: cursor, then the positions check, then the rerun, and after a wake the NEW cursor
+before the rerun, so a publish between the two costs one extra rerun, never a lost one. Do not erase a user's entry when
+its last waiter leaves: a publish between two slices must be seen. The audience reads the room's rows through
+`for_each_room_membership_row` (ADR-0437).
 - On the `sync_pool` path the wait is polled in 1-second slices (`http_server.cpp`), which bounds
   shutdown and dropped-client detection to one second; the no-pool fallback and the sliding-sync
   re-wait loop wait for the full remaining timeout in a single call

@@ -11,6 +11,7 @@
 #include <atomic>
 #include <chrono>
 #include <cstddef>
+#include <cstdint>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -292,6 +293,7 @@ SCENARIO("SyncNotifier counts the callers blocked in a wait", "[sync][notifier][
 namespace
 {
 
+using merovingian::sync::LongPollStep;
 using merovingian::sync::SyncNotifier;
 
 // Parks a waiter for `user` on a thread; the result is read after join() on the main thread only.
@@ -300,7 +302,8 @@ class ParkedWaiter final
 public:
     ParkedWaiter(SyncNotifier& notifier, std::string user, std::size_t expected_waiting)
         : thread_{[this, &notifier, user = std::move(user)] {
-            woke_.store(notifier.wait_for_change(0U, 0U, std::chrono::seconds{60}, user));
+            auto const cursor = notifier.observe(user);
+            woke_.store(notifier.wait_for_change(cursor, std::chrono::seconds{60}));
         }}
     {
         // Wait for it to park, by yielding rather than by sleeping.
@@ -334,6 +337,9 @@ private:
     return names;
 }
 
+constexpr auto alice = "@alice:example.org";
+constexpr auto bob = "@bob:example.org";
+
 } // namespace
 
 // ADR-0437: a long-poll is woken for its own user, not for every event on the server.
@@ -348,14 +354,14 @@ SCENARIO("SyncNotifier wakes a waiter only for publishes that concern its user",
                 for (auto round = 0; round < 200; ++round)
                 {
                     auto notifier = SyncNotifier{};
-                    auto waiter = ParkedWaiter{notifier, "@alice:example.org", 1U};
+                    auto waiter = ParkedWaiter{notifier, alice, 1U};
 
-                    auto const bobs = users({"@bob:example.org"});
+                    auto const bobs = users({bob});
                     notifier.publish(1U, 0U, bobs);
                     REQUIRE(notifier.signals_sent() == 0U);
                     REQUIRE(notifier.waiting() == 1U);
 
-                    auto const alices = users({"@bob:example.org", "@alice:example.org"});
+                    auto const alices = users({bob, alice});
                     notifier.publish(2U, 0U, alices);
                     REQUIRE(waiter.join());
                     REQUIRE(notifier.signals_sent() == 1U);
@@ -373,7 +379,7 @@ SCENARIO("SyncNotifier wakes a waiter only for publishes that concern its user",
                 for (auto round = 0; round < 200; ++round)
                 {
                     auto notifier = SyncNotifier{};
-                    auto waiter = ParkedWaiter{notifier, "@alice:example.org", 1U};
+                    auto waiter = ParkedWaiter{notifier, alice, 1U};
 
                     notifier.publish(1U, 0U);
                     REQUIRE(waiter.join());
@@ -383,90 +389,368 @@ SCENARIO("SyncNotifier wakes a waiter only for publishes that concern its user",
         }
     }
 
-    GIVEN("a waiter for alice and an invite to her, to a room she was not in")
-    {
-        WHEN("an event scoped to the inviter and the invitee is published")
-        {
-            THEN("alice wakes")
-            {
-                for (auto round = 0; round < 200; ++round)
-                {
-                    auto notifier = SyncNotifier{};
-                    auto waiter = ParkedWaiter{notifier, "@alice:example.org", 1U};
-
-                    auto const audience = users({"@bob:example.org", "@alice:example.org"});
-                    notifier.publish(1U, 0U, audience);
-                    REQUIRE(waiter.join());
-                }
-            }
-        }
-    }
-
     GIVEN("a waiter that named no user and a waiter for bob")
     {
         auto notifier = SyncNotifier{};
-        auto anyone = ParkedWaiter{notifier, "", 1U};
-        auto bob = ParkedWaiter{notifier, "@bob:example.org", 2U};
+        auto anyone = std::atomic<bool>{false};
+        auto anyone_thread = std::thread{[&] {
+            anyone.store(notifier.wait_for_change(0U, 0U, std::chrono::seconds{60}));
+        }};
+        while (notifier.waiting() < 1U)
+        {
+            std::this_thread::yield();
+        }
+        auto bobs_waiter = ParkedWaiter{notifier, bob, 2U};
 
         WHEN("an event scoped to bob is published")
         {
-            auto const bobs = users({"@bob:example.org"});
+            auto const bobs = users({bob});
             notifier.publish(1U, 0U, bobs);
 
             THEN("both wake, the one with no user as every waiter always did")
             {
-                REQUIRE(anyone.join());
-                REQUIRE(bob.join());
+                anyone_thread.join();
+                REQUIRE(anyone.load());
+                REQUIRE(bobs_waiter.join());
                 REQUIRE(notifier.signals_sent() == 2U);
             }
         }
     }
+}
 
-    GIVEN("a publish scoped to bob made before alice began to wait")
+// ADR-0437: a cursor is the user's place in the notifier's history, kept across slices.
+SCENARIO("SyncNotifier cursors see what was published between two waits", "[sync][notifier][scoped][cursor]")
+{
+    GIVEN("a cursor taken for alice")
     {
         auto notifier = SyncNotifier{};
-        auto const bobs = users({"@bob:example.org"});
-        notifier.publish(5U, 0U, bobs);
+        auto const cursor = notifier.observe(alice);
 
-        WHEN("alice waits from before it")
+        WHEN("publishes scoped to bob move the positions, with no wait in progress")
         {
-            auto const woke = notifier.wait_for_change(0U, 0U, std::chrono::milliseconds{0}, "@alice:example.org");
+            auto const bobs = users({bob});
+            notifier.publish(5U, 5U, bobs);
+            notifier.publish(6U, 6U, bobs);
 
-            THEN("she is told at once, as the stream is ahead of her")
+            THEN("alice's wait does not return, whatever the positions say")
             {
-                REQUIRE(woke);
+                REQUIRE_FALSE(notifier.wait_for_change(cursor, std::chrono::milliseconds{0}));
             }
         }
-        WHEN("alice waits from the position it reached")
+        WHEN("a publish scoped to alice lands between two waits")
         {
-            auto const woke = notifier.wait_for_change(5U, 0U, std::chrono::milliseconds{0}, "@alice:example.org");
+            auto const alices = users({alice});
+            notifier.publish(1U, 0U, alices);
 
-            THEN("nothing is pending")
+            THEN("her next wait returns true at once")
             {
-                REQUIRE_FALSE(woke);
+                REQUIRE(notifier.wait_for_change(cursor, std::chrono::milliseconds{0}));
+            }
+            THEN("a cursor taken afterwards starts from there")
+            {
+                auto const later = notifier.observe(alice);
+                REQUIRE_FALSE(notifier.wait_for_change(later, std::chrono::milliseconds{0}));
+            }
+        }
+        WHEN("a broadcast lands between two waits")
+        {
+            notifier.publish(1U, 0U);
+
+            THEN("her next wait returns true at once")
+            {
+                REQUIRE(notifier.wait_for_change(cursor, std::chrono::milliseconds{0}));
             }
         }
     }
 
-    GIVEN("a waiter racing a publish scoped to it")
+    GIVEN("a user whose generation is kept after the last waiter leaves")
     {
-        WHEN("the publish may land before, or after, the waiter parks")
+        auto notifier = SyncNotifier{};
+        auto const first = notifier.observe(alice);
+        REQUIRE_FALSE(notifier.wait_for_change(first, std::chrono::milliseconds{1}));
+
+        WHEN("a publish scoped to her lands while nobody waits")
         {
-            THEN("the change is never lost")
+            auto const alices = users({alice});
+            notifier.publish(1U, 0U, alices);
+
+            THEN("the cursor she held earlier sees it")
             {
-                for (auto round = 0; round < 200; ++round)
+                REQUIRE(notifier.wait_for_change(first, std::chrono::milliseconds{0}));
+            }
+        }
+    }
+}
+
+namespace
+{
+
+// Counts what a long-poll did, from atomics the main thread reads. The long-poll runs on a thread of its own
+// and asserts nothing.
+struct PollProbe final
+{
+    std::atomic<int> reruns{0};
+    std::atomic<int> idle_slices{0};
+    std::atomic<bool> complete{false};
+    std::atomic<bool> gone{false};
+};
+
+// Runs long_poll_wait for `user` from `since` on a thread, with 2 ms slices and a 60 s deadline.
+template <typename OnRerun, typename OnIdle>
+class PollThread final
+{
+public:
+    PollThread(SyncNotifier& notifier, PollProbe& probe, std::string user, std::uint64_t since_ordering,
+               OnRerun on_rerun, OnIdle on_idle)
+        : thread_{[&notifier, &probe, user = std::move(user), since_ordering, on_rerun = std::move(on_rerun),
+                   on_idle = std::move(on_idle)]() mutable {
+            auto const result = merovingian::sync::long_poll_wait(
+                notifier, user, since_ordering, 0U, std::chrono::steady_clock::now() + std::chrono::seconds{60},
+                std::chrono::milliseconds{2},
+                []() {
+                    return true;
+                },
+                [&]() {
+                    auto const count = ++probe.reruns;
+                    return on_rerun(count);
+                },
+                [&]() {
+                    ++probe.idle_slices;
+                    return on_idle(probe.idle_slices.load());
+                });
+            probe.complete.store(result.dispatched);
+            probe.gone.store(result.client_gone);
+        }}
+    {
+    }
+    PollThread(PollThread const&) = delete;
+    auto operator=(PollThread const&) -> PollThread& = delete;
+    ~PollThread()
+    {
+        if (thread_.joinable())
+        {
+            thread_.join();
+        }
+    }
+    auto join() -> void
+    {
+        thread_.join();
+    }
+
+private:
+    std::thread thread_;
+};
+
+[[nodiscard]] auto done(std::uint64_t since_ordering = 0U) -> LongPollStep
+{
+    return {true, since_ordering, 0U};
+}
+[[nodiscard]] auto pending(std::uint64_t since_ordering) -> LongPollStep
+{
+    return {false, since_ordering, 0U};
+}
+
+} // namespace
+
+// ADR-0437: the long-poll reruns the sync for a change that concerns the user, not once per slice.
+SCENARIO("A long-poll reruns its sync only for changes that concern its user", "[sync][notifier][scoped][long-poll]")
+{
+    GIVEN("a long-poll for alice whose positions are overtaken by publishes scoped to bob")
+    {
+        WHEN("several slices pass")
+        {
+            THEN("the sync is not rerun, and is rerun once for a publish scoped to alice")
+            {
+                for (auto round = 0; round < 20; ++round)
                 {
                     auto notifier = SyncNotifier{};
-                    auto woke = std::atomic<bool>{false};
-                    auto waiter = std::thread{[&] {
-                        woke.store(notifier.wait_for_change(0U, 0U, std::chrono::seconds{60}, "@alice:example.org"));
-                    }};
-                    auto const alices = users({"@alice:example.org"});
+                    auto probe = PollProbe{};
+                    auto poll = PollThread{notifier,
+                                           probe,
+                                           alice,
+                                           0U,
+                                           [](int) {
+                                               return done();
+                                           },
+                                           [](int) {
+                                               return true;
+                                           }};
+                    while (probe.idle_slices.load() < 1)
+                    {
+                        std::this_thread::yield();
+                    }
+                    auto const bobs = users({bob});
+                    notifier.publish(7U, 7U, bobs);
+                    auto const seen = probe.idle_slices.load();
+                    while (probe.idle_slices.load() < seen + 3)
+                    {
+                        std::this_thread::yield();
+                    }
+                    REQUIRE(probe.reruns.load() == 0);
 
-                    notifier.publish(1U, 0U, alices);
-                    waiter.join();
-                    REQUIRE(woke.load());
+                    auto const alices = users({alice});
+                    notifier.publish(8U, 8U, alices);
+                    poll.join();
+                    REQUIRE(probe.reruns.load() == 1);
+                    REQUIRE(probe.complete.load());
                 }
+            }
+        }
+    }
+
+    GIVEN("a publish scoped to alice that lands between two slices")
+    {
+        WHEN("the first slice ends")
+        {
+            THEN("the next wait sees it and the sync is rerun")
+            {
+                for (auto round = 0; round < 20; ++round)
+                {
+                    auto notifier = SyncNotifier{};
+                    auto probe = PollProbe{};
+                    auto const alices = users({alice});
+                    auto poll = PollThread{notifier,
+                                           probe,
+                                           alice,
+                                           0U,
+                                           [](int) {
+                                               return done();
+                                           },
+                                           [&notifier, &alices](int slices) {
+                                               if (slices == 1)
+                                               {
+                                                   notifier.publish(1U, 0U, alices);
+                                               }
+                                               return true;
+                                           }};
+                    poll.join();
+                    REQUIRE(probe.reruns.load() == 1);
+                    REQUIRE(probe.complete.load());
+                }
+            }
+        }
+    }
+
+    GIVEN("a broadcast that lands between two slices")
+    {
+        WHEN("the first slice ends")
+        {
+            THEN("the next wait sees it and the sync is rerun")
+            {
+                for (auto round = 0; round < 20; ++round)
+                {
+                    auto notifier = SyncNotifier{};
+                    auto probe = PollProbe{};
+                    auto poll = PollThread{notifier,
+                                           probe,
+                                           alice,
+                                           0U,
+                                           [](int) {
+                                               return done();
+                                           },
+                                           [&notifier](int slices) {
+                                               if (slices == 1)
+                                               {
+                                                   notifier.publish(1U, 0U);
+                                               }
+                                               return true;
+                                           }};
+                    poll.join();
+                    REQUIRE(probe.reruns.load() == 1);
+                    REQUIRE(probe.complete.load());
+                }
+            }
+        }
+    }
+
+    GIVEN("a publish scoped to alice that lands after the cursor and before the rerun's snapshot")
+    {
+        WHEN("the stream was already ahead of the long-poll's position, so it reruns at once")
+        {
+            THEN("one extra rerun follows and nothing is lost")
+            {
+                for (auto round = 0; round < 20; ++round)
+                {
+                    auto notifier = SyncNotifier{};
+                    auto const bobs = users({bob});
+                    notifier.publish(1U, 0U, bobs);
+                    auto probe = PollProbe{};
+                    auto const alices = users({alice});
+                    auto poll = PollThread{notifier,
+                                           probe,
+                                           alice,
+                                           0U,
+                                           [&notifier, &alices](int count) {
+                                               if (count == 1)
+                                               {
+                                                   // Lands between observe() and this rerun's snapshot.
+                                                   notifier.publish(2U, 0U, alices);
+                                                   return pending(2U);
+                                               }
+                                               return done();
+                                           },
+                                           [](int) {
+                                               return true;
+                                           }};
+                    poll.join();
+                    REQUIRE(probe.reruns.load() == 2);
+                    REQUIRE(probe.complete.load());
+                }
+            }
+        }
+    }
+
+    GIVEN("a long-poll that named no user")
+    {
+        WHEN("any publish happens")
+        {
+            THEN("it reruns, as every long-poll once did")
+            {
+                auto notifier = SyncNotifier{};
+                auto probe = PollProbe{};
+                auto poll = PollThread{notifier,
+                                       probe,
+                                       "",
+                                       0U,
+                                       [](int) {
+                                           return done();
+                                       },
+                                       [](int) {
+                                           return true;
+                                       }};
+                while (probe.idle_slices.load() < 1)
+                {
+                    std::this_thread::yield();
+                }
+                auto const bobs = users({bob});
+                notifier.publish(1U, 0U, bobs);
+                poll.join();
+                REQUIRE(probe.reruns.load() == 1);
+            }
+        }
+    }
+
+    GIVEN("a long-poll whose idle check finds the client gone")
+    {
+        WHEN("a slice ends")
+        {
+            THEN("it stops without rerunning")
+            {
+                auto notifier = SyncNotifier{};
+                auto probe = PollProbe{};
+                auto poll = PollThread{notifier,
+                                       probe,
+                                       alice,
+                                       0U,
+                                       [](int) {
+                                           return done();
+                                       },
+                                       [](int) {
+                                           return false;
+                                       }};
+                poll.join();
+                REQUIRE(probe.gone.load());
+                REQUIRE(probe.reruns.load() == 0);
             }
         }
     }
@@ -474,17 +758,25 @@ SCENARIO("SyncNotifier wakes a waiter only for publishes that concern its user",
 
 // ADR-0437: the users an event in a room is published to.
 SCENARIO("A room event's sync audience is its joined and invited members, its sender and the user it is about",
-         "[sync][notifier][scoped]")
+         "[sync][notifier][scoped][audience]")
 {
-    GIVEN("a room with joined, invited, knocking, left and banned users")
+    GIVEN("a room with joined, invited, knocking, left and banned users, written through the store")
     {
         auto store = merovingian::database::PersistentStore{};
-        store.memberships.push_back({"!room:example.org", "@joined:example.org", "join", 1U});
-        store.memberships.push_back({"!room:example.org", "@invited:example.org", "invite", 2U});
-        store.memberships.push_back({"!room:example.org", "@knocking:example.org", "knock", 3U});
-        store.memberships.push_back({"!room:example.org", "@left:example.org", "leave", 4U});
-        store.memberships.push_back({"!room:example.org", "@banned:example.org", "ban", 5U});
-        store.memberships.push_back({"!other:example.org", "@elsewhere:example.org", "join", 6U});
+        auto const write = [&store](char const* room, char const* user, char const* membership, std::uint64_t order) {
+            REQUIRE(merovingian::database::store_membership_projection(store, room, {user, membership, order, {}}));
+        };
+        write("!room:example.org", "@joined:example.org", "join", 1U);
+        write("!room:example.org", "@invited:example.org", "invite", 2U);
+        write("!room:example.org", "@knocking:example.org", "knock", 3U);
+        write("!room:example.org", "@left:example.org", "leave", 4U);
+        write("!room:example.org", "@banned:example.org", "ban", 5U);
+        write("!other:example.org", "@elsewhere:example.org", "join", 6U);
+        // An invitee who joins is one row that changes in place.
+        write("!room:example.org", "@invited:example.org", "join", 7U);
+        // A deleted row is gone from the room.
+        write("!room:example.org", "@forgotten:example.org", "join", 8U);
+        REQUIRE(merovingian::database::delete_membership(store, "!room:example.org", "@forgotten:example.org"));
 
         WHEN("the audience of an event sent by a member who kicked another is built")
         {
@@ -497,6 +789,26 @@ SCENARIO("A room event's sync audience is its joined and invited members, its se
                 std::ranges::sort(sorted);
                 REQUIRE(sorted ==
                         std::vector<std::string>{"@invited:example.org", "@joined:example.org", "@kicked:example.org"});
+            }
+            THEN("the per-room index is in step with the rows and answers without a scan of other rooms")
+            {
+                REQUIRE(store.membership_indexed_rows == store.memberships.size());
+                auto visited = std::vector<std::string>{};
+                merovingian::database::for_each_room_membership_row(
+                    store, "!other:example.org", [&visited](merovingian::database::PersistentMembership const& row) {
+                        visited.push_back(row.room_id + row.user_id);
+                    });
+                REQUIRE(visited == std::vector<std::string>{"!other:example.org@elsewhere:example.org"});
+            }
+        }
+        WHEN("rows are added behind the store's back")
+        {
+            store.memberships.push_back({"!room:example.org", "@sneaky:example.org", "join", 9U});
+            auto const audience = merovingian::homeserver::sync_audience_of_room(store, "!room:example.org", {});
+
+            THEN("the audience still holds them, by falling back to a scan")
+            {
+                REQUIRE(std::ranges::find(audience, "@sneaky:example.org") != audience.end());
             }
         }
     }
