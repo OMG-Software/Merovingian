@@ -418,3 +418,8 @@
 * [0417 - Appservice query hooks on unauthenticated client routes take a proxy slot](0417-appservice-query-hooks-on-unauthenticated-client-routes-take-a-proxy-slot.md) — Refines ADR-0079 and ADR-0181: `GET /profile` and `GET /directory/room` take one slot for the appservice query loop, only when a registration matches
 * [0418 - The outbound client logs a URL without its query](0418-the-outbound-client-logs-an-url-without-its-query.md)
 * [0419 - The thumbnail decoder refuses to run without a platform sandbox](0419-the-thumbnail-decoder-refuses-to-run-without-a-platform-sandbox.md) — NetBSD has no in-process decoder sandbox, so the worker refuses to decode there instead of running on rlimits alone
+* [0425 - A retired server key verifies events sent before it expired and never authenticates a request](0425-a-retired-server-key-signs-events-never-requests.md)
+* [0426 - The to-device queue is restored to numeric stream-id order after hydration](0426-to-device-queue-is-restored-to-numeric-order-after-hydration.md)
+* [0445 - Room creation encryption is decided only by room_creation_encryption_policy](0445-room-creation-encryption-is-decided-only-by-the-encryption-policy.md)
+* [0446 - The encryption settings apply to room creation only](0446-the-encryption-settings-apply-to-room-creation-only.md)
+* [0447 - Unknown presets and a non-boolean m.federate fail towards the stricter encryption policy](0447-unknown-presets-and-non-boolean-m-federate-fail-towards-the-stricter-policy.md)

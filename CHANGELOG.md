@@ -2,6 +2,10 @@
 
 The high severity findings of the November project analysis.
 
+- Fixed: `old_verify_keys` in remote key responses are now read and stored durably (`server_signing_keys.expired_ts`), so events signed before a remote's key rotation verify from the cache. A retired key verifies an event only if its `origin_server_ts` is before `expired_ts`, never authenticates an X-Matrix request, stays retired once listed, and keeps the earliest expiry (ADR-0425). The column is added to the v1 schema, so a database created before this version must be recreated.
+- Fixed: after a restart the to-device queue reloaded in text order ("10" before "9"), and sliding sync could then acknowledge and delete an undelivered message. The queue is re-sorted numerically after loading, and the drain and the extension sort before paging (ADR-0426).
+- Fixed: room creation now enforces the five `security.encryption.*` settings through `room_creation_encryption_policy` (ADR-0445 to ADR-0447). A request for an unencrypted private, direct or otherwise required room is refused with 400 `M_INVALID_ROOM_STATE` before anything is stored. A public room with `is_direct`, or with `allow_unencrypted_public_rooms=false`, is now encrypted by default. An `m.room.encryption` entry under a non-empty `state_key` no longer cancels the default encryption of a private room.
+
 ## 0.12.71
 
 The low and informational findings of security audit run 2 (ref 5e67d4e8).
