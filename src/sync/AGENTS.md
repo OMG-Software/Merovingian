@@ -328,7 +328,8 @@ themselves (spec: a server may add a user to `changed` when they share a new roo
 
 ## Lazy-loading room members on `/sync` (ADR-0450 to ADR-0454)
 
-`room.state.lazy_load_members` (never `room.timeline`'s) turns it on. `state` then keeps all non-member state and only
+`room.state.lazy_load_members` (never `room.timeline`'s) turns it on. `state` then carries the non-member state the room would carry without lazy-loading (the state filter and the incremental
+delta still apply) and only
 these `m.room.member` events, each passed through the state filter first: the senders of delivered timeline events, as of
 the timeline's start; on a limited incremental sync every member change in the gap (never redundant); the user's own on an
 initial sync, `full_state=true` or a join in the window, unless the join is in the timeline. All of it is decided by

@@ -5,7 +5,7 @@ Lazy-loading of room members on `/sync` and `/context`.
 ### Added
 
 - **Lazy-loading of room members on `GET /sync` (ADR-0450 to ADR-0454).** With `room.state.lazy_load_members`, a joined or
-  left room's `state` keeps all non-member state and carries only the member events of the delivered timeline's senders
+  left room's `state` carries the non-member state it would carry without lazy-loading (the state filter and the incremental delta still apply) and only the member events of the delivered timeline's senders
   (as of the timeline's start, on an incremental sync too), every member change in the gap of a `limited` sync, and the
   user's own membership when they join or ask for `full_state`. A member the client has acknowledged is skipped: the
   server remembers, in memory per user, device, `filter` and room, the event it sent and the `next_batch` that carried it,
