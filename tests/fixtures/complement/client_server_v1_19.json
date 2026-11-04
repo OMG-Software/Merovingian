@@ -142,7 +142,7 @@
       "path": "/_matrix/client/v3/profile/%40alice%3Aexample.org",
       "auth_from": "refreshed_token",
       "expect_status": 200,
-      "expect_keys_present": ["displayname", "avatar_url"]
+      "expect_keys_absent": ["displayname", "avatar_url"]
     },
     {
       "method": "GET",

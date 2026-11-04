@@ -5802,11 +5802,12 @@ SCENARIO("Profile endpoint returns a user profile stub for authenticated clients
             auto const response = merovingian::homeserver::handle_client_server_request(
                 runtime, {"GET", "/_matrix/client/v3/profile/%40alice%3Aexample.org", token, {}});
 
-            THEN("the response is 200 and contains displayname and avatar_url fields")
+            THEN("the response is 200 and leaves out the fields the user has not set")
             {
                 REQUIRE(response.response.status == 200U);
-                REQUIRE(response.response.body.find("displayname") != std::string::npos);
-                REQUIRE(response.response.body.find("avatar_url") != std::string::npos);
+                // Spec: "otherwise not present" (analysis CS2); this asserted both as empty strings.
+                REQUIRE(response.response.body.find("displayname") == std::string::npos);
+                REQUIRE(response.response.body.find("avatar_url") == std::string::npos);
             }
         }
 
@@ -5818,7 +5819,7 @@ SCENARIO("Profile endpoint returns a user profile stub for authenticated clients
             THEN("the response is 200 - profile lookup is unauthenticated per the Matrix spec")
             {
                 REQUIRE(response.response.status == 200U);
-                REQUIRE(response.response.body.find("displayname") != std::string::npos);
+                REQUIRE(response.response.body.find("displayname") == std::string::npos);
             }
         }
     }

@@ -16346,14 +16346,15 @@ SCENARIO("GET /profile/{userId} is unauthenticated and returns displayname and a
             auto const resp = merovingian::homeserver::handle_client_server_request(
                 rt, {"GET", "/_matrix/client/v3/profile/%40alice%3Aexample.org", {}, {}});
 
-            THEN("response is 200 with displayname and avatar_url present")
+            THEN("response is 200, and a field the user has not set is not present")
             {
                 // Spec MUST: profile lookup succeeds without authentication
                 REQUIRE(resp.response.status == 200U);
                 auto const body = parse_object(resp.response.body);
-                // Spec MUST: response contains "displayname" and "avatar_url" keys
-                REQUIRE(object_member(body, "displayname") != nullptr);
-                REQUIRE(object_member(body, "avatar_url") != nullptr);
+                // Spec: "displayname" and "avatar_url" are "if they have set one, otherwise not present". This
+                // asserted both present (as empty strings) until analysis CS2; the spec says otherwise.
+                REQUIRE(object_member(body, "displayname") == nullptr);
+                REQUIRE(object_member(body, "avatar_url") == nullptr);
             }
         }
 

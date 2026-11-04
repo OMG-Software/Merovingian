@@ -85,7 +85,8 @@ struct Reply final
     body += "}";
     auto const reply = call(rt, "POST", "/_matrix/client/v3/login", {}, body);
     REQUIRE(reply.status == 200U);
-    auto const* token = string_member(parse_object(reply.body), "access_token");
+    auto const parsed = parse_object(reply.body);
+    auto const* token = string_member(parsed, "access_token");
     REQUIRE(token != nullptr);
     return *token;
 }

@@ -148,6 +148,9 @@ SCENARIO("GET /profile/{userId} leaves out a field the user has not set",
 
         WHEN("the user searches for themselves in the user directory")
         {
+            // The directory lists a user found through a public room.
+            REQUIRE(call(rt, "POST", "/_matrix/client/v3/createRoom", token, R"({"preset":"public_chat"})").status ==
+                    200U);
             auto const reply =
                 call(rt, "POST", "/_matrix/client/v3/user_directory/search", token, R"({"search_term":"alice"})");
 
