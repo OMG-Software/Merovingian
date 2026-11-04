@@ -7279,6 +7279,8 @@ namespace
         auto const empty_lazy_members_set = std::unordered_set<std::string>{};
         auto lazy_members_included_by_room = std::unordered_map<std::string, std::unordered_set<std::string>>{};
         auto room_timeline_limits_built = std::unordered_map<std::string, std::uint64_t>{};
+        // The rooms this connection is sent for the first time: their account data goes down in full (ADR-0493).
+        auto initial_room_ids = std::unordered_set<std::string>{};
         // ADR-0247: the one event position this response's pos names; no room's
         // timeline holds an event above it, or the next request would send it again.
         auto const visible_event_ordering = visible_stream_position(rt.homeserver.database);
@@ -7342,6 +7344,10 @@ namespace
                                        ? sync::TimelineExpansion::expand
                                        : sync::TimelineExpansion::none;
             room_timeline_limits_built[room_id] = sub.timeline_limit;
+            if (is_initial)
+            {
+                initial_room_ids.insert(room_id);
+            }
             // The floor is the later of the request pos and the room's last send; the room's
             // last send alone decides what counts as resent (`expanded_timeline`).
             auto room =
@@ -7416,9 +7422,9 @@ namespace
         auto ext_obj = canonicaljson::Object{};
         if (ssreq.extensions.has_value())
         {
-            extension_responses = sync::build_extensions(rt.homeserver, user, device_id, *ssreq.extensions,
-                                                         since_sync_stream_id, store.next_sync_stream_id, store,
-                                                         room_access, response_room_ids, ignored_senders);
+            extension_responses = sync::build_extensions(
+                rt.homeserver, user, device_id, *ssreq.extensions, since_sync_stream_id, store.next_sync_stream_id,
+                store, room_access, response_room_ids, ignored_senders, initial_room_ids);
             ext_obj = sliding_sync_ext_to_value(*extension_responses);
         }
 
@@ -20452,7 +20458,20 @@ auto set_presence(ClientServerRuntime& runtime, database::PersistentPresence sta
 
 auto run_presence_idle_sweep(ClientServerRuntime& runtime) -> std::chrono::milliseconds
 {
-    std::ignore = runtime;
+    auto guard = std::unique_lock<RuntimeMutex>{runtime.homeserver.mutex};
+    auto const changed = expire_idle_presence(runtime.homeserver, presence_now_ms());
+    for (auto const& state : changed)
+    {
+        log_diagnostic("presence.idle", {
+                                            {"actor", state.user_id, false}
+        });
+        broadcast_presence_edu(runtime.homeserver, state);
+    }
+    if (!changed.empty())
+    {
+        // Wakes long-polling syncs of the users who share a room with the ones now idle.
+        std::ignore = ensure_sync_notifier(runtime);
+    }
     return presence_idle_sweep_interval;
 }
 

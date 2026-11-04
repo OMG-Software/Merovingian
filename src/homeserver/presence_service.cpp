@@ -181,6 +181,38 @@ auto record_presence(HomeserverRuntime& runtime, database::PersistentPresence ro
     return true;
 }
 
+auto expire_idle_presence(HomeserverRuntime& runtime, std::int64_t now_ms) -> std::vector<database::PersistentPresence>
+{
+    auto changed = std::vector<database::PersistentPresence>{};
+    if (!presence_enabled(runtime))
+    {
+        return changed;
+    }
+    // Chosen first, written after: recording a row must not run while the rows are being walked.
+    auto idle = std::vector<database::PersistentPresence>{};
+    for (auto const& row : runtime.database.persistent_store.presence_states)
+    {
+        if (row.presence == "online" && is_local_user(runtime, row.user_id) &&
+            presence_last_active_ago(row, now_ms) > presence_idle_timeout_ms)
+        {
+            idle.push_back(row);
+        }
+    }
+    for (auto& row : idle)
+    {
+        // The stored time since the user was active is as of an earlier moment; record_presence restamps the row.
+        row.last_active_ago = presence_last_active_ago(row, now_ms);
+        row.presence = "unavailable";
+        row.currently_active = false;
+        if (record_presence(runtime, row))
+        {
+            row.observed_at_ms = now_ms;
+            changed.push_back(std::move(row));
+        }
+    }
+    return changed;
+}
+
 auto read_presence(HomeserverRuntime const& runtime, std::string_view requester, std::string_view target)
     -> PresenceRead
 {

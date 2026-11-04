@@ -36,7 +36,7 @@ This is the largest and most complex module — read this file carefully before 
 | `push_room_facts.cpp` | `push_room_facts`, `room_member_display_name`, `push_evaluation_context`: the evaluation context push delivery and unread counting share |
 | `push_badge_count.cpp` | `count_push_badge`: the Push Gateway `counts.unread` from one walk of the events, newest first in stream order, that stops once every room is settled, at most 10000 rows (ADR-0207) |
 | `push_rule_unread_classifier.cpp` | `PushRuleUnreadClassifier`: counts unread events by the user's push rules, from the start of their current join (R15, ADR-0205) |
-| `presence_service.cpp` | Presence (CS API "Presence", SS API `m.presence`): `read_presence` (GET), `apply_sync_presence` (the `/sync` `set_presence` parameter), `build_sync_presence_events` (`presence.events`), `accept_inbound_presence` (the EDU sink's presence case) and `record_presence`, the one place a presence row is stored. `presence.enabled=false` turns every entry point into a no-op. Sending the EDU stays in `client_server.cpp` (`broadcast_presence_edu`), beside the other outbound EDUs |
+| `presence_service.cpp` | Presence (CS API "Presence", SS API `m.presence`): `read_presence` (GET), `apply_sync_presence` (the `/sync` `set_presence` parameter), `build_sync_presence_events` (`presence.events`), `accept_inbound_presence` (the EDU sink's presence case) and `record_presence`, the one place a presence row is stored. `expire_idle_presence` (the idle sweep, ADR-0492). `presence.enabled=false` turns every entry point into a no-op. Sending the EDU stays in `client_server.cpp` (`broadcast_presence_edu`), beside the other outbound EDUs |
 | `push_retry.cpp` | `attempt_push_delivery` (every push attempt: circuit breaker, rejected pushkeys, scheduling retries) and `PushRetryJob`, the one thread that sends retries (R14, ADR-0206); a run is bounded by a time budget, takes retries one recipient at a time in turn and sends with a shorter timeout (ADR-0410), and a slow answer counts against the gateway's circuit (ADR-0409) |
 | `email_push.cpp` | Kind `"email"` pushers (ADR-0219, ADR-0220): `owned_email_pusher_address` (the pushkey must be the account's own email 3PID), `remove_email_pushers_for_address`, and `EmailPushJob`, the one thread that sends due digests through `send_due_email_notifications`. It re-reads the pusher, the 3PID, the account and the badge count under `runtime.mutex`, then sends with the mutex released |
 | `runtime_signing_key_store.cpp` | Production `SigningKeyStore` over the persisted server signing-key rows |
@@ -754,6 +754,10 @@ without that check ignores `presence.enabled=false`. Rules:
 - `accept_inbound_presence` binds `user_id` to the sending origin, bounds the entries it looks at, and keeps
   only users who share a joined room with a local user (one pass over the memberships per EDU). A new field
   accepted from the EDU needs a bound.
+- A local user who is `online` and has been inactive over `presence_idle_timeout_ms` (5 minutes) is set `unavailable`
+  by `expire_idle_presence`, run every `presence_idle_sweep_interval` (30 s) by the `presence-idle` `PeriodicJob`
+  (`run_presence_idle_sweep` in `client_server.cpp`: it takes `runtime.mutex` for one pass, queues the EDUs, makes no
+  network call). It touches only local `online` rows; nothing sets a user `offline` (ADR-0492).
 - Presence in `/sync` is built by `build_sync_presence_events`, which also sends a user's presence once to
   someone who started sharing a room with them since the token, whatever its stream position: the row's own
   position is older than the token.

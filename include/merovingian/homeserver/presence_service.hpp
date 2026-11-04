@@ -14,6 +14,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace merovingian::homeserver
 {
@@ -67,6 +68,14 @@ inline constexpr auto presence_idle_sweep_interval = std::chrono::seconds{30};
 // Stores one user's presence and tells appservices. The caller holds runtime.mutex and wakes the
 // sync notifier. `row.observed_at_ms` is set here.
 [[nodiscard]] auto record_presence(HomeserverRuntime& runtime, database::PersistentPresence row) -> bool;
+
+// CS API "Presence", "Idle timeout" (ADR-0492): sets to `unavailable`, with `currently_active` false, every LOCAL user
+// whose presence is `online` and whose last active time (`presence_last_active_ago`) at `now_ms` is over
+// `presence_idle_timeout_ms`. A remote user's presence is their own server's to say, and `unavailable` and
+// `offline` are not idle. Returns the rows as stored, for the caller to tell other servers about and to wake
+// syncs for. The caller holds runtime.mutex. Does nothing with presence off.
+[[nodiscard]] auto expire_idle_presence(HomeserverRuntime& runtime, std::int64_t now_ms)
+    -> std::vector<database::PersistentPresence>;
 
 // How a GET /presence/{userId}/status is answered.
 enum class PresenceReadStatus : std::uint8_t
