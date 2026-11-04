@@ -17,7 +17,8 @@ membership. Which of the remaining checks does this server add?
 
 * An event is signed for a user only by that user's server (the sender's domain must have signed it).
 * A `signed` object is delivered once but never expires. Anyone who held it could replay it.
-* Interoperability: servers in practice send no `display_name`, though the spec table lists it as required.
+* The spec table marks `display_name` Required, but this server never reads it, so its absence cannot change what is
+  stored or sent.
 
 ## Decision Outcome
 
@@ -31,8 +32,12 @@ membership. Which of the remaining checks does this server add?
 3. **A user already `join`ed or `ban`ned is refused (403), and one already `invite`d is a success that stores nothing.**
    Rule 4.3.1 lets a third-party invite stand in for the membership checks, so without this a replayed object would move
    a joined member to `invite`. The refusal sits in front of the auth rules, which still run on the composed event.
-4. **`display_name` is optional on receipt and never read.** The event's `display_name` is the room's own
-   `m.room.third_party_invite` one, so a hostile caller cannot put text of its choosing into the room.
+4. **`display_name` is tolerated when absent on receipt, and never read.** The spec marks it Required in the exchange
+   request. This is a tolerance on receipt of a field the spec requires, not a reading of the spec: the invite takes the
+   name from the room's own `m.room.third_party_invite`, so a caller's value cannot reach the room and refusing its
+   absence would protect nothing. What this server SENDS conforms: `build_third_party_invite_exchange_body` always
+   includes `display_name`, as an empty string, because `3pid/onbind` supplies none (an empty string satisfies the schema,
+   invents nothing and discloses nothing about the bound identifier).
 5. The signature check is the auth rules' (`compose_signed_event` authorises the event before it is signed and stored):
    the invite for the token must exist, its sender must be `sender`, `signed.mxid` must be the invitee, and a signature in
    `signed` must verify against a key of that invite.

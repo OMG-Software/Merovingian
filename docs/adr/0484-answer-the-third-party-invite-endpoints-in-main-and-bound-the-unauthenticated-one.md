@@ -36,8 +36,9 @@ Chosen option: "answer both in main".
 * `onbind` is matched by exact path in `FederationProxy::handle` and `handle_federation_http_request` before any
   signature is demanded, like `openid/userinfo` and `version`. There is no IPC frame for it.
 * What `onbind` can cost is bounded in `notify_third_party_bind`: the body is parsed with at most
-  `max_third_party_bind_invites` (32) invites, an entry that is malformed or names a user other than the bound `mxid` is
-  dropped, the whole request draws one slot of the ADR-0079 outbound budget keyed by the caller's address
+  `max_third_party_bind_invites` (32) invites are read and the rest counted as dropped (the spec gives no status for
+  more, and refusing the body would lose every invite the identity server holds for the user), an entry that is
+  malformed or names a user other than the bound `mxid` is dropped, a non-zero drop count is logged at warning level, the whole request draws one slot of the ADR-0079 outbound budget keyed by the caller's address
   (`rate_limit_client_key`, 429 when spent) and one 30 second deadline, and nothing is done for a user who is not an active
   account here (the answer is the same, so it is no account oracle). Nothing in the body is believed: the signature on each
   `signed` is checked by whichever server holds the room, against the keys of the room's own `m.room.third_party_invite`
