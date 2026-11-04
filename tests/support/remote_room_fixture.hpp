@@ -73,7 +73,7 @@ inline auto seed_room_with_genesis_state_group(homeserver::HomeserverRuntime& ru
     auto& local = runtime.database.rooms;
 
     store.rooms.push_back({room_id, local_admin});
-    local.push_back({room_id, local_admin, {}, {}, false});
+    local.push_back({room_id, local_admin, {}, false});
 
     auto const create_id = room_id + ":create";
     auto const pl_id = room_id + ":pl";

@@ -1831,7 +1831,6 @@ private:
     REQUIRE(db::update_forward_extremities(store, room_id, room_id + ":member", {}, true));
     runtime.database.rooms.push_back({
         room_id, local_user, {local_user, rr::remote_member},
-          {},
           false
     });
 

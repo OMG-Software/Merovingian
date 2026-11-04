@@ -1462,7 +1462,6 @@ namespace
         auto* room = find_room(runtime.database, room_id);
         if (room != nullptr)
         {
-            room->events.push_back(composed_event.json);
             // An invite reaches the invitee's server through /invite; every other
             // membership change also reaches its target's server.
             federate_local_event(runtime, room_id, *room, composed_event,
@@ -3755,7 +3754,7 @@ auto ensure_crypto_provider_holds_key(HomeserverRuntime& runtime, std::string_vi
     {
         return server_failure("room persistence failed");
     }
-    runtime.database.rooms.push_back({room_id, *user_id, {*user_id}, {}, options.directory_public});
+    runtime.database.rooms.push_back({room_id, *user_id, {*user_id}, options.directory_public});
     // Declared before any event is emitted so that its destructor, which runs on every way out of
     // this function, queues what was stored for interested appservices.
     auto created_events = CreatedEventQueue{runtime, room_id, *user_id};
@@ -6192,7 +6191,7 @@ namespace
                                                           "join", joined_member_stream);
             }
         }
-        runtime.database.rooms.push_back({std::string{room_id}, *user_id, std::move(joined_members), {}});
+        runtime.database.rooms.push_back({std::string{room_id}, *user_id, std::move(joined_members)});
         if (!record_room_share_started_device_changes(runtime, room_id, *user_id) ||
             !record_own_device_list_change(runtime, *user_id))
         {
@@ -6325,7 +6324,6 @@ namespace
                 });
                 return make_operation_result(false, {}, "third-party invite event persistence failed", 500U);
             }
-            room->events.push_back(composed_invite->json);
             federate_local_event(runtime, room_id, *room, *composed_invite);
             // The invite is an m.room.member event for `user_id`, who may be one of an
             // appservice's virtual users; it was stored here and nowhere else queued it.
@@ -6439,7 +6437,6 @@ namespace
             });
             return make_operation_result(false, {}, "membership event persistence failed", 500U);
         }
-        room->events.push_back(composed->json);
         federate_local_event(runtime, room_id, *room, *composed);
 
         // persist_composed_event has already projected the join (CSAZ-6).
@@ -7140,17 +7137,7 @@ namespace
     {
         return false;
     }
-    auto const previous_json = stored->json;
-    if (!database::replace_event_json(store, event_id, std::string{cosigned_event_json}))
-    {
-        return false;
-    }
-    // The in-memory room keeps its own copy of what it was sent.
-    if (auto* room = find_room(runtime.database, room_id); room != nullptr)
-    {
-        std::ranges::replace(room->events, previous_json, std::string{cosigned_event_json});
-    }
-    return true;
+    return database::replace_event_json(store, event_id, std::string{cosigned_event_json});
 }
 
 auto queue_remote_invite(HomeserverRuntime& runtime, std::string_view room_id, std::string_view invitee_server,
@@ -7450,7 +7437,6 @@ namespace
     auto* room_for_push = find_room(runtime.database, room_id);
     if (room_for_push != nullptr)
     {
-        room_for_push->events.push_back(composed->json);
         federate_local_event(runtime, room_id, *room_for_push, *composed);
     }
 
@@ -8751,7 +8737,6 @@ namespace
             });
             return make_operation_result(false, {}, "event persistence failed", 500U);
         }
-        room->events.push_back(composed->json);
         append_local_audit(runtime.database, observability::AuditCategory::admin, "room.event_sent", user_id, room_id,
                            "stored");
         log_diagnostic("room.event.accepted",

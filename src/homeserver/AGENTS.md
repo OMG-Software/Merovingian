@@ -685,11 +685,11 @@ visibility and aliases stand for `m.room.canonical_alias`), refuse it up front w
 event type, before anything is created. Membership alone is not enough. Alias `PUT` validates with
 `auth::room_alias_is_valid` and requires this server's domain; `DELETE` allows the alias's recorded creator.
 
-## `LocalRoom::events` holds event JSON, never IDs (ADR-0342)
+## A room's events are in the event table only (ADR-0342, ADR-0442)
 
-Every writer pushes the signed event's JSON into `LocalRoom::events`. Take an event ID from the event table
-or the room's forward extremities (`last_known_event_id` in `client_server.cpp` is the model); reading one
-from this vector put a whole event into a room upgrade's `predecessor.event_id`.
+`LocalRoom` has no list of events. Read a room's events, and take an event ID, from `PersistentStore::events` or the
+room's forward extremities (`last_known_event_id` in `client_server.cpp` is the model). A redacted event is served
+from the table's redacted JSON; do not add a second copy.
 
 ## Typing expiry (R13, ADR-0199)
 

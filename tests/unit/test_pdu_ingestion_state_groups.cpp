@@ -82,7 +82,7 @@ auto seed_room_with_genesis_state_group(HomeserverRuntime& runtime, std::string 
     auto& local = runtime.database.rooms;
 
     store.rooms.push_back({room_id, "@admin:local.example.org"});
-    local.push_back({room_id, "@admin:local.example.org", {}, {}, false});
+    local.push_back({room_id, "@admin:local.example.org", {}, false});
 
     auto const create_id = room_id + ":create";
     auto const pl_id = room_id + ":pl";

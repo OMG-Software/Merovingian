@@ -198,7 +198,7 @@ struct Genesis final
 
     auto& store = runtime.database.persistent_store;
     store.rooms.push_back({room_id, admin});
-    runtime.database.rooms.push_back({room_id, admin, {}, {}, false});
+    runtime.database.rooms.push_back({room_id, admin, {}, false});
 
     auto const create_id = room_id + ":create";
     auto create_content = canonicaljson::Object{};

@@ -86,7 +86,7 @@ public:
         REQUIRE(policy_ != nullptr);
         auto& store = runtime_.database.persistent_store;
         store.rooms.push_back({room_id_, admin});
-        runtime_.database.rooms.push_back({room_id_, admin, {}, {}, false});
+        runtime_.database.rooms.push_back({room_id_, admin, {}, false});
     }
 
     [[nodiscard]] auto id() const -> std::string const&

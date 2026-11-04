@@ -183,7 +183,6 @@ struct LocalRoom final
     std::string room_id{};
     std::string creator_user_id{};
     std::vector<std::string> members{};
-    std::vector<std::string> events{};
     // True when the room has been explicitly published to the public room directory
     // via PUT /_matrix/client/v3/directory/list/room/{roomId}. Private by default.
     bool directory_public{false};

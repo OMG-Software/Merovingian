@@ -87,11 +87,8 @@ auto seed_room(merovingian::homeserver::HomeserverRuntime& runtime, std::string_
     auto& local = runtime.database.rooms;
 
     store.rooms.push_back({std::string{room_id}, "@admin:local.example.org"});
-    local.push_back({std::string{room_id},
-                     "@admin:local.example.org",
-                     std::vector<std::string>{"@alice:remote.example.org"},
-                     {},
-                     false});
+    local.push_back({std::string{room_id}, "@admin:local.example.org",
+                     std::vector<std::string>{"@alice:remote.example.org"}, false});
     store.memberships.push_back({std::string{room_id}, "@alice:remote.example.org", "join", 0U});
 
     auto const create_id = std::string{room_id} + ":create";
@@ -164,15 +161,14 @@ auto seed_room(merovingian::homeserver::HomeserverRuntime& runtime, std::string_
     auto const local_member_id = std::string{room_id} + ":local_member";
     auto const local_member_json =
         make_seed_event_json(room_id, "m.room.member", local_user, local_user, std::move(local_member_content), 3, 4);
-    store.events.push_back(
-        {local_member_id, std::string{room_id}, local_user, local_member_json, 0U, 0U, {}, {}, {}});
+    store.events.push_back({local_member_id, std::string{room_id}, local_user, local_member_json, 0U, 0U, {}, {}, {}});
     store.state.push_back({std::string{room_id}, "m.room.member", local_user, local_member_id});
     store.memberships.push_back({std::string{room_id}, local_user, "join", 0U});
 
     auto const local_state = std::vector<database::PersistentStateGroupStateEntry>{
-        {"", "m.room.create",       "",                          create_id},
-        {"", "m.room.power_levels", "",                          pl_id    },
-        {"", "m.room.member",       "@alice:remote.example.org", member_id},
+        {"", "m.room.create",       "",                          create_id      },
+        {"", "m.room.power_levels", "",                          pl_id          },
+        {"", "m.room.member",       "@alice:remote.example.org", member_id      },
         {"", "m.room.member",       local_user,                  local_member_id},
     };
     auto const local_group_id = database::create_or_reuse_state_group(
