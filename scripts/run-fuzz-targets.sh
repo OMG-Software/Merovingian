@@ -96,10 +96,12 @@ coverage_flags="-fsanitize-coverage=inline-8bit-counters,pc-table,trace-cmp"
 
 if [ -f "$builddir/build.ninja" ]; then
     # shellcheck disable=SC2086
-    env CC="$cc" CXX="$cxx" meson setup "$builddir" --reconfigure -Dbuild_tests=false -Dbuild_fuzz=true         $instrumentation "-Dc_args=$coverage_flags" "-Dcpp_args=$coverage_flags"
+    env CC="$cc" CXX="$cxx" meson setup "$builddir" --reconfigure -Dbuild_tests=false -Dbuild_fuzz=true \
+        $instrumentation "-Dc_args=$coverage_flags" "-Dcpp_args=$coverage_flags"
 else
     # shellcheck disable=SC2086
-    env CC="$cc" CXX="$cxx" meson setup "$builddir" -Dbuild_tests=false -Dbuild_fuzz=true         $instrumentation "-Dc_args=$coverage_flags" "-Dcpp_args=$coverage_flags"
+    env CC="$cc" CXX="$cxx" meson setup "$builddir" -Dbuild_tests=false -Dbuild_fuzz=true \
+        $instrumentation "-Dc_args=$coverage_flags" "-Dcpp_args=$coverage_flags"
 fi
 
 meson compile -C "$builddir"
