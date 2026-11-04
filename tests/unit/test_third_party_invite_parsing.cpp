@@ -12,6 +12,7 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <functional>
 #include <string>
 #include <string_view>
 #include <variant>
@@ -77,7 +78,7 @@ SCENARIO("An exchange_third_party_invite body is accepted only when every field 
 
     GIVEN("signed objects that lack a field, hold a bad value or are over a bound")
     {
-        auto const many_servers = [] {
+        auto const many_servers = std::invoke([] {
             auto servers = std::string{};
             for (auto index = 0; index < 9; ++index)
             {
@@ -85,7 +86,7 @@ SCENARIO("An exchange_third_party_invite body is accepted only when every field 
                            R"(":{"ed25519:0":"c2ln"})";
             }
             return R"({"mxid":"@bob:example.org","signatures":{)" + servers + R"(},"token":"tok"})";
-        }();
+        });
         auto const bad = std::vector<std::string>{
             R"({"mxid":"@bob:example.org","signatures":{"is.example":{"ed25519:0":"c2ln"}}})",
             R"({"signatures":{"is.example":{"ed25519:0":"c2ln"}},"token":"tok"})",
