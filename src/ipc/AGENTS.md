@@ -51,6 +51,13 @@ and `merovingian-fed-worker`. There is no filesystem socket path: the fd is inhe
    `read_frame` failing (length, short read, AEAD authentication) marks the channel unhealthy (ADR-0322).
    Never put a clamp for one value in place of this; the next value has the same effect.
 
+7. **A pending request carries main-owned identity and EDU digests, never worker JSON (FED-12, F-74, ADR-0142,
+   ADR-0395).** `send_request` takes the `verified_origin` and, for a verified `/send`, the digests of the EDUs of
+   the body (`WorkerPool::handle`, `verified_send_edu_digests`). `consume_pending_edu` is the only way an EDU relay is
+   admitted: live parent on this channel, exact origin, and an unused equal digest, marked used under `pending_mu_`.
+   The pending lock covers that scan only, never a sink or network call. This module hashes nothing: digests are
+   opaque strings made by `federation::edu_relay_digest`.
+
 ## Thread safety — the reader/dispatch split
 
 Each `IpcChannel` runs two threads (`docs/architecture.md`, "IPC reader/dispatch split"):
@@ -67,7 +74,7 @@ Each `IpcChannel` runs two threads (`docs/architecture.md`, "IPC reader/dispatch
 
 ## Testing
 
-- `tests/unit/test_ipc_framing.cpp` — framing, request/response pairing, notifications, timeouts
+- `tests/unit/test_ipc_framing.cpp` — framing, request/response pairing, notifications, timeouts, pending-request admission of EDU relays (`[f74-edu-binding]`)
 - `tests/unit/test_ipc_stream_cipher.cpp` — handshake and AEAD framing
 - `tests/unit/test_ipc_federation_frames.cpp` — federation frame (de)serialisation
 
@@ -79,4 +86,5 @@ Each `IpcChannel` runs two threads (`docs/architecture.md`, "IPC reader/dispatch
   [ADR-0043](../../docs/adr/0043-base64-encode-ipc-response-bodies.md) ·
   [ADR-0368](../../docs/adr/0368-an-ipc-response-that-cannot-be-sent-fails-its-requester-at-once.md) ·
   [ADR-0321](../../docs/adr/0321-every-ipc-frame-is-valid-utf-8-by-construction.md) ·
-  [ADR-0322](../../docs/adr/0322-an-authenticated-frame-whose-payload-does-not-parse-fails-one-request.md)
+  [ADR-0322](../../docs/adr/0322-an-authenticated-frame-whose-payload-does-not-parse-fails-one-request.md) ·
+  [ADR-0395](../../docs/adr/0395-bind-worker-edu-relays-to-the-edus-of-the-verified-body-by-digest.md)

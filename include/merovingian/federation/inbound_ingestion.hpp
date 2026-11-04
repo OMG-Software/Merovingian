@@ -187,6 +187,13 @@ using EduSink = std::function<EduDispositionResult(InboundEduEnvelope const&)>;
 [[nodiscard]] auto parse_inbound_edu_envelope(std::string_view edu_type, std::string_view origin,
                                               std::string_view content_json) -> std::optional<InboundEduEnvelope>;
 
+// The digest main binds a worker-relayed EDU to (F-74, ADR-0395): the hash of the (edu_type, content)
+// pair, with the type length-prefixed so no (type, content) split can collide with another. `content_json`
+// is the canonical serialisation `extract_transaction_edus` produces, which is what a worker relays
+// byte for byte. nullopt only if the hash fails.
+[[nodiscard]] auto edu_relay_digest(std::string_view edu_type, std::string_view content_json)
+    -> std::optional<std::string>;
+
 // Validates an EDU content shape per type. The handler uses this as a
 // gate before invoking the production sink so a malformed EDU never
 // reaches the runtime state surface.

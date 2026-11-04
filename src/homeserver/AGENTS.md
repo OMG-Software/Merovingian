@@ -385,6 +385,12 @@ ADR-0171), as backfill ingestion does. Do it before taking `runtime.mutex`: reso
 a key may go to the network. A new relay that carries a PDU follows the same
 pattern.
 
+An EDU relay (`edu_ingest`, `handle_edu_ingest_request`) carries no signature, so it is bound to the body main
+authenticated instead (F-74, ADR-0395): `WorkerPool::handle` gives the pending request one digest per EDU of a verified
+`/send` body (`verified_send_edu_digests`), and the handler hashes the relayed pair before taking `runtime.mutex` and
+admits it only through `IpcChannel::consume_pending_edu`. Never admit an EDU relay on origin alone, and never run the
+sink with the channel's pending lock held.
+
 Main never signs on a worker's behalf (ADR-0078). A `sign_request` frame is refused
 inline by `refuse_forbidden_worker_request`, which takes no runtime and so cannot take
 `runtime.mutex` or reach a crypto provider; the handler calls it before any other frame

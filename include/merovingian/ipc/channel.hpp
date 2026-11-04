@@ -19,6 +19,7 @@
 #include <string_view>
 #include <thread>
 #include <utility>
+#include <vector>
 
 namespace merovingian::crypto
 {
@@ -146,14 +147,25 @@ public:
     // verified_origin is main-owned identity from signature verification, never
     // worker JSON. Empty identity cannot authorize a worker EDU relay. The
     // monotonic deadline starts before publication/write, not after a blocked write.
+    // edu_digests are the digests of the EDUs the main-verified request body carries, one per occurrence
+    // (F-74, ADR-0395). Like verified_origin they are main-owned and never read from worker JSON; the entry
+    // owns them before it is published, and an EDU relay is admitted only against one it has not yet used.
     [[nodiscard]] auto send_request(std::string_view json_body, std::chrono::seconds timeout = std::chrono::seconds{30},
-                                    std::string_view verified_origin = {}) -> std::optional<std::string>;
+                                    std::string_view verified_origin = {}, std::vector<std::string> edu_digests = {})
+        -> std::optional<std::string>;
 
     // EDU admission linearizes at this locked check, after the caller has acquired
     // its runtime lock. No pending lock escapes this call or covers a sink callback.
     // An already admitted operation may finish after its parent completes/stops.
     [[nodiscard]] auto matches_pending_origin(std::uint64_t parent_request_id, std::string_view claimed_origin) const
         -> bool;
+
+    // The same admission for one relayed EDU: the parent must pass matches_pending_origin AND hold a digest equal
+    // to edu_digest that no earlier relay used. The first such digest is marked used under the same lock, so an
+    // EDU in the body is admitted once per occurrence. Holds the pending lock only for this call (a scan of at
+    // most the transaction's EDU limit); the caller runs the sink after it returns. False for no match.
+    [[nodiscard]] auto consume_pending_edu(std::uint64_t parent_request_id, std::string_view claimed_origin,
+                                           std::string_view edu_digest) -> bool;
 
     // Sends a response to an inbound request. json_body: without "id"/"reply_to".
     auto send_response(std::uint64_t reply_to, std::string_view json_body) -> void;
@@ -218,9 +230,19 @@ private:
         std::optional<std::string> response{};
         bool ready{false};
         std::string verified_origin{};
+        // One per EDU occurrence in the verified body; `used` set by consume_pending_edu under pending_mu_.
+        struct EduDigest final
+        {
+            std::string digest{};
+            bool used{false};
+        };
+        std::vector<EduDigest> edu_digests{};
         std::chrono::steady_clock::time_point deadline{};
         std::condition_variable cv{};
     };
+    // Whether the entry may authorise a relay claiming `claimed_origin` now. Caller holds pending_mu_.
+    [[nodiscard]] auto pending_admits_origin(PendingEntry const& entry, std::string_view claimed_origin) const noexcept
+        -> bool;
     mutable std::mutex pending_mu_{};
     // Reader thread and waiting caller each hold a reference; the map entry is
     // erased while the caller still holds its copy, so the entry is destroyed

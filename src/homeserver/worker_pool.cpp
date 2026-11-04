@@ -986,8 +986,38 @@ auto handle_membership_ingest_request(HomeserverRuntime& runtime, std::string_vi
     return serialize_membership_ingest_result(result);
 }
 
+auto verified_send_edu_digests(LocalHttpRequest const& request, std::uint32_t max_edus) -> std::vector<std::string>
+{
+    auto digests = std::vector<std::string>{};
+    if (!request.sig_verified || request.verified_origin.empty())
+    {
+        return digests;
+    }
+    auto const route = federation::match_federation_route(request.method, request.target);
+    if (!route.matched || route.route.endpoint != federation::FederationEndpoint::transaction)
+    {
+        return digests;
+    }
+    auto const edus = federation::extract_transaction_edus(request.body);
+    if (edus.size() > max_edus)
+    {
+        return digests;
+    }
+    digests.reserve(edus.size());
+    for (auto const& [edu_type, content_json] : edus)
+    {
+        auto digest = federation::edu_relay_digest(edu_type, content_json);
+        if (!digest.has_value())
+        {
+            return {};
+        }
+        digests.push_back(std::move(*digest));
+    }
+    return digests;
+}
+
 auto handle_edu_ingest_request(HomeserverRuntime& runtime, std::string_view request_json,
-                               ipc::IpcChannel const& receiving_channel) -> std::string
+                               ipc::IpcChannel& receiving_channel) -> std::string
 {
     // EDUs (typing, receipts, presence, m.direct_to_device, device list
     // updates) accepted by a worker must reach main's own edu_sink the same
@@ -1004,16 +1034,23 @@ auto handle_edu_ingest_request(HomeserverRuntime& runtime, std::string_view requ
         return serialize_edu_ingest_result(
             {federation::EduDispositionStatus::rejected_invalid, "edu_ingest envelope failed to parse"});
     }
+    // F-74 (ADR-0395): hash before taking the runtime lock; the digest is of the bytes the worker relayed.
+    auto const digest = federation::edu_relay_digest(envelope->edu_type, envelope->content_json);
     auto result = federation::EduDispositionResult{};
     {
         auto guard = std::unique_lock{runtime.mutex};
         // Check after any runtime-lock wait. A channel-local parent ID is only a
         // routing reference: it must still name a live main-verified origin on
-        // the exact channel that delivered this relay. The pending mutex is
-        // released before invoking the real sink (including persistence).
+        // the exact channel that delivered this relay, and the EDU must be one the
+        // verified body carried and no earlier relay used (consume_pending_edu marks
+        // it used under the pending lock). The pending mutex is released before
+        // invoking the real sink (including persistence).
         auto const parent_request_id = ipc::ipc_json_get_u64(request_json, "parent_request_id");
-        if (!receiving_channel.matches_pending_origin(parent_request_id, envelope->origin))
+        if (!digest.has_value() || !receiving_channel.consume_pending_edu(parent_request_id, envelope->origin, *digest))
         {
+            LOG_WARNING("edu_ingest refused: no matching live verified parent, or the EDU is not in its body "
+                        "(or was already relayed); origin=" +
+                        envelope->origin + " edu_type=" + envelope->edu_type);
             return serialize_edu_ingest_result({federation::EduDispositionStatus::rejected_invalid,
                                                 "edu_ingest has no matching live verified parent"});
         }
@@ -1581,7 +1618,11 @@ auto WorkerPool::handle(LocalHttpRequest const& request, std::string_view room_i
     // The proxy sets these fields only after main's signature verification.
     // Ordinary/unsigned requests must not acquire an EDU-authorizing context.
     auto const verified_origin = request.sig_verified ? std::string_view{request.verified_origin} : std::string_view{};
-    auto const reply = ch->send_request(ipc::serialize_fed_request(request), timeout, verified_origin);
+    // F-74 (ADR-0395): the EDUs of the body main authenticated, so a relay can be bound to them.
+    auto edu_digests = verified_send_edu_digests(
+        request, std::max<std::uint32_t>(1U, runtime_.config.security().federation.max_transaction_edus));
+    auto const reply =
+        ch->send_request(ipc::serialize_fed_request(request), timeout, verified_origin, std::move(edu_digests));
     if (!reply.has_value())
     {
         LOG_WARNING("WorkerPool: shard " + std::to_string(index) + " request timed out or failed for " +

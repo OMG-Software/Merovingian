@@ -437,7 +437,8 @@ auto IpcChannel::report_oversize_drop(std::string_view json_body, char const* ki
 }
 
 auto IpcChannel::send_request(std::string_view json_body, std::chrono::seconds timeout,
-                              std::string_view verified_origin) -> std::optional<std::string>
+                              std::string_view verified_origin, std::vector<std::string> edu_digests)
+    -> std::optional<std::string>
 {
     auto const now = std::chrono::steady_clock::now();
     // Check conversion and addition before computing an absolute deadline.
@@ -466,6 +467,11 @@ auto IpcChannel::send_request(std::string_view json_body, std::chrono::seconds t
 
     auto entry = std::make_shared<PendingEntry>();
     entry->verified_origin = verified_origin;
+    entry->edu_digests.reserve(edu_digests.size());
+    for (auto& digest : edu_digests)
+    {
+        entry->edu_digests.push_back({std::move(digest), false});
+    }
     entry->deadline = deadline;
     {
         auto const lk = std::lock_guard{pending_mu_};
@@ -498,13 +504,38 @@ auto IpcChannel::send_request(std::string_view json_body, std::chrono::seconds t
     return std::move(entry->response);
 }
 
+auto IpcChannel::pending_admits_origin(PendingEntry const& entry, std::string_view claimed_origin) const noexcept
+    -> bool
+{
+    return running_.load() && healthy_.load() && !entry.ready && !claimed_origin.empty() &&
+           entry.verified_origin == claimed_origin && std::chrono::steady_clock::now() < entry.deadline;
+}
+
 auto IpcChannel::matches_pending_origin(std::uint64_t parent_request_id, std::string_view claimed_origin) const -> bool
 {
     auto const lock = std::lock_guard{pending_mu_};
     auto const found = pending_.find(parent_request_id);
-    return running_.load() && healthy_.load() && found != pending_.end() && !found->second->ready &&
-           !claimed_origin.empty() && found->second->verified_origin == claimed_origin &&
-           std::chrono::steady_clock::now() < found->second->deadline;
+    return found != pending_.end() && pending_admits_origin(*found->second, claimed_origin);
+}
+
+auto IpcChannel::consume_pending_edu(std::uint64_t parent_request_id, std::string_view claimed_origin,
+                                     std::string_view edu_digest) -> bool
+{
+    auto const lock = std::lock_guard{pending_mu_};
+    auto const found = pending_.find(parent_request_id);
+    if (found == pending_.end() || !pending_admits_origin(*found->second, claimed_origin))
+    {
+        return false;
+    }
+    for (auto& candidate : found->second->edu_digests)
+    {
+        if (!candidate.used && candidate.digest == edu_digest)
+        {
+            candidate.used = true;
+            return true;
+        }
+    }
+    return false;
 }
 
 auto IpcChannel::send_response(std::uint64_t reply_to, std::string_view json_body) -> void

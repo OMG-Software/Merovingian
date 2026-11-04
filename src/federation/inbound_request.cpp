@@ -4161,6 +4161,16 @@ auto federation_send_transaction_id(std::string_view target) -> std::string
     return transaction_id.find('/') == std::string_view::npos ? std::string{transaction_id} : std::string{};
 }
 
+auto extract_transaction_edus(std::string_view body) -> std::vector<std::pair<std::string, std::string>>
+{
+    auto parsed_body = parse_transaction_body(body);
+    if (!parsed_body.valid)
+    {
+        return {};
+    }
+    return std::move(parsed_body.edus);
+}
+
 auto federation_transaction_completed(FederationRuntimeState const& runtime, std::string_view origin,
                                       std::string_view transaction_id) -> bool
 {

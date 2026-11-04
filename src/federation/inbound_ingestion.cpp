@@ -6,6 +6,7 @@
 #include "merovingian/canonicaljson/parser.hpp"
 #include "merovingian/canonicaljson/serializer.hpp"
 #include "merovingian/canonicaljson/value.hpp"
+#include "merovingian/crypto/generic_hash.hpp"
 #include "merovingian/events/event_id.hpp"
 #include "merovingian/events/limits.hpp"
 #include "merovingian/events/state_resolution.hpp"
@@ -14,6 +15,7 @@
 #include "merovingian/rooms/room_version_policy.hpp"
 
 #include <algorithm>
+#include <array>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -349,6 +351,13 @@ auto parse_inbound_edu_envelope(std::string_view edu_type, std::string_view orig
     out.content_json = std::string{content_json};
     out.origin = std::string{origin};
     return out;
+}
+
+auto edu_relay_digest(std::string_view edu_type, std::string_view content_json) -> std::optional<std::string>
+{
+    auto const type_length = std::to_string(edu_type.size());
+    auto const pieces = std::array<std::string_view, 4U>{type_length, ":", edu_type, content_json};
+    return crypto::generic_hash(pieces);
 }
 
 } // namespace merovingian::federation

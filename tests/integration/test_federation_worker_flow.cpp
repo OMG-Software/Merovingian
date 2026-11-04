@@ -1388,6 +1388,100 @@ SCENARIO("A retried transaction is not processed again when its room moves betwe
     }
 }
 
+// F-74 (ADR-0395): the digests main binds relays to are computed from the body main holds, and the worker relays
+// the content it canonicalised from the same bytes. This drives a real worker so that equality is proved end to end:
+// an honest transaction is relayed in full, once per EDU occurrence.
+SCENARIO("A real worker's relays of a signed transaction's EDUs all match the digests main bound",
+         "[integration][federation][worker][send][f74-edu-binding]")
+{
+    using namespace merovingian;
+    using namespace merovingian::tests::remote_room;
+    GIVEN("a resident room served by one actual worker shard and a signed transaction carrying only EDUs")
+    {
+        auto const tmp = unique_temp_dir("merovingian-edu-bound-");
+        auto cleanup = Fed10TempDirectory{tmp};
+        auto config = make_federation_worker_config(tmp);
+        config.server().server_name = local_server;
+        config.federation_worker().shards = 1U;
+        auto const config_path = tmp / "worker.conf";
+        write_worker_config(config_path, config);
+        auto started = homeserver::start_client_server(config);
+        REQUIRE(started.started);
+        auto& client = started.runtime;
+        auto& runtime = client.homeserver;
+        homeserver::wire_federation_callbacks(runtime);
+        REQUIRE(static_cast<bool>(runtime.federation.edu_sink));
+        auto const room_id = std::string{"!edu-bound:"} + local_server;
+        fed10_persist_remote_room(runtime, room_id);
+        auto const relay_server = std::string{"203.0.113.21"};
+        auto const relay_member = std::string{"@relay:"} + relay_server;
+        REQUIRE(database::store_membership(runtime.database.persistent_store, {room_id, relay_member, "join"}) ==
+                database::MembershipStoreResult::stored);
+        auto relay = remote_runtime();
+        relay.server_name = relay_server;
+        relay.signing_key.server_name = relay_server;
+        relay.discovery.server_name = relay_server;
+        relay.discovery.resolved_host = relay_server;
+        relay.discovery.resolved_addresses = {relay_server};
+        REQUIRE(database::store_server_signing_key(
+            runtime.database.persistent_store,
+            {relay_server, relay.signing_key.key_id,
+             events::matrix_base64_from_bytes(relay.signing_key.public_key_bytes), relay.signing_key.valid_until_ts}));
+        // Three EDUs the worker must relay and main must admit: keys out of canonical order, the same EDU twice
+        // (two occurrences, two relays), and a string written with a \u escape that the canonical form writes as
+        // UTF-8. Each byte-for-byte equal digest only holds if the worker relays the canonical content.
+        auto const typing_a = std::string{"{\"edu_type\":\"m.typing\",\"content\":{\"typing\":true,\"user_id\":\""} +
+                              relay_member + "\",\"room_id\":\"" + room_id + "\"}}";
+        auto const typing_b = std::string{"{\"content\":{\"user_id\":\""} + relay_member +
+                              "\",\"typing\":false,\"room_id\":\"" + room_id +
+                              "\",\"note\":\"caf\\u00e9\"},\"edu_type\":\"m.typing\"}";
+        auto const body = std::string{"{\"origin\":\""} + relay_server +
+                          "\",\"origin_server_ts\":50,\"pdus\":[],\"edus\":[" + typing_a + "," + typing_a + "," +
+                          typing_b + "]}";
+        auto const target = std::string{"/_matrix/federation/v1/send/edu-bound-1"};
+        auto call = federation::OutboundCall{};
+        call.transaction = federation::make_outbound_transaction(local_server, "PUT", target, relay_server, body);
+        call.key_id = remote_key_id;
+        call.secret_key = federation::test::secret_key_buffer(federation::test::keypair_from_seed(remote_key_seed));
+        auto const outbound = federation::build_outbound_request(call);
+        auto const authorization = std::ranges::find_if(outbound.headers, [](auto const& header) {
+            return header.name == "Authorization";
+        });
+        REQUIRE(authorization != outbound.headers.end());
+        // The same bytes, txnId and signature for every send of this transaction.
+        auto const wire = "PUT " + target + " HTTP/1.1\r\nHost: localhost\r\nAuthorization: " + authorization->value +
+                          "\r\nContent-Type: application/json\r\nContent-Length: " + std::to_string(body.size()) +
+                          "\r\nConnection: close\r\n\r\n" + body;
+
+        auto edu_deliveries = std::atomic<std::size_t>{};
+        runtime.federation.remotes = {relay};
+        runtime.federation.remote_key_resolver = genuine_key_resolver();
+        // Observe, but always execute, the genuine production typing sink.
+        auto real_edu_sink = runtime.federation.edu_sink;
+        runtime.federation.edu_sink = [&edu_deliveries, real_edu_sink](auto const& edu) {
+            ++edu_deliveries;
+            return real_edu_sink(edu);
+        };
+        runtime.federation_proxy = std::make_unique<FederationProxy>(
+            config.federation_worker(), runtime, std::string{worker_binary_path()}, config_path.string());
+        auto const proxy_lifetime = Fed10ProxyLifetime{runtime};
+        std::ignore = proxy_lifetime;
+        REQUIRE(wait_for_healthy(*runtime.federation_proxy, std::chrono::seconds{15}));
+        auto listener = Fed10SocketListener{client};
+
+        WHEN("the transaction is sent through the real worker")
+        {
+            auto const accepted = fed10_socket_request(listener.port(), wire);
+
+            THEN("every EDU occurrence reaches main's sink, none is refused, and nothing is delivered twice")
+            {
+                CHECK(accepted.status == 200U);
+                CHECK(edu_deliveries.load() == 3U);
+            }
+        }
+    }
+}
+
 SCENARIO("handle_membership_ingest_request persists a worker-relayed federated join to main's own store",
          "[integration][federation-worker][membership][send_join]")
 {
@@ -1917,15 +2011,29 @@ SCENARIO("A realistically-shaped Olm-encrypted m.direct_to_device EDU survives a
         });
         // Keep a real main-owned parent live while the worker relays the EDU.
         // The trusted origin is chosen by this testcase, not read from JSON.
+        auto const sender = std::string{"@james:matrix.ping.me.uk"};
+        auto const target_user = "@james:" + runtime.config.server().server_name;
+        auto const target_device = std::string{"DEVICE1"};
+        auto const identity_key = std::string{"Ca5s7Jdb83Eak12tAADQBgE0QJRyF4EC3rcWZwhaNwQ"};
+        // ~2KB placeholder ciphertext body — long enough to match a real
+        // Olm-encrypted payload's size, not just its alphabet.
+        auto const ciphertext_body = std::string(2048U, 'A');
+
+        auto const content_json =
+            std::string{"{\"sender\":\""} + sender +
+            "\",\"type\":\"m.room.encrypted\",\"message_id\":\"m1\",\"messages\":{\"" + target_user + "\":{\"" +
+            target_device + "\":{\"algorithm\":\"m.olm.v1.curve25519-aes-sha2\",\"ciphertext\":{\"" + identity_key +
+            "\":{\"body\":\"" + ciphertext_body + "\",\"type\":1}},\"sender_key\":\"" + identity_key + "\"}}}}";
+
+        // The EDU the verified body carries (F-74): the parent holds its digest, as WorkerPool::handle would.
+        auto const content_digest = merovingian::federation::edu_relay_digest("m.direct_to_device", content_json);
+        REQUIRE(content_digest.has_value());
         auto relay_context = merovingian::tests::EduRelayContext{*channels.main, *channels.worker};
-        REQUIRE(relay_context.establish("matrix.ping.me.uk"));
+        REQUIRE(relay_context.establish("matrix.ping.me.uk", {*content_digest}));
 
         WHEN("the worker side sends a real edu_ingest wire frame carrying an Olm-encrypted room-key share over the "
              "encrypted channel")
         {
-            auto const sender = std::string{"@james:matrix.ping.me.uk"};
-            auto const target_user = "@james:" + runtime.config.server().server_name;
-            auto const target_device = std::string{"DEVICE1"};
             // to-device messages are only delivered to existing local users and devices (FED-3).
             {
                 auto persistent = merovingian::database::PersistentUser{};
@@ -1938,17 +2046,6 @@ SCENARIO("A realistically-shaped Olm-encrypted m.direct_to_device EDU survives a
                 device.device_id = target_device;
                 runtime.database.persistent_store.devices.push_back(std::move(device));
             }
-            auto const identity_key = std::string{"Ca5s7Jdb83Eak12tAADQBgE0QJRyF4EC3rcWZwhaNwQ"};
-            // ~2KB placeholder ciphertext body — long enough to match a real
-            // Olm-encrypted payload's size, not just its alphabet.
-            auto const ciphertext_body = std::string(2048U, 'A');
-
-            auto const content_json =
-                std::string{"{\"sender\":\""} + sender +
-                "\",\"type\":\"m.room.encrypted\",\"message_id\":\"m1\",\"messages\":{\"" + target_user + "\":{\"" +
-                target_device + "\":{\"algorithm\":\"m.olm.v1.curve25519-aes-sha2\",\"ciphertext\":{\"" + identity_key +
-                "\":{\"body\":\"" + ciphertext_body + "\",\"type\":1}},\"sender_key\":\"" + identity_key + "\"}}}}";
-
             auto const request_json = std::string{R"({"type":"edu_ingest","edu_type":"m.direct_to_device",)"} +
                                       R"("origin":"matrix.ping.me.uk","content_json":)" +
                                       ipc_escape_json_string(content_json) + "}";
@@ -2158,6 +2255,114 @@ SCENARIO("handle_edu_ingest_request reports rejected_invalid when edu_sink is no
                 REQUIRE(response_json.find("edu_sink not wired") != std::string::npos);
             }
         }
+    }
+}
+
+// F-74 (security audit run 2, ADR-0395). The relay is bound to the EDUs of the body main verified, not just to the
+// origin: an EDU the body carried is relayed once per occurrence, and nothing else reaches edu_sink.
+// Spec: server-server-api.md "Transactions" (a transaction's EDUs are authenticated by the X-Matrix signature over
+// the request that carried them).
+SCENARIO("A worker-relayed EDU reaches edu_sink only if the verified body carried it, and only once",
+         "[integration][federation-worker][edu][f74-edu-binding]")
+{
+    GIVEN("a runtime counting what reaches edu_sink and a live verified parent whose body carried one EDU")
+    {
+        REQUIRE(sodium_init() >= 0);
+        auto const tmp_dir = unique_temp_dir("merovingian-fed-worker-edu-bound");
+        auto config = make_federation_worker_config(tmp_dir);
+        config.database().sqlite_path = (tmp_dir / "edu-bound-test.sqlite3").string();
+        auto started = start_runtime(config);
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        auto delivered = std::vector<std::string>{};
+        runtime.federation.edu_sink = [&delivered](merovingian::federation::InboundEduEnvelope const& envelope) {
+            delivered.push_back(envelope.origin + "|" + envelope.edu_type + "|" + envelope.content_json);
+            return merovingian::federation::EduDispositionResult{
+                merovingian::federation::EduDispositionStatus::accepted, {}};
+        };
+        auto const carried = std::string{
+            R"({"sender":"@remote:matrix.example.org","type":"m.room_key","message_id":"m1","messages":{}})"};
+        auto const not_carried = std::string{
+            R"({"sender":"@remote:matrix.example.org","type":"m.room_key","message_id":"m2","messages":{}})"};
+        auto const relay_of = [](std::string const& content, std::string const& origin) {
+            return std::string{R"({"type":"edu_ingest","edu_type":"m.direct_to_device",)"} + R"("origin":")" + origin +
+                   R"(","content_json":)" + ipc_escape_json_string(content) + "}";
+        };
+        auto const carried_digest = merovingian::federation::edu_relay_digest("m.direct_to_device", carried);
+        REQUIRE(carried_digest.has_value());
+        auto channels = merovingian::tests::make_edu_relay_channels();
+        auto context = merovingian::tests::EduRelayContext{*channels.main, *channels.worker};
+        REQUIRE(context.establish("matrix.example.org", {*carried_digest}));
+        auto const handle = [&](std::string const& relay) {
+            return merovingian::homeserver::handle_edu_ingest_request(runtime, context.wrap(relay), *channels.main);
+        };
+
+        WHEN("the EDU the body carried is relayed")
+        {
+            auto const response = handle(relay_of(carried, "matrix.example.org"));
+
+            THEN("it is accepted and reaches edu_sink once")
+            {
+                CHECK(response.find(R"("status":"accepted")") != std::string::npos);
+                REQUIRE(delivered.size() == 1U);
+                CHECK(delivered.front() == "matrix.example.org|m.direct_to_device|" + carried);
+            }
+        }
+        WHEN("the same EDU is relayed a second time under the same parent")
+        {
+            auto const first = handle(relay_of(carried, "matrix.example.org"));
+            auto const second = handle(relay_of(carried, "matrix.example.org"));
+
+            THEN("the second is refused and edu_sink sees only the first")
+            {
+                CHECK(first.find(R"("status":"accepted")") != std::string::npos);
+                CHECK(second.find(R"("status":"rejected_invalid")") != std::string::npos);
+                CHECK(delivered.size() == 1U);
+            }
+        }
+        WHEN("an EDU the body did not carry is relayed under the live parent")
+        {
+            auto const response = handle(relay_of(not_carried, "matrix.example.org"));
+            auto const other_type =
+                handle(std::string{R"({"type":"edu_ingest","edu_type":"m.typing",)"} +
+                       R"("origin":"matrix.example.org","content_json":)" + ipc_escape_json_string(carried) + "}");
+
+            THEN("it is refused, edu_sink sees nothing, and the genuine EDU can still be relayed afterwards")
+            {
+                CHECK(response.find(R"("status":"rejected_invalid")") != std::string::npos);
+                CHECK(other_type.find(R"("status":"rejected_invalid")") != std::string::npos);
+                CHECK(delivered.empty());
+                auto const genuine = handle(relay_of(carried, "matrix.example.org"));
+                CHECK(genuine.find(R"("status":"accepted")") != std::string::npos);
+                CHECK(delivered.size() == 1U);
+            }
+        }
+        WHEN("the carried EDU is relayed claiming another origin")
+        {
+            auto const response = handle(relay_of(carried, "evil.example.org"));
+
+            THEN("the origin check still refuses it, and it does not use up the genuine EDU")
+            {
+                CHECK(response.find(R"("status":"rejected_invalid")") != std::string::npos);
+                CHECK(delivered.empty());
+                auto const genuine = handle(relay_of(carried, "matrix.example.org"));
+                CHECK(genuine.find(R"("status":"accepted")") != std::string::npos);
+                CHECK(delivered.size() == 1U);
+            }
+        }
+        WHEN("the carried EDU is relayed after the parent request has completed")
+        {
+            REQUIRE(context.finish());
+            auto const response = handle(relay_of(carried, "matrix.example.org"));
+
+            THEN("it is refused")
+            {
+                CHECK(response.find(R"("status":"rejected_invalid")") != std::string::npos);
+                CHECK(delivered.empty());
+            }
+        }
+
+        REQUIRE(context.finish());
     }
 }
 
@@ -3688,9 +3893,13 @@ public:
             index = parents_.size();
         }
         auto frame = merovingian::ipc::serialize_fed_request(request);
+        // The digests WorkerPool::handle hands the channel with a verified /send (F-74, ADR-0395), from the
+        // production function, so the relays below are bound to the body exactly as in production.
+        auto digests = merovingian::homeserver::verified_send_edu_digests(request, 100U);
         pending_.push_back(
-            std::async(std::launch::async, [this, frame = std::move(frame), origin = request.verified_origin] {
-                return channels_.server->send_request(frame, std::chrono::seconds{60}, origin);
+            std::async(std::launch::async, [this, frame = std::move(frame), origin = request.verified_origin,
+                                            digests = std::move(digests)]() mutable {
+                return channels_.server->send_request(frame, std::chrono::seconds{60}, origin, std::move(digests));
             }));
         auto guard = std::unique_lock{mutex_};
         if (!received_.wait_for(guard, std::chrono::seconds{10}, [&] {
@@ -4047,8 +4256,13 @@ SCENARIO("Main binds worker EDU origins to genuinely verified pending federation
                     runtime.database.persistent_store.policy_rules.push_back(
                         {"rule-fed12-f21", "federation", origin_a, "deny", ""});
                 }
-                auto const ruled =
-                    relay.relay(frame(parent_a->id, origin_a, content(origin_a, "fed12-ruled", marker_a)));
+                // A fresh verified parent of A whose body carries the EDU, so the refusal below is the rule's
+                // and not the digest binding's (the first parent's only EDU was used by the control above).
+                auto const ruled_content = content(origin_a, "fed12-ruled", marker_a);
+                auto const request_ruled = verified_parent(origin_a, id_a, *key_a, ruled_content, "fed12-parent-ruled");
+                auto const parent_ruled = relay.send_parent(request_ruled);
+                REQUIRE(parent_ruled.has_value());
+                auto const ruled = relay.relay(frame(parent_ruled->id, origin_a, ruled_content));
                 REQUIRE(ruled.has_value());
                 CHECK(bool{ipc::ipc_json_get_str(*ruled, "status") == "rejected_invalid"});
                 CHECK(same_rows(snapshot().rows, after_retry.rows));
@@ -4060,6 +4274,7 @@ SCENARIO("Main binds worker EDU origins to genuinely verified pending federation
                 }
                 REQUIRE(relay.parent_is_pending(0U));
                 REQUIRE(relay.parent_is_pending(1U));
+                REQUIRE(relay.parent_is_pending(2U));
                 REQUIRE(relay.finish());
                 // Both real parent futures have consumed their fed_response;
                 // their channel pending entries are gone before the stale RPC.
