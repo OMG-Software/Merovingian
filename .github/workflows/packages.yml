@@ -283,19 +283,13 @@ jobs:
   netbsd-pkg:
     name: NetBSD package
     runs-on: ubuntu-latest
-    continue-on-error: true
     permissions:
       contents: read
       attestations: write
       id-token: write
-    outputs:
-      # continue-on-error masks .result as 'success' even on failure, so we
-      # surface the real step outcome via a job output for the retry condition.
-      build_succeeded: ${{ steps.build.outcome == 'success' }}
     steps:
       - uses: actions/checkout@v4
       - name: Build NetBSD package
-        id: build
         uses: vmactions/netbsd-vm@c8a0d7ddb84619a7a8cc4e652efa7950b3fd9f92 # v1.5.2
         with:
           usesh: true
@@ -334,15 +328,19 @@ jobs:
           name: netbsd-package
           path: merovingian-*.tgz
 
-  # Retry once on QEMU infrastructure crashes (ssh exit 139 / SIGSEGV) or
-  # CDN outages.  continue-on-error on netbsd-pkg masks .result as 'success'
-  # even when the job fails, so we gate on the build_succeeded output instead.
+  # Runs a second build after netbsd-pkg failed, to tell a QEMU infrastructure
+  # crash (ssh exit 139 / SIGSEGV) or a CDN outage from a real failure. Neither
+  # job is allowed to fail quietly any more: a failed netbsd-pkg leaves the run
+  # red, and so does a failed retry, and while netbsd-pkg is red the signing
+  # and publishing jobs below do not publish (their !failure() guard sees it).
+  # The retry therefore cannot turn the run green; re-running the failed job
+  # is what does that. always() is needed because a job whose dependency
+  # failed is skipped otherwise.
   netbsd-pkg-retry:
     name: NetBSD package (retry)
     runs-on: ubuntu-latest
     needs: netbsd-pkg
-    if: needs.netbsd-pkg.outputs.build_succeeded != 'true'
-    continue-on-error: true
+    if: always() && needs.netbsd-pkg.result == 'failure'
     permissions:
       contents: read
       attestations: write
@@ -794,7 +792,6 @@ jobs:
           name: openbsd-package
           path: packages-openbsd/
       - uses: actions/download-artifact@v4
-        continue-on-error: true
         with:
           name: netbsd-package
           path: packages-netbsd/
@@ -820,7 +817,7 @@ jobs:
             mv "$f" "packages/$(basename "${f%.tgz}")-openbsd.tgz"
           done
           for f in packages-netbsd/*.tgz; do
-            [ -f "$f" ] && mv "$f" "packages/$(basename "${f%.tgz}")-netbsd.tgz"
+            mv "$f" "packages/$(basename "${f%.tgz}")-netbsd.tgz"
           done
           for f in packages-debian/*.deb; do
             mv "$f" "packages/$(basename "${f%.deb}")-debian.deb"

@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+import re
 import unittest
 from pathlib import Path
 
@@ -92,6 +93,24 @@ class CiWorkflowTests(unittest.TestCase):
         # THEN each BSD job builds through the shared BSD wrapper, which runs the
         # full meson test suite on the platform.
         self.assertGreaterEqual(workflow.count("sh scripts/build-bsd.sh --builddir build"), 3)
+
+    def test_every_bsd_build_and_test_job_is_required(self) -> None:
+        # GIVEN the repository CI workflow.
+        workflow = CI_WORKFLOW.read_text(encoding="utf-8")
+
+        # WHEN each BSD job's text is read, up to the next top-level job.
+        for job in ("freebsd-build-and-test", "openbsd-build-and-test", "netbsd-build-and-test"):
+            pattern = r"^  " + job + r":\n(.*?)(?=^  [A-Za-z0-9_-]+:\n|\Z)"
+            match = re.search(pattern, workflow, re.MULTILINE | re.DOTALL)
+            self.assertIsNotNone(match, f"{job} is missing")
+            text = match.group(1)
+
+            # THEN it does not carry a job-level continue-on-error: a BSD failure
+            # must fail the run and block the merge (ADR-0502).
+            self.assertIsNone(
+                re.search(r"^    continue-on-error:", text, re.MULTILINE),
+                f"{job}: continue-on-error would let a failing BSD suite pass",
+            )
 
     def test_tier_one_linux_distro_platforms_have_build_and_test_jobs(self) -> None:
         # GIVEN the repository CI workflow.
