@@ -11,6 +11,7 @@
 
 #include <algorithm>
 #include <cstddef>
+#include <ranges>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -180,6 +181,9 @@ auto build_third_party_invite_exchange_body(ThirdPartyInviteExchange const& exch
         return {};
     }
     auto invite = canonicaljson::Object{};
+    // `display_name` is Required by the spec. `3pid/onbind` supplies none, so it is empty: that satisfies the schema,
+    // invents nothing and discloses nothing; the inviting server takes the real name from its own event (ADR-0485).
+    invite.push_back(canonicaljson::make_member("display_name", canonicaljson::Value{std::string{}}));
     invite.push_back(canonicaljson::make_member("signed", signed_value.value));
     auto content = canonicaljson::Object{};
     content.push_back(canonicaljson::make_member("membership", canonicaljson::Value{std::string{"invite"}}));
@@ -219,12 +223,14 @@ auto parse_third_party_bind_notification(std::string_view body) -> ThirdPartyBin
     {
         return refused("address, medium, mxid and invites are required");
     }
+    auto notification = ThirdPartyBindNotification{*address, *medium, *mxid, {}, 0U};
+    // Only the first `max_third_party_bind_invites` are looked at; the spec gives no status for more, and refusing the
+    // body would lose every invite the identity server holds for this user. The rest are counted, not read.
     if (invites->size() > max_third_party_bind_invites)
     {
-        return refused("too many invites");
+        notification.dropped = invites->size() - max_third_party_bind_invites;
     }
-    auto notification = ThirdPartyBindNotification{*address, *medium, *mxid, {}, 0U};
-    for (auto const& entry : *invites)
+    for (auto const& entry : *invites | std::views::take(max_third_party_bind_invites))
     {
         auto const* object = std::get_if<canonicaljson::Object>(&entry.storage());
         auto const* entry_address = object == nullptr ? nullptr : string_of(*object, "address");

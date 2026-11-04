@@ -163,7 +163,8 @@ SCENARIO("The exchange body this server sends carries every field the spec requi
             auto const body = fed::build_third_party_invite_exchange_body(*exchange);
             auto const parsed = merovingian::canonicaljson::parse_json(body);
 
-            THEN("the third_party_invite holds a string display_name (empty: onbind supplies none) and the signed object")
+            THEN("the third_party_invite holds a string display_name (empty: onbind supplies none) and the signed "
+                 "object")
             {
                 REQUIRE(parsed.error == merovingian::canonicaljson::ParseError::none);
                 auto const* root = std::get_if<merovingian::canonicaljson::Object>(&parsed.value.storage());

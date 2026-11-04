@@ -7491,12 +7491,12 @@ auto request_third_party_invite_exchange(HomeserverRuntime& runtime,
         destination, runtime.config.server().server_name, exchange.room_id, body);
     auto const key_id = signing_key->key_id;
     auto secret_key = core::SecretBuffer{runtime.database.signing_secret_key.bytes()};
-    auto const call = [&] {
+    auto const call = std::invoke([&] {
         auto const released = RuntimeLockRelease{guard};
         return perform_bounded_outbound_call_with_status(runtime, OutboundAnswerTrust::unverified, exchange.room_id,
                                                          transaction, key_id, std::move(secret_key),
                                                          "room.third_party_invite.forward_failed", timeout_seconds);
-    }();
+    });
     if (!call.ok)
     {
         return make_operation_result(false, {}, "the inviting server did not accept the exchange",
@@ -7530,6 +7530,17 @@ auto notify_third_party_bind(HomeserverRuntime& runtime, federation::ThirdPartyB
             return make_operation_result(true, {});
         }
     }
+    if (notification.dropped != 0U)
+    {
+        // Entries past the cap, malformed ones and ones naming another user: counted by the parser, never acted on.
+        log_diagnostic("room.third_party_invite.bind_invites_dropped",
+                       {
+                           {"user_id", notification.mxid,                           false},
+                           {"dropped", std::to_string(notification.dropped),        false},
+                           {"kept",    std::to_string(notification.invites.size()), false}
+        },
+                       observability::LogEventSeverity::warning);
+    }
     auto const deadline = OutboundDeadline{effective_client_outbound_deadline(runtime, remote_invite_offer_seconds)};
     for (auto const& invite : notification.invites)
     {
@@ -7540,10 +7551,10 @@ auto notify_third_party_bind(HomeserverRuntime& runtime, federation::ThirdPartyB
         }
         auto const exchange = federation::ThirdPartyInviteExchange{invite.room_id, invite.sender, notification.mxid,
                                                                    invite.signed_invite};
-        auto const own_user = [&] {
+        auto const own_user = std::invoke([&] {
             auto const guard = std::unique_lock<RuntimeMutex>{runtime.mutex};
             return auth::user_id_server_name(invite.sender) == runtime.config.server().server_name;
-        }();
+        });
         auto const outcome = own_user ? exchange_third_party_invite(runtime, exchange, client_key)
                                       : request_third_party_invite_exchange(runtime, exchange, seconds_left);
         if (!outcome.ok)

@@ -54,8 +54,9 @@ struct ThirdPartyInviteExchangeParse final
 
 // Parses an `exchange_third_party_invite` body. `path_room_id` is the decoded `{roomId}`; the body's `room_id` must
 // equal it. The event must be an `m.room.member` with `membership: invite` and a `third_party_invite` holding a valid
-// `signed`. `display_name` is not required (servers in practice omit it) and never read: the invite takes its display
-// name from the room's own `m.room.third_party_invite` (ADR-0485).
+// `signed`. `display_name` is accepted when absent although the spec marks it Required: it is never read (the invite
+// takes its display name from the room's own `m.room.third_party_invite`), so refusing its absence protects nothing.
+// That is a tolerance on receipt, not a reading of the spec (ADR-0485).
 [[nodiscard]] auto parse_third_party_invite_exchange(std::string_view body, std::string_view path_room_id)
     -> ThirdPartyInviteExchangeParse;
 
@@ -90,8 +91,9 @@ struct ThirdPartyBindParse final
 };
 
 // Parses a `/3pid/onbind` body. A body that is not an object with a string `address` and `medium`, a valid `mxid` and
-// an `invites` array of at most `max_third_party_bind_invites` entries is refused whole; an entry that is malformed or
-// names another user than `mxid` is dropped alone.
+// an `invites` array is refused whole. Only the first `max_third_party_bind_invites` entries are read; the rest are
+// counted in `dropped` (the spec gives no status for more), as is an entry that is malformed or names another user than
+// `mxid`.
 [[nodiscard]] auto parse_third_party_bind_notification(std::string_view body) -> ThirdPartyBindParse;
 
 // How a server's exchange of a third-party invite ended.
