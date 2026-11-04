@@ -52,10 +52,10 @@ SCENARIO("Integrated local homeserver smoke flow boots and exercises auth room a
                 // formats are pinned by the create-room room-version unit tests.
                 REQUIRE(result.value.find("room_id=!") != std::string::npos);
                 REQUIRE(result.value.find("members=1") != std::string::npos);
-                // The count is the room's rows in the event table: its create, membership and setup events
-                // and the message the flow sends, so at least one and never reported as zero.
-                REQUIRE(result.value.find("events=") != std::string::npos);
-                REQUIRE(result.value.find("events=0") == std::string::npos);
+                // The count is the room's rows in the event table: the private room's create, membership and
+                // preset state events (encryption among them) and the message the flow sends.
+                INFO(result.value);
+                REQUIRE(result.value.ends_with(" events=8"));
             }
         }
     }
