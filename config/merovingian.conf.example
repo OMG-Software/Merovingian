@@ -242,9 +242,13 @@ security.access_token_lifetime_ms=3600000
 security.refresh_token_lifetime_ms=2592000000
 
 # Room encryption policy
-# New private/direct rooms require encryption by default. Public unencrypted
-# rooms are allowed for compatibility, while federated private rooms must not
-# bypass encryption.
+# Enforced when a room is created here (POST /createRoom); joins of rooms other
+# servers created are not checked. New private/direct rooms are encrypted by
+# default. default_for_new_rooms and require_for_direct_messages must stay true:
+# the server refuses to start otherwise. Public unencrypted rooms are allowed
+# for compatibility. block_unencrypted_federated_private_rooms refuses creating
+# an unencrypted private room that can federate (federation enabled and
+# m.federate not false).
 security.encryption.default_for_new_rooms=true
 security.encryption.require_for_direct_messages=true
 security.encryption.require_for_private_rooms=true

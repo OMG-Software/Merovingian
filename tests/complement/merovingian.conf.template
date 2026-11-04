@@ -60,7 +60,8 @@ federation.worker.allow_without_landlock=@ALLOW_WITHOUT_LANDLOCK@
 # server refuses a config that stops encrypting new rooms by default or stops
 # requiring encryption in direct messages, so Complement meets both as shipped.
 # The parts an operator may change are off: unencrypted private rooms may be
-# created here, and joined when another server created them.
+# created here, including ones that can federate. The settings apply only to
+# rooms this server creates; joining rooms other servers created is never checked.
 security.encryption.require_for_private_rooms=false
 security.encryption.allow_unencrypted_public_rooms=true
 security.encryption.block_unencrypted_federated_private_rooms=false

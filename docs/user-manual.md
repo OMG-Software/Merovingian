@@ -1104,17 +1104,37 @@ three keys are reloadable. See `docs/auth-identity.md` "Failed-login throttle".
 
 #### Encryption policy — `security.encryption.*`
 
-These keys enforce the room encryption policy. The defaults require encryption
-for direct messages and private rooms and block unencrypted federated private
-rooms.
+These keys decide, when a room is created (`POST /createRoom`), whether it is
+encrypted and whether a request for an unencrypted room is refused. They apply
+to rooms this server creates only: they do not stop anyone joining an
+unencrypted room another server created, and they do not touch federation
+ingest. `private` below means the `private_chat` and `trusted_private_chat`
+presets; an unknown preset is treated as private.
+
+The Matrix API has no way to ask for an unencrypted room, so the request is read
+from `initial_state`: the last `m.room.encryption` entry with an empty (or
+absent) `state_key` is the request, and it asks for encryption only when its
+`content.algorithm` is exactly `m.megolm.v1.aes-sha2`. Any other entry is a
+request for an unencrypted room. No such entry means the request is
+unspecified. An entry under a non-empty `state_key` does not count. A refused
+request is answered `400 M_INVALID_ROOM_STATE` and nothing is stored.
+
+A room is encrypted when the request asks for it, or when the request is
+unspecified and encryption is required or on by default. Encryption is required
+for a direct room (`is_direct`) with `require_for_direct_messages`, for a
+private room with `require_for_private_rooms`, for a public room when
+`allow_unencrypted_public_rooms` is `false`, and for a private room that can
+federate (federation enabled and `m.federate` not `false`) with
+`block_unencrypted_federated_private_rooms`. It is on by default for private
+and direct rooms with `default_for_new_rooms`.
 
 | Key | Default | When to change |
 |---|---|---|
-| `security.encryption.default_for_new_rooms` | `true` | Disable only in constrained test environments. |
-| `security.encryption.require_for_direct_messages` | `true` | Should stay `true` in production. |
-| `security.encryption.require_for_private_rooms` | `true` | Should stay `true` in production. |
+| `security.encryption.default_for_new_rooms` | `true` | Must stay `true`: the server refuses to start with `false` (a configuration validation error, exit code for config validation). |
+| `security.encryption.require_for_direct_messages` | `true` | Must stay `true`: the server refuses to start with `false`. |
+| `security.encryption.require_for_private_rooms` | `true` | Should stay `true` in production. `false` lets a request for an unencrypted private room through (unless a federation block below applies). |
 | `security.encryption.allow_unencrypted_public_rooms` | `true` | Set `false` to require encryption even for public rooms. |
-| `security.encryption.block_unencrypted_federated_private_rooms` | `true` | Keep `true` to prevent E2EE bypass across federation. |
+| `security.encryption.block_unencrypted_federated_private_rooms` | `true` | Keep `true` to refuse creating an unencrypted private room that can federate. Rooms created with `m.federate: false`, or on a server with federation off, are not affected. Joins of rooms other servers created are not checked. |
 
 #### Federation policy — `security.federation.*`
 
