@@ -14,6 +14,7 @@
 #include <ranges>
 #include <string>
 #include <string_view>
+#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -726,6 +727,318 @@ SCENARIO("The time search of an event table steps over refused rows within a cap
             {
                 REQUIRE(found.event == table.end());
                 REQUIRE(found.truncated);
+            }
+        }
+    }
+}
+
+namespace
+{
+
+using merovingian::database::RelationKind;
+
+[[nodiscard]] auto make_related_event(std::string event_id, std::uint64_t stream_ordering, std::string_view target,
+                                      std::string_view rel_type) -> PersistentEvent
+{
+    auto event = make_event(std::move(event_id), stream_ordering);
+    event.json = R"({"type":"m.room.message","content":{"body":"x","m.relates_to":{"event_id":")" +
+                 std::string{target} + R"(","rel_type":")" + std::string{rel_type} + R"("}}})";
+    return event;
+}
+
+// The children of `target` as "id:kind" strings: each kind's children newest listed first, the kinds in
+// the order replace, thread, reference.
+[[nodiscard]] auto children_of(EventTable const& table, std::string_view target, std::size_t cap = 100U)
+    -> std::vector<std::string>
+{
+    auto seen = std::vector<std::string>{};
+    for (auto const kind : {RelationKind::replace, RelationKind::thread, RelationKind::reference})
+    {
+        std::ignore = table.for_each_relation_child_newest_first(
+            target, kind,
+            [&seen, kind](PersistentEvent const& row) {
+                seen.push_back(row.event_id + ":" + std::to_string(static_cast<int>(kind)));
+            },
+            cap);
+    }
+    return seen;
+}
+
+const auto replace_kind = std::to_string(static_cast<int>(RelationKind::replace));
+const auto thread_kind = std::to_string(static_cast<int>(RelationKind::thread));
+const auto reference_kind = std::to_string(static_cast<int>(RelationKind::reference));
+
+// The IDs of room `room_id`'s rows as a whole-table walk in stream order selects them: the reference
+// the per-room index must equal.
+[[nodiscard]] auto room_ids_by_full_walk(EventTable const& table, std::string_view room_id) -> std::vector<std::string>
+{
+    auto ids = std::vector<std::string>{};
+    for (auto const& event : table.in_stream_order())
+    {
+        if (event.room_id == room_id)
+        {
+            ids.push_back(event.event_id);
+        }
+    }
+    return ids;
+}
+
+} // namespace
+
+SCENARIO("An event table walks one room's rows in stream order without visiting other rooms",
+         "[database][event-table][room-stream]")
+{
+    GIVEN("rooms with events arriving out of order, a backfilled row, an outlier and a rejected row")
+    {
+        auto table = EventTable{};
+        REQUIRE(table.insert(make_event("$a1", 10U, "!a:example.org")));
+        REQUIRE(table.insert(make_event("$b1", 11U, "!b:example.org")));
+        REQUIRE(table.insert(make_event("$a3", 30U, "!a:example.org")));
+        // Committed after a newer row of its room, and sharing an ordering with another row.
+        REQUIRE(table.insert(make_event("$a2", 20U, "!a:example.org")));
+        REQUIRE(table.insert(make_event("$a2b", 20U, "!a:example.org")));
+        // A backfilled row is ordered after the join it precedes.
+        auto backfilled = make_event("$a0", 31U, "!a:example.org");
+        backfilled.depth = 1U;
+        REQUIRE(table.insert(std::move(backfilled)));
+        auto outlier = make_event("$a-outlier", 12U, "!a:example.org");
+        outlier.status = "outlier";
+        REQUIRE(table.insert(std::move(outlier)));
+        auto rejected = make_event("$b-rejected", 5U, "!b:example.org");
+        rejected.status = "rejected";
+        REQUIRE(table.insert(std::move(rejected)));
+
+        WHEN("a room is walked through the room index")
+        {
+            THEN("it selects the same rows in the same order as a whole-table walk, whatever their status")
+            {
+                REQUIRE(ids_of(table.room_in_stream_order("!a:example.org")) ==
+                        room_ids_by_full_walk(table, "!a:example.org"));
+                REQUIRE(ids_of(table.room_in_stream_order("!b:example.org")) ==
+                        room_ids_by_full_walk(table, "!b:example.org"));
+                REQUIRE(ids_of(table.room_in_stream_order("!a:example.org")) ==
+                        std::vector<std::string>{"$a1", "$a-outlier", "$a2", "$a2b", "$a3", "$a0"});
+            }
+            THEN("a room that holds no rows yields none")
+            {
+                REQUIRE(table.room_in_stream_order("!none:example.org").empty());
+            }
+        }
+
+        WHEN("rows are erased, modified into another room and cleared")
+        {
+            auto const removed = table.erase_if([](PersistentEvent const& row) {
+                return row.event_id == "$a2" || row.event_id == "$b-rejected";
+            });
+            table.modify(table.find("$a1"), [](PersistentEvent& row) {
+                row.room_id = "!b:example.org";
+            });
+
+            THEN("the room index still equals a whole-table walk for every room")
+            {
+                REQUIRE(removed == 2U);
+                for (auto const room : {"!a:example.org", "!b:example.org"})
+                {
+                    REQUIRE(ids_of(table.room_in_stream_order(room)) == room_ids_by_full_walk(table, room));
+                }
+                REQUIRE(ids_of(table.room_in_stream_order("!b:example.org")) == std::vector<std::string>{"$a1", "$b1"});
+                table.clear();
+                REQUIRE(table.room_in_stream_order("!a:example.org").empty());
+            }
+        }
+    }
+
+    GIVEN("rows added in bulk to a table that already holds rows of the same rooms")
+    {
+        auto table = EventTable{};
+        REQUIRE(table.insert(make_event("$a5", 50U, "!a:example.org")));
+        auto batch = std::vector<PersistentEvent>{};
+        batch.push_back(make_event("$a9", 90U, "!a:example.org"));
+        batch.push_back(make_event("$a1", 10U, "!a:example.org"));
+        batch.push_back(make_event("$c1", 15U, "!c:example.org"));
+        batch.push_back(make_event("$a1b", 10U, "!a:example.org"));
+
+        WHEN("insert_all merges them")
+        {
+            REQUIRE(table.insert_all(std::move(batch)) == 4U);
+
+            THEN("each room's index equals a whole-table walk, equal orderings in the order added")
+            {
+                REQUIRE(ids_of(table.room_in_stream_order("!a:example.org")) ==
+                        room_ids_by_full_walk(table, "!a:example.org"));
+                REQUIRE(ids_of(table.room_in_stream_order("!a:example.org")) ==
+                        std::vector<std::string>{"$a1", "$a1b", "$a5", "$a9"});
+                REQUIRE(ids_of(table.room_in_stream_order("!c:example.org")) == std::vector<std::string>{"$c1"});
+            }
+        }
+    }
+}
+
+SCENARIO("An event table lists the children of an event without scanning its rows",
+         "[database][event-table][relations]")
+{
+    GIVEN("a parent with a thread reply, an edit and an unrelated event")
+    {
+        auto table = EventTable{};
+        REQUIRE(table.insert(make_event("$parent", 1U)));
+        REQUIRE(table.insert(make_related_event("$reply", 2U, "$parent", "m.thread")));
+        REQUIRE(table.insert(make_related_event("$edit", 3U, "$parent", "m.replace")));
+        // The unrelated event has no relation, so it must never appear as a child of anything.
+        REQUIRE(table.insert(make_event("$other", 4U)));
+
+        WHEN("the children of the parent are visited")
+        {
+            THEN("each is listed with its kind, newest listed first, and nothing else is")
+            {
+                REQUIRE(children_of(table, "$parent") ==
+                        std::vector<std::string>{"$edit:" + replace_kind, "$reply:" + thread_kind});
+                REQUIRE(table.relation_child_count("$parent") == 2U);
+                REQUIRE(table.relation_child_count("$parent", RelationKind::thread) == 1U);
+                REQUIRE(children_of(table, "$other").empty());
+            }
+        }
+
+        WHEN("the walk is capped below the number of children")
+        {
+            // A third thread reply is added so the cap of one is below the number of thread children.
+            auto walk = EventTable::RelationWalk{};
+            auto visited = std::size_t{0U};
+            REQUIRE(table.insert(make_related_event("$reply2", 5U, "$parent", "m.thread")));
+            walk = table.for_each_relation_child_newest_first(
+                "$parent", RelationKind::thread,
+                [&visited](PersistentEvent const&) {
+                    ++visited;
+                },
+                1U);
+
+            THEN("only the cap is visited and the walk says it was cut short")
+            {
+                REQUIRE(visited == 1U);
+                REQUIRE(walk.examined == 1U);
+                REQUIRE(walk.truncated);
+            }
+        }
+
+        WHEN("a child is redacted, so its JSON no longer carries the relation")
+        {
+            // Redaction strips `m.relates_to` from the stored JSON. The index is built from that JSON, so the edit
+            // has to drop out of the list.
+            table.modify(table.find("$edit"), [](PersistentEvent& row) {
+                row.json = R"({"type":"m.room.message","content":{}})";
+            });
+
+            THEN("it is no longer a child, and the other child is")
+            {
+                REQUIRE(children_of(table, "$parent") == std::vector<std::string>{"$reply:" + thread_kind});
+            }
+        }
+
+        WHEN("a child's status changes")
+        {
+            table.modify(table.find("$reply"), [](PersistentEvent& row) {
+                // Status is not part of the relation, so the index leaves the row listed and the caller decides
+                // what to do with a rejected child.
+                row.status = "rejected";
+            });
+
+            THEN("it is still listed, for the reader to judge by status")
+            {
+                REQUIRE(table.relation_child_count("$parent") == 2U);
+            }
+        }
+
+        WHEN("an earlier row is erased")
+        {
+            // Erasing the first row shifts the later rows down, so any position the index held for them would now
+            // be wrong.
+            REQUIRE(table.erase_if([](PersistentEvent const& row) {
+                return row.event_id == "$parent";
+            }) == 1U);
+
+            THEN("the surviving children are still found at their new positions")
+            {
+                REQUIRE(children_of(table, "$parent") ==
+                        std::vector<std::string>{"$edit:" + replace_kind, "$reply:" + thread_kind});
+                REQUIRE(table.find("$edit")->event_id == "$edit");
+            }
+        }
+
+        WHEN("the table is cleared")
+        {
+            table.clear();
+
+            THEN("it lists no children")
+            {
+                REQUIRE(table.relation_child_count("$parent") == 0U);
+            }
+        }
+    }
+
+    // Hydration loads the store through insert_all rather than insert, which must index relations the same way.
+    GIVEN("events added in one batch, as at hydration")
+    {
+        auto table = EventTable{};
+        auto batch = std::vector<PersistentEvent>{};
+        batch.push_back(make_event("$parent", 1U));
+        batch.push_back(make_related_event("$reply", 2U, "$parent", "m.thread"));
+        batch.push_back(make_related_event("$ref", 3U, "$parent", "m.reference"));
+        batch.push_back(make_related_event("$react", 4U, "$parent", "m.annotation"));
+        batch.push_back(make_related_event("$odd", 5U, "$parent", "org.example.custom"));
+        // The reaction and the custom relation type are stored but not indexed. Only thread, replace and reference
+        // children are listed.
+        REQUIRE(table.insert_all(std::move(batch)) == 5U);
+
+        WHEN("the children of the parent are visited")
+        {
+            THEN("the aggregated kinds are indexed, each in its own list, and annotations and other types are not")
+            {
+                REQUIRE(children_of(table, "$parent") ==
+                        std::vector<std::string>{"$reply:" + thread_kind, "$ref:" + reference_kind});
+                REQUIRE(table.relation_child_count("$parent") == 2U);
+            }
+        }
+    }
+
+    // The edit is inserted before ten replies, so an edit walk limited by the cap must not be crowded out by the
+    // thread replies.
+    GIVEN("a thread with more replies than a window holds, and one edit")
+    {
+        auto table = EventTable{};
+        REQUIRE(table.insert(make_event("$parent", 1U)));
+        REQUIRE(table.insert(make_related_event("$edit", 2U, "$parent", "m.replace")));
+        for (auto index = std::uint64_t{0U}; index < 10U; ++index)
+        {
+            REQUIRE(table.insert(make_related_event("$r" + std::to_string(index), 10U + index, "$parent", "m.thread")));
+        }
+
+        WHEN("the edits are walked under a cap smaller than the thread")
+        {
+            auto const seen = children_of(table, "$parent", 3U);
+
+            THEN("the edit is found, however many thread replies follow it")
+            {
+                REQUIRE(seen.front() == "$edit:" + replace_kind);
+                REQUIRE(seen.size() == 4U);
+            }
+        }
+    }
+
+    // An empty target and a 300-byte target are both unusable as an index key.
+    GIVEN("an event whose relation names no usable target")
+    {
+        auto table = EventTable{};
+        auto empty_target = make_related_event("$empty", 1U, "", "m.thread");
+        auto long_target = make_related_event("$long", 2U, std::string(300U, 'a'), "m.thread");
+
+        WHEN("they are stored")
+        {
+            REQUIRE(table.insert(std::move(empty_target)));
+            REQUIRE(table.insert(std::move(long_target)));
+
+            THEN("neither is indexed, so a client cannot grow the index with junk keys")
+            {
+                REQUIRE(table.relation_child_count("") == 0U);
+                REQUIRE(table.relation_child_count(std::string(300U, 'a')) == 0U);
             }
         }
     }

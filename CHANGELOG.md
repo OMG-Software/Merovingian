@@ -1,3 +1,81 @@
+## 0.12.72
+
+The high severity findings of the November project analysis (ref 8af381cf). Complement in CI was left out on the owner's
+instruction, and full lazy-loading follows on its own branch.
+
+### Security
+
+- **The `security.encryption.*` settings are now enforced when a room is created (ADR-0445 to ADR-0447).** They were
+  parsed and documented as enforced, but nothing read them. A request for an unencrypted private, direct or otherwise
+  required room is refused with 400 `M_INVALID_ROOM_STATE` before anything is stored. A public room with `is_direct`, or
+  with `allow_unencrypted_public_rooms=false`, is now encrypted by default. An `m.room.encryption` entry under a
+  non-empty `state_key` no longer cancels the default encryption of a private room. The settings apply to rooms this
+  server creates; joins are not refused for a room's encryption.
+- **`PUT /rooms/{roomId}/state/m.room.encryption` refuses a body without a valid `algorithm` (ADR-0448).** `{}`, a
+  non-string `algorithm` or any value but `m.megolm.v1.aes-sha2` is 400 `M_BAD_JSON` and stores nothing, so a member can
+  no longer switch a room's encryption off with an empty body. A sender without the power still gets 403. Events
+  arriving over federation are not checked, so a remote server can still send such an event.
+- **`POST /keys/device_signing/upload` validates and verifies before any write (ADR-0421).** It checks `user_id`, `usage`
+  and `keys`, and stores the keys in one transaction. A self-signing or user-signing key must be signed by the
+  accompanying master key, or by the held master key if the request has none. A missing or wrong signature is 400
+  `M_INVALID_SIGNATURE`, no master key is 400 `M_MISSING_PARAM`, and a key must be `ed25519:<key>` equal to its value and
+  32 bytes.
+
+### Fixed
+
+- **`old_verify_keys` in remote key responses are read and stored durably (ADR-0425).** Events signed before a remote's
+  key rotation now verify from the cache. A retired key verifies an event only if its `origin_server_ts` is before
+  `expired_ts`, never authenticates an X-Matrix request, stays retired once listed, and keeps the earliest expiry. The
+  `server_signing_keys.expired_ts` column is added to the v1 schema, so a database created before this version must be
+  recreated.
+- **A restart could cost an undelivered to-device message (ADR-0426).** The queue reloaded in text order ("10" before
+  "9"), and sliding sync could then acknowledge and delete a message it had not sent. The queue is re-sorted numerically
+  after loading, and the drain and the extension sort before paging.
+- **Client routes match on the path (ADR-0420).** `POST /register?kind=user` and appservice calls such as
+  `GET /joined_rooms?user_id=` no longer get 405 or 404. `POST /register` honours `kind`: `guest` gets 403 and an unknown
+  value 400 `M_INVALID_PARAM`.
+- **`PUT /room_keys/keys` no longer answers 200 for a failed write.** A malformed body is 400, a batch is written in one
+  transaction, and a failed write is 500.
+
+### Added
+
+- **Bundled aggregations (ADR-0430).** `unsigned.m.relations` (`m.replace`, `m.thread`, `m.reference`) is served on
+  `/messages`, `/context`, `/event`, `/relations`, `/search`, `/threads`, `/sync` (limited sections) and sliding sync
+  (limited rooms), built from a relation index in the event table with a separate window per relation kind. Ignored
+  senders, refused events and events the viewer cannot see never count.
+
+### Performance
+
+- **A request reads its room's events through a per-room stream-order index (ADR-0435, ADR-0436).** `/sync`, `/messages`,
+  `/context`, `/search`, `initialSync`, `/relations` and the unread counts no longer walk every event once per room.
+- **A long-poll is rerun only for changes that concern its user (ADR-0437).** Local event sends, some membership changes
+  and inbound federation PDUs wake the room's joined and invited members, the sender and the user a membership event is
+  about. Every other change, including receipts, typing, presence, to-device, device lists, account data, joins, leaves,
+  knocks, room creation, profile changes and backfill, still wakes every long-poll.
+- **A message no longer scans all account data or commits once per recipient (ADR-0440).** Account data and notifications
+  are indexed by user, and an event's notification rows commit in one transaction.
+- **An event's outbound federation transactions are queued in one durable commit (ADR-0441)**, indexed by transaction ID.
+- **Start-up builds the roster in linear time, and the event table is the only copy of a room's events (ADR-0442).**
+  `LocalRoom::events` is removed.
+
+### CI
+
+- **The live PostgreSQL job now covers this version's batch writers.** `store_notifications`,
+  `store_federation_transactions`, `store_cross_signing_keys` and `store_key_backup_sessions` each write a batch, reopen
+  the store and compare every field, then upsert and reopen again. A key backup batch naming a version that does not
+  exist is refused whole, and neither the mirror nor the database keeps any of it.
+- CodeQL: the seven long functions this version adds or lengthens now say why their steps matter, among them
+  `cross_signing_upload_refusal`, and `store_notifications` erases pruned rows from a plain loop. The comments change no
+  behaviour.
+
+### Documentation
+
+- Removed the 2026-09-29 security audit report and the 2026-10-17 conformance audit report with their site navigation
+  entries, and turned every link to them into plain text.
+- The docs now state that no live configuration reload exists (a changed key needs a restart, and the reload
+  classification is used only by `--plan-config-reload`), that inbound federation `publicRooms` is not served, and that
+  room versions 3 to 12 are supported, not 1 and 2.
+
 ## 0.12.71
 
 The low and informational findings of security audit run 2 (ref 5e67d4e8).

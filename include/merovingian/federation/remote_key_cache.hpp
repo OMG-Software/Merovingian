@@ -25,12 +25,27 @@ struct RemoteVerifyKey final
     std::string public_key_base64{};
 };
 
+// One `old_verify_keys` entry: a key the server no longer signs with, and when
+// it stopped (server-server-api.md, Publishing keys). Valid only for events
+// sent before `expired_ts`; never for a federation request.
+struct RemoteOldVerifyKey final
+{
+    std::string key_id{};
+    std::string public_key_base64{};
+    std::uint64_t expired_ts{0U};
+};
+
 // Parsed and self-verified result of fetching a remote server's keys.
 struct RemoteKeyResponse final
 {
     std::string server_name{};
     std::uint64_t valid_until_ts{0U};
     std::vector<RemoteVerifyKey> verify_keys{};
+    // Well-formed `old_verify_keys` entries. A malformed entry is skipped on its
+    // own; it never costs the response its `verify_keys`. cache_remote_server_keys
+    // persists each as a retired row (`server_signing_keys.expired_ts`), so events
+    // signed before a rotation verify from the cache with no further fetch.
+    std::vector<RemoteOldVerifyKey> old_verify_keys{};
 };
 
 struct RemoteKeyFetchResult final
@@ -67,10 +82,19 @@ class CachedServerDiscovery;
 // before expiry so verifications never trip on a key that is about to expire.
 [[nodiscard]] auto remote_key_needs_refresh(std::uint64_t valid_until_ts, std::uint64_t now_ts) noexcept -> bool;
 
+// Whether a cached key may be used without fetching again: a current key until it is within the refresh
+// slack of its expiry, a retired key (old_verify_keys) always, because it can never become current and
+// its validity is judged per event against `expired_ts`.
+[[nodiscard]] auto cached_remote_key_usable(FederationKeyRecord const& key, std::uint64_t now_ts) noexcept -> bool;
+
 // Persists every verify key in the response, fetched at `fetched_at_ms`, under
 // `database::PersistentServerSigningKey`. Each key's valid_until_ts is stored
 // as the lesser of the published value and `fetched_at_ms` + 7 days
-// (rooms/v5.md, "Signing key validity period"). Returns false if any single
+// (rooms/v5.md, "Signing key validity period"). Each old_verify_keys entry is
+// stored as a retired row: `expired_ts` capped at `fetched_at_ms`, and
+// `valid_until_ts` equal to it. Retirement is one way and the earliest expiry
+// wins (store_server_signing_key): a key later listed under verify_keys stays
+// retired, and one a response now lists under old_verify_keys is retired at once. Returns false if any single
 // key fails to persist; the caller is expected to log and continue.
 [[nodiscard]] auto cache_remote_server_keys(database::PersistentStore& store, RemoteKeyResponse const& response,
                                             std::uint64_t fetched_at_ms) -> bool;

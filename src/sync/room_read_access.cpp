@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <limits>
+#include <ranges>
 #include <string>
 #include <unordered_map>
 #include <utility>
@@ -126,8 +127,8 @@ namespace
 
 } // namespace
 
-auto room_read_access_for(database::PersistentStore const& store, std::string_view room_id,
-                          std::string_view user_id) -> RoomReadAccess
+auto room_read_access_for(database::PersistentStore const& store, std::string_view room_id, std::string_view user_id)
+    -> RoomReadAccess
 {
     auto found_row = false;
     auto newest_ordering = std::uint64_t{0U};
@@ -192,17 +193,20 @@ auto state_anchor_event(database::PersistentStore const& store, std::string_view
     {
         limit = std::min(limit, access.boundary_ordering);
     }
+    // The room's rows newest first (ADR-0435): the first one at or below `limit` that is not withheld has the
+    // highest stream ordering. Among rows sharing it, the one added first wins, as when every row was compared.
     database::PersistentEvent const* newest = nullptr;
-    for (auto const& event : store.events)
+    for (auto const& event : store.events.room_in_stream_order(room_id) | std::views::reverse)
     {
-        if (event.room_id != room_id || event.stream_ordering > limit || event_is_withheld(event))
+        if (newest != nullptr && event.stream_ordering != newest->stream_ordering)
+        {
+            break;
+        }
+        if (event.stream_ordering > limit || event_is_withheld(event))
         {
             continue;
         }
-        if (newest == nullptr || event.stream_ordering > newest->stream_ordering)
-        {
-            newest = &event;
-        }
+        newest = &event;
     }
     return newest;
 }

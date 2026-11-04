@@ -1184,7 +1184,7 @@ SCENARIO("DB-6 createRoom rejects NUL initial-state keys before local admission"
                             auto const next_before = runtime.database.next_stream_ordering;
                             auto const rooms_before = runtime.database.rooms.size();
                             REQUIRE(rooms_before == 1U);
-                            auto const events_before = runtime.database.rooms.front().events.size();
+                            auto const events_before = runtime.database.persistent_store.events.size();
                             {
                                 auto opened = merovingian::database::open_sqlite_persistent_store(path.string());
                                 REQUIRE(opened.ok);
@@ -1214,7 +1214,7 @@ SCENARIO("DB-6 createRoom rejects NUL initial-state keys before local admission"
                             CHECK(runtime.database.next_stream_ordering == next_before);
                             CHECK(runtime.database.rooms.size() == rooms_before);
                             REQUIRE_FALSE(runtime.database.rooms.empty());
-                            CHECK(runtime.database.rooms.front().events.size() == events_before);
+                            CHECK(runtime.database.persistent_store.events.size() == events_before);
                         }
                         auto reopened = merovingian::database::open_sqlite_persistent_store(path.string());
                         REQUIRE(reopened.ok);
@@ -1259,7 +1259,7 @@ SCENARIO("DB-6 send_event rejects NUL state keys before local stream allocation"
                         auto const next_before = runtime.database.next_stream_ordering;
                         auto const rooms_before = runtime.database.rooms.size();
                         REQUIRE(rooms_before == 1U);
-                        auto const events_before = runtime.database.rooms.front().events.size();
+                        auto const events_before = runtime.database.persistent_store.events.size();
                         {
                             auto opened = merovingian::database::open_sqlite_persistent_store(path.string());
                             REQUIRE(opened.ok);
@@ -1274,7 +1274,7 @@ SCENARIO("DB-6 send_event rejects NUL state keys before local stream allocation"
                         CHECK(runtime.database.next_stream_ordering == next_before);
                         CHECK(runtime.database.rooms.size() == rooms_before);
                         REQUIRE_FALSE(runtime.database.rooms.empty());
-                        CHECK(runtime.database.rooms.front().events.size() == events_before);
+                        CHECK(runtime.database.persistent_store.events.size() == events_before);
                     }
                     auto reopened = merovingian::database::open_sqlite_persistent_store(path.string());
                     REQUIRE(reopened.ok);

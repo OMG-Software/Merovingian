@@ -9,13 +9,16 @@
 #include "merovingian/federation/outbound_transaction.hpp"
 #include "merovingian/homeserver/runtime.hpp"
 #include "merovingian/rooms/room_version_policy.hpp"
+#include "merovingian/sync/bundled_aggregations.hpp"
 
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <initializer_list>
 #include <optional>
 #include <string>
 #include <string_view>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -200,6 +203,13 @@ auto federate_accepted_membership_event(HomeserverRuntime& runtime, std::string_
 // the result is false in that case.
 [[nodiscard]] auto apply_membership_to_roster(HomeserverRuntime& runtime, std::string_view room_id,
                                               std::string_view user_id, std::string_view membership) -> bool;
+
+// The users whose long-polling /sync a new event in `room_id` can change (ADR-0437): every user whose
+// membership of the room is `join` or `invite`, plus `also` (the sender and a user whose membership the
+// event changes, including one it removes). Each appears once. Remote users may be named; a waiter exists
+// only for a local one. Call with `runtime.mutex` held, so the set is the one the event was stored under.
+[[nodiscard]] auto sync_audience_of_room(database::PersistentStore const& store, std::string_view room_id,
+                                         std::initializer_list<std::string_view> also) -> std::vector<std::string>;
 
 // send_join against. When the client names via servers, only those, in request
 // order: room IDs "are not routable on their own" (appendices, Room IDs), so the
@@ -467,6 +477,15 @@ auto deliver_federation_push_notifications(HomeserverRuntime& runtime, federatio
 // consistent.
 [[nodiscard]] auto client_event_with_id(database::PersistentStore const& store, database::PersistentEvent const& event)
     -> canonicaljson::Value;
+
+// The one builder of `unsigned.m.relations` for a request (client-server-api.md, "Aggregations of
+// child events", ADR-0430): `sync::BundledAggregations` whose nested events (`latest_event`, the
+// `m.replace` event) are serialized by client_event_with_id. `enabled` false for a `/sync` section
+// that is not `limited`. `ignored_senders` and `visibility` must outlive the result.
+[[nodiscard]] auto make_bundled_aggregations(database::PersistentStore const& store,
+                                             sync::HistoryVisibility& visibility, std::string_view user_id,
+                                             std::unordered_set<std::string> const& ignored_senders,
+                                             bool enabled = true) -> sync::BundledAggregations;
 
 struct FetchRelationsRequest final
 {

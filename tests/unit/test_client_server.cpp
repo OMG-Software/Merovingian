@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
+#include "../support/cross_signing_fixture.hpp"
 #include "../support/in_memory_database_config.hpp"
 //
 // +-------------------------------------------------------------------------+
@@ -7448,13 +7449,10 @@ SCENARIO("E2EE cross-signing keys round-trip via /keys/device_signing/upload + /
 
         WHEN("the user uploads master_key, self_signing_key, and user_signing_key")
         {
+            auto const keys = make_cross_signing_set("@inviter:example.org");
             auto const upload = merovingian::homeserver::handle_client_server_request(
-                runtime,
-                {"POST", "/_matrix/client/v3/keys/device_signing/upload", token,
-                 R"({"auth":{"type":"m.login.password","user":"@inviter:example.org","password":"CorrectHorse7!"},)"
-                 R"("master_key":{"user_id":"@inviter:example.org","usage":["user"],"keys":{"ed25519:MASTER_KEY_ID":"MASTER_KEY_VALUE"}},)"
-                 R"("self_signing_key":{"user_id":"@inviter:example.org","usage":["self_signing"],"keys":{"ed25519:SSK_KEY_ID":"SSK_KEY_VALUE"}},)"
-                 R"("user_signing_key":{"user_id":"@inviter:example.org","usage":["user_signing"],"keys":{"ed25519:USK_KEY_ID":"USK_KEY_VALUE"}}})"});
+                runtime, {"POST", "/_matrix/client/v3/keys/device_signing/upload", token,
+                          cross_signing_upload_body(keys.members())});
             REQUIRE(upload.response.status == 200U);
 
             auto const query = merovingian::homeserver::handle_client_server_request(
@@ -7469,9 +7467,9 @@ SCENARIO("E2EE cross-signing keys round-trip via /keys/device_signing/upload + /
                 REQUIRE(body.find("master_keys") != std::string::npos);
                 REQUIRE(body.find("self_signing_keys") != std::string::npos);
                 REQUIRE(body.find("user_signing_keys") != std::string::npos);
-                REQUIRE(body.find("MASTER_KEY_VALUE") != std::string::npos);
-                REQUIRE(body.find("SSK_KEY_VALUE") != std::string::npos);
-                REQUIRE(body.find("USK_KEY_VALUE") != std::string::npos);
+                REQUIRE(body.find(keys.master.public_key) != std::string::npos);
+                REQUIRE(body.find(keys.self_signing.public_key) != std::string::npos);
+                REQUIRE(body.find(keys.user_signing.public_key) != std::string::npos);
             }
         }
     }
@@ -7558,17 +7556,18 @@ SCENARIO("End-to-end E2EE bootstrap: full Element Rust crypto order round-trips"
             REQUIRE(inviter_device_upload.response.status == 200U);
 
             // 2. cross-signing keys for inviter
+            auto const inviter_keys = make_cross_signing_set("@inviter:example.org");
             auto const inviter_cs_upload = merovingian::homeserver::handle_client_server_request(
-                runtime,
-                {"POST", "/_matrix/client/v3/keys/device_signing/upload", inviter_token,
-                 R"({"master_key":{"user_id":"@inviter:example.org","usage":["user"],"keys":{"ed25519:MASTER":"MASTER_VALUE"}},"self_signing_key":{"user_id":"@inviter:example.org","usage":["self_signing"],"keys":{"ed25519:SSK":"SSK_VALUE"}},"auth":{"type":"m.login.password","password":"CorrectHorse7!"}})"});
+                runtime, {"POST", "/_matrix/client/v3/keys/device_signing/upload", inviter_token,
+                          cross_signing_upload_body(inviter_keys.selected_members(true, true, false))});
             REQUIRE(inviter_cs_upload.response.status == 200U);
 
             // 3. cross-signing signatures for inviter (self-signing)
             auto const inviter_sigs = merovingian::homeserver::handle_client_server_request(
                 runtime,
                 {"POST", "/_matrix/client/v3/keys/signatures/upload", inviter_token,
-                 R"({"@inviter:example.org":{"ed25519:SSK":{"device_keys":{"INVITER_DEV":{"user_id":"@inviter:example.org","device_id":"INVITER_DEV","algorithms":["m.olm.v1.curve25519-aes-sha2"],"keys":{"ed25519:INVITER_DEV":"BBBB"}}}}}})"});
+                 R"({"@inviter:example.org":{"ed25519:)" + inviter_keys.self_signing.public_key +
+                     R"(":{"device_keys":{"INVITER_DEV":{"user_id":"@inviter:example.org","device_id":"INVITER_DEV","algorithms":["m.olm.v1.curve25519-aes-sha2"],"keys":{"ed25519:INVITER_DEV":"BBBB"}}}}}})"});
             REQUIRE(inviter_sigs.response.status == 200U);
 
             // 4. key backup version for inviter
@@ -7600,12 +7599,12 @@ SCENARIO("End-to-end E2EE bootstrap: full Element Rust crypto order round-trips"
                 // signature map.
                 REQUIRE(body.find("master_keys") != std::string::npos);
                 REQUIRE(body.find("self_signing_keys") != std::string::npos);
-                REQUIRE(body.find("MASTER_VALUE") != std::string::npos);
-                REQUIRE(body.find("SSK_VALUE") != std::string::npos);
+                REQUIRE(body.find(inviter_keys.master.public_key) != std::string::npos);
+                REQUIRE(body.find(inviter_keys.self_signing.public_key) != std::string::npos);
                 // The self-signing signature for the device's ed25519 key
                 // must be merged into the device_keys signature map under
                 // the SSK key id.
-                REQUIRE(body.find("\"ed25519:SSK\"") != std::string::npos);
+                REQUIRE(body.find("\"ed25519:" + inviter_keys.self_signing.public_key + "\"") != std::string::npos);
             }
         }
     }

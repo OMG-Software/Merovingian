@@ -31,9 +31,16 @@ See `docs/matrix-v1.19-spec/rooms/index.md` for the feature matrix.
 
 ## Encryption policy
 
-`encryption_policy.cpp` decides whether a new room is created encrypted
-(`room_creation_encryption_policy`, driven by the preset, DM flag and federation settings) and
-provides log-redaction helpers so encrypted payloads never reach the logs in plaintext
+`encryption_policy.cpp` decides whether a new room is created encrypted and whether a request
+for an unencrypted one is refused. `room_creation_encryption_policy` is the ONLY place that
+decides: it takes the preset, DM flag, whether the room can federate, the request and the five
+`security.encryption.*` settings (ADR-0445), and `create_room` must not re-derive any of it.
+`encryption_request_from_initial_state` reads the request from `initial_state`; the last
+`m.room.encryption` entry with an empty state key is the request, and anything but
+`m.megolm.v1.aes-sha2` in it is "unencrypted" (fail closed). `encryption_algorithm_is_valid` is the only place that names the valid algorithm; the client
+state PUT of `m.room.encryption` (`homeserver/client_server.cpp`) refuses a missing or other `algorithm`
+with 400 `M_BAD_JSON` through it (ADR-0448). Room-creation settings: joins and federation
+ingest are never checked, and neither does the PUT check apply to federated events. It also provides log-redaction helpers so encrypted payloads never reach the logs in plaintext
 (`encrypted_event_payload_is_loggable`, `make_encrypted_event_log_summary`).
 
 The server does **not** reject plaintext events in a room that has `m.room.encryption` state;

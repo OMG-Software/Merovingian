@@ -106,8 +106,12 @@ namespace
         }
 
         auto const limit = req.limit > 0U ? req.limit : 20U;
-        auto const drained =
+        // next_batch is the stream id of the last message sent and acknowledges
+        // every row at or below it, so the page is taken from the lowest ids
+        // whatever order the store returned them in.
+        auto drained =
             database::drain_to_device_messages(store, user, device_id, since_stream_id, current_sync_stream_id);
+        std::ranges::stable_sort(drained, {}, &database::PersistentToDeviceMessage::stream_id);
 
         auto resp = ExtToDeviceResponse{};
         auto count = std::uint64_t{0U};

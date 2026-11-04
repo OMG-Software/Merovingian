@@ -5,12 +5,14 @@
 #include "merovingian/database/persistent_event.hpp"
 
 #include <algorithm>
+#include <array>
 #include <compare>
 #include <cstddef>
 #include <cstdint>
 #include <functional>
 #include <optional>
 #include <ranges>
+#include <span>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -32,17 +34,39 @@ enum class TimeDirection : unsigned char
     backwards,
 };
 
-// The in-memory mirror of the `events` table (ADR-0215). It owns the rows and keeps three indexes
+// The `rel_type` of an event's `content."m.relates_to"` that the server aggregates
+// (client-server-api.md, "Aggregations of child events"). Any other `rel_type`, `m.annotation`
+// included ("not aggregated by the server"), is not indexed at all.
+enum class RelationKind : unsigned char
+{
+    replace,
+    thread,
+    reference,
+};
+
+// How many kinds RelationKind has: each kind has its own list under a target.
+inline constexpr std::size_t relation_kind_count{3U};
+
+// The in-memory mirror of the `events` table (ADR-0215). It owns the rows and keeps four indexes
 // over them, so every writer keeps them consistent by construction:
 //
 //   - by event ID: find() is a hash lookup, not a scan of every stored event;
 //   - by stream order: in_stream_order() visits rows by ascending stream_ordering (rows with equal
 //     stream_ordering in the order they were added), whatever order they arrived in;
+//   - by room and stream order (ADR-0435): room_in_stream_order() visits one room's rows, of every
+//     status, in the order in_stream_order() would visit them, so a per-room reader never walks the
+//     rows of the other rooms;
 //   - by room and time (ADR-0300): nearest_by_time() seeks the row nearest an `origin_server_ts` in
 //     one room by binary search. The key is (origin_server_ts, depth, stream_ordering). A row is in
 //     this index only while it is a timeline event: its status is not `outlier`, `rejected` or
 //     `soft_failed`, and its JSON carries an integer top-level `origin_server_ts`. modify() moves a
-//     row in or out when a mutation changes that.
+//     row in or out when a mutation changes that;
+//   - by relation target (ADR-0430): a row whose JSON has `content."m.relates_to"` with a string
+//     `event_id` and a `rel_type` the server aggregates is listed under that `event_id` and
+//     `RelationKind`, whatever its status, so for_each_relation_child_newest_first() visits the
+//     children of one kind of one event without a scan of the table, and one kind's children can
+//     never use up the window of another's. modify() moves a row when a mutation changes its relation, which
+//     is how a redaction (the redacted JSON has no `content."m.relates_to"`) drops a child.
 //
 // Iterating the table itself visits rows in the order they were added, which is NOT stream order:
 // hydration selects with no ORDER BY, PostgreSQL moves a row whose status is updated, and stream
@@ -108,6 +132,20 @@ public:
     [[nodiscard]] auto in_stream_order() const
     {
         return std::views::transform(stream_order_, [this](std::size_t position) -> PersistentEvent const& {
+            return rows_[position];
+        });
+    }
+
+    // The rows of room `room_id` by ascending stream_ordering, rows with equal stream_ordering in the
+    // order they were added: exactly the rows in_stream_order() visits whose room_id is `room_id`, of
+    // every status (a caller applies its own status rules), at a cost of the room's rows alone
+    // (ADR-0435). std::views::reverse gives newest first. Valid until the table is next changed.
+    [[nodiscard]] auto room_in_stream_order(std::string_view room_id) const
+    {
+        auto const room = by_room_stream_.find(room_id);
+        auto const positions =
+            room == by_room_stream_.end() ? std::span<std::size_t const>{} : std::span<std::size_t const>{room->second};
+        return std::views::transform(positions, [this](std::size_t position) -> PersistentEvent const& {
             return rows_[position];
         });
     }
@@ -207,6 +245,46 @@ public:
         return walk;
     }
 
+    // How far for_each_relation_child_newest_first() got.
+    struct RelationWalk final
+    {
+        std::size_t examined{0U};
+        // True when the walk stopped at `max_examined` with children of the target left.
+        bool truncated{false};
+    };
+    // How many rows are listed as children of `target_event_id` (all kinds, whatever their status or room).
+    [[nodiscard]] auto relation_child_count(std::string_view target_event_id) const -> std::size_t;
+    // The same for one kind.
+    [[nodiscard]] auto relation_child_count(std::string_view target_event_id, RelationKind kind) const -> std::size_t;
+    // Offers `visit` the rows of kind `kind` that relate to `target_event_id`
+    // (`content."m.relates_to"."event_id"`), the most recently added first, at most `max_examined` of
+    // them, so the cost is bounded by the cap however many rows the table holds, and each kind has a
+    // window of its own (ADR-0430). The rows may be in any room and any status: the relation names
+    // an event ID, which is client-chosen text. `visit` is called as visit(PersistentEvent const&)
+    // and must not change the table. Valid until the table is next changed.
+    template <typename Visit>
+    auto for_each_relation_child_newest_first(std::string_view target_event_id, RelationKind kind, Visit visit,
+                                              std::size_t max_examined) const -> RelationWalk
+    {
+        auto const target = relation_children_.find(target_event_id);
+        if (target == relation_children_.end())
+        {
+            return {};
+        }
+        auto walk = RelationWalk{};
+        for (auto const position : target->second[static_cast<std::size_t>(kind)] | std::views::reverse)
+        {
+            if (walk.examined == max_examined)
+            {
+                walk.truncated = true;
+                break;
+            }
+            ++walk.examined;
+            std::invoke(visit, rows_[position]);
+        }
+        return walk;
+    }
+
     // Adds `event` unless a row with its event ID is already held; returns whether it was added.
     // Costs a hash insert plus, for an event older than the newest held, a shift of the stream-order
     // positions after it (8 bytes each); the rows themselves never move.
@@ -250,13 +328,31 @@ public:
         // change, so it is taken before and after.
         auto room_id = target.room_id;
         auto const time_before = time_entry_for(target, position);
+        // The relation key follows the row's JSON, which a mutation (a redaction) may rewrite.
+        auto const relation_before = relation_key_for(target);
         std::invoke(mutation, target);
         target.event_id = std::move(event_id);
         target.stream_ordering = stream_ordering;
+        if (target.room_id != room_id)
+        {
+            unindex_stream(room_id, position, stream_ordering);
+            index_stream(position);
+        }
         if (target.room_id != room_id || time_entry_for(target, position) != time_before)
         {
             unindex_time(room_id, time_before);
             index_time(position);
+        }
+        if (auto const relation_after = relation_key_for(target); relation_after != relation_before)
+        {
+            if (relation_before.has_value())
+            {
+                unindex_relation(position, *relation_before);
+            }
+            if (relation_after.has_value())
+            {
+                index_relation(position, *relation_after);
+            }
         }
     }
 
@@ -286,6 +382,21 @@ private:
         [[nodiscard]] auto operator<=>(TimeEntry const&) const noexcept = default;
     };
 
+    // The rows of one target, as positions in rows_, one list per RelationKind, in the order listed.
+    using RelationLists = std::array<std::vector<std::size_t>, relation_kind_count>;
+    // The event a row relates to and how, from its JSON; nullopt for a row with no usable relation.
+    struct RelationKey final
+    {
+        std::string target{};
+        RelationKind kind{RelationKind::replace};
+        [[nodiscard]] auto operator==(RelationKey const&) const noexcept -> bool = default;
+    };
+    [[nodiscard]] static auto relation_key_for(PersistentEvent const& row) -> std::optional<RelationKey>;
+    // Lists the row at `position` under `key`'s target.
+    auto index_relation(std::size_t position, RelationKey const& key) -> void;
+    // Removes the row at `position` from `key`'s target.
+    auto unindex_relation(std::size_t position, RelationKey const& key) -> void;
+
     // The index entry `row`, at `position`, would have, or nullopt when it is not a timeline event.
     [[nodiscard]] static auto time_entry_for(PersistentEvent const& row, std::size_t position)
         -> std::optional<TimeEntry>;
@@ -293,6 +404,10 @@ private:
     auto index_time(std::size_t position) -> void;
     // Removes `entry` (what time_entry_for gave the row before it changed) from room `room_id`'s part.
     auto unindex_time(std::string_view room_id, std::optional<TimeEntry> const& entry) -> void;
+    // Adds the row at `position` to its room's part of the room-and-stream index.
+    auto index_stream(std::size_t position) -> void;
+    // Removes the row at `position`, whose stream_ordering is `stream_ordering`, from room `room_id`'s part.
+    auto unindex_stream(std::string_view room_id, std::size_t position, std::uint64_t stream_ordering) -> void;
     auto erase_marked(std::vector<bool> const& removed) -> std::size_t;
 
     std::vector<PersistentEvent> rows_{};
@@ -300,8 +415,12 @@ private:
     std::unordered_map<std::string, std::size_t, IdHash, std::equal_to<>> by_id_{};
     // Positions in rows_, by ascending (stream_ordering, position).
     std::vector<std::size_t> stream_order_{};
+    // room_id -> positions in rows_ of that room's rows (every status), by ascending (stream_ordering, position).
+    std::unordered_map<std::string, std::vector<std::size_t>, IdHash, std::equal_to<>> by_room_stream_{};
     // room_id -> that room's timeline events by ascending TimeEntry.
     std::unordered_map<std::string, std::vector<TimeEntry>, IdHash, std::equal_to<>> by_room_time_{};
+    // target event_id -> the rows relating to it, in the order they were listed.
+    std::unordered_map<std::string, RelationLists, IdHash, std::equal_to<>> relation_children_{};
 };
 
 } // namespace merovingian::database

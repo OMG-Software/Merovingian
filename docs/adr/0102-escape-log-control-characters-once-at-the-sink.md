@@ -3,7 +3,7 @@
 * Status: accepted
 * Date: 2026-10-04
 
-Technical Story: AUTH-9 in [security-audit-report-2026-09-29.md](../security-audit-report-2026-09-29.md)
+Technical Story: AUTH-9 in the 2026-09-29 security audit report (removed from the repository in 0.12.72)
 
 ## Context and Problem Statement
 

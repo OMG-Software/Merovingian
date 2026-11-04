@@ -47,5 +47,5 @@ chance of dropping the frame the other side is currently waiting on.
 
 ## Links
 
-* Security audit finding CRY-2 in `docs/security-audit-report-2026-09-29.md`.
+* Security audit finding CRY-2 in `docs/security-audit-report-2026-09-29.md` (removed from the repository in 0.12.72).
 * Supersedes the queue half of [ADR-0027](0027-bound-the-connection-queue-but-not-the-ipc-queue.md).

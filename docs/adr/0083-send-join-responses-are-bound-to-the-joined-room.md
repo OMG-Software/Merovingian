@@ -4,7 +4,7 @@
 * Date: 2026-09-29
 
 Technical Story: finding FED-1 (critical) in
-`docs/security-audit-report-2026-09-29.md`.
+`docs/security-audit-report-2026-09-29.md` (removed from the repository in 0.12.72).
 
 ## Context and Problem Statement
 

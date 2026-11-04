@@ -32,6 +32,7 @@
 #include <merovingian/database/schema.hpp>
 #include <merovingian/events/event_id.hpp>
 #include <merovingian/events/event_signer.hpp>
+#include <merovingian/federation/remote_key_cache.hpp>
 #include <merovingian/homeserver/local_http_router.hpp>
 #include <merovingian/homeserver/room_service.hpp>
 #include <merovingian/homeserver/runtime.hpp>
@@ -234,6 +235,118 @@ SCENARIO("PostgreSQL user profiles survive an open/close/reopen cycle", "[databa
                 REQUIRE(found != reopened.store.profiles.end());
                 REQUIRE(found->displayname == "Restart Profile");
                 REQUIRE(found->avatar_url == "mxc://example.org/restart");
+            }
+        }
+    }
+}
+
+// HF-B S1: stream_id is a TEXT column, so ORDER BY puts "10" before "9" and
+// "100" before "99". The queue must come back in numeric order after a restart.
+SCENARIO("PostgreSQL to-device messages reload in numeric stream-id order across a digit boundary",
+         "[database][postgresql][integration][restart][to-device-order]")
+{
+    GIVEN("a live PostgreSQL store holding queued to-device messages whose ids cross a power of ten")
+    {
+        auto const uri = postgresql_uri_from_environment();
+        if (uri.empty())
+        {
+            SUCCEED("skipped: MEROVINGIAN_TEST_POSTGRESQL_URI is not set");
+            return;
+        }
+        auto opened = merovingian::database::open_postgresql_persistent_store(uri);
+        REQUIRE(opened.ok);
+        auto const recipient = "@pg-todevice-" + unique_test_suffix() + ":example.org";
+        // Skip ahead to just below the next power of ten (ids are only ever skipped, never reused).
+        auto boundary = std::uint64_t{10U};
+        while (boundary < opened.store.next_sync_stream_id + 4U)
+        {
+            boundary *= 10U;
+        }
+        opened.store.next_sync_stream_id = boundary - 3U;
+        for (auto ordinal = 0; ordinal < 4; ++ordinal)
+        {
+            REQUIRE(merovingian::database::enqueue_to_device_message(
+                opened.store, {0U, "@alice:example.org", recipient, "DEVICE", "m.test.message", "{}"}));
+        }
+
+        WHEN("the store is closed and opened again")
+        {
+            opened = {};
+            auto reopened = merovingian::database::open_postgresql_persistent_store(uri);
+
+            THEN("the whole queue is in numeric stream-id order and the four rows are in sequence")
+            {
+                REQUIRE(reopened.ok);
+                REQUIRE(std::ranges::is_sorted(reopened.store.to_device_messages, {},
+                                               &merovingian::database::PersistentToDeviceMessage::stream_id));
+                auto ids = std::vector<std::uint64_t>{};
+                for (auto const& row : reopened.store.to_device_messages)
+                {
+                    if (row.target_user_id == recipient)
+                    {
+                        ids.push_back(row.stream_id);
+                    }
+                }
+                REQUIRE(ids == std::vector<std::uint64_t>{boundary - 2U, boundary - 1U, boundary, boundary + 1U});
+            }
+        }
+    }
+}
+
+// HF-B F1: a key a remote lists under old_verify_keys is stored as a retired row, and stays retired
+// through a restart, a re-listing under verify_keys and a later expiry.
+SCENARIO("PostgreSQL retired remote signing keys survive a reload and stay retired",
+         "[database][postgresql][integration][restart][old-keys]")
+{
+    GIVEN("a live PostgreSQL store that cached a response listing one current and one retired key")
+    {
+        auto const uri = postgresql_uri_from_environment();
+        if (uri.empty())
+        {
+            SUCCEED("skipped: MEROVINGIAN_TEST_POSTGRESQL_URI is not set");
+            return;
+        }
+        auto opened = merovingian::database::open_postgresql_persistent_store(uri);
+        REQUIRE(opened.ok);
+        auto const server = "pg-retired-" + unique_test_suffix() + ".example.org";
+        auto const key_a = std::string{"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"};
+        auto const key_b = std::string{"BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB"};
+        constexpr auto fetched_at = std::uint64_t{1'800'000'000'000U};
+        auto response = merovingian::federation::RemoteKeyResponse{};
+        response.server_name = server;
+        response.valid_until_ts = fetched_at + 1'000'000U;
+        response.verify_keys = {
+            {"ed25519:cur", key_a}
+        };
+        response.old_verify_keys = {
+            {"ed25519:old", key_b, 5000U}
+        };
+        REQUIRE(merovingian::federation::cache_remote_server_keys(opened.store, response, fetched_at));
+
+        WHEN("the old key is listed again with a later expiry and under verify_keys, and the store is reopened")
+        {
+            response.old_verify_keys = {
+                {"ed25519:old", key_b, 9000U}
+            };
+            REQUIRE(merovingian::federation::cache_remote_server_keys(opened.store, response, fetched_at));
+            response.verify_keys.push_back({"ed25519:old", key_b});
+            response.old_verify_keys.clear();
+            REQUIRE(merovingian::federation::cache_remote_server_keys(opened.store, response, fetched_at));
+            opened = {};
+            auto reopened = merovingian::database::open_postgresql_persistent_store(uri);
+            REQUIRE(reopened.ok);
+
+            THEN("the old key is still retired with the earliest expiry and the current key is not")
+            {
+                auto const old_row =
+                    merovingian::database::find_server_signing_key(reopened.store, server, "ed25519:old");
+                REQUIRE(old_row.has_value());
+                REQUIRE(old_row->expired_ts == 5000U);
+                REQUIRE(old_row->valid_until_ts == 5000U);
+                auto const current =
+                    merovingian::database::find_server_signing_key(reopened.store, server, "ed25519:cur");
+                REQUIRE(current.has_value());
+                REQUIRE(current->expired_ts == 0U);
             }
         }
     }
@@ -1718,7 +1831,6 @@ private:
     REQUIRE(db::update_forward_extremities(store, room_id, room_id + ":member", {}, true));
     runtime.database.rooms.push_back({
         room_id, local_user, {local_user, rr::remote_member},
-          {},
           false
     });
 
@@ -2066,6 +2178,362 @@ SCENARIO("PostgreSQL hydration finds events by ID and walks them in stream order
                 REQUIRE(events.find(middle)->json == R"({"type":"m.room.message","content":{}})");
                 REQUIRE(events.find_in_room(room_id, late) != events.end());
                 REQUIRE(stream_order_of(events, ids) == ids);
+            }
+        }
+    }
+}
+
+SCENARIO("PostgreSQL store_notifications writes a batch in one commit and upserts over reopen",
+         "[database][postgresql][integration][restart][batch-write]")
+{
+    GIVEN("a live PostgreSQL store")
+    {
+        auto const uri = postgresql_uri_from_environment();
+        if (uri.empty())
+        {
+            SUCCEED("skipped: MEROVINGIAN_TEST_POSTGRESQL_URI is not set");
+            return;
+        }
+        auto opened = merovingian::database::open_postgresql_persistent_store(uri);
+        REQUIRE(opened.ok);
+        auto const suffix = unique_test_suffix();
+        auto const user_id = "@batch-notify-" + suffix + ":example.org";
+        auto const room_id = "!batch-notify-" + suffix + ":example.org";
+        auto const event_id = [&suffix](std::string_view tag) {
+            return "$batch-notify-" + std::string{tag} + "-" + suffix + ":example.org";
+        };
+        auto const batch = std::vector<merovingian::database::PersistentNotification>{
+            {user_id, room_id, event_id("a"), 11U, 1100U, R"(["notify"])",                           "tag-a", false},
+            {user_id, room_id, event_id("b"), 12U, 1200U, R"(["notify",{"set_tweak":"highlight"}])", "tag-b", true },
+            {user_id, room_id, event_id("c"), 13U, 1300U, R"(["dont_notify"])",                      "",      false},
+        };
+        auto const check_rows = [&user_id](merovingian::database::PersistentStore const& store,
+                                           std::vector<merovingian::database::PersistentNotification> const& expected) {
+            auto const rows = merovingian::database::list_notifications_for_user(store, user_id);
+            REQUIRE(rows.size() == expected.size());
+            for (auto const& want : expected)
+            {
+                auto const found =
+                    std::ranges::find(rows, want.event_id, &merovingian::database::PersistentNotification::event_id);
+                REQUIRE(found != rows.end());
+                REQUIRE(found->room_id == want.room_id);
+                REQUIRE(found->stream_ordering == want.stream_ordering);
+                REQUIRE(found->ts == want.ts);
+                REQUIRE(found->actions == want.actions);
+                REQUIRE(found->profile_tag == want.profile_tag);
+                REQUIRE(found->highlight == want.highlight);
+            }
+        };
+
+        WHEN("three notifications are stored in one call and the store is reopened")
+        {
+            auto const commits_before = merovingian::database::committed_transaction_count(opened.store);
+            auto const stored = merovingian::database::store_notifications(opened.store, batch);
+            auto const commits = merovingian::database::committed_transaction_count(opened.store) - commits_before;
+            opened = {};
+            auto reopened = merovingian::database::open_postgresql_persistent_store(uri);
+            REQUIRE(reopened.ok);
+
+            THEN("the call cost one commit and every row came back from the database with its fields")
+            {
+                REQUIRE(stored);
+                REQUIRE(commits == 1U);
+                check_rows(reopened.store, batch);
+            }
+        }
+
+        WHEN("the same keys are written again with changed fields and the store is reopened")
+        {
+            REQUIRE(merovingian::database::store_notifications(opened.store, batch));
+            auto updated = batch;
+            updated[0].stream_ordering = 21U;
+            updated[0].actions = R"(["dont_notify"])";
+            updated[1].highlight = false;
+            updated[1].ts = 2200U;
+            updated[2].profile_tag = "changed";
+            REQUIRE(merovingian::database::store_notifications(opened.store, updated));
+            opened = {};
+            auto reopened = merovingian::database::open_postgresql_persistent_store(uri);
+            REQUIRE(reopened.ok);
+
+            THEN("the update took and no duplicate appeared")
+            {
+                check_rows(reopened.store, updated);
+            }
+        }
+
+        WHEN("a batch pushes the user past the per-user cap and the store is reopened")
+        {
+            REQUIRE(merovingian::database::store_notifications(opened.store, batch, 2U));
+            opened = {};
+            auto reopened = merovingian::database::open_postgresql_persistent_store(uri);
+            REQUIRE(reopened.ok);
+            auto const rows = merovingian::database::list_notifications_for_user(reopened.store, user_id);
+
+            THEN("the oldest row was pruned in the database and the newest two remain")
+            {
+                REQUIRE(rows.size() == 2U);
+                REQUIRE(std::ranges::none_of(rows, [&](merovingian::database::PersistentNotification const& row) {
+                    return row.event_id == event_id("a");
+                }));
+            }
+        }
+    }
+}
+
+SCENARIO("PostgreSQL store_federation_transactions writes a batch in one commit and upserts over reopen",
+         "[database][postgresql][integration][restart][batch-write]")
+{
+    GIVEN("a live PostgreSQL store")
+    {
+        auto const uri = postgresql_uri_from_environment();
+        if (uri.empty())
+        {
+            SUCCEED("skipped: MEROVINGIAN_TEST_POSTGRESQL_URI is not set");
+            return;
+        }
+        auto opened = merovingian::database::open_postgresql_persistent_store(uri);
+        REQUIRE(opened.ok);
+        auto const suffix = unique_test_suffix();
+        auto const make_row = [&suffix](std::string_view tag, std::uint32_t retries, std::uint64_t next_retry) {
+            auto row = merovingian::database::PersistentFederationTransaction{};
+            row.transaction_id = "batch-txn-" + std::string{tag} + "-" + suffix;
+            row.server_name = std::string{tag} + "-" + suffix + ".example.org";
+            row.method = "PUT";
+            row.target = "/_matrix/federation/v1/send/" + row.transaction_id;
+            row.origin = "origin.example.org";
+            row.origin_server_ts = "1700000000" + std::to_string(retries);
+            row.body = R"({"pdus":[],"tag":")" + std::string{tag} + R"("})";
+            row.retry_count = retries;
+            row.next_retry_ts = next_retry;
+            return row;
+        };
+        auto const batch = std::vector<merovingian::database::PersistentFederationTransaction>{
+            make_row("a", 0U, 0U), make_row("b", 1U, 5000U), make_row("c", 2U, 9000U)};
+        auto const check_rows =
+            [](merovingian::database::PersistentStore const& store,
+               std::vector<merovingian::database::PersistentFederationTransaction> const& expected) {
+                for (auto const& want : expected)
+                {
+                    REQUIRE(std::ranges::count(
+                                store.federation_transactions, want.transaction_id,
+                                &merovingian::database::PersistentFederationTransaction::transaction_id) == 1);
+                    auto const found =
+                        std::ranges::find(store.federation_transactions, want.transaction_id,
+                                          &merovingian::database::PersistentFederationTransaction::transaction_id);
+                    REQUIRE(found->server_name == want.server_name);
+                    REQUIRE(found->method == want.method);
+                    REQUIRE(found->target == want.target);
+                    REQUIRE(found->origin == want.origin);
+                    REQUIRE(found->origin_server_ts == want.origin_server_ts);
+                    REQUIRE(found->body == want.body);
+                    REQUIRE(found->retry_count == want.retry_count);
+                    REQUIRE(found->next_retry_ts == want.next_retry_ts);
+                }
+            };
+
+        WHEN("three transactions are stored in one call and the store is reopened")
+        {
+            auto const commits_before = merovingian::database::committed_transaction_count(opened.store);
+            auto const stored = merovingian::database::store_federation_transactions(opened.store, batch);
+            auto const commits = merovingian::database::committed_transaction_count(opened.store) - commits_before;
+            opened = {};
+            auto reopened = merovingian::database::open_postgresql_persistent_store(uri);
+            REQUIRE(reopened.ok);
+
+            THEN("the call cost one commit and every row came back from the database with its fields")
+            {
+                REQUIRE(stored);
+                REQUIRE(commits == 1U);
+                check_rows(reopened.store, batch);
+            }
+        }
+
+        WHEN("the same transaction ids are written again with changed fields and the store is reopened")
+        {
+            REQUIRE(merovingian::database::store_federation_transactions(opened.store, batch));
+            auto updated = batch;
+            updated[0].retry_count = 7U;
+            updated[0].next_retry_ts = 77000U;
+            updated[1].body = R"({"pdus":[],"tag":"changed"})";
+            updated[2].target = "/_matrix/federation/v1/send/changed-" + suffix;
+            REQUIRE(merovingian::database::store_federation_transactions(opened.store, updated));
+            opened = {};
+            auto reopened = merovingian::database::open_postgresql_persistent_store(uri);
+            REQUIRE(reopened.ok);
+
+            THEN("the update took and no duplicate appeared")
+            {
+                check_rows(reopened.store, updated);
+            }
+        }
+    }
+}
+
+SCENARIO("PostgreSQL store_cross_signing_keys writes a batch in one commit and upserts over reopen",
+         "[database][postgresql][integration][restart][batch-write]")
+{
+    GIVEN("a live PostgreSQL store")
+    {
+        auto const uri = postgresql_uri_from_environment();
+        if (uri.empty())
+        {
+            SUCCEED("skipped: MEROVINGIAN_TEST_POSTGRESQL_URI is not set");
+            return;
+        }
+        auto opened = merovingian::database::open_postgresql_persistent_store(uri);
+        REQUIRE(opened.ok);
+        auto const user_id = "@batch-xsign-" + unique_test_suffix() + ":example.org";
+        auto const batch = std::vector<merovingian::database::PersistentCrossSigningKey>{
+            {user_id, "master",       R"({"usage":["master"],"keys":{"ed25519:m":"MASTER"}})"    },
+            {user_id, "self_signing", R"({"usage":["self_signing"],"keys":{"ed25519:s":"SELF"}})"},
+            {user_id, "user_signing", R"({"usage":["user_signing"],"keys":{"ed25519:u":"USER"}})"},
+        };
+        auto const check_rows =
+            [&user_id](merovingian::database::PersistentStore const& store,
+                       std::vector<merovingian::database::PersistentCrossSigningKey> const& expected) {
+                REQUIRE(std::ranges::count(store.cross_signing_keys, user_id,
+                                           &merovingian::database::PersistentCrossSigningKey::user_id) == 3);
+                for (auto const& want : expected)
+                {
+                    auto const found = std::ranges::find_if(
+                        store.cross_signing_keys, [&want](merovingian::database::PersistentCrossSigningKey const& row) {
+                            return row.user_id == want.user_id && row.key_type == want.key_type;
+                        });
+                    REQUIRE(found != store.cross_signing_keys.end());
+                    REQUIRE(found->json == want.json);
+                }
+            };
+
+        WHEN("three keys are stored in one call and the store is reopened")
+        {
+            auto const commits_before = merovingian::database::committed_transaction_count(opened.store);
+            auto const stored = merovingian::database::store_cross_signing_keys(opened.store, batch);
+            auto const commits = merovingian::database::committed_transaction_count(opened.store) - commits_before;
+            opened = {};
+            auto reopened = merovingian::database::open_postgresql_persistent_store(uri);
+            REQUIRE(reopened.ok);
+
+            THEN("the call cost one commit and every key came back from the database with its json")
+            {
+                REQUIRE(stored);
+                REQUIRE(commits == 1U);
+                check_rows(reopened.store, batch);
+            }
+        }
+
+        WHEN("the same keys are written again with changed json and the store is reopened")
+        {
+            REQUIRE(merovingian::database::store_cross_signing_keys(opened.store, batch));
+            auto updated = batch;
+            updated[0].json = R"({"usage":["master"],"keys":{"ed25519:m":"MASTER2"}})";
+            updated[2].json = R"({"usage":["user_signing"],"keys":{"ed25519:u":"USER2"}})";
+            REQUIRE(merovingian::database::store_cross_signing_keys(opened.store, updated));
+            opened = {};
+            auto reopened = merovingian::database::open_postgresql_persistent_store(uri);
+            REQUIRE(reopened.ok);
+
+            THEN("the update took and no duplicate appeared")
+            {
+                check_rows(reopened.store, updated);
+            }
+        }
+    }
+}
+
+SCENARIO("PostgreSQL store_key_backup_sessions writes a batch in one commit and upserts over reopen",
+         "[database][postgresql][integration][restart][batch-write]")
+{
+    GIVEN("a live PostgreSQL store holding a key backup version")
+    {
+        auto const uri = postgresql_uri_from_environment();
+        if (uri.empty())
+        {
+            SUCCEED("skipped: MEROVINGIAN_TEST_POSTGRESQL_URI is not set");
+            return;
+        }
+        auto opened = merovingian::database::open_postgresql_persistent_store(uri);
+        REQUIRE(opened.ok);
+        auto const suffix = unique_test_suffix();
+        auto const user_id = "@batch-backup-" + suffix + ":example.org";
+        auto const room_id = "!batch-backup-" + suffix + ":example.org";
+        auto const version = std::string{"1"};
+        REQUIRE(merovingian::database::store_key_backup_version(
+            opened.store, {user_id, version, R"({"algorithm":"m.megolm_backup.v1.curve25519-aes-sha2"})"}));
+        auto const batch = std::vector<merovingian::database::PersistentKeyBackupSession>{
+            {user_id, version, room_id, "session-a", R"({"first_message_index":0,"session_data":"A"})"},
+            {user_id, version, room_id, "session-b", R"({"first_message_index":1,"session_data":"B"})"},
+            {user_id, version, room_id, "session-c", R"({"first_message_index":2,"session_data":"C"})"},
+        };
+        auto const rows_for_user = [&user_id](merovingian::database::PersistentStore const& store) {
+            return std::ranges::count(store.key_backup_sessions, user_id,
+                                      &merovingian::database::PersistentKeyBackupSession::user_id);
+        };
+        auto const check_rows = [&rows_for_user](
+                                    merovingian::database::PersistentStore const& store,
+                                    std::vector<merovingian::database::PersistentKeyBackupSession> const& expected) {
+            REQUIRE(rows_for_user(store) == 3);
+            for (auto const& want : expected)
+            {
+                auto const found = std::ranges::find_if(
+                    store.key_backup_sessions, [&want](merovingian::database::PersistentKeyBackupSession const& row) {
+                        return row.user_id == want.user_id && row.version == want.version &&
+                               row.room_id == want.room_id && row.session_id == want.session_id;
+                    });
+                REQUIRE(found != store.key_backup_sessions.end());
+                REQUIRE(found->json == want.json);
+            }
+        };
+
+        WHEN("three sessions are stored in one call and the store is reopened")
+        {
+            auto const commits_before = merovingian::database::committed_transaction_count(opened.store);
+            auto const stored = merovingian::database::store_key_backup_sessions(opened.store, batch);
+            auto const commits = merovingian::database::committed_transaction_count(opened.store) - commits_before;
+            opened = {};
+            auto reopened = merovingian::database::open_postgresql_persistent_store(uri);
+            REQUIRE(reopened.ok);
+
+            THEN("the call cost one commit and every session came back from the database with its json")
+            {
+                REQUIRE(stored);
+                REQUIRE(commits == 1U);
+                check_rows(reopened.store, batch);
+            }
+        }
+
+        WHEN("the same sessions are written again with changed json and the store is reopened")
+        {
+            REQUIRE(merovingian::database::store_key_backup_sessions(opened.store, batch));
+            auto updated = batch;
+            updated[0].json = R"({"first_message_index":0,"session_data":"A2"})";
+            updated[1].json = R"({"first_message_index":1,"session_data":"B2"})";
+            REQUIRE(merovingian::database::store_key_backup_sessions(opened.store, updated));
+            opened = {};
+            auto reopened = merovingian::database::open_postgresql_persistent_store(uri);
+            REQUIRE(reopened.ok);
+
+            THEN("the update took and no duplicate appeared")
+            {
+                check_rows(reopened.store, updated);
+            }
+        }
+
+        WHEN("the last session of a batch names a backup version that does not exist")
+        {
+            auto bad = batch;
+            bad[2].version = "no-such-version";
+            auto const stored = merovingian::database::store_key_backup_sessions(opened.store, bad);
+            auto const rows_in_memory = rows_for_user(opened.store);
+            opened = {};
+            auto reopened = merovingian::database::open_postgresql_persistent_store(uri);
+            REQUIRE(reopened.ok);
+
+            THEN("the foreign key rejects the commit and none of the batch is in memory or the database")
+            {
+                REQUIRE_FALSE(stored);
+                REQUIRE(rows_in_memory == 0);
+                REQUIRE(rows_for_user(reopened.store) == 0);
             }
         }
     }

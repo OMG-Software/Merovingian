@@ -61,4 +61,4 @@ failed-sync fallback, undoing the intended malformed-first-PDU boundary.
 
 * [Architecture](../architecture.md)
 * [Matrix v1.19 Server-Server API](../matrix-v1.19-spec/server-server-api.md)
-* [29 September 2026 security audit](../security-audit-report-2026-09-29.md)
+* 29 September 2026 security audit (2026-09-29 security audit report, removed from the repository in 0.12.72)

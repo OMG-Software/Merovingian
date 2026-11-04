@@ -764,11 +764,14 @@ namespace
                                                              column_text(row, 5)});
                          }) &&
                load_rows(connection,
-                         "SELECT server_name, key_id, public_key, valid_until_ts, secret_key FROM server_signing_keys",
+                         "SELECT server_name, key_id, public_key, valid_until_ts, secret_key, expired_ts FROM "
+                         "server_signing_keys",
                          [&store](sqlite3_stmt& row) {
-                             store.server_signing_keys.push_back({column_text(row, 0), column_text(row, 1),
-                                                                  column_text(row, 2), parse_u64(column_text(row, 3)),
-                                                                  column_text(row, 4)});
+                             auto key = PersistentServerSigningKey{column_text(row, 0), column_text(row, 1),
+                                                                   column_text(row, 2), parse_u64(column_text(row, 3)),
+                                                                   column_text(row, 4)};
+                             key.expired_ts = parse_u64(column_text(row, 5));
+                             store.server_signing_keys.push_back(std::move(key));
                          }) &&
                load_rows(connection,
                          "SELECT server_name, state, retry_after_ts, last_success_ts, consecutive_failures FROM "
@@ -1660,10 +1663,15 @@ auto open_sqlite_persistent_store(std::string const& path, TableLoadProfile prof
     }
     std::ignore = store.events.insert_all(std::move(hydrated_events));
     sort_appservice_outbox(store);
+    sort_to_device_messages(store);
     reconstruct_event_relations(store);
     rebuild_state_transition_index(store);
     rebuild_state_index(store);
+    rebuild_membership_index(store);
     rebuild_client_txn_index(store);
+    rebuild_account_data_index(store);
+    rebuild_notification_index(store);
+    rebuild_federation_transaction_index(store);
     rebuild_redaction_state(store);
     rebuild_deferred_pdu_awaits(store);
     rebuild_key_signature_index(store);
@@ -1888,13 +1896,13 @@ namespace detail
         auto keys = std::vector<PersistentServerSigningKey>{};
         auto const ok = load_rows_bound(
             **connection,
-            "SELECT server_name, key_id, public_key, valid_until_ts FROM server_signing_keys WHERE server_name = ?1",
+            "SELECT server_name, key_id, public_key, valid_until_ts, expired_ts FROM server_signing_keys WHERE "
+            "server_name = ?1",
             {std::string{server_name}}, [&keys](sqlite3_stmt& row) {
-                keys.push_back({column_text(row, 0),
-                                column_text(row, 1),
-                                column_text(row, 2),
-                                parse_u64(column_text(row, 3)),
-                                {}});
+                auto key = PersistentServerSigningKey{
+                    column_text(row, 0), column_text(row, 1), column_text(row, 2), parse_u64(column_text(row, 3)), {}};
+                key.expired_ts = parse_u64(column_text(row, 4));
+                keys.push_back(std::move(key));
             });
         if (!ok)
         {

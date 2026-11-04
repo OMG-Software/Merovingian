@@ -266,8 +266,9 @@ public:
     // Per-logger level. A module is the first whitespace-delimited
     // token of the diagnostic line (e.g. "http_server", "auth",
     // "sync_notifier"). Empty/blank logger names are treated as the
-    // default. The map is read with a shared_mutex so the operator can
-    // hot-reload log_modules on SIGHUP without blocking the hot path.
+    // default. The map is read with a shared_mutex so a future reload path
+    // could change levels without blocking the hot path; today no SIGHUP
+    // handler exists and log_modules is applied at start-up only.
     auto set_module_log_level(std::string_view logger, LogLevel level) -> void
     {
         auto lock = std::lock_guard<std::shared_mutex>{m_module_levels_lock};

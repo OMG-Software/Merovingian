@@ -6,7 +6,7 @@
 Technical Story: 2026-09-29 security audit, findings HTTP-2 (unauthenticated
 directory endpoints pin workers on blocking outbound federation calls) and OUT-7
 (`security.media.remote_fetch_enabled=false` does not stop remote media
-fetches) in `docs/security-audit-report-2026-09-29.md`.
+fetches) in `docs/security-audit-report-2026-09-29.md` (removed from the repository in 0.12.72).
 
 ## Context and Problem Statement
 

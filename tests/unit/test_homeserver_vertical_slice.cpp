@@ -21,6 +21,7 @@
 // |                                                                         |
 // +-------------------------------------------------------------------------+
 
+#include "../support/cross_signing_fixture.hpp"
 #include "../support/master_key.hpp"
 #include "../support/registration_token.hpp"
 #include "merovingian/config/config.hpp"
@@ -1733,8 +1734,8 @@ SCENARIO("Cross-signing key upload stores and returns all three key types",
         REQUIRE(login.response.status == 200U);
         auto const token = extract_token(login.response.body);
 
-        auto const cross_signing_body = std::string{
-            R"({"master_key":{"user_id":"@alice:example.org","usage":["master"],"keys":{"ed25519:MASTER":"abc"},"signatures":{}},"self_signing_key":{"user_id":"@alice:example.org","usage":["self_signing"],"keys":{"ed25519:SELF":"def"},"signatures":{}},"user_signing_key":{"user_id":"@alice:example.org","usage":["user_signing"],"keys":{"ed25519:USER":"ghi"},"signatures":{}},"auth":{"type":"m.login.password","password":"CorrectHorse7!"}})"};
+        auto const cross_signing_body =
+            merovingian::tests::fresh_cross_signing_upload_body("@alice:example.org", true, true, true);
 
         WHEN("the user uploads cross-signing keys via device_signing/upload")
         {

@@ -96,77 +96,134 @@ DispatchWorker::~DispatchWorker()
 
 auto DispatchWorker::enqueue(OutboundTransaction transaction) -> bool
 {
-    if (!transaction_is_well_formed(transaction))
+    auto batch = std::vector<OutboundTransaction>{};
+    batch.push_back(std::move(transaction));
+    return enqueue_batch(std::move(batch)).front();
+}
+
+auto DispatchWorker::enqueue_batch(std::vector<OutboundTransaction> batch) -> std::vector<bool>
+{
+    auto accepted = std::vector<bool>(batch.size(), false);
+    // The batch's admissible members, as positions in `batch`. A transaction the shape or the policy refuses is
+    // refused alone, as before; only a failed commit refuses all that were admitted.
+    auto admitted = std::vector<std::size_t>{};
+    for (auto position = std::size_t{0U}; position < batch.size(); ++position)
     {
-        log_diagnostic("enqueue.rejected", {
-                                               {"transaction_id", transaction.transaction_id, false},
-                                               {"destination",    transaction.destination,    false},
-                                               {"reason",         "transaction is malformed", false}
-        });
-        return false;
-    }
-    if (config_.destination_refusal)
-    {
-        if (auto const refusal = config_.destination_refusal(transaction.destination); !refusal.empty())
+        auto const& transaction = batch[position];
+        if (!transaction_is_well_formed(transaction))
         {
             log_diagnostic("enqueue.rejected", {
                                                    {"transaction_id", transaction.transaction_id, false},
                                                    {"destination",    transaction.destination,    false},
-                                                   {"reason",         refusal,                    false}
+                                                   {"reason",         "transaction is malformed", false}
             });
-            auto lock = std::lock_guard{mutex_};
-            ++summary_.rejected;
-            return false;
+            continue;
         }
+        if (config_.destination_refusal)
+        {
+            if (auto const refusal = config_.destination_refusal(transaction.destination); !refusal.empty())
+            {
+                log_diagnostic("enqueue.rejected", {
+                                                       {"transaction_id", transaction.transaction_id, false},
+                                                       {"destination",    transaction.destination,    false},
+                                                       {"reason",         refusal,                    false}
+                });
+                auto lock = std::lock_guard{mutex_};
+                ++summary_.rejected;
+                continue;
+            }
+        }
+        admitted.push_back(position);
+    }
+    if (admitted.empty())
+    {
+        return accepted;
     }
     {
         auto lock = std::lock_guard{mutex_};
         if (shutdown_requested_.load())
         {
-            log_diagnostic("enqueue.rejected", {
-                                                   {"transaction_id", transaction.transaction_id, false},
-                                                   {"destination",    transaction.destination,    false},
-                                                   {"reason",         "worker is shutting down",  false}
-            });
-            return false;
+            for (auto const position : admitted)
+            {
+                log_diagnostic("enqueue.rejected", {
+                                                       {"transaction_id", batch[position].transaction_id, false},
+                                                       {"destination",    batch[position].destination,    false},
+                                                       {"reason",         "worker is shutting down",      false}
+                });
+            }
+            return accepted;
         }
-        if (config_.max_queue_depth != 0U && queue_.size() >= config_.max_queue_depth)
+        // The bounds count the batch's own earlier members, which are not in the queue yet.
+        auto taken = std::vector<std::size_t>{};
+        auto taken_per_destination = std::unordered_map<std::string, std::size_t>{};
+        for (auto const position : admitted)
         {
-            log_diagnostic("enqueue.rejected", {
-                                                   {"transaction_id", transaction.transaction_id,    false},
-                                                   {"destination",    transaction.destination,       false},
-                                                   {"queue_depth",    std::to_string(queue_.size()), false},
-                                                   {"reason",         "queue depth limit reached",   false}
-            });
-            ++summary_.rejected;
-            return false;
+            auto const& transaction = batch[position];
+            if (config_.max_queue_depth != 0U && queue_.size() + taken.size() >= config_.max_queue_depth)
+            {
+                log_diagnostic("enqueue.rejected",
+                               {
+                                   {"transaction_id", transaction.transaction_id,                   false},
+                                   {"destination",    transaction.destination,                      false},
+                                   {"queue_depth",    std::to_string(queue_.size() + taken.size()), false},
+                                   {"reason",         "queue depth limit reached",                  false}
+                });
+                ++summary_.rejected;
+                continue;
+            }
+            auto const held = queued_per_destination_.find(transaction.destination);
+            auto const already_held = (held != queued_per_destination_.end() ? held->second : std::size_t{0U}) +
+                                      taken_per_destination[transaction.destination];
+            if (already_held >= effective_max_pending_per_destination(config_))
+            {
+                log_diagnostic("enqueue.rejected", {
+                                                       {"transaction_id", transaction.transaction_id,        false},
+                                                       {"destination",    transaction.destination,           false},
+                                                       {"reason",         "destination queue share reached", false}
+                });
+                ++summary_.rejected;
+                continue;
+            }
+            ++taken_per_destination[transaction.destination];
+            taken.push_back(position);
         }
-        if (destination_at_share_locked(transaction.destination))
+        if (taken.empty())
         {
-            log_diagnostic("enqueue.rejected", {
-                                                   {"transaction_id", transaction.transaction_id,        false},
-                                                   {"destination",    transaction.destination,           false},
-                                                   {"reason",         "destination queue share reached", false}
-            });
-            ++summary_.rejected;
-            return false;
+            return accepted;
         }
-        if (persistent_store_ != nullptr &&
-            !database::store_federation_transaction(*persistent_store_, to_persistent_transaction(transaction)))
+        // One commit for the batch (ADR-0441): every row is durable before any can be sent, and a failure leaves
+        // none of them in the database or the queue.
+        if (persistent_store_ != nullptr)
         {
-            log_diagnostic("enqueue.rejected", {
-                                                   {"transaction_id", transaction.transaction_id,      false},
-                                                   {"destination",    transaction.destination,         false},
-                                                   {"reason",         "failed to persist transaction", false}
-            });
-            return false;
+            auto rows = std::vector<database::PersistentFederationTransaction>{};
+            rows.reserve(taken.size());
+            for (auto const position : taken)
+            {
+                rows.push_back(to_persistent_transaction(batch[position]));
+            }
+            if (!database::store_federation_transactions(*persistent_store_, std::move(rows)))
+            {
+                for (auto const position : taken)
+                {
+                    log_diagnostic("enqueue.rejected", {
+                                                           {"transaction_id", batch[position].transaction_id,  false},
+                                                           {"destination",    batch[position].destination,     false},
+                                                           {"reason",         "failed to persist transaction", false}
+                    });
+                }
+                return accepted;
+            }
         }
-        push_queue_locked(std::move(transaction));
-        ++summary_.enqueued;
-        ++summary_.pending;
+        for (auto const position : taken)
+        {
+            accepted[position] = true;
+            push_queue_locked(std::move(batch[position]));
+            ++summary_.enqueued;
+            ++summary_.pending;
+        }
     }
-    cv_.notify_one();
-    return true;
+    cv_.notify_all();
+    return accepted;
 }
 
 auto effective_max_pending_per_destination(DispatchWorkerConfig const& config) noexcept -> std::size_t

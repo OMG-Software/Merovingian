@@ -229,7 +229,7 @@ More specific guidance lives alongside the code it governs. Read the relevant fi
 | `src/appservice/AGENTS.md` | Application Service API: registration parsing, namespace matching, masquerading, outbound client |
 | `src/auth/AGENTS.md` | Auth: token lifecycle, UIAA, constant-time comparison, password hashing |
 | `src/canonicaljson/AGENTS.md` | Canonical JSON: encoding rules, signing pipeline, serializer constraints |
-| `src/config/AGENTS.md` | Config: parse-time validation, hot-reload, size limit parsing |
+| `src/config/AGENTS.md` | Config: parse-time validation, reload planning, size limit parsing |
 | `src/core/AGENTS.md` | Core primitives: `SecretBuffer`, `FileDescriptor`, `Error`, `query_params` |
 | `src/crypto/AGENTS.md` | Crypto security boundary: libsodium isolation, constant-time, key validation |
 | `src/database/AGENTS.md` | Database: prepared statements, backend abstraction, migration rules |

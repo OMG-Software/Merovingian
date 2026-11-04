@@ -231,9 +231,9 @@ SCENARIO("Sliding sync room lists apply DM and room metadata filters before sort
     {
         auto runtime = merovingian::homeserver::HomeserverRuntime{};
         runtime.database.rooms = {
-            {"!alpha:example.org", "@alice:example.org", {}, {}, false},
-            {"!beta:example.org",  "@alice:example.org", {}, {}, false},
-            {"!gamma:example.org", "@alice:example.org", {}, {}, false},
+            {"!alpha:example.org", "@alice:example.org", {}, false},
+            {"!beta:example.org",  "@alice:example.org", {}, false},
+            {"!gamma:example.org", "@alice:example.org", {}, false},
         };
 
         auto store = merovingian::database::PersistentStore{};
@@ -317,9 +317,9 @@ SCENARIO("Sliding sync room lists emit incremental sync ops when notification an
     {
         auto runtime = merovingian::homeserver::HomeserverRuntime{};
         runtime.database.rooms = {
-            {"!alpha:example.org", "@alice:example.org", {}, {}, false},
-            {"!beta:example.org",  "@alice:example.org", {}, {}, false},
-            {"!gamma:example.org", "@alice:example.org", {}, {}, false},
+            {"!alpha:example.org", "@alice:example.org", {}, false},
+            {"!beta:example.org",  "@alice:example.org", {}, false},
+            {"!gamma:example.org", "@alice:example.org", {}, false},
         };
 
         auto store = merovingian::database::PersistentStore{};

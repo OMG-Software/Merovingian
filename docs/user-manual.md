@@ -1099,22 +1099,50 @@ A refused login returns `429 M_LIMIT_EXCEEDED` with `retry_after_ms`, even for
 the correct password. Because the per-source counter keys on the client source,
 set `server.trusted_proxies` when running behind a reverse proxy: otherwise every
 client shares the proxy's address and one person's failures lock out everyone's
-logins for that account. The counters hold at most 100 000 entries each. All
-three keys are reloadable. See `docs/auth-identity.md` "Failed-login throttle".
+logins for that account. The counters hold at most 100 000 entries each. The reload
+plan classifies all three keys as reloadable, but nothing applies a reload at runtime
+today (see [Reloadability policy](#reloadability-policy)), so a changed value needs a
+restart. See `docs/auth-identity.md` "Failed-login throttle".
 
 #### Encryption policy — `security.encryption.*`
 
-These keys enforce the room encryption policy. The defaults require encryption
-for direct messages and private rooms and block unencrypted federated private
-rooms.
+These keys decide, when a room is created (`POST /createRoom`), whether it is
+encrypted and whether a request for an unencrypted room is refused. They apply
+to rooms this server creates only: they do not stop anyone joining an
+unencrypted room another server created, and they do not touch federation
+ingest. `private` below means the `private_chat` and `trusted_private_chat`
+presets; an unknown preset is treated as private.
+
+The Matrix API has no way to ask for an unencrypted room, so the request is read
+from `initial_state`: the last `m.room.encryption` entry with an empty (or
+absent) `state_key` is the request, and it asks for encryption only when its
+`content.algorithm` is exactly `m.megolm.v1.aes-sha2`. Any other entry is a
+request for an unencrypted room. No such entry means the request is
+unspecified. An entry under a non-empty `state_key` does not count. A refused
+request is answered `400 M_INVALID_ROOM_STATE` and nothing is stored.
+
+Setting `m.room.encryption` later with `PUT /rooms/{roomId}/state/m.room.encryption`
+is refused with `400 M_BAD_JSON` unless `content.algorithm` is exactly
+`m.megolm.v1.aes-sha2`, so an empty body cannot switch encryption off. This
+applies to clients and appservices on this server only; events from other
+servers are not checked.
+
+A room is encrypted when the request asks for it, or when the request is
+unspecified and encryption is required or on by default. Encryption is required
+for a direct room (`is_direct`) with `require_for_direct_messages`, for a
+private room with `require_for_private_rooms`, for a public room when
+`allow_unencrypted_public_rooms` is `false`, and for a private room that can
+federate (federation enabled and `m.federate` not `false`) with
+`block_unencrypted_federated_private_rooms`. It is on by default for private
+and direct rooms with `default_for_new_rooms`.
 
 | Key | Default | When to change |
 |---|---|---|
-| `security.encryption.default_for_new_rooms` | `true` | Disable only in constrained test environments. |
-| `security.encryption.require_for_direct_messages` | `true` | Should stay `true` in production. |
-| `security.encryption.require_for_private_rooms` | `true` | Should stay `true` in production. |
+| `security.encryption.default_for_new_rooms` | `true` | Must stay `true`: the server refuses to start with `false` (a configuration validation error, exit code for config validation). |
+| `security.encryption.require_for_direct_messages` | `true` | Must stay `true`: the server refuses to start with `false`. |
+| `security.encryption.require_for_private_rooms` | `true` | Should stay `true` in production. `false` lets a request for an unencrypted private room through (unless a federation block below applies). |
 | `security.encryption.allow_unencrypted_public_rooms` | `true` | Set `false` to require encryption even for public rooms. |
-| `security.encryption.block_unencrypted_federated_private_rooms` | `true` | Keep `true` to prevent E2EE bypass across federation. |
+| `security.encryption.block_unencrypted_federated_private_rooms` | `true` | Keep `true` to refuse creating an unencrypted private room that can federate. Rooms created with `m.federate: false`, or on a server with federation off, are not affected. Joins of rooms other servers created are not checked. |
 
 #### Federation policy — `security.federation.*`
 
@@ -1634,9 +1662,17 @@ Configuration keys are classified as **reloadable** or **restart-required**.
 Restart-required keys affect stable process identity or secret-source
 selection; reloadable keys are runtime policy or limit values intended to be
 applied through a future reload path without a full homeserver restart.
-Configuration parsing and validation are restart-safe today, but the live
-reload control path (SIGHUP/admin socket) is not yet wired — `--plan-config-reload`
-only reports what *would* happen.
+
+**Today every configuration change needs a restart.** The server reads its
+configuration once, at start-up. It installs no SIGHUP handler (only SIGINT and
+SIGTERM, for shutdown, and SIGPIPE, which is ignored), has no admin socket, and
+no other code path re-reads the file or applies a changed value to a running
+process. The classification below is therefore not a promise that a key can be
+changed live. It is used by `--plan-config-reload`, which compares two config
+files offline and reports how each differing key *would* be classified once a
+reload path exists, and by the runtime config snapshot described below, which
+only the unit tests call. A key marked "Reloadable" still needs a restart to
+take effect.
 
 | Key or key group | Policy |
 |---|---|
@@ -1711,8 +1747,9 @@ restart-required changes:
 | `applied` | Candidate config changed only reloadable keys and replaced the in-memory snapshot. |
 | `restart_required` | Candidate config changed at least one restart-required key and was not applied. |
 
-The snapshot is an internal foundation for future live reload — it is not yet
-connected to SIGHUP, an admin socket, or any external control API.
+The snapshot is an internal foundation for future live reload. Nothing in the
+server binary constructs it: it is not connected to SIGHUP, an admin socket, or
+any external control API, and only the unit tests call `apply_reload`.
 
 ### Startup hardening self-check
 

@@ -47,6 +47,8 @@
 #include <ranges>
 #include <string>
 #include <string_view>
+#include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <variant>
 #include <vector>
@@ -748,38 +750,38 @@ auto hydrate_local_database(LocalDatabase& database, database::TableLoadProfile 
     std::ignore =
         database::persist_event_stream_watermark(database.persistent_store, database.next_stream_ordering - 1U);
 
+    // The roster is built with maps local to start-up: a room by ID and each room's members as a set, so a
+    // membership costs one lookup, not a scan of every room and of the room's members so far.
     database.rooms.reserve(database.persistent_store.rooms.size());
+    auto room_position = std::unordered_map<std::string, std::size_t>{};
+    room_position.reserve(database.persistent_store.rooms.size());
     for (auto const& room : database.persistent_store.rooms)
     {
-        database.rooms.push_back({room.room_id, room.creator_user_id, {}, {}, room.directory_public});
+        room_position.try_emplace(room.room_id, database.rooms.size());
+        database.rooms.push_back({room.room_id, room.creator_user_id, {}, room.directory_public});
     }
 
+    auto joined = std::unordered_set<std::string>{};
     for (auto const& membership : database.persistent_store.memberships)
     {
         if (membership.membership != "join")
         {
             continue;
         }
-        auto room = std::ranges::find_if(database.rooms, [&membership](LocalRoom const& candidate) {
-            return candidate.room_id == membership.room_id;
-        });
-        if (room != database.rooms.end() &&
-            !std::ranges::any_of(room->members, [&membership](std::string const& user_id) {
-                return user_id == membership.user_id;
-            }))
+        // A room ID names the first room that holds it, as the scan it replaces did.
+        auto const position = room_position.find(membership.room_id);
+        if (position == room_position.end())
         {
-            room->members.push_back(membership.user_id);
+            continue;
         }
-    }
-
-    for (auto const& event : database.persistent_store.events)
-    {
-        auto room = std::ranges::find_if(database.rooms, [&event](LocalRoom const& candidate) {
-            return candidate.room_id == event.room_id;
-        });
-        if (room != database.rooms.end())
+        auto key = std::string{};
+        key.reserve(membership.room_id.size() + membership.user_id.size() + 1U);
+        key.append(membership.room_id);
+        key.push_back('\0');
+        key.append(membership.user_id);
+        if (joined.insert(std::move(key)).second)
         {
-            room->events.push_back(event.json);
+            database.rooms[position->second].members.push_back(membership.user_id);
         }
     }
 
@@ -898,6 +900,7 @@ PendingStreamOrdering::~PendingStreamOrdering()
 
 PublishedStreamOrdering::PublishedStreamOrdering(HomeserverRuntime& runtime, std::uint64_t ordering)
     : m_runtime{runtime}
+    , m_ordering{ordering}
     , m_pending{std::in_place, runtime.database, ordering}
 {
 }
@@ -910,9 +913,18 @@ PublishedStreamOrdering::~PublishedStreamOrdering() noexcept
         m_pending.reset();
         if (m_runtime.sync_notifier != nullptr)
         {
-            // The event stream only: a sync stream ID is the caller's to publish
-            // once its event is applied.
-            m_runtime.sync_notifier->publish(visible_stream_position(m_runtime.database), 0U);
+            // The event stream only: a sync stream ID is the caller's to publish once its event is
+            // applied. Events held behind this ordering have just become visible, and their writers'
+            // scoped publishes ran before they were: a broadcast. Otherwise only the positions move.
+            auto const visible = visible_stream_position(m_runtime.database);
+            if (visible > m_ordering)
+            {
+                m_runtime.sync_notifier->publish(visible, 0U);
+            }
+            else
+            {
+                m_runtime.sync_notifier->publish(visible, 0U, sync::AffectedUsers{});
+            }
         }
     }
     catch (...)

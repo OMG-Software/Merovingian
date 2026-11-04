@@ -3,7 +3,7 @@
 * Status: accepted
 * Date: 2026-09-29
 
-Technical Story: finding ISO-1 in `docs/security-audit-report-2026-09-29.md`
+Technical Story: finding ISO-1 in `docs/security-audit-report-2026-09-29.md` (removed from the repository in 0.12.72)
 (Area 8, process isolation and platform hardening).
 
 ## Context and Problem Statement

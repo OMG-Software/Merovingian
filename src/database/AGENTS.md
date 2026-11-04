@@ -88,6 +88,34 @@ state.size()` and the row a position names still matches. Every code path that a
 calls `note_state_row_appended` or `rebuild_state_index` (the two writers in `persistent_store.cpp`, `reload_room`,
 and both hydration paths); a new one must too. Do not scan `state` for one key or one room in a handler.
 
+## Per-user and per-ID indexes (ADR-0440, ADR-0441)
+
+`account_data_user_index`, `notification_user_index` and `federation_transaction_index` follow the state index's rule:
+trusted only while `*_indexed_rows` equals the vector's size and the rows a position names match, else a lookup
+scans. Writers call their `ensure_*` first, so they heal; hydration calls `rebuild_account_data_index`,
+`rebuild_notification_index` and `rebuild_federation_transaction_index`. Look a user's account data up with
+`find_account_data_content` / `for_each_user_account_data`, never by looping `store.account_data`. `store.notifications`
+has no order (rows are erased by moving the last into the gap): use `list_notifications_for_user`. One event's
+notifications are written by `store_notifications` and its outbound transactions by `store_federation_transactions`,
+each in one transaction with the mirror changed after the commit. Tests prove cost with `committed_transaction_count`
+and the `*_rows_examined` counters, not time.
+## The membership index (ADR-0437)
+
+`PersistentStore::membership_room_index` holds the positions in `memberships` of each room's rows behind
+`for_each_room_membership_row`. Like the state index it is trusted only while `membership_indexed_rows ==
+memberships.size()` and each position names a row of the room; otherwise a reader scans. Every code path that appends
+to `memberships` calls `note_membership_row_appended` (`store_membership`, `apply_membership_projection`, the room
+creation writer), every one that erases calls `rebuild_membership_index` (`delete_membership`, `apply_room_snapshot`),
+and both hydration paths rebuild it after loading. A row's room never changes in place. A new writer does the same.
+## The relation index (ADR-0430)
+
+`EventTable` lists every row with a usable `content."m.relates_to"` of an aggregated `rel_type` (`m.replace`,
+`m.thread`, `m.reference`; never `m.annotation`) under its target event ID and kind
+(`relation_child_count`, `for_each_relation_child_newest_first(target, kind, ...)`: one window per kind). It is derived from the row JSON, so `insert`,
+`insert_all`, `erase_if`, `modify` (a redaction drops the child) and `clear` keep it current and a writer that
+bypasses them does not compile. Status and room are not in the key: the reader judges them. Never scan the
+table to find the children of an event.
+
 ## Backend selection
 
 The backend is chosen at startup from config (`database.engine = sqlite | postgresql`).

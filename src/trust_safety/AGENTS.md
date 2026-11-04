@@ -13,7 +13,7 @@ Policy engine for content and user moderation.
 
 - The engine **decides; the caller acts.** A decision names an action, but the calling module
   performs the state change (quarantining media, locking or suspending an account).
-- Policy rules are loaded from config at startup and can be hot-reloaded.
+- Policy rules are loaded from config at startup; there is no live reload yet (a change needs a restart).
 - **Never hard-code moderation decisions in this module.** All rules come from config
   or an operator-supplied policy file.
 - Policy engine decisions must be logged at DEBUG level with the rule that triggered them.

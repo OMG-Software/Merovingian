@@ -218,7 +218,7 @@ identical to an existing one. See
 The handler does only signal-safe work: it writes one byte to the pipe and sets
 an atomic flag. The main thread unblocks `poll()` and initiates clean shutdown.
 `SIGPIPE` is ignored process-wide so a peer that vanishes mid-write cannot
-terminate the process (HTTP-5, security-audit-report-2026-09-29.md). Before the HTTP-5 fix
+terminate the process (HTTP-5, 2026-09-29 security audit). Before the HTTP-5 fix
 this was only true after the first thumbnail was generated, because the sole
 `SIG_IGN` sat in `src/media/thumbnailer.cpp`. OpenSSL's socket BIO writes with
 plain `write()` and no `MSG_NOSIGNAL`, so a TLS client that completed the

@@ -71,7 +71,7 @@ join; the bounded transient remainder is discarded.
 
 ## Links
 
-* [FED-11 audit finding](../security-audit-report-2026-09-29.md)
+* FED-11 audit finding (2026-09-29 security audit report, removed from the repository in 0.12.72)
 * [ADR-0009: per-room ingestion stripes](0009-serialize-inbound-pdu-ingestion-on-per-room-stripes.md)
 * [ADR-0003: release every runtime-lock recursion level](0003-drain-every-recursion-level-in-one-release-primitive.md)
 * [ADR-0064: spec-conformant PDU ingestion](0064-spec-conformant-pdu-ingestion-with-delta-state-groups.md)

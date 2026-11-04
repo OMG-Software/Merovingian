@@ -43,6 +43,17 @@ Federation is the highest-risk surface: **all input comes from untrusted remote 
    `max_signature_keys_per_server` (4) for the sender's server is refused before any lookup.
    Never pick "the" key ID with a loop that stops at the first match.
 
+   A key a server lists under `old_verify_keys` is "only valid for signing events" (Publishing keys). The key
+   response parser reads it (`RemoteKeyResponse::old_verify_keys`) and the resolver returns it as a
+   `FederationKeyRecord` with `retired` set: `verify_signed_federation_request` refuses it, the X-Matrix paths never
+   install it as a remote's request key, and `check_signing_key_valid_for_event` accepts it only when
+   `origin_server_ts < expired_ts` (ADR-0425). `cache_remote_server_keys` stores it as a retired row
+   (`server_signing_keys.expired_ts`, `valid_until_ts` equal to it): retirement is one way, the earliest expiry wins,
+   a later listing under `verify_keys` never revives it, and a current key a response now lists under
+   `old_verify_keys` is retired at once. A retired cached row is a cache hit (`cached_remote_key_usable`): the resolver
+   never fetches for it, a worker's mirror refresh returns it as retired, `find_any_cached_remote_key` skips it, and
+   nothing prunes it by `valid_until_ts`. A malformed entry is skipped alone.
+
    A `send_join` naming one of THIS server's users as `join_authorised_via_users_server`
    cannot carry our signature yet: the request layer and the worker relay leave that one check
    to the acceptor (`PduSignatureChecks::authorised_here`), which co-signs only after
@@ -194,7 +205,7 @@ Federation is the highest-risk surface: **all input comes from untrusted remote 
    retried transaction back without taking another, and `release_destination_slot_locked` frees
    it only when the transaction leaves for good (delivered, dropped, or failed to persist), all
    under `mutex_`. Replay parks rows past a destination's share instead of promoting them. A new
-   path that touches `queue_` uses these. Never discard `enqueue`'s result: log a refusal. Give
+   path that touches `queue_` uses these. An event's destinations go through `enqueue_batch` (ADR-0441): one durable commit, all or none on a failed commit. Never discard `enqueue`'s result: log a refusal. Give
    every destination its own transaction ID: it is the durable `federation_transactions` key.
    A failure's backoff runs from the end of the attempt (`finished_at`, `perform_outbound_transaction`'s
    `finished_clock`), never from its start: a timeout is longer than the early backoffs (ADR-0309). The

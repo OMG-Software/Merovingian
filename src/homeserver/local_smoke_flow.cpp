@@ -105,8 +105,12 @@ auto run_local_smoke_flow(config::Config const& config) -> OperationResult
     {
         return make_operation_result(false, {}, "room not found in runtime database after demo flow");
     }
+    // The room's events are counted from the event table, the one place they are held.
+    auto const event_count = std::ranges::count_if(runtime.database.persistent_store.events, [&](auto const& row) {
+        return row.room_id == room.value;
+    });
     auto const summary = "room_id=" + room.value + " members=" + std::to_string(room_it->members.size()) +
-                         " events=" + std::to_string(room_it->events.size());
+                         " events=" + std::to_string(event_count);
     return make_operation_result(true, summary);
 }
 

@@ -171,7 +171,7 @@ struct SeededRoom final
 {
     auto const a = std::string{admin};
     runtime.database.persistent_store.rooms.push_back({room_id, a});
-    runtime.database.rooms.push_back({room_id, a, {std::string{admin}}, {}, false});
+    runtime.database.rooms.push_back({room_id, a, {std::string{admin}}, false});
     auto room = SeededRoom{room_id,
                            room_id + "/create",
                            room_id + "/pl",

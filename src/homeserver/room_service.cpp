@@ -60,6 +60,7 @@
 #include "merovingian/observability/observability.hpp"
 #include "merovingian/push/push_gateway_client.hpp"
 #include "merovingian/push/push_rules.hpp"
+#include "merovingian/rooms/encryption_policy.hpp"
 #include "merovingian/rooms/room_version_policy.hpp"
 #include "merovingian/sync/history_visibility.hpp"
 #include "merovingian/sync/room_read_access.hpp"
@@ -775,6 +776,25 @@ namespace
         return result;
     }
 
+    // The inputs of rooms::room_creation_encryption_policy (ADR-0445), which alone decides.
+    // An unknown preset is private, as its join rules and guest access already are (ADR-0447).
+    // A room can federate when this server federates and `m.federate` is not boolean false,
+    // which is what the create-event auth rule reads.
+    [[nodiscard]] auto creation_encryption_request(HomeserverRuntime const& runtime, CreateRoomOptions const& options)
+        -> rooms::RoomCreationEncryptionRequest
+    {
+        auto const preset = options.preset == "public_chat"            ? rooms::RoomPreset::public_chat
+                            : options.preset == "trusted_private_chat" ? rooms::RoomPreset::trusted_private_chat
+                                                                       : rooms::RoomPreset::private_chat;
+        auto const* federate = object_member(options.creation_content, "m.federate");
+        auto const* federate_flag = federate == nullptr ? nullptr : std::get_if<bool>(&federate->storage());
+        auto const can_federate =
+            runtime.config.security().federation.enabled && (federate_flag == nullptr || *federate_flag);
+        return {preset, options.is_direct, can_federate,
+                rooms::encryption_request_from_initial_state(options.initial_state),
+                runtime.config.security().encryption};
+    }
+
     // Room version 12: the creation options must imply valid initial state. Each of the
     // create event's additional_creators "MUST be a valid user ID", and the room's creators
     // (the creator, the additional creators and, for trusted_private_chat, the invitees
@@ -1275,29 +1295,25 @@ namespace
         if (runtime.dispatch_worker != nullptr)
         {
             auto const& server_name = runtime.config.server().server_name;
+            // Each remote server once, in the order the members name them. A set answers "seen" in one lookup;
+            // searching the list per member made a large room cost members x servers.
             auto remote_servers = std::vector<std::string>{};
+            auto seen_servers = std::unordered_set<std::string>{};
+            auto const note_remote_server = [&](std::string_view candidate) {
+                if (!candidate.empty() && candidate != server_name && candidate != excluded_server &&
+                    seen_servers.emplace(candidate).second)
+                {
+                    remote_servers.emplace_back(candidate);
+                }
+            };
             for (auto const& member : members)
             {
-                auto const member_server = std::string{auth::user_id_server_name(member)};
-                if (member_server.empty())
-                {
-                    continue;
-                }
-                if (member_server != server_name && member_server != excluded_server &&
-                    std::ranges::find(remote_servers, member_server) == remote_servers.end())
-                {
-                    remote_servers.emplace_back(member_server);
-                }
+                note_remote_server(auth::user_id_server_name(member));
             }
             // The target of a kick, ban or unban is told even though it is no longer (or
             // not yet) among the room's members once the event applies. An invite reaches
             // the invitee's server through /invite instead.
-            if (auto const target_server = std::string{auth::user_id_server_name(target_user_id)};
-                !target_server.empty() && target_server != server_name && target_server != excluded_server &&
-                std::ranges::find(remote_servers, target_server) == remote_servers.end())
-            {
-                remote_servers.push_back(target_server);
-            }
+            note_remote_server(auth::user_id_server_name(target_user_id));
             // Built by the shared builder so the transaction carries the Required `origin` and
             // `origin_server_ts`; a hand-built body without them was refused by strict receivers.
             auto const tx_body_result = remote_servers.empty()
@@ -1318,7 +1334,12 @@ namespace
                 auto const& tx_body = *tx_body_result;
                 // One transaction ID per destination: it is the durable queue row's key, so a shared ID
                 // left one row for the whole fan-out and the first delivery deleted the others' row.
+                // The destinations are queued as one batch: one committed transaction for the event, not one per
+                // server (ADR-0441).
                 auto refused = std::vector<std::string>{};
+                auto batch = std::vector<federation::OutboundTransaction>{};
+                auto batch_destinations = std::vector<std::string_view>{};
+                batch.reserve(remote_servers.size());
                 for (auto const& destination : remote_servers)
                 {
                     // ADR-0391: not a refusal to report; the operator said this server gets nothing.
@@ -1331,9 +1352,15 @@ namespace
                     auto transaction =
                         federation::make_outbound_transaction(destination, "PUT", target, server_name, tx_body);
                     transaction.transaction_id = tx_id;
-                    if (!runtime.dispatch_worker->enqueue(std::move(transaction)))
+                    batch.push_back(std::move(transaction));
+                    batch_destinations.push_back(destination);
+                }
+                auto const accepted = runtime.dispatch_worker->enqueue_batch(std::move(batch));
+                for (auto position = std::size_t{0U}; position < accepted.size(); ++position)
+                {
+                    if (!accepted[position])
                     {
-                        refused.push_back(destination);
+                        refused.emplace_back(batch_destinations[position]);
                     }
                 }
                 if (!refused.empty())
@@ -1435,7 +1462,6 @@ namespace
         auto* room = find_room(runtime.database, room_id);
         if (room != nullptr)
         {
-            room->events.push_back(composed_event.json);
             // An invite reaches the invitee's server through /invite; every other
             // membership change also reaches its target's server.
             federate_local_event(runtime, room_id, *room, composed_event,
@@ -1445,7 +1471,11 @@ namespace
         auto const sync_stream_id = database::allocate_sync_stream_id(runtime.database.persistent_store);
         if (runtime.sync_notifier != nullptr)
         {
-            runtime.sync_notifier->publish(visible_stream_position(runtime.database), sync_stream_id);
+            // ADR-0437: the room's joined and invited members, the sender, and the user whose membership
+            // changed, who may have just left it (kick, ban, leave).
+            auto const audience =
+                sync_audience_of_room(runtime.database.persistent_store, room_id, {sender_user_id, target_user_id});
+            runtime.sync_notifier->publish(visible_stream_position(runtime.database), sync_stream_id, audience);
         }
         // Push delivery: covers invite/ban/kick/leave/knock, all funneled
         // through this one function. `target_user_id` is passed as an extra
@@ -2508,6 +2538,31 @@ auto federate_accepted_membership_event(HomeserverRuntime& runtime, std::string_
     queue_event_to_room_servers(runtime, room_id, room->members, event_id, event_json, {}, requesting_server);
 }
 
+auto sync_audience_of_room(database::PersistentStore const& store, std::string_view room_id,
+                           std::initializer_list<std::string_view> also) -> std::vector<std::string>
+{
+    auto audience = std::vector<std::string>{};
+    auto seen = std::unordered_set<std::string>{};
+    auto const add = [&](std::string_view user) {
+        if (!user.empty() && seen.emplace(user).second)
+        {
+            audience.emplace_back(user);
+        }
+    };
+    // The room's own rows (ADR-0437), not every room's.
+    database::for_each_room_membership_row(store, room_id, [&add](database::PersistentMembership const& membership) {
+        if (membership.membership == "join" || membership.membership == "invite")
+        {
+            add(membership.user_id);
+        }
+    });
+    for (auto const user : also)
+    {
+        add(user);
+    }
+    return audience;
+}
+
 // The one place a membership change reaches the live roster and the device lists. The roster is always
 // updated, since the member event is already stored; a device-list write that fails is reported through
 // the result, not by leaving the roster behind the store.
@@ -3484,6 +3539,21 @@ auto ensure_crypto_provider_holds_key(HomeserverRuntime& runtime, std::string_vi
             return invalid_room_state_result("power_level_content_override: " + problem);
         }
     }
+    // Spec (createRoom, 400 M_INVALID_ROOM_STATE): "The initial state implied by the parameters
+    // to the createRoom request is invalid". Judged before anything is stored (ADR-0445).
+    auto const encryption_request = creation_encryption_request(runtime, options);
+    auto const encryption_decision = rooms::room_creation_encryption_policy(encryption_request);
+    if (!encryption_decision.allowed)
+    {
+        log_diagnostic(
+            "room.create.rejected",
+            {
+                {"actor",  *user_id,                   false},
+                {"status", "400",                      false},
+                {"reason", encryption_decision.reason, false}
+        });
+        return invalid_room_state_result(encryption_decision.reason);
+    }
     if (auto refusal = v12_creation_refusal(options, *user_id); refusal.has_value())
     {
         log_diagnostic("room.create.rejected",
@@ -3713,7 +3783,7 @@ auto ensure_crypto_provider_holds_key(HomeserverRuntime& runtime, std::string_vi
     {
         return server_failure("room persistence failed");
     }
-    runtime.database.rooms.push_back({room_id, *user_id, {*user_id}, {}, options.directory_public});
+    runtime.database.rooms.push_back({room_id, *user_id, {*user_id}, options.directory_public});
     // Declared before any event is emitted so that its destructor, which runs on every way out of
     // this function, queues what was stored for interested appservices.
     auto created_events = CreatedEventQueue{runtime, room_id, *user_id};
@@ -3908,7 +3978,6 @@ auto ensure_crypto_provider_holds_key(HomeserverRuntime& runtime, std::string_vi
     auto client_provided_join_rules = false;
     auto client_provided_history_visibility = false;
     auto client_provided_guest_access = false;
-    auto client_provided_encryption = false;
     for (auto const& item : options.initial_state)
     {
         auto const* state_obj = std::get_if<canonicaljson::Object>(&item.storage());
@@ -3932,10 +4001,6 @@ auto ensure_crypto_provider_holds_key(HomeserverRuntime& runtime, std::string_vi
         else if (*type_str == "m.room.guest_access")
         {
             client_provided_guest_access = true;
-        }
-        else if (*type_str == "m.room.encryption")
-        {
-            client_provided_encryption = true;
         }
     }
 
@@ -3970,12 +4035,12 @@ auto ensure_crypto_provider_holds_key(HomeserverRuntime& runtime, std::string_vi
         return server_failure("preset room state event generation failed");
     }
 
-    // Emit m.room.encryption for private room presets. Per the Matrix spec,
-    // private_chat and trusted_private_chat rooms SHOULD enable encryption by
-    // default. Skip if the client already included m.room.encryption in
-    // initial_state to avoid emitting a duplicate state event.
-    auto const encryption_preset = options.preset == "private_chat" || options.preset == "trusted_private_chat";
-    if (encryption_preset && !client_provided_encryption)
+    // Emit the default m.room.encryption when the policy says the room is encrypted and the
+    // client gave no effective entry. With an effective entry (the last one under the empty
+    // state key) the initial_state loop below stores exactly the entry the policy judged, and an
+    // entry under another state key never replaces the default (ADR-0445).
+    if (encryption_decision.encryption_enabled &&
+        encryption_request.encryption == rooms::RoomEncryptionRequest::unspecified)
     {
         auto encryption_content = canonicaljson::Object{};
         encryption_content.push_back(
@@ -6155,7 +6220,7 @@ namespace
                                                           "join", joined_member_stream);
             }
         }
-        runtime.database.rooms.push_back({std::string{room_id}, *user_id, std::move(joined_members), {}});
+        runtime.database.rooms.push_back({std::string{room_id}, *user_id, std::move(joined_members)});
         if (!record_room_share_started_device_changes(runtime, room_id, *user_id) ||
             !record_own_device_list_change(runtime, *user_id))
         {
@@ -6288,7 +6353,6 @@ namespace
                 });
                 return make_operation_result(false, {}, "third-party invite event persistence failed", 500U);
             }
-            room->events.push_back(composed_invite->json);
             federate_local_event(runtime, room_id, *room, *composed_invite);
             // The invite is an m.room.member event for `user_id`, who may be one of an
             // appservice's virtual users; it was stored here and nowhere else queued it.
@@ -6402,7 +6466,6 @@ namespace
             });
             return make_operation_result(false, {}, "membership event persistence failed", 500U);
         }
-        room->events.push_back(composed->json);
         federate_local_event(runtime, room_id, *room, *composed);
 
         // persist_composed_event has already projected the join (CSAZ-6).
@@ -7103,17 +7166,7 @@ namespace
     {
         return false;
     }
-    auto const previous_json = stored->json;
-    if (!database::replace_event_json(store, event_id, std::string{cosigned_event_json}))
-    {
-        return false;
-    }
-    // The in-memory room keeps its own copy of what it was sent.
-    if (auto* room = find_room(runtime.database, room_id); room != nullptr)
-    {
-        std::ranges::replace(room->events, previous_json, std::string{cosigned_event_json});
-    }
-    return true;
+    return database::replace_event_json(store, event_id, std::string{cosigned_event_json});
 }
 
 auto queue_remote_invite(HomeserverRuntime& runtime, std::string_view room_id, std::string_view invitee_server,
@@ -7413,7 +7466,6 @@ namespace
     auto* room_for_push = find_room(runtime.database, room_id);
     if (room_for_push != nullptr)
     {
-        room_for_push->events.push_back(composed->json);
         federate_local_event(runtime, room_id, *room_for_push, *composed);
     }
 
@@ -8135,6 +8187,8 @@ namespace
             return membership != nullptr ? *membership : std::string{};
         }();
 
+        // The history rows of every recipient this event notifies, committed together after the loop (ADR-0440).
+        auto notified = std::vector<database::PersistentNotification>{};
         // Built on the first recipient with a pusher (see the check below).
         auto active_users = std::optional<std::unordered_set<std::string, TransparentStringHash, std::equal_to<>>>{};
         auto recipients = room.members;
@@ -8205,12 +8259,9 @@ namespace
             // profile_tag is left empty: it names a specific pusher's
             // configured tag, but this recording happens once per (user,
             // event) rather than once per pusher.
-            std::ignore = database::store_notification(
-                store,
-                database::PersistentNotification{
-                    std::string{member}, room.room_id, composed.event_id, persisted_stream_ordering, notification_ts,
-                    push_notification_actions_json(result), std::string{}, result.tweak_highlight},
-                static_cast<std::size_t>(runtime.config.server().client_api.max_notifications_retained_per_user));
+            notified.push_back(database::PersistentNotification{
+                std::string{member}, room.room_id, composed.event_id, persisted_stream_ordering, notification_ts,
+                push_notification_actions_json(result), std::string{}, result.tweak_highlight});
 
             if (!push_delivery_enabled && !email_delivery_enabled)
             {
@@ -8323,6 +8374,18 @@ namespace
 
                 deliveries.push_back(PendingPushDelivery{pusher, std::move(notification)});
             }
+        }
+        // One transaction for the whole event, not one commit per recipient. A failure writes none of the rows and
+        // leaves memory equal to the database; the push deliveries above do not depend on them.
+        if (!database::store_notifications(
+                store, std::move(notified),
+                static_cast<std::size_t>(runtime.config.server().client_api.max_notifications_retained_per_user)))
+        {
+            log_diagnostic("push.notification_history.persist_failed",
+                           {
+                               {"event_id", composed.event_id, false}
+            },
+                           observability::LogEventSeverity::warning);
         }
         return deliveries;
     }
@@ -8703,7 +8766,6 @@ namespace
             });
             return make_operation_result(false, {}, "event persistence failed", 500U);
         }
-        room->events.push_back(composed->json);
         append_local_audit(runtime.database, observability::AuditCategory::admin, "room.event_sent", user_id, room_id,
                            "stored");
         log_diagnostic("room.event.accepted",
@@ -8718,8 +8780,15 @@ namespace
         });
         if (runtime.sync_notifier != nullptr)
         {
+            // ADR-0437: an event in a room concerns the room's joined and invited members, its sender and, for
+            // a membership event, the user it is about (a kick or ban removes them from the room's members).
+            auto const member_target = composed->event_type == "m.room.member" && composed->state_key.has_value()
+                                           ? std::string_view{*composed->state_key}
+                                           : std::string_view{};
+            auto const audience = sync_audience_of_room(runtime.database.persistent_store, room_id,
+                                                        {std::string_view{user_id}, member_target});
             runtime.sync_notifier->publish(visible_stream_position(runtime.database),
-                                           runtime.database.persistent_store.next_sync_stream_id);
+                                           runtime.database.persistent_store.next_sync_stream_id, audience);
         }
         // Refresh any federation worker's snapshot of this room the same way the
         // 7 membership-mutating calls already do (create_room, join_room,
@@ -9199,6 +9268,21 @@ auto deliver_federation_push_notifications(HomeserverRuntime& runtime, federatio
     return canonicaljson::Value{std::move(client_obj)};
 }
 
+[[nodiscard]] auto make_bundled_aggregations(database::PersistentStore const& store,
+                                             sync::HistoryVisibility& visibility, std::string_view user_id,
+                                             std::unordered_set<std::string> const& ignored_senders, bool enabled)
+    -> sync::BundledAggregations
+{
+    return sync::BundledAggregations{store,
+                                     visibility,
+                                     user_id,
+                                     ignored_senders,
+                                     [&store](database::PersistentEvent const& child) {
+                                         return client_event_with_id(store, child);
+                                     },
+                                     enabled};
+}
+
 namespace
 {
     [[nodiscard]] auto parse_stream_ordering_token(std::optional<std::string> const& token)
@@ -9240,6 +9324,10 @@ namespace
     // Room History Visibility (CSAZ-3): one filter for the request. A parent the user may not
     // see is "not found", like GET /event, and children they may not see are not listed.
     auto visibility = sync::HistoryVisibility{store, *user_id};
+    // Each child listed is itself an event served to the client, so it carries its own bundled
+    // aggregations ("Aggregations of child events").
+    auto const ignored_senders = trust_safety::resolve_ignored_users(store, *user_id);
+    auto aggregations = make_bundled_aggregations(store, visibility, *user_id, ignored_senders);
     auto const parent = store.events.find_in_room(request.room_id, request.event_id);
     if (parent == store.events.end() || !visibility.can_see(*parent))
     {
@@ -9247,13 +9335,8 @@ namespace
     }
 
     auto matches = std::vector<database::PersistentEvent const*>{};
-    for (auto const& event : store.events)
+    for (auto const& event : store.events.room_in_stream_order(request.room_id))
     {
-        if (event.room_id != request.room_id)
-        {
-            continue;
-        }
-
         if (request.event_type.has_value())
         {
             auto const parsed_type = canonicaljson::parse_lossless(event.json);
@@ -9409,7 +9492,7 @@ namespace
     chunk.reserve(end - start);
     for (auto index = start; index < end; ++index)
     {
-        chunk.push_back(client_event_with_id(runtime.database.persistent_store, *matches[index]));
+        chunk.push_back(aggregations.apply(*matches[index], client_event_with_id(store, *matches[index])));
     }
 
     auto response = canonicaljson::Object{};
@@ -9551,7 +9634,7 @@ namespace
 
             auto& aggregate = aggregates[*root_id];
             ++aggregate.count;
-            if (aggregate.latest_child == nullptr || event.stream_ordering > aggregate.latest_child->stream_ordering)
+            if (aggregate.latest_child == nullptr || sync::is_later_in_thread(event, *aggregate.latest_child))
             {
                 aggregate.latest_child = &event;
             }
@@ -9633,6 +9716,7 @@ namespace
     auto const* version_policy =
         rooms::find_room_version_policy(room_version_for_room(runtime.database.persistent_store, request.room_id));
 
+    auto aggregations = make_bundled_aggregations(store, visibility, *user_id, ignored_senders);
     auto chunk = canonicaljson::Array{};
     chunk.reserve(end - start);
     for (auto index = start; index < end; ++index)
@@ -9651,50 +9735,9 @@ namespace
                 root_event = std::move(redacted.event);
             }
         }
-        // Value exposes its storage as const, so mutate a copy of the object and
-        // rebuild the Value from it rather than writing through the accessor.
-        auto const* root_source = std::get_if<canonicaljson::Object>(&root_event.storage());
-        if (root_source == nullptr)
-        {
-            continue;
-        }
-        auto root_obj = *root_source;
-
-        auto thread_bundle = canonicaljson::Object{};
-        thread_bundle.push_back(
-            canonicaljson::make_member("latest_event", client_event_with_id(store, *aggregate.latest_child)));
-        thread_bundle.push_back(canonicaljson::make_member("count", canonicaljson::Value{aggregate.count}));
-        thread_bundle.push_back(
-            canonicaljson::make_member("current_user_participated", canonicaljson::Value{aggregate.participated}));
-
-        auto relations = canonicaljson::Object{};
-        relations.push_back(canonicaljson::make_member("m.thread", canonicaljson::Value{std::move(thread_bundle)}));
-
-        // Merge into any unsigned block the event already carries rather than
-        // replacing it: client_event_with_id may have populated prev_content there.
-        auto unsigned_obj = canonicaljson::Object{};
-        for (auto const& member : root_obj)
-        {
-            if (member.key != "unsigned")
-            {
-                continue;
-            }
-            if (auto const* existing = std::get_if<canonicaljson::Object>(&member.value->storage());
-                existing != nullptr)
-            {
-                unsigned_obj = *existing;
-            }
-        }
-        std::erase_if(unsigned_obj, [](canonicaljson::ObjectMember const& member) {
-            return member.key == "m.relations";
-        });
-        unsigned_obj.push_back(canonicaljson::make_member("m.relations", canonicaljson::Value{std::move(relations)}));
-        std::erase_if(root_obj, [](canonicaljson::ObjectMember const& member) {
-            return member.key == "unsigned";
-        });
-        root_obj.push_back(canonicaljson::make_member("unsigned", canonicaljson::Value{std::move(unsigned_obj)}));
-
-        chunk.push_back(canonicaljson::Value{std::move(root_obj)});
+        // The root's m.thread (and any other) aggregation is built by the one aggregation code every
+        // endpoint uses, from the relation index, not from this endpoint's walk.
+        chunk.push_back(aggregations.apply(*aggregate.root, std::move(root_event)));
     }
 
     auto response = canonicaljson::Object{};

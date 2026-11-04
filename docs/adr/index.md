@@ -418,3 +418,18 @@
 * [0417 - Appservice query hooks on unauthenticated client routes take a proxy slot](0417-appservice-query-hooks-on-unauthenticated-client-routes-take-a-proxy-slot.md) — Refines ADR-0079 and ADR-0181: `GET /profile` and `GET /directory/room` take one slot for the appservice query loop, only when a registration matches
 * [0418 - The outbound client logs a URL without its query](0418-the-outbound-client-logs-an-url-without-its-query.md)
 * [0419 - The thumbnail decoder refuses to run without a platform sandbox](0419-the-thumbnail-decoder-refuses-to-run-without-a-platform-sandbox.md) — NetBSD has no in-process decoder sandbox, so the worker refuses to decode there instead of running on rlimits alone
+* [0420 - Client routes are matched on the path without the query string](0420-client-routes-are-matched-on-the-path-without-the-query.md)
+* [0421 - A cross-signing upload is verified against the accompanying or held master key](0421-cross-signing-uploads-are-verified-against-the-held-master-key.md)
+* [0425 - A retired server key verifies events sent before it expired and never authenticates a request](0425-a-retired-server-key-signs-events-never-requests.md)
+* [0426 - The to-device queue is restored to numeric stream-id order after hydration](0426-to-device-queue-is-restored-to-numeric-order-after-hydration.md)
+* [0430 - Bundled aggregations are built by one module from a relation index inside EventTable](0430-bundled-aggregations-are-built-from-a-relation-index-in-the-event-table.md)
+* [0435 - The event table keeps a per-room index in stream order, and a request reads its room through it](0435-the-event-table-keeps-a-per-room-index-in-stream-order.md)
+* [0436 - An event is judged for ignored senders by sender first, and its JSON is parsed only for an ignored one](0436-an-event-is-judged-for-ignored-senders-without-parsing-it-first.md)
+* [0437 - The sync notifier wakes a long-poll for its own user, and a publish with no scope wakes everyone](0437-the-sync-notifier-wakes-a-long-poll-for-its-own-user.md)
+* [0440 - Push recipients read their own rows and share one notification commit](0440-push-recipients-read-their-own-rows-and-share-one-notification-commit.md)
+* [0441 - An event's outbound transactions are queued in one commit](0441-an-events-outbound-transactions-are-queued-in-one-commit.md)
+* [0442 - The event table is the only copy of a room's events](0442-the-event-table-is-the-only-copy-of-a-rooms-events.md)
+* [0445 - Room creation encryption is decided only by room_creation_encryption_policy](0445-room-creation-encryption-is-decided-only-by-the-encryption-policy.md)
+* [0446 - The encryption settings apply to room creation only](0446-the-encryption-settings-apply-to-room-creation-only.md)
+* [0447 - Unknown presets and a non-boolean m.federate fail towards the stricter encryption policy](0447-unknown-presets-and-non-boolean-m-federate-fail-towards-the-stricter-policy.md)
+* [0448 - A client PUT of m.room.encryption must carry the listed algorithm](0448-a-client-put-of-m-room-encryption-must-carry-the-listed-algorithm.md)

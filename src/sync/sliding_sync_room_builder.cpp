@@ -8,13 +8,16 @@
 #include "merovingian/canonicaljson/value.hpp"
 #include "merovingian/database/redaction_view.hpp"
 #include "merovingian/homeserver/push_rule_unread_classifier.hpp"
+#include "merovingian/sync/bundled_aggregations.hpp"
 #include "merovingian/sync/viewer_event_unsigned.hpp"
 #include "merovingian/trust_safety/ignore_list.hpp"
 
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <limits>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <tuple>
@@ -68,18 +71,19 @@ namespace
     // sender can put anything there. It is built from `redacted_because` (attach_redacted_because) and the
     // viewer's own `transaction_id`, `membership` and `prev_content` (ViewerEventUnsigned), the same rule
     // as client_event_with_id (ADR-0402). A stored row that cannot be read is withheld (empty string).
-    [[nodiscard]] auto client_event_json(database::PersistentStore const& store, database::PersistentEvent const& event,
-                                         ViewerEventUnsigned& viewer) -> std::string
+    [[nodiscard]] auto client_event_value(database::PersistentStore const& store,
+                                          database::PersistentEvent const& event)
+        -> std::optional<canonicaljson::Object>
     {
         auto const parsed = canonicaljson::parse_lossless(event.json);
         if (parsed.error != canonicaljson::ParseError::none)
         {
-            return {};
+            return std::nullopt;
         }
         auto const* obj = as_object(parsed.value);
         if (obj == nullptr)
         {
-            return {};
+            return std::nullopt;
         }
         auto client_obj = *obj;
         // Stored JSON from v1-v3 rooms (and PDUs relayed by other
@@ -93,13 +97,38 @@ namespace
         // carries `redacts` where older and newer clients look for it.
         database::add_redaction_compat(client_obj);
         database::attach_redacted_because(store, event.event_id, client_obj);
-        auto const serialized =
-            canonicaljson::serialize_canonical(viewer.apply(event, canonicaljson::Value{std::move(client_obj)}));
-        if (serialized.error != canonicaljson::CanonicalJsonError::none)
+        return client_obj;
+    }
+
+    [[nodiscard]] auto serialized_client_event(canonicaljson::Value const& value) -> std::string
+    {
+        auto const serialized = canonicaljson::serialize_canonical(value);
+        return serialized.error == canonicaljson::CanonicalJsonError::none ? serialized.output : std::string{};
+    }
+
+    [[nodiscard]] auto client_event_json(database::PersistentStore const& store, database::PersistentEvent const& event,
+                                         ViewerEventUnsigned& viewer) -> std::string
+    {
+        auto client_obj = client_event_value(store, event);
+        if (!client_obj.has_value())
         {
             return {};
         }
-        return serialized.output;
+        return serialized_client_event(viewer.apply(event, canonicaljson::Value{std::move(*client_obj)}));
+    }
+
+    // As above, with the event's bundled aggregations (`unsigned.m.relations`) added to the viewer's
+    // `unsigned`: built by the server, never taken from the stored copy.
+    [[nodiscard]] auto client_event_json(database::PersistentStore const& store, database::PersistentEvent const& event,
+                                         ViewerEventUnsigned& viewer, BundledAggregations& aggregations) -> std::string
+    {
+        auto client_obj = client_event_value(store, event);
+        if (!client_obj.has_value())
+        {
+            return {};
+        }
+        return serialized_client_event(
+            aggregations.apply(event, viewer.apply(event, canonicaljson::Value{std::move(*client_obj)})));
     }
 
     // Ignoring Users (spec: docs/matrix-v1.19-spec/client-server-api.md
@@ -413,12 +442,8 @@ namespace
         -> std::uint64_t
     {
         auto ts = std::uint64_t{0U};
-        for (auto const& ev : store.events)
+        for (auto const& ev : store.events.room_in_stream_order(room_id))
         {
-            if (ev.room_id != room_id)
-            {
-                continue;
-            }
             auto const parsed = canonicaljson::parse_lossless(ev.json);
             if (parsed.error != canonicaljson::ParseError::none)
             {
@@ -480,9 +505,9 @@ auto count_unread_by_thread(database::PersistentStore const& store, std::string_
     {
         return counts;
     }
-    for (auto const& ev : store.events)
+    for (auto const& ev : store.events.room_in_stream_order(room_id))
     {
-        if (ev.room_id != room_id || ev.status != "accepted" || ev.stream_ordering <= markers.unthreaded ||
+        if (ev.status != "accepted" || ev.stream_ordering <= markers.unthreaded ||
             ev.stream_ordering <= *counted_after || ev.sender_user_id == user)
         {
             continue;
@@ -718,12 +743,10 @@ auto build_room_response(homeserver::HomeserverRuntime const& rt, std::string_vi
     // events, while required_state below keeps it.
     bool const timeline_has_floor = !is_initial && expansion == TimelineExpansion::none;
     auto timeline_events = std::vector<std::pair<std::uint64_t, std::string>>{};
-    for (auto const& ev : store.events)
+    // The row behind each timeline entry, in the same order, for the bundled aggregations below.
+    auto timeline_rows = std::vector<std::reference_wrapper<database::PersistentEvent const>>{};
+    for (auto const& ev : store.events.room_in_stream_order(room_id))
     {
-        if (ev.room_id != room_id)
-        {
-            continue;
-        }
         // ADR-0064 phase B2: a rejected or soft-failed event is never
         // relayed to clients (spec "Rejection", "Soft failure"). Room state
         // (required_state, built separately from current_state) is
@@ -762,11 +785,9 @@ auto build_room_response(homeserver::HomeserverRuntime const& rt, std::string_vi
         if (auto client_json = client_event_json(store, ev, viewer_unsigned); !client_json.empty())
         {
             timeline_events.emplace_back(ev.stream_ordering, std::move(client_json));
+            timeline_rows.push_back(std::cref(ev));
         }
     }
-    std::sort(timeline_events.begin(), timeline_events.end(), [](auto const& a, auto const& b) {
-        return a.first < b.first;
-    });
 
     auto const limit = static_cast<std::size_t>(sub.timeline_limit);
     bool const timeline_limited = timeline_events.size() > limit;
@@ -790,6 +811,25 @@ auto build_room_response(homeserver::HomeserverRuntime const& rt, std::string_vi
         auto const drop_count = timeline_events.size() - limit;
         timeline_events.erase(timeline_events.begin(),
                               timeline_events.begin() + static_cast<std::ptrdiff_t>(drop_count));
+        timeline_rows.erase(timeline_rows.begin(), timeline_rows.begin() + static_cast<std::ptrdiff_t>(drop_count));
+    }
+    // MSC4186 says nothing of bundled aggregations, so the classic /sync rule is followed: a section
+    // that is `limited` carries them (client-server-api.md, "Aggregations of child events"), one
+    // that is not does not. Only the kept events are serialized again, with their aggregations.
+    if (timeline_limited)
+    {
+        auto aggregations = BundledAggregations{
+            store, visibility, user, ignored_senders, [&store](database::PersistentEvent const& child) {
+                return canonicaljson::Value{client_event_value(store, child).value_or(canonicaljson::Object{})};
+            }};
+        for (auto index = std::size_t{0U}; index < timeline_events.size(); ++index)
+        {
+            if (auto bundled = client_event_json(store, timeline_rows[index].get(), viewer_unsigned, aggregations);
+                !bundled.empty())
+            {
+                timeline_events[index].second = std::move(bundled);
+            }
+        }
     }
     // A room's first send on the connection has no previous send and no "previous
     // sync", so it is neither expanded nor live.

@@ -1,4 +1,5 @@
 sync_sources = files(
+  'bundled_aggregations.cpp',
   'device_list_delta.cpp',
   'history_visibility.cpp',
   'read_markers.cpp',

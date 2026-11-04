@@ -1,5 +1,6 @@
 // SPDX-FileCopyrightText: 2026 James Chapman
 // SPDX-License-Identifier: GPL-3.0-or-later
+#include "../support/cross_signing_fixture.hpp"
 #include "../support/in_memory_database_config.hpp"
 #include "../support/master_key.hpp"
 #include "../support/registration_token.hpp"
@@ -262,11 +263,9 @@ SCENARIO("A failed device-list write is reported to a client that can retry the 
                     UploadedChange::signature},
             Trigger{"PUT", "/_matrix/client/v3/devices/" + alice.device_id, R"({"display_name":"renamed"})",
                     UploadedChange::device_name},
-            Trigger{
-                "POST", "/_matrix/client/v3/keys/device_signing/upload",
-                R"({"auth":{"type":"m.login.password","user":"@alice:example.org","password":"CorrectHorse7!"},)"
-                R"("master_key":{"user_id":"@alice:example.org","usage":["master"],"keys":{"ed25519:MASTER":"abc"}}})",
-                UploadedChange::cross_signing_key},
+            Trigger{"POST", "/_matrix/client/v3/keys/device_signing/upload",
+                    merovingian::tests::fresh_cross_signing_upload_body("@alice:example.org", true, false, false),
+                    UploadedChange::cross_signing_key},
             Trigger{
                 "POST", "/_matrix/client/v3/keys/upload",
                 R"({"device_keys":{"user_id":"@alice:example.org","device_id":")" + alice.device_id +

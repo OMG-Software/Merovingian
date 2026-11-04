@@ -184,7 +184,7 @@ struct Genesis final
     auto const admin = std::string{local_admin};
     auto& store = runtime.database.persistent_store;
     store.rooms.push_back({room_id, admin});
-    runtime.database.rooms.push_back({room_id, admin, {admin}, {}, false});
+    runtime.database.rooms.push_back({room_id, admin, {admin}, false});
     if (std::ranges::none_of(runtime.database.users, [&](homeserver::LocalUser const& user) {
             return user.user_id == admin;
         }))

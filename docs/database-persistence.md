@@ -101,6 +101,15 @@ value. Test fixtures that do not exercise persistence select it through
   through `store_server_signing_key`, `find_server_signing_key` and
   `snapshot_server_signing_keys` (a copy for callers that iterate). The lock is
   never held across the database write or a network call.
+- `server_signing_keys.expired_ts` (`TEXT NOT NULL DEFAULT ''`, v1 step, ADR-0425) marks a remote server's retired
+  key, one it listed under `old_verify_keys`; empty means current. `PersistentServerSigningKey::expired_ts` is 0 for
+  a current key. A retired row has `valid_until_ts` equal to `expired_ts`, capped at the fetch time, and it is
+  one-way: `store_server_signing_key` keeps a retired row retired whatever a later write says, keeps its public key,
+  takes the smaller expiry, and retires a current row written with an expiry at once (the SQL upsert applies the same
+  rule, so concurrent writers cannot raise an expiry). A row that holds a secret, this server's own key, never takes an
+  expiry: such a write returns false. Both loaders and the backend half of `refresh_remote_signing_keys` select the
+  column (the worker role is granted it in `provision-federation-worker-role.sql`), and nothing deletes or prunes a
+  row by `valid_until_ts`.
 - Media bytes are not hydrated (ADR-0119). The SQLite and PostgreSQL loaders read
   `media_blobs` without its `bytes` column; `prepare_media_blob_read` (under the
   runtime mutex) and `read_media_blob` (without it) fetch one blob's bytes per
@@ -266,8 +275,8 @@ value. Test fixtures that do not exercise persistence select it through
   persist and list rows, following the same pattern as `PersistentPusher`
   above; implemented for both SQLite and PostgreSQL, hydrated on backend
   open. `room_service.cpp`'s `build_pending_push_deliveries()` calls
-  `store_notification` for every local recipient whose push rule evaluation
-  resolves `notify: true` — **unconditionally**, regardless of
+  `store_notifications` once per event, with a row for every local recipient whose push rule evaluation
+  resolves `notify: true` — in one transaction, **unconditionally**, regardless of
   `server.push.enabled` or whether that recipient has a registered pusher:
   `GET /notifications` returns events the user "has been, or would have
   been, notified about" (spec), so a user with push turned off must still
@@ -279,9 +288,9 @@ value. Test fixtures that do not exercise persistence select it through
   `m.read.private` receipts in that room (unthreaded, or the one for the
   event's thread), so it always reflects the latest receipt without a
   write-side update on every receipt change.
-  **Retention:** `store_notification` prunes the oldest rows for that
-  `user_id` beyond `server.client_api.max_notifications_retained_per_user`
-  (default 1,000, valid range 1..100,000), after every insert. The same policy
+  **Retention:** `store_notifications` prunes, in the same transaction as the inserts, the oldest rows for each
+  notified `user_id` beyond `server.client_api.max_notifications_retained_per_user`
+  (default 1,000, valid range 1..100,000). The mirror changes only after the commit (ADR-0440). The same policy
   applies to the in-memory mirror and SQLite/PostgreSQL persistence; rows with
   the oldest stream ordering are removed first. It is independent of
   `server.push.max_in_flight_deliveries`, which bounds background tasks rather
@@ -826,6 +835,10 @@ value. Test fixtures that do not exercise persistence select it through
   startup. Handlers check the table before processing and store the result after
   a successful send, allowing clients to safely retry `PUT /rooms/{roomId}/send`
   and `PUT /sendToDevice` requests.
+- `to_device_messages.stream_id` is TEXT, so `ORDER BY stream_id` sorts "10" before "9". Both backends call
+  `database::sort_to_device_messages` after hydrating to restore numeric order, and `drain_to_device_messages` and the
+  sliding sync `to_device` extension sort what they return, so `next_batch` never acknowledges a row that was not sent
+  (ADR-0426).
 - `PUT /sendToDevice` writes its local `to_device_messages` rows and its
   `client_txn_ids` row in ONE backend transaction
   (`database::enqueue_to_device_messages_with_client_txn`, R02, ADR-0164). The
@@ -1115,7 +1128,7 @@ Two independent mechanisms close this, together:
    `SELECT` that never names `secret_key` at all, leaving
    `PersistentServerSigningKey::secret_key` empty for every worker-loaded
    row; and `provision-federation-worker-role.sql` grants
-   `SELECT (server_name, key_id, public_key, valid_until_ts)` — a
+   `SELECT (server_name, key_id, public_key, valid_until_ts, expired_ts)` — a
    PostgreSQL column-level grant — so even a bug that widened the C++ query
    back to five columns would be refused at the database. The worker's
    *write* attempt (caching a freshly-fetched key) is expected to fail under
@@ -1133,7 +1146,7 @@ Two independent mechanisms close this, together:
    fresh connection and a TLS handshake) in the worker. The resolver the worker
    runs is built with `KeyMirrorRefresh::on_miss`: when it finds no usable key in
    the mirror it first calls `database::refresh_remote_signing_keys`, which
-   re-reads that one server's rows with the same four-column `SELECT` (never
+   re-reads that one server's rows with the same five-column `SELECT` (never
    `secret_key`; `detail::load_remote_signing_keys_from_sqlite` and
    `…_from_postgresql`) and merges them into the mirror under
    `server_signing_keys_mutex`, leaving a row that holds a secret alone. Only a
@@ -1328,8 +1341,8 @@ the whole load (ADR-0161).
 ### Event table indexes (0.12.39)
 
 `PersistentStore::events` is a `database::EventTable` (`include/merovingian/database/event_table.hpp`),
-not a `std::vector`. It owns the in-memory rows of the `events` table and keeps three indexes over them
-(the third since 0.12.64), all holding positions in its row vector so they survive reallocation (ADR-0215):
+not a `std::vector`. It owns the in-memory rows of the `events` table and keeps four indexes over them
+(the third since 0.12.64, the fourth since 0.12.72), all holding positions in its row vector so they survive reallocation (ADR-0215):
 
 - **by event ID.** `events.find(id)` and `events.contains(id)` are hash lookups, and
   `events.find_in_room(room_id, id)` adds the room check. `events.with_id(id)` is a range of zero or
@@ -1339,6 +1352,11 @@ not a `std::vector`. It owns the in-memory rows of the `events` table and keeps 
   the table itself visits arrival order, which is not stream order: SQLite hydration has no `ORDER BY`,
   PostgreSQL hydrates in event-ID order and moves a row whose status is updated, and stream orderings
   commit out of order across rooms.
+- **by room and stream order (ADR-0435).** `events.room_in_stream_order(room_id)` visits the rows of one room,
+  of every status, in the order `in_stream_order()` visits them, at the cost of that room's rows. It is what
+  `/sync`, `/messages`, `/context`, `/search`, `initialSync`, `/relations`, the sliding sync builder, `read_markers_for`
+  and `count_unread_by_thread` read a room through; never `for (x : store.events)` plus a `room_id` test on a request
+  path. `insert`, `insert_all`, `erase_if`, `modify` (a changed `room_id`) and `clear` keep it current.
 - **by room and time (ADR-0300).** `events.nearest_by_time(room_id, ts, direction, accept, max_examined)`
   seeks the timeline event of one room nearest an `origin_server_ts`, ordered by (`origin_server_ts`,
   `depth`, `stream_ordering`), the boundary inclusive, stepping over rows `accept` refuses and offering at
@@ -1347,6 +1365,14 @@ not a `std::vector`. It owns the in-memory rows of the `events` table and keeps 
   only while its status is not `outlier`, `rejected` or `soft_failed` and its JSON has an integer top-level
   `origin_server_ts`; `modify` moves a row in or out when a mutation changes that. There is no migration:
   the key is parsed from the JSON once, when a row enters the table.
+- **by relation target (ADR-0430).** `events.for_each_relation_child_newest_first(target_event_id, kind, visit,
+  max_examined)` visits the rows of one `RelationKind` (`m.replace`, `m.thread`, `m.reference`) whose
+  `content."m.relates_to"` names `target_event_id`, newest listed first; `m.annotation` and other types are not
+  indexed. `relation_child_count()` is the size of the lists. It backs bundled aggregations (`unsigned.m.relations`).
+  A row is listed whatever its status or room (the reader judges both); a target ID that is empty or over
+  255 bytes is not indexed. `modify` re-derives the key, so a redacted child (no `m.relates_to` left) leaves
+  the list. There is no migration: the key is parsed from the JSON when a row enters the table, only for a
+  row whose JSON contains `"m.relates_to"`.
 
 Rows are read-only through the table. The only ways to change it are:
 

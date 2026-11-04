@@ -230,7 +230,8 @@ security.password_hashing.max_concurrent=4
 # owner out from the owner's own address. max_failures_per_account is the ceiling
 # across all sources and stops guessing spread over many addresses. Set
 # server.trusted_proxies behind a reverse proxy, or every client shares one
-# source. Window is a number with an s or m suffix (1s to 1440m). Reloadable.
+# source. Window is a number with an s or m suffix (1s to 1440m). Classified reloadable, but the live
+# reload path is not yet wired, so a change needs a restart.
 security.login_throttle.max_failures_per_source=5
 security.login_throttle.max_failures_per_account=50
 security.login_throttle.window=15m
@@ -242,9 +243,13 @@ security.access_token_lifetime_ms=3600000
 security.refresh_token_lifetime_ms=2592000000
 
 # Room encryption policy
-# New private/direct rooms require encryption by default. Public unencrypted
-# rooms are allowed for compatibility, while federated private rooms must not
-# bypass encryption.
+# Enforced when a room is created here (POST /createRoom); joins of rooms other
+# servers created are not checked. New private/direct rooms are encrypted by
+# default. default_for_new_rooms and require_for_direct_messages must stay true:
+# the server refuses to start otherwise. Public unencrypted rooms are allowed
+# for compatibility. block_unencrypted_federated_private_rooms refuses creating
+# an unencrypted private room that can federate (federation enabled and
+# m.federate not false).
 security.encryption.default_for_new_rooms=true
 security.encryption.require_for_direct_messages=true
 security.encryption.require_for_private_rooms=true

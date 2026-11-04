@@ -19,14 +19,13 @@ namespace
     [[nodiscard]] auto stored_global_ruleset(database::PersistentStore const& store, std::string_view user_id)
         -> canonicaljson::Object
     {
-        auto const row = std::ranges::find_if(store.account_data, [user_id](database::PersistentAccountData const& d) {
-            return d.user_id == user_id && d.room_id.empty() && d.event_type == push_rules_account_data_type;
-        });
-        if (row == store.account_data.end())
+        auto const stored =
+            database::find_account_data_content(store, user_id, std::string_view{}, push_rules_account_data_type);
+        if (!stored.has_value())
         {
             return {};
         }
-        auto parsed = canonicaljson::parse_lossless(row->content_json);
+        auto parsed = canonicaljson::parse_lossless(*stored);
         auto const* content = std::get_if<canonicaljson::Object>(&parsed.value.storage());
         if (parsed.error != canonicaljson::ParseError::none || content == nullptr)
         {

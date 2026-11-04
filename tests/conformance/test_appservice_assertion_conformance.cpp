@@ -404,12 +404,16 @@ SCENARIO("identity assertion does not apply to Account Management", "[appservice
 
             THEN("the asserted account is neither deactivated nor has its password changed")
             {
-                std::ignore = merovingian::homeserver::handle_client_server_request(
+                // Both are refused at the Account Management gate, ahead of the handlers that a query
+                // string no longer hides them from: the status is what shows it was the gate.
+                auto const deactivate = merovingian::homeserver::handle_client_server_request(
                     runtime, {"POST", "/_matrix/client/v3/account/deactivate?user_id=@_a_alice:example.org",
                               service_a_token, R"({"erase":true})"});
-                std::ignore = merovingian::homeserver::handle_client_server_request(
+                auto const password = merovingian::homeserver::handle_client_server_request(
                     runtime, {"POST", "/_matrix/client/v3/account/password?user_id=@_a_alice:example.org",
                               service_a_token, R"({"new_password":"AnotherHorse8!"})"});
+                CHECK(deactivate.response.status == 403U);
+                CHECK(password.response.status == 403U);
                 auto const* const alice = find_local_user(runtime, "@_a_alice:example.org");
                 REQUIRE(alice != nullptr);
                 CHECK_FALSE(alice->deactivated);
@@ -451,6 +455,52 @@ SCENARIO("identity assertion does not apply to Account Management", "[appservice
             THEN("the endpoint is unaffected")
             {
                 CHECK(response.response.status == 200U);
+            }
+        }
+
+        std::filesystem::remove(path_a);
+        std::filesystem::remove(path_b);
+    }
+}
+
+// Spec: Matrix Application Service API v1.19, Identity assertion: "the application service may set
+// the `user_id` query parameter on a request to act as a user", for "all aspects of the Client-Server
+// API, except for Account Management". The query string must not hide the endpoint from the router.
+SCENARIO("an appservice asserts a user on an endpoint matched by its whole path",
+         "[appservice][conformance][assertion][route][query-string]")
+{
+    GIVEN("service A with a registered virtual user")
+    {
+        auto const path_a = std::filesystem::temp_directory_path() / "merovingian-conformance-qs-a.json";
+        auto const path_b = std::filesystem::temp_directory_path() / "merovingian-conformance-qs-b.json";
+        auto const config = overlapping_services_config(path_a, path_b);
+        auto started = merovingian::homeserver::start_client_server(config);
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        REQUIRE(register_as_user(runtime, service_a_token, "_a_alice").response.status == 200U);
+
+        WHEN("GET /joined_rooms is called with an asserted ?user_id=")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                runtime, {"GET", "/_matrix/client/v3/joined_rooms?user_id=@_a_alice:example.org", service_a_token, {}});
+
+            THEN("the endpoint answers for the asserted user")
+            {
+                REQUIRE(response.response.status == 200U);
+                CHECK(response.response.body.find("joined_rooms") != std::string::npos);
+            }
+        }
+
+        WHEN("POST /register is called with m.login.application_service and a ?kind= parameter")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                runtime, {"POST", "/_matrix/client/v3/register?kind=user", service_a_token,
+                          R"({"type":"m.login.application_service","inhibit_login":true,"username":"_a_carol"})"});
+
+            THEN("the virtual user is created")
+            {
+                CHECK(response.response.status == 200U);
+                CHECK(find_local_user(runtime, "@_a_carol:example.org") != nullptr);
             }
         }
 

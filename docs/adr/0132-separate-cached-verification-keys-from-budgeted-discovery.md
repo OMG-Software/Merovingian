@@ -78,6 +78,6 @@ semaphore is destroyed.
 
 ## Links
 
-* [Security audit FED-10](../security-audit-report-2026-09-29.md#fed-10-resolving-sender-keys-for-relayed-pdus-bypasses-the-key-resolution-admission-budget)
+* Security audit FED-10 (2026-09-29 security audit report, removed from the repository in 0.12.72)
 * [HTTP transport](../http-transport.md)
 * [Runtime architecture](../architecture.md)

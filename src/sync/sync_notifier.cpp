@@ -6,10 +6,14 @@
 #include "merovingian/observability/logger.hpp"
 #include "merovingian/observability/observability.hpp"
 
+#include <algorithm>
 #include <chrono>
 #include <cstddef>
+#include <functional>
 #include <mutex>
+#include <optional>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace merovingian::sync
@@ -25,7 +29,8 @@ namespace
 
 } // namespace
 
-auto SyncNotifier::publish(std::uint64_t new_stream_ordering, std::uint64_t new_sync_stream_id) -> void
+auto SyncNotifier::publish(std::uint64_t new_stream_ordering, std::uint64_t new_sync_stream_id,
+                           std::optional<AffectedUsers> scope) -> void
 {
     auto changed = false;
     {
@@ -40,13 +45,52 @@ auto SyncNotifier::publish(std::uint64_t new_stream_ordering, std::uint64_t new_
             sync_stream_id_ = new_sync_stream_id;
             changed = true;
         }
+        // The generations move and the waiters are signalled in the hold that moved the counters, so a waiter
+        // either saw them at entry or is signalled here (ADR-0437). They move whether or not the positions
+        // advanced: a caller publishes the visible position read at publish time, which can equal the position
+        // an earlier publish carried for another writer's event.
+        if (changed && waiting_anyone_ > 0U)
+        {
+            ++signals_sent_;
+            anyone_.notify_all();
+        }
+        if (!scope.has_value())
+        {
+            ++broadcast_generation_;
+            for (auto& entry : by_user_)
+            {
+                if (entry.second.waiters > 0U)
+                {
+                    ++signals_sent_;
+                    entry.second.wake.notify_all();
+                }
+            }
+        }
+        else
+        {
+            for (auto const& user : *scope)
+            {
+                // A user with no entry has never observed: there is no cursor to miss this publish.
+                auto const waiters = by_user_.find(user);
+                if (waiters == by_user_.end())
+                {
+                    continue;
+                }
+                ++waiters->second.generation;
+                if (waiters->second.waiters > 0U)
+                {
+                    ++signals_sent_;
+                    waiters->second.wake.notify_all();
+                }
+            }
+        }
     }
     if (changed)
     {
-        cv_.notify_all();
         log_diagnostic("stream.published", {
-                                               {"stream_ordering", std::to_string(new_stream_ordering), false},
-                                               {"sync_stream_id",  std::to_string(new_sync_stream_id),  false}
+                                               {"stream_ordering", std::to_string(new_stream_ordering),  false},
+                                               {"sync_stream_id",  std::to_string(new_sync_stream_id),   false},
+                                               {"scoped",          scope.has_value() ? "true" : "false", false}
         });
     }
 }
@@ -71,9 +115,11 @@ auto SyncNotifier::wait_for_change(std::uint64_t since_stream_ordering, std::uin
         return false;
     }
     ++waiting_;
-    auto const changed = cv_.wait_for(lock, timeout, [this, since_stream_ordering, since_sync_stream_id] {
+    ++waiting_anyone_;
+    auto const changed = anyone_.wait_for(lock, timeout, [this, since_stream_ordering, since_sync_stream_id] {
         return stream_ordering_ > since_stream_ordering || sync_stream_id_ > since_sync_stream_id;
     });
+    --waiting_anyone_;
     --waiting_;
     log_diagnostic(changed ? "stream.changed" : "stream.timeout",
                    {
@@ -86,6 +132,119 @@ auto SyncNotifier::wait_for_change(std::uint64_t since_stream_ordering, std::uin
     return changed;
 }
 
+auto SyncNotifier::observe(std::string_view user) -> WaitCursor
+{
+    auto lock = std::lock_guard{mutex_};
+    auto entry = by_user_.find(user);
+    if (entry == by_user_.end())
+    {
+        entry = by_user_.try_emplace(std::string{user}).first;
+    }
+    return WaitCursor{std::string{user}, entry->second.generation, broadcast_generation_};
+}
+
+auto SyncNotifier::wait_for_change(WaitCursor const& cursor, std::chrono::milliseconds timeout) -> bool
+{
+    auto lock = std::unique_lock{mutex_};
+    auto entry = by_user_.find(cursor.user);
+    if (entry == by_user_.end())
+    {
+        entry = by_user_.try_emplace(cursor.user).first;
+    }
+    auto& user = entry->second;
+    auto const moved = [this, &user, &cursor] {
+        return user.generation != cursor.user_generation || broadcast_generation_ != cursor.broadcast_generation;
+    };
+    if (moved())
+    {
+        return true;
+    }
+    if (timeout.count() <= 0)
+    {
+        return false;
+    }
+    ++waiting_;
+    ++user.waiters;
+    auto const changed = user.wake.wait_for(lock, timeout, moved);
+    --user.waiters;
+    --waiting_;
+    return changed;
+}
+
+auto long_poll_wait(SyncNotifier& notifier, std::string_view user, std::uint64_t since_stream_ordering,
+                    std::uint64_t since_sync_stream_id, std::chrono::steady_clock::time_point deadline,
+                    std::chrono::milliseconds slice, std::function<bool()> const& running,
+                    std::function<LongPollStep()> const& rerun, std::function<bool()> const& idle) -> LongPollOutcome
+{
+    auto outcome = LongPollOutcome{};
+    auto const run = [&] {
+        auto const step = rerun();
+        since_stream_ordering = step.since_stream_ordering;
+        since_sync_stream_id = step.since_sync_stream_id;
+        outcome.dispatched = step.complete;
+        return step.complete;
+    };
+    auto const remaining_slice = [&] {
+        auto const remaining =
+            std::chrono::duration_cast<std::chrono::milliseconds>(deadline - std::chrono::steady_clock::now());
+        return std::min(remaining, slice);
+    };
+    if (user.empty())
+    {
+        while (running())
+        {
+            auto const wait = remaining_slice();
+            if (wait.count() <= 0)
+            {
+                break;
+            }
+            if (notifier.wait_for_change(since_stream_ordering, since_sync_stream_id, wait))
+            {
+                if (run())
+                {
+                    break;
+                }
+            }
+            else if (!idle())
+            {
+                outcome.client_gone = true;
+                break;
+            }
+        }
+        return outcome;
+    }
+    // (a) The cursor first, then (b) the positions, then the rerun's own snapshot: each later than the one before.
+    auto cursor = notifier.observe(user);
+    if (notifier.wait_for_change(since_stream_ordering, since_sync_stream_id, std::chrono::milliseconds{0}) && run())
+    {
+        return outcome;
+    }
+    // (c)
+    while (running())
+    {
+        auto const wait = remaining_slice();
+        if (wait.count() <= 0)
+        {
+            break;
+        }
+        if (notifier.wait_for_change(cursor, wait))
+        {
+            // The new cursor before the rerun: a publish after it is seen by the next wait.
+            cursor = notifier.observe(user);
+            if (run())
+            {
+                break;
+            }
+        }
+        else if (!idle())
+        {
+            outcome.client_gone = true;
+            break;
+        }
+    }
+    return outcome;
+}
+
 auto SyncNotifier::current_sync_stream_id() const -> std::uint64_t
 {
     auto lock = std::lock_guard{mutex_};
@@ -96,6 +255,12 @@ auto SyncNotifier::waiting() const -> std::size_t
 {
     auto lock = std::lock_guard{mutex_};
     return waiting_;
+}
+
+auto SyncNotifier::signals_sent() const -> std::uint64_t
+{
+    auto lock = std::lock_guard{mutex_};
+    return signals_sent_;
 }
 
 } // namespace merovingian::sync

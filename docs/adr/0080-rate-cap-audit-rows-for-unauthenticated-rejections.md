@@ -5,7 +5,7 @@
 
 Technical Story: 2026-09-29 security audit, finding AUTH-1 (unauthenticated
 requests write unbounded, synchronous audit rows under the global lock) and the
-AUTH-1 addendum (`docs/security-audit-report-2026-09-29.md`).
+AUTH-1 addendum (`docs/security-audit-report-2026-09-29.md` (removed from the repository in 0.12.72)).
 
 ## Context and Problem Statement
 

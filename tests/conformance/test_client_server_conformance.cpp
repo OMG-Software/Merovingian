@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
+#include "../support/cross_signing_fixture.hpp"
 #include "../support/in_memory_database_config.hpp"
 //
 // +-------------------------------------------------------------------------+
@@ -1948,8 +1949,9 @@ SCENARIO("POST /keys/device_signing/upload without auth returns 401 UIA challeng
         WHEN("the device uploads cross-signing keys without providing auth")
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
-                started.runtime, {"POST", "/_matrix/client/v3/keys/device_signing/upload", token,
-                                  R"({"master_key":{"keys":{"ed25519:master":"base64key"},"usage":["master"]}})"});
+                started.runtime,
+                {"POST", "/_matrix/client/v3/keys/device_signing/upload", token,
+                 R"({"master_key":{"user_id":"@alice:example.org","keys":{"ed25519:master":"base64key"},"usage":["master"]}})"});
 
             THEN("the server issues a UIA challenge with m.login.password flow")
             {
@@ -1977,9 +1979,8 @@ SCENARIO("POST /keys/device_signing/upload returns 200 with a valid JSON object"
         WHEN("the device uploads cross-signing keys with valid UIA password auth")
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
-                started.runtime,
-                {"POST", "/_matrix/client/v3/keys/device_signing/upload", token,
-                 R"({"master_key":{"keys":{"ed25519:master":"base64key"},"usage":["master"]},"self_signing_key":{"keys":{"ed25519:self":"base64key"},"usage":["self_signing"]},"user_signing_key":{"keys":{"ed25519:user":"base64key"},"usage":["user_signing"]},"auth":{"type":"m.login.password","password":"CorrectHorse7!"}})"});
+                started.runtime, {"POST", "/_matrix/client/v3/keys/device_signing/upload", token,
+                                  fresh_cross_signing_upload_body("@alice:example.org", true, true, true)});
 
             THEN("the response is 200 and the body is an empty JSON object")
             {
@@ -2004,12 +2005,10 @@ SCENARIO("POST /keys/device_signing/upload then POST /keys/query returns publish
         REQUIRE(started.started);
         auto const token = logged_in_token(started.runtime);
 
-        REQUIRE(
-            merovingian::homeserver::handle_client_server_request(
-                started.runtime,
-                {"POST", "/_matrix/client/v3/keys/device_signing/upload", token,
-                 R"({"master_key":{"user_id":"@alice:example.org","usage":["master"],"keys":{"ed25519:MASTER":"base64master"},"signatures":{}},"self_signing_key":{"user_id":"@alice:example.org","usage":["self_signing"],"keys":{"ed25519:SELF":"base64self"},"signatures":{}},"user_signing_key":{"user_id":"@alice:example.org","usage":["user_signing"],"keys":{"ed25519:USER":"base64user"},"signatures":{}},"auth":{"type":"m.login.password","password":"CorrectHorse7!"}})"})
-                .response.status == 200U);
+        REQUIRE(merovingian::homeserver::handle_client_server_request(
+                    started.runtime, {"POST", "/_matrix/client/v3/keys/device_signing/upload", token,
+                                      fresh_cross_signing_upload_body("@alice:example.org", true, true, true)})
+                    .response.status == 200U);
 
         WHEN("the device queries its own keys")
         {
@@ -2092,23 +2091,23 @@ SCENARIO("POST /keys/signatures/upload then POST /keys/query returns the uploade
         REQUIRE(started.started);
         auto const token = logged_in_token(started.runtime);
 
+        auto const set = make_cross_signing_set("@alice:example.org");
         REQUIRE(
             merovingian::homeserver::handle_client_server_request(
                 started.runtime,
                 {"POST", "/_matrix/client/v3/keys/upload", token,
                  R"({"device_keys":{"user_id":"@alice:example.org","device_id":"DEVICE1","algorithms":["m.olm.v1.curve25519-aes-sha2"],"keys":{"curve25519:DEVICE1":"curve","ed25519:DEVICE1":"device-signing"},"signatures":{}}})"})
                 .response.status == 200U);
+        REQUIRE(merovingian::homeserver::handle_client_server_request(
+                    started.runtime, {"POST", "/_matrix/client/v3/keys/device_signing/upload", token,
+                                      cross_signing_upload_body(set.master_member())})
+                    .response.status == 200U);
         REQUIRE(
             merovingian::homeserver::handle_client_server_request(
-                started.runtime,
-                {"POST", "/_matrix/client/v3/keys/device_signing/upload", token,
-                 R"({"master_key":{"user_id":"@alice:example.org","usage":["master"],"keys":{"ed25519:MASTER":"base64master"},"signatures":{}},"auth":{"type":"m.login.password","password":"CorrectHorse7!"}})"})
-                .response.status == 200U);
-        REQUIRE(
-            merovingian::homeserver::handle_client_server_request(
-                started.runtime,
-                {"POST", "/_matrix/client/v3/keys/signatures/upload", token,
-                 R"({"@alice:example.org":{"DEVICE1":{"signatures":{"@alice:example.org":{"ed25519:MASTER":"device-sig"}}},"MASTER":{"signatures":{"@alice:example.org":{"ed25519:DEVICE1":"master-sig"}}}}})"})
+                started.runtime, {"POST", "/_matrix/client/v3/keys/signatures/upload", token,
+                                  R"({"@alice:example.org":{"DEVICE1":{"signatures":{"@alice:example.org":{"ed25519:)" +
+                                      set.master.public_key + R"(":"device-sig"}}},")" + set.master.public_key +
+                                      R"(":{"signatures":{"@alice:example.org":{"ed25519:DEVICE1":"master-sig"}}}}})"})
                 .response.status == 200U);
 
         WHEN("the device queries its own keys")
@@ -2132,7 +2131,7 @@ SCENARIO("POST /keys/signatures/upload then POST /keys/query returns the uploade
                 REQUIRE(device_signatures != nullptr);
                 auto const* alice_device_signatures = object_member_as_object(*device_signatures, "@alice:example.org");
                 REQUIRE(alice_device_signatures != nullptr);
-                auto const* device_sig = string_member(*alice_device_signatures, "ed25519:MASTER");
+                auto const* device_sig = string_member(*alice_device_signatures, "ed25519:" + set.master.public_key);
                 REQUIRE(device_sig != nullptr);
                 REQUIRE(*device_sig == "device-sig");
 
@@ -2170,17 +2169,18 @@ SCENARIO("POST /keys/query shows a user-signing signature over a master key only
         auto const bob_token = register_and_login(started.runtime, "bob");
         auto const carol_token = register_and_login(started.runtime, "carol");
 
+        auto const alice_keys = make_cross_signing_set("@alice:example.org");
+        REQUIRE(merovingian::homeserver::handle_client_server_request(
+                    started.runtime, {"POST", "/_matrix/client/v3/keys/device_signing/upload", alice_token,
+                                      cross_signing_upload_body(alice_keys.master_member())})
+                    .response.status == 200U);
         REQUIRE(
             merovingian::homeserver::handle_client_server_request(
-                started.runtime,
-                {"POST", "/_matrix/client/v3/keys/device_signing/upload", alice_token,
-                 R"({"master_key":{"user_id":"@alice:example.org","usage":["master"],"keys":{"ed25519:ALICEMASTER":"ALICEMASTER"}},"auth":{"type":"m.login.password","password":"CorrectHorse7!"}})"})
-                .response.status == 200U);
-        REQUIRE(
-            merovingian::homeserver::handle_client_server_request(
-                started.runtime,
-                {"POST", "/_matrix/client/v3/keys/signatures/upload", bob_token,
-                 R"({"@alice:example.org":{"ALICEMASTER":{"user_id":"@alice:example.org","usage":["master"],"keys":{"ed25519:ALICEMASTER":"ALICEMASTER"},"signatures":{"@bob:example.org":{"ed25519:BOBUSK":"bob-usk-sig"}}}}})"})
+                started.runtime, {"POST", "/_matrix/client/v3/keys/signatures/upload", bob_token,
+                                  R"({"@alice:example.org":{")" + alice_keys.master.public_key +
+                                      R"(":{"user_id":"@alice:example.org","usage":["master"],"keys":{"ed25519:)" +
+                                      alice_keys.master.public_key + R"(":")" + alice_keys.master.public_key +
+                                      R"("},"signatures":{"@bob:example.org":{"ed25519:BOBUSK":"bob-usk-sig"}}}}})"})
                 .response.status == 200U);
 
         auto const bob_signature_seen_by = [&](std::string const& token) -> bool {
@@ -2228,12 +2228,10 @@ SCENARIO("POST /keys/query does not expose user_signing_key to non-owners",
         auto started = merovingian::homeserver::start_client_server(conformance_config());
         REQUIRE(started.started);
         auto const alice_token = logged_in_token(started.runtime);
-        REQUIRE(
-            merovingian::homeserver::handle_client_server_request(
-                started.runtime,
-                {"POST", "/_matrix/client/v3/keys/device_signing/upload", alice_token,
-                 R"({"master_key":{"user_id":"@alice:example.org","usage":["master"],"keys":{"ed25519:MKEY":"mval"},"signatures":{}},"user_signing_key":{"user_id":"@alice:example.org","usage":["user_signing"],"keys":{"ed25519:USIGN":"uval"},"signatures":{}},"auth":{"type":"m.login.password","password":"CorrectHorse7!"}})"})
-                .response.status == 200U);
+        REQUIRE(merovingian::homeserver::handle_client_server_request(
+                    started.runtime, {"POST", "/_matrix/client/v3/keys/device_signing/upload", alice_token,
+                                      fresh_cross_signing_upload_body("@alice:example.org", true, false, true)})
+                    .response.status == 200U);
 
         WHEN("bob queries alice's keys")
         {
@@ -2424,9 +2422,8 @@ SCENARIO("POST /keys/device_signing/upload emits device_lists.changed in /sync",
         WHEN("alice uploads cross-signing keys from DEVICE1")
         {
             auto const upload = merovingian::homeserver::handle_client_server_request(
-                rt,
-                {"POST", "/_matrix/client/v3/keys/device_signing/upload", token_a,
-                 R"({"master_key":{"user_id":"@alice:example.org","usage":["master"],"keys":{"ed25519:MKEY":"mval"},"signatures":{}},"user_signing_key":{"user_id":"@alice:example.org","usage":["user_signing"],"keys":{"ed25519:USIGN":"uval"},"signatures":{}},"auth":{"type":"m.login.password","password":"CorrectHorse7!"}})"});
+                rt, {"POST", "/_matrix/client/v3/keys/device_signing/upload", token_a,
+                     fresh_cross_signing_upload_body("@alice:example.org", true, false, true)});
             REQUIRE(upload.response.status == 200U);
 
             THEN("DEV_B's next /sync includes alice in device_lists.changed")
@@ -2538,12 +2535,11 @@ SCENARIO("POST /keys/signatures/upload emits device_lists.changed in /sync",
         auto const token_b = login_existing_user(rt, "alice", "DEV_B"); // alice / DEV_B
 
         // Upload cross-signing keys first (precondition for signature upload).
-        REQUIRE(
-            merovingian::homeserver::handle_client_server_request(
-                rt,
-                {"POST", "/_matrix/client/v3/keys/device_signing/upload", token_a,
-                 R"({"master_key":{"user_id":"@alice:example.org","usage":["master"],"keys":{"ed25519:MKEY":"mval"},"signatures":{}},"self_signing_key":{"user_id":"@alice:example.org","usage":["self_signing"],"keys":{"ed25519:SSIGN":"sval"},"signatures":{}},"auth":{"type":"m.login.password","password":"CorrectHorse7!"}})"})
-                .response.status == 200U);
+        auto const alice_keys = make_cross_signing_set("@alice:example.org");
+        REQUIRE(merovingian::homeserver::handle_client_server_request(
+                    rt, {"POST", "/_matrix/client/v3/keys/device_signing/upload", token_a,
+                         cross_signing_upload_body(alice_keys.selected_members(true, true, false))})
+                    .response.status == 200U);
 
         // Advance DEV_B's since token past the cross-signing key-upload notification.
         auto const sync_after_upload =
@@ -2554,9 +2550,11 @@ SCENARIO("POST /keys/signatures/upload emits device_lists.changed in /sync",
         WHEN("alice uploads a device self-signature from DEVICE1")
         {
             auto const upload = merovingian::homeserver::handle_client_server_request(
-                rt,
-                {"POST", "/_matrix/client/v3/keys/signatures/upload", token_a,
-                 R"({"@alice:example.org":{"ed25519:MKEY":{"user_id":"@alice:example.org","usage":["master"],"keys":{"ed25519:MKEY":"mval"},"signatures":{"@alice:example.org":{"ed25519:DEVICE1":"c2ln"}}}}})"});
+                rt, {"POST", "/_matrix/client/v3/keys/signatures/upload", token_a,
+                     R"({"@alice:example.org":{"ed25519:)" + alice_keys.master.public_key +
+                         R"(":{"user_id":"@alice:example.org","usage":["master"],"keys":{"ed25519:)" +
+                         alice_keys.master.public_key + R"(":")" + alice_keys.master.public_key +
+                         R"("},"signatures":{"@alice:example.org":{"ed25519:DEVICE1":"c2ln"}}}}})"});
             REQUIRE(upload.response.status == 200U);
 
             THEN("DEV_B's next /sync includes alice in device_lists.changed")

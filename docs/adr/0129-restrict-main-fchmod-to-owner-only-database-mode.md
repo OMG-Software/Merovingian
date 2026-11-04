@@ -58,4 +58,4 @@ database files. Path-based chmod also discards the descriptor identity guarantee
 ## Links
 
 * [Runtime hardening](../hardening.md)
-* [29 September 2026 security audit](../security-audit-report-2026-09-29.md)
+* 29 September 2026 security audit (2026-09-29 security audit report, removed from the repository in 0.12.72)
