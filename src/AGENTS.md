@@ -1,6 +1,6 @@
 # src/ — Implementations
 
-Every `.cpp` file here mirrors a header in `include/merovingian/` at the same relative path.
+A `.cpp` file here normally mirrors the header of the same name at the same relative path in `include/merovingian/`. Two do not: `database/sqlite_store.cpp` and `federation_worker/main.cpp` have no header. Some headers have no `.cpp`.
 Module directory names match: `src/auth/` ↔ `include/merovingian/auth/`.
 
 ## File conventions
