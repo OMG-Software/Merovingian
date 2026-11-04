@@ -2754,8 +2754,8 @@ SCENARIO("MSC4186 sliding sync sends a newly listed room all of its account data
         for (auto const* room_id : {&room_a, &room_b})
         {
             REQUIRE(merovingian::homeserver::handle_client_server_request(
-                        rt, {"PUT", "/_matrix/client/v3/user/%40alice%3Aexample.org/rooms/" + *room_id +
-                                        "/tags/m.favourite",
+                        rt, {"PUT",
+                             "/_matrix/client/v3/user/%40alice%3Aexample.org/rooms/" + *room_id + "/tags/m.favourite",
                              alice_token, "{}"})
                         .response.status == 200U);
         }
@@ -2785,6 +2785,68 @@ SCENARIO("MSC4186 sliding sync sends a newly listed room all of its account data
             THEN("the room already sent, unchanged, is not sent its tag again")
             {
                 REQUIRE(account_data_types_for_room(second.response.body, listed_room).empty());
+            }
+        }
+    }
+}
+
+// Performance refactor pin (P11): the member counts and heroes of a sliding sync room are read from the
+// room's own membership and state rows. They must follow a membership change made through the API (a join
+// and a leave), not a snapshot taken at hydration.
+SCENARIO("MSC4186 sliding sync member counts and heroes follow joins and leaves", "[sliding-sync][counts][p11]")
+{
+    GIVEN("alice and bob in one room, and a second room only alice is in")
+    {
+        auto const config = sliding_sync_config();
+        auto started = merovingian::homeserver::start_client_server(config);
+        REQUIRE(started.started);
+        auto& rt = started.runtime;
+        auto const alice_token = register_and_login(rt, "alice", "CorrectHorse7!", "ALICE");
+        auto const bob_token = register_and_login(rt, "bob", "CorrectHorse7!", "BOB");
+        auto const shared_room = create_room(rt, alice_token);
+        auto const solo_room = create_room(rt, alice_token);
+        REQUIRE(merovingian::homeserver::handle_client_server_request(
+                    rt, {"POST", "/_matrix/client/v3/rooms/" + shared_room + "/invite", alice_token,
+                         R"({"user_id":"@bob:example.org"})"})
+                    .response.status == 200U);
+        REQUIRE(merovingian::homeserver::handle_client_server_request(
+                    rt, {"POST", "/_matrix/client/v3/rooms/" + shared_room + "/join", bob_token, "{}"})
+                    .response.status == 200U);
+        // A new connection per question, so every room is initial and is in the response.
+        auto connections = 0;
+        auto const counts_of = [&rt, &alice_token, &connections](std::string const& room_id) {
+            auto const body =
+                R"({"conn_id":"c)" + std::to_string(++connections) +
+                R"(","lists":{"all":{"ranges":[[0,9]],"required_state":[],"timeline_limit":1,"include_heroes":true}}})";
+            auto const result = sliding_sync(rt, alice_token, body);
+            REQUIRE(result.response.status == 200U);
+            auto const rooms = rooms_object(result.response.body);
+            auto const* room = object_member_as_object(rooms, room_id);
+            REQUIRE(room != nullptr);
+            auto const* joined = int_member(*room, "joined_count");
+            auto const* heroes = object_member_as_array(*room, "heroes");
+            REQUIRE(joined != nullptr);
+            return std::pair{*joined, heroes == nullptr ? std::size_t{0U} : heroes->size()};
+        };
+
+        WHEN("bob has joined")
+        {
+            THEN("the shared room counts two joined and shows bob as a hero, the solo room one and no hero")
+            {
+                REQUIRE(counts_of(shared_room) == std::pair{std::int64_t{2}, std::size_t{1U}});
+                REQUIRE(counts_of(solo_room) == std::pair{std::int64_t{1}, std::size_t{0U}});
+            }
+        }
+
+        WHEN("bob then leaves")
+        {
+            REQUIRE(merovingian::homeserver::handle_client_server_request(
+                        rt, {"POST", "/_matrix/client/v3/rooms/" + shared_room + "/leave", bob_token, "{}"})
+                        .response.status == 200U);
+
+            THEN("the shared room counts one joined and shows no hero")
+            {
+                REQUIRE(counts_of(shared_room) == std::pair{std::int64_t{1}, std::size_t{0U}});
             }
         }
     }

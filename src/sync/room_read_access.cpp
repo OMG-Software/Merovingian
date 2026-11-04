@@ -70,14 +70,8 @@ namespace
     [[nodiscard]] auto current_member_event_id(database::PersistentStore const& store, std::string_view room_id,
                                                std::string_view user_id) -> std::optional<std::string>
     {
-        for (auto const& state : store.state)
-        {
-            if (state.room_id == room_id && state.event_type == member_type && state.state_key == user_id)
-            {
-                return state.event_id;
-            }
-        }
-        return std::nullopt;
+        // The state index (ADR-0344): one lookup, no scan of every room's state.
+        return database::find_current_state_event_id(store, room_id, member_type, user_id);
     }
 
     // The event that ended the user's most recent join, found by walking the chain of the
@@ -133,19 +127,19 @@ auto room_read_access_for(database::PersistentStore const& store, std::string_vi
     auto found_row = false;
     auto newest_ordering = std::uint64_t{0U};
     auto membership = std::string_view{};
-    for (auto const& row : store.memberships)
-    {
-        if (row.room_id != room_id || row.user_id != user_id)
+    // Only this room's rows, in storage order (ADR-0437); the user's newest row decides.
+    database::for_each_room_membership_row(store, room_id, [&](database::PersistentMembership const& row) {
+        if (row.user_id != user_id)
         {
-            continue;
+            return;
         }
         if (!found_row || row.stream_ordering >= newest_ordering)
         {
             found_row = true;
             newest_ordering = row.stream_ordering;
-            membership = row.membership;
+            membership = std::string_view{row.membership};
         }
-    }
+    });
 
     auto const member_event_id = current_member_event_id(store, room_id, user_id);
     if (!found_row)
@@ -222,13 +216,9 @@ auto room_state_event_ids(database::PersistentStore const& store, std::string_vi
     if (access.kind == RoomReadKind::current && !at.has_value())
     {
         auto ids = std::vector<std::string>{};
-        for (auto const& state : store.state)
-        {
-            if (state.room_id == room_id)
-            {
-                ids.push_back(state.event_id);
-            }
-        }
+        database::for_each_room_state_row(store, room_id, [&ids](database::PersistentStateEvent const& state) {
+            ids.push_back(state.event_id);
+        });
         return ids;
     }
 
