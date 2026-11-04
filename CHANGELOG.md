@@ -1,3 +1,7 @@
+## 0.12.72
+
+The high severity findings of the November project analysis.
+
 ## 0.12.71
 
 The low and informational findings of security audit run 2 (ref 5e67d4e8).
