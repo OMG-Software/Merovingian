@@ -497,6 +497,40 @@ SCENARIO("Signed federation request verification rejects stale bad mismatched an
     }
 }
 
+// Spec: ../../docs/matrix-v1.19-spec/server-server-api.md#publishing-keys
+// ("old_verify_keys which are only valid for signing events").
+SCENARIO("A retired key never authenticates a federation request", "[federation][inbound][security][old-keys]")
+{
+    GIVEN("a correctly signed request and the signing key marked retired")
+    {
+        auto const origin = std::string{"matrix.example.org"};
+        auto const key_id = std::string{"ed25519:auto"};
+        auto const token = std::string{"verify-token"};
+        auto key = merovingian::federation::FederationKeyRecord{};
+        key.server_name = origin;
+        key.key_id = key_id;
+        key.valid_until_ts = 2000U;
+        key.public_key_bytes = merovingian::federation::test::keypair_from_seed(token).public_key;
+        auto retired = key;
+        retired.retired = true;
+        retired.expired_ts = 2000U;
+        auto const request = signed_request(origin, key_id, token, pdu_for(origin));
+
+        WHEN("the request is verified against the live key and against the retired key")
+        {
+            auto const live = merovingian::federation::verify_signed_federation_request(request, key);
+            auto const old = merovingian::federation::verify_signed_federation_request(request, retired);
+
+            THEN("only the live key is accepted")
+            {
+                REQUIRE(live.accepted);
+                REQUIRE_FALSE(old.accepted);
+                REQUIRE(old.status == 403U);
+            }
+        }
+    }
+}
+
 SCENARIO("Inbound federation transaction accepts signed public trusted remotes", "[federation][inbound][transaction]")
 {
     GIVEN("a runtime with a known public remote")

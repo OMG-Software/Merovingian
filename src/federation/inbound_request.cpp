@@ -2499,6 +2499,12 @@ auto verify_signed_federation_request(SignedFederationRequest const& request, Fe
     {
         return make_decision(false, 403U, "request signing key does not match origin");
     }
+    // server-server-api.md, Publishing keys: old_verify_keys "are only valid
+    // for signing events", never for a federation request.
+    if (key.retired)
+    {
+        return make_decision(false, 403U, "request signing key is retired");
+    }
     if (key.valid_until_ts != 0U && request.now_ts > key.valid_until_ts)
     {
         return make_decision(false, 403U, "request signing key has expired");
@@ -3046,6 +3052,12 @@ auto check_signing_key_valid_for_event(FederationKeyRecord const& key, canonical
     {
         return make_decision(false, 400U, "PDU origin_server_ts is missing or invalid");
     }
+    // A retired key (old_verify_keys) verifies an event only if it was sent
+    // before the key expired; a missing expired_ts fails closed.
+    if (key.retired && (key.expired_ts == 0U || static_cast<std::uint64_t>(*ts) >= key.expired_ts))
+    {
+        return make_decision(false, 403U, "sender domain signing key expired before the event was sent");
+    }
     if (key.valid_until_ts < static_cast<std::uint64_t>(*ts))
     {
         return make_decision(false, 403U, "sender domain signing key expired before the event was sent");
@@ -3229,7 +3241,8 @@ namespace
                 remember_key_resolution_failure(runtime, request.origin, request.key_id,
                                                 std::chrono::steady_clock::now());
             }
-            if (resolved.has_value())
+            // A retired key never authenticates a request (Publishing keys).
+            if (resolved.has_value() && !resolved->signing_key.retired)
             {
                 if (resolved->server_name.empty())
                 {
@@ -3305,7 +3318,8 @@ namespace
                 }
                 auto const refresh_slot = KeyResolutionSlot{runtime, !refresh_cache_served};
                 auto refreshed = runtime.remote_key_resolver(request.origin, request.key_id);
-                if (refreshed.has_value() && !refreshed->signing_key.public_key_bytes.empty())
+                if (refreshed.has_value() && !refreshed->signing_key.retired &&
+                    !refreshed->signing_key.public_key_bytes.empty())
                 {
                     remote->signing_key = std::move(refreshed->signing_key);
                     persist_remote_signing_key(runtime, *remote);

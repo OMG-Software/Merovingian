@@ -25,12 +25,27 @@ struct RemoteVerifyKey final
     std::string public_key_base64{};
 };
 
+// One `old_verify_keys` entry: a key the server no longer signs with, and when
+// it stopped (server-server-api.md, Publishing keys). Valid only for events
+// sent before `expired_ts`; never for a federation request.
+struct RemoteOldVerifyKey final
+{
+    std::string key_id{};
+    std::string public_key_base64{};
+    std::uint64_t expired_ts{0U};
+};
+
 // Parsed and self-verified result of fetching a remote server's keys.
 struct RemoteKeyResponse final
 {
     std::string server_name{};
     std::uint64_t valid_until_ts{0U};
     std::vector<RemoteVerifyKey> verify_keys{};
+    // Well-formed `old_verify_keys` entries. A malformed entry is skipped on its
+    // own; it never costs the response its `verify_keys`. Not persisted by
+    // cache_remote_server_keys (the cache table has no column for them), so a
+    // retired key resolves from a fresh fetch only.
+    std::vector<RemoteOldVerifyKey> old_verify_keys{};
 };
 
 struct RemoteKeyFetchResult final

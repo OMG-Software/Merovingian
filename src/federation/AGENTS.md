@@ -43,6 +43,13 @@ Federation is the highest-risk surface: **all input comes from untrusted remote 
    `max_signature_keys_per_server` (4) for the sender's server is refused before any lookup.
    Never pick "the" key ID with a loop that stops at the first match.
 
+   A key a server lists under `old_verify_keys` is "only valid for signing events" (Publishing keys). The key
+   response parser reads it (`RemoteKeyResponse::old_verify_keys`) and the resolver returns it as a
+   `FederationKeyRecord` with `retired` set: `verify_signed_federation_request` refuses it, the X-Matrix paths never
+   install it as a remote's request key, and `check_signing_key_valid_for_event` accepts it only when
+   `origin_server_ts < expired_ts` (ADR-0425). It is not written to the key cache (no schema column), so it resolves
+   from a fresh fetch. A malformed entry is skipped alone.
+
    A `send_join` naming one of THIS server's users as `join_authorised_via_users_server`
    cannot carry our signature yet: the request layer and the worker relay leave that one check
    to the acceptor (`PduSignatureChecks::authorised_here`), which co-signs only after

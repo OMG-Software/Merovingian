@@ -80,6 +80,7 @@ namespace
         std::string server_name{};
         std::uint64_t valid_until_ts{0U};
         std::vector<RemoteVerifyKey> verify_keys{};
+        std::vector<RemoteOldVerifyKey> old_verify_keys{};
         // signatures[server_name][key_id] = base64 signature
         std::vector<std::pair<std::string, std::string>> server_signatures{};
         canonicaljson::Value canonical_payload{};
@@ -98,6 +99,50 @@ namespace
             stripped.push_back(canonicaljson::make_member(member.key, *member.value));
         }
         return stripped;
+    }
+
+    // server-server-api.md, Publishing keys: `old_verify_keys` maps a key ID to
+    // {expired_ts, key}. Each entry stands alone: one that is malformed, lacks a
+    // usable expired_ts (an integer above zero), repeats a current key's ID or
+    // carries key material that is not a 32-byte Ed25519 key is skipped, and
+    // never costs the response its verify_keys. A member that is not an object
+    // yields no old keys. The response signature already covers this member.
+    [[nodiscard]] auto parse_old_verify_keys(canonicaljson::Object const& root,
+                                             std::vector<RemoteVerifyKey> const& verify_keys)
+        -> std::vector<RemoteOldVerifyKey>
+    {
+        auto old_keys = std::vector<RemoteOldVerifyKey>{};
+        auto const* member = find_member(root, "old_verify_keys");
+        auto const* object = member == nullptr ? nullptr : std::get_if<canonicaljson::Object>(&member->storage());
+        if (object == nullptr)
+        {
+            return old_keys;
+        }
+        for (auto const& entry : *object)
+        {
+            auto const is_current = std::ranges::any_of(verify_keys, [&entry](RemoteVerifyKey const& current) {
+                return current.key_id == entry.key;
+            });
+            auto const is_repeat = std::ranges::any_of(old_keys, [&entry](RemoteOldVerifyKey const& seen) {
+                return seen.key_id == entry.key;
+            });
+            auto const* fields = std::get_if<canonicaljson::Object>(&entry.value->storage());
+            if (is_current || is_repeat || fields == nullptr)
+            {
+                continue;
+            }
+            auto const* key_value = find_member(*fields, "key");
+            auto const* expired_value = find_member(*fields, "expired_ts");
+            auto key = key_value == nullptr ? std::nullopt : extract_string(*key_value);
+            auto expired_ts = expired_value == nullptr ? std::nullopt : extract_integer(*expired_value);
+            if (!key.has_value() || !expired_ts.has_value() || *expired_ts == 0U ||
+                events::matrix_bytes_from_base64(*key).size() != crypto::ed25519_public_key_bytes)
+            {
+                continue;
+            }
+            old_keys.push_back({entry.key, std::move(*key), *expired_ts});
+        }
+        return old_keys;
     }
 
     [[nodiscard]] auto parse_response(std::string_view body) -> std::optional<RemoteKeyParsed>
@@ -184,6 +229,7 @@ namespace
             return std::nullopt;
         }
 
+        record.old_verify_keys = parse_old_verify_keys(*root, record.verify_keys);
         record.canonical_payload = canonicaljson::Value{strip_signatures(*root)};
         return record;
     }
@@ -306,6 +352,7 @@ auto parse_and_verify_remote_key_response(std::string_view body, std::string_vie
     response.server_name = std::move(parsed->server_name);
     response.valid_until_ts = parsed->valid_until_ts;
     response.verify_keys = std::move(parsed->verify_keys);
+    response.old_verify_keys = std::move(parsed->old_verify_keys);
     return {true, std::move(response), {}};
 }
 
@@ -469,6 +516,34 @@ namespace
         return runtime;
     }
 
+    // The record for a key the response lists under old_verify_keys: marked
+    // retired, so it can verify an event sent before `expired_ts` and nothing
+    // else. A server cannot have stopped using a key in the future, so the
+    // expiry is capped at the moment of the fetch. Never written to the cache.
+    [[nodiscard]] auto fetched_old_key_record(RemoteKeyResponse const& response, std::string_view key_id,
+                                              std::uint64_t fetched_at_ms) -> std::optional<FederationKeyRecord>
+    {
+        auto const entry = std::ranges::find_if(response.old_verify_keys, [key_id](RemoteOldVerifyKey const& key) {
+            return key.key_id == key_id;
+        });
+        if (entry == response.old_verify_keys.end() || entry->expired_ts == 0U)
+        {
+            return std::nullopt;
+        }
+        auto record = FederationKeyRecord{};
+        record.server_name = response.server_name;
+        record.key_id = entry->key_id;
+        record.retired = true;
+        record.expired_ts = std::min(entry->expired_ts, fetched_at_ms);
+        record.valid_until_ts = record.expired_ts;
+        record.public_key_bytes = events::matrix_bytes_from_base64(entry->public_key_base64);
+        if (record.expired_ts == 0U || record.public_key_bytes.size() != crypto::ed25519_public_key_bytes)
+        {
+            return std::nullopt;
+        }
+        return record;
+    }
+
     // The record for `key_id` in a fetched, self-verified key response, trusted
     // for exactly as long as cache_remote_server_keys would trust it.
     [[nodiscard]] auto fetched_key_record(RemoteKeyResponse const& response, std::string_view key_id,
@@ -483,7 +558,7 @@ namespace
         });
         if (entry == response.verify_keys.end())
         {
-            return std::nullopt;
+            return fetched_old_key_record(response, key_id, fetched_at_ms);
         }
         auto record = FederationKeyRecord{};
         record.server_name = response.server_name;
