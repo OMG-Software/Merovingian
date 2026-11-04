@@ -89,11 +89,8 @@ auto seed_room(merovingian::homeserver::HomeserverRuntime& runtime, std::string_
     auto& local = runtime.database.rooms;
 
     store.rooms.push_back({std::string{room_id}, "@admin:local.example.org"});
-    local.push_back({std::string{room_id},
-                     "@admin:local.example.org",
-                     std::vector<std::string>{"@alice:remote.example.org"},
-                     {},
-                     false});
+    local.push_back({std::string{room_id}, "@admin:local.example.org",
+                     std::vector<std::string>{"@alice:remote.example.org"}, false});
     store.memberships.push_back({std::string{room_id}, "@alice:remote.example.org", "join", 0U});
 
     auto const create_id = std::string{room_id} + ":create";
