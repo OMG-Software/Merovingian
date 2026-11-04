@@ -1,5 +1,7 @@
 // SPDX-FileCopyrightText: 2026 James Chapman
 // SPDX-License-Identifier: GPL-3.0-or-later
+
+#include "../support/joining_threads.hpp"
 #include "merovingian/sync/lazy_member_tracker.hpp"
 
 #include <catch2/catch_test_macros.hpp>
@@ -8,8 +10,6 @@
 #include <atomic>
 #include <cstddef>
 #include <string>
-#include <thread>
-#include <vector>
 
 namespace
 {
@@ -401,7 +401,7 @@ SCENARIO("Driving the tracker from several threads keeps its counts within the c
 
         WHEN("each thread records its own members and reads them back")
         {
-            auto threads = std::vector<std::jthread>{};
+            auto threads = merovingian::tests::JoiningThreads{};
             for (auto index = std::size_t{0U}; index < hits.size(); ++index)
             {
                 threads.emplace_back([&tracker, &hits, index] {
@@ -422,7 +422,7 @@ SCENARIO("Driving the tracker from several threads keeps its counts within the c
                     }
                 });
             }
-            threads.clear(); // joins
+            threads.join();
 
             THEN("the caps hold once the threads have finished")
             {

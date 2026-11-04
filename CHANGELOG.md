@@ -27,6 +27,10 @@ Lazy-loading of room members on `/sync` and `/context`.
   at the start of the timeline whatever `since` says.
 - **A left room's lazy-loaded `state` no longer ends with the user's older join.** When an incremental sync puts the leave in `state` (the timeline filter excludes `m.room.member`) and the user also sent an event in the window, their earlier join was added after the leave, so a client applying `state` in order showed them joined. No own member event is added beside the leave now. The `LruMap` behind the lazy-member tracker erases entries with `erase_at` instead of rebuilding its index on every request.
 
+### CI
+
+- The lazy-member tracker's thread test uses `JoiningThreads`, not `std::jthread`, which the libc++ of FreeBSD and OpenBSD does not provide (ADR-0167).
+
 ## 0.12.72
 
 The high severity findings of the November project analysis (ref 8af381cf). Complement in CI was left out on the owner's
