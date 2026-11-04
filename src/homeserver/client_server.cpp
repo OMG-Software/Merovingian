@@ -19438,7 +19438,7 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             }
             // Spec: "Moves any local aliases to the new room." The tombstone is already sent, so a failed
             // write is reported as a server fault rather than a success that leaves an alias on the old room.
-            auto const aliases_to_move = [&] {
+            auto const aliases_to_move = std::invoke([&] {
                 auto moved = std::vector<std::string>{};
                 for (auto const& alias : rt.homeserver.database.persistent_store.room_aliases)
                 {
@@ -19448,7 +19448,7 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                     }
                 }
                 return moved;
-            }();
+            });
             for (auto const& alias : aliases_to_move)
             {
                 if (!database::reassign_room_alias(rt.homeserver.database.persistent_store, alias, new_room_id))
