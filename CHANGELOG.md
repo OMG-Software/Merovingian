@@ -60,6 +60,9 @@ instruction, and full lazy-loading follows on its own branch.
   `store_federation_transactions`, `store_cross_signing_keys` and `store_key_backup_sessions` each write a batch, reopen
   the store and compare every field, then upsert and reopen again. A key backup batch naming a version that does not
   exist is refused whole, and neither the mirror nor the database keeps any of it.
+- CodeQL: the seven long functions this version adds or lengthens now say why their steps matter, among them
+  `cross_signing_upload_refusal`, and `store_notifications` erases pruned rows from a plain loop. The comments change no
+  behaviour.
 
 ### Documentation
 
