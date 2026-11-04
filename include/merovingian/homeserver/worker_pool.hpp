@@ -52,6 +52,15 @@ struct HomeserverRuntime;
 [[nodiscard]] auto handle_membership_ingest_request(HomeserverRuntime& runtime, std::string_view request_json)
     -> std::string;
 
+// The digests of the EDUs a main-verified inbound /send body carries, one per occurrence, in body order
+// (F-74, ADR-0395). WorkerPool::handle hands them to the IPC channel with the request, and
+// handle_edu_ingest_request admits a worker-relayed EDU only against one it has not used. Empty unless the
+// request is a signature-verified PUT /_matrix/federation/v1/send/{txnId} whose body parses as a transaction,
+// and empty when the body holds more than `max_edus` EDUs: the worker refuses such a transaction whole, so it
+// relays none of them. Exposed for tests; takes no lock and makes no call.
+[[nodiscard]] auto verified_send_edu_digests(LocalHttpRequest const& request, std::uint32_t max_edus)
+    -> std::vector<std::string>;
+
 // Handles an "edu_ingest" IPC request (a worker relaying an inbound EDU —
 // m.typing, m.receipt, m.presence, m.direct_to_device, or
 // m.device_list_update — so it reaches main's edu_sink instead of being
@@ -61,7 +70,7 @@ struct HomeserverRuntime;
 // without spawning a real worker subprocess. Takes and returns the same wire
 // JSON a worker sends/receives over the IPC channel.
 [[nodiscard]] auto handle_edu_ingest_request(HomeserverRuntime& runtime, std::string_view request_json,
-                                             ipc::IpcChannel const& receiving_channel) -> std::string;
+                                             ipc::IpcChannel& receiving_channel) -> std::string;
 
 // Handles an "invite_ingest" IPC request (a worker relaying an inbound
 // PUT /_matrix/federation/{v1,v2}/invite acceptance so the invite's

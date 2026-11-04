@@ -2157,9 +2157,12 @@ membership. No whole-finding or release acceptance is claimed. See proposed
   again, and a replay older than 24 hours or evicted by 65 536 newer messages from any origin
   is too; persisting it would need a migration and buys little for a best-effort EDU. The
   origin in an `edu_ingest` frame remains worker-claimed, but the FED-12 repair
-  above correlates it with a live main-owned verified request before sink admission.
-  This is not per-EDU signature or signed-body membership verification; ADR-0071
-  covers PDU re-verification only.
+  above correlates it with a live main-owned verified request before sink admission,
+  and since 0.12.71 (F-74, ADR-0395) main also requires the relayed EDU to be one the
+  verified `/send` body carried, by a digest of its canonical `(edu_type, content)`
+  pair, consumed once per occurrence. A compromised worker can no longer inject an
+  EDU as another server's users; it can still replay or reorder, within one live
+  request, EDUs that server really sent. ADR-0071 covers PDU re-verification.
 - **Inbound `/invite` overwrote a ban with a forged invite (FED-5).** `invite_handler` ran no
   room authorisation rules: it rewrote the target's membership row from `ban` to `invite` and
   stored the remote event as the target's current `m.room.member` state, so local composition

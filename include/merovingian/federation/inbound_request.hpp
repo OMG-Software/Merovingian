@@ -28,6 +28,7 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 namespace merovingian::federation
@@ -696,6 +697,12 @@ struct InboundSignatureVerification final
 
 // The txnId of a /_matrix/federation/v1/send/{txnId} target, or empty.
 [[nodiscard]] auto federation_send_transaction_id(std::string_view target) -> std::string;
+// The (edu_type, canonical content JSON) of every EDU in a /send body, in order, exactly as
+// handle_inbound_federation_request hands them to the EDU sink: the same parse (`parse_lossless`, so a float,
+// an out-of-range integer, a duplicate key or a depth or size overrun refuses the whole body), the same members
+// skipped, the same canonical serialisation (keys sorted). Empty when the body is not a valid transaction.
+// Main uses it to bind the EDUs a worker relays to the body it authenticated (F-74, ADR-0395).
+[[nodiscard]] auto extract_transaction_edus(std::string_view body) -> std::vector<std::pair<std::string, std::string>>;
 [[nodiscard]] auto federation_transaction_completed(FederationRuntimeState const& runtime, std::string_view origin,
                                                     std::string_view transaction_id) -> bool;
 // The answer a completed transaction was first given: nullopt when the

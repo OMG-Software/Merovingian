@@ -667,6 +667,16 @@ quickly finding everything a given `AGENTS.md` file contributed.
   Why: the two identifiers share a signature namespace (a colliding device received the master key's
   uploaded signatures), and a remote cache kept a revoked device listed, possibly as verified.
   Source: `src/homeserver/AGENTS.md`.
+- **Bind every EDU a worker relays to the EDUs of the request body main verified, once per occurrence.**
+  `WorkerPool::handle` gives the pending request one digest per EDU of a signature-verified `/send` body
+  (`verified_send_edu_digests`); `handle_edu_ingest_request` admits a relay only through
+  `IpcChannel::consume_pending_edu` (live parent on the receiving channel, exact origin, an unused equal digest),
+  hashing before it takes `runtime.mutex` and never holding the pending lock across the sink. A relay that is not in
+  the body is refused and logged.
+  Why: an EDU has no signature of its own, so origin correlation alone let a compromised worker holding any live
+  verified request from server X inject to-device, receipt, typing and presence EDUs as X's users, any number of times
+  (F-74, ADR-0395; refines ADR-0142).
+  Source: `src/ipc/AGENTS.md`, `src/homeserver/AGENTS.md`.
 
 - **Authorise an inbound `/invite` for a room we hold against the room's current state before
   signing it, never overwrite a `ban` from that path, and leave `current_state` to the

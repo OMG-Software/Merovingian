@@ -718,20 +718,23 @@ SCENARIO("Sync long-poll wakes when a federation-relayed EDU reaches to_device_m
         // this exact runtime either way).
         merovingian::homeserver::wire_federation_callbacks(rt.homeserver);
         REQUIRE(rt.homeserver.federation.edu_sink);
+        auto const device_id = first_device_id_for(rt, alice_id);
+        auto const content_json = std::string{R"({"sender":"@bob:matrix.example.org",)"} +
+                                  R"("type":"m.room.encrypted","message_id":"m1","messages":{")" + alice_id +
+                                  R"(":{")" + device_id +
+                                  R"(":{"algorithm":"m.olm.v1.curve25519-aes-sha2","ciphertext":{},)"
+                                  R"("sender_key":"identkey"}}}})";
+        // The EDU the verified body carries (F-74): the parent holds its digest, as WorkerPool::handle would.
+        auto const content_digest = merovingian::federation::edu_relay_digest("m.direct_to_device", content_json);
+        REQUIRE(content_digest.has_value());
         auto relay_channels = merovingian::tests::make_edu_relay_channels();
         auto relay_context = merovingian::tests::EduRelayContext{*relay_channels.main, *relay_channels.worker};
-        REQUIRE(relay_context.establish("matrix.example.org"));
+        REQUIRE(relay_context.establish("matrix.example.org", {*content_digest}));
 
         WHEN("a worker relays an Olm-encrypted m.direct_to_device EDU mid-wait, the same way "
              "WorkerSupervisor::set_request_handler's \"edu_ingest\" branch does")
         {
             auto const before_id = rt.sync_notifier->current_sync_stream_id();
-            auto const device_id = first_device_id_for(rt, alice_id);
-            auto const content_json = std::string{R"({"sender":"@bob:matrix.example.org",)"} +
-                                      R"("type":"m.room.encrypted","message_id":"m1","messages":{")" + alice_id +
-                                      R"(":{")" + device_id +
-                                      R"(":{"algorithm":"m.olm.v1.curve25519-aes-sha2","ciphertext":{},)"
-                                      R"("sender_key":"identkey"}}}})";
             auto const request_json = std::string{R"({"type":"edu_ingest","edu_type":"m.direct_to_device",)"} +
                                       R"("origin":"matrix.example.org","content_json":)" +
                                       ipc_escape_json_string(content_json) + "}";
