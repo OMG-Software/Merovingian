@@ -2,6 +2,29 @@
 
 Lazy-loading of room members on `/sync` and `/context`.
 
+### Added
+
+- **Lazy-loading of room members on `GET /sync` (ADR-0450 to ADR-0454).** With `room.state.lazy_load_members`, a joined or
+  left room's `state` keeps all non-member state and carries only the member events of the delivered timeline's senders
+  (as of the timeline's start, on an incremental sync too), every member change in the gap of a `limited` sync, and the
+  user's own membership when they join or ask for `full_state`. A member the client has acknowledged is skipped: the
+  server remembers, in memory per user, device, `filter` and room, the event it sent and the `next_batch` that carried it,
+  and skips it only when a later `since` covers that token on all three components and the member event is unchanged. A
+  retry of an older `since` forgets what that token does not cover, so a lost response cannot lose a member.
+  `include_redundant_members=true` and `full_state=true` skip nothing. The state filter's `types` and `senders` apply to
+  the members, and `lazy_load_members` on `room.timeline` does nothing, as the spec has it. The tracker is bounded (1024
+  streams, 64 rooms and 64 members each, 131072 members in all, least recently used out; a `filter` over 2048 bytes is
+  untracked) and is forgotten on restart, which only costs a resend. Invite and knock state, sliding sync, and
+  `use_state_after`/`state_after` (not implemented) are untouched.
+- **`GET /rooms/{roomId}/context/{eventId}` honours `lazy_load_members` (ADR-0451).** `state` is only the member events of
+  the senders of `events_before`, `event` and `events_after`; the filter's `types` and `senders` do not remove them.
+  Redundant members are not tracked on `/context` or `/messages`.
+
+### Fixed
+
+- **`GET /sync` honours `full_state=true` (ADR-0453).** It was parsed and ignored. A joined room's `state` is now the state
+  at the start of the timeline whatever `since` says.
+
 ## 0.12.72
 
 The high severity findings of the November project analysis (ref 8af381cf). Complement in CI was left out on the owner's
