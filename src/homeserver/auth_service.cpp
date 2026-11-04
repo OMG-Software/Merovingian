@@ -50,6 +50,24 @@ namespace merovingian::homeserver
 namespace
 {
 
+    // F-62 (ADR-0416). A login that fails records the claimed user ID and device ID as the audit row's actor
+    // and target, and the caller is unauthenticated: it chooses both. Only text that is a well-formed
+    // identifier (the strict grammar a registration must meet, which has no space or '=') is recorded;
+    // anything else is recorded as a fixed marker. The refusal the client receives is the same either way. The
+    // diagnostic log line keeps the claimed text, where it is one field value.
+    constexpr std::string_view audit_invalid_user_id = "(invalid user id)";
+    constexpr std::string_view audit_invalid_device_id = "(invalid device id)";
+
+    [[nodiscard]] auto audit_claimed_user_id(std::string_view user_id) -> std::string
+    {
+        return std::string{auth::user_id_is_valid(user_id) ? user_id : audit_invalid_user_id};
+    }
+
+    [[nodiscard]] auto audit_claimed_device_id(std::string_view device_id) -> std::string
+    {
+        return std::string{auth::device_id_is_valid(device_id) ? device_id : audit_invalid_device_id};
+    }
+
     auto log_diagnostic(std::string_view event, std::vector<observability::StructuredLogField> fields,
                         observability::LogEventSeverity severity = observability::LogEventSeverity::debug) -> void
     {
@@ -784,7 +802,8 @@ namespace
                                      {"reason",    "invalid device id",    false}
             },
                                  observability::LogEventSeverity::warning, observability::AuditCategory::auth,
-                                 "login.rejected", user.user_id, std::string{device_id}, "invalid device id");
+                                 "login.rejected", user.user_id, audit_claimed_device_id(device_id),
+                                 "invalid device id");
             return make_operation_result(false, {}, "invalid device id");
         }
 
@@ -1120,7 +1139,7 @@ auto login_local_user(HomeserverRuntime& runtime, std::string_view user_id, std:
                                  {"retry_after_ms", std::to_string(retry_after_ms), false}
         },
                              observability::LogEventSeverity::warning, observability::AuditCategory::auth,
-                             "login.throttled", std::string{user_id}, std::string{device_id},
+                             "login.throttled", audit_claimed_user_id(user_id), audit_claimed_device_id(device_id),
                              "429:too many failed login attempts");
         auto throttled = make_operation_result(false, {}, "too many failed login attempts", 429U);
         // Carry the delay already computed above so the caller can render the
@@ -1188,7 +1207,7 @@ auto login_local_user(HomeserverRuntime& runtime, std::string_view user_id, std:
                                  {"reason",    audit_reason,           false}
         },
                              observability::LogEventSeverity::warning, observability::AuditCategory::auth,
-                             "login.rejected", std::string{user_id}, std::string{device_id},
+                             "login.rejected", audit_claimed_user_id(user_id), audit_claimed_device_id(device_id),
                              std::string{"403:"} + audit_reason);
         return make_operation_result(false, {}, "invalid login", 403U);
     }

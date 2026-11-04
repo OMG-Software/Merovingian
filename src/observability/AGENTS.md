@@ -61,6 +61,14 @@ durability distinction:
 
 ## Rules
 
+- **The admin audit view is JSON, one object per row** (F-62, ADR-0416). `admin_audit_summary`
+  quotes `actor`, `target` and `reason`, which can hold text an unauthenticated caller chose.
+  Never go back to joining the fields into a delimited line, and render any new reader of the
+  `audit_log` the same way.
+- **A URL is logged without its query** (F-76, ADR-0418). The logger judges a value by its field
+  name, so a query holding a credential or a user's URL passes through under `url`. Log
+  scheme, host, port and path (`loggable_url` in `outbound_client.cpp`), not `sanitized_http_target`,
+  whose marker list misses names such as `share_token` or `sig`.
 - **One log record is one physical line.** `SingleLog::make_log_line` passes the module and
   message through `escape_log_controls` (AUTH-9), so control characters in any logged value are
   written as printable escapes. Write log records only through `SingleLog`; never write log
