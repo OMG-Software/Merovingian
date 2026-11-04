@@ -46,6 +46,7 @@
 #include "merovingian/homeserver/local_http_router.hpp"
 #include "merovingian/homeserver/local_services.hpp"
 #include "merovingian/homeserver/media_service.hpp"
+#include "merovingian/homeserver/operator_admin.hpp"
 #include "merovingian/homeserver/presence_service.hpp"
 #include "merovingian/homeserver/push_rule_unread_classifier.hpp"
 #include "merovingian/homeserver/remote_media_fetch_scope.hpp"
@@ -969,11 +970,6 @@ namespace
         std::string reason{};
     };
 
-    struct MatrixAdminReviewBody final
-    {
-        std::string reason{"manual_review"};
-    };
-
     struct MatrixAdminPolicyRuleBody final
     {
         std::string action{"deny"};
@@ -1587,21 +1583,16 @@ namespace
         // Preserve the other moderation flag when updating one of the two.
         auto const new_suspended = is_lock ? target->suspended : *flag;
         auto const new_locked = is_lock ? *flag : target->locked;
-        if (!database::set_user_account_state(rt.homeserver.database.persistent_store, target_user_id, new_suspended,
-                                              new_locked))
+        auto const audit_event = is_lock ? std::string_view{"account.locked"} : std::string_view{"account.suspended"};
+        auto const reason_code = *flag ? (is_lock ? "locked" : "suspended") : (is_lock ? "unlocked" : "unsuspended");
+        // The one write behind this endpoint and the operator accounts route: persist, then mirror into the
+        // LocalUser the request-path gate reads, then audit. A failed write changes nothing in memory.
+        if (!set_local_user_moderation(rt.homeserver, *admin, target_user_id, new_suspended, new_locked, audit_event,
+                                       reason_code)
+                 .ok)
         {
             return dispatch_err(req, rt, 500U, "M_UNKNOWN", "Failed to persist account state.");
         }
-        // Mirror into the in-memory LocalUser vector so the request-path gate
-        // (account_state_for_user) and subsequent GET reads see the new state
-        // without a restart. set_user_account_state persists + updates the
-        // PersistentUser vector; this updates the authoritative LocalUser vector.
-        target->suspended = new_suspended;
-        target->locked = new_locked;
-        auto const audit_event = is_lock ? std::string_view{"account.locked"} : std::string_view{"account.suspended"};
-        auto const reason_code = *flag ? (is_lock ? "locked" : "suspended") : (is_lock ? "unlocked" : "unsuspended");
-        append_local_audit(rt.homeserver.database, observability::AuditCategory::admin, audit_event, *admin,
-                           target_user_id, reason_code);
         return dispatch_resp(req, rt, 200U, json_serialize(json_obj({json_member(field_name, json_bool(*flag))})));
     }
 
@@ -3082,25 +3073,6 @@ namespace
         return MatrixSafetyReportBody{*reason};
     }
 
-    [[nodiscard]] auto parse_admin_review_body(std::string_view body) -> std::optional<MatrixAdminReviewBody>
-    {
-        if (body.empty())
-        {
-            return MatrixAdminReviewBody{};
-        }
-        auto const object = parsed_json_object(body);
-        if (!object.has_value())
-        {
-            return std::nullopt;
-        }
-        auto const* reason = string_member(*object, "reason");
-        if (reason == nullptr || reason->empty())
-        {
-            return MatrixAdminReviewBody{};
-        }
-        return MatrixAdminReviewBody{*reason};
-    }
-
     [[nodiscard]] auto parse_admin_policy_rule_body(std::string_view body) -> std::optional<MatrixAdminPolicyRuleBody>
     {
         auto const object = parsed_json_object(body);
@@ -3723,35 +3695,13 @@ namespace
         // F-73 (ADR-0092): the operator surface this dispatcher serves has its own counters. Left in the
         // fallback, an admin request shares one count with every unknown client path, and the admin
         // tier's small allowance is compared with a count that cheaper traffic from the same client
-        // key raised. A path that is none of these stays in the fallback, so a client cannot make
-        // counter keys by inventing admin paths: the keys are the fixed routes plus one per moderation
-        // action, whatever media identifier follows.
-        auto constexpr operator_prefix = std::string_view{"/_merovingian/admin/"};
-        if (starts_with(out, operator_prefix))
+        // key raised. The counter key is the template of the route the table declares
+        // (observability::admin_routes(), ADR-0504), whatever identifier follows; a path that is none of
+        // them stays in the fallback, so a client cannot make counter keys by inventing admin paths.
+        if (starts_with(out, "/_merovingian/admin/"))
         {
-            static constexpr auto operator_routes = std::to_array<std::string_view>({
-                "/_merovingian/admin/health",
-                "/_merovingian/admin/metrics",
-                "/_merovingian/admin/media/metrics",
-                "/_merovingian/admin/audit",
-            });
-            if (std::ranges::find(operator_routes, out) != operator_routes.end())
-            {
-                return out;
-            }
-            static constexpr auto media_actions = std::to_array<std::string_view>({
-                "/_merovingian/admin/media/quarantine/",
-                "/_merovingian/admin/media/release/",
-                "/_merovingian/admin/media/remove/",
-            });
-            for (auto const action : media_actions)
-            {
-                if (starts_with(out, action) && has_one_segment(std::string_view{out}.substr(action.size())))
-                {
-                    return std::string{action} + "{mediaId}";
-                }
-            }
-            return std::string{unmatched};
+            auto const operator_route = observability::match_admin_path(out);
+            return operator_route.matched ? operator_route.route.path_template : std::string{unmatched};
         }
 
         auto constexpr review_prefix = std::string_view{"/_matrix/client/v3/admin/safety/review/"};
@@ -11678,23 +11628,6 @@ namespace
                                std::string{suffix.substr(separator + separator_text.size())}};
     }
 
-    [[nodiscard]] auto review_target_from_path(std::string_view target) -> std::optional<trust_safety::ReviewTarget>
-    {
-        if (target == "federation" || target == "federation_server")
-        {
-            return trust_safety::ReviewTarget::federation_server;
-        }
-        if (target == "media")
-        {
-            return trust_safety::ReviewTarget::media;
-        }
-        if (target == "room")
-        {
-            return trust_safety::ReviewTarget::room;
-        }
-        return std::nullopt;
-    }
-
     [[nodiscard]] auto admin_review_path_parts(std::string_view target) -> std::optional<AdminReviewPathParts>
     {
         auto constexpr prefix = std::string_view{"/_matrix/client/v3/admin/safety/review/"};
@@ -11707,7 +11640,7 @@ namespace
         {
             return std::nullopt;
         }
-        auto const review_target = review_target_from_path(suffix.substr(0U, separator));
+        auto const review_target = review_target_from_name(suffix.substr(0U, separator));
         if (!review_target.has_value())
         {
             return std::nullopt;
@@ -12845,36 +12778,18 @@ namespace
             return resp(200U, "{}");
         }
 
-        auto const path = admin_review_path_parts(req.target);
-        auto const body = parse_admin_review_body(req.body);
-        if (!path.has_value() || !body.has_value())
+        // The same implementation as POST /_merovingian/admin/review/{targetType}/{targetId} (ADR-0504).
+        auto const review = admin_review_path_parts(req.target);
+        if (!review.has_value())
         {
             return err(400U, "M_BAD_JSON", "admin review body must be Matrix JSON");
         }
-        auto const reason =
-            trust_safety::enforcement_reason(body->reason, "target held for review", "admin marked target for review");
-        auto const record = trust_safety::ReviewRecord{path->target, path->target_id, true, reason};
-        auto const decision = trust_safety::review_policy(record);
-        auto const audit = trust_safety::make_safety_audit_event(admin_user, path->target_id, decision);
-        append_policy_audit(rt, audit);
-        auto const scope = std::string{trust_safety::policy_surface_name(decision.surface)};
-        if (!database::store_policy_rule(rt.homeserver.database.persistent_store,
-                                         {scope + ':' + path->target_id, scope, path->target_id,
-                                          std::string{trust_safety::policy_action_name(decision.action)},
-                                          body->reason}))
-        {
-            return err(500U, "M_UNKNOWN", "policy rule persistence failed");
-        }
-        if (!database::append_admin_action(rt.homeserver.database.persistent_store,
-                                           {std::string{admin_user}, audit.event_type, path->target_id}))
-        {
-            return err(500U, "M_UNKNOWN", "admin action persistence failed");
-        }
-        if (decision.action == trust_safety::PolicyAction::quarantine || decision.allowed)
+        auto const outcome = apply_admin_review(rt.homeserver, admin_user, review->target, review->target_id, req.body);
+        if (outcome.status == 200U)
         {
             return resp(200U, "{}");
         }
-        return err(400U, "M_BAD_REQUEST", decision.reason.public_summary);
+        return err(outcome.status, outcome.errcode, outcome.message);
     }
 
     // ── Third-party lookups response builders (Matrix v1.19 CS API
@@ -13488,6 +13403,14 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
     // throttled exactly once with no double-count.
     if (starts_with(request_path, "/_merovingian/admin/"))
     {
+        // The table of operator routes decides what is served (ADR-0504); a path or method it does not
+        // declare is not found, whoever asks.
+        if (!observability::match_admin_route(req.method, request_path).matched)
+        {
+            auto missing = LocalHttpResponse{404U, "route not found", {{"Content-Type", "text/plain; charset=utf-8"}}};
+            apply_cors_headers(req, missing, rt.cors);
+            return DispatchResult{DispatchResult::Status::complete, std::move(missing), {}};
+        }
         auto local = call_local(req);
         apply_cors_headers(req, local, rt.cors);
         return DispatchResult{DispatchResult::Status::complete, std::move(local), {}};

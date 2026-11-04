@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <cctype>
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -20,12 +21,6 @@ namespace
     [[nodiscard]] auto starts_with(std::string_view value, std::string_view prefix) noexcept -> bool
     {
         return value.size() >= prefix.size() && value.substr(0U, prefix.size()) == prefix;
-    }
-
-    [[nodiscard]] auto exact_or_child(std::string_view target, std::string_view exact, std::string_view prefix) noexcept
-        -> bool
-    {
-        return target == exact || (target.size() > prefix.size() && starts_with(target, prefix));
     }
 
     [[nodiscard]] auto public_value(std::string_view value) -> database::BoundValue
@@ -250,14 +245,22 @@ auto admin_operation_name(AdminOperation operation) noexcept -> char const*
         return "health";
     case AdminOperation::metrics:
         return "metrics";
+    case AdminOperation::media_metrics:
+        return "media_metrics";
     case AdminOperation::audit_query:
         return "audit_query";
+    case AdminOperation::account_summary:
+        return "account_summary";
     case AdminOperation::account_action:
         return "account_action";
     case AdminOperation::review_action:
         return "review_action";
-    case AdminOperation::shutdown:
-        return "shutdown";
+    case AdminOperation::media_quarantine:
+        return "media_quarantine";
+    case AdminOperation::media_release:
+        return "media_release";
+    case AdminOperation::media_remove:
+        return "media_remove";
     }
 
     return "unknown";
@@ -358,52 +361,79 @@ auto admin_surface_is_safe(AdminControlSurface const& surface) noexcept -> bool
     return surface.bind_address == "127.0.0.1" || surface.bind_address == "::1";
 }
 
-auto admin_routes() -> std::vector<AdminRoute>
+auto admin_routes() -> std::vector<AdminRoute> const&
 {
-    return {
+    static auto const routes = std::vector<AdminRoute>{
         route("GET", "/_merovingian/admin/health", AdminOperation::health),
         route("GET", "/_merovingian/admin/metrics", AdminOperation::metrics),
+        route("GET", "/_merovingian/admin/media/metrics", AdminOperation::media_metrics),
         route("GET", "/_merovingian/admin/audit", AdminOperation::audit_query),
+        route("GET", "/_merovingian/admin/accounts/{userId}", AdminOperation::account_summary),
         route("POST", "/_merovingian/admin/accounts/{userId}", AdminOperation::account_action),
         route("POST", "/_merovingian/admin/review/{targetType}/{targetId}", AdminOperation::review_action),
-        route("POST", "/_merovingian/admin/shutdown", AdminOperation::shutdown),
+        route("POST", "/_merovingian/admin/media/quarantine/{mediaId}", AdminOperation::media_quarantine),
+        route("POST", "/_merovingian/admin/media/release/{mediaId}", AdminOperation::media_release),
+        route("POST", "/_merovingian/admin/media/remove/{mediaId}", AdminOperation::media_remove),
     };
+    return routes;
 }
 
-auto match_admin_route(std::string_view method, std::string_view target) -> AdminRouteMatch
+namespace
 {
-    for (auto const& candidate : admin_routes())
+
+    // True when `path` has the segments of `path_template`, a `{name}` segment standing for exactly one
+    // non-empty segment. Linear in the path, with no allocation.
+    [[nodiscard]] auto path_fits_template(std::string_view path_template, std::string_view path) noexcept -> bool
     {
-        if (candidate.method != method)
+        while (true)
         {
-            continue;
-        }
-        if (candidate.path_template == target)
-        {
-            return {true, candidate, {}};
-        }
-        if (candidate.operation == AdminOperation::account_action &&
-            exact_or_child(target, "/_merovingian/admin/accounts/{userId}", "/_merovingian/admin/accounts/"))
-        {
-            return {true, candidate, {}};
-        }
-        if (candidate.operation == AdminOperation::review_action)
-        {
-            auto constexpr prefix = std::string_view{"/_merovingian/admin/review/"};
-            if (starts_with(target, prefix))
+            auto const template_end = path_template.find('/');
+            auto const path_end = path.find('/');
+            auto const template_segment = path_template.substr(0U, template_end);
+            auto const path_segment = path.substr(0U, path_end);
+            auto const is_variable =
+                template_segment.size() > 2U && template_segment.front() == '{' && template_segment.back() == '}';
+            if (is_variable ? path_segment.empty() : template_segment != path_segment)
             {
-                auto const suffix = target.substr(prefix.size());
-                auto const separator = suffix.find('/');
-                if (separator != std::string_view::npos && separator > 0U && separator + 1U < suffix.size() &&
-                    suffix.find('/', separator + 1U) == std::string_view::npos)
-                {
-                    return {true, candidate, {}};
-                }
+                return false;
             }
+            if (template_end == std::string_view::npos || path_end == std::string_view::npos)
+            {
+                return template_end == path_end;
+            }
+            path_template.remove_prefix(template_end + 1U);
+            path.remove_prefix(path_end + 1U);
         }
     }
 
-    return {false, {}, "admin route not found"};
+    [[nodiscard]] auto match_admin_target(std::optional<std::string_view> method, std::string_view target)
+        -> AdminRouteMatch
+    {
+        auto const path = target.substr(0U, target.find('?'));
+        for (auto const& candidate : admin_routes())
+        {
+            if (method.has_value() && candidate.method != *method)
+            {
+                continue;
+            }
+            if (path_fits_template(candidate.path_template, path))
+            {
+                return {true, candidate, {}};
+            }
+        }
+        return {false, {}, "admin route not found"};
+    }
+
+} // namespace
+
+auto match_admin_route(std::string_view method, std::string_view target) -> AdminRouteMatch
+{
+    return match_admin_target(method, target);
+}
+
+auto match_admin_path(std::string_view target) -> AdminRouteMatch
+{
+    return match_admin_target(std::nullopt, target);
 }
 
 auto make_audit_event(AuditCategory category, std::string_view event_type, std::string_view actor,
