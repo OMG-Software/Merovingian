@@ -1573,8 +1573,9 @@ threat it closes; the controls above are the standing defences these reinforce.
   `PersistentStore::audit_log` keep only the newest 1 024 rows; actor, target and
   reason are cut to 255 bytes on a UTF-8 boundary with invalid bytes and control
   characters replaced. `login.rejected` and `login.throttled` are gated the
-  same way. **Residual:** the `audit_log` table itself has no retention, so a
-  distributed flood of ungated kinds still grows it. Rejected requests beyond a
+  same way. **Residual:** the `audit_log` table is trimmed only past
+  `security.audit_log_retention_days` (default 365, ADR-0489), so a distributed
+  flood of ungated kinds still grows it for that long. Rejected requests beyond a
   window's allowance keep their diagnostic log line but no audit row.
 
 - **Committed statements and their parameters retained in memory (2026-09-29

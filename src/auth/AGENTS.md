@@ -68,6 +68,14 @@ failures must not feed the login tables either. A successful login clears only t
 source) key, never the per-account ceiling. Keep the cap and the amortised-O(1) expiry: no code
 path may scan a table. See `docs/auth-identity.md` "Failed-login throttle".
 
+## Session lookup and retention
+
+`LocalDatabase::sessions` is a `homeserver::SessionTable`: `find` narrows by an index of token-hash digests and then calls
+the caller's predicate, which must compare the full hashes with `constant_time_equal` (rule 3). Never answer a lookup from
+the index alone, never add a fall-back scan for a miss (an unknown token is the common attack), and change a session's
+hash only through `set_access_token_hash`. The `retention-sweep` job erases sessions that can never authenticate again and
+deletes their rows; it keeps a revoked refresh token until it expires so reuse is still detected (ADR-0488).
+
 ## Token lifecycle
 
 ```

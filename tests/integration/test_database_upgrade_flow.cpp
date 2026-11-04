@@ -229,6 +229,8 @@ constexpr auto v1_index_names = std::array{
     std::string_view{"idx_to_device_messages_recipient_age"},
     std::string_view{"idx_deferred_pdus_room_id"},
     std::string_view{"idx_media_pending_uploads_owner"},
+    std::string_view{"idx_events_room_id"},
+    std::string_view{"idx_state_groups_room_id"},
 };
 
 // Versions 2 to 26 of the ledger every pre-1.0 build up to 0.12.46 wrote, after

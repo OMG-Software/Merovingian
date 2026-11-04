@@ -245,6 +245,11 @@ security.login_throttle.window=15m
 security.access_token_lifetime_ms=3600000
 security.refresh_token_lifetime_ms=2592000000
 
+# How long audit_log rows are kept, in days. 0 keeps every row for ever; otherwise
+# 30..3650. Rows older than this are deleted in bounded batches by an hourly job and
+# each deletion is itself audited (audit.retention.purged). The default is one year.
+security.audit_log_retention_days=365
+
 # Room encryption policy
 # Enforced when a room is created here (POST /createRoom); joins of rooms other
 # servers created are not checked. New private/direct rooms are encrypted by

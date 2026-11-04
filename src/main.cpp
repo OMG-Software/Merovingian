@@ -25,6 +25,7 @@
 #include "merovingian/homeserver/local_services.hpp"
 #include "merovingian/homeserver/periodic_job.hpp"
 #include "merovingian/homeserver/push_retry.hpp"
+#include "merovingian/homeserver/retention_sweep.hpp"
 #include "merovingian/homeserver/room_service.hpp"
 #include "merovingian/homeserver/tls.hpp"
 #include "merovingian/media/runtime_media.hpp"
@@ -924,6 +925,24 @@ struct ListenerBinding final
     if (!client_txn_prune_job.start())
     {
         LOG_CRITICAL("Client transaction prune thread failed to start; refusing to serve");
+        dispatcher.request_stop();
+        pool.request_stop();
+        media_fetch_pool.request_stop();
+        sync_pool.request_stop();
+        return std::nullopt;
+    }
+    // Deletes the sessions and tokens that can no longer authenticate and the audit rows past
+    // `security.audit_log_retention_days` (G7, ADR-0488, ADR-0489), in bounded batches, once an hour (and at
+    // start). It takes the runtime lock one batch at a time and only ever touches `runtime`, which outlives
+    // this function. Declared after the pools so it is stopped and joined before them.
+    auto retention_sweep_job = merovingian::homeserver::PeriodicJob{
+        "retention-sweep", [&runtime](merovingian::homeserver::StopFlag const& stop) {
+            return merovingian::homeserver::run_retention_sweep(runtime.homeserver, std::chrono::system_clock::now(),
+                                                                stop);
+        }};
+    if (!retention_sweep_job.start())
+    {
+        LOG_CRITICAL("Retention sweep thread failed to start; refusing to serve");
         dispatcher.request_stop();
         pool.request_stop();
         media_fetch_pool.request_stop();

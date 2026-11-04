@@ -1423,6 +1423,8 @@ SCENARIO("The v1 schema step creates every table in its final shape and every in
                     "target_device_id, created_at_ms)",
                     "CREATE INDEX idx_deferred_pdus_room_id ON deferred_pdus (room_id)",
                     "CREATE INDEX idx_media_pending_uploads_owner ON media_pending_uploads (owner_user_id)",
+                    "CREATE INDEX idx_events_room_id ON events (room_id)",
+                    "CREATE INDEX idx_state_groups_room_id ON state_groups (room_id)",
                 };
                 for (auto const& index : indexes)
                 {

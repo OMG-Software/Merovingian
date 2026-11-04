@@ -33,7 +33,9 @@ Manages schema migrations and provides a dual-backend (SQLite / PostgreSQL) pers
    hashes, so keeping them would leave those hashes in process memory for its whole life.
 6. **In-memory mirrors of append-only tables are bounded windows.** `PersistentStore::audit_log`
    holds the newest `max_in_memory_audit_events` rows; append through `append_audit_event` and
-   hydrate through `remember_audit_event`, never `push_back`. `append_audit_event` bounds
+   hydrate through `remember_audit_event`, never `push_back`. The table is NOT append-only: retention deletes rows older
+   than `security.audit_log_retention_days` (ADR-0489), so never order `audit_log` by `ctid` alone (PostgreSQL orders by
+   `created_at_ms`, then `ctid`) and name the columns of every insert. `append_audit_event` bounds
    `actor`, `target` and `reason` to 255 bytes on a UTF-8 boundary (`observability::bounded_utf8`).
 
 7. **Persisted writes lease a pooled connection; nothing else opens one per write.** `commit_persistent_transaction`

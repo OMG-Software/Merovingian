@@ -586,15 +586,16 @@ namespace
         return std::chrono::system_clock::now() + std::chrono::milliseconds{lifetime_ms};
     }
 
+    // P7: the lookup goes through the session table's index of token-hash digests, so its cost does not grow
+    // with the number of sessions. The index only narrows the candidates; every candidate is still confirmed
+    // with the constant-time hash comparison (src/auth/AGENTS.md rule 3).
     [[nodiscard]] auto find_session(LocalDatabase const& database, std::vector<std::string> const& token_hashes,
                                     std::chrono::system_clock::time_point now) -> LocalSession const*
     {
-        auto const iterator =
-            std::ranges::find_if(database.sessions, [&token_hashes, now](LocalSession const& session) {
-                return matches_any_token_hash(session.access_token_hash, token_hashes) && !session.revoked &&
-                       !is_expired(session.expires_at, now);
-            });
-        return iterator == database.sessions.end() ? nullptr : &(*iterator);
+        return database.sessions.find(token_hashes, [now](LocalSession const& session, std::string const& hash) {
+            return token_hash_matches(session.access_token_hash, hash) && !session.revoked &&
+                   !is_expired(session.expires_at, now);
+        });
     }
 
     // Disambiguates a find_session miss for audit reporting: returns true when a
@@ -605,13 +606,10 @@ namespace
                                                  std::vector<std::string> const& token_hashes,
                                                  std::chrono::system_clock::time_point now) -> bool
     {
-        auto const now_value = now;
-        auto const iterator =
-            std::ranges::find_if(database.sessions, [&token_hashes, now_value](LocalSession const& session) {
-                return matches_any_token_hash(session.access_token_hash, token_hashes) && !session.revoked &&
-                       is_expired(session.expires_at, now_value);
-            });
-        return iterator != database.sessions.end();
+        return database.sessions.find(token_hashes, [now](LocalSession const& session, std::string const& hash) {
+            return token_hash_matches(session.access_token_hash, hash) && !session.revoked &&
+                   is_expired(session.expires_at, now);
+        }) != nullptr;
     }
 
     // One-shot migration of a v3 access token to the master-key-derived v4 hash.
@@ -646,7 +644,7 @@ namespace
         {
             if (!session.revoked && token_hash_matches(session.access_token_hash, matched_v3_hash))
             {
-                session.access_token_hash = *v4_hash;
+                runtime.database.sessions.set_access_token_hash(session, *v4_hash);
                 user_id = session.user_id;
                 device_id = session.device_id;
                 expires_at = session.expires_at;
@@ -766,13 +764,13 @@ namespace
         {
             return make_operation_result(false, {}, "user already exists");
         }
-        if (!database::store_user(runtime.database.persistent_store, {user_id, *password_hash, false, false, admin}))
+        // The account and its empty profile (so GET /profile returns real data from first login) commit together.
+        if (!database::store_user_with_profile(runtime.database.persistent_store,
+                                               {user_id, *password_hash, false, false, admin}, {user_id, {}, {}}))
         {
             return make_operation_result(false, {}, "user persistence failed", 500U);
         }
         runtime.database.users.push_back({user_id, *password_hash, false, false, admin});
-        // Create empty profile so GET /profile returns real data from first login.
-        std::ignore = database::store_profile(runtime.database.persistent_store, {user_id, {}, {}});
         append_local_audit(runtime.database, observability::AuditCategory::auth, "auth.user_registered", user_id,
                            user_id, audit_outcome);
         log_diagnostic("registration.accepted",
@@ -1880,7 +1878,10 @@ auto logout_local_user(HomeserverRuntime& runtime, std::string_view access_token
         return make_operation_result(false, {}, "unauthenticated");
     }
 
-    std::ignore = database::revoke_access_token(runtime.database.persistent_store, persisted_hash);
+    // P13 (ADR-0491): the presented token, the device's refresh tokens and the device's access tokens are
+    // revoked in one transaction; the checks below confirm the store agrees before anything is marked.
+    std::ignore =
+        database::revoke_device_credentials(runtime.database.persistent_store, persisted_hash, user_id, device_id);
     if (!access_token_is_revoked(runtime.database.persistent_store, persisted_hash))
     {
         return make_operation_result(false, {}, "token revocation persistence failed", 500U);
@@ -1895,15 +1896,13 @@ auto logout_local_user(HomeserverRuntime& runtime, std::string_view access_token
     //
     // Spec: docs/matrix-v1.19-spec/client-server-api.md#post_matrixclientv3logout
     // — the device's access token and refresh token are both invalidated.
-    std::ignore = database::revoke_refresh_tokens_for_device(runtime.database.persistent_store, user_id, device_id);
     if (!device_refresh_tokens_are_revoked(runtime.database.persistent_store, user_id, device_id))
     {
         return make_operation_result(false, {}, "token revocation persistence failed", 500U);
     }
     // The device is deleted next, and deleting a device "invalidates any access token associated
     // with it" (DELETE /devices/{deviceId}): another login under the same device ID holds a token of
-    // its own, which must not outlive the device.
-    std::ignore = database::revoke_access_tokens_for_device(runtime.database.persistent_store, user_id, device_id);
+    // its own, which must not outlive the device. The transaction above revoked those too.
     if (!device_tokens_are_revoked(runtime.database.persistent_store, user_id, device_id))
     {
         return make_operation_result(false, {}, "token revocation persistence failed", 500U);
