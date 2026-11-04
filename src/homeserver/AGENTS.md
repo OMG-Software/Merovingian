@@ -668,10 +668,22 @@ Every path that sets a typing entry to `typing: true` sets its `expires_at`: the
 entries, advances the room's typing stream position and sends `typing: false` for local users; it
 runs on the "typing-expiry" `PeriodicJob` in `main.cpp`. A new path that adds a typing entry must
 set `expires_at`, or it never expires, and call `wake_typing_expiry` so an earlier deadline than the
-job's current sleep is not missed. Every read and write of `typing_users` holds `runtime.mutex`:
+job's current sleep is not missed. The inbound typing case of `edu_sink` ignores (accepts, changes nothing) an EDU
+for a user not joined to the room or from a server the room's ACL denies, checked there as well as in the dispatcher
+because a worker relay carries content the worker chose (F-55); at `max_inbound_typing_entries` it evicts the oldest
+remote entry only, and drops the new one if none is remote (ADR-0386). Every read and write of `typing_users` holds `runtime.mutex`:
 the federation EDU sink runs without it and takes it itself in the typing case. Every other EDU case
 that reads or writes store state (receipts, presence, device lists) or reads the visible stream
 position takes it the same way; `enqueue_direct_to_device_messages` takes it itself.
+
+## Receipts and read markers name an event ID by shape and size (F-53, ADR-0385)
+
+`POST .../receipt/{receiptType}/{eventId}` and `POST .../read_markers` answer 400 `M_INVALID_PARAM` for an event ID (and
+for each of `m.read`, `m.fully_read`, `m.read.private`) that `events::event_id_is_acceptable_in_receipt` refuses, before
+anything is stored; `read_markers` judges every value before it stores one. The inbound `m.receipt` EDU sink ignores such
+an `event_ids[0]`, and `database::store_receipt` refuses an `event_id` or `thread_id` over 255 bytes. None asks whether the
+event exists: the spec has no such error. Do not swap the helper for `events::event_id_is_valid`, which lacks a version 3
+event ID's `+` and `/`.
 
 ## Presence
 
@@ -703,7 +715,9 @@ the job.
 
 - **Every stored event is queued once, by the code that stored it.** `queue_event_for_appservices` (room_service.cpp)
   wraps `enqueue_appservice_delivery` and passes the `state_key` of a membership event as `member_event_target` (R07).
-  Send, each membership transition, the third-party invite made on join, federation PDUs and `createRoom` all call it.
+  Send, each membership transition, the third-party invite made on join, federation PDUs, the `membership_acceptor`
+  (an accepted remote `send_join`, `send_leave` or `send_knock`, never a rejected or soft-failed one, F-51) and
+  `createRoom` all call it.
   The federation `/invite` handler, for a room this server is not in, stores the invite as an outlier with no
   `LocalRoom` and calls the `room_id` overload of `enqueue_appservice_delivery` with the invitee as target: no
   transaction will bring that event again, so it is the only chance an appservice has to see its user invited.

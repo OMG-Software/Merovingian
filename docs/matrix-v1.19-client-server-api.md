@@ -201,7 +201,7 @@ session cascade are outside that regression's scope.
 
 | Method | Path | Operation ID | Auth | Request body | Responses |
 | --- | --- | --- | --- | --- | --- |
-| `POST` | `/_matrix/client/v3/rooms/{roomId}/read_markers` | `setReadMarker` | access token | required application/json | 200, 429 |
+| `POST` | `/_matrix/client/v3/rooms/{roomId}/read_markers` | `setReadMarker` | access token | required application/json | 200, 400, 429 |
 
 ## Reporting content
 

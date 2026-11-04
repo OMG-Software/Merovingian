@@ -4307,6 +4307,13 @@ namespace
     {
         return false;
     }
+    // Defence in depth (F-53): an event ID, and the thread root's event ID a receipt may be filed
+    // under, are at most 255 bytes (Appendices, "Event IDs"). Callers check the shape; this keeps a
+    // row from growing past what a receipt can mean, whichever path writes it.
+    if (receipt.event_id.size() > events::max_id_length_bytes || receipt.thread_id.size() > events::max_id_length_bytes)
+    {
+        return false;
+    }
     receipt.stream_id = allocate_sync_stream_id(store);
     auto statements = std::vector<PreparedStatement>{};
     if (evicted.has_value())

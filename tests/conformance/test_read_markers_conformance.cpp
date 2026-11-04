@@ -18,6 +18,7 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <algorithm>
 #include <string>
 
 namespace
@@ -258,6 +259,79 @@ SCENARIO("POST /rooms/{roomId}/read_markers rejects a malformed body with M_BAD_
                 // contain valid JSON." The body is text that is not JSON; M_BAD_JSON is for valid
                 // JSON "malformed in some way". (Was M_BAD_JSON before Complement run 10.)
                 REQUIRE(*errcode == "M_NOT_JSON");
+            }
+        }
+    }
+}
+
+// Spec: Matrix Client-Server API v1.19
+// Endpoint: POST /_matrix/client/v3/rooms/{roomId}/read_markers
+// URL: ../../docs/matrix-v1.19-spec/client-server-api.md#post_matrixclientv3roomsroomidread_markers
+// Appendices, "Event IDs": ../../docs/matrix-v1.19-spec/appendices.md#event-ids
+//
+// The marker values are event IDs, and an event ID "MUST NOT exceed 255 bytes". A value that is not
+// one is refused with 400 M_INVALID_PARAM, and none of the body's markers is kept, shown to the room
+// or sent to other servers.
+SCENARIO("POST /rooms/{roomId}/read_markers rejects a marker that is not an event ID",
+         "[conformance][client-server][read-markers][receipt-event-id-bounds]")
+{
+    GIVEN("a running client-server with a logged-in user in a room")
+    {
+        auto started = merovingian::homeserver::start_client_server(conformance_config());
+        REQUIRE(started.started);
+        auto const token = logged_in_token(started.runtime);
+        auto const create = merovingian::homeserver::handle_client_server_request(
+            started.runtime, {"POST", "/_matrix/client/v3/createRoom", token, R"({"name":"markers room"})"});
+        REQUIRE(create.response.status == 200U);
+        auto const room_id = room_id_from_create(create.response.body);
+        auto const post_markers = [&](std::string const& body) {
+            return merovingian::homeserver::handle_client_server_request(
+                started.runtime, {"POST", "/_matrix/client/v3/rooms/" + room_id + "/read_markers", token, body});
+        };
+        auto const oversized = "$" + std::string(255U, 'a');
+
+        WHEN("one marker is over 255 bytes next to a well-formed m.fully_read")
+        {
+            THEN("each of the three markers is refused with 400 M_INVALID_PARAM and none is kept")
+            {
+                for (auto const* key : {"m.read", "m.read.private"})
+                {
+                    auto const response = post_markers(std::string{"{\"m.fully_read\":\"$fine:example.org\",\""} + key +
+                                                       "\":\"" + oversized + "\"}");
+                    REQUIRE(response.response.status == 400U);
+                    auto const body = parse_object(response.response.body);
+                    auto const* errcode = string_member(body, "errcode");
+                    REQUIRE(errcode != nullptr);
+                    REQUIRE(*errcode == "M_INVALID_PARAM");
+                }
+                auto const fully_read = post_markers("{\"m.fully_read\":\"" + oversized + "\"}");
+                REQUIRE(fully_read.response.status == 400U);
+                auto const& store = started.runtime.homeserver.database.persistent_store;
+                REQUIRE(store.receipts.empty());
+                REQUIRE(std::ranges::none_of(store.account_data, [](auto const& row) {
+                    return row.event_type == "m.fully_read";
+                }));
+            }
+        }
+
+        WHEN("a marker is not shaped like an event ID")
+        {
+            auto const response = post_markers(R"({"m.read":"not an event id"})");
+
+            THEN("it is refused with 400 M_INVALID_PARAM")
+            {
+                REQUIRE(response.response.status == 400U);
+            }
+        }
+
+        WHEN("the markers are well-formed event IDs of at most 255 bytes")
+        {
+            auto const response =
+                post_markers("{\"m.read\":\"$read:example.org\",\"m.fully_read\":\"$" + std::string(254U, 'b') + "\"}");
+
+            THEN("they are accepted")
+            {
+                REQUIRE(response.response.status == 200U);
             }
         }
     }

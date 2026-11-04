@@ -19,12 +19,15 @@
 #include "../support/registration_token.hpp"
 #include "merovingian/canonicaljson/value.hpp"
 #include "merovingian/config/config.hpp"
+#include "merovingian/federation/inbound_ingestion.hpp"
 #include "merovingian/homeserver/client_server.hpp"
+#include "merovingian/homeserver/local_http_router.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
 #include <algorithm>
 #include <chrono>
+#include <mutex>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -366,6 +369,168 @@ SCENARIO("a local user's typing expires after its timeout and other members are 
                 REQUIRE(later.user_ids.has_value());
                 // Project policy: past the default the user is no longer typing, so user_ids omits them.
                 REQUIRE(!contains(*later.user_ids, "@alice:example.org"));
+            }
+        }
+    }
+}
+
+namespace
+{
+
+// What a federation worker's edu_ingest relay and the /send handler both end in: the runtime's EDU sink.
+[[nodiscard]] auto deliver_typing_edu(ClientServerRuntime& rt, std::string const& origin, std::string const& room_id,
+                                      std::string const& user_id) -> merovingian::federation::EduDispositionResult
+{
+    REQUIRE(static_cast<bool>(rt.homeserver.federation.edu_sink));
+    return rt.homeserver.federation.edu_sink(
+        {merovingian::federation::EduType::typing, "m.typing",
+         R"({"room_id":")" + room_id + R"(","user_id":")" + user_id + R"(","typing":true})", origin});
+}
+
+auto join_remote_member(ClientServerRuntime& rt, std::string const& room_id, std::string const& user_id) -> void
+{
+    rt.homeserver.database.persistent_store.memberships.push_back({room_id, user_id, "join", 0U});
+}
+
+} // namespace
+
+// Spec: Matrix Server-Server API v1.19, "Typing Notifications"
+// URL: ../../docs/matrix-v1.19-spec/server-server-api.md#typing-notifications
+//
+// "Receiving servers should verify that the user is in the room and belongs to the server sending
+// the EDU." A typing EDU for a user who is not joined to the room is not applied, so no member's
+// /sync shows them typing.
+SCENARIO("A typing EDU for a remote user who is not joined to the room is not shown in /sync",
+         "[conformance][federation][typing][typing-edu-membership]")
+{
+    GIVEN("a room alice and bob are in, and a remote server with one user joined and one never in the room")
+    {
+        auto started = merovingian::homeserver::start_client_server(typing_config());
+        REQUIRE(started.started);
+        auto& rt = started.runtime;
+        merovingian::homeserver::wire_federation_callbacks(rt.homeserver);
+        auto const room = typing_room(rt);
+        join_remote_member(rt, room.room_id, "@joined:remote.example.org");
+        auto const initial = sync_typing(rt, room.bob, room.room_id, {});
+
+        WHEN("the remote server sends typing for the user who was never in the room")
+        {
+            auto const result = deliver_typing_edu(rt, "remote.example.org", room.room_id, "@ghost:remote.example.org");
+            auto const after = sync_typing(rt, room.bob, room.room_id, initial.next_batch);
+
+            THEN("the EDU is accepted without effect and the user is not shown typing")
+            {
+                // Spec: an EDU that is not applied is not an error for the sending server.
+                REQUIRE(result.status == merovingian::federation::EduDispositionStatus::accepted);
+                // Spec "should verify that the user is in the room": the ghost is not.
+                REQUIRE((!after.user_ids.has_value() || !contains(*after.user_ids, "@ghost:remote.example.org")));
+            }
+        }
+
+        WHEN("the remote server sends typing for the user who is joined")
+        {
+            auto const result =
+                deliver_typing_edu(rt, "remote.example.org", room.room_id, "@joined:remote.example.org");
+            auto const after = sync_typing(rt, room.bob, room.room_id, initial.next_batch);
+
+            THEN("the user is shown typing")
+            {
+                REQUIRE(result.status == merovingian::federation::EduDispositionStatus::accepted);
+                REQUIRE(after.user_ids.has_value());
+                // Control: the check refuses non-members only.
+                REQUIRE(contains(*after.user_ids, "@joined:remote.example.org"));
+            }
+        }
+    }
+}
+
+// Spec: Matrix Server-Server API v1.19, "Server Access Control Lists (ACLs)"
+// URL: ../../docs/matrix-v1.19-spec/server-server-api.md#server-access-control-lists-acls
+//
+// ACLs "MUST be applied to ... m.typing", and "an EDU from a server denied access to the room MUST
+// be ignored". A federation worker relays an EDU to the runtime's EDU sink (edu_ingest) with content
+// the worker chose and an ACL judged on the worker's snapshot, so the sink judges the ACL itself.
+SCENARIO("A typing EDU from a server the room's ACL denies is ignored, including when relayed by a worker",
+         "[conformance][federation][typing][typing-edu-acl]")
+{
+    GIVEN("a room whose ACL denies denied.example.org, with a joined user on that server and on another")
+    {
+        auto started = merovingian::homeserver::start_client_server(typing_config());
+        REQUIRE(started.started);
+        auto& rt = started.runtime;
+        merovingian::homeserver::wire_federation_callbacks(rt.homeserver);
+        auto const room = typing_room(rt);
+        // Fixture: alice, the creator, sets the ACL.
+        REQUIRE(call(rt, "PUT", "/_matrix/client/v3/rooms/" + room.room_id + "/state/m.room.server_acl/", room.alice,
+                     R"({"allow":["*"],"deny":["denied.example.org"]})")
+                    .status == 200U);
+        join_remote_member(rt, room.room_id, "@mallory:denied.example.org");
+        join_remote_member(rt, room.room_id, "@carol:allowed.example.org");
+        auto const initial = sync_typing(rt, room.bob, room.room_id, {});
+
+        WHEN("the denied server's joined user is reported typing")
+        {
+            std::ignore = deliver_typing_edu(rt, "denied.example.org", room.room_id, "@mallory:denied.example.org");
+            auto const after = sync_typing(rt, room.bob, room.room_id, initial.next_batch);
+
+            THEN("the user is not shown typing")
+            {
+                // Spec MUST: an EDU from a server denied access to the room is ignored.
+                REQUIRE((!after.user_ids.has_value() || !contains(*after.user_ids, "@mallory:denied.example.org")));
+            }
+        }
+
+        WHEN("an allowed server's joined user is reported typing")
+        {
+            std::ignore = deliver_typing_edu(rt, "allowed.example.org", room.room_id, "@carol:allowed.example.org");
+            auto const after = sync_typing(rt, room.bob, room.room_id, initial.next_batch);
+
+            THEN("the user is shown typing")
+            {
+                REQUIRE(after.user_ids.has_value());
+                // Control: the ACL refuses only the server it denies.
+                REQUIRE(contains(*after.user_ids, "@carol:allowed.example.org"));
+            }
+        }
+    }
+}
+
+// Project rule (F-55): the typing table is shared by this server's users and every remote user, and is
+// capped. A remote server filling it must not be able to clear a local user's typing.
+SCENARIO("A flood of remote typing at the cap never evicts a local user's typing",
+         "[conformance][federation][typing][typing-edu-cap]")
+{
+    GIVEN("a table at the typing cap whose oldest entry is a local user's")
+    {
+        auto started = merovingian::homeserver::start_client_server(typing_config());
+        REQUIRE(started.started);
+        auto& rt = started.runtime;
+        merovingian::homeserver::wire_federation_callbacks(rt.homeserver);
+        auto const room = typing_room(rt);
+        join_remote_member(rt, room.room_id, "@late:remote.example.org");
+        REQUIRE(put_typing(rt, room, R"({"typing":true})").status == 200U);
+        {
+            auto const guard = std::unique_lock{rt.homeserver.mutex};
+            auto const expires_at = std::chrono::steady_clock::now() + std::chrono::minutes{1};
+            while (rt.homeserver.typing_users.size() < merovingian::homeserver::max_inbound_typing_entries)
+            {
+                rt.homeserver.typing_users.push_back(
+                    {room.room_id,
+                     "@filler" + std::to_string(rt.homeserver.typing_users.size()) + ":remote.example.org", true, 0U,
+                     expires_at});
+            }
+        }
+
+        WHEN("one more remote user starts typing")
+        {
+            std::ignore = deliver_typing_edu(rt, "remote.example.org", room.room_id, "@late:remote.example.org");
+
+            THEN("the local user is still typing and the table is still at its cap")
+            {
+                auto const guard = std::unique_lock{rt.homeserver.mutex};
+                REQUIRE(rt.homeserver.typing_users.size() == merovingian::homeserver::max_inbound_typing_entries);
+                REQUIRE(contains(merovingian::homeserver::current_typing_users_in_room(rt.homeserver, room.room_id),
+                                 "@alice:example.org"));
             }
         }
     }

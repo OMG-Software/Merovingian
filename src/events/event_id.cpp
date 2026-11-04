@@ -4,6 +4,7 @@
 #include "merovingian/events/event_id.hpp"
 
 #include "merovingian/canonicaljson/serializer.hpp"
+#include "merovingian/events/limits.hpp"
 #include "merovingian/events/redaction.hpp"
 
 #include <algorithm>
@@ -107,6 +108,21 @@ auto event_id_is_valid(std::string_view event_id) noexcept -> bool
     }
 
     return true;
+}
+
+auto event_id_is_acceptable_in_receipt(std::string_view event_id) noexcept -> bool
+{
+    if (event_id.size() > max_id_length_bytes)
+    {
+        return false;
+    }
+    // A version 3 event ID is standard base64, whose `+` and `/` the URL-safe grammar lacks.
+    return event_id_is_valid(event_id) ||
+           (event_id.size() >= 3U && event_id.front() == '$' &&
+            std::ranges::all_of(event_id.substr(1U), [](char character) {
+                return (character >= 'A' && character <= 'Z') || (character >= 'a' && character <= 'z') ||
+                       (character >= '0' && character <= '9') || character == '+' || character == '/';
+            }));
 }
 
 auto make_content_hash_id(canonicaljson::Value const& event, rooms::RoomVersionPolicy const& policy) -> EventIdResult

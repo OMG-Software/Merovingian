@@ -404,6 +404,52 @@ SCENARIO("receipt inserts without eviction and upserts its existing key", "[rece
     }
 }
 
+// F-53, defence in depth. Appendices, "Event IDs": an event ID "MUST NOT exceed 255 bytes". The
+// store refuses a receipt whose event ID, or whose thread root's event ID, is longer, whichever
+// path wrote it, and keeps nothing.
+SCENARIO("the receipt store refuses an event ID or thread ID over 255 bytes",
+         "[receipt][receipt-event-id-bounds][sqlite]")
+{
+    GIVEN("an empty SQLite receipt table")
+    {
+        auto const path = unique_sqlite_path();
+        {
+            auto opened = merovingian::database::open_sqlite_persistent_store(path.string());
+            REQUIRE(opened.ok);
+            auto const longest = "$" + std::string(254U, 'a');
+            auto const oversized = "$" + std::string(255U, 'a');
+
+            WHEN("a receipt names a 256-byte event ID, or a 256-byte thread ID")
+            {
+                auto const long_event =
+                    merovingian::database::store_receipt(opened.store, test_receipt("@alice:example.org", oversized));
+                auto const long_thread = merovingian::database::store_receipt(
+                    opened.store, test_receipt("@alice:example.org", "$ok:example.org", oversized));
+
+                THEN("both are refused and no row is kept")
+                {
+                    REQUIRE_FALSE(long_event);
+                    REQUIRE_FALSE(long_thread);
+                    REQUIRE(opened.store.receipts.empty());
+                }
+            }
+
+            WHEN("a receipt names a 255-byte event ID and a 255-byte thread ID")
+            {
+                auto const stored = merovingian::database::store_receipt(
+                    opened.store, test_receipt("@alice:example.org", longest, longest));
+
+                THEN("it is kept")
+                {
+                    REQUIRE(stored);
+                    REQUIRE(opened.store.receipts.size() == 1U);
+                }
+            }
+        }
+        std::filesystem::remove(path);
+    }
+}
+
 SCENARIO("a failed receipt insert rolls back the preceding eviction in memory and on disk",
          "[receipt][receipt-atomicity][sqlite]")
 {

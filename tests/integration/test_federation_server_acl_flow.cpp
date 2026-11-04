@@ -408,6 +408,8 @@ SCENARIO("Inbound room-local typing EDU is dropped when the origin is denied by 
         WHEN("a typing EDU arrives from an allowed origin")
         {
             auto const user_id = std::string{"@good:matrix.ping.me.uk"};
+            // An inbound typing EDU is applied only for a user joined to the room (F-55).
+            runtime.homeserver.database.persistent_store.memberships.push_back({room_id, user_id, "join", 0U});
             auto const body = typing_transaction_body(allowed_origin, room_id, user_id, true);
             auto const target = std::string{"/_matrix/federation/v1/send/txn-acl-edu-allowed"};
             auto const response =
