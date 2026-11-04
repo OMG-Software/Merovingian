@@ -16,6 +16,7 @@
 #include "merovingian/observability/observability.hpp"
 
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/generators/catch_generators.hpp>
 
 #include <algorithm>
 #include <chrono>
@@ -386,6 +387,58 @@ SCENARIO("Account routes refuse the targets the lock endpoint refuses", "[g5][op
                 send(world.runtime(), "POST", account_path("%40bob%3Aexample.org"), world.admin, action_body("lock"));
 
             THEN("the decoded user is the one acted on")
+            {
+                REQUIRE(response.status == 200U);
+                REQUIRE(find_user(world.runtime(), "@bob:example.org")->locked);
+            }
+        }
+    }
+}
+
+// The dispatcher sends /_merovingian/admin/* to require_admin before the general user-token gate, so the check
+// that stops a locked or suspended account on every other route does not run for these: it has to be here.
+SCENARIO("A locked or suspended administrator cannot use the operator routes", "[g5][operator-admin][auth]")
+{
+    GIVEN("an administrator whose account has been locked or suspended, and who still holds a token")
+    {
+        auto world = make_world(make_config());
+        auto const suspended = GENERATE(false, true);
+        auto const locked = !suspended;
+        REQUIRE(merovingian::homeserver::set_local_user_moderation(world.runtime().homeserver, "@admin:example.org",
+                                                                   "@ops:example.org", suspended, locked,
+                                                                   "account.locked", "locked")
+                    .ok);
+
+        WHEN("that administrator acts on another account")
+        {
+            auto const response =
+                send(world.runtime(), "POST", account_path("%40bob%3Aexample.org"), world.ops, action_body("lock"));
+
+            THEN("it is refused and the other account is unchanged")
+            {
+                REQUIRE(response.status == 403U);
+                REQUIRE_FALSE(find_user(world.runtime(), "@bob:example.org")->locked);
+            }
+        }
+
+        WHEN("that administrator asks for any other operator route")
+        {
+            THEN("each is refused")
+            {
+                REQUIRE(send(world.runtime(), "GET", "/_merovingian/admin/health", world.ops).status == 403U);
+                REQUIRE(send(world.runtime(), "GET", account_path("%40bob%3Aexample.org"), world.ops).status == 403U);
+                REQUIRE(send(world.runtime(), "POST", "/_merovingian/admin/review/room/%21room%3Aexample.org",
+                             world.ops, "{}")
+                            .status == 403U);
+            }
+        }
+
+        WHEN("an administrator in good standing uses the same route")
+        {
+            auto const response =
+                send(world.runtime(), "POST", account_path("%40bob%3Aexample.org"), world.admin, action_body("lock"));
+
+            THEN("it works")
             {
                 REQUIRE(response.status == 200U);
                 REQUIRE(find_user(world.runtime(), "@bob:example.org")->locked);

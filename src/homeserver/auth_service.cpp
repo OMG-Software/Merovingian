@@ -1837,7 +1837,9 @@ auto require_admin(HomeserverRuntime& runtime, std::string_view access_token) ->
         return {std::nullopt, AdminAuthResult::Denial::missing_token};
     }
     auto const* user = find_user(runtime.database, *user_id);
-    if (user == nullptr || !user->admin)
+    // The dispatcher sends operator routes here before its general user-token
+    // gate, so a locked or suspended account's standing is judged here or nowhere.
+    if (user == nullptr || !user->admin || user->locked || user->suspended)
     {
         return {std::nullopt, AdminAuthResult::Denial::not_admin};
     }

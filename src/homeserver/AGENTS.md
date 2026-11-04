@@ -124,7 +124,9 @@ The table `observability::admin_routes()` is the only list of operator routes. A
 1. a row in `admin_routes()` (method, template with `{name}` for one segment) and a value of `AdminOperation`;
 2. a branch in `handle_local_http_request` that asks `is_admin_operation(AdminOperation::...)`, never compares a path.
    Call `admin_auth_denied` (401 missing or invalid token, 403 not an administrator) first, before any lookup of what
-   the request names, so a non-administrator learns nothing about it;
+   the request names, so a non-administrator learns nothing about it. `require_admin` also answers 403 to an
+   administrator whose account is locked or suspended: these routes are dispatched ahead of the general user-token
+   gate, so nothing else judges that standing;
 3. no change to `normalized_target`: it files the request under the row's template (`match_admin_path`), and an
    unmatched path under `/_matrix/client/{unmatched}`. `handle_client_server_request` answers 404 `route not found` to a
    path or method the table does not declare. The `[g5]` walk in `tests/integration/test_operator_admin_flow.cpp` calls

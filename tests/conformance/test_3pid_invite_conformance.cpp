@@ -212,7 +212,6 @@ SCENARIO("POST /createRoom with invite_3pid stores an IS-backed m.room.third_par
         REQUIRE(port > 0U);
         auto const is_host_port = is_host + ":" + std::to_string(port);
         auto const is_base_url = std::string{"https://"} + is_host_port;
-        started.runtime.homeserver.config.server().identity_server.default_server = is_base_url;
         started.runtime.homeserver.config.server().identity_server.trusted_servers = {is_base_url};
         started.runtime.homeserver.test_forced_identity_resolution[is_host] =
             merovingian::identity::TestForcedIdentityResolution{{"127.0.0.1"}, cert.certificate_pem};
