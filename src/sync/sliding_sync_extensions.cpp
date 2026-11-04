@@ -194,13 +194,25 @@ namespace
 
     [[nodiscard]] auto build_account_data(database::PersistentStore const& store, std::string_view user,
                                           std::uint64_t since_sync_stream_id,
-                                          std::vector<std::string> const& response_room_ids) -> ExtAccountDataResponse
+                                          std::vector<std::string> const& response_room_ids,
+                                          std::unordered_set<std::string> const& initial_room_ids)
+        -> ExtAccountDataResponse
     {
         auto resp = ExtAccountDataResponse{};
+        // One lookup per row, not a scan of the response's rooms per row.
+        auto const response_rooms =
+            std::unordered_set<std::string_view>{response_room_ids.begin(), response_room_ids.end()};
 
         for (auto const& data : store.account_data)
         {
-            if (data.user_id != user || data.stream_id <= since_sync_stream_id)
+            if (data.user_id != user)
+            {
+                continue;
+            }
+            // A room the connection has not been sent has had none of its account data, so every row of it goes
+            // down whatever its age; any other row goes down when it changed after `since` (MSC4186; ADR-0493).
+            auto const room_is_new_to_connection = !data.room_id.empty() && initial_room_ids.contains(data.room_id);
+            if (data.stream_id <= since_sync_stream_id && !room_is_new_to_connection)
             {
                 continue;
             }
@@ -216,8 +228,7 @@ namespace
             else
             {
                 // Room-scoped account data is only surfaced for rooms in the response.
-                auto const in_resp = std::ranges::find(response_room_ids, data.room_id) != response_room_ids.end();
-                if (in_resp)
+                if (response_rooms.contains(data.room_id))
                 {
                     resp.rooms_json[data.room_id].push_back(std::move(json));
                 }
@@ -402,7 +413,8 @@ auto build_extensions(homeserver::HomeserverRuntime const& rt, std::string_view 
                       SlidingSyncExtensionRequests const& ext_req, std::uint64_t since_sync_stream_id,
                       std::uint64_t current_sync_stream_id, database::PersistentStore& store,
                       std::vector<std::string> const& response_room_ids,
-                      std::unordered_set<std::string> const& ignored_senders) -> SlidingSyncExtensionResponses
+                      std::unordered_set<std::string> const& ignored_senders,
+                      std::unordered_set<std::string> const& initial_room_ids) -> SlidingSyncExtensionResponses
 {
     // Only receipts and typing classify rooms; skip the membership pass when neither is on.
     auto const needs_access = (ext_req.receipts.has_value() && ext_req.receipts->enabled) ||
@@ -410,7 +422,7 @@ auto build_extensions(homeserver::HomeserverRuntime const& rt, std::string_view 
     auto const room_access =
         needs_access ? room_access_index(store, user) : std::map<std::string, RoomAccess, std::less<>>{};
     return build_extensions(rt, user, device_id, ext_req, since_sync_stream_id, current_sync_stream_id, store,
-                            room_access, response_room_ids, ignored_senders);
+                            room_access, response_room_ids, ignored_senders, initial_room_ids);
 }
 
 auto build_extensions(homeserver::HomeserverRuntime const& rt, std::string_view user, std::string_view device_id,
@@ -418,7 +430,8 @@ auto build_extensions(homeserver::HomeserverRuntime const& rt, std::string_view 
                       std::uint64_t current_sync_stream_id, database::PersistentStore& store,
                       std::map<std::string, RoomAccess, std::less<>> const& room_access,
                       std::vector<std::string> const& response_room_ids,
-                      std::unordered_set<std::string> const& ignored_senders) -> SlidingSyncExtensionResponses
+                      std::unordered_set<std::string> const& ignored_senders,
+                      std::unordered_set<std::string> const& initial_room_ids) -> SlidingSyncExtensionResponses
 {
     auto resp = SlidingSyncExtensionResponses{};
 
@@ -434,7 +447,7 @@ auto build_extensions(homeserver::HomeserverRuntime const& rt, std::string_view 
 
     if (ext_req.account_data.has_value() && ext_req.account_data->enabled)
     {
-        resp.account_data = build_account_data(store, user, since_sync_stream_id, response_room_ids);
+        resp.account_data = build_account_data(store, user, since_sync_stream_id, response_room_ids, initial_room_ids);
     }
 
     auto const wants_receipts = ext_req.receipts.has_value() && ext_req.receipts->enabled;
