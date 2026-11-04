@@ -107,6 +107,14 @@ memberships.size()` and each position names a row of the room; otherwise a reade
 to `memberships` calls `note_membership_row_appended` (`store_membership`, `apply_membership_projection`, the room
 creation writer), every one that erases calls `rebuild_membership_index` (`delete_membership`, `apply_room_snapshot`),
 and both hydration paths rebuild it after loading. A row's room never changes in place. A new writer does the same.
+## The relation index (ADR-0430)
+
+`EventTable` lists every row with a usable `content."m.relates_to"` of an aggregated `rel_type` (`m.replace`,
+`m.thread`, `m.reference`; never `m.annotation`) under its target event ID and kind
+(`relation_child_count`, `for_each_relation_child_newest_first(target, kind, ...)`: one window per kind). It is derived from the row JSON, so `insert`,
+`insert_all`, `erase_if`, `modify` (a redaction drops the child) and `clear` keep it current and a writer that
+bypasses them does not compile. Status and room are not in the key: the reader judges them. Never scan the
+table to find the children of an event.
 
 ## Backend selection
 

@@ -21,6 +21,7 @@ Spec authority:
 | `room_access.cpp` | `room_access_for()`: classifies a user's current membership of a room as joined / invited / none; `room_access_index()`: the same answer for all of a user's rooms in one pass |
 | `receipt_visibility.cpp` | `receipt_visible_to()`: the one rule deciding which viewers may see a stored receipt |
 | `receipt_content_builder.cpp` | `ReceiptContentBuilder`: the one builder of an `m.receipt` event's content (with `thread_id`), shared by `/sync` and sliding sync |
+| `bundled_aggregations.cpp` | `BundledAggregations`: the one builder of `unsigned.m.relations` (`m.replace`, `m.thread`, `m.reference`) for an event served to a client (ADR-0430) |
 | `viewer_event_unsigned.cpp` | `ViewerEventUnsigned`: adds the requesting user's `unsigned.membership` and, for the sending device, `unsigned.transaction_id` to a client event |
 | `read_markers.cpp` | `ReadMarkers`, `read_markers_for()`, `event_thread_id()`: where a user has read up to, unthreaded and per thread |
 | `history_visibility.cpp` | `HistoryVisibility`: the one per-request filter deciding which room events a user may see (Room History Visibility rules, state at the event, fail closed) |
@@ -176,6 +177,19 @@ nothing prunes it. `membership`
 comes from `HistoryVisibility::membership_at`: the user's `m.room.member` state in the state group
 after the event, `leave` before they had any. `/sync` timelines and `GET .../event/{eventId}`
 use it; a new read path that returns timeline events to a client should too.
+
+## Bundled aggregations (ADR-0430)
+
+`unsigned.m.relations` is built by `BundledAggregations` and nothing else, at the point an event is serialized:
+`/messages`, `/context`, `/event`, the `/relations` forms, `/search` (results and context), `/threads`, `/sync`
+and sliding sync. `/sync` and sliding sync pass `enabled = limited` (spec: only a `limited` section); a new
+read path that returns timeline events calls `make_bundled_aggregations` (`room_service.hpp`) and `apply()`.
+Children come from `EventTable::for_each_relation_child_newest_first`, never a scan of `store.events`, capped
+by `max_aggregated_children_examined` (per relation kind, so one kind never exhausts another's window), `max_aggregated_edits_parsed` and `max_reference_chunk_entries`. A child
+counts only if it is in the parent's room, not rejected or soft-failed, not from an ignored sender and
+`HistoryVisibility::can_see`. A stored `unsigned.m.relations` is never passed through. State events get none, a
+redacted original gets no `m.replace`, and `latest_event` is the greatest `(depth, stream_ordering)`
+(`is_later_in_thread`, shared with `/threads`).
 
 ## Unread counts
 

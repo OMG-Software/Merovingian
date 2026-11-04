@@ -9,6 +9,7 @@
 #include "merovingian/federation/outbound_transaction.hpp"
 #include "merovingian/homeserver/runtime.hpp"
 #include "merovingian/rooms/room_version_policy.hpp"
+#include "merovingian/sync/bundled_aggregations.hpp"
 
 #include <chrono>
 #include <cstddef>
@@ -17,6 +18,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -475,6 +477,15 @@ auto deliver_federation_push_notifications(HomeserverRuntime& runtime, federatio
 // consistent.
 [[nodiscard]] auto client_event_with_id(database::PersistentStore const& store, database::PersistentEvent const& event)
     -> canonicaljson::Value;
+
+// The one builder of `unsigned.m.relations` for a request (client-server-api.md, "Aggregations of
+// child events", ADR-0430): `sync::BundledAggregations` whose nested events (`latest_event`, the
+// `m.replace` event) are serialized by client_event_with_id. `enabled` false for a `/sync` section
+// that is not `limited`. `ignored_senders` and `visibility` must outlive the result.
+[[nodiscard]] auto make_bundled_aggregations(database::PersistentStore const& store,
+                                             sync::HistoryVisibility& visibility, std::string_view user_id,
+                                             std::unordered_set<std::string> const& ignored_senders,
+                                             bool enabled = true) -> sync::BundledAggregations;
 
 struct FetchRelationsRequest final
 {

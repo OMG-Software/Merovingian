@@ -1365,6 +1365,14 @@ not a `std::vector`. It owns the in-memory rows of the `events` table and keeps 
   only while its status is not `outlier`, `rejected` or `soft_failed` and its JSON has an integer top-level
   `origin_server_ts`; `modify` moves a row in or out when a mutation changes that. There is no migration:
   the key is parsed from the JSON once, when a row enters the table.
+- **by relation target (ADR-0430).** `events.for_each_relation_child_newest_first(target_event_id, kind, visit,
+  max_examined)` visits the rows of one `RelationKind` (`m.replace`, `m.thread`, `m.reference`) whose
+  `content."m.relates_to"` names `target_event_id`, newest listed first; `m.annotation` and other types are not
+  indexed. `relation_child_count()` is the size of the lists. It backs bundled aggregations (`unsigned.m.relations`).
+  A row is listed whatever its status or room (the reader judges both); a target ID that is empty or over
+  255 bytes is not indexed. `modify` re-derives the key, so a redacted child (no `m.relates_to` left) leaves
+  the list. There is no migration: the key is parsed from the JSON when a row enters the table, only for a
+  row whose JSON contains `"m.relates_to"`.
 
 Rows are read-only through the table. The only ways to change it are:
 

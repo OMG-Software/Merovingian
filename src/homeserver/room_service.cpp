@@ -9268,6 +9268,21 @@ auto deliver_federation_push_notifications(HomeserverRuntime& runtime, federatio
     return canonicaljson::Value{std::move(client_obj)};
 }
 
+[[nodiscard]] auto make_bundled_aggregations(database::PersistentStore const& store,
+                                             sync::HistoryVisibility& visibility, std::string_view user_id,
+                                             std::unordered_set<std::string> const& ignored_senders, bool enabled)
+    -> sync::BundledAggregations
+{
+    return sync::BundledAggregations{store,
+                                     visibility,
+                                     user_id,
+                                     ignored_senders,
+                                     [&store](database::PersistentEvent const& child) {
+                                         return client_event_with_id(store, child);
+                                     },
+                                     enabled};
+}
+
 namespace
 {
     [[nodiscard]] auto parse_stream_ordering_token(std::optional<std::string> const& token)
@@ -9309,6 +9324,10 @@ namespace
     // Room History Visibility (CSAZ-3): one filter for the request. A parent the user may not
     // see is "not found", like GET /event, and children they may not see are not listed.
     auto visibility = sync::HistoryVisibility{store, *user_id};
+    // Each child listed is itself an event served to the client, so it carries its own bundled
+    // aggregations ("Aggregations of child events").
+    auto const ignored_senders = trust_safety::resolve_ignored_users(store, *user_id);
+    auto aggregations = make_bundled_aggregations(store, visibility, *user_id, ignored_senders);
     auto const parent = store.events.find_in_room(request.room_id, request.event_id);
     if (parent == store.events.end() || !visibility.can_see(*parent))
     {
@@ -9473,7 +9492,7 @@ namespace
     chunk.reserve(end - start);
     for (auto index = start; index < end; ++index)
     {
-        chunk.push_back(client_event_with_id(runtime.database.persistent_store, *matches[index]));
+        chunk.push_back(aggregations.apply(*matches[index], client_event_with_id(store, *matches[index])));
     }
 
     auto response = canonicaljson::Object{};
@@ -9615,7 +9634,7 @@ namespace
 
             auto& aggregate = aggregates[*root_id];
             ++aggregate.count;
-            if (aggregate.latest_child == nullptr || event.stream_ordering > aggregate.latest_child->stream_ordering)
+            if (aggregate.latest_child == nullptr || sync::is_later_in_thread(event, *aggregate.latest_child))
             {
                 aggregate.latest_child = &event;
             }
@@ -9697,6 +9716,7 @@ namespace
     auto const* version_policy =
         rooms::find_room_version_policy(room_version_for_room(runtime.database.persistent_store, request.room_id));
 
+    auto aggregations = make_bundled_aggregations(store, visibility, *user_id, ignored_senders);
     auto chunk = canonicaljson::Array{};
     chunk.reserve(end - start);
     for (auto index = start; index < end; ++index)
@@ -9715,50 +9735,9 @@ namespace
                 root_event = std::move(redacted.event);
             }
         }
-        // Value exposes its storage as const, so mutate a copy of the object and
-        // rebuild the Value from it rather than writing through the accessor.
-        auto const* root_source = std::get_if<canonicaljson::Object>(&root_event.storage());
-        if (root_source == nullptr)
-        {
-            continue;
-        }
-        auto root_obj = *root_source;
-
-        auto thread_bundle = canonicaljson::Object{};
-        thread_bundle.push_back(
-            canonicaljson::make_member("latest_event", client_event_with_id(store, *aggregate.latest_child)));
-        thread_bundle.push_back(canonicaljson::make_member("count", canonicaljson::Value{aggregate.count}));
-        thread_bundle.push_back(
-            canonicaljson::make_member("current_user_participated", canonicaljson::Value{aggregate.participated}));
-
-        auto relations = canonicaljson::Object{};
-        relations.push_back(canonicaljson::make_member("m.thread", canonicaljson::Value{std::move(thread_bundle)}));
-
-        // Merge into any unsigned block the event already carries rather than
-        // replacing it: client_event_with_id may have populated prev_content there.
-        auto unsigned_obj = canonicaljson::Object{};
-        for (auto const& member : root_obj)
-        {
-            if (member.key != "unsigned")
-            {
-                continue;
-            }
-            if (auto const* existing = std::get_if<canonicaljson::Object>(&member.value->storage());
-                existing != nullptr)
-            {
-                unsigned_obj = *existing;
-            }
-        }
-        std::erase_if(unsigned_obj, [](canonicaljson::ObjectMember const& member) {
-            return member.key == "m.relations";
-        });
-        unsigned_obj.push_back(canonicaljson::make_member("m.relations", canonicaljson::Value{std::move(relations)}));
-        std::erase_if(root_obj, [](canonicaljson::ObjectMember const& member) {
-            return member.key == "unsigned";
-        });
-        root_obj.push_back(canonicaljson::make_member("unsigned", canonicaljson::Value{std::move(unsigned_obj)}));
-
-        chunk.push_back(canonicaljson::Value{std::move(root_obj)});
+        // The root's m.thread (and any other) aggregation is built by the one aggregation code every
+        // endpoint uses, from the relation index, not from this endpoint's walk.
+        chunk.push_back(aggregations.apply(*aggregate.root, std::move(root_event)));
     }
 
     auto response = canonicaljson::Object{};

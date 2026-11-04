@@ -3,6 +3,9 @@
 
 #include "merovingian/database/event_table.hpp"
 
+#include "merovingian/canonicaljson/parser.hpp"
+#include "merovingian/events/limits.hpp"
+
 #include <algorithm>
 #include <charconv>
 #include <cstddef>
@@ -15,6 +18,7 @@
 #include <system_error>
 #include <unordered_map>
 #include <utility>
+#include <variant>
 #include <vector>
 
 namespace merovingian::database
@@ -114,7 +118,127 @@ namespace
         return std::nullopt;
     }
 
+    [[nodiscard]] auto string_member_of(canonicaljson::Object const& object, std::string_view key) -> std::string const*
+    {
+        for (auto const& member : object)
+        {
+            if (member.key == key)
+            {
+                return std::get_if<std::string>(&member.value->storage());
+            }
+        }
+        return nullptr;
+    }
+
+    [[nodiscard]] auto object_member_of(canonicaljson::Object const& object, std::string_view key)
+        -> canonicaljson::Object const*
+    {
+        for (auto const& member : object)
+        {
+            if (member.key == key)
+            {
+                return std::get_if<canonicaljson::Object>(&member.value->storage());
+            }
+        }
+        return nullptr;
+    }
+
+    // The kind the server aggregates for `rel_type`, or nullopt for any other (not indexed).
+    [[nodiscard]] auto relation_kind_of(std::string_view rel_type) noexcept -> std::optional<RelationKind>
+    {
+        if (rel_type == "m.replace")
+        {
+            return RelationKind::replace;
+        }
+        if (rel_type == "m.thread")
+        {
+            return RelationKind::thread;
+        }
+        if (rel_type == "m.reference")
+        {
+            return RelationKind::reference;
+        }
+        return std::nullopt;
+    }
+
 } // namespace
+
+auto EventTable::relation_key_for(PersistentEvent const& row) -> std::optional<RelationKey>
+{
+    // Stored events are canonical JSON, so the member is spelt this way when present. A row without
+    // it costs one substring search, not a parse (the prefilter sync::event_thread_id uses too).
+    if (row.json.find("\"m.relates_to\"") == std::string::npos)
+    {
+        return std::nullopt;
+    }
+    auto const parsed = canonicaljson::parse_lossless(row.json);
+    if (parsed.error != canonicaljson::ParseError::none)
+    {
+        return std::nullopt;
+    }
+    auto const* event = std::get_if<canonicaljson::Object>(&parsed.value.storage());
+    auto const* content = event == nullptr ? nullptr : object_member_of(*event, "content");
+    auto const* relates = content == nullptr ? nullptr : object_member_of(*content, "m.relates_to");
+    if (relates == nullptr)
+    {
+        return std::nullopt;
+    }
+    auto const* target = string_member_of(*relates, "event_id");
+    auto const* rel_type = string_member_of(*relates, "rel_type");
+    // The target is client-chosen text used as a key: an empty or over-long one names no event.
+    if (target == nullptr || rel_type == nullptr || target->empty() || target->size() > events::max_id_length_bytes)
+    {
+        return std::nullopt;
+    }
+    auto const kind = relation_kind_of(*rel_type);
+    if (!kind.has_value())
+    {
+        return std::nullopt;
+    }
+    return RelationKey{*target, *kind};
+}
+
+auto EventTable::index_relation(std::size_t position, RelationKey const& key) -> void
+{
+    relation_children_[key.target][static_cast<std::size_t>(key.kind)].push_back(position);
+}
+
+auto EventTable::unindex_relation(std::size_t position, RelationKey const& key) -> void
+{
+    auto const target = relation_children_.find(key.target);
+    if (target == relation_children_.end())
+    {
+        return;
+    }
+    std::erase(target->second[static_cast<std::size_t>(key.kind)], position);
+    if (std::ranges::all_of(target->second, [](std::vector<std::size_t> const& list) {
+            return list.empty();
+        }))
+    {
+        relation_children_.erase(target);
+    }
+}
+
+auto EventTable::relation_child_count(std::string_view target_event_id) const -> std::size_t
+{
+    auto const target = relation_children_.find(target_event_id);
+    if (target == relation_children_.end())
+    {
+        return std::size_t{0U};
+    }
+    auto total = std::size_t{0U};
+    for (auto const& list : target->second)
+    {
+        total += list.size();
+    }
+    return total;
+}
+
+auto EventTable::relation_child_count(std::string_view target_event_id, RelationKind kind) const -> std::size_t
+{
+    auto const target = relation_children_.find(target_event_id);
+    return target == relation_children_.end() ? std::size_t{0U} : target->second[static_cast<std::size_t>(kind)].size();
+}
 
 auto EventTable::time_entry_for(PersistentEvent const& row, std::size_t position) -> std::optional<TimeEntry>
 {
@@ -248,6 +372,10 @@ auto EventTable::insert(PersistentEvent event) -> bool
     rows_.push_back(std::move(event));
     index_time(position);
     index_stream(position);
+    if (auto const relation = relation_key_for(rows_[position]); relation.has_value())
+    {
+        index_relation(position, *relation);
+    }
 
     // The common case: the newest event so far goes on the end of the stream order.
     if (stream_order_.empty() || rows_[stream_order_.back()].stream_ordering <= stream_ordering)
@@ -332,6 +460,13 @@ auto EventTable::insert_all(std::vector<PersistentEvent> events) -> std::size_t
         std::ranges::sort(middle, entries.end());
         std::ranges::inplace_merge(entries, middle);
     }
+    for (auto position = first_added; position < rows_.size(); ++position)
+    {
+        if (auto const relation = relation_key_for(rows_[position]); relation.has_value())
+        {
+            index_relation(position, *relation);
+        }
+    }
     return rows_.size() - first_added;
 }
 
@@ -401,6 +536,24 @@ auto EventTable::erase_marked(std::vector<bool> const& removed) -> std::size_t
         }
         room = room->second.empty() ? by_room_time_.erase(room) : std::next(room);
     }
+
+    // And the relation index: renumber the survivors, drop a removed child and an emptied target.
+    for (auto target = relation_children_.begin(); target != relation_children_.end();)
+    {
+        auto empty = true;
+        for (auto& list : target->second)
+        {
+            std::erase_if(list, [&remap](std::size_t position) {
+                return remap[position] == gone;
+            });
+            for (auto& position : list)
+            {
+                position = remap[position];
+            }
+            empty = empty && list.empty();
+        }
+        target = empty ? relation_children_.erase(target) : std::next(target);
+    }
     return removed_count;
 }
 
@@ -418,6 +571,7 @@ auto EventTable::clear() noexcept -> void
     stream_order_.clear();
     by_room_stream_.clear();
     by_room_time_.clear();
+    relation_children_.clear();
 }
 
 auto EventTable::reserve(size_type capacity) -> void

@@ -5595,11 +5595,14 @@ namespace
             limited ? matched.end() - static_cast<std::ptrdiff_t>(request.timeline_cap) : matched.begin();
         auto timeline_events = canonicaljson::Array{};
         auto leave_in_timeline = false;
+        auto aggregations =
+            make_bundled_aggregations(store, history_visibility, request.user_id, ignored_senders, limited);
         for (auto it = window_begin; it != matched.end(); ++it)
         {
             leave_in_timeline =
                 leave_in_timeline || (leave_event != store.events.end() && (*it)->event_id == leave_event->event_id);
-            timeline_events.push_back(viewer_unsigned.apply(**it, client_event_with_id(store, **it)));
+            timeline_events.push_back(
+                aggregations.apply(**it, viewer_unsigned.apply(**it, client_event_with_id(store, **it))));
         }
         // /messages?dir=b returns events strictly older than `from`: anchor it at the oldest event
         // returned, or at `since` when the window is empty, as a joined room's prev_batch is.
@@ -5884,9 +5887,13 @@ namespace
             auto const limited = cut_by_cap || hole != matched.end();
 
             auto timeline_events = canonicaljson::Array{};
+            // Bundled aggregations ride a section only when it is `limited` (client-server-api.md,
+            // "Aggregations of child events"); otherwise the client has the children in the timeline.
+            auto aggregations = make_bundled_aggregations(store, history_visibility, user, ignored_senders, limited);
             for (auto it = window_begin; it != matched.end(); ++it)
             {
-                timeline_events.push_back(viewer_unsigned.apply(**it, client_event_with_id(store, **it)));
+                timeline_events.push_back(
+                    aggregations.apply(**it, viewer_unsigned.apply(**it, client_event_with_id(store, **it))));
             }
             auto const event_count = timeline_events.size();
 
@@ -9720,6 +9727,7 @@ namespace
         // token still moves past it, so a page of hidden events yields a token to continue
         // from rather than repeating itself.
         auto visibility = sync::HistoryVisibility{store, user_id};
+        auto aggregations = make_bundled_aggregations(store, visibility, user_id, ignored_senders);
         auto chunk = canonicaljson::Array{};
         auto start_token = std::string{};
         auto end_token = std::string{};
@@ -9742,7 +9750,7 @@ namespace
             {
                 start_token = std::to_string(event.stream_ordering);
             }
-            chunk.push_back(client_event_with_id(store, event));
+            chunk.push_back(aggregations.apply(event, client_event_with_id(store, event)));
             chunk_senders.insert(event.sender_user_id);
             return true;
         };
@@ -9827,6 +9835,7 @@ namespace
         // visible; events_before and events_after hold only events the user may see, and the
         // `state` below is pinned to the last event returned, which is one of them.
         auto visibility = sync::HistoryVisibility{store, user_id};
+        auto aggregations = make_bundled_aggregations(store, visibility, user_id, ignored_senders);
 
         auto entries = std::vector<database::PersistentEvent const*>{};
         for (auto const& event : store.events.room_in_stream_order(room_id))
@@ -9875,7 +9884,7 @@ namespace
                 {
                     continue;
                 }
-                events_before.push_back(client_event_with_id(store, *candidate));
+                events_before.push_back(aggregations.apply(*candidate, client_event_with_id(store, *candidate)));
                 start_token = std::to_string(candidate->stream_ordering);
             }
         }
@@ -9905,7 +9914,7 @@ namespace
                 {
                     continue;
                 }
-                events_after.push_back(client_event_with_id(store, *candidate));
+                events_after.push_back(aggregations.apply(*candidate, client_event_with_id(store, *candidate)));
                 end_token = std::to_string(candidate->stream_ordering);
                 last_returned_event_id = candidate->event_id;
             }
@@ -9926,7 +9935,7 @@ namespace
         return json_serialize(json_obj({
             json_member("start", json_str(start_token)),
             json_member("events_before", json_arr(std::move(events_before))),
-            json_member("event", client_event_with_id(store, target)),
+            json_member("event", aggregations.apply(target, client_event_with_id(store, target))),
             json_member("events_after", json_arr(std::move(events_after))),
             json_member("end", json_str(end_token)),
             json_member("state", json_arr(std::move(state))),
@@ -10190,7 +10199,8 @@ namespace
                                                   database::PersistentEvent const& target, SearchRequest const& request,
                                                   SearchRoomIndex const& room_index,
                                                   std::unordered_set<std::string> const& ignored_senders,
-                                                  sync::HistoryVisibility& visibility) -> canonicaljson::Value
+                                                  sync::HistoryVisibility& visibility,
+                                                  sync::BundledAggregations& aggregations) -> canonicaljson::Value
     {
         auto const& store = rt.homeserver.database.persistent_store;
         auto const entries = room_index.timeline(target.room_id);
@@ -10219,7 +10229,7 @@ namespace
             {
                 continue;
             }
-            events_before.push_back(client_event_with_id(store, *candidate));
+            events_before.push_back(aggregations.apply(*candidate, client_event_with_id(store, *candidate)));
             senders_in_context.insert(candidate->sender_user_id);
             start_token = std::to_string(candidate->stream_ordering);
         }
@@ -10241,7 +10251,7 @@ namespace
             {
                 continue;
             }
-            events_after.push_back(client_event_with_id(store, *candidate));
+            events_after.push_back(aggregations.apply(*candidate, client_event_with_id(store, *candidate)));
             senders_in_context.insert(candidate->sender_user_id);
             end_token = std::to_string(candidate->stream_ordering);
         }
@@ -10361,6 +10371,7 @@ namespace
         // Room History Visibility (CSAZ-3): a search matches only events the user may see,
         // however they came by the room.
         auto visibility = sync::HistoryVisibility{store, user_id};
+        auto aggregations = make_bundled_aggregations(store, visibility, user_id, ignored_senders);
 
         auto candidates = std::vector<database::PersistentEvent const*>{};
         // Access control: never a room the caller has not been in. This is the gate standing between this
@@ -10556,12 +10567,13 @@ namespace
 
             auto result_members = canonicaljson::Object{};
             result_members.push_back(json_member("rank", canonicaljson::Value{match.rank}));
-            result_members.push_back(json_member("result", client_event_with_id(store, event)));
+            result_members.push_back(
+                json_member("result", aggregations.apply(event, client_event_with_id(store, event))));
             if (request.context_requested)
             {
                 result_members.push_back(
                     json_member("context", build_search_event_context(rt, event, request, room_index, ignored_senders,
-                                                                      visibility)));
+                                                                      visibility, aggregations)));
             }
             results.push_back(json_obj(std::move(result_members)));
         }
@@ -17337,8 +17349,10 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                 // `unsigned.transaction_id` and `unsigned.membership` are the requesting client's own.
                 auto viewer_unsigned = sync::ViewerEventUnsigned{store, visibility, *user,
                                                                  authenticated_request_device_id(rt, req.access_token)};
+                auto const ignored_senders = trust_safety::resolve_ignored_users(store, *user);
+                auto aggregations = make_bundled_aggregations(store, visibility, *user, ignored_senders);
                 auto const serialized = canonicaljson::serialize_canonical(
-                    viewer_unsigned.apply(*event, client_event_with_id(store, *event)));
+                    aggregations.apply(*event, viewer_unsigned.apply(*event, client_event_with_id(store, *event))));
                 if (serialized.error != canonicaljson::CanonicalJsonError::none)
                 {
                     return dispatch_err(req, rt, 500U, "M_UNKNOWN", "failed to serialize event");
