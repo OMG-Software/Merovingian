@@ -10,6 +10,7 @@
 #include "merovingian/events/event_id.hpp"
 #include "merovingian/events/limits.hpp"
 #include "merovingian/events/state_resolution.hpp"
+#include "merovingian/events/unsigned_data.hpp"
 #include "merovingian/observability/logger.hpp"
 #include "merovingian/observability/observability.hpp"
 #include "merovingian/rooms/room_version_policy.hpp"
@@ -169,7 +170,17 @@ auto parse_inbound_pdu_envelope(std::string_view pdu_json, std::string_view room
     }
     out.origin_server_ts = envelope.event.origin_server_ts;
     out.signatures = envelope.event.signatures;
-    out.json = std::string{pdu_json};
+    // The relaying server's `unsigned` is covered by no signature or hash (ADR-0402): the envelope,
+    // and so everything stored from it, never holds it.
+    auto stripped_json = events::without_unsigned_json(pdu_json);
+    if (!stripped_json.has_value())
+    {
+        log_diagnostic("pdu.parse.rejected", {
+                                                 {"reason", "unsigned could not be removed from the PDU", false}
+        });
+        return std::nullopt;
+    }
+    out.json = std::move(*stripped_json);
 
     if (auto const* prev_value = find_member(*root, "prev_events"); prev_value != nullptr)
     {

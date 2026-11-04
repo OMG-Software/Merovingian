@@ -1150,6 +1150,17 @@ Clients are served `unsigned.redacted_because` on a redacted event (`database::a
 called by `client_event_with_id` and the sliding sync builder) and `redacts` in both locations on a redaction
 event (`database::add_redaction_compat`, rooms/v11.md).
 
+### `unsigned` is never stored from a remote server, and never served from a stored copy (ADR-0402)
+
+`unsigned` is outside the content hash, the reference hash and every signature, so the server that relayed an
+event chose it. Every path that stores a received PDU removes it first (`events::without_unsigned`,
+`events/unsigned_data.hpp`): `parse_inbound_pdu_envelope`, `verify_and_store_backfilled_event`, the `send_join`
+state and auth-chain writer, a knock's stored `knock_room_state`, the inbound invite handler and the signed
+`make_join`/`make_leave`/`make_knock` template. The event ID, content hash and signatures are unchanged by it. A
+client's `unsigned` is built from what this server computes (`replaces_state`, `redacted_because`, and the viewer's
+`transaction_id`, `membership` and `prev_content` through `sync::ViewerEventUnsigned`), in `client_event_with_id`
+and in sliding sync alike, never from a stored copy with a list of keys removed. `age` is not served.
+
 ### The algorithm
 
 The redaction engine retains top-level keys and event-content keys according to

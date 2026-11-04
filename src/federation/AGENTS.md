@@ -293,6 +293,14 @@ Federation is the highest-risk surface: **all input comes from untrusted remote 
    functions hold no static state, take no lock and return owned data; the caller guards the store. Read current state
    with `find_current_state_event_id` and `for_each_room_state_row`, never a scan of `store.state` (ADR-0344).
 
+20. **A received PDU is stored without its `unsigned` (F-70, ADR-0402).** `unsigned` is outside the content hash, the
+   reference hash and every signature, so the relaying server chose it, third parties' events included.
+   `parse_inbound_pdu_envelope` removes it (`events::without_unsigned_json`), so `/send`, the worker relays and the
+   membership acceptor store `InboundPduEnvelope::json` without it; backfill (`verify_and_store_backfilled_event`),
+   the `send_join` state writer and the invite handler do the same. A new path that stores a PDU another server sent
+   calls the helper, and refuses the PDU if it returns nothing. `invite_room_state` and `knock_room_state` are taken
+   from the request or answer field, never from an event's `unsigned`. Removing it changes no event ID or signature check.
+
 ## Key files
 
 | File | Responsibility |

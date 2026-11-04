@@ -728,6 +728,14 @@ quickly finding everything a given `AGENTS.md` file contributed.
   transaction ID collapsed a fan-out into one durable row (CWE-400; ADR-0177).
   Source: `src/federation/AGENTS.md`.
 
+- **Never store a received PDU's `unsigned`, and never build a client's `unsigned` from a stored copy.**
+  Every path that stores a PDU another server sent removes it first (`events::without_unsigned`), and
+  `client_event_with_id` and sliding sync build `unsigned` from what this server computes.
+  Why: no signature or hash covers `unsigned`, so a relaying server could attach `m.relations`,
+  `redacted_because` or `prev_content` to a third party's event and have clients show them as this
+  server's own (CWE-345; F-70, F-84, ADR-0402).
+  Source: `src/federation/AGENTS.md`, `src/sync/AGENTS.md`.
+
 ## Application Service API
 
 - **`as_token`/`hs_token` live in `core::SecretBuffer` and are never logged;

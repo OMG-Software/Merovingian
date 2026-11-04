@@ -8,6 +8,7 @@
 #include "merovingian/canonicaljson/value.hpp"
 #include "merovingian/database/redaction_view.hpp"
 #include "merovingian/homeserver/push_rule_unread_classifier.hpp"
+#include "merovingian/sync/viewer_event_unsigned.hpp"
 #include "merovingian/trust_safety/ignore_list.hpp"
 
 #include <algorithm>
@@ -62,35 +63,43 @@ namespace
     // reference hash), but every client-facing event — timeline and
     // required_state alike — must include it per the Matrix spec's Room
     // Event Format. Mirrors client_server.cpp's client_event_value().
-    [[nodiscard]] auto client_event_json(database::PersistentStore const& store, std::string_view event_id,
-                                         std::string_view stored_json) -> std::string
+    //
+    // `unsigned` is never taken from the stored copy: it is outside the event's signatures, so a remote
+    // sender can put anything there. It is built from `redacted_because` (attach_redacted_because) and the
+    // viewer's own `transaction_id`, `membership` and `prev_content` (ViewerEventUnsigned), the same rule
+    // as client_event_with_id (ADR-0402). A stored row that cannot be read is withheld (empty string).
+    [[nodiscard]] auto client_event_json(database::PersistentStore const& store, database::PersistentEvent const& event,
+                                         ViewerEventUnsigned& viewer) -> std::string
     {
-        auto const parsed = canonicaljson::parse_lossless(stored_json);
-        if (parsed.error == canonicaljson::ParseError::none)
+        auto const parsed = canonicaljson::parse_lossless(event.json);
+        if (parsed.error != canonicaljson::ParseError::none)
         {
-            if (auto const* obj = as_object(parsed.value); obj != nullptr)
-            {
-                auto client_obj = *obj;
-                // Stored JSON from v1-v3 rooms (and PDUs relayed by other
-                // implementations) may already carry event_id — replace it
-                // rather than appending a duplicate key (#457).
-                std::erase_if(client_obj, [](canonicaljson::ObjectMember const& member) {
-                    return member.key == "event_id";
-                });
-                client_obj.push_back(
-                    canonicaljson::make_member("event_id", canonicaljson::Value{std::string{event_id}}));
-                // CSAZ-11: a redacted event carries unsigned.redacted_because; a redaction event
-                // carries `redacts` where older and newer clients look for it.
-                database::add_redaction_compat(client_obj);
-                database::attach_redacted_because(store, event_id, client_obj);
-                auto const serialized = canonicaljson::serialize_canonical(canonicaljson::Value{std::move(client_obj)});
-                if (serialized.error == canonicaljson::CanonicalJsonError::none)
-                {
-                    return serialized.output;
-                }
-            }
+            return {};
         }
-        return std::string{stored_json};
+        auto const* obj = as_object(parsed.value);
+        if (obj == nullptr)
+        {
+            return {};
+        }
+        auto client_obj = *obj;
+        // Stored JSON from v1-v3 rooms (and PDUs relayed by other
+        // implementations) may already carry event_id — replace it
+        // rather than appending a duplicate key (#457).
+        std::erase_if(client_obj, [](canonicaljson::ObjectMember const& member) {
+            return member.key == "event_id" || member.key == "unsigned";
+        });
+        client_obj.push_back(canonicaljson::make_member("event_id", canonicaljson::Value{event.event_id}));
+        // CSAZ-11: a redacted event carries unsigned.redacted_because; a redaction event
+        // carries `redacts` where older and newer clients look for it.
+        database::add_redaction_compat(client_obj);
+        database::attach_redacted_because(store, event.event_id, client_obj);
+        auto const serialized =
+            canonicaljson::serialize_canonical(viewer.apply(event, canonicaljson::Value{std::move(client_obj)}));
+        if (serialized.error != canonicaljson::CanonicalJsonError::none)
+        {
+            return {};
+        }
+        return serialized.output;
     }
 
     // Ignoring Users (spec: docs/matrix-v1.19-spec/client-server-api.md
@@ -538,7 +547,8 @@ auto build_room_response(homeserver::HomeserverRuntime const& rt, std::string_vi
                          std::unordered_set<std::string> const& lazy_members_already_sent,
                          std::unordered_set<std::string> const& ignored_senders, TimelineExpansion expansion,
                          std::optional<std::uint64_t> room_last_sent_ordering,
-                         std::optional<std::uint64_t> timeline_upper_bound) -> SlidingSyncRoomResponse
+                         std::optional<std::uint64_t> timeline_upper_bound, std::string_view device_id)
+    -> SlidingSyncRoomResponse
 {
     // One filter for the request: the classifier borrows it, so both share its lazy indexes.
     auto visibility = HistoryVisibility{store, user};
@@ -546,7 +556,7 @@ auto build_room_response(homeserver::HomeserverRuntime const& rt, std::string_vi
         store, user, static_cast<std::size_t>(rt.config.server().client_api.max_push_rules_per_user), visibility};
     return build_room_response(rt, room_id, user, sub, room_since_event_ordering, is_initial, store,
                                lazy_members_already_sent, ignored_senders, visibility, unread, expansion,
-                               room_last_sent_ordering, timeline_upper_bound);
+                               room_last_sent_ordering, timeline_upper_bound, device_id);
 }
 
 auto timeline_limit_expands(SlidingSyncConnectionState const& conn, std::string_view room_id,
@@ -626,11 +636,16 @@ auto build_room_response(homeserver::HomeserverRuntime const& rt, std::string_vi
                          std::unordered_set<std::string> const& ignored_senders, HistoryVisibility& visibility,
                          UnreadEventClassifier const& unread, TimelineExpansion expansion,
                          std::optional<std::uint64_t> room_last_sent_ordering,
-                         std::optional<std::uint64_t> timeline_upper_bound) -> SlidingSyncRoomResponse
+                         std::optional<std::uint64_t> timeline_upper_bound, std::string_view device_id)
+    -> SlidingSyncRoomResponse
 {
     auto resp = SlidingSyncRoomResponse{};
 
     resp.initial = is_initial;
+
+    // The requesting user's own `unsigned.membership` and, for the sending device, `unsigned.transaction_id`
+    // on every event of the response, through the request's one HistoryVisibility (ADR-0402).
+    auto viewer_unsigned = ViewerEventUnsigned{store, visibility, user, device_id};
 
     // ── Name and avatar ─────────────────────────────────────────────────────
     resp.name = state_content_string(store, room_id, "m.room.name", "name");
@@ -744,7 +759,10 @@ auto build_room_response(homeserver::HomeserverRuntime const& rt, std::string_vi
         {
             continue;
         }
-        timeline_events.emplace_back(ev.stream_ordering, client_event_json(store, ev.event_id, ev.json));
+        if (auto client_json = client_event_json(store, ev, viewer_unsigned); !client_json.empty())
+        {
+            timeline_events.emplace_back(ev.stream_ordering, std::move(client_json));
+        }
     }
     std::sort(timeline_events.begin(), timeline_events.end(), [](auto const& a, auto const& b) {
         return a.first < b.first;
@@ -856,7 +874,10 @@ auto build_room_response(homeserver::HomeserverRuntime const& rt, std::string_vi
                 {
                     break; // spec: invites from ignored users are not sent
                 }
-                resp.required_state_json.push_back(client_event_json(store, ev.event_id, ev.json));
+                if (auto client_json = client_event_json(store, ev, viewer_unsigned); !client_json.empty())
+                {
+                    resp.required_state_json.push_back(std::move(client_json));
+                }
                 if (lazy_load_room_members && se.event_type == "m.room.member" &&
                     timeline_membership.contains(se.state_key))
                 {

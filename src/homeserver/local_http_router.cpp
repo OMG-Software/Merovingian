@@ -18,6 +18,7 @@
 #include "merovingian/events/event_signer.hpp"
 #include "merovingian/events/limits.hpp"
 #include "merovingian/events/redaction.hpp"
+#include "merovingian/events/unsigned_data.hpp"
 #include "merovingian/federation/edu_idempotence.hpp"
 #include "merovingian/federation/event_query.hpp"
 #include "merovingian/federation/inbound_ingestion.hpp"
@@ -2741,6 +2742,10 @@ namespace
             {
                 return {false, 400U, "malformed invite event", {}};
             }
+            // The inviting server's `unsigned` (the v1 invite carries `invite_room_state` there) is covered by
+            // no signature, and the stored and returned copy must not hold it (ADR-0402). The invite's room
+            // state comes from the request's own `invite_room_state` field, never from this object.
+            parsed.value = events::without_unsigned(parsed.value);
             // The rules the event is redacted and signed under: the room's own
             // version where this server holds it, else the one the request
             // carries (handle_invite fills it for v1 too). Only a room with no
@@ -3828,7 +3833,13 @@ namespace
         }
 
         auto effective_pdu = parsed.value;
-        auto stored_json = std::string{event_json};
+        // What the origin put in `unsigned` is covered by no signature or hash, so it is never stored (ADR-0402).
+        auto stripped_json = events::without_unsigned_json(event_json);
+        if (!stripped_json.has_value())
+        {
+            return false;
+        }
+        auto stored_json = std::move(*stripped_json);
         if (!events::verify_pdu_content_hash(effective_pdu))
         {
             auto const redaction = events::redact_event(effective_pdu, policy);
