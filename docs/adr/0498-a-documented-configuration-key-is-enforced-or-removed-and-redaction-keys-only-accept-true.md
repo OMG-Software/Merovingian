@@ -25,7 +25,10 @@ Chosen option: the second. A key that looks like a control and does nothing is w
   permits, for example, email addresses from a particular domain"). Empty restricts nothing; matching is on the exact
   domain after the last `@`, ignoring ASCII letter case; **subdomains do not match** (an allow list entry is a
   decision about one domain, and a suffix match would let `evil.example.org` ride on `example.org`). msisdn has no
-  domain and is not restricted. The check runs before any identity server is contacted, on every path that tells an
+  domain and is not restricted. The key is **not** a limit on every email a user may add: `POST /account/3pid/add`
+  verifies locally and binds nothing on an identity server, so it is outside this key. An entry that is empty or holds
+  `@`, `*` or whitespace can never match and is a start-up configuration finding, because failing closed at request
+  time would refuse every email with no explanation. The check runs before any identity server is contacted, on every path that tells an
   identity server an address: email `requestToken` delegation, bind, and 3PID room invites.
 * `default_server` is removed. It was documented as "used when a client omits `id_server`", but an omitted `id_server`
   means this server verifies the 3PID itself, and an identity server cannot be asked without the client's own

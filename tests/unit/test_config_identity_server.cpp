@@ -203,3 +203,35 @@ SCENARIO("A configuration that turns log redaction off is refused", "[config][lo
         }
     }
 }
+
+// ADR-0498: an entry that can never equal an email domain would make every email refused with no explanation, so
+// configuration says why.
+SCENARIO("An allowed_bind_domains entry that can never match is a configuration finding", "[config][identity-server]")
+{
+    GIVEN("allowed_bind_domains entries with an at sign, a wildcard, whitespace or nothing at all")
+    {
+        auto const at_sign =
+            merovingian::config::parse_key_value_config("server.identity_server.allowed_bind_domains=@example.org\n");
+        auto const wildcard =
+            merovingian::config::parse_key_value_config("server.identity_server.allowed_bind_domains=*.example.org\n");
+        auto const whitespace = merovingian::config::parse_key_value_config(
+            "server.identity_server.allowed_bind_domains=example.org,exa mple.com\n");
+        auto const good = merovingian::config::parse_key_value_config(
+            "server.identity_server.allowed_bind_domains=example.org,Example.com\n");
+        auto empty = merovingian::config::Config{};
+        empty.server().identity_server.allowed_bind_domains = {"example.org", ""};
+
+        WHEN("each is validated")
+        {
+            THEN("each bad entry is a finding on the key and plain domains are accepted")
+            {
+                auto const key = "server.identity_server.allowed_bind_domains";
+                REQUIRE(contains_finding(merovingian::config::validate(at_sign.config), key));
+                REQUIRE(contains_finding(merovingian::config::validate(wildcard.config), key));
+                REQUIRE(contains_finding(merovingian::config::validate(whitespace.config), key));
+                REQUIRE(contains_finding(merovingian::config::validate(empty), key));
+                REQUIRE_FALSE(contains_finding(merovingian::config::validate(good.config), key));
+            }
+        }
+    }
+}

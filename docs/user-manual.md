@@ -786,7 +786,7 @@ is not possible. 3PIDs are not used for login or password reset.
 | Key | Default | When to change |
 |---|---|---|
 | `server.identity_server.trusted_servers` | (empty) | Comma-separated allow-list of identity server base URLs (must be HTTPS). A 3PID operation naming an `id_server` outside this list is refused. |
-| `server.identity_server.allowed_bind_domains` | (empty) | Comma-separated email domains this server may tell an identity server about (ADR-0498). Empty restricts nothing. When set, an email address on any other domain (exact match, letter case ignored, subdomains do not match) is refused with `403 M_THREEPID_DENIED` on the identity-server `requestToken`, bind and 3PID invite paths. msisdn numbers have no domain and are not restricted. |
+| `server.identity_server.allowed_bind_domains` | (empty) | Comma-separated email domains this server may tell an identity server about (ADR-0498). Empty restricts nothing. When set, an email address on any other domain (exact match, letter case ignored, subdomains do not match) is refused with `403 M_THREEPID_DENIED` on the identity-server `requestToken`, bind and 3PID invite paths. msisdn numbers have no domain and are not restricted, and `POST /account/3pid/add` (verified locally, nothing bound on an identity server) is outside this key, so it is **not** a limit on every email a user may add. Entries are bare domains: one that is empty or holds `@`, `*` or whitespace is a start-up configuration error. |
 | `server.identity_server.connect_timeout_seconds` | `10` | Outbound connect timeout for identity server HTTP calls. |
 | `server.identity_server.total_timeout_seconds` | `30` | Outbound total timeout for identity server HTTP calls. Must be `>=` `connect_timeout_seconds`. |
 

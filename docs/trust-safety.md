@@ -47,7 +47,8 @@ This capability note describes runtime-wired trust-and-safety behavior.
   `PUT /_matrix/client/v3/admin/safety/policy_rules/{scope}/{entity}`, and
   `DELETE /_matrix/client/v3/admin/safety/policy_rules/{scope}/{entity}`.
   A rule's action is one of `allow`, `deny`, `quarantine`, `lock_account` or
-  `suspend_account`; any other value is rejected. The engine's `PolicyAction`
+  `suspend_account`; any other value is rejected. The scope must be one something reads: `registration`, `federation`,
+  `media` or `room`; any other scope is `400 M_INVALID_PARAM` and nothing is stored (ADR-0500). The engine's `PolicyAction`
   also has `accept_report`, used only for event-report decisions.
 - Remote policy-server transport through
   `security.trust_safety.policy_server_url` and the fail-closed

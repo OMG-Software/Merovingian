@@ -11739,6 +11739,14 @@ namespace
                                         core::percent_decode_path_component(suffix.substr(separator + 1U))};
     }
 
+    // The scopes something reads: registration (auth_service), federation (inbound requests), media (media_service)
+    // and room (room_service), the last three also written by the admin review route. A rule in any other scope
+    // would be stored and never consulted (ADR-0500).
+    [[nodiscard]] auto is_enforced_policy_rule_scope(std::string_view scope) noexcept -> bool
+    {
+        return scope == "registration" || scope == "federation" || scope == "media" || scope == "room";
+    }
+
     [[nodiscard]] auto is_valid_policy_rule_action(std::string_view action) noexcept -> bool
     {
         return action == "allow" || action == "deny" || action == "quarantine" || action == "lock_account" ||
@@ -12814,6 +12822,11 @@ namespace
             {
                 return err(400U, "M_BAD_JSON",
                            "policy rule action must be allow, deny, quarantine, lock_account, or suspend_account");
+            }
+            if (!is_enforced_policy_rule_scope(path->scope))
+            {
+                return err(400U, "M_INVALID_PARAM",
+                           "policy rule scope must be registration, federation, media, or room");
             }
             auto const rule = database::PersistentPolicyRule{
                 path->scope + ':' + path->entity, path->scope, path->entity, body->action, body->reason,

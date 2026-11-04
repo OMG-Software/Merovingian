@@ -13,10 +13,8 @@ SCENARIO("Trust and safety policy engine exposes all policy surfaces", "[trust-s
     {
         WHEN("names are requested")
         {
-            THEN("invite, federation, media, registration, room, and account surfaces exist")
+            THEN("federation, media, registration, room, and account surfaces exist")
             {
-                REQUIRE(std::string{merovingian::trust_safety::policy_surface_name(
-                            merovingian::trust_safety::PolicySurface::invite)} == "invite");
                 REQUIRE(std::string{merovingian::trust_safety::policy_surface_name(
                             merovingian::trust_safety::PolicySurface::federation)} == "federation");
                 REQUIRE(std::string{merovingian::trust_safety::policy_surface_name(
@@ -116,31 +114,6 @@ SCENARIO("Registration policy blocks local denials and malformed input", "[trust
                 REQUIRE(registration_allowed.allowed);
                 REQUIRE_FALSE(registration_blocked.allowed);
                 REQUIRE(registration_blocked.reason.code == "registration_disabled");
-            }
-        }
-    }
-}
-
-SCENARIO("Account enforcement records can be persisted through prepared statements", "[trust-safety][account]")
-{
-    GIVEN("account enforcement records")
-    {
-        auto const reason = merovingian::trust_safety::enforcement_reason("manual_review", "account restricted",
-                                                                          "admin reviewed account");
-        auto suspended = merovingian::trust_safety::AccountEnforcementRecord{};
-        suspended.user_id = "@alice:example.org";
-        suspended.suspended = true;
-        suspended.reason = reason;
-
-        WHEN("statements are generated")
-        {
-            auto const statements = merovingian::trust_safety::account_enforcement_statements(suspended);
-
-            THEN("the record can be persisted through a valid prepared statement")
-            {
-                REQUIRE(statements.size() == 1U);
-                REQUIRE(statements.front().name == "trust_safety_update_account_enforcement");
-                REQUIRE(merovingian::database::prepared_statement_is_valid(statements.front()).valid);
             }
         }
     }

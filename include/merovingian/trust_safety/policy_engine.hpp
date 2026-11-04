@@ -15,7 +15,6 @@ namespace merovingian::trust_safety
 
 enum class PolicySurface
 {
-    invite,
     federation,
     media,
     registration,
@@ -68,14 +67,6 @@ struct PolicyServerHook final
     EnforcementReason reason{};
     std::string rule_id{};
     std::uint32_t timeout_milliseconds{250U};
-};
-
-struct AccountEnforcementRecord final
-{
-    std::string user_id{};
-    bool suspended{false};
-    bool locked{false};
-    EnforcementReason reason{};
 };
 
 struct RegistrationPolicyRequest final
@@ -164,8 +155,6 @@ struct SafetyAuditEvent final
 [[nodiscard]] auto evaluate_federation_policy(FederationPolicyRequest const& request) -> PolicyDecision;
 [[nodiscard]] auto evaluate_media_policy(MediaPolicyRequest const& request) -> PolicyDecision;
 [[nodiscard]] auto evaluate_room_policy(RoomPolicyRequest const& request) -> PolicyDecision;
-[[nodiscard]] auto account_enforcement_statements(AccountEnforcementRecord const& record)
-    -> std::vector<database::PreparedStatement>;
 [[nodiscard]] auto review_policy(ReviewRecord const& record) -> PolicyDecision;
 [[nodiscard]] auto reporting_api_routes() -> std::vector<ReportingApiRoute>;
 [[nodiscard]] auto match_reporting_api_route(std::string_view method, std::string_view target)

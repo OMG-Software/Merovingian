@@ -184,6 +184,9 @@ struct DriveParams final
     std::optional<std::string> bind_id_server{};
     // Points the session at an identity server that is not listening.
     bool identity_server_down{false};
+    // allowed_bind_domains in force when the bind route is called (set after the requestToken step, so only
+    // the bind gate is exercised).
+    std::vector<std::string> bind_domains{};
 };
 
 struct Outcome final
@@ -224,6 +227,8 @@ struct Outcome final
         REQUIRE(runtime.registration_validation_sessions.size() == 1U);
         runtime.registration_validation_sessions.front().identity_server_base_url = "https://is.localhost.test:1";
     }
+
+    runtime.homeserver.config.server().identity_server.allowed_bind_domains = params.bind_domains;
 
     auto const id_server = params.bind_id_server.value_or(identity_server.host_port());
     auto response = std::pair<std::uint16_t, std::string>{};
@@ -910,6 +915,70 @@ SCENARIO("POST /account/3pid/bind and the legacy POST /account/3pid bind only a 
             REQUIRE(bind.body.find("M_SERVER_NOT_TRUSTED") != std::string::npos);
             REQUIRE_FALSE(bind.bound);
             REQUIRE(bind.identity_bind_calls == 0U);
+        }
+    }
+}
+
+// Spec: M_THREEPID_DENIED, "The server does not permit this third-party identifier. This may happen if the server only
+// permits, for example, email addresses from a particular domain" (client-server-api.md, Common error codes).
+SCENARIO("POST /account/3pid/bind and the legacy POST /account/3pid honour allowed_bind_domains",
+         "[homeserver][identity][integration][3pid][config]")
+{
+    GIVEN("each bind route, a validated session for alice@example.org and allowed_bind_domains=other.net")
+    {
+        auto const bind = [] {
+            auto params = DriveParams{};
+            params.route = Route::bind;
+            params.validation_response = validated_response(email_address);
+            params.bind_domains = {"other.net"};
+            return drive(params);
+        }();
+        auto const legacy = [] {
+            auto params = DriveParams{};
+            params.route = Route::legacy_bind;
+            params.validation_response = validated_response(email_address);
+            params.bind_domains = {"other.net"};
+            return drive(params);
+        }();
+
+        THEN("both are refused with 403 M_THREEPID_DENIED, the identity server is never asked to bind, and nothing is "
+             "bound")
+        {
+            for (auto const* outcome : {&bind, &legacy})
+            {
+                REQUIRE(outcome->status == 403U);
+                REQUIRE(outcome->body.find("M_THREEPID_DENIED") != std::string::npos);
+                REQUIRE_FALSE(outcome->bound);
+                REQUIRE(outcome->identity_bind_calls == 0U);
+            }
+        }
+    }
+
+    GIVEN("each bind route, the same validated session and allowed_bind_domains=Example.ORG")
+    {
+        auto const bind = [] {
+            auto params = DriveParams{};
+            params.route = Route::bind;
+            params.validation_response = validated_response(email_address);
+            params.bind_domains = {"Example.ORG"};
+            return drive(params);
+        }();
+        auto const legacy = [] {
+            auto params = DriveParams{};
+            params.route = Route::legacy_bind;
+            params.validation_response = validated_response(email_address);
+            params.bind_domains = {"Example.ORG"};
+            return drive(params);
+        }();
+
+        THEN("both still bind at the identity server once and record the binding")
+        {
+            for (auto const* outcome : {&bind, &legacy})
+            {
+                REQUIRE(outcome->status == 200U);
+                REQUIRE(outcome->bound);
+                REQUIRE(outcome->identity_bind_calls == 1U);
+            }
         }
     }
 }

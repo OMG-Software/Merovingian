@@ -20,11 +20,6 @@ namespace
         return value.size() >= prefix.size() && value.substr(0U, prefix.size()) == prefix;
     }
 
-    [[nodiscard]] auto public_value(std::string_view value) -> database::BoundValue
-    {
-        return {std::string{value}, false};
-    }
-
     [[nodiscard]] auto reason_or_default(EnforcementReason reason, std::string_view code, std::string_view summary)
         -> EnforcementReason
     {
@@ -133,8 +128,6 @@ auto policy_surface_name(PolicySurface surface) noexcept -> char const*
 {
     switch (surface)
     {
-    case PolicySurface::invite:
-        return "invite";
     case PolicySurface::federation:
         return "federation";
     case PolicySurface::media:
@@ -382,25 +375,6 @@ auto evaluate_room_policy(RoomPolicyRequest const& request) -> PolicyDecision
                        {"reason",  result.reason.code,                             false}
     });
     return result;
-}
-
-auto account_enforcement_statements(AccountEnforcementRecord const& record) -> std::vector<database::PreparedStatement>
-{
-    if (!matrix_id_is_valid(record.user_id))
-    {
-        return {};
-    }
-
-    return {
-        {
-         "trust_safety_update_account_enforcement", "UPDATE accounts SET suspended = $1, locked = $2, enforcement_reason = $3 WHERE user_id = $4",
-         {
-                public_value(record.suspended ? "true" : "false"),
-                public_value(record.locked ? "true" : "false"),
-                public_value(record.reason.code),
-                public_value(record.user_id),
-            }, },
-    };
 }
 
 auto review_policy(ReviewRecord const& record) -> PolicyDecision
