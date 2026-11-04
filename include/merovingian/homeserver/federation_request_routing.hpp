@@ -55,6 +55,10 @@ namespace merovingian::homeserver
 // Matrix v1.19 marks this endpoint as unauthenticated.
 [[nodiscard]] auto is_federation_version_endpoint(std::string_view target) noexcept -> bool;
 
+// `PUT /_matrix/federation/v1/3pid/onbind`, which an identity server calls and the spec marks as not authenticated
+// ("Requires authentication: No"). Main answers it itself (ADR-0484); the path is matched exactly.
+[[nodiscard]] auto is_federation_3pid_onbind_endpoint(std::string_view target) noexcept -> bool;
+
 // The `Allow` value for a request that uses a method the path does not serve: the path is one this
 // server's federation surface (or `/_matrix/key/v2/server`, the version and the OpenID userinfo
 // endpoint) serves, but not with `method`. nullopt when the method is served there, or when the path

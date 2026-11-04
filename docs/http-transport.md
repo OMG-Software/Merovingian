@@ -285,6 +285,14 @@ backend choice:
   does not resolve hostnames so the SSRF policy in
   `merovingian::federation::security` remains the single source of truth
 
+Server discovery follows the spec's steps in order. The `.well-known/matrix/server` fetch follows 30x redirects (301,
+302, 303, 307, 308) itself, at most `well_known_max_redirects` (4), every hop an `https` URL that is resolved and checked
+against the same deny-list and private-range rule before it is requested, pinned to the addresses that passed, with one
+deadline shared by all the hops and a loop ending the chain (ADR-0483). A `Location` that is a relative path is refused.
+SRV lookups ask `_matrix-fed._tcp.<hostname>` first and, only when it has no record, the deprecated
+`_matrix._tcp.<hostname>`, for the original hostname and for a delegated hostname without a port; the Host header and the
+certificate name are the hostname for either.
+
 Federation discovery applies `security.federation.deny_ip_ranges` in addition
 to the mandatory built-in SSRF blocks. The discovery network owns this immutable
 policy, so IP-literal, explicit-port, well-known, SRV, fallback, redirect and
@@ -352,7 +360,8 @@ posture:
 
 - `CURLOPT_SSL_VERIFYPEER = 1` — reject untrusted certificate chains
 - `CURLOPT_SSL_VERIFYHOST = 2` — require the certificate to match the URL host
-- `CURLOPT_FOLLOWLOCATION = 0` — redirects are refused
+- `CURLOPT_FOLLOWLOCATION = 0` — redirects are refused by the client. A caller that must follow one does it itself, one
+  pinned request per hop: the URL preview gate (ADR-0213) and the `.well-known/matrix/server` fetch (ADR-0483)
 - `CURLOPT_PROTOCOLS_STR = "https"` — no cleartext fallback, unless the
   request set `allow_cleartext_http = true` (see above), in which case
   `"https,http"`

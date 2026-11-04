@@ -32,6 +32,7 @@
 #include "merovingian/federation/outbound_transaction.hpp"
 #include "merovingian/federation/remote_key_cache.hpp"
 #include "merovingian/federation/server_discovery.hpp"
+#include "merovingian/federation/third_party_invite.hpp"
 #include "merovingian/homeserver/appservice_delivery.hpp"
 #include "merovingian/homeserver/appservice_ephemeral.hpp"
 #include "merovingian/homeserver/auth_service.hpp"
@@ -7185,6 +7186,88 @@ auto queue_remote_invite(HomeserverRuntime& runtime, std::string_view room_id, s
     return runtime.dispatch_worker->enqueue(std::move(transaction));
 }
 
+namespace
+{
+
+    // The tail shared by an invite a client sends (`invite_user`) and one issued for a third-party invite
+    // (`exchange_third_party_invite`): `invite_event` is composed and signed for a user of ANOTHER server and not yet
+    // stored. It is offered to that user's server, then stored and sent to the room's other servers
+    // (Server-Server API, "Inviting to a room"). Runs with `guard` held, releasing it for the exchange; `client_key`
+    // names the ADR-0079 outbound budget the offer draws on.
+    [[nodiscard]] auto offer_and_store_remote_invite(HomeserverRuntime& runtime, std::unique_lock<RuntimeMutex>& guard,
+                                                     std::string_view room_id, std::string const& inviter,
+                                                     std::string_view target_user_id, ComposedEvent invite_event,
+                                                     std::string_view client_key) -> OperationResult
+    {
+        auto const invitee_server = std::string{auth::user_id_server_name(target_user_id)};
+        // ADR-0079: the offer holds a client-outbound slot, waited for within its deadline (ADR-0306). The wait
+        // releases runtime.mutex, as the exchange does; the room is found again below. With no slot the invite
+        // takes the unreachable path: queued, and stored only if the queue takes it (ADR-0307).
+        auto const offer_deadline =
+            OutboundDeadline{effective_client_outbound_deadline(runtime, remote_invite_offer_seconds)};
+        auto const offer_slot =
+            admit_client_outbound_proxy_waiting(runtime, std::string{client_key}, guard, offer_deadline);
+        // A slot taken on the last poll can come after the deadline. Read the time left once: remaining_seconds()
+        // rounds up, so 0 means it has passed, and a 0 passed on would mean "the outbound default" to
+        // deliver_remote_invite.
+        auto const seconds_left = offer_deadline.remaining_seconds();
+        auto const delivery =
+            offer_slot.has_value() && seconds_left > 0U
+                ? deliver_remote_invite(runtime, guard, room_id, invitee_server, invite_event.event_id,
+                                        invite_event.json, seconds_left)
+                : RemoteInviteResult{RemoteInviteOutcome::unreachable, 503U, "no client-outbound slot for the offer"};
+        if (delivery.outcome == RemoteInviteOutcome::refused)
+        {
+            return make_operation_result(false, {}, delivery.reason, delivery.status);
+        }
+        if (delivery.outcome == RemoteInviteOutcome::delivered)
+        {
+            // Signed by both servers now: this is the event that is stored and sent to the room's servers.
+            invite_event.json = delivery.cosigned_event_json;
+            invite_event.signatures.insert(invite_event.signatures.end(), delivery.cosigned_signatures.begin(),
+                                           delivery.cosigned_signatures.end());
+        }
+
+        // runtime.mutex was down for the exchange: the room, or the inviter's place in it, may have changed.
+        auto* room = find_room(runtime.database, room_id);
+        if (room == nullptr)
+        {
+            return make_operation_result(false, {}, "room not found", 404U);
+        }
+        if (!room_has_member(*room, inviter))
+        {
+            return make_operation_result(false, {}, "user is not joined", 403U);
+        }
+        // An unreachable invitee's server gets the invite from the retry queue. Queued before the invite is
+        // stored: once stored, the invite cannot be taken back, and an invite that was neither delivered nor
+        // queued reaches nobody, so the client must not be told it was sent (ADR-0307).
+        if (delivery.outcome == RemoteInviteOutcome::unreachable &&
+            !queue_remote_invite(runtime, room_id, invitee_server, invite_event.event_id, invite_event.json))
+        {
+            log_diagnostic("room.invite.not_queued",
+                           {
+                               {"actor",          inviter,                     false},
+                               {"room_id",        std::string{room_id},        false},
+                               {"invitee_server", std::string{invitee_server}, false}
+            },
+                           observability::LogEventSeverity::warning);
+            return make_operation_result(false, {}, "the invitee's server cannot be reached and no retry can be queued",
+                                         503U);
+        }
+        auto const stored =
+            store_composed_membership(runtime, room_id, inviter, target_user_id, "invite", invite_event);
+        if (!stored.ok)
+        {
+            return stored;
+        }
+        append_local_audit(runtime.database, observability::AuditCategory::admin, "room.invited", inviter,
+                           target_user_id, std::string{room_id});
+        notify_room_changed(runtime, room_id);
+        return make_operation_result(true, std::string{room_id});
+    }
+
+} // namespace
+
 [[nodiscard]] auto invite_user(HomeserverRuntime& runtime, std::string_view access_token, std::string_view room_id,
                                std::string_view target_user_id, std::string_view reason, std::string_view client_key)
     -> OperationResult
@@ -7234,70 +7317,258 @@ auto queue_remote_invite(HomeserverRuntime& runtime, std::string_view room_id, s
     {
         return composed.failure;
     }
-    auto& invite_event = *composed.event;
-    // ADR-0079: the offer holds a client-outbound slot, waited for within its deadline (ADR-0306). The wait
-    // releases runtime.mutex, as the exchange does; the room is found again below. With no slot the invite
-    // takes the unreachable path: queued, and stored only if the queue takes it (ADR-0307).
-    auto const offer_deadline =
-        OutboundDeadline{effective_client_outbound_deadline(runtime, remote_invite_offer_seconds)};
-    auto const offer_slot =
-        admit_client_outbound_proxy_waiting(runtime, std::string{client_key}, guard, offer_deadline);
-    // A slot taken on the last poll can come after the deadline. Read the time left once: remaining_seconds()
-    // rounds up, so 0 means it has passed, and a 0 passed on would mean "the outbound default" to
-    // deliver_remote_invite.
-    auto const seconds_left = offer_deadline.remaining_seconds();
-    auto const delivery =
-        offer_slot.has_value() && seconds_left > 0U
-            ? deliver_remote_invite(runtime, guard, room_id, invitee_server, invite_event.event_id, invite_event.json,
-                                    seconds_left)
-            : RemoteInviteResult{RemoteInviteOutcome::unreachable, 503U, "no client-outbound slot for the offer"};
-    if (delivery.outcome == RemoteInviteOutcome::refused)
+    return offer_and_store_remote_invite(runtime, guard, room_id, *user_id, target_user_id, std::move(*composed.event),
+                                         client_key);
+}
+
+namespace
+{
+
+    // The `display_name` of the room's `m.room.third_party_invite` for `token`, or nullopt when the room has none.
+    [[nodiscard]] auto third_party_invite_display_name(database::PersistentStore const& store, std::string_view room_id,
+                                                       std::string_view token) -> std::optional<std::string>
     {
-        return make_operation_result(false, {}, delivery.reason, delivery.status);
-    }
-    if (delivery.outcome == RemoteInviteOutcome::delivered)
-    {
-        // Signed by both servers now: this is the event that is stored and sent to the room's servers.
-        invite_event.json = delivery.cosigned_event_json;
-        invite_event.signatures.insert(invite_event.signatures.end(), delivery.cosigned_signatures.begin(),
-                                       delivery.cosigned_signatures.end());
+        auto const event_id = database::find_current_state_event_id(store, room_id, "m.room.third_party_invite", token);
+        if (!event_id.has_value())
+        {
+            return std::nullopt;
+        }
+        auto const event = find_event_json(store, *event_id);
+        auto const* object = std::get_if<canonicaljson::Object>(&event.storage());
+        auto const* content_value = object == nullptr ? nullptr : object_member(*object, "content");
+        auto const* content =
+            content_value == nullptr ? nullptr : std::get_if<canonicaljson::Object>(&content_value->storage());
+        auto const* display_name = content == nullptr ? nullptr : string_member(*content, "display_name");
+        return display_name == nullptr ? std::string{} : *display_name;
     }
 
-    // runtime.mutex was down for the exchange: the room, or the inviter's place in it, may have changed.
-    room = find_room(runtime.database, room_id);
+    [[nodiscard]] auto third_party_member_event_json(std::string_view target_user_id, std::string_view display_name,
+                                                     std::string_view signed_json) -> std::optional<std::string>
+    {
+        auto const signed_value = canonicaljson::parse_json(signed_json);
+        if (signed_value.error != canonicaljson::ParseError::none)
+        {
+            return std::nullopt;
+        }
+        auto invite = canonicaljson::Object{};
+        invite.push_back(canonicaljson::make_member("display_name", canonicaljson::Value{std::string{display_name}}));
+        invite.push_back(canonicaljson::make_member("signed", signed_value.value));
+        auto content = canonicaljson::Object{};
+        content.push_back(canonicaljson::make_member("membership", canonicaljson::Value{std::string{"invite"}}));
+        content.push_back(canonicaljson::make_member("third_party_invite", canonicaljson::Value{std::move(invite)}));
+        auto event = canonicaljson::Object{};
+        event.push_back(canonicaljson::make_member("type", canonicaljson::Value{std::string{"m.room.member"}}));
+        event.push_back(canonicaljson::make_member("state_key", canonicaljson::Value{std::string{target_user_id}}));
+        event.push_back(canonicaljson::make_member("content", canonicaljson::Value{std::move(content)}));
+        return serialize_canonical_string(canonicaljson::Value{std::move(event)});
+    }
+
+} // namespace
+
+auto exchange_third_party_invite(HomeserverRuntime& runtime, federation::ThirdPartyInviteExchange const& exchange,
+                                 std::string_view client_key) -> OperationResult
+{
+    auto guard = std::unique_lock<RuntimeMutex>{runtime.mutex};
+    if (auto refused = sync_stream_refusal(runtime); refused.has_value())
+    {
+        return *refused;
+    }
+    // This server can sign only for its own users (ADR-0485): the spec's caller asks "the inviting homeserver", which
+    // is the server of the user who sent the original m.room.third_party_invite.
+    auto const& our_server = runtime.config.server().server_name;
+    if (auth::user_id_server_name(exchange.sender) != our_server)
+    {
+        return make_operation_result(false, {}, "the sender of the third-party invite is not a user of this server",
+                                     403U);
+    }
+    auto* room = find_room(runtime.database, exchange.room_id);
     if (room == nullptr)
     {
         return make_operation_result(false, {}, "room not found", 404U);
     }
-    if (!room_has_member(*room, *user_id))
+    if (!room_has_member(*room, exchange.sender))
     {
-        return make_operation_result(false, {}, "user is not joined", 403U);
+        return make_operation_result(false, {}, "the sender of the third-party invite is not in the room", 403U);
     }
-    // An unreachable invitee's server gets the invite from the retry queue. Queued before the invite is
-    // stored: once stored, the invite cannot be taken back, and an invite that was neither delivered nor
-    // queued reaches nobody, so the client must not be told it was sent (ADR-0307).
-    if (delivery.outcome == RemoteInviteOutcome::unreachable &&
-        !queue_remote_invite(runtime, room_id, invitee_server, invite_event.event_id, invite_event.json))
+    auto const& store = runtime.database.persistent_store;
+    auto const display_name = third_party_invite_display_name(store, exchange.room_id, exchange.signed_invite.token);
+    if (!display_name.has_value())
     {
-        log_diagnostic("room.invite.not_queued",
+        return make_operation_result(false, {}, "the room has no third-party invite for the token", 403U);
+    }
+    // The auth rules let a third-party invite stand in for the usual membership checks, so a member who is already
+    // in the room, or banned, would be moved to `invite` by a replayed `signed` object (ADR-0485).
+    auto const membership = current_membership_of(store, exchange.room_id, exchange.target_user_id);
+    if (membership == "join" || membership == "ban")
+    {
+        return make_operation_result(false, {}, "the invited user is already in the room or banned from it", 403U);
+    }
+    if (membership == "invite")
+    {
+        return make_operation_result(true, exchange.room_id);
+    }
+    auto const target_is_local = auth::user_id_server_name(exchange.target_user_id) == our_server;
+    if (target_is_local && !std::ranges::any_of(runtime.database.users, [&](LocalUser const& user) {
+            return user.user_id == exchange.target_user_id && !user.deactivated;
+        }))
+    {
+        return make_operation_result(false, {}, "the invited user is not a user of this server", 404U);
+    }
+    auto const event_json =
+        third_party_member_event_json(exchange.target_user_id, *display_name, exchange.signed_invite.json);
+    if (!event_json.has_value())
+    {
+        return make_operation_result(false, {}, "the signed object could not be read", 400U);
+    }
+    // Composing runs the full authorisation rules, rule 4.3.1 among them: the matching m.room.third_party_invite,
+    // the sender being its sender, and a signature in `signed` that verifies against one of its public keys. Anything
+    // else is refused here, before an event exists.
+    auto composition = compose_signed_event(runtime, exchange.room_id, exchange.sender, *event_json);
+    if (composition.failure == ComposeFailure::too_large)
+    {
+        return event_too_large_result();
+    }
+    if (!composition.event.has_value())
+    {
+        log_diagnostic("room.third_party_invite.exchange_refused",
                        {
-                           {"actor",          *user_id,                    false},
-                           {"room_id",        std::string{room_id},        false},
-                           {"invitee_server", std::string{invitee_server}, false}
+                           {"room_id", exchange.room_id,                     false},
+                           {"sender",  exchange.sender,                      false},
+                           {"target",  exchange.target_user_id,              false},
+                           {"reason",  "the third-party invite was refused", false}
         },
                        observability::LogEventSeverity::warning);
-        return make_operation_result(false, {}, "the invitee's server cannot be reached and no retry can be queued",
-                                     503U);
+        return make_operation_result(false, {}, "the third-party invite was not authorised", 403U);
     }
-    auto const stored = store_composed_membership(runtime, room_id, *user_id, target_user_id, "invite", invite_event);
-    if (!stored.ok)
+    auto result = OperationResult{};
+    if (target_is_local)
     {
-        return stored;
+        result = store_composed_membership(runtime, exchange.room_id, exchange.sender, exchange.target_user_id,
+                                           "invite", *composition.event);
+        if (result.ok)
+        {
+            append_local_audit(runtime.database, observability::AuditCategory::admin, "room.invited", exchange.sender,
+                               exchange.target_user_id, exchange.room_id);
+            notify_room_changed(runtime, exchange.room_id);
+        }
     }
-    append_local_audit(runtime.database, observability::AuditCategory::admin, "room.invited", *user_id, target_user_id,
-                       std::string{room_id});
-    notify_room_changed(runtime, room_id);
-    return make_operation_result(true, std::string{room_id});
+    else
+    {
+        result = offer_and_store_remote_invite(runtime, guard, exchange.room_id, exchange.sender,
+                                               exchange.target_user_id, std::move(*composition.event), client_key);
+    }
+    if (result.ok)
+    {
+        log_diagnostic("room.third_party_invite.exchanged",
+                       {
+                           {"room_id", exchange.room_id,        false},
+                           {"sender",  exchange.sender,         false},
+                           {"target",  exchange.target_user_id, false}
+        },
+                       observability::LogEventSeverity::info);
+    }
+    return result;
+}
+
+auto request_third_party_invite_exchange(HomeserverRuntime& runtime,
+                                         federation::ThirdPartyInviteExchange const& exchange,
+                                         std::uint32_t timeout_seconds) -> OperationResult
+{
+    auto guard = std::unique_lock<RuntimeMutex>{runtime.mutex};
+    wire_federation_callbacks(runtime);
+    auto const destination = std::string{auth::user_id_server_name(exchange.sender)};
+    auto const body = federation::build_third_party_invite_exchange_body(exchange);
+    if (destination.empty() || destination == runtime.config.server().server_name || body.empty())
+    {
+        return make_operation_result(false, {}, "the third-party invite cannot be forwarded", 400U);
+    }
+    auto const signing_key = find_active_server_signing_key(runtime);
+    if (!signing_key.has_value())
+    {
+        return make_operation_result(false, {}, "server signing key not available", 502U);
+    }
+    auto const transaction = federation::make_outbound_exchange_third_party_invite(
+        destination, runtime.config.server().server_name, exchange.room_id, body);
+    auto const key_id = signing_key->key_id;
+    auto secret_key = core::SecretBuffer{runtime.database.signing_secret_key.bytes()};
+    auto const call = std::invoke([&] {
+        auto const released = RuntimeLockRelease{guard};
+        return perform_bounded_outbound_call_with_status(runtime, OutboundAnswerTrust::unverified, exchange.room_id,
+                                                         transaction, key_id, std::move(secret_key),
+                                                         "room.third_party_invite.forward_failed", timeout_seconds);
+    });
+    if (!call.ok)
+    {
+        return make_operation_result(false, {}, "the inviting server did not accept the exchange",
+                                     call.remote_status == 0U ? std::uint16_t{502U} : call.remote_status);
+    }
+    return make_operation_result(true, exchange.room_id);
+}
+
+auto notify_third_party_bind(HomeserverRuntime& runtime, federation::ThirdPartyBindNotification const& notification,
+                             std::string_view client_key) -> OperationResult
+{
+    // `/3pid/onbind` has no authentication (Server-Server API: "Requires authentication: No"), so what it can cost is
+    // bounded here (ADR-0484): one outbound slot for the whole request, one deadline for every invite in it, at most
+    // `max_third_party_bind_invites` of them, and each one is acted on only if the user it names is an account here.
+    // Nothing is believed from the body: the signature on each `signed` is checked by the server that holds the room.
+    auto const slot = admit_client_outbound_proxy(runtime, std::string{client_key});
+    if (!slot.has_value())
+    {
+        return make_operation_result(false, {}, "too many outbound requests", 429U);
+    }
+    {
+        auto const guard = std::unique_lock<RuntimeMutex>{runtime.mutex};
+        // An unknown, deactivated or foreign user is answered like a known one, so the endpoint tells nobody which
+        // accounts exist.
+        auto const known = auth::user_id_server_name(notification.mxid) == runtime.config.server().server_name &&
+                           std::ranges::any_of(runtime.database.users, [&](LocalUser const& user) {
+                               return user.user_id == notification.mxid && !user.deactivated;
+                           });
+        if (!known)
+        {
+            return make_operation_result(true, {});
+        }
+    }
+    if (notification.dropped != 0U)
+    {
+        // Entries past the cap, malformed ones and ones naming another user: counted by the parser, never acted on.
+        log_diagnostic("room.third_party_invite.bind_invites_dropped",
+                       {
+                           {"user_id", notification.mxid,                           false},
+                           {"dropped", std::to_string(notification.dropped),        false},
+                           {"kept",    std::to_string(notification.invites.size()), false}
+        },
+                       observability::LogEventSeverity::warning);
+    }
+    auto const deadline = OutboundDeadline{effective_client_outbound_deadline(runtime, remote_invite_offer_seconds)};
+    for (auto const& invite : notification.invites)
+    {
+        auto const seconds_left = deadline.remaining_seconds();
+        if (seconds_left == 0U)
+        {
+            break;
+        }
+        auto const exchange = federation::ThirdPartyInviteExchange{invite.room_id, invite.sender, notification.mxid,
+                                                                   invite.signed_invite};
+        auto const own_user = std::invoke([&] {
+            auto const guard = std::unique_lock<RuntimeMutex>{runtime.mutex};
+            return auth::user_id_server_name(invite.sender) == runtime.config.server().server_name;
+        });
+        auto const outcome = own_user ? exchange_third_party_invite(runtime, exchange, client_key)
+                                      : request_third_party_invite_exchange(runtime, exchange, seconds_left);
+        if (!outcome.ok)
+        {
+            log_diagnostic("room.third_party_invite.bind_invite_failed",
+                           {
+                               {"room_id", invite.room_id,                 false},
+                               {"sender",  invite.sender,                  false},
+                               {"status",  std::to_string(outcome.status), false}
+            },
+                           observability::LogEventSeverity::warning);
+        }
+    }
+    return make_operation_result(true, {});
 }
 
 namespace

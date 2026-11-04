@@ -4,6 +4,7 @@
 #pragma once
 
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <string>
 #include <string_view>
@@ -20,6 +21,26 @@ struct WellKnownServerResult final
     std::string body{};
     std::string reason{};
 };
+
+// ADR-0483: a `/.well-known/matrix/server` fetch follows at most this many redirects. Spec, "Resolving server names"
+// step 3: "30x redirects should be followed, however redirection loops should be avoided."
+inline constexpr auto well_known_max_redirects = std::uint32_t{4U};
+
+// One request of the well-known fetch, as the transport answered it. `transport_ok` is false when no HTTP answer
+// was obtained (connection, TLS, timeout, size). A 3xx answer carries its `Location` header in `location`.
+struct WellKnownHopResponse final
+{
+    bool transport_ok{false};
+    std::uint16_t status{0U};
+    std::string location{};
+    std::string body{};
+    std::string error{};
+};
+
+// Performs one GET of `url` (an https URL already checked), connecting only to `pinned_addresses`, within
+// `timeout_seconds`. It never follows a redirect itself.
+using WellKnownHopFetcher = std::function<WellKnownHopResponse(
+    std::string const& url, std::vector<std::string> const& pinned_addresses, std::uint32_t timeout_seconds)>;
 
 struct SrvRecord final
 {
@@ -120,6 +141,16 @@ private:
     std::vector<std::string> denied_ip_ranges_{};
     std::vector<std::string> allowed_private_ip_ranges_{};
 };
+
+// Fetches `https://<server_name>/.well-known/matrix/server`, following redirects (ADR-0483): at most
+// `well_known_max_redirects` of them, each target an absolute https URL, resolved and refused unless every address is
+// allowed (the network's deny-list and private-range allowance, exactly as for the first request) before `fetch_hop` is
+// asked to connect to those addresses only, a URL already visited ends the chain as a loop, and `timeout_seconds` is
+// one deadline for all the hops together. `found` is true when a 200 document was obtained; `ok` is false when the
+// fetch itself failed or was refused (a 200 and a plain "not there" answer are both ok).
+[[nodiscard]] auto fetch_well_known_following_redirects(std::string_view server_name, std::uint32_t timeout_seconds,
+                                                         ServerDiscoveryNetwork& network,
+                                                         WellKnownHopFetcher const& fetch_hop) -> WellKnownServerResult;
 
 // Test-only opt-in token for the well-known delegation overload below.
 //
