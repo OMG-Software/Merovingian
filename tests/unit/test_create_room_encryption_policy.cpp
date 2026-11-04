@@ -19,6 +19,7 @@
 
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/generators/catch_generators.hpp>
+#include <catch2/generators/catch_generators_range.hpp>
 
 #include <cstdint>
 #include <initializer_list>
@@ -100,7 +101,8 @@ struct Reply final
     {
         return {};
     }
-    auto const* algorithm = string_member(parse_object(reply.body), "algorithm");
+    auto const content = parse_object(reply.body);
+    auto const* algorithm = string_member(content, "algorithm");
     return algorithm == nullptr ? std::string{} : *algorithm;
 }
 
