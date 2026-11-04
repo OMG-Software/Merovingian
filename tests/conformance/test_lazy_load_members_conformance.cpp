@@ -831,6 +831,103 @@ SCENARIO("A left room's state ends with the user's leave, not an earlier join of
     }
 }
 
+// Spec: Matrix Client-Server API v1.19
+// Endpoint / Section: GET /rooms/{roomId}/members; GET /sync, rooms.leave
+// URL: ../../docs/matrix-v1.19-spec/client-server-api.md#get_matrixclientv3roomsroomidmembers
+//
+// "If you have left the room then this will be the members of the room when you left." A ban after the user left
+// ends nothing further, so a limited timeline that starts at the ban must not read the state past the leave. That
+// /sync draws this same line for a left room's `state` is this server's reading; the /members rule is the quoted one.
+SCENARIO("A left room's lazy state names nobody who joined after the user left",
+         "[conformance][client-server][sync][lazy-sync]")
+{
+    GIVEN("dave, up to date, leaves; then carol joins and alice bans dave")
+    {
+        auto started = merovingian::homeserver::start_client_server(lazy_config());
+        REQUIRE(started.started);
+        auto& rt = started.runtime;
+        auto const alice = register_user(rt, "alice");
+        auto const bob = register_user(rt, "bob");
+        auto const carol = register_user(rt, "carol");
+        auto const dave = register_user(rt, "dave");
+        auto const room = create_room(rt, alice, "public_chat");
+        join_room(rt, bob, room);
+        join_room(rt, dave, room);
+        auto const initial = sync(rt, dave, k_lazy_state);
+        std::ignore = say(rt, bob, room, "before dave left");
+        REQUIRE(call(rt, "POST", "/_matrix/client/v3/rooms/" + room + "/leave", dave, "{}").status == 200U);
+        join_room(rt, carol, room);
+        auto const ban_body = std::string{R"({"user_id":")"} + user_id("dave") + R"("})";
+        REQUIRE(call(rt, "POST", "/_matrix/client/v3/rooms/" + room + "/ban", alice, ban_body).status == 200U);
+
+        WHEN("dave's incremental sync has room for only the ban in its timeline")
+        {
+            auto const synced = sync(rt, dave,
+                                     R"({"room":{"include_leave":true,"timeline":{"limit":1},)"
+                                     R"("state":{"lazy_load_members":true}}})",
+                                     initial.next_batch);
+            auto const* section = room_section(synced, "leave", room);
+            REQUIRE(section != nullptr);
+            auto const state = events_of(*section, "state");
+
+            THEN("carol, who joined after dave left, is not named")
+            {
+                REQUIRE_FALSE(member_keys(state).contains(user_id("carol")));
+            }
+        }
+    }
+}
+
+// Spec: Matrix Client-Server API v1.19
+// Endpoint / Section: GET /sync, rooms.leave; Lazy-loading room members
+// URL: ../../docs/matrix-v1.19-spec/client-server-api.md#get_matrixclientv3sync
+//
+// A limited timeline's member changes and its senders' members are still owed when the state at the start of the
+// timeline cannot be rebuilt: "only return the member events required to display the senders of the timeline events
+// in this response". Answering from the room's state as of the leave is this server's fallback, not a quoted rule.
+SCENARIO("A left room's lazy members survive state that cannot be rebuilt at the timeline's start",
+         "[conformance][client-server][sync][lazy-sync]")
+{
+    GIVEN("dave, up to date; then carol joins, bob speaks, dave leaves, and the recorded state groups are lost")
+    {
+        auto started = merovingian::homeserver::start_client_server(lazy_config());
+        REQUIRE(started.started);
+        auto& rt = started.runtime;
+        auto const alice = register_user(rt, "alice");
+        auto const bob = register_user(rt, "bob");
+        auto const carol = register_user(rt, "carol");
+        auto const dave = register_user(rt, "dave");
+        auto const room = create_room(rt, alice, "public_chat");
+        join_room(rt, bob, room);
+        join_room(rt, dave, room);
+        auto const initial = sync(rt, dave, k_lazy_state);
+        std::ignore = say(rt, bob, room, "b1");
+        join_room(rt, carol, room);
+        std::ignore = say(rt, bob, room, "b2");
+        std::ignore = say(rt, bob, room, "b3");
+        REQUIRE(call(rt, "POST", "/_matrix/client/v3/rooms/" + room + "/leave", dave, "{}").status == 200U);
+        rt.homeserver.database.persistent_store.event_state_groups.clear();
+
+        WHEN("dave's incremental sync has a limited timeline that leaves out the member events")
+        {
+            auto const synced = sync(rt, dave,
+                                     R"({"room":{"include_leave":true,"timeline":{"limit":2,)"
+                                     R"("not_types":["m.room.member"]},"state":{"lazy_load_members":true}}})",
+                                     initial.next_batch);
+            auto const* section = room_section(synced, "leave", room);
+            REQUIRE(section != nullptr);
+            auto const state = events_of(*section, "state");
+
+            THEN("the timeline's sender and the member who changed in the gap are still sent")
+            {
+                auto const keys = member_keys(state);
+                REQUIRE(keys.contains(user_id("bob")));
+                REQUIRE(keys.contains(user_id("carol")));
+            }
+        }
+    }
+}
+
 // Spec: GET /rooms/{roomId}/context/{eventId}: "state ... lazy_load_members ... may contain the membership
 // events for the senders of events in the chunk"; the filter's types and senders select chunk events.
 SCENARIO("GET /context with lazy-loading returns only the senders' membership events",

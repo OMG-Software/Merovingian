@@ -9,7 +9,9 @@
 #include <array>
 #include <atomic>
 #include <cstddef>
+#include <latch>
 #include <string>
+#include <tuple>
 
 namespace
 {
@@ -397,14 +399,16 @@ SCENARIO("Driving the tracker from several threads keeps its counts within the c
         limits.max_members_per_room = 4U;
         limits.max_tracked_members = 32U;
         auto tracker = LazyMemberTracker{limits};
-        auto hits = std::array<std::atomic<std::size_t>, 4>{};
+        auto completed_rounds = std::array<std::atomic<std::size_t>, 4>{};
+        auto start = std::latch{static_cast<std::ptrdiff_t>(completed_rounds.size())};
 
         WHEN("each thread records its own members and reads them back")
         {
             auto threads = merovingian::tests::JoiningThreads{};
-            for (auto index = std::size_t{0U}; index < hits.size(); ++index)
+            for (auto index = std::size_t{0U}; index < completed_rounds.size(); ++index)
             {
-                threads.emplace_back([&tracker, &hits, index] {
+                threads.emplace_back([&tracker, &completed_rounds, &start, index] {
+                    start.arrive_and_wait();
                     auto const device = "D" + std::to_string(index);
                     auto const key = key_for(device);
                     for (auto round = 0U; round < 200U; ++round)
@@ -412,20 +416,22 @@ SCENARIO("Driving the tracker from several threads keeps its counts within the c
                         auto const user = "@u" + std::to_string(round % 6U) + ":x";
                         auto const room = "!r" + std::to_string(round % 3U) + ":x";
                         tracker.begin_request(key, StreamToken{round, round, round});
-                        if (tracker.is_acknowledged(key, room, user, "$e",
-                                                    StreamToken{round + 1U, round + 1U, round + 1U}))
-                        {
-                            ++hits[index];
-                        }
+                        std::ignore = tracker.is_acknowledged(key, room, user, "$e",
+                                                              StreamToken{round + 1U, round + 1U, round + 1U});
                         record_one(tracker, key, room, user, "$e", StreamToken{round + 1U, round + 1U, round + 1U},
                                    StreamToken{round, round, round});
+                        ++completed_rounds[index];
                     }
                 });
             }
             threads.join();
 
-            THEN("the caps hold once the threads have finished")
+            THEN("every thread finished its rounds and the caps hold")
             {
+                for (auto const& rounds : completed_rounds)
+                {
+                    REQUIRE(rounds.load() == 200U);
+                }
                 REQUIRE(tracker.key_count() <= 4U);
                 REQUIRE(tracker.member_count() <= 32U);
             }
