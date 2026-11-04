@@ -103,15 +103,11 @@ class PackagesWorkflowTests(unittest.TestCase):
         self.assertIn("sh scripts/build-static-linux.sh", workflow)
         self.assertIn("name: static-linux-fallback-package", workflow)
         self.assertIn(
-            "needs: [deb, static-linux-fallback, rpm, freebsd-pkg, openbsd-pkg, netbsd-pkg, netbsd-pkg-retry, debian-pkg, rhel-rpm, opensuse-rpm]",
+            "needs: [deb, static-linux-fallback, rpm, freebsd-pkg, openbsd-pkg, netbsd-pkg, debian-pkg, rhel-rpm, opensuse-rpm]",
             workflow,
         )
-        # The retry runs on netbsd-pkg's real result. It can read .result because
-        # no BSD job masks its failure with continue-on-error any more (ADR-0502).
-        self.assertIn(
-            "if: always() && needs.netbsd-pkg.result == 'failure'",
-            workflow,
-        )
+        # No job retries netbsd-pkg: nothing could make a failed first build pass (ADR-0502).
+        self.assertNotIn("netbsd-pkg-retry", workflow)
         self.assertNotIn("build_succeeded", workflow)
         self.assertIn("merovingian-*-linux-static-x86_64.tar.gz", workflow)
 
@@ -120,7 +116,7 @@ class PackagesWorkflowTests(unittest.TestCase):
         workflow = PACKAGES_WORKFLOW.read_text(encoding="utf-8")
 
         # WHEN each job's own text is read (up to the next top-level job).
-        for job in ("freebsd-pkg", "openbsd-pkg", "netbsd-pkg", "netbsd-pkg-retry"):
+        for job in ("freebsd-pkg", "openbsd-pkg", "netbsd-pkg"):
             text = job_text(workflow, job)
 
             # THEN no job-level continue-on-error masks its failure. A step-level

@@ -221,7 +221,7 @@ rolling `latest` GitHub prerelease, and uploads fresh package checksums:
 | OpenSUSE Tumbleweed `.rpm` | `opensuse-rpm` |
 | FreeBSD `.pkg` | `freebsd-pkg` |
 | OpenBSD `.tgz` | `openbsd-pkg` |
-| NetBSD `.tgz` | `netbsd-pkg` (a failure also runs `netbsd-pkg-retry`, which cannot turn the run green: re-run the failed job, [ADR-0502](adr/0502-every-bsd-job-is-required-and-the-netbsd-retry-cannot-rescue-it.md)) |
+| NetBSD `.tgz` | `netbsd-pkg` (a failure blocks publishing; re-run the failed job, [ADR-0502](adr/0502-every-bsd-job-is-required-and-the-netbsd-retry-cannot-rescue-it.md)) |
 | Portable static Linux tarball (musl) | `static-linux-fallback` |
 
 Every packaging script configures Meson with `--buildtype=release`. Meson's

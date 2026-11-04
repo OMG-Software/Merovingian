@@ -176,8 +176,8 @@ jobs:
       # transparency log has not finished replicating the entry the action
       # itself just wrote by the time it tries to read it back. Retrying after
       # a short delay lets replication catch up — the same class of external
-      # flake the netbsd-pkg-retry job and the zypper retry loop below handle
-      # for their own dependencies.
+      # flake the dnf and zypper retry loops below handle for their own
+      # dependencies.
       - name: Attest RPM package
         id: attest_rpm_1
         uses: actions/attest-build-provenance@v2
@@ -283,64 +283,6 @@ jobs:
   netbsd-pkg:
     name: NetBSD package
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      attestations: write
-      id-token: write
-    steps:
-      - uses: actions/checkout@v4
-      - name: Build NetBSD package
-        uses: vmactions/netbsd-vm@c8a0d7ddb84619a7a8cc4e652efa7950b3fd9f92 # v1.5.2
-        with:
-          usesh: true
-          prepare: |
-            # NetBSD's pkg_add needs PKG_PATH pointing at a binary-package
-            # repository (the vmaction image exports none); without it every
-            # stem fails with "no pkg found". Retry the official CDN and origin
-            # because either endpoint can intermittently reject the CI VM.
-            package_path="pub/pkgsrc/packages/NetBSD/$(uname -m)/$(uname -r | sed 's/_.*//')/All/"
-            install_packages() {
-              for mirror in cdn.netbsd.org ftp.netbsd.org; do
-                export PKG_PATH="https://${mirror}/${package_path}"
-                for attempt in 1 2 3; do
-                  if /usr/sbin/pkg_add -U "$@"; then
-                    return 0
-                  fi
-                  sleep $((attempt * 5))
-                done
-              done
-              return 1
-            }
-            install_packages clang meson ninja-build pkgconf git bison flex gmake libsodium postgresql17-client curl png libjpeg-turbo
-            # pkgsrc's curl and postgresql17-client link NetBSD's base OpenSSL
-            # (libssl.so.16); building against pkgsrc's openssl (libssl.so.3)
-            # would load two OpenSSLs in one process, which the werror link
-            # refuses. Remove it if the image already has it, so base headers,
-            # libraries and pkg-config files are the only OpenSSL in sight.
-            if /usr/sbin/pkg_info -e openssl >/dev/null 2>&1; then /usr/sbin/pkg_delete openssl; fi
-          run: sh scripts/build-netbsd-pkg.sh
-      - name: Attest NetBSD package
-        uses: actions/attest-build-provenance@v2
-        with:
-          subject-path: merovingian-*.tgz
-      - uses: actions/upload-artifact@v4
-        with:
-          name: netbsd-package
-          path: merovingian-*.tgz
-
-  # Runs a second build after netbsd-pkg failed, to tell a QEMU infrastructure
-  # crash (ssh exit 139 / SIGSEGV) or a CDN outage from a real failure. Neither
-  # job is allowed to fail quietly any more: a failed netbsd-pkg leaves the run
-  # red, and so does a failed retry, and while netbsd-pkg is red the signing
-  # and publishing jobs below do not publish (their !failure() guard sees it).
-  # The retry therefore cannot turn the run green; re-running the failed job
-  # is what does that. always() is needed because a job whose dependency
-  # failed is skipped otherwise.
-  netbsd-pkg-retry:
-    name: NetBSD package (retry)
-    runs-on: ubuntu-latest
-    needs: netbsd-pkg
-    if: always() && needs.netbsd-pkg.result == 'failure'
     permissions:
       contents: read
       attestations: write
@@ -757,7 +699,7 @@ jobs:
   stage-package-assets:
     name: Stage unsigned package assets
     if: always() && github.event_name == 'push' && github.ref == 'refs/heads/main'
-    needs: [deb, static-linux-fallback, rpm, freebsd-pkg, openbsd-pkg, netbsd-pkg, netbsd-pkg-retry, debian-pkg, rhel-rpm, opensuse-rpm]
+    needs: [deb, static-linux-fallback, rpm, freebsd-pkg, openbsd-pkg, netbsd-pkg, debian-pkg, rhel-rpm, opensuse-rpm]
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -840,7 +782,7 @@ jobs:
     needs: stage-package-assets
     # GitHub implicitly ANDs a bare expression with success(), and that default
     # success() returns false when any job in the broader dependency graph was
-    # skipped (e.g. the optional netbsd-pkg-retry). Using !failure() && !cancelled()
+    # skipped (e.g. a job whose own `if` is false). Using !failure() && !cancelled()
     # plus an explicit result check makes signing depend only on the staging job
     # outcome, not on the whole graph.
     if: |
