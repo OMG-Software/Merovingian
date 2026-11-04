@@ -514,6 +514,14 @@ client, sender or remote server controls, and per-user rows that requests scan m
 - A client's device or key change goes through `record_shared_room_device_changes`: local observers only,
   deduplicated across rooms, one batch (ADR-0317). Never loop over a roster calling `record_device_list_change`;
   a federated room's roster is chosen by a remote server.
+- A device removal (`DELETE /devices/{deviceId}`, `POST /delete_devices`, `POST /logout`, `POST /logout/all`) reads
+  `remote_servers_for_user` before the removal, then calls `announce_deleted_devices` once with the devices that really
+  went: one `m.device_list_update` with `deleted: true` per device and server, each on its own `allocate_sync_stream_id`
+  position, enqueue only. A new path that deletes a device does the same. Account deactivation deletes none today.
+- A device ID is never a cross-signing key ID: `complete_login` and `login_local_user_by_id` (every device-creating
+  path ends in one of them) refuse a match with 403 `M_FORBIDDEN`, and `POST /keys/device_signing/upload` refuses, before
+  storing, a key whose ID is one of the uploader's device IDs (`cross_signing_upload_names_a_device`). A new path that
+  creates a device goes through those two; a new path that stores a cross-signing key does the upload check.
 - A fallback local event (ADR-0225) records the room's `current_state` as its state before, never the cited
   extremity's own state (ADR-0373, F-40): the extremity is picked by stream order and may predate a ban. Do not
   change `basis_for_new_event` to return the fork's state, or suppress only the diff in `store_event_with_bookkeeping`:

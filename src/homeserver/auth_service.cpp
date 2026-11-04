@@ -17,6 +17,7 @@
 #include "merovingian/crypto/master_key.hpp"
 #include "merovingian/crypto/random.hpp"
 #include "merovingian/crypto/token_key.hpp"
+#include "merovingian/federation/key_signatures.hpp"
 #include "merovingian/homeserver/local_services.hpp"
 #include "merovingian/homeserver/request_lock.hpp"
 #include "merovingian/observability/logger.hpp"
@@ -783,6 +784,32 @@ namespace
         return make_operation_result(true, user_id);
     }
 
+    // Spec (POST /login): the `device_id` "must not be the same as a cross-signing key ID", answered
+    // 403 `M_FORBIDDEN`; the cross-signing section adds "servers MUST not allow devices to have the same
+    // IDs as cross-signing keys". The comparison is with the account's own stored cross-signing keys.
+    // Every path that can create a device ends in `complete_login` or `login_local_user_by_id`, which
+    // call this. A server-generated ID is 32 hex characters and a key ID is an unpadded base64 public
+    // key of 43, so a generated ID can never collide and needs no regeneration.
+    [[nodiscard]] auto device_id_is_cross_signing_key_id(HomeserverRuntime& runtime, std::string_view user_id,
+                                                         std::string_view device_id) -> bool
+    {
+        if (!federation::device_id_names_cross_signing_key(runtime.database.persistent_store, user_id, device_id))
+        {
+            return false;
+        }
+        log_diagnostic_audit(runtime.database, "auth", "login.rejected",
+                             {
+                                 {"user_id",   std::string{user_id},                  false},
+                                 {"device_id", std::string{device_id},                false},
+                                 {"status",    "403",                                 false},
+                                 {"reason",    "device id is a cross-signing key id", false}
+        },
+                             observability::LogEventSeverity::warning, observability::AuditCategory::auth,
+                             "login.rejected", std::string{user_id}, std::string{device_id},
+                             "403:device id is a cross-signing key id");
+        return true;
+    }
+
     // Shared tail of login_local_user() and login_appservice_user(): device
     // validation, account-state (locked/suspended) policy, token issuance,
     // and session persistence. The two callers differ only in how they got
@@ -805,6 +832,10 @@ namespace
                                  "login.rejected", user.user_id, audit_claimed_device_id(device_id),
                                  "invalid device id");
             return make_operation_result(false, {}, "invalid device id");
+        }
+        if (device_id_is_cross_signing_key_id(runtime, user.user_id, device_id))
+        {
+            return make_operation_result(false, {}, "device id must not be a cross-signing key id", 403U);
         }
 
         // A deactivated account can never log in again (spec: POST
@@ -1256,6 +1287,10 @@ auto login_local_user_by_id(HomeserverRuntime& runtime, std::string_view user_id
                              observability::LogEventSeverity::warning, observability::AuditCategory::auth,
                              "login.rejected", std::string{user_id}, std::string{device_id}, "invalid device id");
         return make_operation_result(false, {}, "invalid device id");
+    }
+    if (device_id_is_cross_signing_key_id(runtime, user_id, device_id))
+    {
+        return make_operation_result(false, {}, "device id must not be a cross-signing key id", 403U);
     }
 
     // See the deactivation gate in the shared helper above: permanent and

@@ -844,6 +844,64 @@ SCENARIO("The m.device_list_update EDU carries the device keys with the owner's 
     }
 }
 
+// Spec: ../../docs/matrix-v1.19-spec/server-server-api.md, "Device Management": the EDU's `deleted` is
+// "True if the server is announcing that this device has been deleted"; `device_id`, `stream_id` and
+// `user_id` are required; `prev_id` names the stream_ids of prior EDUs not yet referred to.
+SCENARIO("The m.device_list_update EDU for a deleted device says so and carries no keys",
+         "[federation][keys][edu][device-list-update][device_removal]")
+{
+    GIVEN("a local user who has cross-signed a device")
+    {
+        auto const store = store_with_cross_signed_alice();
+
+        WHEN("the deletion EDU content is built with one earlier stream_id")
+        {
+            auto const earlier = std::vector<std::int64_t>{6};
+            auto const content = fed::build_device_deleted_update_content("@alice:example.org", "ADEVICE", 7, earlier);
+
+            THEN("it is flagged deleted and names the device, user, stream_id and prev_id")
+            {
+                REQUIRE(content.has_value());
+                auto const root = parse_root(*content);
+                REQUIRE(content->find(R"("deleted":true)") != std::string::npos);
+                auto const* device_id = string_at(root, "device_id");
+                REQUIRE(device_id != nullptr);
+                REQUIRE(*device_id == "ADEVICE");
+                auto const* user_id = string_at(root, "user_id");
+                REQUIRE(user_id != nullptr);
+                REQUIRE(*user_id == "@alice:example.org");
+                auto const* stream_id = int_at(root, "stream_id");
+                REQUIRE(stream_id != nullptr);
+                REQUIRE(*stream_id == 7);
+                auto const* prev_id = array_at(root, "prev_id");
+                REQUIRE(prev_id != nullptr);
+                REQUIRE(prev_id->size() == 1U);
+            }
+            THEN("it carries neither keys nor a display name")
+            {
+                REQUIRE(content.has_value());
+                auto const root = parse_root(*content);
+                REQUIRE(json_get(root, "keys") == nullptr);
+                REQUIRE(json_get(root, "device_display_name") == nullptr);
+            }
+        }
+
+        WHEN("the deletion EDU content is built with no earlier stream_id")
+        {
+            auto const content = fed::build_device_deleted_update_content("@alice:example.org", "ADEVICE", 7, {});
+
+            THEN("prev_id is an empty list")
+            {
+                REQUIRE(content.has_value());
+                auto const root = parse_root(*content);
+                auto const* prev_id = array_at(root, "prev_id");
+                REQUIRE(prev_id != nullptr);
+                REQUIRE(prev_id->empty());
+            }
+        }
+    }
+}
+
 // --- A device's current display name --------------------------------------
 // Spec: ../../docs/matrix-v1.19-spec/server-server-api.md, "Device Management":
 // an `m.device_list_update` EDU is sent "for new or deleted devices ... or

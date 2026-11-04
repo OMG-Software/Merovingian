@@ -304,8 +304,8 @@ Federation is the highest-risk surface: **all input comes from untrusted remote 
 | `remote_key_cache.cpp` | Caches remote server signing keys with validity TTL |
 | `invite_room_state.cpp` | `validate_invite_room_state`: the `invite_room_state` checks of an inbound v12+ invite (rule 14) |
 | `membership_endpoints.cpp` | /make_join, /send_join, /make_leave, /send_leave (a refused template carries `error_status`, e.g. 403 `M_FORBIDDEN` for a restricted room) |
-| `key_query.cpp` | E2EE key responses served over federation, key EDU contents, filtering remote key-query responses |
-| `key_signatures.cpp` | The one place uploaded key signatures are merged into published keys (visibility per ADR-0060) |
+| `key_query.cpp` | E2EE key responses served over federation, key EDU contents (`build_device_list_update_content`, and `build_device_deleted_update_content` for a removed device: `deleted: true`, no keys), filtering remote key-query responses |
+| `key_signatures.cpp` | The one place uploaded key signatures are merged into published keys (visibility per ADR-0060); also `cross_signing_key_ids` and `device_id_names_cross_signing_key`, the device-ID versus cross-signing-key-ID test |
 | `security.cpp` | Federation-layer security checks (rate limits, origin validation, SSRF address policy) |
 | `transactions.cpp` | Transaction batching and deduplication |
 | `server_acl.cpp` | Parses and evaluates `m.room.server_acl` allow/deny lists |

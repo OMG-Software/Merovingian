@@ -10,6 +10,7 @@
 #include <set>
 #include <utility>
 #include <variant>
+#include <vector>
 
 namespace merovingian::federation
 {
@@ -120,6 +121,49 @@ auto cross_signing_key_id(canonicaljson::Object const& key_object) -> std::optio
         return std::nullopt;
     }
     return name.substr(colon + 1U);
+}
+
+auto cross_signing_key_ids(canonicaljson::Object const& key_object) -> std::vector<std::string>
+{
+    auto ids = std::vector<std::string>{};
+    auto const* keys = member_object(key_object, "keys");
+    if (keys == nullptr)
+    {
+        return ids;
+    }
+    for (auto const& member : *keys)
+    {
+        auto const colon = member.key.find(':');
+        if (colon == std::string::npos || colon == 0U || colon + 1U == member.key.size())
+        {
+            continue;
+        }
+        ids.push_back(member.key.substr(colon + 1U));
+    }
+    return ids;
+}
+
+auto device_id_names_cross_signing_key(database::PersistentStore const& store, std::string_view user_id,
+                                       std::string_view device_id) -> bool
+{
+    for (auto const& key : store.cross_signing_keys)
+    {
+        if (key.user_id != user_id)
+        {
+            continue;
+        }
+        auto const object = parsed_object(key.json);
+        if (!object.has_value())
+        {
+            continue;
+        }
+        auto const ids = cross_signing_key_ids(*object);
+        if (std::ranges::find(ids, device_id) != ids.end())
+        {
+            return true;
+        }
+    }
+    return false;
 }
 
 auto merge_visible_key_signatures(canonicaljson::Object& key_object, database::PersistentStore const& store,

@@ -657,6 +657,17 @@ quickly finding everything a given `AGENTS.md` file contributed.
   `device_list_changes` row per local user per EDU (audit FED-3, FED-7).
   Source: `src/federation/AGENTS.md`.
 
+- **A device ID is never one of its account's cross-signing key IDs, and a removed device is
+  announced to remote servers.** `POST /login` (every path that creates a device) answers
+  403 `M_FORBIDDEN` for a `device_id` equal to a stored cross-signing key ID, and
+  `POST /keys/device_signing/upload` answers 403 with nothing stored for a key whose ID is one of the
+  uploader's device IDs. `DELETE /devices/{deviceId}`, `POST /delete_devices`, `POST /logout` and
+  `POST /logout/all` enqueue one `m.device_list_update` with `deleted: true` per removed device and
+  server, destinations read before the removal, no network I/O under the runtime lock.
+  Why: the two identifiers share a signature namespace (a colliding device received the master key's
+  uploaded signatures), and a remote cache kept a revoked device listed, possibly as verified.
+  Source: `src/homeserver/AGENTS.md`.
+
 - **Authorise an inbound `/invite` for a room we hold against the room's current state before
   signing it, never overwrite a `ban` from that path, and leave `current_state` to the
   transaction path.** The URL event ID must equal the event's own reference-hash ID.

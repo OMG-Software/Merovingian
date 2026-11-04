@@ -464,6 +464,31 @@ auto build_device_list_update_content(database::PersistentStore const& store, st
     return serialized;
 }
 
+auto build_device_deleted_update_content(std::string_view user_id, std::string_view device_id, std::int64_t stream_id,
+                                         std::span<std::int64_t const> prev_ids) -> std::optional<std::string>
+{
+    // Spec (SS API, m.device_list_update): `deleted` is "True if the server is announcing that this
+    // device has been deleted"; `keys` and `device_display_name` are optional and say nothing about
+    // a device that no longer exists, so neither is sent.
+    auto content = canonicaljson::Object{};
+    content.push_back(canonicaljson::make_member("deleted", canonicaljson::Value{true}));
+    content.push_back(canonicaljson::make_member("device_id", canonicaljson::Value{std::string{device_id}}));
+    auto previous = canonicaljson::Array{};
+    for (auto const prev_id : prev_ids)
+    {
+        previous.push_back(canonicaljson::Value{prev_id});
+    }
+    content.push_back(canonicaljson::make_member("prev_id", canonicaljson::Value{std::move(previous)}));
+    content.push_back(canonicaljson::make_member("stream_id", canonicaljson::Value{stream_id}));
+    content.push_back(canonicaljson::make_member("user_id", canonicaljson::Value{std::string{user_id}}));
+    auto serialized = serialize(std::move(content));
+    if (serialized.empty())
+    {
+        return std::nullopt;
+    }
+    return serialized;
+}
+
 auto build_one_time_keys_claim_response(database::PersistentStore& store, std::string_view request_body) -> std::string
 {
     auto request = parsed_value(request_body);
