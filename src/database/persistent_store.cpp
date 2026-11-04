@@ -3491,6 +3491,44 @@ auto mark_redaction_applied(PersistentStore& store, std::string_view redaction_e
     return true;
 }
 
+[[nodiscard]] auto store_cross_signing_keys(PersistentStore& store, std::vector<PersistentCrossSigningKey> keys) -> bool
+{
+    auto statements = std::vector<PreparedStatement>{};
+    statements.reserve(keys.size());
+    for (auto const& key : keys)
+    {
+        if (!key_payload_is_valid(key.json) || key.key_type.empty())
+        {
+            return false;
+        }
+        statements.push_back(record_statement(
+            "upsert_cross_signing_key",
+            "INSERT INTO cross_signing_keys VALUES ($1, $2, $3) ON CONFLICT (user_id, key_type) DO UPDATE SET json "
+            "= $3",
+            {public_value(key.user_id), public_value(key.key_type), sensitive_value(key.json)}));
+    }
+    if (!commit_persistent_transaction(store, statements))
+    {
+        return false;
+    }
+    for (auto& key : keys)
+    {
+        auto const existing =
+            std::ranges::find_if(store.cross_signing_keys, [&key](PersistentCrossSigningKey const& current) {
+                return current.user_id == key.user_id && current.key_type == key.key_type;
+            });
+        if (existing != store.cross_signing_keys.end())
+        {
+            existing->json = std::move(key.json);
+        }
+        else
+        {
+            store.cross_signing_keys.push_back(std::move(key));
+        }
+    }
+    return true;
+}
+
 auto rebuild_key_signature_index(PersistentStore& store) -> void
 {
     store.key_signature_target_index.clear();
@@ -3729,6 +3767,48 @@ auto rebuild_key_signature_index(PersistentStore& store) -> void
         return true;
     }
     store.key_backup_sessions.push_back(std::move(session));
+    return true;
+}
+
+[[nodiscard]] auto store_key_backup_sessions(PersistentStore& store, std::vector<PersistentKeyBackupSession> sessions)
+    -> bool
+{
+    auto statements = std::vector<PreparedStatement>{};
+    statements.reserve(sessions.size());
+    for (auto const& session : sessions)
+    {
+        if (!key_payload_is_valid(session.json) || session.version.empty() || session.room_id.empty() ||
+            session.session_id.empty())
+        {
+            return false;
+        }
+        statements.push_back(record_statement(
+            "upsert_key_backup_session",
+            "INSERT INTO key_backup_sessions VALUES ($1, $2, $3, $4, $5) ON CONFLICT (user_id, version, room_id, "
+            "session_id) DO UPDATE SET json = $5",
+            {public_value(session.user_id), public_value(session.version), public_value(session.room_id),
+             public_value(session.session_id), sensitive_value(session.json)}));
+    }
+    if (!commit_persistent_transaction(store, statements))
+    {
+        return false;
+    }
+    for (auto& session : sessions)
+    {
+        auto const existing =
+            std::ranges::find_if(store.key_backup_sessions, [&session](PersistentKeyBackupSession const& current) {
+                return current.user_id == session.user_id && current.version == session.version &&
+                       current.room_id == session.room_id && current.session_id == session.session_id;
+            });
+        if (existing != store.key_backup_sessions.end())
+        {
+            existing->json = std::move(session.json);
+        }
+        else
+        {
+            store.key_backup_sessions.push_back(std::move(session));
+        }
+    }
     return true;
 }
 

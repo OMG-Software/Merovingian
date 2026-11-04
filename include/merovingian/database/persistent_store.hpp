@@ -1876,6 +1876,10 @@ auto apply_store_event_with_state(PersistentStore& store, PreparedStateUpdate co
 [[nodiscard]] auto find_fallback_key(PersistentStore const& store, std::string_view user_id, std::string_view device_id,
                                      std::string_view algorithm = {}) -> std::optional<PersistentFallbackKey>;
 [[nodiscard]] auto store_cross_signing_key(PersistentStore& store, PersistentCrossSigningKey key) -> bool;
+// Stores every key in one transaction: all are written or, when the write fails or a key is refused,
+// none is and the held keys are unchanged. An empty list succeeds and writes nothing.
+[[nodiscard]] auto store_cross_signing_keys(PersistentStore& store, std::vector<PersistentCrossSigningKey> keys)
+    -> bool;
 [[nodiscard]] auto store_key_signature(PersistentStore& store, PersistentKeySignature signature) -> bool;
 // Every uploaded signature whose target is `target_user_id`, in storage order.
 // Backed by the target index (CSAZ-10); falls back to a scan only when the
@@ -1899,6 +1903,10 @@ auto rebuild_key_signature_index(PersistentStore& store) -> void;
 [[nodiscard]] auto delete_key_backup_version(PersistentStore& store, std::string_view user_id, std::string_view version)
     -> bool;
 [[nodiscard]] auto store_key_backup_session(PersistentStore& store, PersistentKeyBackupSession session) -> bool;
+// Stores every session in one transaction: all are written or, when the write fails or a session is
+// refused, none is. An empty list succeeds and writes nothing.
+[[nodiscard]] auto store_key_backup_sessions(PersistentStore& store, std::vector<PersistentKeyBackupSession> sessions)
+    -> bool;
 [[nodiscard]] auto delete_key_backup_room_sessions(PersistentStore& store, std::string_view user_id,
                                                    std::string_view version, std::string_view room_id) -> bool;
 [[nodiscard]] auto delete_key_backup_session(PersistentStore& store, std::string_view user_id, std::string_view version,

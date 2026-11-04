@@ -7,6 +7,7 @@
 //  - a device ID is never the same as one of the account's cross-signing key IDs, at login
 //    (403 M_FORBIDDEN) or when such a key is uploaded (403).
 
+#include "../support/cross_signing_fixture.hpp"
 #include "../support/in_memory_database_config.hpp"
 #include "../support/json_test_support.hpp"
 #include "../support/master_key.hpp"
@@ -377,33 +378,30 @@ SCENARIO("A login naming a cross-signing key ID as its device is refused", "[con
         auto& runtime = started.runtime;
         register_user(runtime, "alice");
         auto const token = login_as(runtime, "alice", "DEVICE1");
-        auto const upload = send(
-            runtime, "POST", "/_matrix/client/v3/keys/device_signing/upload", token,
-            R"({)" + password_auth() +
-                R"(,"master_key":{"user_id":"@alice:example.org","usage":["master"],"keys":{"ed25519:MASTERKEYID":"MASTERKEYID"}},)"
-                R"("self_signing_key":{"user_id":"@alice:example.org","usage":["self_signing"],"keys":{"ed25519:SELFKEYID":"SELFKEYID"}},)"
-                R"("user_signing_key":{"user_id":"@alice:example.org","usage":["user_signing"],"keys":{"ed25519:USERKEYID":"USERKEYID"}}})");
+        auto const set = make_cross_signing_set("@alice:example.org", true);
+        auto const upload = send(runtime, "POST", "/_matrix/client/v3/keys/device_signing/upload", token,
+                                 R"({)" + password_auth() + "," + set.members() + "}");
         REQUIRE(upload.status == 200U);
 
         WHEN("alice logs in with her master key's ID as the device ID")
         {
             auto const login =
-                send(runtime, "POST", "/_matrix/client/v3/login", {}, login_body("alice", "MASTERKEYID"));
+                send(runtime, "POST", "/_matrix/client/v3/login", {}, login_body("alice", set.master.public_key));
 
             THEN("the login is refused with 403 M_FORBIDDEN and no device is created")
             {
                 // Spec MUST: 403 M_FORBIDDEN for a device ID equal to a cross-signing key ID.
                 REQUIRE(login.status == 403U);
                 REQUIRE(errcode_of(login) == "M_FORBIDDEN");
-                REQUIRE_FALSE(device_exists(runtime, "@alice:example.org", "MASTERKEYID"));
+                REQUIRE_FALSE(device_exists(runtime, "@alice:example.org", set.master.public_key));
             }
         }
         WHEN("alice logs in with her self-signing or user-signing key's ID as the device ID")
         {
             auto const self_login =
-                send(runtime, "POST", "/_matrix/client/v3/login", {}, login_body("alice", "SELFKEYID"));
+                send(runtime, "POST", "/_matrix/client/v3/login", {}, login_body("alice", set.self_signing.public_key));
             auto const user_login =
-                send(runtime, "POST", "/_matrix/client/v3/login", {}, login_body("alice", "USERKEYID"));
+                send(runtime, "POST", "/_matrix/client/v3/login", {}, login_body("alice", set.user_signing.public_key));
 
             THEN("both are refused with 403 M_FORBIDDEN")
             {
@@ -426,7 +424,8 @@ SCENARIO("A login naming a cross-signing key ID as its device is refused", "[con
         WHEN("bob logs in with a device ID that is alice's master key ID")
         {
             register_user(runtime, "bob");
-            auto const login = send(runtime, "POST", "/_matrix/client/v3/login", {}, login_body("bob", "MASTERKEYID"));
+            auto const login =
+                send(runtime, "POST", "/_matrix/client/v3/login", {}, login_body("bob", set.master.public_key));
 
             THEN("the login succeeds, because the rule is about the account's own cross-signing keys")
             {
@@ -471,12 +470,12 @@ SCENARIO("A cross-signing upload whose key is the ID of one of the user's device
         register_user(runtime, "alice");
         auto const token = login_as(runtime, "alice", "DEVICE1");
 
-        WHEN("she uploads a master key whose ID is DEVICE1")
+        WHEN("she uploads a master key whose ID is that of one of her devices")
         {
-            auto const upload = send(
-                runtime, "POST", "/_matrix/client/v3/keys/device_signing/upload", token,
-                R"({)" + password_auth() +
-                    R"(,"master_key":{"user_id":"@alice:example.org","usage":["master"],"keys":{"ed25519:DEVICE1":"DEVICE1"}}})");
+            auto const set = make_cross_signing_set("@alice:example.org", true);
+            std::ignore = login_as(runtime, "alice", set.master.public_key);
+            auto const upload = send(runtime, "POST", "/_matrix/client/v3/keys/device_signing/upload", token,
+                                     R"({)" + password_auth() + "," + set.master_member() + "}");
 
             THEN("the upload is refused with 403 and the key is not stored")
             {
@@ -486,13 +485,13 @@ SCENARIO("A cross-signing upload whose key is the ID of one of the user's device
                 REQUIRE(runtime.homeserver.database.persistent_store.cross_signing_keys.empty());
             }
         }
-        WHEN("she uploads a valid master key and a user-signing key whose ID is DEVICE1")
+        WHEN("she uploads a valid master key and a user-signing key whose ID is that of one of her devices")
         {
-            auto const upload = send(
-                runtime, "POST", "/_matrix/client/v3/keys/device_signing/upload", token,
-                R"({)" + password_auth() +
-                    R"(,"master_key":{"user_id":"@alice:example.org","usage":["master"],"keys":{"ed25519:MASTERKEYID":"MASTERKEYID"}},)"
-                    R"("user_signing_key":{"user_id":"@alice:example.org","usage":["user_signing"],"keys":{"ed25519:DEVICE1":"DEVICE1"}}})");
+            auto const set = make_cross_signing_set("@alice:example.org", true);
+            std::ignore = login_as(runtime, "alice", set.user_signing.public_key);
+            auto const upload =
+                send(runtime, "POST", "/_matrix/client/v3/keys/device_signing/upload", token,
+                     R"({)" + password_auth() + "," + set.master_member() + "," + set.user_signing_member() + "}");
 
             THEN("nothing from the upload is stored")
             {
@@ -502,10 +501,9 @@ SCENARIO("A cross-signing upload whose key is the ID of one of the user's device
         }
         WHEN("she uploads a master key whose ID matches no device of hers")
         {
-            auto const upload = send(
-                runtime, "POST", "/_matrix/client/v3/keys/device_signing/upload", token,
-                R"({)" + password_auth() +
-                    R"(,"master_key":{"user_id":"@alice:example.org","usage":["master"],"keys":{"ed25519:MASTERKEYID":"MASTERKEYID"}}})");
+            auto const set = make_cross_signing_set("@alice:example.org", true);
+            auto const upload = send(runtime, "POST", "/_matrix/client/v3/keys/device_signing/upload", token,
+                                     R"({)" + password_auth() + "," + set.master_member() + "}");
 
             THEN("the upload is accepted")
             {
@@ -516,11 +514,10 @@ SCENARIO("A cross-signing upload whose key is the ID of one of the user's device
         WHEN("bob has a device named like the master key alice uploads")
         {
             register_user(runtime, "bob");
-            std::ignore = login_as(runtime, "bob", "MASTERKEYID");
-            auto const upload = send(
-                runtime, "POST", "/_matrix/client/v3/keys/device_signing/upload", token,
-                R"({)" + password_auth() +
-                    R"(,"master_key":{"user_id":"@alice:example.org","usage":["master"],"keys":{"ed25519:MASTERKEYID":"MASTERKEYID"}}})");
+            auto const set = make_cross_signing_set("@alice:example.org", true);
+            std::ignore = login_as(runtime, "bob", set.master.public_key);
+            auto const upload = send(runtime, "POST", "/_matrix/client/v3/keys/device_signing/upload", token,
+                                     R"({)" + password_auth() + "," + set.master_member() + "}");
 
             THEN("the upload is accepted, because only the uploader's own devices count")
             {

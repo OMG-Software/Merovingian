@@ -5777,7 +5777,10 @@ auto wire_federation_callbacks(HomeserverRuntime& runtime) -> void
         });
         return response(503U, "runtime not started");
     }
-    if (request.method == "GET" && request.target == "/_merovingian/admin/health")
+    // A route is the path: the query string is part of `request.target` and is read by the handlers that
+    // take parameters (ADR-0420).
+    auto const request_path = std::string_view{request.target}.substr(0U, request.target.find('?'));
+    if (request.method == "GET" && request_path == "/_merovingian/admin/health")
     {
         if (auto const denied = admin_auth_denied(runtime, request.access_token, correlation); denied.has_value())
         {
@@ -5786,7 +5789,7 @@ auto wire_federation_callbacks(HomeserverRuntime& runtime) -> void
         return response(200U, admin_health_summary(runtime),
                         observability_headers(correlation, "text/plain; charset=utf-8"));
     }
-    if (request.method == "GET" && request.target == "/_merovingian/admin/media/metrics")
+    if (request.method == "GET" && request_path == "/_merovingian/admin/media/metrics")
     {
         if (auto const denied = admin_auth_denied(runtime, request.access_token, correlation); denied.has_value())
         {
@@ -5795,7 +5798,7 @@ auto wire_federation_callbacks(HomeserverRuntime& runtime) -> void
         return response(200U, media_metrics_summary(runtime),
                         observability_headers(correlation, "text/plain; charset=utf-8"));
     }
-    if (request.method == "GET" && request.target == "/_merovingian/admin/metrics")
+    if (request.method == "GET" && request_path == "/_merovingian/admin/metrics")
     {
         if (auto const denied = admin_auth_denied(runtime, request.access_token, correlation); denied.has_value())
         {
@@ -5912,7 +5915,7 @@ auto wire_federation_callbacks(HomeserverRuntime& runtime) -> void
         }
         return response(federation_response.status, federation_response.body, std::move(response_headers));
     }
-    if (request.method == "POST" && request.target == "/_matrix/client/v3/register")
+    if (request.method == "POST" && request_path == "/_matrix/client/v3/register")
     {
         if (auto const fields = split_pipe_3(request.body); fields.has_value())
         {
@@ -5924,7 +5927,7 @@ auto wire_federation_callbacks(HomeserverRuntime& runtime) -> void
                    ? response_from_operation(register_local_user(runtime, (*fields)[0], (*fields)[1]), 200U)
                    : response(400U, "registration body must be localpart|password[|token]");
     }
-    if (request.method == "POST" && request.target == "/_matrix/client/v3/login")
+    if (request.method == "POST" && request_path == "/_matrix/client/v3/login")
     {
         auto const fields = split_pipe_3(request.body);
         return fields.has_value()
@@ -5933,13 +5936,12 @@ auto wire_federation_callbacks(HomeserverRuntime& runtime) -> void
                                              200U)
                    : response(400U, "login body must be user_id|password|device_id");
     }
-    if (request.method == "POST" && request.target == "/_matrix/client/v3/logout")
+    if (request.method == "POST" && request_path == "/_matrix/client/v3/logout")
     {
         auto result = logout_local_user(runtime, request.access_token);
         return result.ok ? response(200U, "logged out") : response(401U, result.reason);
     }
-    if (request.method == "POST" &&
-        (request.target == "/_matrix/media/v3/upload" || starts_with(request.target, "/_matrix/media/v3/upload?")))
+    if (request.method == "POST" && request_path == "/_matrix/media/v3/upload")
     {
         auto const fields = split_pipe_4(request.body);
         if (!fields.has_value())
@@ -5957,7 +5959,7 @@ auto wire_federation_callbacks(HomeserverRuntime& runtime) -> void
         return response_from_media_operation(result);
     }
     // ADR-0212: POST /_matrix/media/v1/create reserves an mxc:// URI.
-    if (request.method == "POST" && request.target == "/_matrix/media/v1/create")
+    if (request.method == "POST" && request_path == "/_matrix/media/v1/create")
     {
         return response_from_media_operation(create_pending_media_upload(runtime, request.access_token));
     }
@@ -6068,7 +6070,7 @@ auto wire_federation_callbacks(HomeserverRuntime& runtime) -> void
         auto const result = admin_remove_local_media(runtime, request.access_token, *media_id, request.body);
         return response_from_media_operation(result);
     }
-    if (request.method == "POST" && request.target == "/_matrix/client/v3/createRoom")
+    if (request.method == "POST" && request_path == "/_matrix/client/v3/createRoom")
     {
         // create_room self-locks (see room_service.cpp); release this
         // handler's own guard first so it is not double-locked, matching the

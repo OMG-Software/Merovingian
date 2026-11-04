@@ -18,6 +18,7 @@
 #include "merovingian/auth/password.hpp"
 #include "merovingian/canonicaljson/parser.hpp"
 #include "merovingian/canonicaljson/serializer.hpp"
+#include "merovingian/canonicaljson/signable.hpp"
 #include "merovingian/canonicaljson/value.hpp"
 #include "merovingian/core/folded_substring.hpp"
 #include "merovingian/core/query_params.hpp"
@@ -9306,15 +9307,21 @@ namespace
     // Stores `session` unless the key the backup already holds for that session wins under
     // key_backup_offer_replaces. True when the request is done (stored, or deliberately kept the
     // held key); false only when the store refused to write.
-    [[nodiscard]] auto store_key_backup_session_by_rules(database::PersistentStore& store,
-                                                         database::PersistentKeyBackupSession session) -> bool
+    [[nodiscard]] auto key_backup_session_is_kept(database::PersistentStore const& store,
+                                                  database::PersistentKeyBackupSession const& session) -> bool
     {
         auto const held =
             std::ranges::find_if(store.key_backup_sessions, [&session](database::PersistentKeyBackupSession const& s) {
                 return s.user_id == session.user_id && s.version == session.version && s.room_id == session.room_id &&
                        s.session_id == session.session_id;
             });
-        if (held != store.key_backup_sessions.end() && !key_backup_offer_replaces(held->json, session.json))
+        return held != store.key_backup_sessions.end() && !key_backup_offer_replaces(held->json, session.json);
+    }
+
+    [[nodiscard]] auto store_key_backup_session_by_rules(database::PersistentStore& store,
+                                                         database::PersistentKeyBackupSession session) -> bool
+    {
+        if (key_backup_session_is_kept(store, session))
         {
             return true;
         }
@@ -11403,6 +11410,225 @@ namespace
                                    });
     }
 
+    // A refusal of a key upload: the status and Matrix error a handler answers with.
+    struct KeyUploadRefusal final
+    {
+        std::uint16_t status{};
+        std::string errcode;
+        std::string message;
+    };
+
+    // The public key of a cross-signing key object, unpadded base64, when the object's `keys` is exactly one
+    // property named `ed25519:<public key>` whose value is that same public key and the key decodes to
+    // 32 bytes (spec, CrossSigningKey `keys`). Any other algorithm cannot be verified here, so it is no key.
+    [[nodiscard]] auto cross_signing_ed25519_public_key(canonicaljson::Object const& key) -> std::optional<std::string>
+    {
+        auto const* keys_value = object_member(key, "keys");
+        auto const* keys = keys_value == nullptr ? nullptr : std::get_if<canonicaljson::Object>(&keys_value->storage());
+        if (keys == nullptr || keys->size() != 1U || keys->front().value == nullptr)
+        {
+            return std::nullopt;
+        }
+        auto constexpr prefix = std::string_view{"ed25519:"};
+        auto const& name = keys->front().key;
+        auto const* value = std::get_if<std::string>(&keys->front().value->storage());
+        if (value == nullptr || !starts_with(name, prefix) || name.size() == prefix.size() ||
+            name.substr(prefix.size()) != *value)
+        {
+            return std::nullopt;
+        }
+        if (events::matrix_bytes_from_base64(*value).size() != crypto::ed25519_public_key_bytes)
+        {
+            return std::nullopt;
+        }
+        return *value;
+    }
+
+    // Whether `key` carries `signatures.<user>.ed25519:<signer_public_key>` and that signature is the signer's
+    // over the key's Signing JSON (appendices): canonical JSON without `signatures` and `unsigned`. Other
+    // signatures on the key are ignored.
+    [[nodiscard]] auto cross_signing_key_is_signed_by(canonicaljson::Value const& key_value,
+                                                      canonicaljson::Object const& key, std::string_view user,
+                                                      std::string_view signer_public_key) -> bool
+    {
+        auto const* by_user = object_member_as_object(key, "signatures");
+        by_user = by_user == nullptr ? nullptr : object_member_as_object(*by_user, user);
+        if (by_user == nullptr)
+        {
+            return false;
+        }
+        auto const* encoded = string_member(*by_user, "ed25519:" + std::string{signer_public_key});
+        if (encoded == nullptr)
+        {
+            return false;
+        }
+        auto const signature = events::matrix_bytes_from_base64(*encoded);
+        auto const public_key = events::matrix_bytes_from_base64(signer_public_key);
+        auto const signable = canonicaljson::make_signable_object_view(key_value);
+        if (signature.empty() || public_key.empty() || signable.error != canonicaljson::CanonicalJsonError::none)
+        {
+            return false;
+        }
+        return crypto::ed25519_verify(crypto::Ed25519PublicKey{public_key}, signable.output,
+                                      crypto::Ed25519Signature{signature})
+            .valid;
+    }
+
+    // Spec (POST /keys/device_signing/upload, CrossSigningKey): `keys`, `usage` and `user_id` are
+    // required; `keys` "must have exactly one property, whose name is in the form
+    // <algorithm>:<unpadded_base64_public_key>, and whose value is the unpadded base64 public key"; `user_id`
+    // is the user the key belongs to, so a key for anyone but the authenticated user is "not authorised"
+    // (403). A self-signing or user-signing key "Must be signed by the accompanying master signing key, or by
+    // the user's most recently uploaded master signing key if no master signing key is included in the
+    // request": no master key available is 400 M_MISSING_PARAM, a missing or wrong signature 400
+    // M_INVALID_SIGNATURE. Every key is judged before any is stored, so a refused upload leaves the held
+    // keys as they were. A master key's own signatures are not checked ("Optional for the master signing
+    // key").
+    [[nodiscard]] auto cross_signing_upload_refusal(ClientServerRuntime const& rt, std::string_view user,
+                                                    canonicaljson::Object const& body)
+        -> std::optional<KeyUploadRefusal>
+    {
+        auto const bad = [](std::string message) {
+            return KeyUploadRefusal{400U, "M_BAD_JSON", std::move(message)};
+        };
+        struct SuppliedKey final
+        {
+            std::string_view name;
+            bool signed_by_master{false};
+            canonicaljson::Value const* value{nullptr};
+            canonicaljson::Object const* object{nullptr};
+        };
+        auto supplied = std::vector<SuppliedKey>{};
+        auto master_public_key = std::optional<std::string>{};
+        for (auto const& [key_type, usage] : {
+                 std::pair<std::string_view, std::string_view>{"master_key",       "master"      },
+                 std::pair<std::string_view, std::string_view>{"self_signing_key", "self_signing"},
+                 std::pair<std::string_view, std::string_view>{"user_signing_key", "user_signing"},
+        })
+        {
+            auto const* value = object_member(body, key_type);
+            if (value == nullptr)
+            {
+                continue;
+            }
+            auto const* key = std::get_if<canonicaljson::Object>(&value->storage());
+            if (key == nullptr)
+            {
+                return bad(std::string{key_type} + " must be an object");
+            }
+            auto const* key_user = string_member(*key, "user_id");
+            if (key_user == nullptr)
+            {
+                return bad(std::string{key_type} + " must have a user_id");
+            }
+            if (*key_user != user)
+            {
+                return KeyUploadRefusal{403U, "M_FORBIDDEN", std::string{key_type} + " belongs to another user"};
+            }
+            auto const* usages_value = object_member(*key, "usage");
+            auto const* usages =
+                usages_value == nullptr ? nullptr : std::get_if<canonicaljson::Array>(&usages_value->storage());
+            if (usages == nullptr)
+            {
+                return bad(std::string{key_type} + " must have a usage array");
+            }
+            auto const has_usage = std::ranges::any_of(*usages, [usage](canonicaljson::Value const& entry) {
+                auto const* text = std::get_if<std::string>(&entry.storage());
+                return text != nullptr && *text == usage;
+            });
+            if (!has_usage)
+            {
+                return bad(std::string{key_type} + " usage must contain \"" + std::string{usage} + "\"");
+            }
+            auto public_key = cross_signing_ed25519_public_key(*key);
+            if (!public_key.has_value())
+            {
+                return bad(std::string{key_type} +
+                           " keys must be one ed25519:<public key> property whose value is that 32-byte public key");
+            }
+            if (usage == "master")
+            {
+                master_public_key = std::move(public_key);
+            }
+            supplied.push_back({key_type, usage != "master", value, key});
+        }
+        if (std::ranges::none_of(supplied, [](SuppliedKey const& key) {
+                return key.signed_by_master;
+            }))
+        {
+            return std::nullopt;
+        }
+        if (!master_public_key.has_value())
+        {
+            // The user's most recently uploaded master key is the one held: an upload replaces it.
+            for (auto const& held : rt.homeserver.database.persistent_store.cross_signing_keys)
+            {
+                if (held.user_id != user || held.key_type != "master")
+                {
+                    continue;
+                }
+                auto const stored = parsed_json_object(held.json);
+                master_public_key = stored.has_value() ? cross_signing_ed25519_public_key(*stored) : std::nullopt;
+                break;
+            }
+        }
+        if (!master_public_key.has_value())
+        {
+            return KeyUploadRefusal{400U, "M_MISSING_PARAM", "no master signing key is available"};
+        }
+        for (auto const& key : supplied)
+        {
+            if (key.signed_by_master &&
+                !cross_signing_key_is_signed_by(*key.value, *key.object, user, *master_public_key))
+            {
+                return KeyUploadRefusal{400U, "M_INVALID_SIGNATURE",
+                                        std::string{key.name} + " is not signed by the master signing key"};
+            }
+        }
+        return std::nullopt;
+    }
+
+    // Spec (PUT /room_keys/keys): `rooms` is required, each room holds `sessions`, each session is a
+    // KeyBackupData object. Nothing is skipped: one malformed entry refuses the whole body, before
+    // anything is stored.
+    [[nodiscard]] auto room_key_batch_refusal(std::string_view request_body) -> std::optional<KeyUploadRefusal>
+    {
+        auto const bad = [](std::string message) {
+            return KeyUploadRefusal{400U, "M_BAD_JSON", std::move(message)};
+        };
+        auto const body = parsed_json_object(request_body);
+        if (!body.has_value())
+        {
+            return bad("the body must be a JSON object");
+        }
+        auto const* rooms = object_member_as_object(*body, "rooms");
+        if (rooms == nullptr)
+        {
+            return bad("rooms must be an object");
+        }
+        for (auto const& room : *rooms)
+        {
+            auto const* room_object =
+                room.value == nullptr ? nullptr : std::get_if<canonicaljson::Object>(&room.value->storage());
+            auto const* sessions = room_object == nullptr ? nullptr : object_member_as_object(*room_object, "sessions");
+            if (sessions == nullptr)
+            {
+                return bad("room " + room.key + " must be an object with a sessions object");
+            }
+            for (auto const& session : *sessions)
+            {
+                auto const* session_object =
+                    session.value == nullptr ? nullptr : std::get_if<canonicaljson::Object>(&session.value->storage());
+                if (session_object == nullptr ||
+                    canonicaljson::serialize_canonical(*session.value).error != canonicaljson::CanonicalJsonError::none)
+                {
+                    return bad("session " + session.key + " must be a key backup data object");
+                }
+            }
+        }
+        return std::nullopt;
+    }
+
     [[nodiscard]] auto store_key_api_payload(ClientServerRuntime& rt, auth::KeyApiEndpoint endpoint,
                                              std::string_view user, std::string_view /*device_id*/,
                                              LocalHttpRequest const& req, std::string_view version) -> bool
@@ -11421,7 +11647,7 @@ namespace
             {
                 return false;
             }
-            auto stored = true;
+            auto keys = std::vector<database::PersistentCrossSigningKey>{};
             for (auto const& [key_type, key_name] : {
                      std::pair<std::string_view, std::string_view>{"master_key",       "master"      },
                      std::pair<std::string_view, std::string_view>{"self_signing_key", "self_signing"},
@@ -11436,16 +11662,12 @@ namespace
                 auto const serialized = canonicaljson::serialize_canonical(*value);
                 if (serialized.error != canonicaljson::CanonicalJsonError::none)
                 {
-                    stored = false;
-                    continue;
+                    return false;
                 }
-                if (!database::store_cross_signing_key(store,
-                                                       {std::string{user}, std::string{key_name}, serialized.output}))
-                {
-                    stored = false;
-                }
+                keys.push_back({std::string{user}, std::string{key_name}, serialized.output});
             }
-            return stored;
+            // One transaction: a failed write leaves the previous set of keys intact.
+            return database::store_cross_signing_keys(store, std::move(keys));
         }
         case auth::KeyApiEndpoint::upload_signatures: {
             auto const parsed = parsed_json_object(req.body);
@@ -11528,49 +11750,45 @@ namespace
             return stored;
         }
         case auth::KeyApiEndpoint::put_room_key_backup_batch: {
-            auto const body = canonicaljson::parse_lossless(req.body);
-            auto const* body_obj = std::get_if<canonicaljson::Object>(&body.value.storage());
-            if (body_obj == nullptr)
+            // The route handler has already refused a malformed body (room_key_batch_refusal).
+            auto const body = parsed_json_object(req.body);
+            if (!body.has_value())
             {
                 return false;
             }
-            auto const* rooms = object_member_as_object(*body_obj, "rooms");
+            auto const* rooms = object_member_as_object(*body, "rooms");
             if (rooms == nullptr)
             {
                 return false;
             }
+            auto sessions_to_store = std::vector<database::PersistentKeyBackupSession>{};
             for (auto const& room : *rooms)
             {
-                if (room.value == nullptr)
-                {
-                    continue;
-                }
-                auto const* room_obj = std::get_if<canonicaljson::Object>(&room.value->storage());
-                if (room_obj == nullptr)
-                {
-                    continue;
-                }
-                auto const* sessions = object_member_as_object(*room_obj, "sessions");
+                auto const* room_obj =
+                    room.value == nullptr ? nullptr : std::get_if<canonicaljson::Object>(&room.value->storage());
+                auto const* sessions = room_obj == nullptr ? nullptr : object_member_as_object(*room_obj, "sessions");
                 if (sessions == nullptr)
                 {
-                    continue;
+                    return false;
                 }
                 for (auto const& session : *sessions)
                 {
-                    if (session.value == nullptr)
-                    {
-                        continue;
-                    }
                     auto const session_json = canonicaljson::serialize_canonical(*session.value);
                     if (session_json.error != canonicaljson::CanonicalJsonError::none)
                     {
+                        return false;
+                    }
+                    auto offered = database::PersistentKeyBackupSession{std::string{user}, std::string{version},
+                                                                        room.key, session.key, session_json.output};
+                    if (key_backup_session_is_kept(store, offered))
+                    {
                         continue;
                     }
-                    std::ignore = store_key_backup_session_by_rules(
-                        store, {std::string{user}, std::string{version}, room.key, session.key, session_json.output});
+                    sessions_to_store.push_back(std::move(offered));
                 }
             }
-            return true;
+            // One transaction: a failed write stores none of the batch and the request answers 500.
+            return database::store_key_backup_sessions(store, std::move(sessions_to_store));
         }
         case auth::KeyApiEndpoint::delete_key_backup_version: {
             auto constexpr prefix = std::string_view{"/_matrix/client/v3/room_keys/version/"};
@@ -11817,6 +12035,10 @@ namespace
                                    std::to_string(max_uploaded_key_document_bytes) + " bytes");
                 }
             }
+            if (auto const refusal = cross_signing_upload_refusal(rt, user, *cs_body); refusal.has_value())
+            {
+                return err(refusal->status, refusal->errcode, refusal->message);
+            }
             if (cross_signing_upload_names_a_device(rt, user, *cs_body))
             {
                 return err(403U, "M_FORBIDDEN", "a cross-signing key may not have the ID of one of the user's devices");
@@ -11958,6 +12180,13 @@ namespace
                 return resp(404U, matrix_error("M_NOT_FOUND", "no key backup version found"));
             }
             auto const session_ver = *session_ver_opt;
+            if (route.endpoint == auth::KeyApiEndpoint::put_room_key_backup_batch)
+            {
+                if (auto const refusal = room_key_batch_refusal(req.body); refusal.has_value())
+                {
+                    return err(refusal->status, refusal->errcode, refusal->message);
+                }
+            }
             if (key_backup_version_for_user(rt.homeserver.database.persistent_store, user, session_ver) == nullptr)
             {
                 return resp(404U, matrix_error("M_NOT_FOUND", "key backup version not found"));
@@ -12089,11 +12318,11 @@ namespace
     [[nodiscard]] auto handle_admin_safety_route(ClientServerRuntime& rt, std::string_view admin_user,
                                                  LocalHttpRequest const& req) -> LocalHttpResponse
     {
-        if (req.method == "GET" && req.target == "/_matrix/client/v3/admin/safety/reports")
+        if (req.method == "GET" && target_path(req.target) == "/_matrix/client/v3/admin/safety/reports")
         {
             return resp(200U, safety_reports_json(rt));
         }
-        if (req.method == "GET" && req.target == "/_matrix/client/v3/admin/safety/policy_rules")
+        if (req.method == "GET" && target_path(req.target) == "/_matrix/client/v3/admin/safety/policy_rules")
         {
             return resp(200U, policy_rules_json(rt));
         }
@@ -12632,13 +12861,11 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
     // Media upload routes are governed by security.media.max_upload_size rather
     // than the smaller general client-API body cap (64 KiB).  Check which limit
     // applies before enforcing the gate.
-    auto const is_media_upload =
-        (req.method == "POST" &&
-         (req.target == "/_matrix/media/v3/upload" || starts_with(req.target, "/_matrix/media/v3/upload?") ||
-          req.target == "/_matrix/client/v1/media/upload" ||
-          starts_with(req.target, "/_matrix/client/v1/media/upload?"))) ||
-        // ADR-0212: content for a reserved mxc:// URI.
-        (req.method == "PUT" && starts_with(req.target, "/_matrix/media/v3/upload/"));
+    auto const request_path = target_path(req.target);
+    auto const is_media_upload = (req.method == "POST" && (request_path == "/_matrix/media/v3/upload" ||
+                                                           request_path == "/_matrix/client/v1/media/upload")) ||
+                                 // ADR-0212: content for a reserved mxc:// URI.
+                                 (req.method == "PUT" && starts_with(req.target, "/_matrix/media/v3/upload/"));
     auto const body_limit = [&]() -> std::size_t {
         if (is_media_upload)
         {
@@ -12725,7 +12952,7 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
     // GET /.well-known/matrix/client tells clients where the homeserver lives.
     // Must be served before any auth check; the path is outside /_matrix/ so
     // Apache or nginx may not proxy it unless explicitly configured to do so.
-    if (req.method == "GET" && req.target == "/.well-known/matrix/client")
+    if (req.method == "GET" && request_path == "/.well-known/matrix/client")
     {
         auto const& base_url = rt.homeserver.config.server().public_baseurl;
         return dispatch_resp(req, rt, 200U,
@@ -12737,7 +12964,7 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
     // GET /_matrix/client/versions is the unauthenticated discovery endpoint
     // most Matrix clients hit first. It must answer before any auth check so
     // a fresh client can negotiate spec compatibility before it has a token.
-    if (req.method == "GET" && req.target == "/_matrix/client/versions")
+    if (req.method == "GET" && request_path == "/_matrix/client/versions")
     {
         auto versions = canonicaljson::Array{};
         for (auto const& spec : {"v1.1", "v1.2", "v1.3", "v1.4", "v1.5", "v1.6", "v1.7", "v1.8", "v1.9", "v1.10",
@@ -12756,7 +12983,6 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             })));
     }
 
-    auto const request_path = std::string_view{req.target}.substr(0U, std::string_view{req.target}.find('?'));
     // Application Service API identity assertion (the as_token was verified at
     // the top of this function; req.access_token now carries the internal
     // masquerade identity). Runs under the request lock so the user lookup
@@ -13055,7 +13281,7 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                              json_serialize(json_obj({json_member("valid", canonicaljson::Value{valid})})));
     }
 
-    if (req.method == "POST" && req.target == "/_matrix/client/v3/register/email/requestToken")
+    if (req.method == "POST" && request_path == "/_matrix/client/v3/register/email/requestToken")
     {
         auto const body = parse_register_email_request_body(req.body);
         if (!body.has_value())
@@ -13156,7 +13382,7 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             "(id_server and id_access_token)");
     }
 
-    if (req.method == "POST" && req.target == "/_matrix/client/v3/register/msisdn/requestToken")
+    if (req.method == "POST" && request_path == "/_matrix/client/v3/register/msisdn/requestToken")
     {
         auto const body = parse_register_msisdn_request_body(req.body);
         if (!body.has_value())
@@ -13259,8 +13485,19 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             "(id_server and id_access_token)");
     }
 
-    if (req.method == "POST" && req.target == "/_matrix/client/v3/register")
+    if (req.method == "POST" && request_path == "/_matrix/client/v3/register")
     {
+        // Spec POST /register `kind` query parameter: "One of: [guest, user]", default `user`. A
+        // 403 "can be used to identify that a particular `kind` of account is not allowed", and this
+        // server does not offer guest accounts. A value outside the enumeration is not a kind at all.
+        if (auto const kind = query_param_value(req.target, "kind"); kind.has_value() && *kind != "user")
+        {
+            if (*kind == "guest")
+            {
+                return dispatch_err(req, rt, 403U, "M_FORBIDDEN", "guest accounts are not supported");
+            }
+            return dispatch_err(req, rt, 400U, "M_INVALID_PARAM", "kind must be one of: guest, user");
+        }
         auto const registration_object = parsed_json_object(req.body);
         if (!registration_object.has_value())
         {
@@ -13503,7 +13740,7 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                                  json_member("device_id", json_str(reg_device_id)),
                              })));
     }
-    if (req.method == "GET" && req.target == "/_matrix/client/v3/login")
+    if (req.method == "GET" && request_path == "/_matrix/client/v3/login")
     {
         auto flows = canonicaljson::Array{};
         flows.emplace_back(json_obj({json_member("type", json_str("m.login.password"))}));
@@ -13554,8 +13791,7 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
     // the generic redirect, present when the client selected one of the
     // advertised identity_providers). Handled before the access-token gate
     // -- like GET /login above -- because it is itself unauthenticated.
-    if (req.method == "GET" && (req.target == "/_matrix/client/v3/login/sso/redirect" ||
-                                starts_with(req.target, "/_matrix/client/v3/login/sso/redirect?")))
+    if (req.method == "GET" && request_path == "/_matrix/client/v3/login/sso/redirect")
     {
         auto const redirect_url = query_param_value(req.target, "redirectUrl");
         auto const action = query_param_value(req.target, "action");
@@ -13589,7 +13825,7 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
         apply_cors_headers(req, response, rt.cors);
         return DispatchResult{DispatchResult::Status::complete, std::move(response), {}};
     }
-    if (req.method == "POST" && req.target == "/_matrix/client/v3/login")
+    if (req.method == "POST" && request_path == "/_matrix/client/v3/login")
     {
         auto body = parse_login_body(req.body, rt.homeserver.config.server().server_name);
         if (!body.has_value())
@@ -13745,7 +13981,7 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
         }
         return dispatch_resp(req, rt, 200U, json_serialize(json_obj(std::move(response_body))));
     }
-    if (req.method == "POST" && req.target == "/_matrix/client/v3/refresh")
+    if (req.method == "POST" && request_path == "/_matrix/client/v3/refresh")
     {
         auto const body = parse_refresh_body(req.body);
         if (!body.has_value())
@@ -13787,7 +14023,7 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
         }
         return dispatch_resp(req, rt, 200U, json_serialize(json_obj(std::move(response_body))));
     }
-    if (req.method == "POST" && req.target == "/_matrix/client/v3/logout")
+    if (req.method == "POST" && request_path == "/_matrix/client/v3/logout")
     {
         // The device the token belongs to, read before logout revokes the token: logout also deletes
         // the device (spec POST /logout), and the runtime's device list is this layer's to update.
@@ -13968,7 +14204,7 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
         return dispatch_err(req, rt, 404U, "M_NOT_FOUND", "profile field not found");
     }
 
-    if (req.method == "POST" && req.target == "/_matrix/client/v3/account/3pid/email/requestToken")
+    if (req.method == "POST" && request_path == "/_matrix/client/v3/account/3pid/email/requestToken")
     {
         auto const body = parse_register_email_request_body(req.body);
         if (!body.has_value())
@@ -14068,7 +14304,7 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             "(id_server and id_access_token)");
     }
 
-    if (req.method == "POST" && req.target == "/_matrix/client/v3/account/3pid/msisdn/requestToken")
+    if (req.method == "POST" && request_path == "/_matrix/client/v3/account/3pid/msisdn/requestToken")
     {
         auto const body = parse_register_msisdn_request_body(req.body);
         if (!body.has_value())
@@ -14839,7 +15075,7 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
         room_it->directory_public = published;
         return dispatch_resp(req, rt, 200U, "{}");
     }
-    if (req.method == "POST" && req.target == "/_matrix/client/v3/account/password")
+    if (req.method == "POST" && request_path == "/_matrix/client/v3/account/password")
     {
         auto const object = parsed_json_object(req.body);
         if (!object.has_value())
@@ -14916,7 +15152,7 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
     // literal in the suspended-user allowlist. A user whose credentials were
     // compromised had no way to close their own account; only an admin-initiated
     // lock/suspend existed, and that is reversible rather than final.
-    if (req.method == "POST" && req.target == "/_matrix/client/v3/account/deactivate")
+    if (req.method == "POST" && request_path == "/_matrix/client/v3/account/deactivate")
     {
         auto const object = parsed_json_object(req.body);
         if (!object.has_value())
@@ -15005,7 +15241,7 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
         return dispatch_resp(
             req, rt, 200U, json_serialize(json_obj({json_member("id_server_unbind_result", json_str(unbind_result))})));
     }
-    if (req.method == "GET" && req.target == "/_matrix/client/v3/account/3pid")
+    if (req.method == "GET" && request_path == "/_matrix/client/v3/account/3pid")
     {
         auto threepids = canonicaljson::Array{};
         for (auto const& record : rt.homeserver.database.persistent_store.account_threepids)
@@ -15024,7 +15260,7 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
         return dispatch_resp(req, rt, 200U,
                              json_serialize(json_obj({json_member("threepids", json_arr(std::move(threepids)))})));
     }
-    if (req.method == "POST" && req.target == "/_matrix/client/v3/account/3pid/add")
+    if (req.method == "POST" && request_path == "/_matrix/client/v3/account/3pid/add")
     {
         auto const body = parse_account_threepid_add_body(req.body);
         if (!body.has_value())
@@ -15077,7 +15313,7 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
         consume_registration_validation_session(rt, "account-3pid", body->sid, body->client_secret);
         return dispatch_resp(req, rt, 200U, "{}");
     }
-    if (req.method == "POST" && req.target == "/_matrix/client/v3/account/3pid/bind")
+    if (req.method == "POST" && request_path == "/_matrix/client/v3/account/3pid/bind")
     {
         auto const body = parse_account_threepid_bind_body(req.body);
         if (!body.has_value())
@@ -15095,7 +15331,7 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
         return bind_validated_threepid(req, rt, *user, body->sid, body->client_secret, body->id_server,
                                        body->id_access_token);
     }
-    if (req.method == "POST" && req.target == "/_matrix/client/v3/account/3pid")
+    if (req.method == "POST" && request_path == "/_matrix/client/v3/account/3pid")
     {
         auto const object = parsed_json_object(req.body);
         auto const* creds = object.has_value() ? object_member_object(*object, "three_pid_creds") : nullptr;
@@ -15119,7 +15355,7 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
         // The deprecated route carries the same contract as /account/3pid/bind.
         return bind_validated_threepid(req, rt, *user, *sid, *client_secret, *id_server, *id_access_token);
     }
-    if (req.method == "POST" && req.target == "/_matrix/client/v3/account/3pid/unbind")
+    if (req.method == "POST" && request_path == "/_matrix/client/v3/account/3pid/unbind")
     {
         auto const body = parse_account_threepid_delete_body(req.body);
         if (!body.has_value())
@@ -15216,7 +15452,7 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
         return dispatch_resp(
             req, rt, 200U, json_serialize(json_obj({json_member("id_server_unbind_result", json_str(local_result))})));
     }
-    if (req.method == "POST" && req.target == "/_matrix/client/v3/account/3pid/delete")
+    if (req.method == "POST" && request_path == "/_matrix/client/v3/account/3pid/delete")
     {
         auto const body = parse_account_threepid_delete_body(req.body);
         if (!body.has_value())
@@ -15298,7 +15534,7 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
     }
     // Spec: GET /pushers returns the push notification pushers for the
     // authenticated user (Matrix v1.19 CS API §push-notifications).
-    if (req.method == "GET" && req.target == "/_matrix/client/v3/pushers")
+    if (req.method == "GET" && request_path == "/_matrix/client/v3/pushers")
     {
         auto const pushers = database::list_pushers_for_user(rt.homeserver.database.persistent_store, *user);
         auto pusher_array = canonicaljson::Array{};
@@ -15336,7 +15572,7 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
     // app_id+pushkey ("the homeserver must remove any other pushers with the
     // same App ID and pushkey for different users"); append:true skips that
     // removal.
-    if (req.method == "POST" && req.target == "/_matrix/client/v3/pushers/set")
+    if (req.method == "POST" && request_path == "/_matrix/client/v3/pushers/set")
     {
         auto const body = parse_pusher_set_body(req.body);
         if (!body.has_value())
@@ -15616,7 +15852,7 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
     // Clients (Cinny, Element) fetch /capabilities immediately after login to
     // discover what the server supports. Return a minimal stable set; extend
     // as features are implemented.
-    if (req.method == "GET" && req.target == "/_matrix/client/v3/capabilities")
+    if (req.method == "GET" && request_path == "/_matrix/client/v3/capabilities")
     {
         // Advertise every room version rooms::room_version_policy.cpp actually
         // implements (v3-v12; v1 and v2 are not supported, ADR-0076), not a hardcoded subset — clients use this list to
@@ -16223,7 +16459,7 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
     // may attach. The value is sourced from security.media.max_upload_size so
     // client hints match the repository policy enforced during upload.
     if (req.method == "GET" &&
-        (req.target == "/_matrix/media/v3/config" || req.target == "/_matrix/client/v1/media/config"))
+        (request_path == "/_matrix/media/v3/config" || request_path == "/_matrix/client/v1/media/config"))
     {
         auto const parsed_limit = config::parse_size_limit(rt.homeserver.config.security().media.max_upload_size);
         auto const bounded_limit = std::min(parsed_limit.valid ? parsed_limit.bytes : std::uint64_t{104857600U},
@@ -16237,11 +16473,8 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
     // Both the unauthenticated v3 endpoint and the authenticated v1 endpoint need
     // the same body translation so encrypted-room attachments work regardless of
     // which path the client prefers.
-    auto const is_v3_media_upload = req.method == "POST" && (req.target == "/_matrix/media/v3/upload" ||
-                                                             starts_with(req.target, "/_matrix/media/v3/upload?"));
-    auto const is_v1_media_upload =
-        req.method == "POST" && (req.target == "/_matrix/client/v1/media/upload" ||
-                                 starts_with(req.target, "/_matrix/client/v1/media/upload?"));
+    auto const is_v3_media_upload = req.method == "POST" && (request_path == "/_matrix/media/v3/upload");
+    auto const is_v1_media_upload = req.method == "POST" && request_path == "/_matrix/client/v1/media/upload";
     if (is_v3_media_upload || is_v1_media_upload)
     {
         auto const ct = request_header(req, "Content-Type");
@@ -16364,7 +16597,7 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
     // Spec v1.19 §10.5: returns TURN server credentials. When no TURN server
     // is configured we return an empty object so clients disable relay support
     // gracefully rather than treating a 404 as an error.
-    if (req.method == "GET" && req.target == "/_matrix/client/v3/voip/turnServer")
+    if (req.method == "GET" && request_path == "/_matrix/client/v3/voip/turnServer")
     {
         auto const& turn = rt.homeserver.config.server().turn;
         if (turn.server.empty())
@@ -16388,7 +16621,7 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
         auto const device_id = authenticated_request_device_id(rt, req.access_token);
         return complete(handle_key_api_route(rt, key_route.route, *user, device_id, req));
     }
-    if (req.method == "GET" && req.target == "/_matrix/client/v3/devices")
+    if (req.method == "GET" && request_path == "/_matrix/client/v3/devices")
     {
         return dispatch_resp(req, rt, 200U, devices_json(rt, *user));
     }
@@ -16462,7 +16695,7 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
         announce_deleted_devices(rt, *user, {std::string{device_id}}, destinations);
         return dispatch_resp(req, rt, 200U, "{}");
     }
-    if (req.method == "POST" && req.target == "/_matrix/client/v3/delete_devices")
+    if (req.method == "POST" && request_path == "/_matrix/client/v3/delete_devices")
     {
         auto const uia_challenge = device_delete_uia_challenge(issue_uia_session(rt, "delete_devices"));
         auto const body_obj = parsed_json_object(req.body);
@@ -16812,7 +17045,7 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
         });
         return dispatch_resp(req, rt, 200U, json_serialize(json_obj({json_member("room_id", json_str(room_id))})));
     }
-    if (req.method == "GET" && req.target == "/_matrix/client/v3/joined_rooms")
+    if (req.method == "GET" && request_path == "/_matrix/client/v3/joined_rooms")
     {
         log_diagnostic("room.joined_rooms.response", {
                                                          {"actor", *user, false}
@@ -18627,7 +18860,7 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
 
     // POST /_matrix/client/v3/user_directory/search
     // Searches for users by display name or user ID per Matrix spec §user-directory.
-    if (req.method == "POST" && req.target == "/_matrix/client/v3/user_directory/search")
+    if (req.method == "POST" && request_path == "/_matrix/client/v3/user_directory/search")
     {
         auto const body = canonicaljson::parse_lossless(req.body);
         auto const* body_obj = std::get_if<canonicaljson::Object>(&body.value.storage());

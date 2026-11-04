@@ -25,6 +25,7 @@
 // Spec: Matrix Server-Server API v1.19, m.signing_key_update
 // URL:  ../../docs/matrix-v1.19-spec/server-server-api.md#msigning_key_update
 
+#include "../support/cross_signing_fixture.hpp"
 #include "../support/json_test_support.hpp"
 #include "../support/master_key.hpp"
 #include "../support/registration_token.hpp"
@@ -83,8 +84,8 @@ struct RegisteredUser final
     std::string access_token{};
 };
 
-[[nodiscard]] auto register_user(merovingian::homeserver::ClientServerRuntime& runtime,
-                                 std::string_view localpart) -> RegisteredUser
+[[nodiscard]] auto register_user(merovingian::homeserver::ClientServerRuntime& runtime, std::string_view localpart)
+    -> RegisteredUser
 {
     auto const registration = merovingian::homeserver::handle_client_server_request(
         runtime, {"POST",
@@ -157,22 +158,6 @@ auto install_unstarted_dispatch_worker(merovingian::homeserver::ClientServerRunt
         }
     }
     return bodies;
-}
-
-[[nodiscard]] auto cross_signing_upload_body(std::string_view user_id, bool include_public_keys) -> std::string
-{
-    auto const user = std::string{user_id};
-    auto body = std::string{"{"};
-    if (include_public_keys)
-    {
-        body += R"("master_key":{"keys":{"ed25519:ALICEMASTER":"ALICEMASTER"},"usage":["master"],"user_id":")" + user +
-                R"("},"self_signing_key":{"keys":{"ed25519:ALICESSK":"ALICESSK"},"signatures":{")" + user +
-                R"(":{"ed25519:ALICEMASTER":"msk-sig"}},"usage":["self_signing"],"user_id":")" + user + R"("},)";
-    }
-    body += R"("user_signing_key":{"keys":{"ed25519:ALICEUSK":"ALICEUSK"},"signatures":{")" + user +
-            R"(":{"ed25519:ALICEMASTER":"msk-usk-sig"}},"usage":["user_signing"],"user_id":")" + user + R"("},)";
-    body += R"("auth":{"type":"m.login.password","password":"CorrectHorse7!"}})";
-    return body;
 }
 
 [[nodiscard]] auto sync_next_batch(merovingian::homeserver::ClientServerRuntime& runtime, std::string const& token,
@@ -342,27 +327,33 @@ SCENARIO("Publishing cross-signing keys tells the servers alice shares rooms wit
 
         WHEN("alice uploads her master, self-signing and user-signing keys")
         {
+            auto const keys = merovingian::tests::make_cross_signing_set(alice.user_id);
             auto const upload = merovingian::homeserver::handle_client_server_request(
                 runtime, {"POST", "/_matrix/client/v3/keys/device_signing/upload", alice.access_token,
-                          cross_signing_upload_body(alice.user_id, true)});
+                          merovingian::tests::cross_signing_upload_body(keys.members())});
             REQUIRE(upload.response.status == 200U);
 
             THEN("bob's server is sent an m.signing_key_update with her public cross-signing keys")
             {
                 auto const updates = queued_edus(runtime, remote_server, "m.signing_key_update");
                 REQUIRE(updates.size() == 1U);
-                REQUIRE(updates.front().find("ALICEMASTER") != std::string::npos);
-                REQUIRE(updates.front().find("ALICESSK") != std::string::npos);
+                REQUIRE(updates.front().find(keys.master.public_key) != std::string::npos);
+                REQUIRE(updates.front().find(keys.self_signing.public_key) != std::string::npos);
                 // The user-signing key is private to alice and never leaves her server.
-                REQUIRE(updates.front().find("ALICEUSK") == std::string::npos);
+                REQUIRE(updates.front().find(keys.user_signing.public_key) == std::string::npos);
             }
         }
 
         WHEN("alice uploads only a new user-signing key")
         {
+            // Spec (POST /keys/device_signing/upload, 400 M_MISSING_PARAM): the user-signing key is signed by
+            // the master key, so a master key must be available: here, one alice already holds.
+            auto const keys = merovingian::tests::make_cross_signing_set(alice.user_id);
+            runtime.homeserver.database.persistent_store.cross_signing_keys.push_back(
+                {alice.user_id, "master", keys.master_json});
             auto const upload = merovingian::homeserver::handle_client_server_request(
                 runtime, {"POST", "/_matrix/client/v3/keys/device_signing/upload", alice.access_token,
-                          cross_signing_upload_body(alice.user_id, false)});
+                          merovingian::tests::cross_signing_upload_body(keys.user_signing_member())});
             REQUIRE(upload.response.status == 200U);
 
             THEN("no m.signing_key_update is sent, because nothing remote servers can see changed")

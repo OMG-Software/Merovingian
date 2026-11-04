@@ -311,6 +311,16 @@ production-gated.
     (`device_id_names_cross_signing_key()`), and `POST /keys/device_signing/upload` answers `403`,
     storing nothing, for a key whose ID is the ID of one of the uploader's devices. A generated device
     ID is 32 hex characters, a key ID 43 base64 characters, so a generated ID cannot collide.
+  - **A cross-signing upload is validated whole and stored in one transaction.**
+    `POST /keys/device_signing/upload` refuses, before any write, a key that is not an object, whose
+    `user_id` is not the uploader (`403`), whose `usage` lacks its slot's usage, or whose `keys` is not
+    exactly one `ed25519:<key>` property whose value is that same key and decodes to 32 bytes (`400
+    M_BAD_JSON`; another algorithm cannot be verified, so it is refused). A self-signing or user-signing key
+    must be signed by the accompanying master key, or by the held (most recently uploaded) master key when
+    the request has none: no usable master key is `400 M_MISSING_PARAM`, a missing or wrong signature
+    `400 M_INVALID_SIGNATURE`, checked over the key's canonical JSON without `signatures` and `unsigned`
+    (ADR-0421). All keys are judged before the first write, which is one transaction
+    (`database::store_cross_signing_keys`).
   - **Remote users' keys are proxied, not cached (ADR-0061).** `/keys/query` for a remote user
     calls the user's server's `/user/keys/query` and returns its `device_keys`, `master_keys`
     and `self_signing_keys`. `accept_remote_key_query_response()` keeps only the users that

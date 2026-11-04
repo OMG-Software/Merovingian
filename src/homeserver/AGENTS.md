@@ -83,6 +83,27 @@ is `declared_mime|sniffed_mime|scanner_clean|bytes` — the pipe-delimited wrapp
    `404 M_UNRECOGNIZED` before authentication (`client_route_is_known`, ADR-0230), so
    a route missing there is unreachable for every caller
 
+## Routes match the path, not the target (ADR-0420)
+
+`req.target` still holds the query string. Compare a route with `request_path` (defined once, before the body-size gate;
+`target_path(req.target)` outside the dispatcher), never `req.target ==`, so `POST /register?kind=user` and an
+appservice's `GET /joined_rooms?user_id=` reach their handlers. `tests/conformance/test_route_query_conformance.cpp`
+lists every route that used to compare the whole target; a new fixed route goes in its table.
+`POST /register` reads `kind`: `user` (the default) registers, `guest` is `403 M_FORBIDDEN` (no guest accounts), any other
+value `400 M_INVALID_PARAM`.
+
+## Key uploads are judged whole, then written in one transaction
+
+`POST /keys/device_signing/upload` goes through `cross_signing_upload_refusal` before anything is stored: each key is an
+object whose `user_id` is the authenticated user (403 otherwise), whose `usage` holds its slot's usage, and whose `keys`
+has exactly one `ed25519:<key>` property whose value is that 32-byte key (400 `M_BAD_JSON`); a self-signing or user-signing
+key is verified against the accompanying master key or the held one (`400 M_MISSING_PARAM` with none, `400
+M_INVALID_SIGNATURE` for a missing or wrong signature, ADR-0421). The three keys are then written by
+`database::store_cross_signing_keys` in one transaction, so a failed write leaves the previous set. `PUT /room_keys/keys` is
+refused whole (`room_key_batch_refusal`, 400 `M_BAD_JSON`) for a missing or non-object `rooms`, room, `sessions` or
+session, and writes its sessions with `database::store_key_backup_sessions` in one transaction; a failed write is a 500,
+never a 200 with an etag. Do not skip a malformed entry or ignore a write result.
+
 ## The runtime lock and blocking calls
 
 `handle_client_server_request` and `handle_local_http_request` each take
