@@ -783,6 +783,10 @@ namespace
         return std::move(result.output);
     }
 
+    // Spec (setProfileField): "the total profile MUST be under 64 KiB". A profile whose serialised
+    // object is this many bytes or more is refused with 400 M_PROFILE_TOO_LARGE (ADR-0406).
+    constexpr std::size_t max_profile_bytes = 64U * 1024U;
+
     // 401 with soft_logout=true: token was found-but-expired so the client should
     // use its refresh token rather than clearing its session (spec §5.7.2).
     [[nodiscard]] auto dispatch_err_soft_logout(LocalHttpRequest const& req, ClientServerRuntime const& rt,
@@ -7479,9 +7483,6 @@ namespace
                                std::string_view device_id, std::string_view payload) -> void
     {
         auto const plan = auth::make_key_api_boundary_plan(route, user, device_id);
-        rt.key_api_records.push_back({std::string{user}, std::string{device_id},
-                                      auth::key_api_endpoint_name(route.endpoint),
-                                      auth::redacted_key_payload_summary(payload), plan.database_statements.size()});
         append_local_audit(rt.homeserver.database, observability::AuditCategory::auth, plan.audit_event_type, user,
                            device_id, auth::redacted_key_payload_summary(payload));
     }
@@ -16148,13 +16149,54 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                 return dispatch_err(req, rt, 400U, "M_BAD_JSON", "profile update body must be a JSON object");
             }
             auto& store = rt.homeserver.database.persistent_store;
-            if (!database::find_profile(store, *user).has_value() && !database::store_profile(store, {*user, {}, {}}))
+            auto const field = is_displayname ? std::string_view{"displayname"} : std::string_view{"avatar_url"};
+            // Spec (setProfileField): a body without the key named in the path is 400 M_MISSING_PARAM; "For
+            // `displayname`, the value MUST be a string", so valid JSON of another type (null included) is
+            // 400 M_INVALID_PARAM. Either way nothing is stored: an empty string is the only way to clear a field.
+            auto const* const member = object_member(*obj, field);
+            if (member == nullptr)
+            {
+                return dispatch_err(req, rt, 400U, "M_MISSING_PARAM",
+                                    "the request body must contain the key " + std::string{field});
+            }
+            auto const* const val = std::get_if<std::string>(&member->storage());
+            if (val == nullptr)
+            {
+                return dispatch_err(req, rt, 400U, "M_INVALID_PARAM", std::string{field} + " must be a string");
+            }
+            auto const value = std::string_view{*val};
+            // Spec: "For `avatar_url`, the value MUST be an MXC URI string". The empty string stays
+            // accepted as the way this server's clients clear the avatar (ADR-0406).
+            if (is_avatar_url && !value.empty() && !media::mxc_uri_is_valid(value))
+            {
+                return dispatch_err(req, rt, 400U, "M_INVALID_PARAM", "avatar_url must be an MXC URI");
+            }
+            // Spec: "the total profile MUST be under 64 KiB"; a value that would make it larger is
+            // 400 M_PROFILE_TOO_LARGE. The profile this server stores is these two fields (it has no
+            // `m.tz` or custom fields), so the size is that of the profile object with the new value.
+            auto const existing = database::find_profile(store, *user);
+            auto const displayname_after =
+                is_displayname ? std::string{value} : (existing.has_value() ? existing->displayname : std::string{});
+            auto const avatar_url_after =
+                is_avatar_url ? std::string{value} : (existing.has_value() ? existing->avatar_url : std::string{});
+            auto const profile_json = json_serialize_checked(json_obj({
+                json_member("avatar_url", json_str(avatar_url_after)),
+                json_member("displayname", json_str(displayname_after)),
+            }));
+            // A stored field the serialiser refuses (ADR-0182 keeps such a profile usable) cannot be measured
+            // as JSON; its raw length plus the object's fixed overhead is then the size counted.
+            auto const profile_bytes = profile_json.has_value()
+                                           ? profile_json->size()
+                                           : displayname_after.size() + avatar_url_after.size() + 34U;
+            if (profile_bytes >= max_profile_bytes)
+            {
+                return dispatch_err(req, rt, 400U, "M_PROFILE_TOO_LARGE",
+                                    "the profile would exceed its maximum allowed size of 64 KiB");
+            }
+            if (!existing.has_value() && !database::store_profile(store, {*user, {}, {}}))
             {
                 return dispatch_err(req, rt, 500U, "M_UNKNOWN", "failed to persist the profile");
             }
-            auto const field = is_displayname ? std::string_view{"displayname"} : std::string_view{"avatar_url"};
-            auto const* val = string_member(*obj, field);
-            auto const value = val != nullptr ? std::string_view{*val} : std::string_view{};
             auto const updated = is_displayname ? database::update_profile_displayname(store, *user, value)
                                                 : database::update_profile_avatar_url(store, *user, value);
             if (!updated)
@@ -19599,13 +19641,6 @@ auto joined_room_count(ClientServerRuntime const& rt, std::string_view user) noe
 {
     return static_cast<std::size_t>(std::ranges::count_if(rt.homeserver.database.rooms, [user](LocalRoom const& room) {
         return joined(room, user);
-    }));
-}
-
-auto key_api_record_count(ClientServerRuntime const& rt, std::string_view user) noexcept -> std::size_t
-{
-    return static_cast<std::size_t>(std::ranges::count_if(rt.key_api_records, [user](ClientKeyApiRecord const& record) {
-        return record.user_id == user;
     }));
 }
 

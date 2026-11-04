@@ -203,6 +203,28 @@ namespace
 
 } // namespace
 
+auto mxc_uri_is_valid(std::string_view uri) noexcept -> bool
+{
+    constexpr auto scheme = std::string_view{"mxc://"};
+    if (!uri.starts_with(scheme))
+    {
+        return false;
+    }
+    auto const rest = uri.substr(scheme.size());
+    auto const slash = rest.find('/');
+    if (slash == std::string_view::npos)
+    {
+        return false;
+    }
+    auto const server_name = rest.substr(0U, slash);
+    auto const media_id = rest.substr(slash + 1U);
+    auto const media_id_character = [](char c) noexcept {
+        return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '_' || c == '-';
+    };
+    return !server_name.empty() && server_name_is_valid(server_name) && !media_id.empty() &&
+           std::ranges::all_of(media_id, media_id_character);
+}
+
 auto media_acceptance_policy_name(MediaAcceptancePolicy policy) noexcept -> std::string_view
 {
     switch (policy)
