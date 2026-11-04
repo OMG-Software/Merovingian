@@ -1035,9 +1035,7 @@ persisted and hydrated.
   `postgres-integration` workflow because they require PostgreSQL and the role
   environment variables. See `packaging/postgresql/provision-roles.sql`.
 - The schema's v1 `push_rules` table is unused: push rules are kept as `m.push_rules`
-  account data (ADR-0204, see above). The configuration key
-  `server.identity_server.allowed_bind_domains` is accepted but currently read
-  by no bind or `requestToken` path, so it is not enforced.
+  account data (ADR-0204, see above).
 
 ## Federation worker least-privilege role (ADR-0062 part 2)
 

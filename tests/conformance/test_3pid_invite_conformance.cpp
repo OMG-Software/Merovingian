@@ -136,9 +136,7 @@ SCENARIO("POST /rooms/{roomId}/invite with a trusted id_server issues an IS-back
         // Configure the runtime's identity-server trust BEFORE dispatching.
         // The matcher (room_service.cpp::invite_user_by_threepid) parses each
         // trusted_servers entry as an https URL and matches host+port against
-        // the client's id_server (also host:port). default_server is the
-        // fallback when a client omits id_server; set it for completeness.
-        started.runtime.homeserver.config.server().identity_server.default_server = is_base_url;
+        // the client's id_server (also host:port).
         started.runtime.homeserver.config.server().identity_server.trusted_servers = {is_base_url};
 
         // Test-only seam: pin the IS host to the loopback address and trust the

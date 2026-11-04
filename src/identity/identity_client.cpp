@@ -68,6 +68,29 @@ namespace
 
 } // namespace
 
+auto threepid_bind_domain_permitted(std::vector<std::string> const& allowed_domains, std::string_view medium,
+                                    std::string_view address) noexcept -> bool
+{
+    if (allowed_domains.empty() || medium != "email")
+    {
+        return true;
+    }
+    auto const at = address.rfind('@');
+    if (at == std::string_view::npos)
+    {
+        return false;
+    }
+    auto const domain = address.substr(at + 1U);
+    return std::ranges::any_of(allowed_domains, [domain](std::string const& allowed) {
+        return std::ranges::equal(allowed, domain, [](char left, char right) {
+            auto const lower = [](char c) {
+                return c >= 'A' && c <= 'Z' ? static_cast<char>(c - 'A' + 'a') : c;
+            };
+            return lower(left) == lower(right);
+        });
+    });
+}
+
 auto id_access_token_is_valid(std::string_view token) noexcept -> bool
 {
     return token.size() <= max_id_access_token_bytes && std::ranges::all_of(token, [](char const character) noexcept {

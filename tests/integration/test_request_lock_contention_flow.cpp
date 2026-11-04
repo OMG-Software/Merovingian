@@ -544,7 +544,6 @@ SCENARIO("A stalled identity server during a third-party invite leaves the rest 
 
         auto const identity_host_port = identity_host + ":" + std::to_string(port);
         auto const identity_base_url = std::string{"https://"} + identity_host_port;
-        runtime.homeserver.config.server().identity_server.default_server = identity_base_url;
         runtime.homeserver.config.server().identity_server.trusted_servers = {identity_base_url};
         runtime.homeserver.test_forced_identity_resolution[identity_host] =
             merovingian::identity::TestForcedIdentityResolution{{"127.0.0.1"}, certificate.certificate_pem};

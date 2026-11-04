@@ -84,20 +84,16 @@ server.http.ipv6_client_prefix_length=64
 # identity server fails closed rather than silently minting tokens locally, and
 # a 3PID naming an id_server outside the list is refused. That allow-list is the
 # SSRF boundary for outbound identity-server calls, so keep it as narrow as the
-# deployment allows. default_server must itself appear in trusted_servers, and
-# every URL must be HTTPS.
+# deployment allows. Every URL must be HTTPS.
 #
-# allowed_bind_domains is parsed and validated but NOT yet enforced: no bind or
-# requestToken path consults it, so setting it does not currently restrict which
-# domains a user may bind an address for. It is documented here as inert rather
-# than omitted, because a key that looks like a security control and silently
-# does nothing is worse than one that is absent. Tracked in
-# docs/todos/capability-gaps.md.
+# allowed_bind_domains limits the email domains this server will tell an
+# identity server about. Empty restricts nothing; when set, an address on any
+# other domain is refused with 403 M_THREEPID_DENIED on requestToken, bind and
+# 3PID invites. msisdn numbers have no domain and are not restricted.
 #
 # These keys are read at startup — changing any of them
 # requires a restart, not a SIGHUP reload.
 # server.identity_server.trusted_servers=https://vector.im,https://matrix.org
-# server.identity_server.default_server=https://vector.im
 # server.identity_server.allowed_bind_domains=example.org
 # server.identity_server.connect_timeout_seconds=10
 # server.identity_server.total_timeout_seconds=30
@@ -622,11 +618,11 @@ security.media.decode_in_sandbox=true
 # appservice.registration_files=/etc/merovingian/appservices/bridge.yaml
 
 # Logging redaction
-# Structured logs are enabled, but token values and event content stay redacted
-# so operational logs do not become a credential or message-content sink.
+# Token values and event content are always redacted so operational logs do not
+# become a credential or message-content sink. Only true is accepted: false is
+# refused at start-up.
 security.logging.redact_tokens=true
 security.logging.redact_event_content=true
-security.logging.structured=true
 
 # At-rest secret protection
 # master_key_file must point to an owner-only (0400) file containing the raw

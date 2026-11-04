@@ -1087,18 +1087,6 @@ auto validate(Config const& config) -> std::vector<ConfigValidationFinding>
                 {"server.identity_server.trusted_servers", "each trusted identity server must use HTTPS"});
         }
     }
-    if (!identity.default_server.empty())
-    {
-        if (!is_valid_https_url(identity.default_server))
-        {
-            findings.push_back({"server.identity_server.default_server", "default identity server must use HTTPS"});
-        }
-        else if (std::ranges::find(identity.trusted_servers, identity.default_server) == identity.trusted_servers.end())
-        {
-            findings.push_back(
-                {"server.identity_server.default_server", "default identity server must be listed in trusted_servers"});
-        }
-    }
     if (identity.total_timeout_seconds < identity.connect_timeout_seconds)
     {
         findings.push_back(

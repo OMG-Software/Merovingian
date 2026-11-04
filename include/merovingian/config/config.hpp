@@ -118,17 +118,14 @@ struct TurnServerConfig final
 // flows. `trusted_servers` is the allowlist of IS base URLs the homeserver
 // will contact: a 3PID invite/bind whose `id_server` is not in this list is
 // refused (M_UNRECOGNIZED / 404), so operators pin the IS attack surface.
-// `default_server` is the IS used when a client omits `id_server` from a
-// requestToken/bind call. `allowed_bind_domains` restricts which domains a
-// user may bind an email 3PID for (preventing bind-of-someone-else's-domain
-// abuse). Timeouts bound the outbound IS HTTP calls (see OutboundClient).
+// `allowed_bind_domains`, when non-empty, limits the email domains this server will tell an identity server about
+// (M_THREEPID_DENIED otherwise; ADR-0498). Timeouts bound the outbound IS HTTP calls (see OutboundClient).
 // Empty by default: with no trusted servers, every 3PID operation that
 // requires an IS fails closed with a clear error rather than silently
 // minting tokens locally.
 struct IdentityServerConfig final
 {
     std::vector<std::string> trusted_servers{};
-    std::string default_server{};
     std::vector<std::string> allowed_bind_domains{};
     std::uint32_t connect_timeout_seconds{10U};
     std::uint32_t total_timeout_seconds{30U};
@@ -715,7 +712,6 @@ struct LoggingSecurityConfig final
 {
     bool redact_tokens{true};
     bool redact_event_content{true};
-    bool structured{true};
 };
 
 // At-rest protection for high-value server secrets. The master key file

@@ -947,10 +947,6 @@ namespace
         {
             server.identity_server.trusted_servers = parse_string_list(value);
         }
-        else if (key == "server.identity_server.default_server")
-        {
-            server.identity_server.default_server = std::string{value};
-        }
         else if (key == "server.identity_server.allowed_bind_domains")
         {
             server.identity_server.allowed_bind_domains = parse_string_list(value);
@@ -1778,13 +1774,6 @@ namespace
         else if (key == "security.logging.redact_event_content")
         {
             if (!parse_bool_value(value, security.logging.redact_event_content))
-            {
-                add_parse_finding(findings, std::string{key}, "expected boolean value");
-            }
-        }
-        else if (key == "security.logging.structured")
-        {
-            if (!parse_bool_value(value, security.logging.structured))
             {
                 add_parse_finding(findings, std::string{key}, "expected boolean value");
             }

@@ -315,7 +315,6 @@ SCENARIO("IS-delegated 3PID bind/unbind round-trip unbinds via stored client_sec
         // Configure trust BEFORE dispatching. resolve_trusted_identity_base_url
         // (client_server.cpp) parses each trusted_servers entry as an https URL
         // and matches host+port against the client's id_server (host:port).
-        started.runtime.homeserver.config.server().identity_server.default_server = is_base_url;
         started.runtime.homeserver.config.server().identity_server.trusted_servers = {is_base_url};
 
         // Test-only seam: pin the IS host to loopback, trust the self-signed cert.

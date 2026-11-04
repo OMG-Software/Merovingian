@@ -49,16 +49,13 @@ SCENARIO("Identity server config is empty and valid by default", "[config][ident
             {
                 REQUIRE(merovingian::config::is_valid(config));
                 REQUIRE_FALSE(contains_finding(findings, "server.identity_server.trusted_servers"));
-                REQUIRE_FALSE(contains_finding(findings, "server.identity_server.default_server"));
                 REQUIRE(config.server().identity_server.trusted_servers.empty());
-                REQUIRE(config.server().identity_server.default_server.empty());
             }
         }
     }
 }
 
-SCENARIO("Identity server config parses the trusted list, default, bind domains, and timeouts",
-         "[config][identity-server]")
+SCENARIO("Identity server config parses the trusted list, bind domains, and timeouts", "[config][identity-server]")
 {
     GIVEN("a config string configuring a trusted identity server")
     {
@@ -78,7 +75,6 @@ SCENARIO("Identity server config parses the trusted list, default, bind domains,
                 REQUIRE(merovingian::config::is_valid(result.config));
                 REQUIRE(result.config.server().identity_server.trusted_servers.size() == 2U);
                 REQUIRE(result.config.server().identity_server.trusted_servers[0U] == "https://is.example.org");
-                REQUIRE(result.config.server().identity_server.default_server == "https://is.example.org");
                 REQUIRE(result.config.server().identity_server.allowed_bind_domains.size() == 2U);
                 REQUIRE(result.config.server().identity_server.connect_timeout_seconds == 5U);
                 REQUIRE(result.config.server().identity_server.total_timeout_seconds == 20U);
@@ -87,9 +83,9 @@ SCENARIO("Identity server config parses the trusted list, default, bind domains,
     }
 }
 
-SCENARIO("Identity server trusted servers and default must use HTTPS", "[config][identity-server]")
+SCENARIO("Identity server trusted servers must use HTTPS", "[config][identity-server]")
 {
-    GIVEN("a config string with a cleartext trusted server and a cleartext default")
+    GIVEN("a config string with a cleartext trusted server")
     {
         auto const input = std::string{"server.identity_server.trusted_servers=http://is.example.org\n"
                                        "server.identity_server.default_server=http://is2.example.org\n"};
@@ -98,31 +94,10 @@ SCENARIO("Identity server trusted servers and default must use HTTPS", "[config]
         {
             auto const result = merovingian::config::parse_key_value_config(input);
 
-            THEN("both are rejected with HTTPS findings")
+            THEN("it is rejected with an HTTPS finding")
             {
                 REQUIRE_FALSE(merovingian::config::is_valid(result.config));
                 REQUIRE(contains_finding(result.findings, "server.identity_server.trusted_servers"));
-                REQUIRE(contains_finding(result.findings, "server.identity_server.default_server"));
-            }
-        }
-    }
-}
-
-SCENARIO("Identity server default must be a member of the trusted list", "[config][identity-server]")
-{
-    GIVEN("a config string whose default server is not in the trusted list")
-    {
-        auto const input = std::string{"server.identity_server.trusted_servers=https://is.example.org\n"
-                                       "server.identity_server.default_server=https://other.example.org\n"};
-
-        WHEN("parsed and validated")
-        {
-            auto const result = merovingian::config::parse_key_value_config(input);
-
-            THEN("the default is rejected even though both URLs are HTTPS")
-            {
-                REQUIRE_FALSE(merovingian::config::is_valid(result.config));
-                REQUIRE(contains_finding(result.findings, "server.identity_server.default_server"));
             }
         }
     }
@@ -154,7 +129,6 @@ SCENARIO("Identity server config changes require a restart", "[config][identity-
     GIVEN("identity server config keys")
     {
         auto constexpr trusted = "server.identity_server.trusted_servers";
-        auto constexpr default_server = "server.identity_server.default_server";
         auto constexpr bind_domains = "server.identity_server.allowed_bind_domains";
         auto constexpr connect_timeout = "server.identity_server.connect_timeout_seconds";
         auto constexpr total_timeout = "server.identity_server.total_timeout_seconds";
@@ -165,14 +139,66 @@ SCENARIO("Identity server config changes require a restart", "[config][identity-
             {
                 REQUIRE(merovingian::config::reload_policy_for_key(trusted) ==
                         merovingian::config::ReloadPolicy::restart_required);
-                REQUIRE(merovingian::config::reload_policy_for_key(default_server) ==
-                        merovingian::config::ReloadPolicy::restart_required);
                 REQUIRE(merovingian::config::reload_policy_for_key(bind_domains) ==
                         merovingian::config::ReloadPolicy::restart_required);
                 REQUIRE(merovingian::config::reload_policy_for_key(connect_timeout) ==
                         merovingian::config::ReloadPolicy::restart_required);
                 REQUIRE(merovingian::config::reload_policy_for_key(total_timeout) ==
                         merovingian::config::ReloadPolicy::restart_required);
+            }
+        }
+    }
+}
+
+// ADR-0498: a key the code does not act on is removed, so it is refused as unknown rather than accepted and ignored.
+SCENARIO("Removed configuration keys are refused as unknown", "[config][identity-server][logging]")
+{
+    GIVEN("config strings naming keys that nothing reads")
+    {
+        auto const default_server = std::string{"server.identity_server.default_server=https://is.example.org\n"};
+        auto const structured = std::string{"security.logging.structured=true\n"};
+
+        WHEN("each is parsed")
+        {
+            auto const default_result = merovingian::config::parse_key_value_config(default_server);
+            auto const structured_result = merovingian::config::parse_key_value_config(structured);
+
+            THEN("each is a parse finding naming the key")
+            {
+                REQUIRE(contains_finding(default_result.findings, "server.identity_server.default_server"));
+                REQUIRE(contains_finding(structured_result.findings, "security.logging.structured"));
+                REQUIRE_FALSE(default_result.findings.empty());
+                REQUIRE_FALSE(structured_result.findings.empty());
+            }
+        }
+    }
+}
+
+// ADR-0498: tokens and event content are always redacted; only true is accepted.
+SCENARIO("A configuration that turns log redaction off is refused", "[config][logging][security]")
+{
+    GIVEN("config strings that set a redaction key to false")
+    {
+        auto const tokens = std::string{"security.logging.redact_tokens=false\n"};
+        auto const content = std::string{"security.logging.redact_event_content=false\n"};
+        auto const safe =
+            std::string{"security.logging.redact_tokens=true\nsecurity.logging.redact_event_content=true\n"};
+
+        WHEN("each is parsed and validated")
+        {
+            auto const tokens_result = merovingian::config::parse_key_value_config(tokens);
+            auto const content_result = merovingian::config::parse_key_value_config(content);
+            auto const safe_result = merovingian::config::parse_key_value_config(safe);
+
+            THEN("false is refused naming the key, and true is accepted")
+            {
+                REQUIRE(contains_finding(merovingian::config::validate(tokens_result.config),
+                                         "security.logging.redact_tokens"));
+                REQUIRE(contains_finding(merovingian::config::validate(content_result.config),
+                                         "security.logging.redact_event_content"));
+                REQUIRE_FALSE(merovingian::config::is_valid(tokens_result.config));
+                REQUIRE_FALSE(merovingian::config::is_valid(content_result.config));
+                REQUIRE(merovingian::config::is_valid(safe_result.config));
             }
         }
     }

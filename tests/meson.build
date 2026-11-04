@@ -79,6 +79,12 @@ shell = find_program('sh')
   )
 
   test(
+    'systemd-unit-tooling',
+    python,
+    args: [meson.project_source_root() / 'tests' / 'tooling' / 'test_systemd_unit.py'],
+  )
+
+  test(
     'line-endings-tooling',
     python,
     args: [meson.project_source_root() / 'tests' / 'tooling' / 'test_line_endings.py'],
@@ -236,6 +242,7 @@ shell = find_program('sh')
       'unit/test_config_oidc_validation.cpp',
       'unit/test_config_sso.cpp',
       'unit/test_config_identity_server.cpp',
+      'unit/test_identity_bind_domains.cpp',
       'unit/test_config_parser.cpp',
       'unit/test_config_reload_plan.cpp',
       'unit/test_config_reload_policy.cpp',

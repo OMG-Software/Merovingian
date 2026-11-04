@@ -99,6 +99,14 @@ inline constexpr auto max_id_access_token_bytes = std::size_t{4096U};
 // The empty string is valid here: callers treat an empty token as absent.
 [[nodiscard]] auto id_access_token_is_valid(std::string_view token) noexcept -> bool;
 
+// server.identity_server.allowed_bind_domains: whether this server may tell an identity server about this
+// third-party identifier. An empty list restricts nothing. Otherwise an email address must have a domain (the text
+// after its last '@') equal, ignoring ASCII letter case, to one entry; a subdomain does not match. Only the email
+// medium has a domain, so every other medium is permitted. Spec: M_THREEPID_DENIED, "the server only permits, for
+// example, email addresses from a particular domain".
+[[nodiscard]] auto threepid_bind_domain_permitted(std::vector<std::string> const& allowed_domains,
+                                                  std::string_view medium, std::string_view address) noexcept -> bool;
+
 // Pure request-body builders. Each returns the canonical JSON body for one IS
 // endpoint. No network — unit-testable in isolation.
 [[nodiscard]] auto build_store_invite_body(std::string_view medium, std::string_view address, std::string_view room_id,
