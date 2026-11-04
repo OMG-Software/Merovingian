@@ -12328,6 +12328,104 @@ SCENARIO("PUT /profile/{userId}/avatar_url requires an MXC URI",
     }
 }
 
+// Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#put_matrixclientv3profileuseridkeyname
+// Response table (line 18598): 400 "M_MISSING_PARAM: The required `keyName` property is missing from the request
+// body". Request body (line 18581): "For `avatar_url`, the value MUST be an MXC URI string. For `displayname`, the
+// value MUST be a string." A value of the wrong JSON type is valid JSON, so M_BAD_JSON does not apply; it is
+// M_INVALID_PARAM. Neither case may touch the stored value.
+SCENARIO("PUT /profile/{userId}/{keyName} refuses a body without the key or with a non-string value",
+         "[conformance][client-server][profile][profile-body]")
+{
+    GIVEN("a logged-in user with a display name and an avatar_url already set")
+    {
+        auto started = merovingian::homeserver::start_client_server(conformance_config());
+        REQUIRE(started.started);
+        auto const token = logged_in_token(started.runtime);
+        REQUIRE(put_profile_field(started.runtime, token, "displayname", "Alice Before").response.status == 200U);
+        REQUIRE(put_profile_field(started.runtime, token, "avatar_url", "mxc://example.org/before").response.status ==
+                200U);
+
+        auto const put_body = [&](std::string const& field, std::string const& body) {
+            return merovingian::homeserver::handle_client_server_request(
+                started.runtime, {"PUT", "/_matrix/client/v3/profile/%40alice%3Aexample.org/" + field, token, body});
+        };
+        auto const errcode_of = [](merovingian::homeserver::DispatchResult const& response) {
+            auto const body = parse_object(response.response.body);
+            auto const* errcode = string_member(body, "errcode");
+            return errcode != nullptr ? *errcode : std::string{};
+        };
+
+        WHEN("the body is an object without the key named in the path")
+        {
+            auto const bodies = std::vector<std::string>{R"({})", R"({"other":"x"})"};
+
+            THEN("each field answers 400 M_MISSING_PARAM and keeps its stored value")
+            {
+                for (auto const* field : {"displayname", "avatar_url"})
+                {
+                    for (auto const& body : bodies)
+                    {
+                        INFO("field = " << field << " body = " << body);
+                        auto const response = put_body(field, body);
+                        REQUIRE(response.response.status == 400U);
+                        REQUIRE(errcode_of(response) == "M_MISSING_PARAM");
+                        REQUIRE(get_profile_field(started.runtime, "displayname") == "Alice Before");
+                        REQUIRE(get_profile_field(started.runtime, "avatar_url") == "mxc://example.org/before");
+                    }
+                }
+            }
+        }
+
+        WHEN("the body carries the other field's key instead of the one in the path")
+        {
+            auto const response = put_body("displayname", R"({"avatar_url":"mxc://example.org/other"})");
+
+            THEN("it answers 400 M_MISSING_PARAM and changes neither field")
+            {
+                REQUIRE(response.response.status == 400U);
+                REQUIRE(errcode_of(response) == "M_MISSING_PARAM");
+                REQUIRE(get_profile_field(started.runtime, "displayname") == "Alice Before");
+                REQUIRE(get_profile_field(started.runtime, "avatar_url") == "mxc://example.org/before");
+            }
+        }
+
+        WHEN("the key is present with a value that is not a string")
+        {
+            auto const values = std::vector<std::string>{"5", "null", "true", "[]", R"({"a":"b"})"};
+
+            THEN("each field answers 400 M_INVALID_PARAM and keeps its stored value")
+            {
+                for (auto const* field : {"displayname", "avatar_url"})
+                {
+                    for (auto const& value : values)
+                    {
+                        INFO("field = " << field << " value = " << value);
+                        auto const response = put_body(field, R"({")" + std::string{field} + R"(":)" + value + "}");
+                        REQUIRE(response.response.status == 400U);
+                        REQUIRE(errcode_of(response) == "M_INVALID_PARAM");
+                        REQUIRE(get_profile_field(started.runtime, "displayname") == "Alice Before");
+                        REQUIRE(get_profile_field(started.runtime, "avatar_url") == "mxc://example.org/before");
+                    }
+                }
+            }
+        }
+
+        WHEN("the key is present with the empty string")
+        {
+            auto const name = put_body("displayname", R"({"displayname":""})");
+            auto const avatar = put_body("avatar_url", R"({"avatar_url":""})");
+
+            THEN("each field is cleared")
+            {
+                REQUIRE(name.response.status == 200U);
+                REQUIRE(avatar.response.status == 200U);
+                REQUIRE(get_profile_field(started.runtime, "displayname").empty());
+                REQUIRE(get_profile_field(started.runtime, "avatar_url").empty());
+            }
+        }
+    }
+}
+
 // =============================================================================
 // USER DATA — FILTERS
 // =============================================================================

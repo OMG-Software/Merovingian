@@ -38,7 +38,7 @@ A non-MXC `avatar_url` is `400 M_INVALID_PARAM`: the spec's table has no code fo
 common code for a parameter with the wrong value. The check is `media::mxc_uri_is_valid` (the spec grammar:
 `mxc://<server-name>/<media-id>`, media ID of `A-Za-z0-9_-`).
 
-An empty `avatar_url` string is still accepted and clears the avatar. The spec says the value "MUST be an MXC URI
+A body without the key named in the path is `400 M_MISSING_PARAM` (the spec lists it), and a present key whose value is not a string, `null` included, is `400 M_INVALID_PARAM`: it is valid JSON of the wrong type, so `M_BAD_JSON` does not fit. Neither stores anything, so only an explicit empty string clears a field; before, both silently cleared it. An empty `avatar_url` string is still accepted and clears the avatar. The spec says the value "MUST be an MXC URI
 string", which an empty string is not, but clients clear an avatar by sending `""` and the server stores the clear as
 an empty field. Refusing it would leave a user unable to remove an avatar through this endpoint (`DELETE` is the
 spec's way, but not every client uses it). This leniency is deliberate.

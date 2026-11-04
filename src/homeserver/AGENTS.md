@@ -523,7 +523,7 @@ client, sender or remote server controls, and per-user rows that requests scan m
   `state_groups`, `state_group_state`, `event_state_groups` or `events` to find a key. A retained PDU is woken through
   `take_deferred_pdus_awaiting` (ADR-0326), never by searching the retained JSON, and the retry job reads
   `deferred_pdus` in place rather than copying it.
-- `PUT /profile/{userId}/displayname|avatar_url` measures the serialised `{avatar_url, displayname}` object with the new value and refuses 64 KiB or more with `400 M_PROFILE_TOO_LARGE`; a non-empty non-MXC `avatar_url` (`media::mxc_uri_is_valid`) is `400 M_INVALID_PARAM`; an empty one clears it (ADR-0406). A new stored profile field must be added to the measured object.
+- `PUT /profile/{userId}/displayname|avatar_url` measures the serialised `{avatar_url, displayname}` object with the new value and refuses 64 KiB or more with `400 M_PROFILE_TOO_LARGE`; a non-empty non-MXC `avatar_url` (`media::mxc_uri_is_valid`) is `400 M_INVALID_PARAM`; an empty one clears it; a body without the key is `400 M_MISSING_PARAM` and a non-string value `400 M_INVALID_PARAM`, storing nothing (ADR-0406). A new stored profile field must be added to the measured object.
 - `/search` judges a room the user has left with `room_read_access_for` only when one of its
   events would be returned, so those scans stay bounded by the page (R16).
 - `POST /search`, `POST /publicRooms` and `POST /user_directory/search` match their term with one

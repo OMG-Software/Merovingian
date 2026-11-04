@@ -15890,8 +15890,21 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             }
             auto& store = rt.homeserver.database.persistent_store;
             auto const field = is_displayname ? std::string_view{"displayname"} : std::string_view{"avatar_url"};
-            auto const* val = string_member(*obj, field);
-            auto const value = val != nullptr ? std::string_view{*val} : std::string_view{};
+            // Spec (setProfileField): a body without the key named in the path is 400 M_MISSING_PARAM; "For
+            // `displayname`, the value MUST be a string", so valid JSON of another type (null included) is
+            // 400 M_INVALID_PARAM. Either way nothing is stored: an empty string is the only way to clear a field.
+            auto const* const member = object_member(*obj, field);
+            if (member == nullptr)
+            {
+                return dispatch_err(req, rt, 400U, "M_MISSING_PARAM",
+                                    "the request body must contain the key " + std::string{field});
+            }
+            auto const* const val = std::get_if<std::string>(&member->storage());
+            if (val == nullptr)
+            {
+                return dispatch_err(req, rt, 400U, "M_INVALID_PARAM", std::string{field} + " must be a string");
+            }
+            auto const value = std::string_view{*val};
             // Spec: "For `avatar_url`, the value MUST be an MXC URI string". The empty string stays
             // accepted as the way this server's clients clear the avatar (ADR-0406).
             if (is_avatar_url && !value.empty() && !media::mxc_uri_is_valid(value))
