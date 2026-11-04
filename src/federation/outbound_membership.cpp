@@ -185,6 +185,14 @@ auto make_outbound_invite(std::string_view destination, std::string_view origin,
     return transaction;
 }
 
+auto make_outbound_exchange_third_party_invite(std::string_view destination, std::string_view origin,
+                                               std::string_view room_id, std::string_view body) -> OutboundTransaction
+{
+    auto target = std::string{"/_matrix/federation/v1/exchange_third_party_invite/"};
+    target.append(core::percent_encode_path_component(room_id));
+    return make_outbound_transaction(destination, "PUT", target, origin, body);
+}
+
 auto make_outbound_backfill(std::string_view destination, std::string_view origin, std::string_view room_id,
                             std::vector<std::string> const& event_ids, std::size_t limit) -> OutboundTransaction
 {

@@ -7,6 +7,7 @@
 #include "merovingian/events/event.hpp"
 #include "merovingian/federation/inbound_ingestion.hpp"
 #include "merovingian/federation/outbound_transaction.hpp"
+#include "merovingian/federation/third_party_invite.hpp"
 #include "merovingian/homeserver/runtime.hpp"
 #include "merovingian/rooms/room_version_policy.hpp"
 #include "merovingian/sync/bundled_aggregations.hpp"
@@ -131,6 +132,29 @@ struct RemoteInviteResult final
 [[nodiscard]] auto queue_remote_invite(HomeserverRuntime& runtime, std::string_view room_id,
                                        std::string_view invitee_server, std::string_view event_id,
                                        std::string_view event_json) -> bool;
+// Issues the invite for a third-party invite (Server-Server API, `exchange_third_party_invite`, ADR-0485) as the
+// inviting server: `exchange.sender` must be a user of this server in the room, the room must hold the
+// `m.room.third_party_invite` for the token, and the event composed from it must pass the authorisation rules, which
+// check the signature in `signed` against that event's public keys. A user already in the room or banned is refused,
+// one already invited is a success that stores nothing. For an invitee of another server the invite is offered to that
+// server first, as `invite_user` does; `client_key` names the ADR-0079 outbound budget that offer draws on.
+[[nodiscard]] auto exchange_third_party_invite(HomeserverRuntime& runtime,
+                                               federation::ThirdPartyInviteExchange const& exchange,
+                                               std::string_view client_key) -> OperationResult;
+
+// Asks the inviting server (the server of `exchange.sender`) to issue the invite: a signed
+// `PUT /exchange_third_party_invite/{roomId}` within `timeout_seconds`, with `runtime.mutex` released for the call.
+[[nodiscard]] auto request_third_party_invite_exchange(HomeserverRuntime& runtime,
+                                                       federation::ThirdPartyInviteExchange const& exchange,
+                                                       std::uint32_t timeout_seconds) -> OperationResult;
+
+// Acts on an identity server's `PUT /_matrix/federation/v1/3pid/onbind` (no authentication; bounds in ADR-0484): for
+// each invite, the exchange runs here when the sender is a user of this server and is requested from the sender's
+// server otherwise. Answers 200 whatever became of the invites, 429 when the caller's outbound budget is spent.
+[[nodiscard]] auto notify_third_party_bind(HomeserverRuntime& runtime,
+                                           federation::ThirdPartyBindNotification const& notification,
+                                           std::string_view client_key) -> OperationResult;
+
 // Creates a local-only third-party identifier invite. Generates a random token
 // and an Ed25519 keypair, then composes and persists an
 // `m.room.third_party_invite` state event whose `state_key` is the token and

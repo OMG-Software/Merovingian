@@ -1439,6 +1439,11 @@ namespace
             {
                 return {400U, homeserver::matrix_error("M_BAD_JSON", event_envelope.error)};
             }
+            // The invite's event is a PDU: `depth` is required (a missing or malformed one is not a depth of 0).
+            if (auto const depth_violation = pdu_depth_violation(parsed_event.value); !depth_violation.empty())
+            {
+                return {400U, homeserver::matrix_error("M_BAD_JSON", depth_violation)};
+            }
             // Spec: Matrix Server-Server API v1.19 —
             //   PUT /_matrix/federation/v1/invite/{roomId}/{eventId}
             // URL: ../../docs/matrix-v1.19-spec/server-server-api.md#put_matrixfederationv1inviteroomideventid
@@ -2165,6 +2170,44 @@ namespace
         return response;
     }
 
+    // Spec: PUT /_matrix/federation/v1/exchange_third_party_invite/{roomId}
+    // ../../docs/matrix-v1.19-spec/server-server-api.md#put_matrixfederationv1exchange_third_party_inviteroomid
+    //
+    // The invited user's server asks the inviting server to turn a third-party invite into a real invite. The caller is
+    // authenticated (X-Matrix) and must be the invited user's own server: it is the server the identity server told
+    // about the binding (ADR-0485). Everything in the body is the caller's; the signature on `signed` is checked
+    // against the room's `m.room.third_party_invite` by the exchanger, in the process that holds the room.
+    [[nodiscard]] auto handle_exchange_third_party_invite(FederationRuntimeState& runtime,
+                                                          SignedFederationRequest const& request) -> FederationResponse
+    {
+        if (!runtime.third_party_invite_exchanger)
+        {
+            return {501U, "exchange_third_party_invite not implemented"};
+        }
+        auto const room_id =
+            extract_path_segment(request.target, "/_matrix/federation/v1/exchange_third_party_invite/");
+        if (!events::matrix_id_is_valid(room_id, '!'))
+        {
+            return {400U, homeserver::matrix_error("M_INVALID_PARAM", "roomId is not a room ID")};
+        }
+        auto parsed = parse_third_party_invite_exchange(request.body, room_id);
+        if (!parsed.exchange.has_value())
+        {
+            return {400U, homeserver::matrix_error("M_BAD_JSON", parsed.reason)};
+        }
+        if (std::string{auth::user_id_server_name(parsed.exchange->target_user_id)} != request.origin)
+        {
+            return {403U, homeserver::matrix_error("M_FORBIDDEN", "the invited user is not on the requesting server")};
+        }
+        auto const result = runtime.third_party_invite_exchanger(*parsed.exchange, request.origin);
+        if (!result.ok)
+        {
+            return {result.status,
+                    homeserver::matrix_error(result.status == 403U ? "M_FORBIDDEN" : "M_UNKNOWN", result.reason)};
+        }
+        return {200U, "{}"};
+    }
+
     [[nodiscard]] auto dispatch_non_transaction_endpoint(FederationRuntimeState& runtime,
                                                          SignedFederationRequest const& request,
                                                          FederationRoute const& route, FederationRemoteRuntime& remote)
@@ -2213,6 +2256,8 @@ namespace
             return handle_media_download(runtime, request);
         case FederationEndpoint::media_thumbnail:
             return handle_media_thumbnail(runtime, request);
+        case FederationEndpoint::exchange_third_party_invite:
+            return handle_exchange_third_party_invite(runtime, request);
         case FederationEndpoint::edu:
             // Plain send_edu requests have always been a 200 stub; ingestion
             // happens through the transaction path which carries EDUs.
@@ -3449,6 +3494,8 @@ namespace
             return extract_path_segment(target, "/_matrix/federation/v1/hierarchy/");
         case FederationEndpoint::timestamp_to_event:
             return extract_path_segment(target, "/_matrix/federation/v1/timestamp_to_event/");
+        case FederationEndpoint::exchange_third_party_invite:
+            return extract_path_segment(target, "/_matrix/federation/v1/exchange_third_party_invite/");
         default:
             return std::nullopt;
         }

@@ -321,6 +321,19 @@ Federation is the highest-risk surface: **all input comes from untrusted remote 
    calls the helper, and refuses the PDU if it returns nothing. `invite_room_state` and `knock_room_state` are taken
    from the request or answer field, never from an event's `unsigned`. Removing it changes no event ID or signature check.
 
+20. **A PDU's `depth` is required (F3, event-engine.md).** `pdu_format_violation` includes `pdu_depth_violation`: missing,
+   negative, fractional, string or above 2^53 - 1 is a malformed PDU on every path that calls it (`/send`, worker relays,
+   backfill, `send_join` state), never a depth of 0; `handle_invite` calls `pdu_depth_violation` itself.
+20. **Third-party invites (ADR-0484, ADR-0485).** `exchange_third_party_invite` is authenticated, runs in main only
+   (`federation_request_should_bypass_worker`), and its caller must be the server of `state_key`. `3pid/onbind` has no
+   authentication by the spec: main answers it by exact path, parses at most `max_third_party_bind_invites` entries with
+   `parse_third_party_bind_notification`, and `notify_third_party_bind` bounds the work (one ADR-0079 slot, one deadline,
+   no account oracle). Believe nothing in either body: the signature on `signed` is checked by the auth rules of the server that
+   holds the room, and `key_validity_url` is never fetched.
+20. **Discovery follows the spec's order and redirects (ADR-0483).** `.well-known` redirects are followed by
+   `fetch_well_known_following_redirects` (4 hops, each re-resolved and re-checked, one shared deadline); SRV asks
+   `_matrix-fed._tcp.` and then, only if empty, the deprecated `_matrix._tcp.` (`lookup_srv_with_legacy_fallback`).
+
 ## Key files
 
 | File | Responsibility |
@@ -330,6 +343,7 @@ Federation is the highest-risk surface: **all input comes from untrusted remote 
 | `outbound_transaction.cpp` | Batches local events and delivers them to remote servers |
 | `server_discovery.cpp` | Resolves `server_name` → host:port per SS API §Resolving Server Names |
 | `remote_key_cache.cpp` | Caches remote server signing keys with validity TTL |
+| `third_party_invite.cpp` | Parsers for `exchange_third_party_invite` and `3pid/onbind` bodies and the outbound exchange body (ADR-0484) |
 | `invite_room_state.cpp` | `validate_invite_room_state`: the `invite_room_state` checks of an inbound v12+ invite (rule 14) |
 | `membership_endpoints.cpp` | /make_join, /send_join, /make_leave, /send_leave (a refused template carries `error_status`, e.g. 403 `M_FORBIDDEN` for a restricted room) |
 | `key_query.cpp` | E2EE key responses served over federation, key EDU contents (`build_device_list_update_content`, and `build_device_deleted_update_content` for a removed device: `deleted: true`, no keys), filtering remote key-query responses |

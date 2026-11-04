@@ -39,6 +39,7 @@ enum class FederationEndpoint
     timestamp_to_event,
     media_download,
     media_thumbnail,
+    exchange_third_party_invite,
 };
 
 struct FederationTransaction final
