@@ -99,9 +99,9 @@ SCENARIO("A well-known redirect is followed to the document it points at",
         network.addresses["example.org"] = {"198.51.100.1"};
         network.addresses["files.example.net"] = {"198.51.100.2"};
         auto const table = std::map<std::string, WellKnownHopResponse>{
-            {first_url,                                  redirect_to("https://files.example.net/matrix/server-a", 302U)},
-            {"https://files.example.net/matrix/server-a", redirect_to("/matrix/server-b", 308U)                         },
-            {"https://files.example.net/matrix/server-b", answer(delegation)                                            },
+            {first_url, redirect_to("https://files.example.net/matrix/server-a", 302U)},
+            {"https://files.example.net/matrix/server-a", redirect_to("/matrix/server-b", 308U)},
+            {"https://files.example.net/matrix/server-b", answer(delegation)},
         };
         auto log = HopLog{};
 
@@ -218,8 +218,9 @@ SCENARIO("Every hop of a well-known redirect is checked before it is fetched",
           "unresolvable host, to userinfo, to another scheme and to nothing")
     {
         auto const refused_targets = std::vector<std::string>{
-            "https://internal.example.net/x", "https://loopback.example.net/x", "http://public.example.net/x",
-            "elsewhere",                      "https://nowhere.example.net/x",  "https://user@public.example.net/x",
+            "https://internal.example.net/x", "https://loopback.example.net/x",
+            "http://public.example.net/x",    "elsewhere",
+            "https://nowhere.example.net/x",  "https://user@public.example.net/x",
             "ftp://public.example.net/x",     "",
         };
 
@@ -312,7 +313,7 @@ SCENARIO("A well-known redirect chain shares one deadline", "[federation][discov
         WHEN("it is fetched")
         {
             std::ignore = merovingian::federation::fetch_well_known_following_redirects("example.org", 30U, network,
-                                                                                         fetcher_for(table, log));
+                                                                                        fetcher_for(table, log));
 
             THEN("no hop is given more than the whole budget")
             {
@@ -335,7 +336,7 @@ SCENARIO("A well-known answer that is not a redirect or a 200 is reported as abs
         auto network = RedirectNetwork{};
         network.addresses["example.org"] = {"198.51.100.1"};
         auto const table = std::map<std::string, WellKnownHopResponse>{
-            {first_url,                  redirect_to("https://example.org/gone")       },
+            {first_url,                  redirect_to("https://example.org/gone")     },
             {"https://example.org/gone", WellKnownHopResponse{true, 404U, {}, {}, {}}},
         };
         auto log = HopLog{};
@@ -345,9 +346,9 @@ SCENARIO("A well-known answer that is not a redirect or a 200 is reported as abs
             auto const result = merovingian::federation::fetch_well_known_following_redirects(
                 "example.org", 10U, network, fetcher_for(table, log));
 
-            THEN("discovery moves on as for any non-200")
+            THEN("discovery moves on as for any non-200: no document was found")
             {
-                REQUIRE_FALSE(result.ok);
+                REQUIRE_FALSE(result.found);
             }
         }
     }

@@ -146,7 +146,8 @@ private:
 // `well_known_max_redirects` of them, each target an absolute https URL, resolved and refused unless every address is
 // allowed (the network's deny-list and private-range allowance, exactly as for the first request) before `fetch_hop` is
 // asked to connect to those addresses only, a URL already visited ends the chain as a loop, and `timeout_seconds` is
-// one deadline for all the hops together. `found` is true when an answer was obtained, `ok` when it was a 200.
+// one deadline for all the hops together. `found` is true when a 200 document was obtained; `ok` is false when the
+// fetch itself failed or was refused (a 200 and a plain "not there" answer are both ok).
 [[nodiscard]] auto fetch_well_known_following_redirects(std::string_view server_name, std::uint32_t timeout_seconds,
                                                          ServerDiscoveryNetwork& network,
                                                          WellKnownHopFetcher const& fetch_hop) -> WellKnownServerResult;
