@@ -374,8 +374,8 @@ returns `502` on transport error or a malformed IS response.
 
 The `server.identity_server.*` config block (`trusted_servers`,
 `default_server`, `allowed_bind_domains`, `connect_timeout_seconds`,
-`total_timeout_seconds`) is hot-reloaded and marked restart-required for
-trust-set changes. 3PID bindings are persisted in the `account_threepids` table
+`total_timeout_seconds`) is read at start-up; every key in it, including the
+trust set, is classified restart-required. 3PID bindings are persisted in the `account_threepids` table
 (part of the v1 schema); IS-bound bindings additionally store the `client_secret`
 and `sid` needed for a remote unbind.
 
@@ -734,7 +734,8 @@ failures. **A successful login clears only the per-source counter for the source
 it came from.** It does not clear the per-account ceiling: otherwise an attacker
 could spend 49 guesses, wait for the owner to log in, and start again.
 
-All three numbers are configuration, and a change is reloadable:
+All three numbers are configuration. The reload plan classifies them as reloadable, but
+no live reload path is wired, so a change takes effect on restart:
 `security.login_throttle.max_failures_per_source` (default 5, 1 to 1000),
 `security.login_throttle.max_failures_per_account` (default 50, 1 to 100000, not
 below the per-source limit) and `security.login_throttle.window` (default

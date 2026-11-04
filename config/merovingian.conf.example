@@ -230,7 +230,8 @@ security.password_hashing.max_concurrent=4
 # owner out from the owner's own address. max_failures_per_account is the ceiling
 # across all sources and stops guessing spread over many addresses. Set
 # server.trusted_proxies behind a reverse proxy, or every client shares one
-# source. Window is a number with an s or m suffix (1s to 1440m). Reloadable.
+# source. Window is a number with an s or m suffix (1s to 1440m). Classified reloadable, but the live
+# reload path is not yet wired, so a change needs a restart.
 security.login_throttle.max_failures_per_source=5
 security.login_throttle.max_failures_per_account=50
 security.login_throttle.window=15m

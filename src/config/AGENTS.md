@@ -1,6 +1,6 @@
 # src/config/ — Configuration Module
 
-Parses, validates, and hot-reloads the server configuration.
+Parses and validates the server configuration and plans (but does not yet apply) reloads.
 
 ## Key files
 
@@ -8,8 +8,8 @@ Parses, validates, and hot-reloads the server configuration.
 |---|---|
 | `config.cpp` | `Config` class and its section structs (`ServerConfig`, `ListenersConfig`, `DatabaseConfig`, `SecurityConfig`, …) — typed representation of every config option; `validate_config()`, `parse_size_limit()` |
 | `config_parser.cpp` | Parses the key-value `.conf` file into `Config`; validates ranges and required fields |
-| `runtime_config.cpp` | Holds the live `Config` and exposes it thread-safely for other modules |
-| `reload_plan.cpp` | Diffs old vs new config to determine which changes can be applied live |
+| `runtime_config.cpp` | `RuntimeConfigSnapshot`: holds a `Config` and can swap it for a reload-only candidate. Only the unit tests construct it today; the server does not |
+| `reload_plan.cpp` | Diffs old vs new config and classifies each change; used by `--plan-config-reload`. No live reload path (SIGHUP/admin socket) exists yet |
 | `reload_policy.cpp` | `reload_policy_for_key()`: which keys need a restart. Keys are reloadable by default. Restart is required for `server.name`, the `database.*` URI and role keys, listener TLS certificate/key and `reverse_proxy` keys, `security.registration.token_file`, `database.pool_size`, `security.media.thumbnail_cache_size`, `security.media.thumbnail_max_concurrent_per_user`, `security.secrets.master_key_file`, `security.federation.key_resolution_*`, `security.federation.join_response_max_size`, `client_rate_limits.*`, `log_modules.*`, `federation.worker.*`, `server.cors.*`, `server.http.*`, `server.identity_server.*`, `server.push.*`, `appservice.*` and `presence.*`. The rate-limit engine and per-module log map are built once at start-up, so they are not hot-reloadable. |
 
 ## Rules
@@ -21,8 +21,9 @@ Parses, validates, and hot-reloads the server configuration.
   in `config_parser.cpp` and return an error — do not let bad config reach the runtime.
 - **Log the effective config at startup** (INFO level) excluding secrets. Never log TLS private
   key paths or secret values.
-- **Hot-reload** is handled by `reload_plan.cpp`; changes that require restart must be documented
-  in `docs/user-manual.md` (Reloadability policy) with the `requires_restart` flag.
+- **Reload planning** is handled by `reload_plan.cpp`; nothing applies a reload at runtime yet, so
+  every change needs a restart today. Keep the classification documented in `docs/user-manual.md`
+  (Reloadability policy) in step with `reload_policy.cpp`.
 
 ## Size limit parsing
 

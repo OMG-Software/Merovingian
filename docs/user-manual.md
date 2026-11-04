@@ -1099,8 +1099,10 @@ A refused login returns `429 M_LIMIT_EXCEEDED` with `retry_after_ms`, even for
 the correct password. Because the per-source counter keys on the client source,
 set `server.trusted_proxies` when running behind a reverse proxy: otherwise every
 client shares the proxy's address and one person's failures lock out everyone's
-logins for that account. The counters hold at most 100 000 entries each. All
-three keys are reloadable. See `docs/auth-identity.md` "Failed-login throttle".
+logins for that account. The counters hold at most 100 000 entries each. The reload
+plan classifies all three keys as reloadable, but nothing applies a reload at runtime
+today (see [Reloadability policy](#reloadability-policy)), so a changed value needs a
+restart. See `docs/auth-identity.md` "Failed-login throttle".
 
 #### Encryption policy — `security.encryption.*`
 
@@ -1654,9 +1656,17 @@ Configuration keys are classified as **reloadable** or **restart-required**.
 Restart-required keys affect stable process identity or secret-source
 selection; reloadable keys are runtime policy or limit values intended to be
 applied through a future reload path without a full homeserver restart.
-Configuration parsing and validation are restart-safe today, but the live
-reload control path (SIGHUP/admin socket) is not yet wired — `--plan-config-reload`
-only reports what *would* happen.
+
+**Today every configuration change needs a restart.** The server reads its
+configuration once, at start-up. It installs no SIGHUP handler (only SIGINT and
+SIGTERM, for shutdown, and SIGPIPE, which is ignored), has no admin socket, and
+no other code path re-reads the file or applies a changed value to a running
+process. The classification below is therefore not a promise that a key can be
+changed live. It is used by `--plan-config-reload`, which compares two config
+files offline and reports how each differing key *would* be classified once a
+reload path exists, and by the runtime config snapshot described below, which
+only the unit tests call. A key marked "Reloadable" still needs a restart to
+take effect.
 
 | Key or key group | Policy |
 |---|---|
@@ -1731,8 +1741,9 @@ restart-required changes:
 | `applied` | Candidate config changed only reloadable keys and replaced the in-memory snapshot. |
 | `restart_required` | Candidate config changed at least one restart-required key and was not applied. |
 
-The snapshot is an internal foundation for future live reload — it is not yet
-connected to SIGHUP, an admin socket, or any external control API.
+The snapshot is an internal foundation for future live reload. Nothing in the
+server binary constructs it: it is not connected to SIGHUP, an admin socket, or
+any external control API, and only the unit tests call `apply_reload`.
 
 ### Startup hardening self-check
 
