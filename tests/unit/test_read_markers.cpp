@@ -4,11 +4,16 @@
 #include "merovingian/canonicaljson/parser.hpp"
 #include "merovingian/database/persistent_store.hpp"
 #include "merovingian/sync/read_markers.hpp"
+#include "merovingian/sync/sliding_sync_room_builder.hpp"
+#include "merovingian/sync/unread_event_classifier.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
 #include <cstdint>
+#include <optional>
 #include <string>
+#include <string_view>
+#include <unordered_set>
 #include <utility>
 #include <variant>
 #include <vector>
@@ -193,6 +198,102 @@ SCENARIO("read_markers_for counts the user's own non-state events as reading the
             THEN("her state event, the latest of all, moves nothing")
             {
                 REQUIRE_FALSE(markers.covers(40U, "main"));
+            }
+        }
+    }
+}
+
+namespace
+{
+
+// Counts every event as a notification and records which events it was asked to judge.
+class RecordingClassifier final : public merovingian::sync::UnreadEventClassifier
+{
+public:
+    [[nodiscard]] auto counted_after(std::string_view /*room_id*/) const -> std::optional<std::uint64_t> override
+    {
+        return std::uint64_t{0U};
+    }
+    [[nodiscard]] auto visible(merovingian::database::PersistentEvent const& event) const -> bool override
+    {
+        asked.insert(event.event_id);
+        return true;
+    }
+    [[nodiscard]] auto classify(std::string_view /*room_id*/, merovingian::canonicaljson::Value const& /*event*/) const
+        -> merovingian::sync::UnreadEventOutcome override
+    {
+        return {true, false};
+    }
+
+    mutable std::unordered_set<std::string> asked{};
+};
+
+auto add_room_event(merovingian::database::PersistentStore& store, std::string const& event_id,
+                    std::string const& room_id, std::string const& sender, std::uint64_t stream_ordering,
+                    std::string const& status = "accepted") -> void
+{
+    auto event = merovingian::database::PersistentEvent{};
+    event.event_id = event_id;
+    event.room_id = room_id;
+    event.sender_user_id = sender;
+    event.json = R"({"type":"m.room.message","content":{"body":"x"}})";
+    event.stream_ordering = stream_ordering;
+    event.status = status;
+    store.events.push_back(std::move(event));
+}
+
+} // namespace
+
+// ADR-0435: a room's unread state is read from that room's rows alone, whatever else the store holds.
+SCENARIO("Unread counts and read markers read only the room they are asked about", "[sync][read-markers][room-stream]")
+{
+    GIVEN("two rooms, a backfilled event ordered late, an outlier, a rejected event and a foreign receipt")
+    {
+        auto store = merovingian::database::PersistentStore{};
+        auto const room = std::string{"!room:example.org"};
+        auto const other = std::string{"!other:example.org"};
+        add_room_event(store, "$a1", room, "@bob:example.org", 10U);
+        add_room_event(store, "$b1", other, "@bob:example.org", 11U);
+        add_room_event(store, "$a2", room, "@bob:example.org", 20U);
+        add_room_event(store, "$b2", other, "@bob:example.org", 21U);
+        add_room_event(store, "$a-mine", room, "@alice:example.org", 25U);
+        add_room_event(store, "$a-rejected", room, "@bob:example.org", 26U, "rejected");
+        add_room_event(store, "$a-outlier", room, "@bob:example.org", 27U, "outlier");
+        add_room_event(store, "$a-backfilled", room, "@bob:example.org", 40U);
+        // Committed out of order: after newer rows were stored.
+        add_room_event(store, "$a-late", room, "@bob:example.org", 15U);
+        auto receipts = std::vector<merovingian::database::PersistentReceipt>{
+            {room, "m.read", "@alice:example.org", "$a1", 0U, 1U, {}       },
+            // Names an event of another room: it marks nothing here.
+            {room, "m.read", "@alice:example.org", "$b2", 0U, 2U, "$thread"},
+        };
+
+        WHEN("alice's markers and unread counts in the room are built")
+        {
+            auto const markers = merovingian::sync::read_markers_for(receipts, store, room, "@alice:example.org");
+            auto const classifier = RecordingClassifier{};
+            auto const counts =
+                merovingian::sync::count_unread_by_thread(store, room, "@alice:example.org", markers, classifier);
+
+            THEN("the receipt for another room's event moves nothing and her own event reads its thread")
+            {
+                REQUIRE(markers.threads.find("$thread") == markers.threads.end());
+                REQUIRE(markers.unthreaded == 10U);
+                REQUIRE(markers.threads.at("main") == 25U);
+            }
+            THEN("only accepted events of the room above the markers are counted, backfilled ones included")
+            {
+                // $a2 (20) and $a-late (15) lie under her own event's main-thread position (25);
+                // $a-backfilled (40) does not.
+                REQUIRE(counts.total().notification_count == 1U);
+            }
+            THEN("no event of the other room, and no rejected or outlier event, was judged")
+            {
+                REQUIRE(classifier.asked.contains("$a-backfilled"));
+                REQUIRE_FALSE(classifier.asked.contains("$b1"));
+                REQUIRE_FALSE(classifier.asked.contains("$b2"));
+                REQUIRE_FALSE(classifier.asked.contains("$a-rejected"));
+                REQUIRE_FALSE(classifier.asked.contains("$a-outlier"));
             }
         }
     }

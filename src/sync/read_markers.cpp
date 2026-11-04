@@ -84,21 +84,17 @@ auto read_markers_for(std::vector<database::PersistentReceipt> const& receipts, 
     auto markers = ReadMarkers{};
     if (!relevant.empty())
     {
-        for (auto const& event : store.events)
+        // Each receipt names one event: found by ID in the event index, and ignored when it is not one of
+        // this room's (ADR-0435).
+        for (auto const* receipt : relevant)
         {
-            if (event.room_id != room_id)
+            auto const event = store.events.find_in_room(room_id, receipt->event_id);
+            if (event == store.events.end())
             {
                 continue;
             }
-            for (auto const* receipt : relevant)
-            {
-                if (receipt->event_id != event.event_id)
-                {
-                    continue;
-                }
-                auto& position = receipt->thread_id.empty() ? markers.unthreaded : markers.threads[receipt->thread_id];
-                position = std::max(position, event.stream_ordering);
-            }
+            auto& position = receipt->thread_id.empty() ? markers.unthreaded : markers.threads[receipt->thread_id];
+            position = std::max(position, event->stream_ordering);
         }
     }
 
@@ -108,9 +104,9 @@ auto read_markers_for(std::vector<database::PersistentReceipt> const& receipts, 
     // non-state events count: a state event can be sent for the user by this server without the
     // user looking at the room (a profile change is sent to every room as their m.room.member).
     // Events an unthreaded receipt already covers cannot move any position, so they are skipped.
-    for (auto const& event : store.events)
+    for (auto const& event : store.events.room_in_stream_order(room_id))
     {
-        if (event.room_id != room_id || event.sender_user_id != user || event.stream_ordering <= markers.unthreaded)
+        if (event.sender_user_id != user || event.stream_ordering <= markers.unthreaded)
         {
             continue;
         }

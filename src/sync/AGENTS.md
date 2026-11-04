@@ -192,7 +192,9 @@ is the bug a threaded receipt used to cause. A non-state event the user sent als
 reads its own thread (`read_markers_for`, ADR-0170); never let a state event do
 so, or a profile change would mark every room read.
 
-`count_unread_by_thread()` is the one walk for these counts; `/sync` reports its
+`read_markers_for()` finds each receipt's event with `find_in_room` and reads the user's own events through
+`room_in_stream_order`; `count_unread_by_thread()` walks that room index too, so neither costs more than the
+room's events (ADR-0435). `count_unread_by_thread()` is the one walk for these counts; `/sync` reports its
 split when the filter sets `unread_thread_notifications`. What counts is the
 user's push rules' decision (R15, ADR-0205): the walk asks a
 `sync::UnreadEventClassifier` (`homeserver::PushRuleUnreadClassifier` in

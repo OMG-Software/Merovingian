@@ -476,9 +476,9 @@ auto count_unread_by_thread(database::PersistentStore const& store, std::string_
     {
         return counts;
     }
-    for (auto const& ev : store.events)
+    for (auto const& ev : store.events.room_in_stream_order(room_id))
     {
-        if (ev.room_id != room_id || ev.status != "accepted" || ev.stream_ordering <= markers.unthreaded ||
+        if (ev.status != "accepted" || ev.stream_ordering <= markers.unthreaded ||
             ev.stream_ordering <= *counted_after || ev.sender_user_id == user)
         {
             continue;
