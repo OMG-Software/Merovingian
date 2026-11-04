@@ -71,10 +71,11 @@ SCENARIO("createRoom judges invite_3pid before creating the room, and keeps the 
                          merovingian::tests::registration_json("alice", "CorrectHorse7!")})
                     .response.status == 200U);
         auto const login = merovingian::homeserver::handle_client_server_request(
-            rt, {"POST",
-                 "/_matrix/client/v3/login",
-                 {},
-                 R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@alice:example.org"},"password":"CorrectHorse7!","device_id":"D"})"});
+            rt,
+            {"POST",
+             "/_matrix/client/v3/login",
+             {},
+             R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@alice:example.org"},"password":"CorrectHorse7!","device_id":"D"})"});
         auto const login_body = merovingian::tests::parse_object(login.response.body);
         auto const* token_member = merovingian::tests::string_member(login_body, "access_token");
         REQUIRE(token_member != nullptr);

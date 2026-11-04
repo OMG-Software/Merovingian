@@ -141,7 +141,8 @@ struct RemoteInviteResult final
 [[nodiscard]] auto invite_user_by_threepid(HomeserverRuntime& runtime, std::string_view access_token,
                                            std::string_view room_id, std::string_view id_server,
                                            std::string_view medium, std::string_view address,
-                                           std::string_view id_access_token) -> OperationResult;
+                                           std::string_view id_access_token, std::uint32_t max_total_seconds = 0U)
+    -> OperationResult;
 [[nodiscard]] auto ban_user(HomeserverRuntime& runtime, std::string_view access_token, std::string_view room_id,
                             std::string_view target_user_id, std::string_view reason = {}) -> OperationResult;
 [[nodiscard]] auto kick_user(HomeserverRuntime& runtime, std::string_view access_token, std::string_view room_id,
