@@ -8,6 +8,7 @@
 #include "merovingian/homeserver/runtime.hpp"
 #include "merovingian/sync/sync_filter.hpp"
 
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <optional>
@@ -27,6 +28,15 @@ inline constexpr auto max_presence_status_msg_bytes = std::size_t{1024U};
 // transaction carries at most 100 EDUs, and an entry costs a lookup and a row write under
 // runtime.mutex, so the list is cut off here rather than trusted to be short.
 inline constexpr auto max_inbound_presence_entries = std::size_t{100U};
+
+// CS API "Presence", "Idle timeout": "The server will automatically set a user's presence to `unavailable` if
+// their last active time was over a threshold value (e.g. 5 minutes)." The spec names no value; this is the
+// spec's example (ADR-0492).
+inline constexpr auto presence_idle_timeout_ms = std::int64_t{5 * 60 * 1000};
+
+// How long the "presence-idle" job sleeps between passes. A user is set unavailable at most this much after
+// crossing the threshold (ADR-0492).
+inline constexpr auto presence_idle_sweep_interval = std::chrono::seconds{30};
 
 // Spec: "One of: [online, offline, unavailable]".
 [[nodiscard]] auto presence_state_is_valid(std::string_view state) noexcept -> bool;

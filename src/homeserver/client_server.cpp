@@ -20450,6 +20450,12 @@ auto set_presence(ClientServerRuntime& runtime, database::PersistentPresence sta
     return stored;
 }
 
+auto run_presence_idle_sweep(ClientServerRuntime& runtime) -> std::chrono::milliseconds
+{
+    std::ignore = runtime;
+    return presence_idle_sweep_interval;
+}
+
 auto set_account_data(ClientServerRuntime& runtime, database::PersistentAccountData data) -> bool
 {
     auto guard = std::unique_lock<RuntimeMutex>{runtime.homeserver.mutex};

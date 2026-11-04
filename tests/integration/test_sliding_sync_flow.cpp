@@ -2734,3 +2734,58 @@ SCENARIO("MSC4186 sliding sync delivers an m.tag order in the HTTP response",
         }
     }
 }
+
+// MSC4186 (not part of Matrix v1.19; this server's reading of it is in src/sync/AGENTS.md): the
+// account_data extension sends a room's account data for the rooms in the response, and a room that
+// enters the response for the first time on a connection has not been sent anything yet, so all of its
+// account data goes down whatever its age against the request's `pos`. A room the connection has already
+// been sent gets only what changed since.
+SCENARIO("MSC4186 sliding sync sends a newly listed room all of its account data", "[sliding-sync][account-data][s2]")
+{
+    GIVEN("alice has tagged two rooms, then moved on, and the connection's window holds only one of them")
+    {
+        auto const config = sliding_sync_config();
+        auto started = merovingian::homeserver::start_client_server(config);
+        REQUIRE(started.started);
+        auto& rt = started.runtime;
+        auto const alice_token = register_and_login(rt, "alice", "CorrectHorse7!", "ALICE");
+        auto const room_a = create_room(rt, alice_token);
+        auto const room_b = create_room(rt, alice_token);
+        for (auto const* room_id : {&room_a, &room_b})
+        {
+            REQUIRE(merovingian::homeserver::handle_client_server_request(
+                        rt, {"PUT", "/_matrix/client/v3/user/%40alice%3Aexample.org/rooms/" + *room_id +
+                                        "/tags/m.favourite",
+                             alice_token, "{}"})
+                        .response.status == 200U);
+        }
+        send_message(rt, alice_token, room_b, "latest");
+        auto const body = [](std::string_view last_index) {
+            return std::string{R"({"conn_id":"s2","lists":{"recent":{"ranges":[[0,)"} + std::string{last_index} +
+                   R"(]],"required_state":[],"timeline_limit":1}},"extensions":{"account_data":{"enabled":true}}})";
+        };
+        auto const first = sliding_sync(rt, alice_token, body("0"));
+        REQUIRE(first.response.status == 200U);
+        auto const first_rooms = rooms_object(first.response.body);
+        REQUIRE(first_rooms.size() == 1U);
+        auto const& listed_room = first_rooms.front().key == room_a ? room_a : room_b;
+        auto const& unlisted_room = first_rooms.front().key == room_a ? room_b : room_a;
+        REQUIRE(account_data_types_for_room(first.response.body, listed_room) == std::vector<std::string>{"m.tag"});
+
+        WHEN("the connection widens its window so the other room enters the response")
+        {
+            auto const second = sliding_sync(rt, alice_token, body("1"), sliding_sync_pos(first.response.body));
+            REQUIRE(second.response.status == 200U);
+
+            THEN("the newly listed room's tag, which predates the connection's pos, is sent")
+            {
+                REQUIRE(account_data_types_for_room(second.response.body, unlisted_room) ==
+                        std::vector<std::string>{"m.tag"});
+            }
+            THEN("the room already sent, unchanged, is not sent its tag again")
+            {
+                REQUIRE(account_data_types_for_room(second.response.body, listed_room).empty());
+            }
+        }
+    }
+}

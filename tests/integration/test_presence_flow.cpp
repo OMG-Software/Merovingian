@@ -525,3 +525,130 @@ SCENARIO("A presence EDU is accepted only for the sending server's users who sha
         }
     }
 }
+
+namespace
+{
+
+constexpr auto minute_ms = std::int64_t{60 * 1000};
+
+// Presence rows hold when they were last observed; moving that back is the passage of time without a
+// sleep. The row is changed in place, as `record_presence` would restamp it.
+auto age_presence(ClientServerRuntime& runtime, std::string_view user_id, std::int64_t by_ms) -> void
+{
+    for (auto& row : runtime.homeserver.database.persistent_store.presence_states)
+    {
+        if (row.user_id == user_id)
+        {
+            row.observed_at_ms -= by_ms;
+        }
+    }
+}
+
+[[nodiscard]] auto read_alice_presence(ClientServerRuntime& runtime, std::string const& token) -> std::string
+{
+    auto const read = call(runtime, "GET", "/_matrix/client/v3/presence/%40alice%3Aexample.org/status", token);
+    REQUIRE(read.status == 200U);
+    auto const body = parse_object(read.body);
+    auto const* presence = string_member(body, "presence");
+    REQUIRE(presence != nullptr);
+    return *presence;
+}
+
+} // namespace
+
+// Spec: Matrix Client-Server API v1.19, Presence, "Idle timeout":
+//   "The server will automatically set a user's presence to `unavailable` if their last active time
+//   was over a threshold value (e.g. 5 minutes). [...] Any activity that bumps the last active time on
+//   any of the user's clients will cause the server to automatically set their presence to `online`."
+// The spec leaves the threshold open; this server uses five minutes (ADR-0492).
+SCENARIO("A user idle past the presence threshold is set unavailable", "[integration][presence][idle][c11]")
+{
+    GIVEN("alice is online and shares a room with bob on another server")
+    {
+        REQUIRE(sodium_init() >= 0);
+        auto started = merovingian::homeserver::start_client_server(presence_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        install_unstarted_dispatch_worker(runtime);
+        auto const token = register_alice(runtime);
+        share_room_with_remote_bob(runtime);
+        REQUIRE(put_alice_presence(runtime, token, R"({"presence":"online"})").status == 200U);
+        REQUIRE(queued_presence_edus(runtime).size() == 1U);
+
+        WHEN("six minutes pass with no activity and the idle sweep runs")
+        {
+            age_presence(runtime, local_alice, 6 * minute_ms);
+            std::ignore = merovingian::homeserver::run_presence_idle_sweep(runtime);
+
+            THEN("alice reads as unavailable and no longer currently active")
+            {
+                REQUIRE(read_alice_presence(runtime, token) == "unavailable");
+                auto const row = stored_presence(runtime, local_alice);
+                REQUIRE(row.has_value());
+                REQUIRE_FALSE(row->currently_active);
+            }
+            THEN("bob's server is told once, with her last active time")
+            {
+                auto const edus = queued_presence_edus(runtime);
+                REQUIRE(edus.size() == 2U);
+                auto const entry = push_entry_of(edus.back());
+                auto const* presence = string_member(entry, "presence");
+                REQUIRE(presence != nullptr);
+                REQUIRE(*presence == "unavailable");
+                auto const* last_active_ago = int_member(entry, "last_active_ago");
+                REQUIRE(last_active_ago != nullptr);
+                REQUIRE(*last_active_ago >= 6 * minute_ms);
+            }
+            THEN("a second sweep changes nothing")
+            {
+                std::ignore = merovingian::homeserver::run_presence_idle_sweep(runtime);
+                REQUIRE(queued_presence_edus(runtime).size() == 2U);
+            }
+            THEN("her next sync marks her online again")
+            {
+                REQUIRE(call(runtime, "GET", "/_matrix/client/v3/sync?timeout=0", token).status == 200U);
+                REQUIRE(read_alice_presence(runtime, token) == "online");
+            }
+        }
+
+        WHEN("four minutes pass and the idle sweep runs")
+        {
+            age_presence(runtime, local_alice, 4 * minute_ms);
+            std::ignore = merovingian::homeserver::run_presence_idle_sweep(runtime);
+
+            THEN("alice is still online and nothing more is sent")
+            {
+                REQUIRE(read_alice_presence(runtime, token) == "online");
+                REQUIRE(queued_presence_edus(runtime).size() == 1U);
+            }
+        }
+
+        WHEN("alice set herself offline, a long time ago, and the idle sweep runs")
+        {
+            REQUIRE(put_alice_presence(runtime, token, R"({"presence":"offline"})").status == 200U);
+            age_presence(runtime, local_alice, 60 * minute_ms);
+            std::ignore = merovingian::homeserver::run_presence_idle_sweep(runtime);
+
+            THEN("she is still offline: only an online user can be idle")
+            {
+                REQUIRE(read_alice_presence(runtime, token) == "offline");
+                REQUIRE(queued_presence_edus(runtime).size() == 2U);
+            }
+        }
+
+        WHEN("bob's server last reported him online long ago and the idle sweep runs")
+        {
+            REQUIRE(deliver_presence_edu(runtime, remote_server, push_content(remote_bob, "online")).status ==
+                    merovingian::federation::EduDispositionStatus::accepted);
+            age_presence(runtime, remote_bob, 60 * minute_ms);
+            std::ignore = merovingian::homeserver::run_presence_idle_sweep(runtime);
+
+            THEN("his presence is left as his server reported it: a server speaks only for its own users")
+            {
+                auto const row = stored_presence(runtime, remote_bob);
+                REQUIRE(row.has_value());
+                REQUIRE(row->presence == "online");
+            }
+        }
+    }
+}

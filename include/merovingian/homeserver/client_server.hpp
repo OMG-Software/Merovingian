@@ -228,6 +228,11 @@ auto install_test_per_user_rate_limit_engine(ClientServerRuntime& runtime) -> vo
 [[nodiscard]] auto record_device_list_change(ClientServerRuntime& runtime, database::PersistentDeviceListChange change)
     -> bool;
 [[nodiscard]] auto set_presence(ClientServerRuntime& runtime, database::PersistentPresence state) -> bool;
+// One pass of the "presence-idle" job (CS API "Presence", "Idle timeout"; ADR-0492): every local user whose
+// presence is `online` and whose last active time is over `presence_idle_timeout_ms` is set to `unavailable`,
+// told to the servers that share a room with them, and long-polling syncs are woken. Takes runtime.mutex for
+// the pass and makes no network call (the EDUs are queued). Returns how long the job sleeps before the next.
+auto run_presence_idle_sweep(ClientServerRuntime& runtime) -> std::chrono::milliseconds;
 [[nodiscard]] auto set_account_data(ClientServerRuntime& runtime, database::PersistentAccountData data) -> bool;
 // set_account_data for a global row, refused past `max_global_types` distinct types (ADR-0173).
 [[nodiscard]] auto set_global_account_data_within_cap(ClientServerRuntime& runtime,
