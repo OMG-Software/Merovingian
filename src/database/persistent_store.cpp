@@ -1529,12 +1529,9 @@ auto apply_room_snapshot(PersistentStore& store, RoomReloadSnapshot snapshot) ->
     // room_id) before reinserting is what keeps event_edges/event_auth/
     // event_signatures from accumulating duplicates across repeated reloads.
     auto stale_event_ids = std::unordered_set<std::string>{};
-    for (auto const& event : store.events)
+    for (auto const& event : store.events.room_in_stream_order(room_id))
     {
-        if (event.room_id == room_id)
-        {
-            stale_event_ids.insert(event.event_id);
-        }
+        stale_event_ids.insert(event.event_id);
     }
     for (auto const& event : snapshot.events)
     {

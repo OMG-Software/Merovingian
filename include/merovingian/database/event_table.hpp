@@ -11,6 +11,7 @@
 #include <functional>
 #include <optional>
 #include <ranges>
+#include <span>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -38,6 +39,9 @@ enum class TimeDirection : unsigned char
 //   - by event ID: find() is a hash lookup, not a scan of every stored event;
 //   - by stream order: in_stream_order() visits rows by ascending stream_ordering (rows with equal
 //     stream_ordering in the order they were added), whatever order they arrived in;
+//   - by room and stream order (ADR-0435): room_in_stream_order() visits one room's rows, of every
+//     status, in the order in_stream_order() would visit them, so a per-room reader never walks the
+//     rows of the other rooms;
 //   - by room and time (ADR-0300): nearest_by_time() seeks the row nearest an `origin_server_ts` in
 //     one room by binary search. The key is (origin_server_ts, depth, stream_ordering). A row is in
 //     this index only while it is a timeline event: its status is not `outlier`, `rejected` or
@@ -108,6 +112,20 @@ public:
     [[nodiscard]] auto in_stream_order() const
     {
         return std::views::transform(stream_order_, [this](std::size_t position) -> PersistentEvent const& {
+            return rows_[position];
+        });
+    }
+
+    // The rows of room `room_id` by ascending stream_ordering, rows with equal stream_ordering in the
+    // order they were added: exactly the rows in_stream_order() visits whose room_id is `room_id`, of
+    // every status (a caller applies its own status rules), at a cost of the room's rows alone
+    // (ADR-0435). std::views::reverse gives newest first. Valid until the table is next changed.
+    [[nodiscard]] auto room_in_stream_order(std::string_view room_id) const
+    {
+        auto const room = by_room_stream_.find(room_id);
+        auto const positions =
+            room == by_room_stream_.end() ? std::span<std::size_t const>{} : std::span<std::size_t const>{room->second};
+        return std::views::transform(positions, [this](std::size_t position) -> PersistentEvent const& {
             return rows_[position];
         });
     }
@@ -253,6 +271,11 @@ public:
         std::invoke(mutation, target);
         target.event_id = std::move(event_id);
         target.stream_ordering = stream_ordering;
+        if (target.room_id != room_id)
+        {
+            unindex_stream(room_id, position, stream_ordering);
+            index_stream(position);
+        }
         if (target.room_id != room_id || time_entry_for(target, position) != time_before)
         {
             unindex_time(room_id, time_before);
@@ -293,6 +316,10 @@ private:
     auto index_time(std::size_t position) -> void;
     // Removes `entry` (what time_entry_for gave the row before it changed) from room `room_id`'s part.
     auto unindex_time(std::string_view room_id, std::optional<TimeEntry> const& entry) -> void;
+    // Adds the row at `position` to its room's part of the room-and-stream index.
+    auto index_stream(std::size_t position) -> void;
+    // Removes the row at `position`, whose stream_ordering is `stream_ordering`, from room `room_id`'s part.
+    auto unindex_stream(std::string_view room_id, std::size_t position, std::uint64_t stream_ordering) -> void;
     auto erase_marked(std::vector<bool> const& removed) -> std::size_t;
 
     std::vector<PersistentEvent> rows_{};
@@ -300,6 +327,8 @@ private:
     std::unordered_map<std::string, std::size_t, IdHash, std::equal_to<>> by_id_{};
     // Positions in rows_, by ascending (stream_ordering, position).
     std::vector<std::size_t> stream_order_{};
+    // room_id -> positions in rows_ of that room's rows (every status), by ascending (stream_ordering, position).
+    std::unordered_map<std::string, std::vector<std::size_t>, IdHash, std::equal_to<>> by_room_stream_{};
     // room_id -> that room's timeline events by ascending TimeEntry.
     std::unordered_map<std::string, std::vector<TimeEntry>, IdHash, std::equal_to<>> by_room_time_{};
 };

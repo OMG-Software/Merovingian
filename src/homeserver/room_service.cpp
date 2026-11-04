@@ -9280,13 +9280,8 @@ namespace
     }
 
     auto matches = std::vector<database::PersistentEvent const*>{};
-    for (auto const& event : store.events)
+    for (auto const& event : store.events.room_in_stream_order(request.room_id))
     {
-        if (event.room_id != request.room_id)
-        {
-            continue;
-        }
-
         if (request.event_type.has_value())
         {
             auto const parsed_type = canonicaljson::parse_lossless(event.json);

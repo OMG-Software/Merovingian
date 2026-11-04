@@ -5539,6 +5539,17 @@ namespace
         sync::RoomReadAccess access{};
     };
 
+    // Ignoring Users for a stored event: whether `ignored_senders` withholds it. The event's JSON is parsed for
+    // the state-event exemption only when its sender is ignored, so a viewer who ignores nobody pays for no parse
+    // per event (ADR-0436).
+    [[nodiscard]] auto withheld_as_ignored(std::unordered_set<std::string> const& ignored_senders,
+                                           database::PersistentEvent const& event) -> bool
+    {
+        return ignored_senders.contains(event.sender_user_id) &&
+               trust_safety::is_delivery_suppressed(ignored_senders, event.sender_user_id,
+                                                    trust_safety::event_json_is_state_event(event.json));
+    }
+
     [[nodiscard]] auto build_left_room(database::PersistentStore const& store, sync::SyncFilter const& filter,
                                        sync::HistoryVisibility& history_visibility,
                                        sync::ViewerEventUnsigned& viewer_unsigned,
@@ -5560,10 +5571,9 @@ namespace
         auto const since_ordering = request.since_ordering.value_or(std::uint64_t{0U});
 
         auto matched = std::vector<database::PersistentEvent const*>{};
-        for (auto const& event : store.events)
+        for (auto const& event : store.events.room_in_stream_order(request.room_id))
         {
-            if (event.room_id != request.room_id || event.status == "rejected" || event.status == "soft_failed" ||
-                event.stream_ordering > upper_bound ||
+            if (event.status == "rejected" || event.status == "soft_failed" || event.stream_ordering > upper_bound ||
                 (request.since_ordering.has_value() && event.stream_ordering <= since_ordering))
             {
                 continue;
@@ -5573,18 +5583,12 @@ namespace
                 continue;
             }
             auto const is_leave = leave_event != store.events.end() && event.event_id == leave_event->event_id;
-            if (!is_leave &&
-                (trust_safety::is_delivery_suppressed(ignored_senders, event.sender_user_id,
-                                                      trust_safety::event_json_is_state_event(event.json)) ||
-                 !history_visibility.can_see(event)))
+            if (!is_leave && (withheld_as_ignored(ignored_senders, event) || !history_visibility.can_see(event)))
             {
                 continue;
             }
             matched.push_back(&event);
         }
-        std::ranges::sort(matched, [](auto const* lhs, auto const* rhs) noexcept {
-            return lhs->stream_ordering < rhs->stream_ordering;
-        });
 
         auto const limited = matched.size() > request.timeline_cap;
         auto const window_begin =
@@ -5811,12 +5815,10 @@ namespace
             // derived from THIS window per the Matrix sync spec — never from the
             // room's (or store's) total event count.
             auto matched = std::vector<database::PersistentEvent const*>{};
-            for (auto const& event : store.events)
+            // The room's own rows, already in stream order (ADR-0435): the walk costs this room's events,
+            // not the store's.
+            for (auto const& event : store.events.room_in_stream_order(room.room_id))
             {
-                if (event.room_id != room.room_id)
-                {
-                    continue;
-                }
                 // ADR-0064 phase B2: a rejected or soft-failed event is
                 // never relayed to clients (spec "Rejection", "Soft
                 // failure"). current_state delivery (the sync response's
@@ -5846,8 +5848,7 @@ namespace
                 // ignored users to clients") so the room's visible state
                 // never looks different just because the viewer ignored the
                 // sender.
-                if (trust_safety::is_delivery_suppressed(ignored_senders, event.sender_user_id,
-                                                         trust_safety::event_json_is_state_event(event.json)))
+                if (withheld_as_ignored(ignored_senders, event))
                 {
                     continue;
                 }
@@ -5859,9 +5860,6 @@ namespace
                 }
                 matched.push_back(&event);
             }
-            std::ranges::sort(matched, [](auto const* lhs, auto const* rhs) noexcept {
-                return lhs->stream_ordering < rhs->stream_ordering;
-            });
 
             // Spec MUST: `limited` is true only when older events were dropped
             // from this window: it exceeded the page size, or (ADR-0289) it
@@ -6718,11 +6716,16 @@ namespace
             // room the user has joined: rooms{} is windowed to the user's own
             // lists/subscriptions, so an event in an unrelated room on the server
             // must not wake this long-poll early.
+            // Newest first, and only until `since`: the events after it, not the whole table (ADR-0435).
             bool const has_relevant_event =
                 wants_rooms && cur_event > since_event_ordering &&
-                std::ranges::any_of(store.events, [&](database::PersistentEvent const& e) {
-                    return e.stream_ordering > since_event_ordering && user_is_joined(store, e.room_id, user);
-                });
+                std::ranges::any_of(store.events.in_stream_order() | std::views::reverse |
+                                        std::views::take_while([&](database::PersistentEvent const& e) {
+                                            return e.stream_ordering > since_event_ordering;
+                                        }),
+                                    [&](database::PersistentEvent const& e) {
+                                        return user_is_joined(store, e.room_id, user);
+                                    });
 
             if (!has_relevant_event)
             {
@@ -9695,28 +9698,24 @@ namespace
         // the spec requires servers to keep sending.
         auto const ignored_senders = trust_safety::resolve_ignored_users(store, user_id);
         auto entries = std::vector<database::PersistentEvent const*>{};
-        for (auto const& event : store.events)
+        // The room's own rows in stream order (ADR-0435); a room the filter excludes contributes none.
+        if (room_selected)
         {
-            if (!room_selected || event.room_id != room_id)
+            for (auto const& event : store.events.room_in_stream_order(room_id))
             {
-                continue;
+                // ADR-0064 phase B2: /messages paginates the timeline, so a
+                // rejected or soft-failed event is excluded the same as sync's.
+                if (event.status == "rejected" || event.status == "soft_failed")
+                {
+                    continue;
+                }
+                if (withheld_as_ignored(ignored_senders, event))
+                {
+                    continue;
+                }
+                entries.push_back(&event);
             }
-            // ADR-0064 phase B2: /messages paginates the timeline, so a
-            // rejected or soft-failed event is excluded the same as sync's.
-            if (event.status == "rejected" || event.status == "soft_failed")
-            {
-                continue;
-            }
-            if (trust_safety::is_delivery_suppressed(ignored_senders, event.sender_user_id,
-                                                     trust_safety::event_json_is_state_event(event.json)))
-            {
-                continue;
-            }
-            entries.push_back(&event);
         }
-        std::ranges::sort(entries, [](auto const* lhs, auto const* rhs) noexcept {
-            return lhs->stream_ordering < rhs->stream_ordering;
-        });
         // Room History Visibility (CSAZ-3): an event the user may not see is skipped, but the
         // token still moves past it, so a page of hidden events yields a token to continue
         // from rather than repeating itself.
@@ -9830,12 +9829,8 @@ namespace
         auto visibility = sync::HistoryVisibility{store, user_id};
 
         auto entries = std::vector<database::PersistentEvent const*>{};
-        for (auto const& event : store.events)
+        for (auto const& event : store.events.room_in_stream_order(room_id))
         {
-            if (event.room_id != room_id)
-            {
-                continue;
-            }
             // ADR-0064 phase B2: events_before/events_after page through the
             // timeline, so a rejected or soft-failed event is excluded the
             // same as sync's and /messages'. `target` itself is handled by
@@ -9847,9 +9842,6 @@ namespace
             }
             entries.push_back(&event);
         }
-        std::ranges::sort(entries, [](auto const* lhs, auto const* rhs) noexcept {
-            return lhs->stream_ordering < rhs->stream_ordering;
-        });
         auto const target_it = std::ranges::find_if(entries, [&](database::PersistentEvent const* candidate) {
             return candidate->event_id == target.event_id;
         });
@@ -9875,8 +9867,7 @@ namespace
                 {
                     continue;
                 }
-                if (trust_safety::is_delivery_suppressed(ignored_senders, candidate->sender_user_id,
-                                                         trust_safety::event_json_is_state_event(candidate->json)))
+                if (withheld_as_ignored(ignored_senders, *candidate))
                 {
                     continue;
                 }
@@ -9906,8 +9897,7 @@ namespace
                 {
                     continue;
                 }
-                if (trust_safety::is_delivery_suppressed(ignored_senders, candidate->sender_user_id,
-                                                         trust_safety::event_json_is_state_event(candidate->json)))
+                if (withheld_as_ignored(ignored_senders, *candidate))
                 {
                     continue;
                 }
@@ -10219,8 +10209,7 @@ namespace
             {
                 continue;
             }
-            if (trust_safety::is_delivery_suppressed(ignored_senders, candidate->sender_user_id,
-                                                     trust_safety::event_json_is_state_event(candidate->json)))
+            if (withheld_as_ignored(ignored_senders, *candidate))
             {
                 continue;
             }
@@ -10244,8 +10233,7 @@ namespace
             {
                 continue;
             }
-            if (trust_safety::is_delivery_suppressed(ignored_senders, candidate->sender_user_id,
-                                                     trust_safety::event_json_is_state_event(candidate->json)))
+            if (withheld_as_ignored(ignored_senders, *candidate))
             {
                 continue;
             }
@@ -10375,33 +10363,31 @@ namespace
         auto visibility = sync::HistoryVisibility{store, user_id};
 
         auto candidates = std::vector<database::PersistentEvent const*>{};
-        for (auto const& event : store.events)
+        // Access control: never a room the caller has not been in. This is the gate standing between this
+        // endpoint and a server-wide event disclosure, so only the rooms of `searchable_rooms` are read, each
+        // through its own rows (ADR-0435), never the whole table. Within a room the caller has left,
+        // HistoryVisibility below withholds what was sent after.
+        for (auto const& searchable_room : searchable_rooms)
         {
-            // Access control: never a room the caller has not been in. This is
-            // the gate standing between this endpoint and a server-wide event
-            // disclosure, since unlike /messages the scan is not otherwise
-            // bounded to one room by the request path. Within a room the caller
-            // has left, HistoryVisibility below withholds what was sent after.
-            if (!searchable_rooms.contains(event.room_id))
+            for (auto const& event : store.events.room_in_stream_order(searchable_room.first))
             {
-                continue;
+                // ADR-0064 phase B2: search results are a timeline view, so a
+                // rejected or soft-failed event is excluded the same as
+                // sync/messages/context.
+                if (event.status == "rejected" || event.status == "soft_failed")
+                {
+                    continue;
+                }
+                if (!request.prepared_filter.room_passes(event.room_id))
+                {
+                    continue;
+                }
+                if (room_encrypted(event.room_id))
+                {
+                    continue;
+                }
+                candidates.push_back(&event);
             }
-            // ADR-0064 phase B2: search results are a timeline view, so a
-            // rejected or soft-failed event is excluded the same as
-            // sync/messages/context.
-            if (event.status == "rejected" || event.status == "soft_failed")
-            {
-                continue;
-            }
-            if (!request.prepared_filter.room_passes(event.room_id))
-            {
-                continue;
-            }
-            if (room_encrypted(event.room_id))
-            {
-                continue;
-            }
-            candidates.push_back(&event);
         }
         std::ranges::sort(candidates, [](auto const* lhs, auto const* rhs) noexcept {
             return lhs->stream_ordering > rhs->stream_ordering; // newest first
@@ -10453,8 +10439,7 @@ namespace
             {
                 continue;
             }
-            if (trust_safety::is_delivery_suppressed(ignored_senders, candidate->sender_user_id,
-                                                     trust_safety::event_json_is_state_event(candidate->json)))
+            if (withheld_as_ignored(ignored_senders, *candidate))
             {
                 continue;
             }
@@ -10675,17 +10660,14 @@ namespace
 
         auto const& store = rt.homeserver.database.persistent_store;
         auto entries = std::vector<database::PersistentEvent const*>{};
-        for (auto const& event : store.events)
+        for (auto const& event : store.events.room_in_stream_order(room_id))
         {
             // ADR-0064 phase B2: a rejected or soft-failed event is never relayed to clients.
-            if (event.room_id == room_id && event.status != "rejected" && event.status != "soft_failed")
+            if (event.status != "rejected" && event.status != "soft_failed")
             {
                 entries.push_back(&event);
             }
         }
-        std::ranges::sort(entries, [](auto const* lhs, auto const* rhs) noexcept {
-            return lhs->stream_ordering < rhs->stream_ordering;
-        });
 
         // Room History Visibility (CSAZ-3): only events the user may see. For a user who has
         // left, that stops at their departure, because nothing received after it is visible.

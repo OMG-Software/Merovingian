@@ -51,7 +51,9 @@ the filters. `limited` is true when that window was cut by the cap **or** when a
 before it: any ID in its `prev_events` that is not *held*, i.e. has no `store.events` row or a row whose
 status is `outlier` with no state group (rejected and soft-failed rows are held; an outlier that `/get_missing_events` or backfill placed has a state group and is held, ADR-0290). The window then starts at the newest such
 event (kept: the hole lies before it) and `prev_batch` is that event's stream ordering, so `/messages`
-(and its backfill) reaches what lies before. An outlier is never the event the check starts from. Look
+(and its backfill) reaches what lies before. An outlier is never the event the check starts from. Select the room's events through
+`store.events.room_in_stream_order(room_id)` (ADR-0435: the room's own rows, every status, already in stream order),
+never a walk of `store.events` filtered by room. Look
 only at the window's events and look prev events up with `EventTable::contains`/`find` (indexed); never
 scan the store per event, this runs under `runtime.mutex`. A limited incremental response also carries
 the state at the start of the timeline. Sliding sync has its own builder and `limited` rule and is not

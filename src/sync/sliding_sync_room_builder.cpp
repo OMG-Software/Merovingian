@@ -413,12 +413,8 @@ namespace
         -> std::uint64_t
     {
         auto ts = std::uint64_t{0U};
-        for (auto const& ev : store.events)
+        for (auto const& ev : store.events.room_in_stream_order(room_id))
         {
-            if (ev.room_id != room_id)
-            {
-                continue;
-            }
             auto const parsed = canonicaljson::parse_lossless(ev.json);
             if (parsed.error != canonicaljson::ParseError::none)
             {
@@ -718,12 +714,8 @@ auto build_room_response(homeserver::HomeserverRuntime const& rt, std::string_vi
     // events, while required_state below keeps it.
     bool const timeline_has_floor = !is_initial && expansion == TimelineExpansion::none;
     auto timeline_events = std::vector<std::pair<std::uint64_t, std::string>>{};
-    for (auto const& ev : store.events)
+    for (auto const& ev : store.events.room_in_stream_order(room_id))
     {
-        if (ev.room_id != room_id)
-        {
-            continue;
-        }
         // ADR-0064 phase B2: a rejected or soft-failed event is never
         // relayed to clients (spec "Rejection", "Soft failure"). Room state
         // (required_state, built separately from current_state) is
@@ -764,9 +756,6 @@ auto build_room_response(homeserver::HomeserverRuntime const& rt, std::string_vi
             timeline_events.emplace_back(ev.stream_ordering, std::move(client_json));
         }
     }
-    std::sort(timeline_events.begin(), timeline_events.end(), [](auto const& a, auto const& b) {
-        return a.first < b.first;
-    });
 
     auto const limit = static_cast<std::size_t>(sub.timeline_limit);
     bool const timeline_limited = timeline_events.size() > limit;

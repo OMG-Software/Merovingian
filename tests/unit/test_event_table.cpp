@@ -730,3 +730,112 @@ SCENARIO("The time search of an event table steps over refused rows within a cap
         }
     }
 }
+
+namespace
+{
+
+// The IDs of room `room_id`'s rows as a whole-table walk in stream order selects them: the reference
+// the per-room index must equal.
+[[nodiscard]] auto room_ids_by_full_walk(EventTable const& table, std::string_view room_id) -> std::vector<std::string>
+{
+    auto ids = std::vector<std::string>{};
+    for (auto const& event : table.in_stream_order())
+    {
+        if (event.room_id == room_id)
+        {
+            ids.push_back(event.event_id);
+        }
+    }
+    return ids;
+}
+
+} // namespace
+
+SCENARIO("An event table walks one room's rows in stream order without visiting other rooms",
+         "[database][event-table][room-stream]")
+{
+    GIVEN("rooms with events arriving out of order, a backfilled row, an outlier and a rejected row")
+    {
+        auto table = EventTable{};
+        REQUIRE(table.insert(make_event("$a1", 10U, "!a:example.org")));
+        REQUIRE(table.insert(make_event("$b1", 11U, "!b:example.org")));
+        REQUIRE(table.insert(make_event("$a3", 30U, "!a:example.org")));
+        // Committed after a newer row of its room, and sharing an ordering with another row.
+        REQUIRE(table.insert(make_event("$a2", 20U, "!a:example.org")));
+        REQUIRE(table.insert(make_event("$a2b", 20U, "!a:example.org")));
+        // A backfilled row is ordered after the join it precedes.
+        auto backfilled = make_event("$a0", 31U, "!a:example.org");
+        backfilled.depth = 1U;
+        REQUIRE(table.insert(std::move(backfilled)));
+        auto outlier = make_event("$a-outlier", 12U, "!a:example.org");
+        outlier.status = "outlier";
+        REQUIRE(table.insert(std::move(outlier)));
+        auto rejected = make_event("$b-rejected", 5U, "!b:example.org");
+        rejected.status = "rejected";
+        REQUIRE(table.insert(std::move(rejected)));
+
+        WHEN("a room is walked through the room index")
+        {
+            THEN("it selects the same rows in the same order as a whole-table walk, whatever their status")
+            {
+                REQUIRE(ids_of(table.room_in_stream_order("!a:example.org")) ==
+                        room_ids_by_full_walk(table, "!a:example.org"));
+                REQUIRE(ids_of(table.room_in_stream_order("!b:example.org")) ==
+                        room_ids_by_full_walk(table, "!b:example.org"));
+                REQUIRE(ids_of(table.room_in_stream_order("!a:example.org")) ==
+                        std::vector<std::string>{"$a1", "$a-outlier", "$a2", "$a2b", "$a3", "$a0"});
+            }
+            THEN("a room that holds no rows yields none")
+            {
+                REQUIRE(table.room_in_stream_order("!none:example.org").empty());
+            }
+        }
+
+        WHEN("rows are erased, modified into another room and cleared")
+        {
+            auto const removed = table.erase_if([](PersistentEvent const& row) {
+                return row.event_id == "$a2" || row.event_id == "$b-rejected";
+            });
+            table.modify(table.find("$a1"), [](PersistentEvent& row) {
+                row.room_id = "!b:example.org";
+            });
+
+            THEN("the room index still equals a whole-table walk for every room")
+            {
+                REQUIRE(removed == 2U);
+                for (auto const room : {"!a:example.org", "!b:example.org"})
+                {
+                    REQUIRE(ids_of(table.room_in_stream_order(room)) == room_ids_by_full_walk(table, room));
+                }
+                REQUIRE(ids_of(table.room_in_stream_order("!b:example.org")) == std::vector<std::string>{"$a1", "$b1"});
+                table.clear();
+                REQUIRE(table.room_in_stream_order("!a:example.org").empty());
+            }
+        }
+    }
+
+    GIVEN("rows added in bulk to a table that already holds rows of the same rooms")
+    {
+        auto table = EventTable{};
+        REQUIRE(table.insert(make_event("$a5", 50U, "!a:example.org")));
+        auto batch = std::vector<PersistentEvent>{};
+        batch.push_back(make_event("$a9", 90U, "!a:example.org"));
+        batch.push_back(make_event("$a1", 10U, "!a:example.org"));
+        batch.push_back(make_event("$c1", 15U, "!c:example.org"));
+        batch.push_back(make_event("$a1b", 10U, "!a:example.org"));
+
+        WHEN("insert_all merges them")
+        {
+            REQUIRE(table.insert_all(std::move(batch)) == 4U);
+
+            THEN("each room's index equals a whole-table walk, equal orderings in the order added")
+            {
+                REQUIRE(ids_of(table.room_in_stream_order("!a:example.org")) ==
+                        room_ids_by_full_walk(table, "!a:example.org"));
+                REQUIRE(ids_of(table.room_in_stream_order("!a:example.org")) ==
+                        std::vector<std::string>{"$a1", "$a1b", "$a5", "$a9"});
+                REQUIRE(ids_of(table.room_in_stream_order("!c:example.org")) == std::vector<std::string>{"$c1"});
+            }
+        }
+    }
+}

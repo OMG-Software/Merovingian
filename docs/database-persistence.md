@@ -1341,8 +1341,8 @@ the whole load (ADR-0161).
 ### Event table indexes (0.12.39)
 
 `PersistentStore::events` is a `database::EventTable` (`include/merovingian/database/event_table.hpp`),
-not a `std::vector`. It owns the in-memory rows of the `events` table and keeps three indexes over them
-(the third since 0.12.64), all holding positions in its row vector so they survive reallocation (ADR-0215):
+not a `std::vector`. It owns the in-memory rows of the `events` table and keeps four indexes over them
+(the third since 0.12.64, the fourth since 0.12.72), all holding positions in its row vector so they survive reallocation (ADR-0215):
 
 - **by event ID.** `events.find(id)` and `events.contains(id)` are hash lookups, and
   `events.find_in_room(room_id, id)` adds the room check. `events.with_id(id)` is a range of zero or
@@ -1352,6 +1352,11 @@ not a `std::vector`. It owns the in-memory rows of the `events` table and keeps 
   the table itself visits arrival order, which is not stream order: SQLite hydration has no `ORDER BY`,
   PostgreSQL hydrates in event-ID order and moves a row whose status is updated, and stream orderings
   commit out of order across rooms.
+- **by room and stream order (ADR-0435).** `events.room_in_stream_order(room_id)` visits the rows of one room,
+  of every status, in the order `in_stream_order()` visits them, at the cost of that room's rows. It is what
+  `/sync`, `/messages`, `/context`, `/search`, `initialSync`, `/relations`, the sliding sync builder, `read_markers_for`
+  and `count_unread_by_thread` read a room through; never `for (x : store.events)` plus a `room_id` test on a request
+  path. `insert`, `insert_all`, `erase_if`, `modify` (a changed `room_id`) and `clear` keep it current.
 - **by room and time (ADR-0300).** `events.nearest_by_time(room_id, ts, direction, accept, max_examined)`
   seeks the timeline event of one room nearest an `origin_server_ts`, ordered by (`origin_server_ts`,
   `depth`, `stream_ordering`), the boundary inclusive, stepping over rows `accept` refuses and offering at
