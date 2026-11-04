@@ -69,6 +69,7 @@
 #include "merovingian/observability/logger.hpp"
 #include "merovingian/observability/observability.hpp"
 #include "merovingian/push/user_push_rules.hpp"
+#include "merovingian/rooms/encryption_policy.hpp"
 #include "merovingian/rooms/room_version_policy.hpp"
 #include "merovingian/sync/device_list_delta.hpp"
 #include "merovingian/sync/history_visibility.hpp"
@@ -9404,6 +9405,19 @@ namespace
         return content == nullptr ? std::nullopt : std::optional<canonicaljson::Object>{*content};
     }
 
+    // True when `body` is a JSON object whose `algorithm` is a string the encryption policy accepts.
+    [[nodiscard]] auto encryption_content_has_valid_algorithm(std::string_view body) -> bool
+    {
+        auto const content = parsed_json_object(body);
+        if (!content.has_value())
+        {
+            return false;
+        }
+        auto const* algorithm = object_member(*content, "algorithm");
+        auto const* text = algorithm == nullptr ? nullptr : std::get_if<std::string>(&algorithm->storage());
+        return text != nullptr && rooms::encryption_algorithm_is_valid(*text);
+    }
+
     struct CanonicalAliasRefusal final
     {
         std::string_view errcode{};
@@ -17498,6 +17512,18 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                     {
                         return dispatch_err(req, rt, 400U, std::string{refusal->errcode}, refusal->message);
                     }
+                }
+                // Spec (m.room.encryption): `algorithm` is "Required", "One of: `[m.megolm.v1.aes-sha2]`"; a body
+                // missing it or holding another value is M_BAD_JSON ("missing required keys, invalid values for
+                // keys"). Local PUT only: federated events are not judged (ADR-0448). Like the alias check, only
+                // for a sender who may send the event: anyone else gets the 403 the send path gives.
+                if (path->event_type == "m.room.encryption" &&
+                    may_send_state_event(rt.homeserver.database.persistent_store, path->room_id, *user,
+                                         "m.room.encryption") &&
+                    !encryption_content_has_valid_algorithm(req.body))
+                {
+                    return dispatch_err(req, rt, 400U, "M_BAD_JSON",
+                                        "m.room.encryption requires an algorithm of m.megolm.v1.aes-sha2");
                 }
                 log_diagnostic("room.state_event.dispatch", {
                                                                 {"actor",      *user,            false},

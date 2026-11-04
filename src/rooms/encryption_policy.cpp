@@ -13,6 +13,11 @@
 namespace merovingian::rooms
 {
 
+auto encryption_algorithm_is_valid(std::string_view algorithm) noexcept -> bool
+{
+    return algorithm == "m.megolm.v1.aes-sha2";
+}
+
 auto room_is_private(RoomPreset preset) noexcept -> bool
 {
     return preset == RoomPreset::private_chat || preset == RoomPreset::trusted_private_chat;
@@ -97,7 +102,7 @@ auto encryption_request_from_initial_state(std::span<canonicaljson::Value const>
         });
         auto const* algorithm_name =
             algorithm == content_object->end() ? nullptr : std::get_if<std::string>(&algorithm->value->storage());
-        request = algorithm_name != nullptr && *algorithm_name == "m.megolm.v1.aes-sha2"
+        request = algorithm_name != nullptr && encryption_algorithm_is_valid(*algorithm_name)
                       ? RoomEncryptionRequest::encrypted
                       : RoomEncryptionRequest::unencrypted;
     }

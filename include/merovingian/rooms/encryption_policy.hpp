@@ -52,6 +52,9 @@ struct EncryptedEventLogSummary final
     std::string payload{};
 };
 
+// The only algorithm the spec lists for m.room.encryption `algorithm` ("One of: `[m.megolm.v1.aes-sha2]`").
+// This is the only place that names it: createRoom's effective entry and the state PUT both ask it.
+[[nodiscard]] auto encryption_algorithm_is_valid(std::string_view algorithm) noexcept -> bool;
 [[nodiscard]] auto room_is_private(RoomPreset preset) noexcept -> bool;
 [[nodiscard]] auto room_creation_encryption_policy(RoomCreationEncryptionRequest request)
     -> RoomCreationEncryptionDecision;

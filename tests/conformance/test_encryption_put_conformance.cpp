@@ -119,9 +119,9 @@ SCENARIO("A state event for m.room.encryption without a valid algorithm is refus
         auto& rt = started.runtime;
         auto const alice = register_and_login(rt, "alice");
         auto const room_id = create_public_room(rt, alice);
-        REQUIRE(put_encryption(rt, alice, room_id,
-                               R"({"algorithm":"m.megolm.v1.aes-sha2","rotation_period_ms":604800000})")
-                    .status == 200U);
+        REQUIRE(
+            put_encryption(rt, alice, room_id, R"({"algorithm":"m.megolm.v1.aes-sha2","rotation_period_ms":604800000})")
+                .status == 200U);
         auto const before = get_encryption(rt, alice, room_id);
         REQUIRE(before.status == 200U);
 
