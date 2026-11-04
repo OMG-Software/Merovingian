@@ -6,6 +6,7 @@
 #include "merovingian/canonicaljson/parser.hpp"
 #include "merovingian/canonicaljson/value.hpp"
 #include "merovingian/events/limits.hpp"
+#include "merovingian/sync/state_group_lookup.hpp"
 
 #include <algorithm>
 #include <string>
@@ -158,38 +159,21 @@ auto HistoryVisibility::has_state_group(std::string_view event_id) -> bool
     return state_group_of(event_id).has_value();
 }
 
-// Finds the event ID that `group_id`'s full state holds for (event_type, state_key), walking
-// the delta chain newest first exactly as database::read_state_group_full_state does: bounded,
-// cycle-checked, and broken (not "absent") when a group on the chain is missing.
+// Finds the event ID that `group_id`'s full state holds for (event_type, state_key); see lookup_state_in_group.
 auto HistoryVisibility::lookup_in_group(std::string_view group_id, std::string_view event_type,
                                         std::string_view state_key) -> LookupResult
 {
-    auto visited = std::unordered_set<std::string_view>{};
-    auto current = group_id;
-    for (auto hops = std::size_t{0U};; ++hops)
+    auto const result = lookup_state_in_group(store_, group_id, event_type, state_key);
+    switch (result.outcome)
     {
-        if (!visited.insert(current).second || hops > events::max_state_group_delta_depth)
-        {
-            return {Lookup::broken, {}};
-        }
-        auto const group = store_.state_groups.find(current);
-        if (group == store_.state_groups.end())
-        {
-            return {Lookup::broken, {}};
-        }
-        for (auto const& entry : store_.state_group_state.entries_of(current))
-        {
-            if (entry.event_type == event_type && entry.state_key == state_key)
-            {
-                return {Lookup::found, entry.event_id};
-            }
-        }
-        if (!group->parent_state_group_id.has_value())
-        {
-            return {Lookup::absent, {}};
-        }
-        current = *group->parent_state_group_id;
+    case GroupLookup::found:
+        return {Lookup::found, result.event_id};
+    case GroupLookup::absent:
+        return {Lookup::absent, {}};
+    case GroupLookup::broken:
+        break;
     }
+    return {Lookup::broken, {}};
 }
 
 auto HistoryVisibility::content_string(std::string_view event_id, std::string_view key) -> std::optional<std::string>

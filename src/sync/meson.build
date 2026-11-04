@@ -8,6 +8,7 @@ sync_sources = files(
   'receipt_visibility.cpp',
   'room_access.cpp',
   'room_read_access.cpp',
+  'state_group_lookup.cpp',
   'sliding_sync_extensions.cpp',
   'sliding_sync_parser.cpp',
   'sliding_sync_room_builder.cpp',
