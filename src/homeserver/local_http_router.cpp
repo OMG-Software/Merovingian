@@ -36,6 +36,7 @@
 #include "merovingian/homeserver/federation_request_routing.hpp"
 #include "merovingian/homeserver/media_service.hpp"
 #include "merovingian/homeserver/presence_service.hpp"
+#include "merovingian/homeserver/public_rooms.hpp"
 #include "merovingian/homeserver/request_lock.hpp"
 #include "merovingian/homeserver/restricted_join.hpp"
 #include "merovingian/homeserver/room_residency.hpp"
@@ -3021,6 +3022,11 @@ namespace
                 }
             }
             return {true, found->room_id, std::move(servers)};
+        };
+
+        runtime.federation.public_rooms_provider =
+            [rt](federation::PublicRoomsRequest const& request) -> std::optional<std::string> {
+            return serve_federation_public_rooms(*rt, request);
         };
 
         runtime.federation.backfill_provider =

@@ -26,6 +26,7 @@ enum class FederationEndpoint
     backfill,
     edu,
     query_directory,
+    public_rooms,
     query_profile,
     query_keys,
     claim_keys,
@@ -83,8 +84,8 @@ struct FederationEdu final
 // True when handling this endpoint can block a federation worker thread on a
 // synchronous IPC round-trip back to main — pdu_sink/edu_sink (transaction),
 // membership_acceptor (send_join/send_leave/send_knock), invite_handler
-// (invite), or one of the query-provider relays (query_profile, query_keys,
-// claim_keys, query_user_devices, query_event). False for endpoints a worker
+// (invite), or one of the query-provider relays (query_profile, query_directory,
+// public_rooms, query_keys, claim_keys, query_user_devices, query_event). False for endpoints a worker
 // answers entirely from its own local, room-scoped snapshot with no relay.
 // Used to route worker requests to a differently-sized thread pool so a
 // burst of slow relay calls cannot starve fast local ones of a thread to run

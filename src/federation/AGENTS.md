@@ -321,10 +321,17 @@ Federation is the highest-risk surface: **all input comes from untrusted remote 
    calls the helper, and refuses the PDU if it returns nothing. `invite_room_state` and `knock_room_state` are taken
    from the request or answer field, never from an event's `unsigned`. Removing it changes no event ID or signature check.
 
+21. **The published room directory has one listing and one request reader (ADR-0460, ADR-0461).** `parse_public_rooms_body` and
+   `parse_public_rooms_query` refuse with 400 anything unusable; never answer a bad `since` from the first page, which loops a
+   paginating server. The route names no room and reads appservice registrations, so a worker relays it to main, and main reads
+   the frame with the same parser. A worker with no listing from main answers 503, never an empty directory. The page is bounded
+   by the operator's page size and by `max_public_rooms_page_bytes`, and only published rooms are listed.
+
 ## Key files
 
 | File | Responsibility |
 |---|---|
+| `public_rooms.cpp` | Reads a published room directory request (query or body) and writes it as the relay frame's body; the listing is `homeserver/public_rooms.cpp` |
 | `inbound_request.cpp` | Parses and authenticates inbound federation HTTP requests |
 | `inbound_ingestion.cpp` | Validates, verifies, and ingests inbound PDUs |
 | `outbound_transaction.cpp` | Batches local events and delivers them to remote servers |

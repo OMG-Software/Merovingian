@@ -1,3 +1,23 @@
+## 0.12.75
+
+### Added
+
+- **`GET` and `POST /_matrix/federation/v1/publicRooms` are served (ADR-0460, ADR-0461).** Other homeservers can now read this
+  server's published room directory, with `limit`, `since`, the `POST` filter, `third_party_instance_id` and
+  `include_all_networks`. A request needs X-Matrix authentication and counts against the per-origin request cap. Only
+  published rooms are listed. A worker relays the request to main, which reads it again as untrusted input, and answers 503
+  rather than an empty directory if main gives no listing.
+
+### Fixed
+
+- **The client `publicRooms` shares that listing.** An entry now has `room_type`, the `POST` filter honours `room_types`
+  (`null` is rooms without a type, an empty list is no rooms), and a page after the first has `prev_batch`. An empty name,
+  alias or avatar URL is left out. A `?server=` lookup forwards `room_types`. A wrong type for `room_types` is 400 `M_BAD_JSON`.
+- **A directory page is bounded in bytes.** A page holds at most 8 MiB of rooms, whatever `limit` says, and always at least
+  one, with `next_batch` reaching the rest.
+- **A listing no longer builds a state index per request.** Room state is read by index, and only for the rooms a page or
+  filter needs.
+
 ## 0.12.73
 
 Lazy-loading of room members on `/sync` and `/context`.
@@ -31,7 +51,6 @@ Lazy-loading of room members on `/sync` and `/context`.
 ### CI
 
 - The lazy-member tracker's thread test uses `JoiningThreads`, not `std::jthread`, which the libc++ of FreeBSD and OpenBSD does not provide (ADR-0167).
-
 ## 0.12.72
 
 The high severity findings of the November project analysis (ref 8af381cf). Complement in CI was left out on the owner's

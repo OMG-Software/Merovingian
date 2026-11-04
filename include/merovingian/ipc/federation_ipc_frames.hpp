@@ -3,6 +3,7 @@
 #pragma once
 
 #include "merovingian/federation/membership_endpoints.hpp"
+#include "merovingian/federation/public_rooms.hpp"
 #include "merovingian/homeserver/local_http_router.hpp"
 #include "merovingian/http/outbound_client.hpp"
 
@@ -86,5 +87,17 @@ struct MembershipTemplateIngest final
     std::optional<federation::MembershipEventTemplate> const& result) -> std::string;
 [[nodiscard]] auto deserialize_membership_template_ingest_result(std::string_view json)
     -> std::optional<federation::MembershipEventTemplate>;
+
+// An inbound publicRooms request a federation worker hands to main (ADR-0461). Worker to main.
+[[nodiscard]] auto serialize_public_rooms_ingest(federation::PublicRoomsRequest const& request) -> std::string;
+// std::nullopt for a frame that does not parse or holds a request a remote server's could not be: main reads
+// the worker's frame with the checks the worker applied to the remote server.
+[[nodiscard]] auto deserialize_public_rooms_ingest(std::string_view json)
+    -> std::optional<federation::PublicRoomsRequest>;
+
+// Main's answer: the 200 response body, or none (503 to the requesting server).
+[[nodiscard]] auto serialize_public_rooms_ingest_result(std::optional<std::string> const& body) -> std::string;
+// std::nullopt for a refusal, or a frame such as main's overload answer that holds no listing.
+[[nodiscard]] auto deserialize_public_rooms_ingest_result(std::string_view json) -> std::optional<std::string>;
 
 } // namespace merovingian::ipc
