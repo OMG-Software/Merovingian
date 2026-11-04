@@ -39,4 +39,4 @@ Chosen option: "Normalise by lower-casing the host and stripping `:8448` before 
 
 ## Links
 
-* Related security-audit report: `docs/security-audit-report-2026-09-29.md` finding MED-5.
+* Related security-audit report: `docs/security-audit-report-2026-09-29.md` (removed from the repository in 0.12.72) finding MED-5.

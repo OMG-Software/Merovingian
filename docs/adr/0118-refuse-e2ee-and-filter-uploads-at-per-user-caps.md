@@ -62,7 +62,7 @@ and a new one replaces the old.
 
 ## Links
 
-* Security audit finding CSAZ-10 in `docs/security-audit-report-2026-09-29.md`.
+* Security audit finding CSAZ-10 in `docs/security-audit-report-2026-09-29.md` (removed from the repository in 0.12.72).
 * [ADR-0117](0117-bound-to-device-queues-by-recipient-count-and-age.md), the
   to-device half of CSAZ-10.
 * [ADR-0026](0026-refuse-media-uploads-at-capacity-rather-than-evicting.md), the same

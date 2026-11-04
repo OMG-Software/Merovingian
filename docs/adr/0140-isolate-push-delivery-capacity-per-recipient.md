@@ -3,7 +3,7 @@
 * Status: accepted
 * Date: 2026-10-14
 
-Technical Story: OUT-3 in `docs/security-audit-report-2026-09-29.md`.
+Technical Story: OUT-3 in `docs/security-audit-report-2026-09-29.md` (removed from the repository in 0.12.72).
 
 ## Context and Problem Statement
 

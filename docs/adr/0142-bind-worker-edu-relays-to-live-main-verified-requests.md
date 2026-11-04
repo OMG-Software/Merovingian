@@ -92,5 +92,5 @@ signed request body.
 ## Links
 
 * [Matrix v1.19 request authentication](../matrix-v1.19-spec/server-server-api.md#request-authentication)
-* [Security audit, FED-12](../security-audit-report-2026-09-29.md)
+* Security audit, FED-12 (2026-09-29 security audit report, removed from the repository in 0.12.72)
 * [Architecture](../architecture.md#federation-worker-consistency-model)

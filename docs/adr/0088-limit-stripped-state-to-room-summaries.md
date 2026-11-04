@@ -69,4 +69,4 @@ changes synchronized and covered by regression tests.
 ## Links
 
 * [Matrix v1.19 stripped state](../matrix-v1.19-spec/client-server-api.md#stripped-state)
-* [CSAZ-7 audit finding](../security-audit-report-2026-09-29.md)
+* CSAZ-7 audit finding (2026-09-29 security audit report, removed from the repository in 0.12.72)

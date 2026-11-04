@@ -3,7 +3,7 @@
 * Status: accepted; the relayed-PDU part superseded by [ADR-0346](0346-a-relayed-pdu-that-fails-verification-is-not-charged-to-the-relaying-peer.md) (2026-11-03)
 * Date: 2026-09-29
 
-Technical Story: finding FED-4 in `docs/security-audit-report-2026-09-29.md`
+Technical Story: finding FED-4 in `docs/security-audit-report-2026-09-29.md` (removed from the repository in 0.12.72)
 (forged X-Matrix requests lock a real peer out of federation until restart).
 
 ## Context and Problem Statement

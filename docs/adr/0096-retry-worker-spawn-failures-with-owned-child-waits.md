@@ -42,4 +42,4 @@ intervention and leave the configured federation pool degraded.
 
 ## Links
 
-* [Security audit](../security-audit-report-2026-09-29.md)
+* Security audit (2026-09-29 security audit report, removed from the repository in 0.12.72)

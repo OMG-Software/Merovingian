@@ -620,7 +620,7 @@ threat it closes; the controls above are the standing defences these reinforce.
   on.
 
 - **Worker sandbox did not cover threads that existed before it was applied (ISO-1,
-  security-audit-report-2026-09-29.md, closed):** seccomp and Landlock attach to the calling
+  2026-09-29 security audit, closed):** seccomp and Landlock attach to the calling
   thread only, and the logger's two writer threads were started by the worker's first log
   line, before either was installed. A compromised worker thread could aim a signal handler
   at one of them (`rt_sigaction` and `tgkill` are allowed) and run with the main process's
@@ -633,7 +633,7 @@ threat it closes; the controls above are the standing defences these reinforce.
   Landlock, which has no thread-sync flag on older kernels; the ordering rule is what
   prevents it.
 - **A compromised worker could stop or starve the main process (ISO-2,
-  security-audit-report-2026-09-29.md, closed):** the worker filter allowed `kill`,
+  2026-09-29 security audit, closed):** the worker filter allowed `kill`,
   `tkill`, `setrlimit` and `prlimit64` with no argument checks, and the worker runs
   under main's uid, so `kill(getppid(), SIGSTOP)` froze main without a crash (no
   `Restart=on-failure`) and `prlimit64` could lower main's limits. Those syscalls are
@@ -643,7 +643,7 @@ threat it closes; the controls above are the standing defences these reinforce.
   Landlock ABI 6. See
   [ADR-0112](adr/0112-restrict-worker-signals-and-resource-limits.md).
 - **A compromised worker could open any socket family (ISO-8,
-  security-audit-report-2026-09-29.md, closed):** `socket()` and `socketpair()` were
+  2026-09-29 security audit, closed):** `socket()` and `socketpair()` were
   unrestricted, exposing kernel interfaces such as `AF_ALG` and `AF_PACKET`. The worker
   filter now admits `AF_UNIX`, `AF_INET` and `AF_INET6`, answers `AF_NETLINK` with
   `EAFNOSUPPORT` (glibc's address-sorting probe falls back) and kills on anything else;
@@ -653,7 +653,7 @@ threat it closes; the controls above are the standing defences these reinforce.
   accept it. See
   [ADR-0147](adr/0147-filter-worker-socket-families-and-restrict-systemd-address-families.md).
 - **A compromised worker could exhaust main's memory through IPC (CRY-2,
-  security-audit-report-2026-09-29.md, closed):** main's reader thread queued every
+  2026-09-29 security audit, closed):** main's reader thread queued every
   request frame for the dispatch thread without limit, ahead of the in-flight cap
   of ADR-0065. The queue is now capped by frames and bytes; a worker past either
   has its channel closed and is replaced. See

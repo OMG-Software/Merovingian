@@ -73,5 +73,5 @@ bound.
 
 ## Links
 
-* Security audit finding OUT-4 in `docs/security-audit-report-2026-09-29.md`.
+* Security audit finding OUT-4 in `docs/security-audit-report-2026-09-29.md` (removed from the repository in 0.12.72).
 * Related media repository decisions [ADR-0026](0026-refuse-media-uploads-at-capacity-rather-than-evicting.md) and [ADR-0068](0068-random-media-ids-and-legacy-endpoint-freeze.md).

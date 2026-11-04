@@ -78,5 +78,5 @@ check cannot see a jump-offset error.
 
 ## Links
 
-* Security audit finding ISO-2 in `docs/security-audit-report-2026-09-29.md`.
+* Security audit finding ISO-2 in `docs/security-audit-report-2026-09-29.md` (removed from the repository in 0.12.72).
 * Related hardening rules in `docs/hardening.md`.
