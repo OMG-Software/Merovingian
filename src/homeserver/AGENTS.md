@@ -38,7 +38,7 @@ This is the largest and most complex module — read this file carefully before 
 | `push_room_facts.cpp` | `push_room_facts`, `room_member_display_name`, `push_evaluation_context`: the evaluation context push delivery and unread counting share |
 | `push_badge_count.cpp` | `count_push_badge`: the Push Gateway `counts.unread` from one walk of the events, newest first in stream order, that stops once every room is settled, at most 10000 rows (ADR-0207) |
 | `push_rule_unread_classifier.cpp` | `PushRuleUnreadClassifier`: counts unread events by the user's push rules, from the start of their current join (R15, ADR-0205) |
-| `presence_service.cpp` | Presence (CS API "Presence", SS API `m.presence`): `read_presence` (GET), `apply_sync_presence` (the `/sync` `set_presence` parameter), `build_sync_presence_events` (`presence.events`), `accept_inbound_presence` (the EDU sink's presence case) and `record_presence`, the one place a presence row is stored. `presence.enabled=false` turns every entry point into a no-op. Sending the EDU stays in `client_server.cpp` (`broadcast_presence_edu`), beside the other outbound EDUs |
+| `presence_service.cpp` | Presence (CS API "Presence", SS API `m.presence`): `read_presence` (GET), `apply_sync_presence` (the `/sync` `set_presence` parameter), `build_sync_presence_events` (`presence.events`), `accept_inbound_presence` (the EDU sink's presence case) and `record_presence`, the one place a presence row is stored. `expire_idle_presence` (the idle sweep, ADR-0492). `presence.enabled=false` turns every entry point into a no-op. Sending the EDU stays in `client_server.cpp` (`broadcast_presence_edu`), beside the other outbound EDUs |
 | `push_retry.cpp` | `attempt_push_delivery` (every push attempt: circuit breaker, rejected pushkeys, scheduling retries) and `PushRetryJob`, the one thread that sends retries (R14, ADR-0206); a run is bounded by a time budget, takes retries one recipient at a time in turn and sends with a shorter timeout (ADR-0410), and a slow answer counts against the gateway's circuit (ADR-0409) |
 | `password_reset.cpp` | Password reset by email (ADR-0481): `make_password_reset_token` (8 characters, 40 bits), `normalize_password_reset_token`, `send_password_reset_email` (a background task parked in `orphan_futures_`, at most 8 in flight, no lock held while it sends). The endpoints are in `client_server.cpp` before the auth gate; `reset_local_user_password` is in `auth_service.cpp` |
 | `turn_credentials.cpp` | `make_turn_credentials`: the coturn REST API username and password for `GET /voip/turnServer` (ADR-0480) |
@@ -818,6 +818,10 @@ without that check ignores `presence.enabled=false`. Rules:
 - `accept_inbound_presence` binds `user_id` to the sending origin, bounds the entries it looks at, and keeps
   only users who share a joined room with a local user (one pass over the memberships per EDU). A new field
   accepted from the EDU needs a bound.
+- A local user who is `online` and has been inactive over `presence_idle_timeout_ms` (5 minutes) is set `unavailable`
+  by `expire_idle_presence`, run every `presence_idle_sweep_interval` (30 s) by the `presence-idle` `PeriodicJob`
+  (`run_presence_idle_sweep` in `client_server.cpp`: it takes `runtime.mutex` for one pass, queues the EDUs, makes no
+  network call). It touches only local `online` rows, at most `presence_idle_max_per_pass` per pass, and starts the clock of a row with no `observed_at_ms`; nothing sets a user `offline`. A stored non-state message from a local user calls `note_local_message_activity` (in memory, no EDU). Sliding sync reads `set_presence` from the body or the URL (ADR-0495).
 - Presence in `/sync` is built by `build_sync_presence_events`, which also sends a user's presence once to
   someone who started sharing a room with them since the token, whatever its stream position: the row's own
   position is older than the token.
@@ -859,3 +863,7 @@ the job.
   is not an appservice's. The ping holds an ADR-0079 slot and releases `runtime.mutex` for the call. The directory
   entry needs a protocol the registration declares and a room the appservice is interested in; it is persisted
   (`appservice_directory`, ADR-0192).
+
+## Room rosters and the room list (ADR-0496)
+
+`LocalRoom::members` is a `RoomMembers`: write it only with `add` / `remove` / `clear` (the `push_back` and `emplace_back` forms call `add`), and ask `contains`, never a scan. `find_local_room` (and `find_room` in `room_service.cpp`, which calls it) answers from a position index over `LocalDatabase::rooms` that it verifies, and settles a miss by a scan, so code and tests may still edit `rooms` directly. The index is `mutable`: every reader of `LocalDatabase` holds `runtime.mutex`, which is exclusive.

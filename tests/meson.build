@@ -259,6 +259,8 @@ shell = find_program('sh')
       'unit/test_bundled_aggregations.cpp',
       'unit/test_sliding_sync_aggregations.cpp',
       'unit/test_event_table.cpp',
+      'unit/test_event_table_latest_timestamp.cpp',
+      'unit/test_local_room_index.cpp',
       'unit/test_state_index.cpp',
       'unit/test_state_groups.cpp',
       'unit/test_state_group_tables.cpp',

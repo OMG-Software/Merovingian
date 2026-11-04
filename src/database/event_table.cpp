@@ -17,6 +17,7 @@
 #include <string_view>
 #include <system_error>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <variant>
 #include <vector>
@@ -360,6 +361,32 @@ auto EventTable::find_in_room(std::string_view room_id, std::string_view event_i
     return event != rows_.end() && event->room_id == room_id ? event : rows_.end();
 }
 
+auto EventTable::latest_ts_of(PersistentEvent const& row) -> std::int64_t
+{
+    auto const ts = top_level_integer(row.json, "origin_server_ts");
+    return ts.has_value() && *ts > 0 ? *ts : std::int64_t{0};
+}
+
+auto EventTable::recompute_latest_ts(std::string_view room_id) -> void
+{
+    auto latest = std::int64_t{0};
+    if (auto const room = by_room_stream_.find(room_id); room != by_room_stream_.end())
+    {
+        for (auto const position : room->second)
+        {
+            latest = std::max(latest, latest_ts_of(rows_[position]));
+        }
+    }
+    if (latest > 0)
+    {
+        room_latest_ts_.insert_or_assign(std::string{room_id}, latest);
+    }
+    else if (auto const held = room_latest_ts_.find(room_id); held != room_latest_ts_.end())
+    {
+        room_latest_ts_.erase(held);
+    }
+}
+
 auto EventTable::insert(PersistentEvent event) -> bool
 {
     if (by_id_.contains(event.event_id))
@@ -372,6 +399,11 @@ auto EventTable::insert(PersistentEvent event) -> bool
     rows_.push_back(std::move(event));
     index_time(position);
     index_stream(position);
+    if (auto const latest = latest_ts_of(rows_[position]); latest > 0)
+    {
+        auto& held = room_latest_ts_.try_emplace(rows_[position].room_id, latest).first->second;
+        held = std::max(held, latest);
+    }
     if (auto const relation = relation_key_for(rows_[position]); relation.has_value())
     {
         index_relation(position, *relation);
@@ -404,6 +436,11 @@ auto EventTable::insert_all(std::vector<PersistentEvent> events) -> std::size_t
             continue;
         }
         by_id_.emplace(event.event_id, rows_.size());
+        if (auto const latest = latest_ts_of(event); latest > 0)
+        {
+            auto& held = room_latest_ts_.try_emplace(event.room_id, latest).first->second;
+            held = std::max(held, latest);
+        }
         rows_.push_back(std::move(event));
     }
 
@@ -475,6 +512,14 @@ auto EventTable::erase_marked(std::vector<bool> const& removed) -> std::size_t
     // Old position -> position after removal; `gone` for a removed row.
     constexpr auto gone = std::numeric_limits<std::size_t>::max();
     auto remap = std::vector<std::size_t>(rows_.size(), gone);
+    auto rooms_losing_rows = std::unordered_set<std::string>{};
+    for (auto position = std::size_t{0U}; position < rows_.size(); ++position)
+    {
+        if (removed[position])
+        {
+            rooms_losing_rows.insert(rows_[position].room_id);
+        }
+    }
     auto kept = std::size_t{0U};
     for (auto position = std::size_t{0U}; position < rows_.size(); ++position)
     {
@@ -554,6 +599,10 @@ auto EventTable::erase_marked(std::vector<bool> const& removed) -> std::size_t
         }
         target = empty ? relation_children_.erase(target) : std::next(target);
     }
+    for (auto const& room_id : rooms_losing_rows)
+    {
+        recompute_latest_ts(room_id);
+    }
     return removed_count;
 }
 
@@ -572,6 +621,7 @@ auto EventTable::clear() noexcept -> void
     by_room_stream_.clear();
     by_room_time_.clear();
     relation_children_.clear();
+    room_latest_ts_.clear();
 }
 
 auto EventTable::reserve(size_type capacity) -> void
@@ -579,6 +629,17 @@ auto EventTable::reserve(size_type capacity) -> void
     rows_.reserve(capacity);
     by_id_.reserve(capacity);
     stream_order_.reserve(capacity);
+}
+
+} // namespace merovingian::database
+
+namespace merovingian::database
+{
+
+auto EventTable::room_latest_origin_server_ts(std::string_view room_id) const -> std::int64_t
+{
+    auto const held = room_latest_ts_.find(room_id);
+    return held == room_latest_ts_.end() ? std::int64_t{0} : held->second;
 }
 
 } // namespace merovingian::database

@@ -455,11 +455,12 @@ namespace
     {
         auto const& server_name = runtime.config.server().server_name;
         auto servers = std::vector<std::string>{};
+        // Each server once, in the order the members name them. A set answers "seen" in one lookup; searching the list
+        // per member made a large room cost members x servers (ADR-0494 has the same rule for the fan-out).
+        auto seen = std::unordered_set<std::string>{};
         for (auto const& room : runtime.database.rooms)
         {
-            if (!std::ranges::any_of(room.members, [user_id](auto const& m) {
-                    return m == user_id;
-                }))
+            if (!room.members.contains(user_id))
             {
                 continue;
             }
@@ -470,7 +471,7 @@ namespace
                 {
                     continue;
                 }
-                if (server != server_name && std::ranges::find(servers, server) == servers.end())
+                if (server != server_name && seen.emplace(server).second)
                 {
                     servers.emplace_back(server);
                 }
@@ -4270,9 +4271,7 @@ namespace
 
     [[nodiscard]] auto joined(LocalRoom const& room, std::string_view user) -> bool
     {
-        return std::ranges::any_of(room.members, [user](std::string const& member) {
-            return member == user;
-        });
+        return room.members.contains(user);
     }
 
     // Appendices, "Room IDs": `!opaque_id` or `!opaque_id:domain`, at most 255 bytes, with no
@@ -7276,6 +7275,8 @@ namespace
         auto const empty_lazy_members_set = std::unordered_set<std::string>{};
         auto lazy_members_included_by_room = std::unordered_map<std::string, std::unordered_set<std::string>>{};
         auto room_timeline_limits_built = std::unordered_map<std::string, std::uint64_t>{};
+        // The rooms this connection is sent for the first time: their account data goes down in full (ADR-0493).
+        auto initial_room_ids = std::unordered_set<std::string>{};
         // ADR-0247: the one event position this response's pos names; no room's
         // timeline holds an event above it, or the next request would send it again.
         auto const visible_event_ordering = visible_stream_position(rt.homeserver.database);
@@ -7339,6 +7340,10 @@ namespace
                                        ? sync::TimelineExpansion::expand
                                        : sync::TimelineExpansion::none;
             room_timeline_limits_built[room_id] = sub.timeline_limit;
+            if (is_initial)
+            {
+                initial_room_ids.insert(room_id);
+            }
             // The floor is the later of the request pos and the room's last send; the room's
             // last send alone decides what counts as resent (`expanded_timeline`).
             auto room =
@@ -7413,9 +7418,9 @@ namespace
         auto ext_obj = canonicaljson::Object{};
         if (ssreq.extensions.has_value())
         {
-            extension_responses = sync::build_extensions(rt.homeserver, user, device_id, *ssreq.extensions,
-                                                         since_sync_stream_id, store.next_sync_stream_id, store,
-                                                         room_access, response_room_ids, ignored_senders);
+            extension_responses = sync::build_extensions(
+                rt.homeserver, user, device_id, *ssreq.extensions, since_sync_stream_id, store.next_sync_stream_id,
+                store, room_access, response_room_ids, ignored_senders, initial_room_ids);
             ext_obj = sliding_sync_ext_to_value(*extension_responses);
         }
 
@@ -18431,6 +18436,27 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
         {
             return dispatch_err(req, rt, 400U, "M_INVALID_PARAM", std::string{*violation});
         }
+        // MSC4186 request body `set_presence`; the URL's is read when the body has none (ADR-0495). Judged like /sync's
+        // before anything is done: an unknown value is 400 M_INVALID_PARAM.
+        auto const set_presence_text = sliding_req->set_presence.has_value()
+                                           ? std::optional<std::string>{*sliding_req->set_presence}
+                                           : query_param_value(req.target, "set_presence");
+        auto const sliding_presence_mode = parse_sync_presence_mode(
+            set_presence_text.has_value() ? std::optional<std::string_view>{*set_presence_text} : std::nullopt);
+        if (!sliding_presence_mode.has_value())
+        {
+            return dispatch_err(req, rt, 400U, "M_INVALID_PARAM",
+                                "set_presence must be online, offline or unavailable");
+        }
+        if (auto const changed = apply_sync_presence(rt.homeserver, *user, *sliding_presence_mode); changed.has_value())
+        {
+            log_diagnostic("presence.sync.set", {
+                                                    {"actor",    *user,             false},
+                                                    {"presence", changed->presence, false}
+            });
+            broadcast_presence_edu(rt.homeserver, *changed);
+            std::ignore = ensure_sync_notifier(rt);
+        }
         // Prefer query-string pos/timeout; fall back to the newer body-level fields.
         auto pos = sync::parse_sliding_sync_pos(req.target);
         if (!pos.has_value() && sliding_req->pos.has_value())
@@ -21266,6 +21292,28 @@ auto set_presence(ClientServerRuntime& runtime, database::PersistentPresence sta
         broadcast_presence_edu(runtime.homeserver, state);
     }
     return stored;
+}
+
+auto run_presence_idle_sweep(ClientServerRuntime& runtime) -> std::chrono::milliseconds
+{
+    auto guard = std::unique_lock<RuntimeMutex>{runtime.homeserver.mutex};
+    auto const changed = expire_idle_presence(runtime.homeserver, presence_now_ms());
+    for (auto const& state : changed)
+    {
+        log_diagnostic("presence.idle", {
+                                            {"actor", state.user_id, false}
+        });
+        broadcast_presence_edu(runtime.homeserver, state);
+    }
+    if (!changed.empty())
+    {
+        // Wakes long-polling syncs of the users who share a room with the ones now idle.
+        std::ignore = ensure_sync_notifier(runtime);
+    }
+    // A pass that hit its bound leaves users for the next one, which should follow soon, with the lock free in between.
+    return changed.size() >= presence_idle_max_per_pass
+               ? std::chrono::duration_cast<std::chrono::milliseconds>(presence_idle_catch_up_interval)
+               : std::chrono::duration_cast<std::chrono::milliseconds>(presence_idle_sweep_interval);
 }
 
 auto set_account_data(ClientServerRuntime& runtime, database::PersistentAccountData data) -> bool

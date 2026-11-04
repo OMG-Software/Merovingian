@@ -18,6 +18,7 @@
 #include <functional>
 #include <limits>
 #include <optional>
+#include <ranges>
 #include <string>
 #include <string_view>
 #include <tuple>
@@ -53,11 +54,6 @@ namespace
     [[nodiscard]] auto as_string(canonicaljson::Value const& v) noexcept -> std::string const*
     {
         return std::get_if<std::string>(&v.storage());
-    }
-
-    [[nodiscard]] auto as_int(canonicaljson::Value const& v) noexcept -> std::int64_t const*
-    {
-        return std::get_if<std::int64_t>(&v.storage());
     }
 
     // Convert a stored persistent event's signed wire JSON into the
@@ -308,13 +304,17 @@ namespace
                                             std::string_view event_type, std::string_view content_field)
         -> std::optional<std::string>
     {
-        for (auto const& se : store.state)
-        {
-            if (se.room_id != room_id || se.event_type != event_type)
+        // The room's first state row of the type, whatever its state key, from the room's own rows (ADR-0344).
+        auto first_event_id = std::optional<std::string>{};
+        database::for_each_room_state_row(store, room_id, [&](database::PersistentStateEvent const& se) {
+            if (!first_event_id.has_value() && se.event_type == event_type)
             {
-                continue;
+                first_event_id = se.event_id;
             }
-            for (auto const& ev : store.events.with_id(se.event_id))
+        });
+        if (first_event_id.has_value())
+        {
+            for (auto const& ev : store.events.with_id(*first_event_id))
             {
                 auto const parsed = canonicaljson::parse_lossless(ev.json);
                 if (parsed.error != canonicaljson::ParseError::none)
@@ -358,13 +358,13 @@ namespace
                                          std::string_view membership_value) noexcept -> std::uint64_t
     {
         auto count = std::uint64_t{0U};
-        for (auto const& m : store.memberships)
-        {
-            if (m.room_id == room_id && m.membership == membership_value)
+        // The room's own membership rows (ADR-0437), not every room's.
+        database::for_each_room_membership_row(store, room_id, [&](database::PersistentMembership const& m) {
+            if (m.membership == membership_value)
             {
                 ++count;
             }
-        }
+        });
         return count;
     }
 
@@ -376,27 +376,26 @@ namespace
         constexpr std::size_t max_heroes = 5U;
         auto heroes = std::vector<SlidingSyncHero>{};
 
-        for (auto const& m : store.memberships)
+        // The first `max_heroes` other joined users in the room's own membership rows (ADR-0437).
+        auto hero_user_ids = std::vector<std::string>{};
+        database::for_each_room_membership_row(store, room_id, [&](database::PersistentMembership const& m) {
+            if (hero_user_ids.size() < max_heroes && m.user_id != self_user_id && m.membership == "join")
+            {
+                hero_user_ids.push_back(m.user_id);
+            }
+        });
+
+        for (auto const& hero_user_id : hero_user_ids)
         {
-            if (heroes.size() >= max_heroes)
-            {
-                break;
-            }
-            if (m.room_id != room_id || m.user_id == self_user_id || m.membership != "join")
-            {
-                continue;
-            }
             auto hero = SlidingSyncHero{};
-            hero.user_id = m.user_id;
+            hero.user_id = hero_user_id;
 
             // Look up display_name and avatar_url from the member state event.
-            for (auto const& se : store.state)
+            if (auto const member_event_id =
+                    database::find_current_state_event_id(store, room_id, "m.room.member", hero_user_id);
+                member_event_id.has_value())
             {
-                if (se.room_id != room_id || se.event_type != "m.room.member" || se.state_key != m.user_id)
-                {
-                    continue;
-                }
-                for (auto const& ev : store.events.with_id(se.event_id))
+                for (auto const& ev : store.events.with_id(*member_event_id))
                 {
                     auto const parsed = canonicaljson::parse_lossless(ev.json);
                     if (parsed.error != canonicaljson::ParseError::none)
@@ -430,45 +429,18 @@ namespace
                     }
                     break;
                 }
-                break;
             }
             heroes.push_back(std::move(hero));
         }
         return heroes;
     }
 
-    // Latest origin_server_ts in the room's timeline.
+    // Latest origin_server_ts of any event of the room (every status), kept by the event table as rows come and go,
+    // so this costs one lookup, not a parse of the room's history (ADR-0497).
     [[nodiscard]] auto latest_timestamp(database::PersistentStore const& store, std::string_view room_id) noexcept
         -> std::uint64_t
     {
-        auto ts = std::uint64_t{0U};
-        for (auto const& ev : store.events.room_in_stream_order(room_id))
-        {
-            auto const parsed = canonicaljson::parse_lossless(ev.json);
-            if (parsed.error != canonicaljson::ParseError::none)
-            {
-                continue;
-            }
-            auto const* root = as_object(parsed.value);
-            if (root == nullptr)
-            {
-                continue;
-            }
-            auto const* ots_val = find_member(*root, "origin_server_ts");
-            if (ots_val == nullptr)
-            {
-                continue;
-            }
-            if (auto const* n = as_int(*ots_val); n != nullptr && *n > 0)
-            {
-                auto const uts = static_cast<std::uint64_t>(*n);
-                if (uts > ts)
-                {
-                    ts = uts;
-                }
-            }
-        }
-        return ts;
+        return static_cast<std::uint64_t>(store.events.room_latest_origin_server_ts(room_id));
     }
 
 } // namespace
@@ -745,8 +717,16 @@ auto build_room_response(homeserver::HomeserverRuntime const& rt, std::string_vi
     auto timeline_events = std::vector<std::pair<std::uint64_t, std::string>>{};
     // The row behind each timeline entry, in the same order, for the bundled aggregations below.
     auto timeline_rows = std::vector<std::reference_wrapper<database::PersistentEvent const>>{};
-    for (auto const& ev : store.events.room_in_stream_order(room_id))
+    // Newest first, and only until the window and one more event that proves it is limited are held: the events
+    // older than that are never built (ADR-0494). The kept window is the newest `limit` events that pass, as when
+    // every event of the room was built and the oldest dropped.
+    auto const limit = static_cast<std::size_t>(sub.timeline_limit);
+    for (auto const& ev : store.events.room_in_stream_order(room_id) | std::views::reverse)
     {
+        if (timeline_events.size() > limit)
+        {
+            break;
+        }
         // ADR-0064 phase B2: a rejected or soft-failed event is never
         // relayed to clients (spec "Rejection", "Soft failure"). Room state
         // (required_state, built separately from current_state) is
@@ -762,7 +742,9 @@ auto build_room_response(homeserver::HomeserverRuntime const& rt, std::string_vi
         }
         if (timeline_has_floor && ev.stream_ordering <= room_since_event_ordering)
         {
-            continue;
+            // The walk is newest first and `room_in_stream_order` is ascending in stream_ordering, so every row that
+            // follows is at or below the floor too: an incremental build of a room with nothing new ends here.
+            break;
         }
         // m.room.history_visibility (CSAZ-3): an event the user may not see is not part of
         // their timeline, however recently the room was synced.
@@ -775,12 +757,16 @@ auto build_room_response(homeserver::HomeserverRuntime const& rt, std::string_vi
         // the room's visible state stays accurate — except the recipient's
         // own room invite, which the spec says must never be sent from an
         // ignored inviter even though it is itself a state event.
-        auto const ignore_classification = classify_event_for_ignore_filter(ev.json, user);
-        if (trust_safety::is_delivery_suppressed(ignored_senders, ev.sender_user_id,
-                                                 ignore_classification.is_state_event,
-                                                 ignore_classification.is_new_room_invite_for_user))
+        // The event is parsed only when its sender is ignored (ADR-0436).
+        if (ignored_senders.contains(ev.sender_user_id))
         {
-            continue;
+            auto const ignore_classification = classify_event_for_ignore_filter(ev.json, user);
+            if (trust_safety::is_delivery_suppressed(ignored_senders, ev.sender_user_id,
+                                                     ignore_classification.is_state_event,
+                                                     ignore_classification.is_new_room_invite_for_user))
+            {
+                continue;
+            }
         }
         if (auto client_json = client_event_json(store, ev, viewer_unsigned); !client_json.empty())
         {
@@ -789,7 +775,8 @@ auto build_room_response(homeserver::HomeserverRuntime const& rt, std::string_vi
         }
     }
 
-    auto const limit = static_cast<std::size_t>(sub.timeline_limit);
+    std::ranges::reverse(timeline_events);
+    std::ranges::reverse(timeline_rows);
     bool const timeline_limited = timeline_events.size() > limit;
     // MSC4186 §rooms[roomId] `prev_batch`: a /messages `from` that pages back to the
     // events before this timeline. /messages?dir=b returns events strictly older than
@@ -884,15 +871,11 @@ auto build_room_response(homeserver::HomeserverRuntime const& rt, std::string_vi
         auto const resolved_required_state =
             resolve_required_state(sub.required_state, user, timeline_membership, scope_lazy_to_timeline);
 
-        for (auto const& se : store.state)
-        {
-            if (se.room_id != room_id)
-            {
-                continue;
-            }
+        // The room's own state rows, in storage order (ADR-0344), not every room's.
+        database::for_each_room_state_row(store, room_id, [&](database::PersistentStateEvent const& se) {
             if (!state_event_matches_any(resolved_required_state, se.event_type, se.state_key))
             {
-                continue;
+                return;
             }
             bool const bypass_floor = is_initial || (lazy_load_room_members && se.event_type == "m.room.member" &&
                                                      new_lazy_members.contains(se.state_key));
@@ -908,7 +891,9 @@ auto build_room_response(homeserver::HomeserverRuntime const& rt, std::string_vi
                 // Every entry reaching here is already a known state event
                 // (from store.state); only the invite override can still
                 // withhold it — see classify_event_for_ignore_filter above.
-                if (trust_safety::is_delivery_suppressed(
+                // The event is parsed only when its sender is ignored (ADR-0436).
+                if (ignored_senders.contains(ev.sender_user_id) &&
+                    trust_safety::is_delivery_suppressed(
                         ignored_senders, ev.sender_user_id, /*is_state_event=*/true,
                         classify_event_for_ignore_filter(ev.json, user).is_new_room_invite_for_user))
                 {
@@ -925,7 +910,7 @@ auto build_room_response(homeserver::HomeserverRuntime const& rt, std::string_vi
                 }
                 break;
             }
-        }
+        });
     }
 
     for (auto& [ordering, json] : timeline_events)

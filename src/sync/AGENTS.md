@@ -122,6 +122,18 @@ receipts and typing; the sliding-sync handler in `client_server.cpp` builds one 
 receipts and typing `rooms` arrays are de-duplicated by the parser and capped at
 `room_subscriptions` (ADR-0174). A new client-named room list gets the same cap.
 
+## Sliding sync account data
+
+The `account_data` extension sends a global row when it changed after `since`, and a room row when it changed after `since`
+or when the room is new to the connection (`initial_room_ids`: built with `is_initial`, so not in `conn.rooms_seen`): such a
+room has been sent nothing, so all of its room account data goes down (ADR-0493). Neither v1.19 nor MSC4186 states this rule; it is this server's reading, set out in
+that ADR. A room in the response is found through a hash set of `response_room_ids`, never a scan per row.
+
+A room's timeline is built newest first and stops at `timeline_limit + 1` events (ADR-0494); a filter added to that walk is a
+per-event test. Counts, heroes and required state read the room's own membership and state rows
+(`for_each_room_membership_row`, `for_each_room_state_row`, `find_current_state_event_id`), never `store.memberships` or
+`store.state` filtered by room.
+
 ## Receipt visibility
 
 `/sync` and the sliding sync receipts extension decide what a viewer may see of a stored

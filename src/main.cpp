@@ -949,6 +949,22 @@ struct ListenerBinding final
         sync_pool.request_stop();
         return std::nullopt;
     }
+    // Sets a user idle for five minutes to `unavailable` (CS API "Presence", "Idle timeout"; ADR-0492), every 30
+    // seconds, taking the runtime lock for one pass. It only ever touches `runtime`, which outlives this function.
+    // Declared after the pools so it is stopped and joined before them.
+    auto presence_idle_job =
+        merovingian::homeserver::PeriodicJob{"presence-idle", [&runtime](merovingian::homeserver::StopFlag const&) {
+                                                 return merovingian::homeserver::run_presence_idle_sweep(runtime);
+                                             }};
+    if (!presence_idle_job.start())
+    {
+        LOG_CRITICAL("Presence idle thread failed to start; refusing to serve");
+        dispatcher.request_stop();
+        pool.request_stop();
+        media_fetch_pool.request_stop();
+        sync_pool.request_stop();
+        return std::nullopt;
+    }
     // Sends failed push notifications again with exponential backoff (R14, ADR-0206): delivery tasks
     // queue a failure in memory and this one thread retries it, never under the runtime lock across
     // the network call. Declared after the pools and the dispatcher so it stops, and clears the

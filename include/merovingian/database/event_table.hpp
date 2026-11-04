@@ -150,6 +150,10 @@ public:
         });
     }
 
+    // The greatest `origin_server_ts` among the rows of room `room_id`, of every status, counting only a positive
+    // integer member of the event's own JSON; 0 when the room has none (ADR-0497).
+    [[nodiscard]] auto room_latest_origin_server_ts(std::string_view room_id) const -> std::int64_t;
+
     // The row nearest `ts` in room `room_id`, looking `direction` from it, that `accept` takes:
     // forwards, the first row in (origin_server_ts, depth, stream_ordering) order with
     // origin_server_ts >= ts; backwards, the last with origin_server_ts <= ts (the boundary is
@@ -330,6 +334,7 @@ public:
         auto const time_before = time_entry_for(target, position);
         // The relation key follows the row's JSON, which a mutation (a redaction) may rewrite.
         auto const relation_before = relation_key_for(target);
+        auto const latest_before = latest_ts_of(target);
         std::invoke(mutation, target);
         target.event_id = std::move(event_id);
         target.stream_ordering = stream_ordering;
@@ -342,6 +347,12 @@ public:
         {
             unindex_time(room_id, time_before);
             index_time(position);
+        }
+        if (target.room_id != room_id || latest_ts_of(target) != latest_before)
+        {
+            // The room's greatest timestamp may have fallen, which only the room's rows can say (ADR-0497).
+            recompute_latest_ts(room_id);
+            recompute_latest_ts(target.room_id);
         }
         if (auto const relation_after = relation_key_for(target); relation_after != relation_before)
         {
@@ -409,6 +420,10 @@ private:
     // Removes the row at `position`, whose stream_ordering is `stream_ordering`, from room `room_id`'s part.
     auto unindex_stream(std::string_view room_id, std::size_t position, std::uint64_t stream_ordering) -> void;
     auto erase_marked(std::vector<bool> const& removed) -> std::size_t;
+    // The row's own positive integer `origin_server_ts`, else 0.
+    [[nodiscard]] static auto latest_ts_of(PersistentEvent const& row) -> std::int64_t;
+    // Makes room `room_id`'s greatest timestamp the greatest of the rows it now holds.
+    auto recompute_latest_ts(std::string_view room_id) -> void;
 
     std::vector<PersistentEvent> rows_{};
     // event_id -> position in rows_.
@@ -419,6 +434,9 @@ private:
     std::unordered_map<std::string, std::vector<std::size_t>, IdHash, std::equal_to<>> by_room_stream_{};
     // room_id -> that room's timeline events by ascending TimeEntry.
     std::unordered_map<std::string, std::vector<TimeEntry>, IdHash, std::equal_to<>> by_room_time_{};
+    // room_id -> the greatest positive `origin_server_ts` among that room's rows of every status (ADR-0497). A room
+    // with none has no entry.
+    std::unordered_map<std::string, std::int64_t, IdHash, std::equal_to<>> room_latest_ts_{};
     // target event_id -> the rows relating to it, in the order they were listed.
     std::unordered_map<std::string, RelationLists, IdHash, std::equal_to<>> relation_children_{};
 };
