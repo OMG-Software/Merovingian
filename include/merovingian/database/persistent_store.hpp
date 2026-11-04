@@ -971,6 +971,8 @@ struct PersistentStore final
         , server_signing_keys{other.server_signing_keys}
         , federation_destinations{other.federation_destinations}
         , federation_transactions{other.federation_transactions}
+        , federation_transaction_index{other.federation_transaction_index}
+        , federation_transaction_indexed_rows{other.federation_transaction_indexed_rows}
         , rooms{other.rooms}
         , memberships{other.memberships}
         , invites{other.invites}
@@ -1074,6 +1076,8 @@ struct PersistentStore final
         server_signing_keys = other.server_signing_keys;
         federation_destinations = other.federation_destinations;
         federation_transactions = other.federation_transactions;
+        federation_transaction_index = other.federation_transaction_index;
+        federation_transaction_indexed_rows = other.federation_transaction_indexed_rows;
         rooms = other.rooms;
         memberships = other.memberships;
         invites = other.invites;
@@ -1179,6 +1183,12 @@ struct PersistentStore final
     std::vector<PersistentServerSigningKey> server_signing_keys{};
     std::vector<PersistentFederationDestination> federation_destinations{};
     std::vector<PersistentFederationTransaction> federation_transactions{};
+    // Position in `federation_transactions` of each transaction ID (ADR-0441). Kept by
+    // store_federation_transaction(s) and delete_federation_transaction, rebuilt after hydration; trusted
+    // only while `federation_transaction_indexed_rows == federation_transactions.size()` and the row a
+    // position names carries the ID asked for, otherwise a lookup scans the vector.
+    std::unordered_map<std::string, std::size_t> federation_transaction_index{};
+    std::size_t federation_transaction_indexed_rows{0U};
     std::vector<PersistentRoom> rooms{};
     std::vector<PersistentMembership> memberships{};
     std::vector<PersistentInvite> invites{};
@@ -1508,6 +1518,12 @@ auto set_write_connection_limit(PersistentStore& store, std::uint32_t limit) -> 
     -> bool;
 [[nodiscard]] auto store_federation_transaction(PersistentStore& store, PersistentFederationTransaction transaction)
     -> bool;
+// Upserts every transaction in one commit (ADR-0441): all are durable together or none is, and the mirror changes
+// only after the commit. Returns false, writing nothing, if any is malformed or the commit fails.
+[[nodiscard]] auto store_federation_transactions(PersistentStore& store,
+                                                 std::vector<PersistentFederationTransaction> transactions) -> bool;
+// Brings `federation_transaction_index` in step with `federation_transactions`.
+auto rebuild_federation_transaction_index(PersistentStore& store) -> void;
 [[nodiscard]] auto delete_federation_transaction(PersistentStore& store, std::string_view transaction_id) -> bool;
 enum class MembershipStoreResult
 {

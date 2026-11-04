@@ -155,6 +155,11 @@ public:
     // is at capacity, the worker has shut down, or the transaction is
     // malformed (missing transaction id, destination, target, origin, or body).
     [[nodiscard]] auto enqueue(OutboundTransaction transaction) -> bool;
+    // Enqueues the transactions of one event, one per destination, and commits their durable rows in a single
+    // transaction (ADR-0441). Each is admitted or refused by the same checks as `enqueue`, counting the batch's
+    // earlier members against the depth and the destination's share. Answers one flag per transaction, in order.
+    // If the commit fails, none of the admitted transactions is queued or stored and every one answers false.
+    [[nodiscard]] auto enqueue_batch(std::vector<OutboundTransaction> batch) -> std::vector<bool>;
 
     auto start() -> void;
     auto request_shutdown() noexcept -> void;

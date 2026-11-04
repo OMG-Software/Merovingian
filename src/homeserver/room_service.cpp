@@ -1295,29 +1295,25 @@ namespace
         if (runtime.dispatch_worker != nullptr)
         {
             auto const& server_name = runtime.config.server().server_name;
+            // Each remote server once, in the order the members name them. A set answers "seen" in one lookup;
+            // searching the list per member made a large room cost members x servers.
             auto remote_servers = std::vector<std::string>{};
+            auto seen_servers = std::unordered_set<std::string>{};
+            auto const note_remote_server = [&](std::string_view candidate) {
+                if (!candidate.empty() && candidate != server_name && candidate != excluded_server &&
+                    seen_servers.emplace(candidate).second)
+                {
+                    remote_servers.emplace_back(candidate);
+                }
+            };
             for (auto const& member : members)
             {
-                auto const member_server = std::string{auth::user_id_server_name(member)};
-                if (member_server.empty())
-                {
-                    continue;
-                }
-                if (member_server != server_name && member_server != excluded_server &&
-                    std::ranges::find(remote_servers, member_server) == remote_servers.end())
-                {
-                    remote_servers.emplace_back(member_server);
-                }
+                note_remote_server(auth::user_id_server_name(member));
             }
             // The target of a kick, ban or unban is told even though it is no longer (or
             // not yet) among the room's members once the event applies. An invite reaches
             // the invitee's server through /invite instead.
-            if (auto const target_server = std::string{auth::user_id_server_name(target_user_id)};
-                !target_server.empty() && target_server != server_name && target_server != excluded_server &&
-                std::ranges::find(remote_servers, target_server) == remote_servers.end())
-            {
-                remote_servers.push_back(target_server);
-            }
+            note_remote_server(auth::user_id_server_name(target_user_id));
             // Built by the shared builder so the transaction carries the Required `origin` and
             // `origin_server_ts`; a hand-built body without them was refused by strict receivers.
             auto const tx_body_result = remote_servers.empty()
@@ -1338,7 +1334,12 @@ namespace
                 auto const& tx_body = *tx_body_result;
                 // One transaction ID per destination: it is the durable queue row's key, so a shared ID
                 // left one row for the whole fan-out and the first delivery deleted the others' row.
+                // The destinations are queued as one batch: one committed transaction for the event, not one per
+                // server (ADR-0441).
                 auto refused = std::vector<std::string>{};
+                auto batch = std::vector<federation::OutboundTransaction>{};
+                auto batch_destinations = std::vector<std::string_view>{};
+                batch.reserve(remote_servers.size());
                 for (auto const& destination : remote_servers)
                 {
                     // ADR-0391: not a refusal to report; the operator said this server gets nothing.
@@ -1351,9 +1352,15 @@ namespace
                     auto transaction =
                         federation::make_outbound_transaction(destination, "PUT", target, server_name, tx_body);
                     transaction.transaction_id = tx_id;
-                    if (!runtime.dispatch_worker->enqueue(std::move(transaction)))
+                    batch.push_back(std::move(transaction));
+                    batch_destinations.push_back(destination);
+                }
+                auto const accepted = runtime.dispatch_worker->enqueue_batch(std::move(batch));
+                for (auto position = std::size_t{0U}; position < accepted.size(); ++position)
+                {
+                    if (!accepted[position])
                     {
-                        refused.push_back(destination);
+                        refused.emplace_back(batch_destinations[position]);
                     }
                 }
                 if (!refused.empty())

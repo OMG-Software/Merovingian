@@ -1293,40 +1293,121 @@ auto write_connections_opened(PersistentStore const& store) -> std::uint64_t
     return true;
 }
 
+namespace
+{
+
+    [[nodiscard]] auto upsert_federation_transaction_statement(PersistentFederationTransaction const& transaction)
+        -> PreparedStatement
+    {
+        return record_statement(
+            "upsert_federation_transaction",
+            "INSERT INTO federation_transactions (transaction_id, server_name, json, method, target, origin, "
+            "origin_server_ts, body, retry_count, next_retry_ts) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, "
+            "$10) ON CONFLICT (transaction_id) DO UPDATE SET server_name = $2, json = $3, method = $4, target = "
+            "$5, origin = $6, origin_server_ts = $7, body = $8, retry_count = $9, next_retry_ts = $10",
+            {public_value(transaction.transaction_id), public_value(transaction.server_name),
+             sensitive_value(transaction.body), public_value(transaction.method), public_value(transaction.target),
+             public_value(transaction.origin), public_value(transaction.origin_server_ts),
+             sensitive_value(transaction.body), public_value(std::to_string(transaction.retry_count)),
+             public_value(std::to_string(transaction.next_retry_ts))});
+    }
+
+    [[nodiscard]] auto federation_transaction_index_in_step(PersistentStore const& store) noexcept -> bool
+    {
+        return store.federation_transaction_indexed_rows == store.federation_transactions.size();
+    }
+
+    // The position of the transaction `transaction_id` names. Through the index while it is in step, else by scan.
+    [[nodiscard]] auto find_federation_transaction_position(PersistentStore const& store,
+                                                            std::string_view transaction_id)
+        -> std::optional<std::size_t>
+    {
+        if (federation_transaction_index_in_step(store))
+        {
+            auto const entry = store.federation_transaction_index.find(std::string{transaction_id});
+            if (entry == store.federation_transaction_index.end())
+            {
+                return std::nullopt;
+            }
+            if (entry->second < store.federation_transactions.size() &&
+                store.federation_transactions[entry->second].transaction_id == transaction_id)
+            {
+                return entry->second;
+            }
+        }
+        for (auto position = std::size_t{0U}; position < store.federation_transactions.size(); ++position)
+        {
+            if (store.federation_transactions[position].transaction_id == transaction_id)
+            {
+                return position;
+            }
+        }
+        return std::nullopt;
+    }
+
+} // namespace
+
+auto rebuild_federation_transaction_index(PersistentStore& store) -> void
+{
+    store.federation_transaction_index.clear();
+    store.federation_transaction_index.reserve(store.federation_transactions.size());
+    for (auto position = std::size_t{0U}; position < store.federation_transactions.size(); ++position)
+    {
+        store.federation_transaction_index.emplace(store.federation_transactions[position].transaction_id, position);
+    }
+    store.federation_transaction_indexed_rows = store.federation_transactions.size();
+}
+
+[[nodiscard]] auto store_federation_transactions(PersistentStore& store,
+                                                 std::vector<PersistentFederationTransaction> transactions) -> bool
+{
+    if (transactions.empty())
+    {
+        return true;
+    }
+    if (!std::ranges::all_of(transactions, [](PersistentFederationTransaction const& transaction) {
+            return federation_transaction_is_valid(transaction);
+        }))
+    {
+        return false;
+    }
+    auto statements = std::vector<PreparedStatement>{};
+    statements.reserve(transactions.size());
+    for (auto const& transaction : transactions)
+    {
+        statements.push_back(upsert_federation_transaction_statement(transaction));
+    }
+    // One commit for the whole batch (ADR-0441): every row is durable together or none is, and the mirror
+    // below changes only after the commit, so a failure leaves memory and the database equal.
+    if (!commit_persistent_transaction(store, statements))
+    {
+        return false;
+    }
+    if (!federation_transaction_index_in_step(store))
+    {
+        rebuild_federation_transaction_index(store);
+    }
+    for (auto& transaction : transactions)
+    {
+        if (auto const position = find_federation_transaction_position(store, transaction.transaction_id);
+            position.has_value())
+        {
+            store.federation_transactions[*position] = std::move(transaction);
+            continue;
+        }
+        store.federation_transaction_index.emplace(transaction.transaction_id, store.federation_transactions.size());
+        store.federation_transactions.push_back(std::move(transaction));
+        store.federation_transaction_indexed_rows = store.federation_transactions.size();
+    }
+    return true;
+}
+
 [[nodiscard]] auto store_federation_transaction(PersistentStore& store, PersistentFederationTransaction transaction)
     -> bool
 {
-    if (!federation_transaction_is_valid(transaction))
-    {
-        return false;
-    }
-    if (!record_and_persist(
-            store,
-            record_statement(
-                "upsert_federation_transaction",
-                "INSERT INTO federation_transactions (transaction_id, server_name, json, method, target, origin, "
-                "origin_server_ts, body, retry_count, next_retry_ts) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, "
-                "$10) ON CONFLICT (transaction_id) DO UPDATE SET server_name = $2, json = $3, method = $4, target = "
-                "$5, origin = $6, origin_server_ts = $7, body = $8, retry_count = $9, next_retry_ts = $10",
-                {public_value(transaction.transaction_id), public_value(transaction.server_name),
-                 sensitive_value(transaction.body), public_value(transaction.method), public_value(transaction.target),
-                 public_value(transaction.origin), public_value(transaction.origin_server_ts),
-                 sensitive_value(transaction.body), public_value(std::to_string(transaction.retry_count)),
-                 public_value(std::to_string(transaction.next_retry_ts))})))
-    {
-        return false;
-    }
-    auto const existing = std::ranges::find_if(store.federation_transactions,
-                                               [&transaction](PersistentFederationTransaction const& current) {
-                                                   return current.transaction_id == transaction.transaction_id;
-                                               });
-    if (existing != store.federation_transactions.end())
-    {
-        *existing = std::move(transaction);
-        return true;
-    }
-    store.federation_transactions.push_back(std::move(transaction));
-    return true;
+    auto batch = std::vector<PersistentFederationTransaction>{};
+    batch.push_back(std::move(transaction));
+    return store_federation_transactions(store, std::move(batch));
 }
 
 [[nodiscard]] auto delete_federation_transaction(PersistentStore& store, std::string_view transaction_id) -> bool
@@ -1341,11 +1422,13 @@ auto write_connections_opened(PersistentStore const& store) -> std::uint64_t
     {
         return false;
     }
-    auto const [begin, end] = std::ranges::remove_if(
-        store.federation_transactions, [transaction_id](PersistentFederationTransaction const& transaction) {
-            return transaction.transaction_id == transaction_id;
-        });
-    store.federation_transactions.erase(begin, end);
+    auto const position = find_federation_transaction_position(store, transaction_id);
+    if (!position.has_value())
+    {
+        return true;
+    }
+    store.federation_transactions.erase(store.federation_transactions.begin() + static_cast<std::ptrdiff_t>(*position));
+    rebuild_federation_transaction_index(store);
     return true;
 }
 

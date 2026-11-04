@@ -401,6 +401,7 @@ shell = find_program('sh')
       'unit/test_filter_cap.cpp',
       'unit/test_account_data_cap.cpp',
       'unit/test_push_fanout_cost.cpp',
+      'unit/test_dispatch_batch.cpp',
       'unit/test_key_signature_index.cpp',
       'unit/test_remote_media_fetch.cpp',
       'unit/test_sync_receipt_visibility.cpp',

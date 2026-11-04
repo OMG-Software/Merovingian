@@ -205,7 +205,7 @@ Federation is the highest-risk surface: **all input comes from untrusted remote 
    retried transaction back without taking another, and `release_destination_slot_locked` frees
    it only when the transaction leaves for good (delivered, dropped, or failed to persist), all
    under `mutex_`. Replay parks rows past a destination's share instead of promoting them. A new
-   path that touches `queue_` uses these. Never discard `enqueue`'s result: log a refusal. Give
+   path that touches `queue_` uses these. An event's destinations go through `enqueue_batch` (ADR-0441): one durable commit, all or none on a failed commit. Never discard `enqueue`'s result: log a refusal. Give
    every destination its own transaction ID: it is the durable `federation_transactions` key.
    A failure's backoff runs from the end of the attempt (`finished_at`, `perform_outbound_transaction`'s
    `finished_clock`), never from its start: a timeout is longer than the early backoffs (ADR-0309). The
