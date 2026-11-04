@@ -1302,6 +1302,167 @@ SCENARIO("an ordinary access token is rejected by federation_openid_userinfo", "
     }
 }
 
+// --- F-77: an OpenID token ends with the credentials it was minted from --------
+//
+// The spec does not require OpenID tokens to be revoked, but the project's own policy is that every
+// credential derived from an account dies with it. ADR-0031 keeps the tokens in a table of their own
+// so they can never authenticate to the client API; that separation stays, and the revocation paths
+// delete from that table directly.
+
+SCENARIO("deactivating an account ends its OpenID tokens", "[homeserver][auth][openid][deactivate][f77]")
+{
+    GIVEN("a logged-in user holding a minted OpenID token")
+    {
+        REQUIRE(sodium_init() >= 0);
+        auto started = merovingian::homeserver::start_runtime(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        auto const reg = merovingian::homeserver::register_local_user(runtime, "alice", "CorrectHorse7!",
+                                                                      merovingian::tests::registration_token);
+        REQUIRE(reg.ok);
+        auto const login = merovingian::homeserver::login_local_user(runtime, reg.value, "CorrectHorse7!", "DEVICE1");
+        REQUIRE(login.ok);
+        auto const issued = merovingian::homeserver::request_openid_token(runtime, reg.value);
+        REQUIRE(issued.ok);
+        REQUIRE(merovingian::homeserver::federation_openid_userinfo(runtime, issued.access_token).has_value());
+
+        WHEN("the account is deactivated")
+        {
+            auto const deactivated = merovingian::homeserver::deactivate_local_user(runtime, login.value);
+            REQUIRE(deactivated.ok);
+
+            THEN("the token no longer names the user and its row is gone from the store")
+            {
+                REQUIRE_FALSE(
+                    merovingian::homeserver::federation_openid_userinfo(runtime, issued.access_token).has_value());
+                REQUIRE(runtime.database.persistent_store.openid_tokens.empty());
+            }
+        }
+
+        WHEN("only the token's row is restored after the account is deactivated")
+        {
+            auto const kept_rows = runtime.database.persistent_store.openid_tokens;
+            REQUIRE(merovingian::homeserver::deactivate_local_user(runtime, login.value).ok);
+            runtime.database.persistent_store.openid_tokens = kept_rows;
+
+            THEN("userinfo still refuses to name the deactivated account")
+            {
+                REQUIRE_FALSE(
+                    merovingian::homeserver::federation_openid_userinfo(runtime, issued.access_token).has_value());
+            }
+        }
+    }
+}
+
+SCENARIO("deactivation reports a failure to remove the user's OpenID tokens",
+         "[homeserver][auth][openid][deactivate][f77]")
+{
+    GIVEN("a logged-in user holding a minted OpenID token")
+    {
+        REQUIRE(sodium_init() >= 0);
+        auto started = merovingian::homeserver::start_runtime(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        auto const reg = merovingian::homeserver::register_local_user(runtime, "alice", "CorrectHorse7!",
+                                                                      merovingian::tests::registration_token);
+        REQUIRE(reg.ok);
+        auto const login = merovingian::homeserver::login_local_user(runtime, reg.value, "CorrectHorse7!", "DEVICE1");
+        REQUIRE(login.ok);
+        REQUIRE(merovingian::homeserver::request_openid_token(runtime, reg.value).ok);
+
+        WHEN("the OpenID token deletion is forced to fail")
+        {
+            merovingian::database::force_persist_failure_for_statement(runtime.database.persistent_store,
+                                                                       "revoke_openid_tokens_for_user");
+            auto const result = merovingian::homeserver::deactivate_local_user(runtime, login.value);
+
+            THEN("deactivation answers a persistence failure rather than success")
+            {
+                REQUIRE_FALSE(result.ok);
+                REQUIRE(result.status == 500U);
+            }
+        }
+    }
+}
+
+SCENARIO("logging out everywhere ends the user's OpenID tokens, and leaves other users' tokens alone",
+         "[homeserver][auth][openid][logout_all][f77]")
+{
+    GIVEN("two users, each with a minted OpenID token, and the first logged in")
+    {
+        REQUIRE(sodium_init() >= 0);
+        auto started = merovingian::homeserver::start_runtime(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        auto const alice = merovingian::homeserver::register_local_user(runtime, "alice", "CorrectHorse7!",
+                                                                        merovingian::tests::registration_token);
+        auto const bob = merovingian::homeserver::register_local_user(runtime, "bob", "CorrectHorse7!",
+                                                                      merovingian::tests::registration_token);
+        REQUIRE(alice.ok);
+        REQUIRE(bob.ok);
+        auto const login = merovingian::homeserver::login_local_user(runtime, alice.value, "CorrectHorse7!", "DEVICE1");
+        REQUIRE(login.ok);
+        auto const alice_token = merovingian::homeserver::request_openid_token(runtime, alice.value);
+        auto const bob_token = merovingian::homeserver::request_openid_token(runtime, bob.value);
+        REQUIRE(alice_token.ok);
+        REQUIRE(bob_token.ok);
+
+        WHEN("the first user logs out of all devices")
+        {
+            REQUIRE(merovingian::homeserver::logout_all_local_user(runtime, login.value).ok);
+
+            THEN("only the first user's OpenID token stops working")
+            {
+                REQUIRE_FALSE(
+                    merovingian::homeserver::federation_openid_userinfo(runtime, alice_token.access_token).has_value());
+                REQUIRE(
+                    merovingian::homeserver::federation_openid_userinfo(runtime, bob_token.access_token).has_value());
+            }
+        }
+    }
+}
+
+SCENARIO("a password change that logs out other devices ends the user's OpenID tokens",
+         "[homeserver][auth][openid][password_change][f77]")
+{
+    GIVEN("a logged-in user holding a minted OpenID token")
+    {
+        REQUIRE(sodium_init() >= 0);
+        auto started = merovingian::homeserver::start_runtime(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        auto const reg = merovingian::homeserver::register_local_user(runtime, "alice", "OldPassword7!",
+                                                                      merovingian::tests::registration_token);
+        REQUIRE(reg.ok);
+        auto const login = merovingian::homeserver::login_local_user(runtime, reg.value, "OldPassword7!", "DEVICE1");
+        REQUIRE(login.ok);
+        auto const issued = merovingian::homeserver::request_openid_token(runtime, reg.value);
+        REQUIRE(issued.ok);
+
+        WHEN("the password is changed with logout_devices")
+        {
+            REQUIRE(merovingian::homeserver::change_local_user_password(runtime, login.value, "NewPassword99!").ok);
+
+            THEN("the OpenID token no longer names the user")
+            {
+                REQUIRE_FALSE(
+                    merovingian::homeserver::federation_openid_userinfo(runtime, issued.access_token).has_value());
+            }
+        }
+
+        WHEN("the password is changed without logout_devices")
+        {
+            REQUIRE(
+                merovingian::homeserver::change_local_user_password(runtime, login.value, "NewPassword99!", false).ok);
+
+            THEN("the OpenID token is left alone")
+            {
+                REQUIRE(merovingian::homeserver::federation_openid_userinfo(runtime, issued.access_token).has_value());
+            }
+        }
+    }
+}
+
 // --- M-04: logout must invalidate the device's refresh token -----------------
 // Spec: docs/matrix-v1.19-spec/client-server-api.md
 //       #post_matrixclientv3logout — logout invalidates the access token and
@@ -1653,6 +1814,136 @@ SCENARIO("delete_local_device fails closed when token revocation cannot persist"
                 REQUIRE_FALSE(result.ok);
                 REQUIRE(result.status == 500U);
                 REQUIRE(result.reason == "token revocation persistence failed");
+            }
+        }
+    }
+}
+
+// F-67: the token revocations come before the device row is deleted, so a failure leaves the device
+// present and the call retryable, and a retry also reaches tokens an earlier failure stranded.
+SCENARIO("a device deletion that failed to revoke tokens can be retried and then kills them",
+         "[homeserver][auth][delete_device][security][db-5][f67]")
+{
+    GIVEN("a user with a refresh token on a device whose access-token revocation fails once")
+    {
+        REQUIRE(sodium_init() >= 0);
+        auto started = merovingian::homeserver::start_runtime(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+
+        auto const reg = merovingian::homeserver::register_local_user(runtime, "alice", "CorrectHorse7!",
+                                                                      merovingian::tests::registration_token);
+        REQUIRE(reg.ok);
+        auto const login = merovingian::homeserver::login_local_user(runtime, reg.value, "CorrectHorse7!", "DEVICE1");
+        REQUIRE(login.ok);
+        auto const refresh = merovingian::homeserver::issue_refresh_token_for_session(runtime, reg.value, "DEVICE1");
+        REQUIRE(refresh.ok);
+        auto const device_is_listed = [&runtime]() {
+            return std::ranges::any_of(runtime.database.persistent_store.devices, [](auto const& device) {
+                return device.device_id == "DEVICE1";
+            });
+        };
+        merovingian::database::force_persist_failure_for_statement(runtime.database.persistent_store,
+                                                                   "revoke_device_access_tokens");
+        auto const failed = merovingian::homeserver::delete_local_device(runtime, reg.value, "DEVICE1");
+        REQUIRE_FALSE(failed.ok);
+        REQUIRE(failed.status == 500U);
+
+        THEN("the failed call leaves the device present, so the deletion can be retried")
+        {
+            REQUIRE(device_is_listed());
+        }
+
+        WHEN("the deletion is retried")
+        {
+            auto const retried = merovingian::homeserver::delete_local_device(runtime, reg.value, "DEVICE1");
+
+            THEN("it succeeds, the device is gone and neither token works any more")
+            {
+                REQUIRE(retried.ok);
+                REQUIRE_FALSE(device_is_listed());
+                REQUIRE_FALSE(merovingian::homeserver::authenticated_user(runtime, login.value).has_value());
+                REQUIRE_FALSE(merovingian::homeserver::refresh_local_session(runtime, refresh.value).ok);
+            }
+
+            AND_WHEN("the deletion is repeated once more")
+            {
+                auto const repeated = merovingian::homeserver::delete_local_device(runtime, reg.value, "DEVICE1");
+
+                THEN("the device is reported as not found")
+                {
+                    REQUIRE_FALSE(repeated.ok);
+                    REQUIRE(repeated.status == 404U);
+                }
+            }
+        }
+    }
+}
+
+SCENARIO("a device deletion whose row delete fails leaves the device present with its tokens already revoked",
+         "[homeserver][auth][delete_device][security][db-5][f67]")
+{
+    GIVEN("a user with a device whose row deletion fails once")
+    {
+        REQUIRE(sodium_init() >= 0);
+        auto started = merovingian::homeserver::start_runtime(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+
+        auto const reg = merovingian::homeserver::register_local_user(runtime, "alice", "CorrectHorse7!",
+                                                                      merovingian::tests::registration_token);
+        REQUIRE(reg.ok);
+        auto const login = merovingian::homeserver::login_local_user(runtime, reg.value, "CorrectHorse7!", "DEVICE1");
+        REQUIRE(login.ok);
+        merovingian::database::force_persist_failure_for_statement(runtime.database.persistent_store, "delete_device");
+
+        WHEN("the device is deleted")
+        {
+            auto const failed = merovingian::homeserver::delete_local_device(runtime, reg.value, "DEVICE1");
+
+            THEN("the call is a 500, the token is already dead and the device can be deleted on a retry")
+            {
+                REQUIRE_FALSE(failed.ok);
+                REQUIRE(failed.status == 500U);
+                REQUIRE_FALSE(merovingian::homeserver::authenticated_user(runtime, login.value).has_value());
+                REQUIRE(merovingian::homeserver::delete_local_device(runtime, reg.value, "DEVICE1").ok);
+            }
+        }
+    }
+}
+
+SCENARIO("a logout that failed to persist can be retried and then kills the session and refresh token",
+         "[homeserver][auth][logout][security][db-5][f67]")
+{
+    GIVEN("a user with a refresh token whose refresh-token revocation fails once during logout")
+    {
+        REQUIRE(sodium_init() >= 0);
+        auto started = merovingian::homeserver::start_runtime(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+
+        auto const reg = merovingian::homeserver::register_local_user(runtime, "alice", "CorrectHorse7!",
+                                                                      merovingian::tests::registration_token);
+        REQUIRE(reg.ok);
+        auto const login = merovingian::homeserver::login_local_user(runtime, reg.value, "CorrectHorse7!", "DEVICE1");
+        REQUIRE(login.ok);
+        auto const refresh = merovingian::homeserver::issue_refresh_token_for_session(runtime, reg.value, "DEVICE1");
+        REQUIRE(refresh.ok);
+        merovingian::database::force_persist_failure_for_statement(runtime.database.persistent_store,
+                                                                   "revoke_device_refresh_tokens");
+        auto const failed = merovingian::homeserver::logout_local_user(runtime, login.value);
+        REQUIRE_FALSE(failed.ok);
+        REQUIRE(failed.status == 500U);
+
+        WHEN("the logout is retried with the same token")
+        {
+            auto const retried = merovingian::homeserver::logout_local_user(runtime, login.value);
+
+            THEN("it succeeds rather than answering unauthenticated, and the refresh token is dead")
+            {
+                REQUIRE(retried.ok);
+                REQUIRE_FALSE(merovingian::homeserver::authenticated_user(runtime, login.value).has_value());
+                REQUIRE_FALSE(merovingian::homeserver::refresh_local_session(runtime, refresh.value).ok);
             }
         }
     }

@@ -12368,11 +12368,18 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             // Spec (v1.17): "If the given device ID is not known to belong
             // to the user, the server will return a 400 M_UNKNOWN_DEVICE
             // error."
-            auto const device_known = std::ranges::any_of(
-                rt.homeserver.database.persistent_store.devices,
-                [&effective_user_id, &requested_device_id](database::PersistentDevice const& device) {
-                    return device.user_id == effective_user_id && device.device_id == *requested_device_id;
-                });
+            //
+            // persistent_store.devices is changed under runtime.mutex by login, registration and
+            // device deletion, and this prologue runs before the request lock is taken (AUTH-1),
+            // so the read takes the lock itself (F-66).
+            auto const device_known = [&]() {
+                auto const devices_lock = std::lock_guard<RuntimeMutex>{rt.homeserver.mutex};
+                return std::ranges::any_of(
+                    rt.homeserver.database.persistent_store.devices,
+                    [&effective_user_id, &requested_device_id](database::PersistentDevice const& device) {
+                        return device.user_id == effective_user_id && device.device_id == *requested_device_id;
+                    });
+            }();
             if (!device_known)
             {
                 return dispatch_err(req, rt, 400U, "M_UNKNOWN_DEVICE",
