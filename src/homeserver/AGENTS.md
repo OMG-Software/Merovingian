@@ -75,7 +75,9 @@ is `declared_mime|sniffed_mime|scanner_clean|bytes` — the pipe-delimited wrapp
    a variable component (an ID, type or key) needs a template and a row in the HTTP-3
    scenario "gives every implemented dynamic client route its own coalesced bucket"
    in `tests/unit/test_security_audit_http_3.cpp` (ADR-0092); a fixed path needs an
-   entry in `static_routes` and a row in `client_static_route_allow` listing EVERY
+   entry in `static_routes` (an operator route under `/_merovingian/admin/` goes in
+   `operator_routes` or `media_actions` inside `normalized_target`, F-73, or its requests share
+   one counter with every unknown path) and a row in `client_static_route_allow` listing EVERY
    method it serves (a method missing there is answered `405 M_UNRECOGNIZED`
    before authentication). A path the matcher cannot place is answered
    `404 M_UNRECOGNIZED` before authentication (`client_route_is_known`, ADR-0230), so
@@ -140,7 +142,10 @@ logged at warning level. A pre-v12 `create_room` holds a `RoomIdReservation` fro
 ## Client requests that call another server
 
 `publicRooms?server=` (GET and POST), a remote room-alias lookup (`GET /directory/room/{alias}` and `POST /join/{#alias}`), a remote user's profile (`remote_profile_response`: relays only `displayname`/`avatar_url`), remote media download or
-thumbnail, and the `/thirdparty/*` lookups that call an appservice (ADR-0181) make this server
+thumbnail, the `/thirdparty/*` lookups that call an appservice (ADR-0181), and the appservice
+`query_user` / `query_room_alias` hooks of `GET /profile/{userId}` and `GET /directory/room/{alias}`
+(F-68, ADR-0417: one slot for the whole loop, taken only when a registration's namespace matches the
+identifier, so a server with no matching appservice never answers 429) make this server
 call a peer it does not control, and the spec lets clients make them
 without authentication. `RuntimeLockRelease` frees the mutex, not the thread, so each holds one of
 the main pool's threads for the round trip. Every such call therefore:

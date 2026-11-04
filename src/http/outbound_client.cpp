@@ -277,6 +277,17 @@ namespace
         return parsed;
     }
 
+    // F-76 (ADR-0418). What a diagnostic line says of the URL a request went to: the scheme, host, port and
+    // path, never the query. A query can carry a credential the caller put there (an identity server's
+    // `client_secret` and `sid`) or text a user chose (a preview URL, a pusher's gateway URL), and the
+    // logger judges a value by its field name, not its content, so no marker list can be trusted to find
+    // them. Userinfo cannot be present: parse_curl_url refuses it.
+    [[nodiscard]] auto loggable_url(ParsedOutboundUrl const& fields) -> std::string
+    {
+        return fields.scheme + "://" + (fields.ipv6_literal ? "[" + fields.host + "]" : fields.host) + ":" +
+               std::to_string(fields.port) + fields.path;
+    }
+
     struct ApprovedPeer final
     {
         int family{AF_UNSPEC};
@@ -810,6 +821,7 @@ auto OutboundClient::perform(OutboundRequest const& request) -> OutboundResult
     {
         return fail(OutboundError::invalid_url, "invalid_url");
     }
+    auto const logged_url = loggable_url(parsed->fields);
     auto pins = PeerPins{parsed->fields.port, {}};
     for (auto const& address : request.pinned_addresses)
     {
@@ -980,7 +992,7 @@ auto OutboundClient::perform(OutboundRequest const& request) -> OutboundResult
     if (mapped == OutboundError::none && response.status >= 300U && response.status < 400U)
     {
         log_diagnostic("request.redirect_rejected", {
-                                                        {"url",         request.url,                     false},
+                                                        {"url",         logged_url,                      false},
                                                         {"method",      request.method,                  false},
                                                         {"http_status", std::to_string(response.status), false}
         });
@@ -995,7 +1007,7 @@ auto OutboundClient::perform(OutboundRequest const& request) -> OutboundResult
     if (mapped != OutboundError::none)
     {
         log_diagnostic("request.error", {
-                                            {"url",    request.url,                              false},
+                                            {"url",    logged_url,                               false},
                                             {"method", request.method,                           false},
                                             {"error",  std::string{outbound_error_name(mapped)}, false}
         });
@@ -1008,7 +1020,7 @@ auto OutboundClient::perform(OutboundRequest const& request) -> OutboundResult
     }
 
     log_diagnostic("request.success", {
-                                          {"url",         request.url,                     false},
+                                          {"url",         logged_url,                      false},
                                           {"method",      request.method,                  false},
                                           {"http_status", std::to_string(response.status), false}
     });

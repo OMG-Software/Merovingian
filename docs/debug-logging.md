@@ -108,11 +108,18 @@ line shows.
 
 ## Per-module level overrides (0.5.0)
 
-`--debug` lowers the **default** level to `debug` for every module that
-does not have an explicit override. To narrow the firehose to the
-modules you care about, set `log_modules.<name>=<level>` keys in
-`merovingian.conf`. See `docs/log-filtering.md` for the full recipe and
-the list of recognised module names.
+`--debug` lowers the **console sink** threshold to `debug`. It does not change
+the module default, which stays `info`, so a module logs at `debug` or `trace`
+only when `log_modules.<name>` (or `log_modules.*`) says so, and the line then
+reaches the console only with `--debug` and the log file always (its threshold
+is `trace`). Set `log_modules.<name>=<level>` keys in `merovingian.conf` to
+raise one module; `docs/log-filtering.md` has the recipe and the list of
+recognised module names.
+
+The `outbound_client` module logs `request.success`, `request.error` and
+`request.redirect_rejected` at debug. Their `url` field is the scheme, host,
+port and path of the request, never its query (ADR-0418): a query can carry an
+identity server's `client_secret`, or text a user chose.
 
 ## Join Failure Diagnostics
 

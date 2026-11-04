@@ -5681,7 +5681,9 @@ auto wire_federation_callbacks(HomeserverRuntime& runtime) -> void
         return response(200U, admin_metrics_summary(runtime),
                         observability_headers(correlation, "text/plain; version=0.0.4; charset=utf-8"));
     }
-    if (request.method == "GET" && starts_with(request.target, "/_merovingian/admin/audit"))
+    // The path alone is compared (F-73): `/_merovingian/admin/audit-anything` once matched this prefix too,
+    // so a path the rate limiter files under the fallback counter was served as the audit view.
+    if (request.method == "GET" && request.target.substr(0U, request.target.find('?')) == "/_merovingian/admin/audit")
     {
         if (auto const denied = admin_auth_denied(runtime, request.access_token, correlation); denied.has_value())
         {
@@ -5719,8 +5721,9 @@ auto wire_federation_callbacks(HomeserverRuntime& runtime) -> void
         }
         // The admin auth gate at the top of this block already returned 401/403
         // for non-admin callers, so reaching here means the caller is an admin.
+        // F-62 (ADR-0416): the view is a JSON object, not the text line it once was.
         return response(200U, admin_audit_summary(runtime, category_filter, event_type_filter),
-                        observability_headers(correlation, "text/plain; charset=utf-8"));
+                        observability_headers(correlation, "application/json"));
     }
     if (request.method == "GET" && request.target.substr(0U, request.target.find('?')) == "/_matrix/key/v2/server")
     {

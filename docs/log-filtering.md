@@ -92,6 +92,9 @@ curl 'http://127.0.0.1:8008/_merovingian/admin/audit?event_type=login.rejected'
 curl 'http://127.0.0.1:8008/_merovingian/admin/audit?category=policy'
 ```
 
+The answer is a JSON object: `audit_events`, `evicted`, the filters given, and `entries`,
+an array with one object per matching row (ADR-0416).
+
 A malformed `category=` value returns 400 with
 `unknown audit category: <name>` so typos fail loud.
 

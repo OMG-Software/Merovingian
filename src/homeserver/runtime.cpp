@@ -35,6 +35,7 @@
 #include <array>
 #include <chrono>
 #include <cstddef>
+#include <cstdint>
 #include <cstdlib>
 #include <fstream>
 #include <functional>
@@ -1375,26 +1376,35 @@ auto admin_audit_summary(HomeserverRuntime const& runtime, std::optional<observa
                          std::optional<std::string_view> event_type) -> std::string
 {
     // Filter the audit log by the optional `category` and `event_type`
-    // parameters. The result line is prefixed with the count of *all*
-    // retained audit rows so the operator can see how many rows the filter
-    // excluded; the per-entry lines only include the matching rows.
+    // parameters. The view carries the count of *all* retained audit rows so
+    // the operator can see how many rows the filter excluded; `entries` only
+    // holds the matching rows.
     // AUTH-1: the retained rows are the most recent `max_in_memory_audit_events`.
-    // `evicted=<n>` appears once older rows have left that window; they remain in
+    // `evicted` appears once older rows have left that window; they remain in
     // the audit_log table.
+    // F-62 (ADR-0416): a JSON object with one JSON object per row, so the text of a
+    // field (an unauthenticated login's claimed user and device) can never look like
+    // another entry. The text view this replaces joined the fields with ' entry=' and ':'.
     auto const& log = runtime.database.persistent_store.audit_log;
-    auto summary = std::string{"audit events="} + std::to_string(log.size());
+    auto view = canonicaljson::Object{};
+    view.push_back(
+        canonicaljson::make_member("audit_events", canonicaljson::Value{static_cast<std::int64_t>(log.size())}));
     if (runtime.database.persistent_store.audit_log_evicted != 0U)
     {
-        summary += " evicted=" + std::to_string(runtime.database.persistent_store.audit_log_evicted);
+        view.push_back(canonicaljson::make_member(
+            "evicted",
+            canonicaljson::Value{static_cast<std::int64_t>(runtime.database.persistent_store.audit_log_evicted)}));
     }
     if (category.has_value())
     {
-        summary += " filter_category=" + std::string{observability::audit_category_name(*category)};
+        view.push_back(canonicaljson::make_member(
+            "filter_category", canonicaljson::Value{std::string{observability::audit_category_name(*category)}}));
     }
     if (event_type.has_value())
     {
-        summary += " filter_event_type=" + std::string{*event_type};
+        view.push_back(canonicaljson::make_member("filter_event_type", canonicaljson::Value{std::string{*event_type}}));
     }
+    auto entries = canonicaljson::Array{};
     for (auto const& event : log)
     {
         if (category.has_value() && event.category != observability::audit_category_name(*category))
@@ -1405,10 +1415,24 @@ auto admin_audit_summary(HomeserverRuntime const& runtime, std::optional<observa
         {
             continue;
         }
-        summary += " entry=" + event.category + ':' + event.event_type + ':' + event.actor + ':' + event.target + ':' +
-                   event.reason;
+        auto entry = canonicaljson::Object{};
+        entry.push_back(canonicaljson::make_member("category", canonicaljson::Value{event.category}));
+        entry.push_back(canonicaljson::make_member("event_type", canonicaljson::Value{event.event_type}));
+        entry.push_back(canonicaljson::make_member("actor", canonicaljson::Value{event.actor}));
+        entry.push_back(canonicaljson::make_member("target", canonicaljson::Value{event.target}));
+        entry.push_back(canonicaljson::make_member("reason", canonicaljson::Value{event.reason}));
+        entries.push_back(canonicaljson::Value{std::move(entry)});
     }
-    return summary;
+    view.push_back(canonicaljson::make_member("entries", canonicaljson::Value{std::move(entries)}));
+    auto const serialized = canonicaljson::serialize_canonical(canonicaljson::Value{std::move(view)});
+    if (serialized.error != canonicaljson::CanonicalJsonError::none)
+    {
+        // A field that is not valid UTF-8 cannot be written as a JSON string. The stored fields are
+        // bounded to valid UTF-8 on the way in, so this is not expected; say so rather than send a
+        // view with rows missing and no sign of it.
+        return std::string{R"({"error":"audit view could not be serialised"})"};
+    }
+    return serialized.output;
 }
 
 auto find_policy_rule(HomeserverRuntime const& runtime, std::string_view scope, std::string_view entity)
