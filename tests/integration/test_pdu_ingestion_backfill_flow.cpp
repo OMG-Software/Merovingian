@@ -1045,8 +1045,7 @@ SCENARIO("A backfilled event written by a server under an admin's deny rule is n
         auto server_thread = std::thread{[&]() {
             run_body_aware_tls_server(acceptor, tls_context, http_response, &captured_request);
         }};
-        auto const join_server = merovingian::tests::tls_mock::ScopedThreadJoin{server_thread};
-        std::ignore = join_server;
+        [[maybe_unused]] auto const join_server = merovingian::tests::tls_mock::ScopedThreadJoin{server_thread};
 
         WHEN("the event that needs it is ingested")
         {
@@ -4285,8 +4284,7 @@ SCENARIO("A backfilled event is stored without the unsigned object the answering
         auto server_thread = std::thread{[&]() {
             run_body_aware_tls_server(acceptor, tls_context, http_response, &captured_request);
         }};
-        auto const join_server = merovingian::tests::tls_mock::ScopedThreadJoin{server_thread};
-        std::ignore = join_server;
+        [[maybe_unused]] auto const join_server = merovingian::tests::tls_mock::ScopedThreadJoin{server_thread};
 
         WHEN("an event naming the missing one as a prev_event is ingested")
         {

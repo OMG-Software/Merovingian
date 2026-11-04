@@ -5270,6 +5270,7 @@ SCENARIO("A number Canonical JSON cannot represent costs one PDU, not the transa
         };
         auto const good_pdu = signed_json_pdu(origin, key_id, token);
 
+        // A PDU's number decides that PDU alone: the bad ones get errors and the good one goes through.
         WHEN("a correctly signed transaction carries a float PDU, an out-of-range PDU and a valid PDU")
         {
             auto const request = signed_request(
@@ -5319,6 +5320,7 @@ SCENARIO("A number Canonical JSON cannot represent costs one PDU, not the transa
             }
         }
 
+        // The signature is checked over the numbers as received, so tolerating them gives a forger nothing.
         WHEN("the same transaction's signature is forged")
         {
             auto request =
@@ -5340,6 +5342,7 @@ SCENARIO("A number Canonical JSON cannot represent costs one PDU, not the transa
         auto runtime = merovingian::federation::make_federation_runtime_state(config);
         merovingian::federation::upsert_remote(runtime, remote_for(origin, key_id, token));
 
+        // No signature was checked here, so there is no bad signature to charge.
         WHEN("it repeatedly sends a body that is not JSON, so no signed payload can be built")
         {
             auto request = signed_request(origin, key_id, token, transaction_body_pdus(origin, {}));
@@ -5357,6 +5360,7 @@ SCENARIO("A number Canonical JSON cannot represent costs one PDU, not the transa
             }
         }
 
+        // Control: with a checked signature the budget does apply, so the case above is no blanket exemption.
         WHEN("it repeatedly sends a valid body with a forged signature")
         {
             auto request = signed_request(origin, key_id, "another-key", transaction_body_pdus(origin, {}));

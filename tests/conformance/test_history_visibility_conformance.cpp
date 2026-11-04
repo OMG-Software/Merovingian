@@ -706,6 +706,7 @@ SCENARIO("GET /members?at= refuses a point from before the caller could see the 
         REQUIRE_FALSE(after_bob_joined.empty());
         auto const members_url = "/_matrix/client/v3/rooms/" + room_id + "/members?at=";
 
+        // A token from before his join resolves to an event he may not see.
         WHEN("bob asks for the members at the token from before he joined")
         {
             auto const reply = call(rt, "GET", members_url + before_bob, bob);
@@ -733,6 +734,7 @@ SCENARIO("GET /members?at= refuses a point from before the caller could see the 
             }
         }
 
+        // The same token is fine for a caller whose window covers it: the refusal is per caller.
         WHEN("alice, who was joined throughout, asks for the members at the token from before bob joined")
         {
             auto const reply = call(rt, "GET", members_url + before_bob, alice);
@@ -778,6 +780,7 @@ SCENARIO("GET /members?at= refuses a point from before the caller could see the 
         REQUIRE_FALSE(before_bob.empty());
         invite_and_join(rt, alice, room_id, "bob", bob);
 
+        // Shared history makes the earlier event visible, so the same position is answered here.
         WHEN("bob asks for the members at the token from before he joined")
         {
             auto const reply =

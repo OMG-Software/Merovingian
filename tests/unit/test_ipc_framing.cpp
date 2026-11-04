@@ -1150,6 +1150,7 @@ SCENARIO("a pending request admits each EDU of its verified body once", "[ipc][f
         REQUIRE(observed.wait_for(std::chrono::seconds{3}) == std::future_status::ready);
         auto const parent = observed.get();
 
+        // A repeated EDU is one admission per occurrence, so a replay runs out of digests.
         WHEN("the EDUs are admitted one by one")
         {
             auto const first = pair.server->consume_pending_edu(parent, "a.remote.example", "digest-typing");
@@ -1167,6 +1168,7 @@ SCENARIO("a pending request admits each EDU of its verified body once", "[ipc][f
                 CHECK_FALSE(second_again);
             }
         }
+        // A wrong guess must consume nothing, or a worker could burn a genuine EDU's place.
         WHEN("an EDU whose digest the body did not carry is offered")
         {
             auto const absent = pair.server->consume_pending_edu(parent, "a.remote.example", "digest-forged");
@@ -1180,6 +1182,7 @@ SCENARIO("a pending request admits each EDU of its verified body once", "[ipc][f
                 CHECK(genuine);
             }
         }
+        // A digest is necessary, not sufficient: the origin, parent and channel checks stay in force.
         WHEN("a genuine EDU is offered under another origin, another parent, or the worker's own end of the channel")
         {
             auto const other_origin = pair.server->consume_pending_edu(parent, "b.remote.example", "digest-receipt");
@@ -1212,6 +1215,7 @@ SCENARIO("a pending request admits each EDU of its verified body once", "[ipc][f
         }
     }
 
+    // Every other request binds no digests, so a matching origin alone is no longer enough.
     GIVEN("a pending request sent with no digests, as for any request that is not a verified /send")
     {
         auto pair = make_channel_pair();
@@ -1282,6 +1286,7 @@ SCENARIO("a verified /send body yields one digest per EDU it carries", "[ipc][f7
                 CHECK(digests[1] == *presence);
             }
         }
+        // One digest per occurrence, so a pending request admits the EDU that many times and no more.
         WHEN("the same EDU occurs twice in the body")
         {
             request.body =
@@ -1295,6 +1300,7 @@ SCENARIO("a verified /send body yields one digest per EDU it carries", "[ipc][f7
                 CHECK(digests[0] == digests[1]);
             }
         }
+        // The two fields are framed, so moving bytes between type and content cannot collide.
         WHEN("the type and content could be split differently to the same bytes")
         {
             auto const first = merovingian::federation::edu_relay_digest("m.a", "{}");
@@ -1310,6 +1316,7 @@ SCENARIO("a verified /send body yields one digest per EDU it carries", "[ipc][f7
                 CHECK(*first != *third);
             }
         }
+        // Only a body main itself authenticated may bind anything.
         WHEN("the request was not signature-verified, is another endpoint, or has no verified origin")
         {
             auto unsigned_request = request;

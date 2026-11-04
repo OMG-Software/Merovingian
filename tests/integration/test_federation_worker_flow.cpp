@@ -1464,8 +1464,7 @@ SCENARIO("A real worker's relays of a signed transaction's EDUs all match the di
         };
         runtime.federation_proxy = std::make_unique<FederationProxy>(
             config.federation_worker(), runtime, std::string{worker_binary_path()}, config_path.string());
-        auto const proxy_lifetime = Fed10ProxyLifetime{runtime};
-        std::ignore = proxy_lifetime;
+        [[maybe_unused]] auto const proxy_lifetime = Fed10ProxyLifetime{runtime};
         REQUIRE(wait_for_healthy(*runtime.federation_proxy, std::chrono::seconds{15}));
         auto listener = Fed10SocketListener{client};
 
@@ -2297,6 +2296,7 @@ SCENARIO("A worker-relayed EDU reaches edu_sink only if the verified body carrie
             return merovingian::homeserver::handle_edu_ingest_request(runtime, context.wrap(relay), *channels.main);
         };
 
+        // The genuine path: without it, the refusals below could be one check that refuses everything.
         WHEN("the EDU the body carried is relayed")
         {
             auto const response = handle(relay_of(carried, "matrix.example.org"));
@@ -2308,6 +2308,7 @@ SCENARIO("A worker-relayed EDU reaches edu_sink only if the verified body carrie
                 CHECK(delivered.front() == "matrix.example.org|m.direct_to_device|" + carried);
             }
         }
+        // A replay: the first relay spent the digest.
         WHEN("the same EDU is relayed a second time under the same parent")
         {
             auto const first = handle(relay_of(carried, "matrix.example.org"));
@@ -2320,6 +2321,7 @@ SCENARIO("A worker-relayed EDU reaches edu_sink only if the verified body carrie
                 CHECK(delivered.size() == 1U);
             }
         }
+        // A forgery: the parent is live, but its body never held this EDU.
         WHEN("an EDU the body did not carry is relayed under the live parent")
         {
             auto const response = handle(relay_of(not_carried, "matrix.example.org"));
@@ -2337,6 +2339,7 @@ SCENARIO("A worker-relayed EDU reaches edu_sink only if the verified body carrie
                 CHECK(delivered.size() == 1U);
             }
         }
+        // A digest does not replace the origin check, and a refused relay must not spend one.
         WHEN("the carried EDU is relayed claiming another origin")
         {
             auto const response = handle(relay_of(carried, "evil.example.org"));

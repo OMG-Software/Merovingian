@@ -555,6 +555,7 @@ SCENARIO("A relayed PDU whose sender's server the operator excludes is refused w
         runtime.homeserver.federation.remote_key_resolver = counting_key_resolver(lookups, "evil.org", key_seed);
         auto const token = register_and_login(runtime, "opdeny", "CorrectHorse7!", "OP_DENY");
 
+        // The author's server is excluded and the carrying peer is not, so an origin check alone passes this.
         WHEN("an allowed peer relays a PDU that a user on evil.org wrote")
         {
             auto const response = send_relayed(runtime, token, "evil.org", "txn-op-denied");
@@ -567,6 +568,7 @@ SCENARIO("A relayed PDU whose sender's server the operator excludes is refused w
             }
         }
 
+        // Control: the same relay from a permitted author shows the refusal above is the policy's.
         WHEN("an allowed peer relays a PDU that a user on another server wrote")
         {
             auto const response = send_relayed(runtime, token, "other.example.net", "txn-op-other");
@@ -590,6 +592,7 @@ SCENARIO("A relayed PDU whose sender's server the operator excludes is refused w
             counting_key_resolver(lookups, "unlisted.example", key_seed);
         auto const token = register_and_login(runtime, "opallow", "CorrectHorse7!", "OP_ALLOW");
 
+        // With an allow list, the author is judged as an origin would be.
         WHEN("a listed peer relays a PDU that a user on an unlisted server wrote")
         {
             auto const response = send_relayed(runtime, token, "unlisted.example", "txn-op-unlisted");
@@ -618,6 +621,7 @@ SCENARIO("A relayed PDU whose sender's server the operator excludes is refused w
                 {"rule-evil", "federation", "evil.org", "deny", ""});
         }
 
+        // An admin rule is runtime state rather than config, and it is judged on this path too.
         WHEN("an allowed peer relays a PDU that a user on evil.org wrote")
         {
             auto const response = send_relayed(runtime, token, "evil.org", "txn-op-rule");
