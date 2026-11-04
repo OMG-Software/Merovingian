@@ -7,15 +7,14 @@ edit_uri: edit/main/docs/
 
 # docs/ is written to be read in the repository. Agent instruction files, the
 # vendored Matrix spec mirrors (links into the v1.19 mirror are sent to
-# spec.matrix.org by the hooks), superseded generated references, duplicate
-# report renderings and working notes are not published.
+# spec.matrix.org by the hooks), superseded generated references and working
+# notes are not published.
 exclude_docs: |
   AGENTS.md
   CLAUDE.md
   /matrix-v1.18-spec/
   /matrix-v1.19-spec/
   /matrix-v1.18-client-server-api*.md
-  /security-audit-report-*.html
   /todos/audit-*-handover.md
   /adr/template.md
 
@@ -92,8 +91,6 @@ nav:
       - Cryptographic boundary: crypto-boundary.md
       - Security coding rules: security-coding-rules.md
       - Security review checklist: security-review-checklist.md
-      - Audit report (29 September 2026): security-audit-report-2026-09-29.md
-      - Conformance audit (17 October 2026): conformance-audit-report-2026-10-17.md
   - Operations:
       - Platform support: platform-support.md
       - Trust and safety: trust-safety.md
