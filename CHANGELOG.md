@@ -1,3 +1,7 @@
+## 0.12.73
+
+Lazy-loading of room members on `/sync` and `/context`.
+
 ## 0.12.72
 
 The high severity findings of the November project analysis (ref 8af381cf). Complement in CI was left out on the owner's
