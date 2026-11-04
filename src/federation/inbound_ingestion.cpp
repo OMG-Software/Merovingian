@@ -6,14 +6,17 @@
 #include "merovingian/canonicaljson/parser.hpp"
 #include "merovingian/canonicaljson/serializer.hpp"
 #include "merovingian/canonicaljson/value.hpp"
+#include "merovingian/crypto/generic_hash.hpp"
 #include "merovingian/events/event_id.hpp"
 #include "merovingian/events/limits.hpp"
 #include "merovingian/events/state_resolution.hpp"
+#include "merovingian/events/unsigned_data.hpp"
 #include "merovingian/observability/logger.hpp"
 #include "merovingian/observability/observability.hpp"
 #include "merovingian/rooms/room_version_policy.hpp"
 
 #include <algorithm>
+#include <array>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -77,6 +80,52 @@ namespace
 
 } // namespace
 
+auto pdu_format_violation(canonicaljson::Value const& event, rooms::RoomVersionPolicy const& policy) -> std::string
+{
+    auto const* root = std::get_if<canonicaljson::Object>(&event.storage());
+    if (root == nullptr)
+    {
+        return "PDU root is not an object";
+    }
+    auto const serialized = canonicaljson::serialize_canonical(event);
+    if (serialized.error != canonicaljson::CanonicalJsonError::none ||
+        serialized.output.size() > events::max_event_size_bytes)
+    {
+        return "PDU exceeds 65536 byte size limit";
+    }
+    auto const reference_hash_ids = policy.event_id_format == rooms::EventIdFormat::reference_hash;
+    // rooms/v3.md: "the `event_id` field is no longer included"; the receiver computes it.
+    if (reference_hash_ids && find_member(*root, "event_id") != nullptr)
+    {
+        return "PDU carries event_id";
+    }
+    auto const reference_list_violation = [&](std::string_view name, std::size_t limit) -> std::string {
+        auto const* value = find_member(*root, name);
+        auto const* array = value == nullptr ? nullptr : std::get_if<canonicaljson::Array>(&value->storage());
+        if (array == nullptr)
+        {
+            return std::string{name} + " is not an array";
+        }
+        if (array->size() > limit)
+        {
+            return std::string{name} + " exceeds " + std::to_string(limit) + " event limit";
+        }
+        // Room versions 1 and 2 list [event_id, hashes] pairs here, not strings.
+        if (reference_hash_ids && !std::ranges::all_of(*array, [](canonicaljson::Value const& entry) {
+                return std::holds_alternative<std::string>(entry.storage());
+            }))
+        {
+            return std::string{name} + " holds an entry that is not an event ID";
+        }
+        return {};
+    };
+    if (auto violation = reference_list_violation("prev_events", events::max_prev_events_per_event); !violation.empty())
+    {
+        return violation;
+    }
+    return reference_list_violation("auth_events", events::max_auth_events_per_event);
+}
+
 auto parse_inbound_pdu_envelope(std::string_view pdu_json) -> std::optional<InboundPduEnvelope>
 {
     return parse_inbound_pdu_envelope(pdu_json, "12");
@@ -136,6 +185,13 @@ auto parse_inbound_pdu_envelope(std::string_view pdu_json, std::string_view room
         });
         return std::nullopt;
     }
+    if (auto const violation = pdu_format_violation(parsed.value, *room_version_policy); !violation.empty())
+    {
+        log_diagnostic("pdu.parse.rejected", {
+                                                 {"reason", violation, false}
+        });
+        return std::nullopt;
+    }
     auto const event_id_result = events::make_reference_hash_event_id(parsed.value, *room_version_policy);
     if (event_id_result.event_id.empty())
     {
@@ -167,30 +223,24 @@ auto parse_inbound_pdu_envelope(std::string_view pdu_json, std::string_view room
     }
     out.origin_server_ts = envelope.event.origin_server_ts;
     out.signatures = envelope.event.signatures;
-    out.json = std::string{pdu_json};
+    // The relaying server's `unsigned` is covered by no signature or hash (ADR-0402): the envelope,
+    // and so everything stored from it, never holds it.
+    auto stripped_json = events::without_unsigned_json(pdu_json);
+    if (!stripped_json.has_value())
+    {
+        log_diagnostic("pdu.parse.rejected", {
+                                                 {"reason", "unsigned could not be removed from the PDU", false}
+        });
+        return std::nullopt;
+    }
+    out.json = std::move(*stripped_json);
 
     if (auto const* prev_value = find_member(*root, "prev_events"); prev_value != nullptr)
     {
-        if (auto const* prev_array = std::get_if<canonicaljson::Array>(&prev_value->storage());
-            prev_array != nullptr && prev_array->size() > events::max_prev_events_per_event)
-        {
-            log_diagnostic("pdu.parse.rejected", {
-                                                     {"reason", "prev_events exceeds 20 event limit", false}
-            });
-            return std::nullopt;
-        }
         out.prev_event_ids = extract_string_array(*prev_value);
     }
     if (auto const* auth_value = find_member(*root, "auth_events"); auth_value != nullptr)
     {
-        if (auto const* auth_array = std::get_if<canonicaljson::Array>(&auth_value->storage());
-            auth_array != nullptr && auth_array->size() > events::max_auth_events_per_event)
-        {
-            log_diagnostic("pdu.parse.rejected", {
-                                                     {"reason", "auth_events exceeds 10 event limit", false}
-            });
-            return std::nullopt;
-        }
         out.auth_event_ids = extract_string_array(*auth_value);
     }
     // Spec: Room Version 12 (MSC4291) — the m.room.create event MUST NOT appear
@@ -349,6 +399,13 @@ auto parse_inbound_edu_envelope(std::string_view edu_type, std::string_view orig
     out.content_json = std::string{content_json};
     out.origin = std::string{origin};
     return out;
+}
+
+auto edu_relay_digest(std::string_view edu_type, std::string_view content_json) -> std::optional<std::string>
+{
+    auto const type_length = std::to_string(edu_type.size());
+    auto const pieces = std::array<std::string_view, 4U>{type_length, ":", edu_type, content_json};
+    return crypto::generic_hash(pieces);
 }
 
 } // namespace merovingian::federation

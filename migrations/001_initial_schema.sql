@@ -63,8 +63,10 @@ CREATE TABLE "key_signatures" (signer_user_id TEXT NOT NULL, target_user_id TEXT
 CREATE TABLE "key_backups" (user_id TEXT NOT NULL, version TEXT NOT NULL, json TEXT NOT NULL, PRIMARY KEY (user_id, version))
 -- statement create_key_backup_versions
 CREATE TABLE "key_backup_versions" (user_id TEXT NOT NULL, version TEXT NOT NULL, json TEXT NOT NULL, PRIMARY KEY (user_id, version))
+-- statement create_key_backup_version_counters
+CREATE TABLE "key_backup_version_counters" (user_id TEXT PRIMARY KEY, last_version TEXT NOT NULL)
 -- statement create_key_backup_sessions
-CREATE TABLE "key_backup_sessions" (user_id TEXT NOT NULL, version TEXT NOT NULL, room_id TEXT NOT NULL, session_id TEXT NOT NULL, json TEXT NOT NULL, PRIMARY KEY (user_id, version, room_id, session_id))
+CREATE TABLE "key_backup_sessions" (user_id TEXT NOT NULL, version TEXT NOT NULL, room_id TEXT NOT NULL, session_id TEXT NOT NULL, json TEXT NOT NULL, PRIMARY KEY (user_id, version, room_id, session_id), FOREIGN KEY (user_id, version) REFERENCES key_backup_versions (user_id, version) ON DELETE CASCADE)
 -- statement create_media
 CREATE TABLE "media" (media_id TEXT PRIMARY KEY, owner_user_id TEXT NOT NULL, content_type TEXT NOT NULL, size_bytes TEXT NOT NULL, hash_algorithm TEXT NOT NULL, digest TEXT NOT NULL, quarantined TEXT NOT NULL, removed TEXT NOT NULL, legacy_endpoint_visible TEXT NOT NULL DEFAULT 'true', upload_name TEXT NOT NULL DEFAULT '')
 -- statement create_media_blobs
@@ -96,7 +98,7 @@ CREATE TABLE "event_stream_watermark" (singleton INTEGER PRIMARY KEY CHECK (sing
 -- statement create_profiles
 CREATE TABLE "profiles" (user_id TEXT PRIMARY KEY, displayname TEXT NOT NULL DEFAULT '', avatar_url TEXT NOT NULL DEFAULT '')
 -- statement create_client_txn_ids
-CREATE TABLE "client_txn_ids" (user_id TEXT NOT NULL, room_id TEXT NOT NULL, event_type TEXT NOT NULL, txn_id TEXT NOT NULL, event_id TEXT NOT NULL, device_id TEXT NOT NULL DEFAULT '', PRIMARY KEY (user_id, room_id, event_type, txn_id))
+CREATE TABLE "client_txn_ids" (user_id TEXT NOT NULL, room_id TEXT NOT NULL, event_type TEXT NOT NULL, txn_id TEXT NOT NULL, event_id TEXT NOT NULL, device_id TEXT NOT NULL DEFAULT '', created_at_ms TEXT NOT NULL DEFAULT '0', PRIMARY KEY (user_id, device_id, room_id, event_type, txn_id))
 -- statement create_pushers
 CREATE TABLE "pushers" (user_id TEXT NOT NULL, app_id TEXT NOT NULL, pushkey TEXT NOT NULL, kind TEXT NOT NULL, app_display_name TEXT NOT NULL DEFAULT '', device_display_name TEXT NOT NULL DEFAULT '', profile_tag TEXT NOT NULL DEFAULT '', lang TEXT NOT NULL DEFAULT '', data_url TEXT NOT NULL DEFAULT '', data_format TEXT NOT NULL DEFAULT '', data_extra_json TEXT NOT NULL DEFAULT '', device_id TEXT NOT NULL DEFAULT '', PRIMARY KEY (user_id, app_id, pushkey))
 -- statement create_notifications

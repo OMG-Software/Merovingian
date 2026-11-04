@@ -138,7 +138,9 @@ off Linux, so `is_ready()` refused to start every BSD server, on platforms that 
 documented Tier 1.
 
 NetBSD is still refused, on purpose. It has no syscall confinement for the thumbnail
-decoder, so its seccomp check stays a blocker until it does (ADR-0378).
+decoder, so its seccomp check stays a blocker until it does (ADR-0378). The decoder
+itself refuses to run there as well (ADR-0419), so opening the startup gate would not
+by itself make NetBSD decode unconfined images.
 
 | Control | Linux | FreeBSD | OpenBSD | NetBSD |
 |---|---|---|---|---|
@@ -162,11 +164,20 @@ already open and it needs nothing else for the rest of its life.
 | Linux | seccomp-bpf syscall allowlist (`platform::apply_decoder_seccomp_filter()`) |
 | OpenBSD | `pledge("stdio")` |
 | FreeBSD | Capsicum capability mode (`cap_enter`) |
-| NetBSD | **rlimits only** — no equivalent in-process primitive |
+| NetBSD | **none: the worker refuses to decode** — no equivalent in-process primitive |
 
-NetBSD is the remaining gap. Until one exists, run the worker under whatever
-confinement the service manager provides; the rlimits (address space, CPU, file
-size, descriptor count) still apply.
+On NetBSD `apply_decoder_hardening()` refuses with `no platform decoder sandbox`,
+before it applies anything, so the worker exits `1` without reading its input and
+no thumbnail is produced (ADR-0419). Resource limits alone would leave a decoder
+exploit able to read everything the server's uid can, including the master key
+file, the database URI file and the TLS keys. The server asks the worker for its
+library report once at startup; there the refusal appears as a
+`Thumbnail worker libraries not reported` warning. Every thumbnail request is
+answered `404` by the ordinary worker-failure path, and no worker is left running.
+NetBSD is also refused at server startup (ADR-0378), so today this is a second,
+independent barrier. There will be no thumbnails on NetBSD until privilege
+separation comes from outside the server process (a dedicated unprivileged user or
+a chroot for the worker), at which point the platform ladder gets a NetBSD branch.
 
 The library report the server requests at startup (0.12.45) and `--version` are
 answered inside the same sandbox: the worker applies its hardening first and only
@@ -733,7 +744,8 @@ warning until the server is restarted (ADR-0377).
 
 No in-process sandbox primitives are implemented, and a NetBSD server refuses to
 start: its seccomp check stays `unknown` until the thumbnail decoder has real
-confinement (ADR-0378). The `rc.d` scripts only select the service user.
+confinement (ADR-0378). The thumbnail worker refuses to decode on NetBSD
+(`no platform decoder sandbox`, ADR-0419): there are no thumbnails there. The `rc.d` scripts only select the service user.
 
 * The portable `setrlimit` gates are validated by the BSD hardening profile, and
   the thumbnail worker applies `RLIMIT_CPU`, `RLIMIT_FSIZE`, `RLIMIT_CORE`,

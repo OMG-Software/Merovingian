@@ -84,7 +84,9 @@ and existing registration behavior are not superseded by this narrow repair.
   its existing drop-at-cap behavior remains. Use at least two global slots when
   parallel isolation is required.
 * Several recipients can collectively fill the global budget. This is not a
-  fairness guarantee or a persistent scheduler.
+  fairness guarantee or a persistent scheduler. *Refined by
+  [ADR-0409](0409-count-a-slow-gateway-answer-as-a-failure-and-bound-a-delivery-batch.md): how long a
+  batch holds a slot, and how many can wait on one gateway host or address, are now bounded.*
 * The fixed ceiling of eight is deployment policy, not a Matrix protocol maximum.
 * Runtime moves remain startup-only, as with the existing captured-runtime
   background work. Moving a runtime while tasks run is not supported here.

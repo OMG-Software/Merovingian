@@ -66,6 +66,12 @@ Manages schema migrations and provides a dual-backend (SQLite / PostgreSQL) pers
     never `remove_if` over the victims. `store_account_data` and the capped writers refuse content over
     `max_account_data_row_bytes` (ADR-0339).
 
+12. **A client transaction record is keyed by its device, and only to-device records are pruned** (ADR-0380, ADR-0381).
+    `find_client_txn_event_id` takes the device; `prune_to_device_client_txns` deletes records with `room_id` empty and
+    rebuilds both position indexes, and must never touch a room-send row (`unsigned.transaction_id` is served from it).
+    A key backup version is created by `create_key_backup_version` and deleted by `delete_key_backup_version` with its
+    sessions in one transaction (ADR-0384): never reissue a number, and never delete a version row on its own.
+
 ## Reloading a room (F-27, ADR-0360)
 
 `reload_room` is `load_room_snapshot` (the database read; touches no row of the store, takes no lock) followed by

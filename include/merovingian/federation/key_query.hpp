@@ -7,6 +7,7 @@
 
 #include <cstdint>
 #include <optional>
+#include <span>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -82,6 +83,14 @@ struct RemoteKeyClaimKeys final
 // is omitted when it has none. std::nullopt only if serialisation fails.
 [[nodiscard]] auto build_device_list_update_content(database::PersistentStore const& store, std::string_view user_id,
                                                     std::string_view device_id, std::int64_t stream_id)
+    -> std::optional<std::string>;
+
+// Builds the content of an `m.device_list_update` EDU announcing that one of
+// `user_id`'s devices has been deleted: `deleted: true`, the device ID, the
+// stream_id and the `prev_id` list, and no `keys` or `device_display_name`
+// (the device no longer exists). std::nullopt only if serialisation fails.
+[[nodiscard]] auto build_device_deleted_update_content(std::string_view user_id, std::string_view device_id,
+                                                       std::int64_t stream_id, std::span<std::int64_t const> prev_ids)
     -> std::optional<std::string>;
 
 // Builds the response body for `POST /_matrix/federation/v1/user/keys/claim`

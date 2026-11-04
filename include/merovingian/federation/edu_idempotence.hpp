@@ -87,14 +87,17 @@ private:
 // The `message_id` a sending server puts on the `m.direct_to_device` EDU for a
 // client's `PUT /sendToDevice/{eventType}/{txnId}` request.
 //
-// Client transaction IDs are only unique per user, and may be longer than the
+// Client transaction IDs are only unique per device, and may be longer than the
 // 32 codepoints the spec allows, so the raw txn id is not a usable message_id.
-// The ID is instead a hash of (sender, event type, txn id): the same request
-// always yields the same ID (a client retry is recognised as a replay by the
-// receiver), two senders never share one, and it is always 24 characters of
-// URL-safe base64. Each input is length-prefixed before hashing, so no shift of
-// bytes between them can collide. Returns std::nullopt if hashing fails.
-[[nodiscard]] auto derive_direct_to_device_message_id(std::string_view sender, std::string_view event_type,
-                                                      std::string_view txn_id) -> std::optional<std::string>;
+// The ID is instead a hash of (sender, sender device, event type, txn id): the
+// same request always yields the same ID (a client retry is recognised as a
+// replay by the receiver), two senders never share one, two devices of one
+// sender that reuse a txnId do not share one (F-52, ADR-0380), and it is always
+// 24 characters of URL-safe base64. Each input is length-prefixed before
+// hashing, so no shift of bytes between them can collide. `sender_device` is
+// empty for a request with no device. Returns std::nullopt if hashing fails.
+[[nodiscard]] auto derive_direct_to_device_message_id(std::string_view sender, std::string_view sender_device,
+                                                      std::string_view event_type, std::string_view txn_id)
+    -> std::optional<std::string>;
 
 } // namespace merovingian::federation

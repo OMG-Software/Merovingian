@@ -17,13 +17,17 @@
 #include "../support/registration_token.hpp"
 #include "merovingian/config/config.hpp"
 #include "merovingian/homeserver/client_server.hpp"
+#include "merovingian/homeserver/runtime_mutex.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <filesystem>
 #include <fstream>
+#include <future>
+#include <mutex>
 #include <string>
 #include <string_view>
 #include <tuple>
@@ -450,6 +454,72 @@ SCENARIO("identity assertion does not apply to Account Management", "[appservice
             }
         }
 
+        std::filesystem::remove(path_a);
+        std::filesystem::remove(path_b);
+    }
+}
+
+// Security audit run 2, F-66. The device-known check of an appservice's ?device_id= assertion reads
+// the store's device list, which every login, registration and device deletion changes under
+// runtime.mutex. The check runs ahead of the dispatcher's own lock, so it must take the lock itself.
+//
+// Spec: Matrix Application Service API v1.19, Identity assertion
+// URL: ../../docs/matrix-v1.19-spec/application-service-api.md
+//
+// Spec MUST: "If the given device ID is not known to belong to the user, the server will return a
+// 400 M_UNKNOWN_DEVICE error."
+SCENARIO("an appservice's device_id assertion reads the device table under the runtime lock",
+         "[appservice][conformance][auth][f66]")
+{
+    GIVEN("service A with a registered user, and this thread holding the runtime lock")
+    {
+        auto const path_a = std::filesystem::temp_directory_path() / "merovingian-conformance-f66-a.json";
+        auto const path_b = std::filesystem::temp_directory_path() / "merovingian-conformance-f66-b.json";
+        auto const config = overlapping_services_config(path_a, path_b);
+        auto started = merovingian::homeserver::start_client_server(config);
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        REQUIRE(register_as_user(runtime, service_a_token, "_a_alice").response.status == 200U);
+
+        auto lock = std::unique_lock<merovingian::homeserver::RuntimeMutex>{runtime.homeserver.mutex};
+        auto pending = std::async(std::launch::async, [&runtime]() {
+            return merovingian::homeserver::handle_client_server_request(
+                runtime, {"GET",
+                          "/_matrix/client/v3/account/whoami?user_id=@_a_alice:example.org&device_id=NODEVICE",
+                          std::string{service_a_token},
+                          {}});
+        });
+
+        WHEN("service A asserts a device_id while the lock is held elsewhere")
+        {
+            auto const waited = pending.wait_for(std::chrono::milliseconds{300});
+
+            THEN("the check waits for the lock instead of reading the device list unprotected")
+            {
+                REQUIRE(waited == std::future_status::timeout);
+            }
+
+            AND_WHEN("the lock is released")
+            {
+                lock.unlock();
+                auto const response = pending.get();
+
+                THEN("the unknown device is refused with 400 M_UNKNOWN_DEVICE")
+                {
+                    CHECK(response.response.status == 400U);
+                    CHECK(response.response.body.find("M_UNKNOWN_DEVICE") != std::string::npos);
+                }
+            }
+        }
+
+        if (lock.owns_lock())
+        {
+            lock.unlock();
+        }
+        if (pending.valid())
+        {
+            pending.wait();
+        }
         std::filesystem::remove(path_a);
         std::filesystem::remove(path_b);
     }

@@ -876,6 +876,10 @@ namespace
                              store.key_backup_versions.push_back(
                                  {column_text(row, 0), column_text(row, 1), column_text(row, 2)});
                          }) &&
+               load_rows(connection, "SELECT user_id, last_version FROM key_backup_version_counters",
+                         [&store](sqlite3_stmt& row) {
+                             store.key_backup_version_high_water[column_text(row, 0)] = parse_u64(column_text(row, 1));
+                         }) &&
                load_rows(connection, "SELECT user_id, version, room_id, session_id, json FROM key_backup_sessions",
                          [&store](sqlite3_stmt& row) {
                              store.key_backup_sessions.push_back({column_text(row, 0), column_text(row, 1),
@@ -1009,12 +1013,14 @@ namespace
                    [&store](sqlite3_stmt& row) {
                        store.room_aliases.push_back({column_text(row, 0), column_text(row, 1), column_text(row, 2)});
                    }) &&
-               load_rows(
-                   connection, "SELECT user_id, room_id, event_type, txn_id, event_id, device_id FROM client_txn_ids",
-                   [&store](sqlite3_stmt& row) {
-                       store.client_txn_ids.push_back({column_text(row, 0), column_text(row, 1), column_text(row, 2),
-                                                       column_text(row, 3), column_text(row, 4), column_text(row, 5)});
-                   }) &&
+               load_rows(connection,
+                         "SELECT user_id, room_id, event_type, txn_id, event_id, device_id, created_at_ms FROM "
+                         "client_txn_ids",
+                         [&store](sqlite3_stmt& row) {
+                             store.client_txn_ids.push_back(
+                                 {column_text(row, 0), column_text(row, 1), column_text(row, 2), column_text(row, 3),
+                                  column_text(row, 4), column_text(row, 5), parse_u64(column_text(row, 6))});
+                         }) &&
                load_rows(connection,
                          "SELECT user_id, app_id, pushkey, kind, app_display_name, device_display_name, "
                          "profile_tag, lang, data_url, data_format, data_extra_json, device_id FROM pushers ORDER BY "

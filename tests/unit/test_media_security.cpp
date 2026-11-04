@@ -1328,3 +1328,34 @@ SCENARIO("content_type_is_inline_safe reads a spelling variant of a safe type as
         }
     }
 }
+
+SCENARIO("mxc_uri_is_valid accepts only mxc://<server-name>/<media-id> with a spec media ID", "[media][security][mxc]")
+{
+    GIVEN("candidate Matrix Content URIs")
+    {
+        WHEN("each is checked against the Matrix Content URI grammar")
+        {
+            THEN("well-formed URIs are accepted")
+            {
+                REQUIRE(merovingian::media::mxc_uri_is_valid("mxc://example.org/abc123"));
+                REQUIRE(merovingian::media::mxc_uri_is_valid("mxc://hs2/AbC_-123"));
+                REQUIRE(merovingian::media::mxc_uri_is_valid("mxc://example.org:8448/abc"));
+            }
+            AND_THEN("anything else is refused")
+            {
+                REQUIRE_FALSE(merovingian::media::mxc_uri_is_valid(""));
+                REQUIRE_FALSE(merovingian::media::mxc_uri_is_valid("https://example.org/abc"));
+                REQUIRE_FALSE(merovingian::media::mxc_uri_is_valid("MXC://example.org/abc"));
+                REQUIRE_FALSE(merovingian::media::mxc_uri_is_valid("mxc://"));
+                REQUIRE_FALSE(merovingian::media::mxc_uri_is_valid("mxc://example.org"));
+                REQUIRE_FALSE(merovingian::media::mxc_uri_is_valid("mxc://example.org/"));
+                REQUIRE_FALSE(merovingian::media::mxc_uri_is_valid("mxc:///abc"));
+                REQUIRE_FALSE(merovingian::media::mxc_uri_is_valid("mxc://example.org/a/b"));
+                REQUIRE_FALSE(merovingian::media::mxc_uri_is_valid("mxc://example.org/a.b"));
+                REQUIRE_FALSE(merovingian::media::mxc_uri_is_valid("mxc://example.org/a?b"));
+                REQUIRE_FALSE(merovingian::media::mxc_uri_is_valid("mxc://exa mple.org/abc"));
+                REQUIRE_FALSE(merovingian::media::mxc_uri_is_valid(std::string{"mxc://example.org/a\0b", 21U}));
+            }
+        }
+    }
+}

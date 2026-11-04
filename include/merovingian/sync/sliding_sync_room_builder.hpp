@@ -76,17 +76,24 @@ enum class TimelineExpansion : std::uint8_t
 // `timeline_upper_bound`, when given, is the event position the response's pos
 // names (ADR-0247): the timeline holds nothing above it.
 //
+// `device_id` — the requesting device. Every timeline and required_state event's `unsigned` is built
+//                from what the server computes for this viewer (ADR-0402): never the stored copy, and
+//                `transaction_id` only when this device sent the event (sync::ViewerEventUnsigned).
+//
 // The timeline is the newest timeline_limit visible events. `limited` is set when
 // older visible events exist that it does not hold (after the floor, or at all for
 // an initial or expanded room), and `prev_batch` names the position /messages
 // pages back from.
-[[nodiscard]] auto build_room_response(
-    homeserver::HomeserverRuntime const& rt, std::string_view room_id, std::string_view user,
-    SlidingSyncRoomSubscription const& sub, std::uint64_t room_since_event_ordering, bool is_initial,
-    database::PersistentStore const& store, std::unordered_set<std::string> const& lazy_members_already_sent = {},
-    std::unordered_set<std::string> const& ignored_senders = {}, TimelineExpansion expansion = TimelineExpansion::none,
-    std::optional<std::uint64_t> room_last_sent_ordering = std::nullopt,
-    std::optional<std::uint64_t> timeline_upper_bound = std::nullopt) -> SlidingSyncRoomResponse;
+[[nodiscard]] auto build_room_response(homeserver::HomeserverRuntime const& rt, std::string_view room_id,
+                                       std::string_view user, SlidingSyncRoomSubscription const& sub,
+                                       std::uint64_t room_since_event_ordering, bool is_initial,
+                                       database::PersistentStore const& store,
+                                       std::unordered_set<std::string> const& lazy_members_already_sent = {},
+                                       std::unordered_set<std::string> const& ignored_senders = {},
+                                       TimelineExpansion expansion = TimelineExpansion::none,
+                                       std::optional<std::uint64_t> room_last_sent_ordering = std::nullopt,
+                                       std::optional<std::uint64_t> timeline_upper_bound = std::nullopt,
+                                       std::string_view device_id = {}) -> SlidingSyncRoomResponse;
 
 // As above, with the request's shared `visibility` filter (CSAZ-3). A sliding sync request
 // serves many rooms for one user, so the caller builds ONE HistoryVisibility for the whole
@@ -94,14 +101,17 @@ enum class TimelineExpansion : std::uint8_t
 // The timeline only ever contains events `visibility` lets the user see. `unread` is the
 // request's one classifier of unread events (R15), shared across rooms in the same way. The
 // overload above builds a filter and a classifier of its own for a single room.
-[[nodiscard]] auto build_room_response(
-    homeserver::HomeserverRuntime const& rt, std::string_view room_id, std::string_view user,
-    SlidingSyncRoomSubscription const& sub, std::uint64_t room_since_event_ordering, bool is_initial,
-    database::PersistentStore const& store, std::unordered_set<std::string> const& lazy_members_already_sent,
-    std::unordered_set<std::string> const& ignored_senders, HistoryVisibility& visibility,
-    UnreadEventClassifier const& unread, TimelineExpansion expansion = TimelineExpansion::none,
-    std::optional<std::uint64_t> room_last_sent_ordering = std::nullopt,
-    std::optional<std::uint64_t> timeline_upper_bound = std::nullopt) -> SlidingSyncRoomResponse;
+[[nodiscard]] auto build_room_response(homeserver::HomeserverRuntime const& rt, std::string_view room_id,
+                                       std::string_view user, SlidingSyncRoomSubscription const& sub,
+                                       std::uint64_t room_since_event_ordering, bool is_initial,
+                                       database::PersistentStore const& store,
+                                       std::unordered_set<std::string> const& lazy_members_already_sent,
+                                       std::unordered_set<std::string> const& ignored_senders,
+                                       HistoryVisibility& visibility, UnreadEventClassifier const& unread,
+                                       TimelineExpansion expansion = TimelineExpansion::none,
+                                       std::optional<std::uint64_t> room_last_sent_ordering = std::nullopt,
+                                       std::optional<std::uint64_t> timeline_upper_bound = std::nullopt,
+                                       std::string_view device_id = {}) -> SlidingSyncRoomResponse;
 
 // Combine a list's room-config fields with a room_subscription's, per MSC4186
 // room-config combination: when a room matches both a list and a

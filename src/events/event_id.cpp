@@ -4,6 +4,7 @@
 #include "merovingian/events/event_id.hpp"
 
 #include "merovingian/canonicaljson/serializer.hpp"
+#include "merovingian/events/limits.hpp"
 #include "merovingian/events/redaction.hpp"
 
 #include <algorithm>
@@ -109,6 +110,21 @@ auto event_id_is_valid(std::string_view event_id) noexcept -> bool
     return true;
 }
 
+auto event_id_is_acceptable_in_receipt(std::string_view event_id) noexcept -> bool
+{
+    if (event_id.size() > max_id_length_bytes)
+    {
+        return false;
+    }
+    // A version 3 event ID is standard base64, whose `+` and `/` the URL-safe grammar lacks.
+    return event_id_is_valid(event_id) ||
+           (event_id.size() >= 3U && event_id.front() == '$' &&
+            std::ranges::all_of(event_id.substr(1U), [](char character) {
+                return (character >= 'A' && character <= 'Z') || (character >= 'a' && character <= 'z') ||
+                       (character >= '0' && character <= '9') || character == '+' || character == '/';
+            }));
+}
+
 auto make_content_hash_id(canonicaljson::Value const& event, rooms::RoomVersionPolicy const& policy) -> EventIdResult
 {
     return make_reference_hash_event_id(event, policy);
@@ -164,6 +180,29 @@ auto make_reference_hash_event_id(canonicaljson::Value const& event, rooms::Room
         return {{}, hash.error};
     }
 
+    return {"$" + hash.sha256, {}};
+}
+
+auto make_noncanonical_event_id_label(canonicaljson::Value const& event, rooms::RoomVersionPolicy const& policy)
+    -> EventIdResult
+{
+    auto const redacted = redact_event(event, policy);
+    auto const* object = std::get_if<canonicaljson::Object>(&redacted.event.storage());
+    if (!redacted.error.empty() || object == nullptr)
+    {
+        return {{}, redacted.error.empty() ? "event is not an object" : redacted.error};
+    }
+    auto const serialized = canonicaljson::serialize_canonical(
+        canonicaljson::Value{clone_without_fields(*object, {"signatures", "unsigned"})});
+    if (serialized.error != canonicaljson::CanonicalJsonError::none)
+    {
+        return {{}, canonicaljson::canonical_json_error_name(serialized.error)};
+    }
+    auto const hash = sha256_base64(serialized.output, policy.event_id_url_safe_base64);
+    if (!hash.error.empty())
+    {
+        return {{}, hash.error};
+    }
     return {"$" + hash.sha256, {}};
 }
 

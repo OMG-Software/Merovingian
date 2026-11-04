@@ -474,7 +474,7 @@ SCENARIO("Persistent client transaction records keep the first response and scop
             REQUIRE(merovingian::database::store_client_txn(store, duplicate));
 
             auto const replay = merovingian::database::find_client_txn_event_id(
-                store, "@alice:example.org", "!room-a:example.org", "m.room.message", "txn-1");
+                store, "@alice:example.org", "", "!room-a:example.org", "m.room.message", "txn-1");
 
             THEN("the original event id is preserved and the duplicate retry does not add a second row")
             {
@@ -499,12 +499,12 @@ SCENARIO("Persistent client transaction records keep the first response and scop
             {
                 REQUIRE(store.client_txn_ids.size() == 3U);
                 REQUIRE(merovingian::database::find_client_txn_event_id(
-                            store, "@alice:example.org", "!room-a:example.org", "m.room.message", "txn-1") ==
+                            store, "@alice:example.org", "", "!room-a:example.org", "m.room.message", "txn-1") ==
                         std::optional<std::string>{"$event-a"});
                 REQUIRE(merovingian::database::find_client_txn_event_id(
-                            store, "@alice:example.org", "!room-b:example.org", "m.room.message", "txn-1") ==
+                            store, "@alice:example.org", "", "!room-b:example.org", "m.room.message", "txn-1") ==
                         std::optional<std::string>{"$event-b"});
-                REQUIRE(merovingian::database::find_client_txn_event_id(store, "@alice:example.org",
+                REQUIRE(merovingian::database::find_client_txn_event_id(store, "@alice:example.org", "",
                                                                         "!room-a:example.org", "m.reaction", "txn-1") ==
                         std::optional<std::string>{"$event-c"});
             }
@@ -805,13 +805,13 @@ SCENARIO("The client transaction index stays consistent through insert, hydrate 
             REQUIRE(third->user_id == "@bob:example.org");
             REQUIRE(merovingian::database::find_client_txn_by_event_id(checked, "$unknown") == nullptr);
             // Behaviour: the idempotency lookup still answers by its own key.
-            REQUIRE(merovingian::database::find_client_txn_event_id(checked, "@alice:example.org", "!room:example.org",
-                                                                    "m.room.message",
+            REQUIRE(merovingian::database::find_client_txn_event_id(checked, "@alice:example.org", "DEVA",
+                                                                    "!room:example.org", "m.room.message",
                                                                     "t1") == std::optional<std::string>{"$e1"});
-            REQUIRE(merovingian::database::find_client_txn_event_id(checked, "@bob:example.org", "!room:example.org",
-                                                                    "m.room.message",
+            REQUIRE(merovingian::database::find_client_txn_event_id(checked, "@bob:example.org", "DEVB",
+                                                                    "!room:example.org", "m.room.message",
                                                                     "t1") == std::optional<std::string>{"$e3"});
-            REQUIRE_FALSE(merovingian::database::find_client_txn_event_id(checked, "@bob:example.org",
+            REQUIRE_FALSE(merovingian::database::find_client_txn_event_id(checked, "@bob:example.org", "DEVB",
                                                                           "!room:example.org", "m.room.message", "t2")
                               .has_value());
         };
@@ -863,7 +863,7 @@ SCENARIO("The client transaction index stays consistent through insert, hydrate 
                 copied.client_txn_ids.push_back(
                     {"@carol:example.org", "!room:example.org", "m.room.message", "t9", "$e9", "DEVC"});
                 REQUIRE(merovingian::database::find_client_txn_by_event_id(copied, "$e9") != nullptr);
-                REQUIRE(merovingian::database::find_client_txn_event_id(copied, "@carol:example.org",
+                REQUIRE(merovingian::database::find_client_txn_event_id(copied, "@carol:example.org", "DEVC",
                                                                         "!room:example.org", "m.room.message",
                                                                         "t9") == std::optional<std::string>{"$e9"});
             }
@@ -2334,9 +2334,9 @@ SCENARIO("Database schema inventory covers the core Matrix tables", "[database][
             {
                 // Every table belongs to the v1 schema: the pre-1.0 migration chain
                 // collapsed into it, so the initial and current inventories match.
-                REQUIRE(tables.size() == 62U);
+                REQUIRE(tables.size() == 63U);
                 REQUIRE(merovingian::database::current_schema_version() == 1U);
-                REQUIRE(merovingian::database::current_schema_tables().size() == 62U);
+                REQUIRE(merovingian::database::current_schema_tables().size() == 63U);
                 REQUIRE(users_definition.has_value());
                 REQUIRE(current_state_definition.has_value());
                 REQUIRE(room_aliases_definition.has_value());
@@ -4251,5 +4251,268 @@ SCENARIO("Room account data is stored within a per-room cap of distinct types",
                 REQUIRE(store.account_data.size() == rows_before);
             }
         }
+    }
+}
+
+// Spec (client-server-api.md, "Transaction identifiers"): a transaction ID is scoped to a device and an
+// endpoint, so another device of the same user that reuses an ID is making a new request (F-52, ADR-0380).
+SCENARIO("A client transaction record is scoped to the device that made the request",
+         "[database][persistence][client-txn][run2][f52]")
+{
+    GIVEN("a store holding alice's room send txn-1 from her device PHONE")
+    {
+        auto store = merovingian::database::PersistentStore{};
+        REQUIRE(merovingian::database::store_client_txn(
+            store, {"@alice:example.org", "!room:example.org", "m.room.message", "txn-1", "$phone", "PHONE"}));
+
+        WHEN("her device LAPTOP looks up and then records the same transaction ID")
+        {
+            auto const before = merovingian::database::find_client_txn_event_id(
+                store, "@alice:example.org", "LAPTOP", "!room:example.org", "m.room.message", "txn-1");
+            REQUIRE(merovingian::database::store_client_txn(
+                store, {"@alice:example.org", "!room:example.org", "m.room.message", "txn-1", "$laptop", "LAPTOP"}));
+
+            THEN("it was not a retransmission, and each device finds its own record")
+            {
+                REQUIRE_FALSE(before.has_value());
+                REQUIRE(store.client_txn_ids.size() == 2U);
+                REQUIRE(store.client_txn_indexed_rows == store.client_txn_ids.size());
+                REQUIRE(merovingian::database::find_client_txn_event_id(
+                            store, "@alice:example.org", "PHONE", "!room:example.org", "m.room.message", "txn-1") ==
+                        std::optional<std::string>{"$phone"});
+                REQUIRE(merovingian::database::find_client_txn_event_id(
+                            store, "@alice:example.org", "LAPTOP", "!room:example.org", "m.room.message", "txn-1") ==
+                        std::optional<std::string>{"$laptop"});
+            }
+        }
+
+        WHEN("the same device records the transaction ID again")
+        {
+            REQUIRE(merovingian::database::store_client_txn(
+                store, {"@alice:example.org", "!room:example.org", "m.room.message", "txn-1", "$again", "PHONE"}));
+
+            THEN("it is a retransmission: the first record stays and no row is added")
+            {
+                REQUIRE(store.client_txn_ids.size() == 1U);
+                REQUIRE(merovingian::database::find_client_txn_event_id(
+                            store, "@alice:example.org", "PHONE", "!room:example.org", "m.room.message", "txn-1") ==
+                        std::optional<std::string>{"$phone"});
+            }
+        }
+
+        WHEN("a request with no device (an appservice token without one) uses the same transaction ID")
+        {
+            auto const before = merovingian::database::find_client_txn_event_id(
+                store, "@alice:example.org", "", "!room:example.org", "m.room.message", "txn-1");
+            REQUIRE(merovingian::database::store_client_txn(
+                store, {"@alice:example.org", "!room:example.org", "m.room.message", "txn-1", "$nodevice", ""}));
+            REQUIRE(merovingian::database::store_client_txn(
+                store, {"@alice:example.org", "!room:example.org", "m.room.message", "txn-1", "$nodevice2", ""}));
+
+            THEN("the empty device is a scope of its own, deterministically")
+            {
+                REQUIRE_FALSE(before.has_value());
+                REQUIRE(merovingian::database::find_client_txn_event_id(
+                            store, "@alice:example.org", "", "!room:example.org", "m.room.message", "txn-1") ==
+                        std::optional<std::string>{"$nodevice"});
+                REQUIRE(merovingian::database::find_client_txn_event_id(
+                            store, "@alice:example.org", "PHONE", "!room:example.org", "m.room.message", "txn-1") ==
+                        std::optional<std::string>{"$phone"});
+            }
+        }
+    }
+
+    GIVEN("a store holding a to-device transaction of alice's device PHONE")
+    {
+        auto store = merovingian::database::PersistentStore{};
+        REQUIRE(merovingian::database::enqueue_to_device_messages_with_client_txn(
+            store, {}, {"@alice:example.org", "", "m.room_key", "txn-1", "", "PHONE"}));
+
+        WHEN("her device LAPTOP records the same to-device transaction ID")
+        {
+            REQUIRE(merovingian::database::enqueue_to_device_messages_with_client_txn(
+                store, {}, {"@alice:example.org", "", "m.room_key", "txn-1", "", "LAPTOP"}));
+
+            THEN("both are recorded, and a repeat from PHONE is still recognised")
+            {
+                REQUIRE(store.client_txn_ids.size() == 2U);
+                REQUIRE(merovingian::database::find_client_txn_event_id(store, "@alice:example.org", "LAPTOP", "",
+                                                                        "m.room_key", "txn-1")
+                            .has_value());
+                REQUIRE(merovingian::database::enqueue_to_device_messages_with_client_txn(
+                    store, {}, {"@alice:example.org", "", "m.room_key", "txn-1", "", "PHONE"}));
+                REQUIRE(store.client_txn_ids.size() == 2U);
+            }
+        }
+    }
+}
+
+// F-54, ADR-0381: to-device transaction records are kept for 7 days; room-send records are not aged out.
+SCENARIO("Old to-device transaction records are pruned from the database and the mirror, and room sends are kept",
+         "[database][persistence][client-txn][run2][f54]")
+{
+    GIVEN("a SQLite store holding an old and a recent to-device record and an old room send, in that order")
+    {
+        auto const sqlite_path = unique_sqlite_path();
+        std::filesystem::remove(sqlite_path);
+        auto opened = merovingian::database::open_sqlite_persistent_store(sqlite_path.string());
+        REQUIRE(opened.ok);
+        auto& store = opened.store;
+        REQUIRE(merovingian::database::store_client_txn(
+            store, {"@alice:example.org", "", "m.room_key", "old-todevice", "", "PHONE", 1000U}));
+        REQUIRE(merovingian::database::store_client_txn(
+            store, {"@alice:example.org", "!room:example.org", "m.room.message", "old-send", "$sent", "PHONE", 1000U}));
+        REQUIRE(merovingian::database::store_client_txn(
+            store, {"@alice:example.org", "", "m.room_key", "new-todevice", "", "PHONE", 9000U}));
+
+        WHEN("the records made before 5000 are pruned")
+        {
+            auto const removed = merovingian::database::prune_to_device_client_txns(store, 5000U);
+
+            THEN("only the old to-device record is gone, and the indexes still find what is left")
+            {
+                REQUIRE(removed == 1U);
+                REQUIRE(store.client_txn_ids.size() == 2U);
+                REQUIRE(store.client_txn_indexed_rows == store.client_txn_ids.size());
+                REQUIRE_FALSE(merovingian::database::find_client_txn_event_id(store, "@alice:example.org", "PHONE", "",
+                                                                              "m.room_key", "old-todevice")
+                                  .has_value());
+                REQUIRE(merovingian::database::find_client_txn_event_id(store, "@alice:example.org", "PHONE", "",
+                                                                        "m.room_key", "new-todevice")
+                            .has_value());
+                auto const sent = merovingian::database::find_client_txn_by_event_id(store, "$sent");
+                REQUIRE(sent != nullptr);
+                REQUIRE(sent->txn_id == "old-send");
+            }
+
+            THEN("the database agrees after a reopen")
+            {
+                auto reopened = merovingian::database::open_sqlite_persistent_store(sqlite_path.string());
+                REQUIRE(reopened.ok);
+                REQUIRE(reopened.store.client_txn_ids.size() == 2U);
+                REQUIRE_FALSE(merovingian::database::find_client_txn_event_id(reopened.store, "@alice:example.org",
+                                                                              "PHONE", "", "m.room_key", "old-todevice")
+                                  .has_value());
+                REQUIRE(merovingian::database::find_client_txn_event_id(
+                            reopened.store, "@alice:example.org", "PHONE", "!room:example.org", "m.room.message",
+                            "old-send") == std::optional<std::string>{"$sent"});
+                auto const kept = std::ranges::find_if(reopened.store.client_txn_ids, [](auto const& record) {
+                    return record.txn_id == "new-todevice";
+                });
+                REQUIRE(kept != reopened.store.client_txn_ids.end());
+                REQUIRE(kept->created_at_ms == 9000U);
+            }
+        }
+
+        WHEN("nothing is older than the cutoff")
+        {
+            auto const removed = merovingian::database::prune_to_device_client_txns(store, 500U);
+
+            THEN("nothing is removed")
+            {
+                REQUIRE(removed == 0U);
+                REQUIRE(store.client_txn_ids.size() == 3U);
+            }
+        }
+
+        WHEN("a record is stored without a time")
+        {
+            REQUIRE(merovingian::database::store_client_txn(
+                store, {"@alice:example.org", "", "m.room_key", "stamped", "", "PHONE"}));
+
+            THEN("the store stamps it with the current time, so the sweep keeps a fresh record")
+            {
+                auto const stamped = std::ranges::find_if(store.client_txn_ids, [](auto const& record) {
+                    return record.txn_id == "stamped";
+                });
+                REQUIRE(stamped != store.client_txn_ids.end());
+                REQUIRE(stamped->created_at_ms > 0U);
+                auto const stamped_at = stamped->created_at_ms;
+                REQUIRE(merovingian::database::prune_to_device_client_txns(store, stamped_at) == 2U);
+                REQUIRE(merovingian::database::find_client_txn_event_id(store, "@alice:example.org", "PHONE", "",
+                                                                        "m.room_key", "stamped")
+                            .has_value());
+            }
+        }
+        std::filesystem::remove(sqlite_path);
+    }
+}
+
+// Spec (client-server-api.md, DELETE /room_keys/version/{version}): deleting a backup deletes "all key data
+// related to the backup" (F-60, ADR-0384).
+SCENARIO("Deleting a key backup version deletes its sessions in the same transaction and never reissues its number",
+         "[database][persistence][key-backup][run2][f60]")
+{
+    GIVEN("a SQLite store with backup version 1 holding a session")
+    {
+        auto const sqlite_path = unique_sqlite_path();
+        std::filesystem::remove(sqlite_path);
+        auto opened = merovingian::database::open_sqlite_persistent_store(sqlite_path.string());
+        REQUIRE(opened.ok);
+        auto& store = opened.store;
+        auto const created =
+            merovingian::database::create_key_backup_version(store, "@alice:example.org", R"({"algorithm":"a"})");
+        REQUIRE(created == std::optional<std::string>{"1"});
+        REQUIRE(merovingian::database::store_key_backup_session(
+            store, {"@alice:example.org", "1", "!room:example.org", "session-1", R"({"first_message_index":0})"}));
+
+        WHEN("the version is deleted")
+        {
+            REQUIRE(merovingian::database::delete_key_backup_version(store, "@alice:example.org", "1"));
+
+            THEN("its sessions are gone from memory and from the database")
+            {
+                REQUIRE(store.key_backup_versions.empty());
+                REQUIRE(store.key_backup_sessions.empty());
+                auto reopened = merovingian::database::open_sqlite_persistent_store(sqlite_path.string());
+                REQUIRE(reopened.ok);
+                REQUIRE(reopened.store.key_backup_versions.empty());
+                REQUIRE(reopened.store.key_backup_sessions.empty());
+            }
+
+            THEN("the next version gets a new number, also after a restart")
+            {
+                auto const next = merovingian::database::create_key_backup_version(store, "@alice:example.org",
+                                                                                   R"({"algorithm":"b"})");
+                REQUIRE(next == std::optional<std::string>{"2"});
+                REQUIRE(merovingian::database::delete_key_backup_version(store, "@alice:example.org", "2"));
+                auto reopened = merovingian::database::open_sqlite_persistent_store(sqlite_path.string());
+                REQUIRE(reopened.ok);
+                REQUIRE(merovingian::database::create_key_backup_version(reopened.store, "@alice:example.org",
+                                                                         R"({"algorithm":"c"})") ==
+                        std::optional<std::string>{"3"});
+            }
+
+            THEN("another user's numbering is independent")
+            {
+                REQUIRE(merovingian::database::create_key_backup_version(
+                            store, "@bob:example.org", R"({"algorithm":"a"})") == std::optional<std::string>{"1"});
+            }
+        }
+
+        WHEN("the version row is deleted behind the store's back")
+        {
+            // The table's own ON DELETE CASCADE removes the sessions even where the code path does not.
+            auto* handle = static_cast<sqlite3*>(nullptr);
+            REQUIRE(sqlite3_open(sqlite_path.string().c_str(), &handle) == SQLITE_OK);
+            REQUIRE(sqlite3_exec(handle, "PRAGMA foreign_keys = ON", nullptr, nullptr, nullptr) == SQLITE_OK);
+            REQUIRE(sqlite3_exec(handle, "DELETE FROM key_backup_versions WHERE user_id = '@alice:example.org'",
+                                 nullptr, nullptr, nullptr) == SQLITE_OK);
+            auto remaining = 0;
+            REQUIRE(sqlite3_exec(
+                        handle, "SELECT COUNT(*) FROM key_backup_sessions",
+                        [](void* out, int, char** values, char**) {
+                            *static_cast<int*>(out) = std::stoi(values[0]);
+                            return 0;
+                        },
+                        &remaining, nullptr) == SQLITE_OK);
+            sqlite3_close(handle);
+
+            THEN("no session is left in the database")
+            {
+                REQUIRE(remaining == 0);
+            }
+        }
+        std::filesystem::remove(sqlite_path);
     }
 }

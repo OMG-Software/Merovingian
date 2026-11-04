@@ -35,6 +35,10 @@ implementation and no users. The listening server lives in `homeserver/http_serv
   `OutboundError::invalid_header`. Header values carry client input (an identity server access
   token), and libcurl writes header lines verbatim. Keep the check in both
   `validate_outbound_request` and `perform`.
+- **`outbound_client` logs a URL without its query (F-76, ADR-0418).** The `url` field of
+  `request.success`, `request.error` and `request.redirect_rejected` is `loggable_url`: scheme, host,
+  port and path. A query can hold an identity server's `client_secret` or a user's URL. A new log site
+  in this file uses the same string.
 - Body size limits are per-endpoint; see `homeserver/AGENTS.md` for the media upload exception.
 - **Per-client limits share one key.** `client_address_key` is the key for the per-IP connection
   cap (ADR-0072), the per-client worker share (ADR-0077) and the rate limiter. The first two use the

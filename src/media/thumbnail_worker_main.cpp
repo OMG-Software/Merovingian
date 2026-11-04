@@ -17,8 +17,11 @@
 //   4. resamples to the requested geometry (scale or crop), and
 //   5. writes a framed PNG response to stdout.
 //
-// A decoder exploit is therefore contained: the worker holds no secrets, no
-// sockets, and no filesystem access beyond the inherited stdio pipes.
+// A decoder exploit is therefore contained on Linux, OpenBSD and FreeBSD: the
+// worker holds no secrets, no sockets, and no filesystem access beyond the
+// inherited stdio pipes. NetBSD has no in-process sandbox, so there the worker
+// refuses at step 1 with "no platform decoder sandbox" and decodes nothing
+// (ADR-0419); resource limits alone would leave the server uid's files reachable.
 //
 // The server also sends it a library report request once at startup (0.12.45),
 // answered after the same hardening with the libpng and libjpeg-turbo versions

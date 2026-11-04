@@ -1191,3 +1191,82 @@ SCENARIO("An unthreaded and a threaded m.read receipt for one event both reach /
         }
     }
 }
+
+// Spec: Matrix Client-Server API v1.19
+// Endpoint: POST /_matrix/client/v3/rooms/{roomId}/receipt/{receiptType}/{eventId}
+// URL: ../../docs/matrix-v1.19-spec/client-server-api.md#post_matrixclientv3roomsroomidreceiptreceipttypeeventid
+// Appendices, "Event IDs": ../../docs/matrix-v1.19-spec/appendices.md#event-ids
+//
+// `eventId` is an Event ID, and an event ID "MUST NOT exceed 255 bytes". A value that is not one is
+// refused with 400 M_INVALID_PARAM and nothing is stored, shown to the room or sent to other servers.
+// The spec does not make an event the server does not hold an error.
+SCENARIO("POST /rooms/{roomId}/receipt/{receiptType}/{eventId} rejects an eventId that is not an event ID",
+         "[conformance][client-server][receipt][receipt-event-id-bounds]")
+{
+    GIVEN("a running client-server with a logged-in user in a room")
+    {
+        auto started = merovingian::homeserver::start_client_server(conformance_config());
+        REQUIRE(started.started);
+        auto const token = logged_in_token(started.runtime);
+        auto const create = merovingian::homeserver::handle_client_server_request(
+            started.runtime, {"POST", "/_matrix/client/v3/createRoom", token, R"({"name":"receipt room"})"});
+        REQUIRE(create.response.status == 200U);
+        auto const room_id = room_id_from_create(create.response.body);
+        auto const post_receipt = [&](std::string const& receipt_type, std::string const& event_id) {
+            return merovingian::homeserver::handle_client_server_request(
+                started.runtime, {"POST",
+                                  "/_matrix/client/v3/rooms/" + room_id + "/receipt/" + receipt_type + "/" + event_id,
+                                  token,
+                                  {}});
+        };
+
+        WHEN("the eventId is 256 bytes, the sigil included")
+        {
+            auto const oversized = "$" + std::string(255U, 'a');
+            REQUIRE(oversized.size() == 256U);
+
+            THEN("each receipt type is refused with 400 M_INVALID_PARAM and no receipt is kept")
+            {
+                for (auto const* receipt_type : {"m.read", "m.read.private", "m.fully_read"})
+                {
+                    auto const response = post_receipt(receipt_type, oversized);
+                    REQUIRE(response.response.status == 400U);
+                    auto const body = parse_object(response.response.body);
+                    auto const* errcode = string_member(body, "errcode");
+                    REQUIRE(errcode != nullptr);
+                    REQUIRE(*errcode == "M_INVALID_PARAM");
+                }
+                REQUIRE(started.runtime.homeserver.database.persistent_store.receipts.empty());
+            }
+        }
+
+        WHEN("the eventId is 255 bytes of the event ID alphabet and names no event the server holds")
+        {
+            auto const longest = "$" + std::string(254U, 'a');
+            REQUIRE(longest.size() == 255U);
+            auto const response = post_receipt("m.read", longest);
+
+            THEN("it is accepted, because the spec does not make an unknown event an error")
+            {
+                REQUIRE(response.response.status == 200U);
+            }
+        }
+
+        WHEN("the eventId has no sigil or holds characters outside the event ID alphabet")
+        {
+            THEN("it is refused with 400 M_INVALID_PARAM and no receipt is kept")
+            {
+                for (auto const* event_id : {"no-sigil", "$has%20space", "$bad!char", "$"})
+                {
+                    auto const response = post_receipt("m.read", event_id);
+                    REQUIRE(response.response.status == 400U);
+                    auto const body = parse_object(response.response.body);
+                    auto const* errcode = string_member(body, "errcode");
+                    REQUIRE(errcode != nullptr);
+                    REQUIRE(*errcode == "M_INVALID_PARAM");
+                }
+                REQUIRE(started.runtime.homeserver.database.persistent_store.receipts.empty());
+            }
+        }
+    }
+}

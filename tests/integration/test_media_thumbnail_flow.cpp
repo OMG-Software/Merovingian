@@ -5,6 +5,7 @@
 // genuinely decoded, resampled, and re-encoded — not passed through unchanged.
 
 #include "merovingian/core/file_descriptor.hpp"
+#include "merovingian/media/decoder_hardening.hpp"
 #include "merovingian/media/thumbnailer.hpp"
 #include "support/temp_directory.hpp"
 
@@ -186,6 +187,59 @@ private:
 
 } // namespace
 
+namespace
+{
+
+// ADR-0419 (audit run 2, F-78): a platform with no in-process decoder sandbox (NetBSD) refuses to
+// decode, so the real-worker scenarios below cannot see a thumbnail there. Each of them calls one of
+// these first; where no sandbox exists they assert the refusal and the scenario ends, instead of
+// skipping silently or failing on an outcome the platform must not produce. Where a sandbox exists
+// they do nothing and the scenario goes on to prove the sandbox admits the work.
+[[maybe_unused]] [[nodiscard]] auto worker_refuses_thumbnail_without_sandbox(std::string const& worker_path) -> bool
+{
+    if (merovingian::media::decoder_platform_sandbox_available())
+    {
+        return false;
+    }
+    auto config = merovingian::media::ThumbnailerConfig{};
+    config.worker_path = worker_path;
+    config.timeout_seconds = 60U;
+    auto request = merovingian::media::ThumbnailRequest{};
+    request.source_bytes = sample_png();
+    request.source_content_type = "image/png";
+    request.width = 4U;
+    request.height = 4U;
+    request.method = merovingian::media::ThumbnailMethod::scale;
+    auto const result = merovingian::media::generate_thumbnail(config, request);
+    INFO("status=" << result.status << " reason=" << result.reason);
+    // The worker exits 1 before reading its input, so the parent sees no usable answer: the same
+    // failure path as any other dead worker, which the media service answers with 404.
+    REQUIRE_FALSE(result.ok);
+    REQUIRE((result.status == 502U || result.status == 504U));
+    REQUIRE(result.bytes.empty());
+    REQUIRE(result.content_type.empty());
+    REQUIRE(result.reason.find("worker") != std::string::npos);
+    return true;
+}
+
+[[maybe_unused]] [[nodiscard]] auto worker_refuses_library_report_without_sandbox(std::string const& worker_path)
+    -> bool
+{
+    if (merovingian::media::decoder_platform_sandbox_available())
+    {
+        return false;
+    }
+    auto config = merovingian::media::ThumbnailerConfig{};
+    config.worker_path = worker_path;
+    config.timeout_seconds = 60U;
+    auto const report = merovingian::media::query_thumbnail_worker_libraries(config);
+    INFO(report.error.message());
+    REQUIRE_FALSE(report.libraries.has_value());
+    return true;
+}
+
+} // namespace
+
 #ifdef MEROVINGIAN_TEST_THUMBNAIL_WORKER
 
 // This scenario is also the platform-sandbox guard for the 0.12.5 audit,
@@ -200,6 +254,11 @@ private:
 // by what it can still accomplish.
 SCENARIO("the sandboxed worker resamples a PNG to the requested size", "[media][thumbnail][integration]")
 {
+    if (worker_refuses_thumbnail_without_sandbox(MEROVINGIAN_TEST_THUMBNAIL_WORKER))
+    {
+        return;
+    }
+
     GIVEN("an 8x8 PNG and the built thumbnail worker")
     {
         auto config = merovingian::media::ThumbnailerConfig{};
@@ -297,6 +356,11 @@ SCENARIO("the sandboxed worker resamples a PNG to the requested size", "[media][
 SCENARIO("the sandboxed worker reports the image libraries it runs",
          "[media][thumbnail][integration][library-versions]")
 {
+    if (worker_refuses_library_report_without_sandbox(MEROVINGIAN_TEST_THUMBNAIL_WORKER))
+    {
+        return;
+    }
+
     GIVEN("the built thumbnail worker")
     {
         auto config = merovingian::media::ThumbnailerConfig{};
@@ -656,6 +720,11 @@ struct ThinPngCase final
 SCENARIO("the real thumbnail worker applies the request pixel budget to crop fill",
          "[integration][media][thumbnail][med-8][med-8-budget]")
 {
+    if (worker_refuses_thumbnail_without_sandbox(MEROVINGIAN_TEST_THUMBNAIL_WORKER))
+    {
+        return;
+    }
+
     GIVEN("valid thin PNGs containing exactly the configured 4096 source pixels")
     {
         auto config = merovingian::media::ThumbnailerConfig{};
@@ -736,6 +805,11 @@ SCENARIO("the real thumbnail worker applies the request pixel budget to crop fil
 SCENARIO("the real thumbnail worker keeps its existing hard ceiling for crop fill",
          "[integration][media][thumbnail][med-8][med-8-budget]")
 {
+    if (worker_refuses_thumbnail_without_sandbox(MEROVINGIAN_TEST_THUMBNAIL_WORKER))
+    {
+        return;
+    }
+
     GIVEN("valid thin PNGs and zero, ceiling-sized, or UINT32_MAX request budgets")
     {
         auto config = merovingian::media::ThumbnailerConfig{};
@@ -802,6 +876,11 @@ SCENARIO("the real thumbnail worker keeps its existing hard ceiling for crop fil
 SCENARIO("the real thumbnail worker rejects the original MED-8 crop magnitude",
          "[integration][media][thumbnail][med-8][med-8-audit]")
 {
+    if (worker_refuses_thumbnail_without_sandbox(MEROVINGIAN_TEST_THUMBNAIL_WORKER))
+    {
+        return;
+    }
+
     GIVEN("valid thin PNGs and the default pixel budget")
     {
         auto config = merovingian::media::ThumbnailerConfig{};

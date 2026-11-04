@@ -657,6 +657,27 @@ quickly finding everything a given `AGENTS.md` file contributed.
   `device_list_changes` row per local user per EDU (audit FED-3, FED-7).
   Source: `src/federation/AGENTS.md`.
 
+- **A device ID is never one of its account's cross-signing key IDs, and a removed device is
+  announced to remote servers.** `POST /login` (every path that creates a device) answers
+  403 `M_FORBIDDEN` for a `device_id` equal to a stored cross-signing key ID, and
+  `POST /keys/device_signing/upload` answers 403 with nothing stored for a key whose ID is one of the
+  uploader's device IDs. `DELETE /devices/{deviceId}`, `POST /delete_devices`, `POST /logout` and
+  `POST /logout/all` enqueue one `m.device_list_update` with `deleted: true` per removed device and
+  server, destinations read before the removal, no network I/O under the runtime lock.
+  Why: the two identifiers share a signature namespace (a colliding device received the master key's
+  uploaded signatures), and a remote cache kept a revoked device listed, possibly as verified.
+  Source: `src/homeserver/AGENTS.md`.
+- **Bind every EDU a worker relays to the EDUs of the request body main verified, once per occurrence.**
+  `WorkerPool::handle` gives the pending request one digest per EDU of a signature-verified `/send` body
+  (`verified_send_edu_digests`); `handle_edu_ingest_request` admits a relay only through
+  `IpcChannel::consume_pending_edu` (live parent on the receiving channel, exact origin, an unused equal digest),
+  hashing before it takes `runtime.mutex` and never holding the pending lock across the sink. A relay that is not in
+  the body is refused and logged.
+  Why: an EDU has no signature of its own, so origin correlation alone let a compromised worker holding any live
+  verified request from server X inject to-device, receipt, typing and presence EDUs as X's users, any number of times
+  (F-74, ADR-0395; refines ADR-0142).
+  Source: `src/ipc/AGENTS.md`, `src/homeserver/AGENTS.md`.
+
 - **Authorise an inbound `/invite` for a room we hold against the room's current state before
   signing it, never overwrite a `ban` from that path, and leave `current_state` to the
   transaction path.** The URL event ID must equal the event's own reference-hash ID.
@@ -706,6 +727,14 @@ quickly finding everything a given `AGENTS.md` file contributed.
   Why: one dead or hostile peer filled the shared queue and starved every other peer; a shared
   transaction ID collapsed a fan-out into one durable row (CWE-400; ADR-0177).
   Source: `src/federation/AGENTS.md`.
+
+- **Never store a received PDU's `unsigned`, and never build a client's `unsigned` from a stored copy.**
+  Every path that stores a PDU another server sent removes it first (`events::without_unsigned`), and
+  `client_event_with_id` and sliding sync build `unsigned` from what this server computes.
+  Why: no signature or hash covers `unsigned`, so a relaying server could attach `m.relations`,
+  `redacted_because` or `prev_content` to a third party's event and have clients show them as this
+  server's own (CWE-345; F-70, F-84, ADR-0402).
+  Source: `src/federation/AGENTS.md`, `src/sync/AGENTS.md`.
 
 ## Application Service API
 
@@ -775,6 +804,19 @@ quickly finding everything a given `AGENTS.md` file contributed.
   `/thirdparty/*` lookups do (ADR-0181).
   Why: it holds a request-pool thread for up to the appservice timeout (ADR-0079).
   Source: `src/homeserver/AGENTS.md`.
+
+- **`GET /profile/{userId}` and `GET /directory/room/{alias}` take one client-outbound slot for the
+  whole appservice query loop, and only when a registration's namespace matches the identifier**
+  (ADR-0417).
+  Why: both are unauthenticated and each query holds a request-pool thread for the appservice timeout;
+  a server with no matching appservice must never answer 429.
+  Source: `src/homeserver/AGENTS.md`.
+
+- **The admin audit view quotes every field as JSON, and the outbound client logs a URL without its
+  query** (ADR-0416, ADR-0418).
+  Why: audit actors and targets are text an unauthenticated caller chose, and the logger redacts by
+  field name, so a URL's query can carry a credential under the non-sensitive key `url`.
+  Source: `src/observability/AGENTS.md`, `src/http/AGENTS.md`.
 
 - **An appservice's `?ts=` reaches the event composer only through `LocalHttpRequest::origin_server_ts`,
   which the dispatcher clears on every request and sets only for a validated masquerade (as_token)
@@ -1023,6 +1065,8 @@ media-fetch-pool task.
   `max_to_device_bytes_per_user_device`, and one `PUT /sendToDevice` names at most 1,000 local devices
   (ADR-0335, ADR-0336). A one-time or fallback key is a string of at most 256 bytes or a key object of at most 4 KiB
   (400 `M_BAD_JSON`), and `device_keys`, a cross-signing key or a signed key is at most 16 KiB (ADR-0338).
+  The `eventType` and `txnId` of `/send`, `/redact` and `/sendToDevice` are at most 255 bytes (400 `M_INVALID_PARAM`),
+  and the to-device transaction records they leave are deleted after 7 days (ADR-0381).
   Why: account-data reads scan every row under the lock, so one user adding types without bound
   slowed every request that reads them (CWE-770; security audit run-1, ADR-0173). Room rows
   multiply by rooms, so they need both bounds (conformance audit R10, ADR-0197).
@@ -1132,6 +1176,15 @@ media-fetch-pool task.
   Making the unsafe sequence unrepresentable, rather than merely unused, is what closes
   the class rather than the one instance.
   Source: [ADR-0052](adr/0052-revocation-of-credentials-is-one-way.md); `src/auth/AGENTS.md`.
+
+- **A revocation made of several commits must stay retryable: perform the step a repeat reports
+  as "already done" last, and mark in-memory sessions revoked only after the durable writes
+  succeed.** Device deletion revokes tokens, verifies the store, marks sessions, answers 404 if
+  there was no row, then deletes the row.
+  Why: deleting the row first made the 404 the retry gate, so a failed token revocation could
+  never be repeated and the token stayed live while a bulk delete reported success.
+  Source: [ADR-0407](adr/0407-delete-the-device-row-after-its-tokens-are-revoked.md);
+  `src/auth/AGENTS.md`.
 
 - **Never retain committed statements in production; in-memory mirrors of append-only tables
   are bounded windows.** Statement capture is opt-in, bounded and off by default;
@@ -1326,7 +1379,10 @@ media-fetch-pool task.
   state at an event means not visible, never a fallback to current state. Rule 3 (`shared`)
   orders the user's join and the event by depth, never by stream ordering (ADR-0308); because
   depth is chosen by the event's creator (a join's by the resident), a former member is never
-  shown an event that descends from their leave (`may_descend_from_departure`, ADR-0311).
+  shown an event that descends from their leave (`may_descend_from_departure`, ADR-0311). An outlier with no
+  state group was fetched as history and its stream ordering is only the fetch time, so it is denied, the user's
+  own membership outlier excepted (ADR-0415). A `/members?at=` whose anchor event the user may not see is 403,
+  and the members are never judged one by one (ADR-0414).
   Source: `src/sync/AGENTS.md`, `src/homeserver/AGENTS.md`.
 
 - **A sliding-sync sort key is computed once per room before the sort, never inside the
@@ -1391,14 +1447,25 @@ media-fetch-pool task.
 - **Unread counts, the push badge included, count only events the user may see, from their current
   join.** Every counted event passes `sync::HistoryVisibility::can_see` (`unread.visible()`,
   `classifier.visible()`); the join boundary alone does not exclude a backfilled pre-join event,
-  which is ordered after the join. Why: the user's rules decide what counts, so a keyword rule
-  counted over history they may not see would disclose whether it contains a word (CWE-203,
-  ADR-0205).
+  which is ordered after the join; nor does a non-state event from a sender the user has ignored
+  (`m.ignored_user_list`, resolved once by the classifier). Why: the user's rules decide what counts,
+  so a keyword rule counted over history they may not see would disclose whether it contains a word
+  (CWE-203, ADR-0205), and an ignored sender must not raise an indicator for an event the client is
+  never sent.
   Source: `src/sync/AGENTS.md`.
 - **Failed push notifications are retried only from the bounded queue, on the retry job.** Never
   sleep in a delivery task, never hold `runtime.mutex` across `notify`, and drop past the queue's
-  bounds rather than block. Why: a failing gateway must not hold delivery slots, threads or
-  unbounded memory (CWE-400, ADR-0206).
+  bounds rather than block. The one retry thread starts no attempt past a time budget, takes retries
+  one recipient at a time in turn, and sends with a shorter timeout, putting back what it did not
+  reach. A recipient batch holds its slot for a deadline, not for pushers times the timeout, and
+  requests in flight per gateway host and address are capped; an answer slower than half the timeout
+  counts against the host's circuit. Why: a failing or slow gateway must not hold delivery slots,
+  threads or unbounded memory (CWE-400, ADR-0206, ADR-0409, ADR-0410).
+  Source: `src/push/AGENTS.md`.
+- **A deactivated account keeps no pusher and is never delivered to.** Deactivation deletes its
+  pushers and queued retries, and delivery and the retry check refuse the recipient. Why: nobody can
+  sign in to remove a pusher a compromised session registered, and it would keep receiving the
+  account's room messages (CWE-200, ADR-0411).
   Source: `src/push/AGENTS.md`.
 - **An email pusher mails only an email 3PID the account holds, re-checked before every send.**
   Registration refuses any other `pushkey`; the email job deletes a pusher whose address has left

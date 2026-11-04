@@ -89,6 +89,14 @@ production-gated.
   logout was cosmetic. `logout_all`, device deletion, and password change
   already revoked refresh tokens; single-device logout was the one path that
   did not.
+  **Device deletion and single-device logout are retryable (F-67, ADR-0407).**
+  `delete_local_device` revokes the device's access and refresh tokens,
+  verifies that against the store, marks the sessions revoked, answers 404 if
+  there was no device row, and only then deletes the row (500 if that fails).
+  A failure leaves the device present, a retry converges, and a repeat for a
+  device that is already gone still revokes any token an earlier failure
+  stranded. `logout_local_user` marks the session revoked only after its
+  persists succeed.
   **Password change with `logout_devices: true` revokes every other device
   directly, rather than revoking everything and restoring one (fixed
   0.12.7).** The prior sequence — revoke every token for the user, then
@@ -151,7 +159,9 @@ production-gated.
   `sender_localpart` user by default, or as the user named by `?user_id=`
   when that user falls within one of the appservice's `users` namespaces
   (`403` otherwise); `?device_id=` must name a device already known to
-  belong to the asserted user (`400 M_UNKNOWN_DEVICE` otherwise). This
+  belong to the asserted user (`400 M_UNKNOWN_DEVICE` otherwise; the device
+  list is read under `runtime.mutex`, which this prologue takes for that read
+  alone, F-66). This
   masquerade is resolved exactly once, at the top of
   `handle_client_server_request_impl`, by substituting `req.access_token`
   with an internal token (`appservice::encode_masquerade_token`,
@@ -264,7 +274,13 @@ production-gated.
   /devices/{deviceId}` sends an `m.device_list_update` for the renamed device to every server
   that shares a room with the user, and the EDU and every published copy of the device's keys
   carry its current display name (`unsigned.device_display_name`), not the name it had when the
-  keys were uploaded. Per-algorithm `device_one_time_keys_count` is wired into
+  keys were uploaded. A deleted or logged-out device is announced the same way
+  (`announce_deleted_devices()`): `DELETE /devices/{deviceId}`, `POST /delete_devices`,
+  `POST /logout` and `POST /logout/all` each send one `m.device_list_update` per removed device and
+  server, with `deleted: true`, no keys, a `stream_id` of its own from the sync counter, and the
+  previous EDU of the call in `prev_id`. The servers are read before the removal and the EDUs are
+  only enqueued. Account deactivation deletes no device, so it announces none.
+  Per-algorithm `device_one_time_keys_count` is wired into
   `/sync` as well. A `device_lists.changed` self-notification is recorded at two trigger points
   so a user's own devices discover each other without relying on room co-membership: on
   `POST /_matrix/client/v3/keys/upload` (key upload) and on `POST /_matrix/client/v3/login`
@@ -289,6 +305,12 @@ production-gated.
     cross-signing key by its unpadded base64 public key, with no `ed25519:` prefix
     (`cross_signing_key_id()`). Signatures on master keys used to be looked up with the prefix
     and were never found.
+  - **A device ID is never a cross-signing key ID.** `POST /login` (every path that creates a
+    device: password, `m.login.token`, appservice login, registration) answers `403 M_FORBIDDEN` for
+    a `device_id` equal to a key ID of the account's stored master, self-signing or user-signing key
+    (`device_id_names_cross_signing_key()`), and `POST /keys/device_signing/upload` answers `403`,
+    storing nothing, for a key whose ID is the ID of one of the uploader's devices. A generated device
+    ID is 32 hex characters, a key ID 43 base64 characters, so a generated ID cannot collide.
   - **Remote users' keys are proxied, not cached (ADR-0061).** `/keys/query` for a remote user
     calls the user's server's `/user/keys/query` and returns its `device_keys`, `master_keys`
     and `self_signing_keys`. `accept_remote_key_query_response()` keeps only the users that
@@ -491,6 +513,13 @@ so it has its own, deliberately separate, lifecycle:
 - **Retention.** `store_openid_token` sweeps every already-expired row
   (across all users) on each insert, so `openid_tokens` cannot grow without
   bound — see `docs/database-persistence.md`.
+- **Revocation (F-77, ADR-0408).** `database::revoke_openid_tokens_for_user`
+  deletes a user's rows from the table and the in-memory list.
+  `deactivate_local_user`, `logout_all_local_user` and
+  `change_local_user_password` with `logout_devices` call it and answer 500 if
+  it fails. `federation_openid_userinfo` also returns nothing for a user that
+  is missing or deactivated. Single-device logout and device deletion leave
+  OpenID tokens alone: a token is not tied to a device.
 
 See `docs/threat-model.md` ("OpenID token confusion") for the
 privilege-escalation risk this separation exists to prevent.
@@ -593,6 +622,11 @@ are reversible where deactivation is not.
   `auth::password_matches` can never match, so a credential leak predating
   deactivation cannot be replayed even if a future change were to soften the
   login gate.
+- **Every pusher goes too** (ADR-0411). `deactivate_local_user` deletes all of the account's
+  pushers, forgets their email-digest entries and drops their queued retries: nobody can sign in
+  to remove one, and a pusher registered by a compromised session would keep receiving the
+  account's room messages. Push delivery and the retry job also refuse a deactivated recipient,
+  so a pusher that survived sends nothing. Logout and device deletion are unchanged (ADR-0264).
 - **The `users` row is retained**, not deleted: `deactivated` is a
   column of `users` (part of the v1 schema — see `docs/database-persistence.md`), not a row
   removal, so registration's existing duplicate-`user_id` check keeps

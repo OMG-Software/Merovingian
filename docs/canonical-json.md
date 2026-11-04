@@ -100,6 +100,14 @@ legitimately contain floats (e.g. `m.tag` `order`, account data). Because
 active locale's decimal separator back to `.` so float output stays valid
 JSON even if some library calls `setlocale()` (#435).
 
+`parse_preserving_numbers()` is `parse_lossless()` except that a number refused
+for being a float or out of range is kept as a `RawNumber` holding the bytes it
+arrived with. Every other rule of the parser still holds. `serialize_canonical()`
+writes a `RawNumber` back verbatim and `serialize_canonical_strict()` refuses it,
+so it can never reach a hash or a signature this server makes. Its only use is
+rebuilding what a peer signed for X-Matrix authentication, and reading a `/send`
+body so that one PDU's number costs that PDU alone (ADR-0398).
+
 ## Signable object view
 
 `make_signable_object_view` elides the top-level `signatures` and `unsigned`

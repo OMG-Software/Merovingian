@@ -121,6 +121,12 @@ one exception to the `merovingian/` include-path rule in `src/AGENTS.md`.
    its shard. Main judges the origin's rule and the room's ACL again on everything relayed, and the
    worker does not run the policy-server hook: the proxy asked it once before forwarding.
 
+11. **A relayed EDU must be the one main verified in the request body (F-74, ADR-0395).** The `edu_sink` override
+   relays the `content_json` string exactly as `parse_inbound_edu_envelope` received it, which is the canonical
+   serialisation `federation::extract_transaction_edus` produces; main compares a digest of it with the digests of the
+   verified `/send` body and refuses any other. Never re-serialise, normalise or edit the content before relaying, and
+   never relay an EDU from a request other than the `/send` that carried it (`FedRequestParentScope`).
+
 ## Hardening
 
 `main()` starts with `platform::ignore_sigpipe()` (HTTP-5; exits 1 on failure). No thread may exist

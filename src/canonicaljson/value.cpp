@@ -90,6 +90,11 @@ Value::Value(Object value)
 {
 }
 
+Value::Value(RawNumber value)
+    : m_storage{std::move(value)}
+{
+}
+
 // Canonical JSON values are recursive trees, so copying deep-copies nested values.
 // NOLINTNEXTLINE(misc-no-recursion)
 Value::Value(Value const& other)

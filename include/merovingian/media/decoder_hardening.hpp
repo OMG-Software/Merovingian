@@ -13,9 +13,11 @@ namespace merovingian::media
 // Outcome of apply_decoder_hardening(). `accepted` is true only when every
 // hardening control applicable on this platform succeeded (self-imposed
 // resource limits everywhere, plus the platform sandbox: seccomp on Linux,
-// pledge on OpenBSD, cap_enter on FreeBSD). When false, `failed_control`
-// names the control that failed, so the caller can report why before
-// refusing to read untrusted input — see thumbnail_worker_main.cpp::main().
+// pledge on OpenBSD, cap_enter on FreeBSD). A platform with no in-process
+// sandbox (NetBSD) is never accepted: `failed_control` is then
+// "no platform decoder sandbox". When false, `failed_control` names the
+// control that failed, so the caller can report why before refusing to read
+// untrusted input — see thumbnail_worker_main.cpp::main().
 struct DecoderHardeningResult final
 {
     bool accepted{false};
@@ -46,9 +48,21 @@ struct DecoderHardeningOps final
     std::function<bool()> apply_pledge;
     // FreeBSD only: cap_enter().
     std::function<bool()> apply_capsicum;
+    // Whether this platform has an in-process decoder sandbox at all: true on
+    // Linux, OpenBSD and FreeBSD, false everywhere else (NetBSD). Defaults to
+    // decoder_platform_sandbox_available(); tests clear it to exercise the
+    // refusal on a platform that does have a sandbox.
+    bool platform_sandbox_available{false};
 
     DecoderHardeningOps();
 };
+
+// True where the platform has an in-process primitive that confines the
+// decoder: Linux (seccomp-bpf), OpenBSD (pledge), FreeBSD (Capsicum). False
+// elsewhere, notably NetBSD, where apply_decoder_hardening() refuses and the
+// worker therefore never decodes. Uses the same preprocessor conditions as the
+// platform ladder in apply_decoder_hardening().
+[[nodiscard]] auto decoder_platform_sandbox_available() noexcept -> bool;
 
 // True for ASan/TSan/MSan builds, which skip RLIMIT_AS and the seccomp
 // filter: the sanitizer runtime reserves a large virtual address space for
@@ -69,9 +83,11 @@ struct DecoderHardeningOps final
 // worker must complete before it reads any input: self-imposed resource
 // limits (address space, CPU, file size, core dumps, open files), then the
 // platform sandbox — Linux seccomp-bpf decoder profile, OpenBSD
-// pledge("stdio"), FreeBSD cap_enter(). Platforms with no further in-process
-// primitive (e.g. NetBSD) apply the resource limits only; that gap is
-// documented in docs/hardening.md.
+// pledge("stdio"), FreeBSD cap_enter(). A platform with no in-process
+// primitive (NetBSD) is refused before anything is applied, with
+// failed_control "no platform decoder sandbox": resource limits alone do not
+// stop a decoder exploit reading the server's secrets, so the worker decodes
+// nothing there (docs/hardening.md, ADR-0419).
 //
 // Every control that applies on this platform must succeed, or the sequence
 // stops at the first failure and returns a rejected result naming it.

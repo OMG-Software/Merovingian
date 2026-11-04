@@ -6,6 +6,7 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <cstdint>
+#include <string>
 
 #include <sys/resource.h>
 
@@ -48,8 +49,19 @@ namespace
     ops.apply_capsicum = [] {
         return true;
     };
+    // Claimed on every platform so the per-control scenarios below reach the control they break; where
+    // the platform has no sandbox (NetBSD) the platform ladder in apply_decoder_hardening() still refuses.
+    ops.platform_sandbox_available = true;
     return ops;
 }
+
+// The platforms that have an in-process decoder sandbox, spelled out here independently of
+// decoder_platform_sandbox_available() so a mistake in that function is caught.
+#if defined(__linux__) || defined(__OpenBSD__) || defined(__FreeBSD__)
+constexpr auto platform_has_decoder_sandbox = true;
+#else
+constexpr auto platform_has_decoder_sandbox = false;
+#endif
 
 } // namespace
 
@@ -63,14 +75,113 @@ SCENARIO("decoder hardening accepts when every applicable control succeeds", "[m
         {
             auto const result = merovingian::media::apply_decoder_hardening(ops);
 
-            THEN("hardening is accepted and no control is named as failed")
+            if constexpr (platform_has_decoder_sandbox)
             {
-                REQUIRE(result.accepted);
-                REQUIRE(result.failed_control.empty());
+                THEN("hardening is accepted and no control is named as failed")
+                {
+                    REQUIRE(result.accepted);
+                    REQUIRE(result.failed_control.empty());
+                }
+            }
+            else
+            {
+                THEN("hardening is still refused, because this platform has no decoder sandbox to apply")
+                {
+                    REQUIRE_FALSE(result.accepted);
+                    REQUIRE(result.failed_control == "no platform decoder sandbox");
+                }
             }
         }
     }
 }
+
+// ADR-0419 (audit run 2, F-78): resource limits alone do not stop a decoder exploit from reading the
+// server's secrets, so a platform with no in-process sandbox must refuse to decode. The decision is
+// driven through the ops table, so it is covered here on Linux as well as on NetBSD.
+SCENARIO("decoder hardening refuses to run when no platform sandbox applies",
+         "[media][thumbnail_hardening][no-sandbox]")
+{
+    GIVEN("hardening ops where every control would succeed but the platform has no decoder sandbox")
+    {
+        auto ops = all_succeeding_ops();
+        ops.platform_sandbox_available = false;
+        auto controls_applied = 0;
+        ops.set_resource_limit = [&controls_applied](int /*resource*/, std::uint64_t /*value*/) {
+            ++controls_applied;
+            return true;
+        };
+        ops.apply_seccomp_filter = [&controls_applied] {
+            ++controls_applied;
+            return true;
+        };
+        ops.apply_pledge = [&controls_applied] {
+            ++controls_applied;
+            return true;
+        };
+        ops.apply_capsicum = [&controls_applied] {
+            ++controls_applied;
+            return true;
+        };
+
+        WHEN("the decoder worker hardens")
+        {
+            auto const result = merovingian::media::apply_decoder_hardening(ops);
+
+            THEN("hardening is refused and the missing sandbox is named as the failed control")
+            {
+                REQUIRE_FALSE(result.accepted);
+                REQUIRE(result.failed_control == "no platform decoder sandbox");
+            }
+
+            THEN("nothing was applied to the process before the refusal")
+            {
+                REQUIRE(controls_applied == 0);
+            }
+        }
+    }
+}
+
+SCENARIO("the decoder sandbox is reported present exactly on the platforms that have one",
+         "[media][thumbnail_hardening][no-sandbox]")
+{
+    GIVEN("the current platform")
+    {
+        WHEN("the sandbox availability is queried, and default hardening ops are built")
+        {
+            auto const available = merovingian::media::decoder_platform_sandbox_available();
+            auto const ops = merovingian::media::DecoderHardeningOps{};
+
+            THEN("it is available on Linux, OpenBSD and FreeBSD and nowhere else, and the ops agree")
+            {
+                REQUIRE(available == platform_has_decoder_sandbox);
+                REQUIRE(ops.platform_sandbox_available == available);
+            }
+        }
+    }
+}
+
+#if !defined(__linux__) && !defined(__OpenBSD__) && !defined(__FreeBSD__)
+
+SCENARIO("a platform with no decoder sandbox refuses before touching the process",
+         "[media][thumbnail_hardening][no-sandbox]")
+{
+    GIVEN("the real hardening ops on a platform with no in-process decoder sandbox")
+    {
+        WHEN("the decoder worker hardens")
+        {
+            // Safe with the real ops: the refusal comes before any setrlimit.
+            auto const result = merovingian::media::apply_decoder_hardening();
+
+            THEN("hardening is refused naming the missing sandbox")
+            {
+                REQUIRE_FALSE(result.accepted);
+                REQUIRE(result.failed_control == "no platform decoder sandbox");
+            }
+        }
+    }
+}
+
+#endif
 
 SCENARIO("decoder hardening fails closed when RLIMIT_AS cannot be set", "[media][thumbnail_hardening]")
 {

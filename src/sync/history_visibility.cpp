@@ -588,8 +588,15 @@ auto HistoryVisibility::can_see(database::PersistentEvent const& event) -> bool
         {
             return true;
         }
-        // No recorded state (history from before ADR-0064): the visibility at the time cannot
-        // be proved, so only rule 2 applies, judged from the user's own membership timeline.
+        // ADR-0415. An outlier with no recorded state was fetched as history (ADR-0069, ADR-0070): its
+        // place in the room is unknown and its stream ordering is when it was fetched, so rule 2 cannot be
+        // judged from it. Deny. It is judged normally once a later snapshot gives it a state group.
+        if (event.status == "outlier")
+        {
+            return false;
+        }
+        // No recorded state (history from before ADR-0064, stored as accepted): the visibility at the time
+        // cannot be proved, so only rule 2 applies, judged from the user's own membership timeline.
         return joined_when_sent(event);
     }
     auto const& view = view_of_group(*group_id);

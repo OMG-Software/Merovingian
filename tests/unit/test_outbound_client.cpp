@@ -1,13 +1,21 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+#include "../support/mock_appservice.hpp"
 #include "merovingian/http/outbound_client.hpp"
+#include "merovingian/observability/logger.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
 #include <atomic>
 #include <filesystem>
+#include <functional>
+#include <iostream>
+#include <optional>
+#include <sstream>
 #include <string>
+#include <string_view>
 #include <thread>
+#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -541,6 +549,122 @@ SCENARIO("Parsing an outbound URL with an IPv6 literal strips the brackets from 
                     INFO(candidate);
                     REQUIRE_FALSE(merovingian::http::parse_outbound_url(candidate).has_value());
                 }
+            }
+        }
+    }
+}
+
+namespace
+{
+
+// Sends the console log, at debug, with the outbound_client module at debug, to a string for the scope's
+// lifetime. Safe only while the logger's asynchronous writers are not running, as in the unit test binary.
+class OutboundDebugLogCapture final
+{
+public:
+    OutboundDebugLogCapture()
+        : logger_{merovingian::observability::SingleLog::instance()}
+    {
+        REQUIRE_FALSE(logger_.get().writers_started());
+        previous_level_ = logger_.get().exchange_console_log_level(merovingian::observability::LogLevel::debug);
+        previous_module_level_ =
+            logger_.get().exchange_module_log_level(module_, merovingian::observability::LogLevel::debug);
+        previous_buffer_ = std::cout.rdbuf(output_.rdbuf());
+    }
+    ~OutboundDebugLogCapture()
+    {
+        std::cout.rdbuf(previous_buffer_);
+        std::ignore = logger_.get().exchange_module_log_level(module_, previous_module_level_);
+        std::ignore = logger_.get().exchange_console_log_level(previous_level_);
+    }
+    OutboundDebugLogCapture(OutboundDebugLogCapture const&) = delete;
+    auto operator=(OutboundDebugLogCapture const&) -> OutboundDebugLogCapture& = delete;
+    OutboundDebugLogCapture(OutboundDebugLogCapture&&) = delete;
+    auto operator=(OutboundDebugLogCapture&&) -> OutboundDebugLogCapture& = delete;
+
+    [[nodiscard]] auto text() const -> std::string
+    {
+        return output_.str();
+    }
+
+private:
+    std::reference_wrapper<merovingian::observability::SingleLog> logger_;
+    std::string module_{"outbound_client"};
+    std::ostringstream output_{};
+    std::streambuf* previous_buffer_{nullptr};
+    merovingian::observability::LogLevel previous_level_{};
+    std::optional<merovingian::observability::LogLevel> previous_module_level_{};
+};
+
+constexpr auto secret_query =
+    std::string_view{"?sid=sid-value-7&client_secret=secret-value-9&share_token=token-value-3&z=arbitrary-value-5"};
+
+[[nodiscard]] auto log_names_none_of_the_query(std::string const& log) -> bool
+{
+    return log.find("secret-value-9") == std::string::npos && log.find("sid-value-7") == std::string::npos &&
+           log.find("token-value-3") == std::string::npos && log.find("arbitrary-value-5") == std::string::npos &&
+           log.find("client_secret") == std::string::npos;
+}
+
+} // namespace
+
+SCENARIO("An outbound request's debug log line names the URL without its query", "[http][outbound][logging][f76]")
+{
+    GIVEN("a loopback server and a request to a URL whose query holds a client secret and other values")
+    {
+        auto server = merovingian::tests::MockAppservice{};
+        auto client = merovingian::http::OutboundClient{};
+        auto request = merovingian::http::OutboundRequest{};
+        request.method = "GET";
+        request.url = server.url() + "/_matrix/identity/v2/3pid/getValidated3pid" + std::string{secret_query};
+        request.pinned_addresses = {"127.0.0.1"};
+        request.allow_cleartext_http = true;
+        request.connect_timeout_seconds = 2U;
+        request.total_timeout_seconds = 2U;
+
+        WHEN("the server answers 200")
+        {
+            auto const capture = OutboundDebugLogCapture{};
+            auto const result = client.perform(request);
+            auto const log = capture.text();
+
+            THEN("request.success names the path and none of the query")
+            {
+                REQUIRE(result.ok);
+                REQUIRE(log.find("request.success") != std::string::npos);
+                REQUIRE(log.find("/_matrix/identity/v2/3pid/getValidated3pid") != std::string::npos);
+                REQUIRE(log_names_none_of_the_query(log));
+            }
+        }
+
+        WHEN("the server answers with a redirect")
+        {
+            server.set_status(302U);
+            auto const capture = OutboundDebugLogCapture{};
+            auto const result = client.perform(request);
+            auto const log = capture.text();
+
+            THEN("request.redirect_rejected names none of the query")
+            {
+                REQUIRE_FALSE(result.ok);
+                REQUIRE(log.find("request.redirect_rejected") != std::string::npos);
+                REQUIRE(log_names_none_of_the_query(log));
+            }
+        }
+
+        WHEN("the connection fails")
+        {
+            request.url =
+                "https://refused.test.invalid:1/_matrix/identity/v2/3pid/getValidated3pid" + std::string{secret_query};
+            auto const capture = OutboundDebugLogCapture{};
+            auto const result = client.perform(request);
+            auto const log = capture.text();
+
+            THEN("request.error names none of the query")
+            {
+                REQUIRE_FALSE(result.ok);
+                REQUIRE(log.find("request.error") != std::string::npos);
+                REQUIRE(log_names_none_of_the_query(log));
             }
         }
     }

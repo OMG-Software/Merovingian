@@ -1041,7 +1041,11 @@ threat it closes; the controls above are the standing defences these reinforce.
   `runtime.mutex` for the network call.
   **(v0.12.9)** `client_secret` and `sid` are additionally bound as *sensitive*
   prepared-statement values, so they never reach a query trace or diagnostic
-  log — closing the leak path that did not require a DB read at all. They
+  log — closing the leak path that did not require a DB read at all.
+  **(F-76, ADR-0418)** The outbound client's own debug lines (`request.success`,
+  `request.error`, `request.redirect_rejected`) log the request URL without its
+  query, which is where `getValidated3pid` carries them; before, `url` held the
+  whole URL. They
   remain plaintext at rest: that is the residual risk this entry documents, and
   removing it means either encrypting the column or moving to homeserver-signed
   unbind (auth mode 1), both of which are schema/protocol changes rather than a
@@ -1387,6 +1391,10 @@ threat it closes; the controls above are the standing defences these reinforce.
   authentication requirement generally. Mitigated by dispatching it
   entirely outside `federation::handle_inbound_federation_request`, in the
   same homeserver-router bypass used for `GET /_matrix/key/v2/server`.
+  A minted token does not outlive its account (F-77, ADR-0408): deactivation,
+  logout everywhere and a password change that logs out other devices delete
+  the user's `openid_tokens` rows, and `federation_openid_userinfo` refuses a
+  missing or deactivated user.
 
 - **Open redirect and login-token exfiltration via SSO `redirectUrl`
   (identified and mitigated during implementation, v0.12.1):** `GET
@@ -2149,9 +2157,12 @@ membership. No whole-finding or release acceptance is claimed. See proposed
   again, and a replay older than 24 hours or evicted by 65 536 newer messages from any origin
   is too; persisting it would need a migration and buys little for a best-effort EDU. The
   origin in an `edu_ingest` frame remains worker-claimed, but the FED-12 repair
-  above correlates it with a live main-owned verified request before sink admission.
-  This is not per-EDU signature or signed-body membership verification; ADR-0071
-  covers PDU re-verification only.
+  above correlates it with a live main-owned verified request before sink admission,
+  and since 0.12.71 (F-74, ADR-0395) main also requires the relayed EDU to be one the
+  verified `/send` body carried, by a digest of its canonical `(edu_type, content)`
+  pair, consumed once per occurrence. A compromised worker can no longer inject an
+  EDU as another server's users; it can still replay or reorder, within one live
+  request, EDUs that server really sent. ADR-0071 covers PDU re-verification.
 - **Inbound `/invite` overwrote a ban with a forged invite (FED-5).** `invite_handler` ran no
   room authorisation rules: it rewrote the target's membership row from `ban` to `invite` and
   stored the remote event as the target's current `m.room.member` state, so local composition
@@ -2249,7 +2260,8 @@ membership. No whole-finding or release acceptance is claimed. See proposed
   `tests/integration/test_sliding_sync_flow.cpp`.
 - **Residual risk:** history stored before state groups existed has no recorded state, so
   its visibility at the time cannot be proved: it is visible only to users who were joined when
-  it was sent (rule 2 from their own membership timeline, undeterminable means denied), and
+  it was sent (rule 2 from their own membership timeline, undeterminable means denied; an outlier
+  fetched as history with no state group is denied, ADR-0415), and
   `shared` or `world_readable` history from that period is not shown to later joiners or
   peekers until state is recorded for it. The unread counts
   (`notification_count`, `highlight_count`, the `by_notification_count` room ordering and the push
@@ -2316,8 +2328,9 @@ membership. No whole-finding or release acceptance is claimed. See proposed
   threads stay available to everything that does not leave this server. Threads are still
   blocked while a call is in flight: the fix bounds how many, and a separate pool or an
   asynchronous proxy path was rejected for now. Outbound calls to operator-configured
-  destinations that an unauthenticated client can trigger (appservice `query_user` and
-  `query_room_alias`, identity-server `requestToken`) are not under the budget. DNS lookups
+  destinations that an unauthenticated client can trigger (identity-server `requestToken`)
+  are not under the budget; the appservice `query_user` and `query_room_alias` hooks of
+  `GET /profile` and `GET /directory/room` are, one slot per request (ADR-0417). DNS lookups
   inside server discovery are bounded by the resolver, not by the deadline. Clients behind a
   shared address that is not a configured trusted proxy share one per-client slot.
 
@@ -2561,7 +2574,14 @@ Security audit run-1 (2026-10-20) found six LOW issues, all fixed in 0.12.34.
   their event content, until they are sent. **Mitigation:** a bounded in-memory queue (1024
   notifications, 32 per recipient) that drops rather than blocks, eight retries at most, one job
   thread that sends them one at a time, and no `runtime.mutex` across the network call
-  (ADR-0206). Residual risk: a recipient's failing gateway can fill that recipient's share.
+  (ADR-0206). A run of that thread stops starting attempts after 30 s, takes retries one
+  recipient at a time in turn and waits at most 10 s for a gateway, so one account's slow gateway
+  cannot hold it for a whole batch (ADR-0410). A gateway that answers just inside the timeout
+  counts against its circuit, a recipient batch queues the pushers it has not reached after
+  twice the timeout, and requests in flight per gateway host and per resolved address are capped
+  (ADR-0409). Residual risk: a recipient's failing gateway can fill that recipient's share, and
+  several recipients with slow gateways on several addresses can still collectively fill the
+  delivery budget for the batch deadline.
 
 ### Media: header injection, asynchronous uploads and URL previews (0.12.41)
 
@@ -2846,3 +2866,25 @@ nothing, all from trusting the worker's view or the hook's transport.
   shorter deadlines, a backoff for slow successes, and a circuit check before discovery. **Residual risk:** an attacker with many
   server names joined to active rooms can occupy several threads, about 40 s per name per backoff period; an honest peer slower
   than 10 s is throttled until it answers quickly. Tests: `[f20]`.
+
+### An excluded server reached through another server, and one signature covering many event IDs (0.12.71, F-72, F-69, F-57, F-56, F-83)
+
+- **An excluded server's events through a third party (F-72, ADR-0390).** `denied_servers`, `allowed_servers` and the admin
+  rules judged the request's origin, so any allowed server could carry an excluded server's events, and this server
+  contacted the excluded server for its keys. They now also judge the sender's server on every ingest path, before any
+  key lookup. **Residual risk:** the key resolver gate reads the lists only, so a server excluded by an admin rule alone
+  is stopped at the ingest paths, not at the resolver. The lists are exact strings, so a server under a second name, such
+  as with an explicit port, is not matched.
+- **Traffic to an excluded server (F-69, ADR-0391).** Outbound paths are gated at their chokepoints, and queued rows are
+  dropped on replay. **Residual risk:** admin rules do not gate outbound traffic, because delivery threads must not wait on
+  `runtime.mutex`.
+- **One signature, many event IDs (F-57, ADR-0397).** The signing payload left out a top-level `event_id` while the reference
+  hash kept it, so a relay could mint new IDs for a genuine event. The payload now follows the spec, and a v3+ PDU carrying
+  the field is refused.
+- **Format limits on one path only (F-56, ADR-0399).** Events taken from backfill, fetches and `send_join` answers were not
+  held to the size and reference caps. One check now covers them. **Residual risk:** identifier grammar is not checked in
+  that function.
+- **One number sinking a transaction (F-83, ADR-0398).** A float in one PDU failed the whole `/send` as a bad signature, so
+  a peer could lose a batch and be charged against its budget. Authentication now reads the numbers as received; only a
+  signature that was checked and failed is charged. **Residual risk:** events in room versions 3 to 5 holding such a number
+  stay unsupported, a recorded deviation from the spec.

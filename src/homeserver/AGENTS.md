@@ -20,6 +20,7 @@ This is the largest and most complex module — read this file carefully before 
 | `url_preview_service.cpp` | `GET .../preview_url` (ADR-0213): the SSRF gate (`gated_fetch`: resolve, check, pin, follow redirects itself) and the preview cache. Every fetch of a client-named URL goes through it |
 | `room_service.cpp` | Room operations, event persistence, signing-key lifecycle, appservice and push delivery |
 | `appservice_delivery.cpp` | Application Service API outbound queue (ADR-0163): `enqueue_appservice_delivery` (request path, no network) and `drain_appservice_queues` (the one drainer thread, run by a `PeriodicJob` from `main.cpp`) |
+| `client_txn_prune.cpp` | `prune_client_transactions`: the sweep the `client-txn-prune` `PeriodicJob` runs every hour, deleting to-device `client_txn_ids` records older than 7 days (F-54, ADR-0381) |
 | `deferred_pdu_retry.cpp` | Retains federation PDUs that could not yet be placed (`deferred_pdus`) and retries them: `retry_deferred_pdus`, `DeferredPduRetryJob` (R03, ADR-0165). A retry holds no lock across `ingest_pdu_event`; `ingest_pdu_event` writes rows only after signature verification |
 | `redaction_service.cpp` | Applies redactions (judge, overwrite the target's stored JSON, withhold unapplied redactions from clients) and checks a local client's redaction |
 | `room_power.cpp` | `may_send_state_event()`: whether a user may send a state event of a type in a room's current state, judged as the auth rules judge it (CSAZ-12) |
@@ -36,7 +37,7 @@ This is the largest and most complex module — read this file carefully before 
 | `push_badge_count.cpp` | `count_push_badge`: the Push Gateway `counts.unread` from one walk of the events, newest first in stream order, that stops once every room is settled, at most 10000 rows (ADR-0207) |
 | `push_rule_unread_classifier.cpp` | `PushRuleUnreadClassifier`: counts unread events by the user's push rules, from the start of their current join (R15, ADR-0205) |
 | `presence_service.cpp` | Presence (CS API "Presence", SS API `m.presence`): `read_presence` (GET), `apply_sync_presence` (the `/sync` `set_presence` parameter), `build_sync_presence_events` (`presence.events`), `accept_inbound_presence` (the EDU sink's presence case) and `record_presence`, the one place a presence row is stored. `presence.enabled=false` turns every entry point into a no-op. Sending the EDU stays in `client_server.cpp` (`broadcast_presence_edu`), beside the other outbound EDUs |
-| `push_retry.cpp` | `attempt_push_delivery` (every push attempt: circuit breaker, rejected pushkeys, scheduling retries) and `PushRetryJob`, the one thread that sends retries (R14, ADR-0206) |
+| `push_retry.cpp` | `attempt_push_delivery` (every push attempt: circuit breaker, rejected pushkeys, scheduling retries) and `PushRetryJob`, the one thread that sends retries (R14, ADR-0206); a run is bounded by a time budget, takes retries one recipient at a time in turn and sends with a shorter timeout (ADR-0410), and a slow answer counts against the gateway's circuit (ADR-0409) |
 | `email_push.cpp` | Kind `"email"` pushers (ADR-0219, ADR-0220): `owned_email_pusher_address` (the pushkey must be the account's own email 3PID), `remove_email_pushers_for_address`, and `EmailPushJob`, the one thread that sends due digests through `send_due_email_notifications`. It re-reads the pusher, the 3PID, the account and the badge count under `runtime.mutex`, then sends with the mutex released |
 | `runtime_signing_key_store.cpp` | Production `SigningKeyStore` over the persisted server signing-key rows |
 | `federation_proxy.cpp` | Forwards inbound federation requests to the out-of-process federation worker over encrypted IPC; `GET /_matrix/key/v2/server` stays local |
@@ -74,7 +75,9 @@ is `declared_mime|sniffed_mime|scanner_clean|bytes` — the pipe-delimited wrapp
    a variable component (an ID, type or key) needs a template and a row in the HTTP-3
    scenario "gives every implemented dynamic client route its own coalesced bucket"
    in `tests/unit/test_security_audit_http_3.cpp` (ADR-0092); a fixed path needs an
-   entry in `static_routes` and a row in `client_static_route_allow` listing EVERY
+   entry in `static_routes` (an operator route under `/_merovingian/admin/` goes in
+   `operator_routes` or `media_actions` inside `normalized_target`, F-73, or its requests share
+   one counter with every unknown path) and a row in `client_static_route_allow` listing EVERY
    method it serves (a method missing there is answered `405 M_UNRECOGNIZED`
    before authentication). A path the matcher cannot place is answered
    `404 M_UNRECOGNIZED` before authentication (`client_route_is_known`, ADR-0230), so
@@ -139,7 +142,10 @@ logged at warning level. A pre-v12 `create_room` holds a `RoomIdReservation` fro
 ## Client requests that call another server
 
 `publicRooms?server=` (GET and POST), a remote room-alias lookup (`GET /directory/room/{alias}` and `POST /join/{#alias}`), a remote user's profile (`remote_profile_response`: relays only `displayname`/`avatar_url`), remote media download or
-thumbnail, and the `/thirdparty/*` lookups that call an appservice (ADR-0181) make this server
+thumbnail, the `/thirdparty/*` lookups that call an appservice (ADR-0181), and the appservice
+`query_user` / `query_room_alias` hooks of `GET /profile/{userId}` and `GET /directory/room/{alias}`
+(F-68, ADR-0417: one slot for the whole loop, taken only when a registration's namespace matches the
+identifier, so a server with no matching appservice never answers 429) make this server
 call a peer it does not control, and the spec lets clients make them
 without authentication. `RuntimeLockRelease` frees the mutex, not the thread, so each holds one of
 the main pool's threads for the round trip. Every such call therefore:
@@ -384,6 +390,12 @@ ADR-0171), as backfill ingestion does. Do it before taking `runtime.mutex`: reso
 a key may go to the network. A new relay that carries a PDU follows the same
 pattern.
 
+An EDU relay (`edu_ingest`, `handle_edu_ingest_request`) carries no signature, so it is bound to the body main
+authenticated instead (F-74, ADR-0395): `WorkerPool::handle` gives the pending request one digest per EDU of a verified
+`/send` body (`verified_send_edu_digests`), and the handler hashes the relayed pair before taking `runtime.mutex` and
+admits it only through `IpcChannel::consume_pending_edu`. Never admit an EDU relay on origin alone, and never run the
+sink with the channel's pending lock held.
+
 Main never signs on a worker's behalf (ADR-0078). A `sign_request` frame is refused
 inline by `refuse_forbidden_worker_request`, which takes no runtime and so cannot take
 `runtime.mutex` or reach a crypto provider; the handler calls it before any other frame
@@ -486,6 +498,14 @@ client, sender or remote server controls, and per-user rows that requests scan m
   `M_TOO_LARGE` with nothing queued (ADR-0335, ADR-0336). The devices of the named users come from one pass over
   `store.devices`; never scan the device table per entry. The database layer gathers a batch's recipient queues in
   one pass (`index_to_device_recipients`) and never walks the queue per message.
+- A client transaction ID is part of an idempotency key with the request's device (`authenticated_request_device_id`),
+  never the user alone, on `/send`, `/redact` and `/sendToDevice` (ADR-0380); an `eventType` or `txnId` over 255 bytes
+  is `400 M_INVALID_PARAM` before the lookup (`client_txn_part_is_too_long`). Only the to-device `client_txn_ids`
+  rows are pruned, by the `client-txn-prune` job (ADR-0381); a new path that records a transaction takes the
+  device and gets the bound.
+- `POST /room_keys/version` takes its number from `database::create_key_backup_version` (never from a scan of the
+  versions held), and `DELETE /room_keys/version/{version}` deletes the version's sessions in the same transaction
+  (ADR-0384).
 - `POST /keys/upload` checks the shape and size of every one-time and fallback key before storing anything
   (`uploaded_key_shape_refusal`, 400 `M_BAD_JSON`), and `device_keys`, each cross-signing key and each signed key of
   a signature upload are at most `max_uploaded_key_document_bytes` (400 `M_TOO_LARGE`, ADR-0338). A new key upload
@@ -500,6 +520,14 @@ client, sender or remote server controls, and per-user rows that requests scan m
 - A client's device or key change goes through `record_shared_room_device_changes`: local observers only,
   deduplicated across rooms, one batch (ADR-0317). Never loop over a roster calling `record_device_list_change`;
   a federated room's roster is chosen by a remote server.
+- A device removal (`DELETE /devices/{deviceId}`, `POST /delete_devices`, `POST /logout`, `POST /logout/all`) reads
+  `remote_servers_for_user` before the removal, then calls `announce_deleted_devices` once with the devices that really
+  went: one `m.device_list_update` with `deleted: true` per device and server, each on its own `allocate_sync_stream_id`
+  position, enqueue only. A new path that deletes a device does the same. Account deactivation deletes none today.
+- A device ID is never a cross-signing key ID: `complete_login` and `login_local_user_by_id` (every device-creating
+  path ends in one of them) refuse a match with 403 `M_FORBIDDEN`, and `POST /keys/device_signing/upload` refuses, before
+  storing, a key whose ID is one of the uploader's device IDs (`cross_signing_upload_names_a_device`). A new path that
+  creates a device goes through those two; a new path that stores a cross-signing key does the upload check.
 - A fallback local event (ADR-0225) records the room's `current_state` as its state before, never the cited
   extremity's own state (ADR-0373, F-40): the extremity is picked by stream order and may predate a ban. Do not
   change `basis_for_new_event` to return the fork's state, or suppress only the diff in `store_event_with_bookkeeping`:
@@ -523,6 +551,7 @@ client, sender or remote server controls, and per-user rows that requests scan m
   `state_groups`, `state_group_state`, `event_state_groups` or `events` to find a key. A retained PDU is woken through
   `take_deferred_pdus_awaiting` (ADR-0326), never by searching the retained JSON, and the retry job reads
   `deferred_pdus` in place rather than copying it.
+- `PUT /profile/{userId}/displayname|avatar_url` measures the serialised `{avatar_url, displayname}` object with the new value and refuses 64 KiB or more with `400 M_PROFILE_TOO_LARGE`; a non-empty non-MXC `avatar_url` (`media::mxc_uri_is_valid`) is `400 M_INVALID_PARAM`; an empty one clears it; a body without the key is `400 M_MISSING_PARAM` and a non-string value `400 M_INVALID_PARAM`, storing nothing (ADR-0406). A new stored profile field must be added to the measured object.
 - `/search` judges a room the user has left with `room_read_access_for` only when one of its
   events would be returned, so those scans stay bounded by the page (R16).
 - `POST /search`, `POST /publicRooms` and `POST /user_directory/search` match their term with one
@@ -545,13 +574,18 @@ client, sender or remote server controls, and per-user rows that requests scan m
   plus one room, or at `max_hierarchy_walk_visits` (ADR-0345). Never filter `store.state` for one key or one room.
 - `GET /rooms/{roomId}/threads` aggregates by root ID in a hash map over `EventTable::walk_room_newest_first`, at
   most `max_thread_events_examined` events (ADR-0345); never walk `store.events` for one room.
-- `GET /rooms/{roomId}/members` collects the state-backed members in a set (F-10).
+- `GET /rooms/{roomId}/members` collects the state-backed members in a set (F-10). With `at` it judges the one event
+  the position resolves to (`sync::state_anchor_event`) with `HistoryVisibility::can_see` and answers 403 when it is
+  not visible (ADR-0414); it never judges the members one by one.
 - `GET /make_join` (the template provider) and `decide_restricted_join` read the create, join rules, power levels and the
   joiner's member event by `find_current_state_event_id`, a named room's local members by one `for_each_room_state_row`
   walk of that room, and events by `EventTable::find_in_room` (F-19, ADR-0367); `stored_room_version` reads the create
   row by the index. `RestrictedJoinDecision::work` counts what a decision read. Never filter `store.state` or walk
   `store.events` for one room or one key in this path; `[f19]` in `tests/unit/test_send_join_answer.cpp` shows the cost
   is the same with unrelated rooms present.
+- `build_pending_push_deliveries` skips a deactivated recipient from a set of active users built once per call
+  (`active_local_user_ids`, on the first recipient with a pusher; ADR-0411). Never call `asserted_user_is_active`
+  per recipient there: it scans `database.users`.
 - Push delivery's badge count (`counts.unread`, `count_push_badge`) runs per recipient per event.
   It walks `store.events.in_stream_order()` newest first, stops once every joined room is settled,
   visits at most `push_badge_row_budget` (10000) rows, and saturates at `push_badge_unread_cap`
@@ -668,10 +702,22 @@ Every path that sets a typing entry to `typing: true` sets its `expires_at`: the
 entries, advances the room's typing stream position and sends `typing: false` for local users; it
 runs on the "typing-expiry" `PeriodicJob` in `main.cpp`. A new path that adds a typing entry must
 set `expires_at`, or it never expires, and call `wake_typing_expiry` so an earlier deadline than the
-job's current sleep is not missed. Every read and write of `typing_users` holds `runtime.mutex`:
+job's current sleep is not missed. The inbound typing case of `edu_sink` ignores (accepts, changes nothing) an EDU
+for a user not joined to the room or from a server the room's ACL denies, checked there as well as in the dispatcher
+because a worker relay carries content the worker chose (F-55); at `max_inbound_typing_entries` it evicts the oldest
+remote entry only, and drops the new one if none is remote (ADR-0386). Every read and write of `typing_users` holds `runtime.mutex`:
 the federation EDU sink runs without it and takes it itself in the typing case. Every other EDU case
 that reads or writes store state (receipts, presence, device lists) or reads the visible stream
 position takes it the same way; `enqueue_direct_to_device_messages` takes it itself.
+
+## Receipts and read markers name an event ID by shape and size (F-53, ADR-0385)
+
+`POST .../receipt/{receiptType}/{eventId}` and `POST .../read_markers` answer 400 `M_INVALID_PARAM` for an event ID (and
+for each of `m.read`, `m.fully_read`, `m.read.private`) that `events::event_id_is_acceptable_in_receipt` refuses, before
+anything is stored; `read_markers` judges every value before it stores one. The inbound `m.receipt` EDU sink ignores such
+an `event_ids[0]`, and `database::store_receipt` refuses an `event_id` or `thread_id` over 255 bytes. None asks whether the
+event exists: the spec has no such error. Do not swap the helper for `events::event_id_is_valid`, which lacks a version 3
+event ID's `+` and `/`.
 
 ## Presence
 
@@ -703,7 +749,9 @@ the job.
 
 - **Every stored event is queued once, by the code that stored it.** `queue_event_for_appservices` (room_service.cpp)
   wraps `enqueue_appservice_delivery` and passes the `state_key` of a membership event as `member_event_target` (R07).
-  Send, each membership transition, the third-party invite made on join, federation PDUs and `createRoom` all call it.
+  Send, each membership transition, the third-party invite made on join, federation PDUs, the `membership_acceptor`
+  (an accepted remote `send_join`, `send_leave` or `send_knock`, never a rejected or soft-failed one, F-51) and
+  `createRoom` all call it.
   The federation `/invite` handler, for a room this server is not in, stores the invite as an outlier with no
   `LocalRoom` and calls the `room_id` overload of `enqueue_appservice_delivery` with the invitee as target: no
   transaction will bring that event again, so it is the only chance an appservice has to see its user invited.

@@ -6,6 +6,7 @@
 #include "merovingian/core/file_descriptor.hpp"
 #include "merovingian/core/secret_buffer.hpp"
 #include "merovingian/crypto/ipc_auth_key.hpp"
+#include "merovingian/federation/inbound_ingestion.hpp"
 #include "merovingian/homeserver/worker_pool.hpp"
 #include "merovingian/ipc/channel.hpp"
 #include "merovingian/ipc/federation_ipc_frames.hpp"
@@ -25,6 +26,7 @@
 #include <string_view>
 #include <tuple>
 #include <utility>
+#include <vector>
 
 #include <sodium.h>
 #include <sys/socket.h>
@@ -138,7 +140,9 @@ public:
 
     // trusted_origin is explicitly selected by the testcase, never extracted
     // from the worker's EDU frame (whose claimed origin may be invalid).
-    [[nodiscard]] auto establish(std::string_view trusted_origin) -> bool
+    // edu_digests are the digests of the EDUs the testcase says the verified body carried (F-74): an EDU
+    // relayed against this parent is admitted only if its digest is among them and unused.
+    [[nodiscard]] auto establish(std::string_view trusted_origin, std::vector<std::string> edu_digests = {}) -> bool
     {
         REQUIRE(!pending_.valid());
         auto request = homeserver::LocalHttpRequest{};
@@ -147,10 +151,10 @@ public:
         request.body = "{}";
         request.verified_origin = trusted_origin;
         auto frame = ipc::serialize_fed_request(request);
-        pending_ =
-            std::async(std::launch::async, [this, frame = std::move(frame), origin = std::string{trusted_origin}] {
-                return main_.send_request(frame, std::chrono::seconds{30}, origin);
-            });
+        pending_ = std::async(std::launch::async, [this, frame = std::move(frame), origin = std::string{trusted_origin},
+                                                   digests = std::move(edu_digests)]() mutable {
+            return main_.send_request(frame, std::chrono::seconds{30}, origin, std::move(digests));
+        });
         auto guard = std::unique_lock{mutex_};
         if (!received_.wait_for(guard, std::chrono::seconds{10}, [this] {
                 return parent_id_ != 0U;
@@ -236,7 +240,11 @@ private:
 {
     auto channels = make_edu_relay_channels();
     auto context = EduRelayContext{*channels.main, *channels.worker};
-    REQUIRE(context.establish(trusted_origin));
+    // The relayed EDU is taken to be the one in the verified body: its digest is what the parent holds.
+    auto const digest = federation::edu_relay_digest(ipc::ipc_json_get_str(relay_json, "edu_type"),
+                                                     ipc::ipc_json_get_str(relay_json, "content_json"));
+    REQUIRE(digest.has_value());
+    REQUIRE(context.establish(trusted_origin, {*digest}));
     auto const response = homeserver::handle_edu_ingest_request(runtime, context.wrap(relay_json), *channels.main);
     REQUIRE(context.finish());
     return response;

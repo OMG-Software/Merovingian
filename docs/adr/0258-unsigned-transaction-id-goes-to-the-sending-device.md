@@ -1,6 +1,6 @@
 # unsigned.transaction_id goes to the sending device
 
-* Status: accepted
+* Status: accepted; the negative consequence "Idempotency is still keyed by user, not device" is superseded by [ADR-0380](0380-client-transaction-ids-are-scoped-to-the-device-and-a-request-with-no-device-has-its-own-scope.md), and "`client_txn_ids` is never pruned" no longer holds for to-device rows ([ADR-0381](0381-to-device-transaction-records-are-kept-for-seven-days.md))
 * Date: 2026-10-28
 
 Technical Story: Complement run 9 (C4)

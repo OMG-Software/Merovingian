@@ -104,26 +104,24 @@ SCENARIO("Server ACL single-character ? globs match exactly one character", "[fe
     }
 }
 
-SCENARIO("Server ACL with no allow list permits servers not explicitly denied", "[federation][security][acl]")
+SCENARIO("Server ACL with no allow list denies every server", "[federation][security][acl]")
 {
     GIVEN("an ACL that only denies evil.com")
     {
         auto const acl = acl_from_json(R"({"deny":["evil.com"]})");
         REQUIRE(acl.deny.size() == 1U);
         REQUIRE(acl.deny.front() == "evil.com");
+        REQUIRE(acl.allow.empty());
 
-        WHEN("checking a denied and an allowed server")
+        WHEN("checking a listed and an unlisted server")
         {
-            THEN("only the explicitly denied server is rejected")
-            {
-                auto const evil_result = evaluate_server_acl("evil.com", acl);
-                REQUIRE(evil_result.decision == ServerAclDecision::deny);
+            auto const evil_result = evaluate_server_acl("evil.com", acl);
+            auto const good_result = evaluate_server_acl("good.com", acl);
 
-                auto const good_result = evaluate_server_acl("good.com", acl);
-                CAPTURE(good_result.decision);
-                CAPTURE(good_result.rule);
-                CAPTURE(good_result.reason);
-                REQUIRE(good_result.decision == ServerAclDecision::allow);
+            THEN("neither is allowed, because nothing matched an allow entry")
+            {
+                REQUIRE(evil_result.decision == ServerAclDecision::deny);
+                REQUIRE(good_result.decision == ServerAclDecision::deny);
             }
         }
     }
@@ -283,13 +281,13 @@ SCENARIO("Server ACL parser falls back to spec defaults for malformed content", 
         {
             auto const acl = parse_server_acl(parsed.value);
 
-            THEN("defaults are returned so enforcement remains safe")
+            THEN("defaults are returned and enforcement fails closed")
             {
                 REQUIRE(acl.allow.empty());
                 REQUIRE(acl.deny.empty());
                 REQUIRE(acl.allow_ip_literals);
-                // With empty allow and deny lists every server is permitted.
-                REQUIRE(evaluate_server_acl("example.org", acl).decision == ServerAclDecision::allow);
+                // No allow entry can match, so every server is denied.
+                REQUIRE(evaluate_server_acl("example.org", acl).decision == ServerAclDecision::deny);
             }
         }
     }

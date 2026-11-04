@@ -190,7 +190,21 @@ test(
   ],
 )
 
-if thumbnail_worker_available
+if thumbnail_worker_available and host_machine.system() == 'netbsd'
+  # NetBSD has no in-process decoder sandbox, so the worker refuses before it describes any
+  # library: it prints the failed control and exits 1, and prints no report (ADR-0419).
+  test(
+    'thumbnail-worker-refuses-without-sandbox-smoke-test',
+    smoke_test,
+    args: [
+      '-c',
+      'output=$(' + thumbnail_worker_exe.full_path() + ' --version 2>&1); status=$?; '
+        + '[ "$status" -eq 1 ] && '
+        + 'echo "$output" | grep -q "hardening failed: no platform decoder sandbox" && '
+        + '! echo "$output" | grep -q "^libpng"',
+    ],
+  )
+elif thumbnail_worker_available
   # The worker prints its report inside the decoder sandbox and exits 0. A coverage build
   # (-Db_coverage=true) writes its .gcda files at exit, which the sandbox refuses (SIGSYS), so
   # there only the output is checked: the report is printed after hardening either way.

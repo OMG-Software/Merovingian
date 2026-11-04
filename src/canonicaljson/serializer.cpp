@@ -258,6 +258,14 @@ namespace
             }
             return {format_double(*number), CanonicalJsonError::none};
         }
+        if (auto const* raw = std::get_if<RawNumber>(&storage); raw != nullptr)
+        {
+            if (reject_floats)
+            {
+                return {{}, CanonicalJsonError::float_not_allowed};
+            }
+            return {raw->token, CanonicalJsonError::none};
+        }
         if (auto const* string = std::get_if<std::string>(&storage); string != nullptr)
         {
             if (!string_is_valid_for_json(*string))

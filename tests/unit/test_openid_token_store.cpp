@@ -118,3 +118,52 @@ SCENARIO("Persistent store prunes an already-expired OpenID token on the next in
         }
     }
 }
+
+SCENARIO("Persistent store revokes every OpenID token of one user", "[database][persistence][openid][f77]")
+{
+    GIVEN("a store holding two tokens of one user and one of another")
+    {
+        auto store = merovingian::database::PersistentStore{};
+        auto const future = std::chrono::system_clock::now() + std::chrono::hours{1};
+        REQUIRE(merovingian::database::store_openid_token(store, {"@alice:example.org", "token-hash:v2:a1", future}));
+        REQUIRE(merovingian::database::store_openid_token(store, {"@alice:example.org", "token-hash:v2:a2", future}));
+        REQUIRE(merovingian::database::store_openid_token(store, {"@bob:example.org", "token-hash:v2:b1", future}));
+
+        WHEN("the first user's tokens are revoked")
+        {
+            auto const revoked = merovingian::database::revoke_openid_tokens_for_user(store, "@alice:example.org");
+
+            THEN("only the other user's token remains")
+            {
+                REQUIRE(revoked);
+                REQUIRE(store.openid_tokens.size() == 1U);
+                REQUIRE(store.openid_tokens.front().user_id == "@bob:example.org");
+            }
+        }
+
+        WHEN("the deletion is forced to fail")
+        {
+            merovingian::database::force_persist_failure_for_statement(store, "revoke_openid_tokens_for_user");
+            auto const revoked = merovingian::database::revoke_openid_tokens_for_user(store, "@alice:example.org");
+
+            THEN("the failure is reported and every in-memory row stays, so the call can be repeated")
+            {
+                REQUIRE_FALSE(revoked);
+                REQUIRE(store.openid_tokens.size() == 3U);
+                REQUIRE(merovingian::database::revoke_openid_tokens_for_user(store, "@alice:example.org"));
+                REQUIRE(store.openid_tokens.size() == 1U);
+            }
+        }
+
+        WHEN("a user with no tokens is revoked")
+        {
+            auto const revoked = merovingian::database::revoke_openid_tokens_for_user(store, "@carol:example.org");
+
+            THEN("it succeeds and nothing changes")
+            {
+                REQUIRE(revoked);
+                REQUIRE(store.openid_tokens.size() == 3U);
+            }
+        }
+    }
+}

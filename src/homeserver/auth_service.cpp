@@ -17,6 +17,7 @@
 #include "merovingian/crypto/master_key.hpp"
 #include "merovingian/crypto/random.hpp"
 #include "merovingian/crypto/token_key.hpp"
+#include "merovingian/federation/key_signatures.hpp"
 #include "merovingian/homeserver/local_services.hpp"
 #include "merovingian/homeserver/request_lock.hpp"
 #include "merovingian/observability/logger.hpp"
@@ -49,6 +50,24 @@ namespace merovingian::homeserver
 {
 namespace
 {
+
+    // F-62 (ADR-0416). A login that fails records the claimed user ID and device ID as the audit row's actor
+    // and target, and the caller is unauthenticated: it chooses both. Only text that is a well-formed
+    // identifier (the strict grammar a registration must meet, which has no space or '=') is recorded;
+    // anything else is recorded as a fixed marker. The refusal the client receives is the same either way. The
+    // diagnostic log line keeps the claimed text, where it is one field value.
+    constexpr std::string_view audit_invalid_user_id = "(invalid user id)";
+    constexpr std::string_view audit_invalid_device_id = "(invalid device id)";
+
+    [[nodiscard]] auto audit_claimed_user_id(std::string_view user_id) -> std::string
+    {
+        return std::string{auth::user_id_is_valid(user_id) ? user_id : audit_invalid_user_id};
+    }
+
+    [[nodiscard]] auto audit_claimed_device_id(std::string_view device_id) -> std::string
+    {
+        return std::string{auth::device_id_is_valid(device_id) ? device_id : audit_invalid_device_id};
+    }
 
     auto log_diagnostic(std::string_view event, std::vector<observability::StructuredLogField> fields,
                         observability::LogEventSeverity severity = observability::LogEventSeverity::debug) -> void
@@ -765,6 +784,32 @@ namespace
         return make_operation_result(true, user_id);
     }
 
+    // Spec (POST /login): the `device_id` "must not be the same as a cross-signing key ID", answered
+    // 403 `M_FORBIDDEN`; the cross-signing section adds "servers MUST not allow devices to have the same
+    // IDs as cross-signing keys". The comparison is with the account's own stored cross-signing keys.
+    // Every path that can create a device ends in `complete_login` or `login_local_user_by_id`, which
+    // call this. A server-generated ID is 32 hex characters and a key ID is an unpadded base64 public
+    // key of 43, so a generated ID can never collide and needs no regeneration.
+    [[nodiscard]] auto device_id_is_cross_signing_key_id(HomeserverRuntime& runtime, std::string_view user_id,
+                                                         std::string_view device_id) -> bool
+    {
+        if (!federation::device_id_names_cross_signing_key(runtime.database.persistent_store, user_id, device_id))
+        {
+            return false;
+        }
+        log_diagnostic_audit(runtime.database, "auth", "login.rejected",
+                             {
+                                 {"user_id",   std::string{user_id},                  false},
+                                 {"device_id", std::string{device_id},                false},
+                                 {"status",    "403",                                 false},
+                                 {"reason",    "device id is a cross-signing key id", false}
+        },
+                             observability::LogEventSeverity::warning, observability::AuditCategory::auth,
+                             "login.rejected", std::string{user_id}, std::string{device_id},
+                             "403:device id is a cross-signing key id");
+        return true;
+    }
+
     // Shared tail of login_local_user() and login_appservice_user(): device
     // validation, account-state (locked/suspended) policy, token issuance,
     // and session persistence. The two callers differ only in how they got
@@ -784,8 +829,13 @@ namespace
                                      {"reason",    "invalid device id",    false}
             },
                                  observability::LogEventSeverity::warning, observability::AuditCategory::auth,
-                                 "login.rejected", user.user_id, std::string{device_id}, "invalid device id");
+                                 "login.rejected", user.user_id, audit_claimed_device_id(device_id),
+                                 "invalid device id");
             return make_operation_result(false, {}, "invalid device id");
+        }
+        if (device_id_is_cross_signing_key_id(runtime, user.user_id, device_id))
+        {
+            return make_operation_result(false, {}, "device id must not be a cross-signing key id", 403U);
         }
 
         // A deactivated account can never log in again (spec: POST
@@ -1120,7 +1170,7 @@ auto login_local_user(HomeserverRuntime& runtime, std::string_view user_id, std:
                                  {"retry_after_ms", std::to_string(retry_after_ms), false}
         },
                              observability::LogEventSeverity::warning, observability::AuditCategory::auth,
-                             "login.throttled", std::string{user_id}, std::string{device_id},
+                             "login.throttled", audit_claimed_user_id(user_id), audit_claimed_device_id(device_id),
                              "429:too many failed login attempts");
         auto throttled = make_operation_result(false, {}, "too many failed login attempts", 429U);
         // Carry the delay already computed above so the caller can render the
@@ -1188,7 +1238,7 @@ auto login_local_user(HomeserverRuntime& runtime, std::string_view user_id, std:
                                  {"reason",    audit_reason,           false}
         },
                              observability::LogEventSeverity::warning, observability::AuditCategory::auth,
-                             "login.rejected", std::string{user_id}, std::string{device_id},
+                             "login.rejected", audit_claimed_user_id(user_id), audit_claimed_device_id(device_id),
                              std::string{"403:"} + audit_reason);
         return make_operation_result(false, {}, "invalid login", 403U);
     }
@@ -1237,6 +1287,10 @@ auto login_local_user_by_id(HomeserverRuntime& runtime, std::string_view user_id
                              observability::LogEventSeverity::warning, observability::AuditCategory::auth,
                              "login.rejected", std::string{user_id}, std::string{device_id}, "invalid device id");
         return make_operation_result(false, {}, "invalid device id");
+    }
+    if (device_id_is_cross_signing_key_id(runtime, user_id, device_id))
+    {
+        return make_operation_result(false, {}, "device id must not be a cross-signing key id", 403U);
     }
 
     // See the deactivation gate in the shared helper above: permanent and
@@ -1803,7 +1857,11 @@ auto logout_local_user(HomeserverRuntime& runtime, std::string_view access_token
     auto persisted_hash = std::string{};
     auto revoked_any = false;
 
-    for (auto& session : runtime.database.sessions)
+    // F-67: find the session but do not mark it revoked yet. Marking it before the persists below
+    // closed the retry gate on a failure: the client's retry then found no live session and was
+    // answered unauthenticated, while the refresh token the failure left unrevoked could still mint.
+    // The sessions are marked once every persist has succeeded.
+    for (auto const& session : runtime.database.sessions)
     {
         if (matches_any_token_hash(session.access_token_hash, token_hashes) && !session.revoked)
         {
@@ -1813,7 +1871,6 @@ auto logout_local_user(HomeserverRuntime& runtime, std::string_view access_token
                 device_id = session.device_id;
                 persisted_hash = session.access_token_hash;
             }
-            session.revoked = true;
             revoked_any = true;
         }
     }
@@ -1894,6 +1951,11 @@ auto logout_all_local_user(HomeserverRuntime& runtime, std::string_view access_t
     {
         return make_operation_result(false, {}, "session revocation persistence failed", 500U);
     }
+    // F-77: the user's OpenID tokens are credentials derived from the sessions just revoked.
+    if (!database::revoke_openid_tokens_for_user(runtime.database.persistent_store, session->user_id))
+    {
+        return make_operation_result(false, {}, "openid token revocation persistence failed", 500U);
+    }
     for (auto& candidate : runtime.database.sessions)
     {
         if (candidate.user_id == session->user_id)
@@ -1933,6 +1995,47 @@ auto logout_all_local_user(HomeserverRuntime& runtime, std::string_view access_t
                    observability::LogEventSeverity::info);
     return make_operation_result(true, session->user_id);
 }
+
+namespace
+{
+
+    // Deletes pushers of `user_id`, forgetting each one's email-digest entry and dropping its queued
+    // retries. With `kept_device_id`, only the pushers that a device other than it set go: a password
+    // change that revokes those devices' tokens ends their notifications with them (Complement
+    // TestChangePasswordPushers; the spec says nothing of pushers), and a pusher with no recorded
+    // device is kept. With none, every pusher goes: a deactivated account keeps no pusher, because
+    // nobody can sign in to remove one (the rule email_push.cpp applies to email pushers). Returns
+    // false when one could not be deleted. Call under runtime.mutex.
+    [[nodiscard]] auto delete_pushers_of_user(HomeserverRuntime& runtime, std::string_view user_id,
+                                              std::optional<std::string_view> kept_device_id) -> bool
+    {
+        auto& store = runtime.database.persistent_store;
+        auto all_deleted = true;
+        // A copy: delete_pusher erases from the store's mirror.
+        for (auto const& pusher : database::list_pushers_for_user(store, user_id))
+        {
+            if (kept_device_id.has_value() && (pusher.device_id.empty() || pusher.device_id == *kept_device_id))
+            {
+                continue;
+            }
+            if (!database::delete_pusher(store, user_id, pusher.app_id, pusher.pushkey))
+            {
+                all_deleted = false;
+                continue;
+            }
+            if (runtime.email_digest_queue_ != nullptr)
+            {
+                runtime.email_digest_queue_->forget(push::EmailDigestKey{std::string{user_id}, pusher.pushkey});
+            }
+            if (runtime.push_retry_queue_ != nullptr)
+            {
+                std::ignore = runtime.push_retry_queue_->drop_pusher(user_id, pusher.app_id, pusher.pushkey);
+            }
+        }
+        return all_deleted;
+    }
+
+} // namespace
 
 // Permanently deactivates the caller's account (spec: POST
 // /_matrix/client/v3/account/deactivate). Irreversible by design.
@@ -1983,12 +2086,29 @@ auto deactivate_local_user(HomeserverRuntime& runtime, std::string_view access_t
     {
         return make_operation_result(false, {}, "token revocation failed during deactivation", 500U);
     }
+    // F-77: OpenID tokens are credentials of the account too, kept in a table of their own (ADR-0031).
+    if (!database::revoke_openid_tokens_for_user(runtime.database.persistent_store, session->user_id))
+    {
+        return make_operation_result(false, {}, "openid token revocation failed during deactivation", 500U);
+    }
     for (auto& candidate : runtime.database.sessions)
     {
         if (candidate.user_id == session->user_id)
         {
             candidate.revoked = true;
         }
+    }
+    // Every pusher goes too, with its queued retries: nobody can sign in to remove one, and a pusher
+    // that an earlier compromised session registered would keep receiving the account's room
+    // messages. Delivery also refuses a deactivated recipient, so a pusher that could not be deleted
+    // sends nothing.
+    if (!delete_pushers_of_user(runtime, session->user_id, std::nullopt))
+    {
+        log_diagnostic("account.deactivated.pusher_removal_failed",
+                       {
+                           {"user_id", session->user_id, false}
+        },
+                       observability::LogEventSeverity::warning);
     }
     // The password hash is replaced with a value no password can produce, so a
     // credential leak predating deactivation cannot be replayed even if a future
@@ -2014,15 +2134,23 @@ auto delete_local_device(HomeserverRuntime& runtime, std::string_view user_id, s
     {
         return make_operation_result(false, {}, "invalid device", 400U);
     }
-    if (!database::delete_device(runtime.database.persistent_store, user_id, device_id))
-    {
-        return make_operation_result(false, {}, "device not found", 404U);
-    }
-    std::ignore = database::revoke_access_tokens_for_device(runtime.database.persistent_store, user_id, device_id);
-    std::ignore = database::revoke_refresh_tokens_for_device(runtime.database.persistent_store, user_id, device_id);
+    // F-67: the same order as logout_all_local_user. The device row is deleted last, so that a
+    // failure anywhere leaves the device present and the call retryable, and a retry (or a repeat
+    // of a call that answered 404) still revokes tokens an earlier failure left behind. Deleting
+    // the row first made it the retry gate: the retry saw "not found" and never revoked.
+    auto const device_known = std::ranges::any_of(runtime.database.persistent_store.devices,
+                                                  [&user_id, &device_id](database::PersistentDevice const& device) {
+                                                      return device.user_id == user_id && device.device_id == device_id;
+                                                  });
+    // Revoke only when a token is still live, so a repeated delete of a gone device writes nothing.
     if (!device_tokens_are_revoked(runtime.database.persistent_store, user_id, device_id))
     {
-        return make_operation_result(false, {}, "token revocation persistence failed", 500U);
+        std::ignore = database::revoke_access_tokens_for_device(runtime.database.persistent_store, user_id, device_id);
+        std::ignore = database::revoke_refresh_tokens_for_device(runtime.database.persistent_store, user_id, device_id);
+        if (!device_tokens_are_revoked(runtime.database.persistent_store, user_id, device_id))
+        {
+            return make_operation_result(false, {}, "token revocation persistence failed", 500U);
+        }
     }
     for (auto& session : runtime.database.sessions)
     {
@@ -2031,44 +2159,18 @@ auto delete_local_device(HomeserverRuntime& runtime, std::string_view user_id, s
             session.revoked = true;
         }
     }
+    if (!device_known)
+    {
+        return make_operation_result(false, {}, "device not found", 404U);
+    }
+    if (!database::delete_device(runtime.database.persistent_store, user_id, device_id))
+    {
+        return make_operation_result(false, {}, "device deletion failed", 500U);
+    }
     append_local_audit(runtime.database, observability::AuditCategory::auth, "device.deleted", user_id, device_id,
                        "deleted");
     return make_operation_result(true, std::string{device_id});
 }
-
-namespace
-{
-
-    // Deletes the pushers of `user_id` that a device other than `kept_device_id` set. A password
-    // change that revokes those devices' tokens ends their notifications with them (Complement
-    // TestChangePasswordPushers); the spec says nothing of pushers. A pusher with no recorded
-    // device is kept. Returns false when one could not be deleted. Call under runtime.mutex.
-    [[nodiscard]] auto delete_pushers_of_other_devices(HomeserverRuntime& runtime, std::string_view user_id,
-                                                       std::string_view kept_device_id) -> bool
-    {
-        auto& store = runtime.database.persistent_store;
-        auto all_deleted = true;
-        // A copy: delete_pusher erases from the store's mirror.
-        for (auto const& pusher : database::list_pushers_for_user(store, user_id))
-        {
-            if (pusher.device_id.empty() || pusher.device_id == kept_device_id)
-            {
-                continue;
-            }
-            if (!database::delete_pusher(store, user_id, pusher.app_id, pusher.pushkey))
-            {
-                all_deleted = false;
-                continue;
-            }
-            if (runtime.email_digest_queue_ != nullptr)
-            {
-                runtime.email_digest_queue_->forget(push::EmailDigestKey{std::string{user_id}, pusher.pushkey});
-            }
-        }
-        return all_deleted;
-    }
-
-} // namespace
 
 auto change_local_user_password(HomeserverRuntime& runtime, std::string_view access_token,
                                 std::string_view new_password, bool logout_devices) -> OperationResult
@@ -2127,7 +2229,7 @@ auto change_local_user_password(HomeserverRuntime& runtime, std::string_view acc
     // written: a failure here then commits no credential change and the client can retry with its old
     // password. A failure after some deletions only ends notifications early for devices that were
     // about to lose them.
-    if (logout_devices && !delete_pushers_of_other_devices(runtime, user_id, session->device_id))
+    if (logout_devices && !delete_pushers_of_user(runtime, user_id, session->device_id))
     {
         return make_operation_result(false, {}, "pusher removal persistence failed", 500U);
     }
@@ -2161,6 +2263,12 @@ auto change_local_user_password(HomeserverRuntime& runtime, std::string_view acc
         if (!user_tokens_except_device_are_revoked(runtime.database.persistent_store, user_id, session->device_id))
         {
             return make_operation_result(false, {}, "token revocation persistence failed", 500U);
+        }
+        // F-77: an OpenID token is not tied to a device, so the other devices' tokens cannot be told
+        // apart from this one's; all of the user's go.
+        if (!database::revoke_openid_tokens_for_user(runtime.database.persistent_store, user_id))
+        {
+            return make_operation_result(false, {}, "openid token revocation persistence failed", 500U);
         }
         for (auto& candidate : runtime.database.sessions)
         {
@@ -2376,6 +2484,14 @@ auto federation_openid_userinfo(HomeserverRuntime const& runtime, std::string_vi
         // are the same 401 response).
         if (matches_any_token_hash(row.token_hash, candidate_hashes) && row.expires_at > now)
         {
+            // F-77, defence in depth: the revocation paths delete a user's rows, but a token must
+            // also never name an account that is gone or closed (a row restored by a failed write,
+            // or one minted in the moment before a deactivation).
+            auto const* const owner = find_user(runtime.database, row.user_id);
+            if (owner == nullptr || owner->deactivated)
+            {
+                return std::nullopt;
+            }
             return row.user_id;
         }
     }

@@ -31,8 +31,10 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cstdint>
 #include <filesystem>
+#include <memory>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -168,6 +170,23 @@ struct RelayedEvent final
     auto const response = path == RelayPath::membership ? homeserver::handle_membership_ingest_request(runtime, frame)
                                                         : homeserver::handle_invite_ingest_request(runtime, frame);
     return response.find(R"("accepted":true)") != std::string::npos;
+}
+
+// Whether main refused the relay for the operator's policy on the event's author. The membership and invite handlers
+// also require the origin to be the author's server, so "not taken in" alone says nothing about this policy there.
+[[nodiscard]] auto relay_refused_for_author_policy(homeserver::HomeserverRuntime& runtime, RelayPath path,
+                                                   RelayedEvent const& event, std::string_view origin) -> bool
+{
+    auto constexpr refusal = std::string_view{"server is denied by operator policy"};
+    auto const frame = relay_frame(path, event.envelope, origin);
+    if (path == RelayPath::pdu)
+    {
+        auto const result = homeserver::handle_pdu_ingest_request(runtime, frame);
+        return result.status == PduIngestionStatus::rejected_acl && result.reason == refusal;
+    }
+    auto const response = path == RelayPath::membership ? homeserver::handle_membership_ingest_request(runtime, frame)
+                                                        : homeserver::handle_invite_ingest_request(runtime, frame);
+    return response.find(refusal) != std::string::npos;
 }
 
 // Everything persistent a relay could change, so "nothing stored" is checked as state, not as one event's absence.
@@ -407,6 +426,89 @@ SCENARIO("main refuses a relayed event from an origin an admin's federation poli
                         CHECK(relay_once(runtime, path, relay_case.event(), remote_server));
                     }
                 }
+            }
+        }
+    }
+}
+
+// F-72 (ADR-0390): the server that wrote the event is held to the operator's policy, whoever carries it.
+// (The checks loop inside THEN: a Catch2 section inside a loop runs for its first pass only.)
+SCENARIO("main refuses a relayed event whose sender's server the operator's policy excludes",
+         "[integration][federation-worker][worker_policy_authority][operator-policy]")
+{
+    auto constexpr allowed_relay = std::string_view{"allowed-relay.example.org"};
+
+    GIVEN("an allowed origin relaying a valid signed event written by another server")
+    {
+        WHEN("an admin rule denies or quarantines the sender's server")
+        {
+            THEN("main does not take it in and stores nothing, on each relay path")
+            {
+                auto sequence = std::int64_t{80};
+                for (auto const path : relay_paths)
+                {
+                    for (std::string_view const action_name : {"deny", "quarantine"})
+                    {
+                        CAPTURE(relay_path_name(path), action_name);
+                        auto relay_case = RelayCase{path, "rule-sender", sequence++};
+                        auto& runtime = relay_case.runtime();
+                        set_federation_policy_rule(runtime, remote_server, std::string{action_name});
+                        auto const before = store_shape(runtime);
+
+                        CHECK(relay_refused_for_author_policy(runtime, path, relay_case.event(), allowed_relay));
+                        CHECK(store_shape(runtime) == before);
+                        CHECK_FALSE(event_stored(runtime, relay_case.event().envelope.event_id));
+                    }
+                }
+            }
+        }
+
+        WHEN("the sender's server is in denied_servers")
+        {
+            THEN("main does not take it in, looks up no key for that server, and stores nothing")
+            {
+                auto sequence = std::int64_t{100};
+                for (auto const path : relay_paths)
+                {
+                    CAPTURE(relay_path_name(path));
+                    auto relay_case = RelayCase{path, "config-sender", sequence++};
+                    auto& runtime = relay_case.runtime();
+                    runtime.federation.config.denied_servers.emplace_back(remote_server);
+                    auto key_lookups = std::make_shared<std::atomic<int>>(0);
+                    runtime.federation.remote_key_resolver =
+                        [key_lookups](std::string_view,
+                                      std::string_view) -> std::optional<federation::FederationRemoteRuntime> {
+                        ++*key_lookups;
+                        return std::nullopt;
+                    };
+                    auto const before = store_shape(runtime);
+
+                    CHECK(relay_refused_for_author_policy(runtime, path, relay_case.event(), allowed_relay));
+                    CHECK(key_lookups->load() == 0);
+                    CHECK(store_shape(runtime) == before);
+                }
+            }
+        }
+
+        WHEN("the rule names a different server")
+        {
+            THEN("none of the relays is refused for this policy, and the PDU is taken in")
+            {
+                auto sequence = std::int64_t{120};
+                for (auto const path : relay_paths)
+                {
+                    CAPTURE(relay_path_name(path));
+                    auto relay_case = RelayCase{path, "rule-sender-control", sequence++};
+                    auto& runtime = relay_case.runtime();
+                    set_federation_policy_rule(runtime, "someone-else.example.org", "deny");
+
+                    CHECK_FALSE(relay_refused_for_author_policy(runtime, path, relay_case.event(), allowed_relay));
+                }
+                auto relay_case = RelayCase{RelayPath::pdu, "rule-sender-accepted", sequence++};
+                auto& runtime = relay_case.runtime();
+                set_federation_policy_rule(runtime, "someone-else.example.org", "deny");
+
+                CHECK(relay_once(runtime, RelayPath::pdu, relay_case.event(), allowed_relay));
             }
         }
     }

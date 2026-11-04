@@ -105,6 +105,20 @@ auto DispatchWorker::enqueue(OutboundTransaction transaction) -> bool
         });
         return false;
     }
+    if (config_.destination_refusal)
+    {
+        if (auto const refusal = config_.destination_refusal(transaction.destination); !refusal.empty())
+        {
+            log_diagnostic("enqueue.rejected", {
+                                                   {"transaction_id", transaction.transaction_id, false},
+                                                   {"destination",    transaction.destination,    false},
+                                                   {"reason",         refusal,                    false}
+            });
+            auto lock = std::lock_guard{mutex_};
+            ++summary_.rejected;
+            return false;
+        }
+    }
     {
         auto lock = std::lock_guard{mutex_};
         if (shutdown_requested_.load())
@@ -610,11 +624,18 @@ auto DispatchWorker::replay_pending() -> std::size_t
             }
             destinations_.push_back({destination.server_name, to_federation_destination(destination)});
         }
+        // A row can outlive the policy it was queued under (ADR-0391). It will never be sent, so it goes.
+        auto excluded_rows = std::vector<std::string>{};
         for (auto const& transaction : persistent_store_->federation_transactions)
         {
             auto outbound = to_outbound_transaction(transaction);
             if (!transaction_is_well_formed(outbound))
             {
+                continue;
+            }
+            if (config_.destination_refusal && !config_.destination_refusal(outbound.destination).empty())
+            {
+                excluded_rows.push_back(std::move(outbound.transaction_id));
                 continue;
             }
             if ((config_.max_queue_depth != 0U && queue_.size() >= config_.max_queue_depth) ||
@@ -630,6 +651,17 @@ auto DispatchWorker::replay_pending() -> std::size_t
             ++summary_.enqueued;
             ++summary_.pending;
             ++replayed;
+        }
+        for (auto const& transaction_id : excluded_rows)
+        {
+            if (database::delete_federation_transaction(*persistent_store_, transaction_id))
+            {
+                ++summary_.dropped;
+            }
+            else
+            {
+                ++summary_.failed;
+            }
         }
     }
     cv_.notify_one();

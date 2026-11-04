@@ -1,6 +1,6 @@
 # Derive to-device message IDs per sender and record them only after the messages commit
 
-* Status: accepted
+* Status: accepted; the derivation is refined by [ADR-0380](0380-client-transaction-ids-are-scoped-to-the-device-and-a-request-with-no-device-has-its-own-scope.md): the sender device is part of the hash
 * Deciders: James Chapman, Claude Code
 * Date: 2026-10-17
 

@@ -23,8 +23,10 @@
 // |  can still answer.                                                     |
 // +-------------------------------------------------------------------------+
 
+#include "../support/appservice_test_config.hpp"
 #include "../support/json_test_support.hpp"
 #include "../support/master_key.hpp"
+#include "../support/mock_appservice.hpp"
 #include "../support/registration_token.hpp"
 #include "../support/tls_mock_server.hpp"
 #include "merovingian/config/config.hpp"
@@ -549,6 +551,86 @@ SCENARIO("Third-party lookups that call an appservice take a client outbound pro
             THEN("it answers without needing a slot, since no appservice is called")
             {
                 REQUIRE(response.response.status == 200U);
+            }
+        }
+    }
+}
+
+// Security audit run 2 (F-68, ADR-0417). GET /profile/{userId} and GET /directory/room/{roomAlias} are
+// served without authentication and ask a matching appservice about an identifier this server does not
+// know. Each query holds the request thread until the appservice answers, so the loop takes one slot of
+// the client outbound budget (ADR-0079, ADR-0181), only when a registration will be asked.
+SCENARIO("An unknown user or alias in an appservice namespace is looked up under a client outbound proxy slot",
+         "[appservice][integration][security][http-2][out-7][f68]")
+{
+    GIVEN("an appservice owning @bridge_ users and #bridge_ aliases, and a budget whose only slot is taken")
+    {
+        auto bridge = merovingian::tests::MockAppservice{};
+        bridge.set_status(404U);
+        auto const config = merovingian::tests::appservice_test_config({
+            {.id = "bridge",
+             .url = bridge.url(),
+             .users_regex = "@bridge_.*:example.org",
+             .aliases_regex = "#bridge_.*:example.org"}
+        });
+        auto started = merovingian::homeserver::start_client_server(config);
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        runtime.homeserver.client_outbound_proxy_policy.global_cap = 1U;
+        auto held = merovingian::homeserver::admit_client_outbound_proxy(runtime.homeserver, "another-client");
+        REQUIRE(held.has_value());
+
+        WHEN("an unauthenticated client asks for a profile and an alias inside the namespaces")
+        {
+            auto const profile = merovingian::homeserver::handle_client_server_request(
+                runtime, {"GET", "/_matrix/client/v3/profile/%40bridge_one%3Aexample.org", {}, {}});
+            auto const alias = merovingian::homeserver::handle_client_server_request(
+                runtime, {"GET", "/_matrix/client/v3/directory/room/%23bridge_one%3Aexample.org", {}, {}});
+
+            THEN("both are refused with 429 M_LIMIT_EXCEEDED and the appservice is not called")
+            {
+                REQUIRE(profile.response.status == 429U);
+                REQUIRE(profile.response.body.find("M_LIMIT_EXCEEDED") != std::string::npos);
+                REQUIRE(alias.response.status == 429U);
+                REQUIRE(alias.response.body.find("M_LIMIT_EXCEEDED") != std::string::npos);
+                REQUIRE(bridge.requests().empty());
+                REQUIRE(runtime.homeserver.client_outbound_budget->active() == 1U);
+            }
+        }
+
+        WHEN("the same client asks for a profile and an alias outside every namespace")
+        {
+            auto const profile = merovingian::homeserver::handle_client_server_request(
+                runtime, {"GET", "/_matrix/client/v3/profile/%40nobody%3Aexample.org", {}, {}});
+            auto const alias = merovingian::homeserver::handle_client_server_request(
+                runtime, {"GET", "/_matrix/client/v3/directory/room/%23nowhere%3Aexample.org", {}, {}});
+
+            THEN("they are answered 404 without needing a slot, since no appservice is asked")
+            {
+                REQUIRE(profile.response.status == 404U);
+                REQUIRE(alias.response.status == 404U);
+                REQUIRE(bridge.requests().empty());
+            }
+        }
+
+        WHEN("the slot is free and the client asks for a profile and an alias inside the namespaces")
+        {
+            held.reset();
+            auto const profile = merovingian::homeserver::handle_client_server_request(
+                runtime, {"GET", "/_matrix/client/v3/profile/%40bridge_one%3Aexample.org", {}, {}});
+            auto const after_profile = runtime.homeserver.client_outbound_budget->active();
+            auto const alias = merovingian::homeserver::handle_client_server_request(
+                runtime, {"GET", "/_matrix/client/v3/directory/room/%23bridge_one%3Aexample.org", {}, {}});
+            auto const after_alias = runtime.homeserver.client_outbound_budget->active();
+
+            THEN("the appservice is asked about each, a decline is a 404, and each slot is returned")
+            {
+                REQUIRE(profile.response.status == 404U);
+                REQUIRE(alias.response.status == 404U);
+                REQUIRE(bridge.requests_to("/_matrix/app/v1/users/").size() == 1U);
+                REQUIRE(bridge.requests_to("/_matrix/app/v1/rooms/").size() == 1U);
+                REQUIRE(after_profile == 0U);
+                REQUIRE(after_alias == 0U);
             }
         }
     }

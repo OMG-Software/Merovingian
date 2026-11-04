@@ -28,6 +28,7 @@
 #include "merovingian/crypto/generic_hash.hpp"
 #include "merovingian/crypto/random.hpp"
 #include "merovingian/database/persistent_store.hpp"
+#include "merovingian/events/event_id.hpp"
 #include "merovingian/events/event_signer.hpp"
 #include "merovingian/federation/edu_idempotence.hpp"
 #include "merovingian/federation/event_query.hpp"
@@ -413,6 +414,12 @@ namespace
     auto dispatch_edu_to_server(HomeserverRuntime& runtime, std::string_view destination, std::string_view edu_type,
                                 std::string_view edu_content_json) -> bool
     {
+        // ADR-0391: nothing goes to a server the operator excludes, and that is not a failure of the caller's
+        // request. PUT /sendToDevice lists no error for it, so a message to such a server is answered 200.
+        if (!federation::federation_server_policy(runtime.federation.config, destination).allowed)
+        {
+            return true;
+        }
         wire_federation_callbacks(runtime);
         if (runtime.dispatch_worker == nullptr)
         {
@@ -568,6 +575,117 @@ namespace
         }
     }
 
+    // The members of `before` (device IDs `user_id` owned when a request began) that the device table
+    // no longer holds: the devices a logout or deletion really removed. One pass over the table.
+    [[nodiscard]] auto devices_removed_since(database::PersistentStore const& store, std::string_view user_id,
+                                             std::vector<std::string> const& before) -> std::vector<std::string>
+    {
+        auto remaining = std::set<std::string_view>{};
+        for (auto const& device : store.devices)
+        {
+            if (device.user_id == user_id)
+            {
+                remaining.insert(device.device_id);
+            }
+        }
+        auto removed = std::vector<std::string>{};
+        for (auto const& device_id : before)
+        {
+            if (!remaining.contains(device_id))
+            {
+                removed.push_back(device_id);
+            }
+        }
+        return removed;
+    }
+
+    // The IDs of `user_id`'s devices, in one pass over the device table.
+    [[nodiscard]] auto device_ids_of_user(database::PersistentStore const& store, std::string_view user_id)
+        -> std::vector<std::string>
+    {
+        auto ids = std::vector<std::string>{};
+        for (auto const& device : store.devices)
+        {
+            if (device.user_id == user_id)
+            {
+                ids.push_back(device.device_id);
+            }
+        }
+        return ids;
+    }
+
+    // Tells each server in `destinations` that `device_ids` of `user_id` are gone: one
+    // m.device_list_update EDU per device and server with `deleted: true` and no keys (Matrix spec v1.19
+    // SS API, Device Management: servers "must send `m.device_list_update` EDUs to all the servers who
+    // share a room with a given local user ... whenever that user's device list changes (i.e. for new or
+    // deleted devices ...)"). Every removal path - DELETE /devices/{deviceId}, POST /delete_devices,
+    // POST /logout and POST /logout/all - calls this once with the devices it removed.
+    //
+    // The caller computes `destinations` (remote_servers_for_user) before the removal, and calls this with
+    // runtime.mutex held. It only enqueues: no network I/O. Cost is the devices removed times the servers,
+    // each enqueue bounded by the dispatch queue's per-destination share (ADR-0177).
+    //
+    // Each EDU takes its own stream position from the sync counter that numbers every other device-list
+    // change, so `stream_id` is unique for the user. `prev_id` names the EDU announced just before it in
+    // this call, so a receiver that lost one sees an unknown prev_id and resyncs through
+    // /user/keys/query; the first EDU of a call has no prior EDU to name, as with every other
+    // m.device_list_update this server sends.
+    auto announce_deleted_devices(ClientServerRuntime& rt, std::string_view user_id,
+                                  std::vector<std::string> const& device_ids,
+                                  std::vector<std::string> const& destinations) -> void
+    {
+        if (destinations.empty() || device_ids.empty())
+        {
+            return;
+        }
+        auto& store = rt.homeserver.database.persistent_store;
+        auto previous = std::vector<std::int64_t>{};
+        auto refused = std::size_t{0U};
+        for (auto const& device_id : device_ids)
+        {
+            auto stream_id = std::int64_t{0};
+            try
+            {
+                stream_id = static_cast<std::int64_t>(database::allocate_sync_stream_id(store));
+            }
+            catch (std::overflow_error const&)
+            {
+                // At the counter's ceiling no position is left (ADR-0315). The removal stands.
+                log_diagnostic(
+                    "device_list.deletion_unannounced",
+                    {
+                        {"user_id", std::string{user_id},              false},
+                        {"reason",  "the sync stream counter is full", false}
+                },
+                    observability::LogEventSeverity::warning);
+                return;
+            }
+            auto const content =
+                federation::build_device_deleted_update_content(user_id, device_id, stream_id, previous);
+            previous = {stream_id};
+            if (!content.has_value())
+            {
+                continue;
+            }
+            for (auto const& destination : destinations)
+            {
+                if (!dispatch_edu_to_server(rt.homeserver, destination, "m.device_list_update", *content))
+                {
+                    ++refused;
+                }
+            }
+        }
+        if (refused > 0U)
+        {
+            log_diagnostic("device_list.deletion_refused",
+                           {
+                               {"user_id", std::string{user_id},    false},
+                               {"refused", std::to_string(refused), false}
+            },
+                           observability::LogEventSeverity::warning);
+        }
+    }
+
     // Generate a 32-character lowercase hex filter ID from 16 random bytes.
     // Delegates to the crypto module so libsodium calls stay inside src/crypto.
     [[nodiscard]] auto generate_filter_id() -> std::string
@@ -671,6 +789,10 @@ namespace
         }
         return std::move(result.output);
     }
+
+    // Spec (setProfileField): "the total profile MUST be under 64 KiB". A profile whose serialised
+    // object is this many bytes or more is refused with 400 M_PROFILE_TOO_LARGE (ADR-0406).
+    constexpr std::size_t max_profile_bytes = 64U * 1024U;
 
     // 401 with soft_logout=true: token was found-but-expired so the client should
     // use its refresh token rather than clearing its session (spec §5.7.2).
@@ -3594,6 +3716,40 @@ namespace
             return std::string{unmatched};
         }
 
+        // F-73 (ADR-0092): the operator surface this dispatcher serves has its own counters. Left in the
+        // fallback, an admin request shares one count with every unknown client path, and the admin
+        // tier's small allowance is compared with a count that cheaper traffic from the same client
+        // key raised. A path that is none of these stays in the fallback, so a client cannot make
+        // counter keys by inventing admin paths: the keys are the fixed routes plus one per moderation
+        // action, whatever media identifier follows.
+        auto constexpr operator_prefix = std::string_view{"/_merovingian/admin/"};
+        if (starts_with(out, operator_prefix))
+        {
+            static constexpr auto operator_routes = std::to_array<std::string_view>({
+                "/_merovingian/admin/health",
+                "/_merovingian/admin/metrics",
+                "/_merovingian/admin/media/metrics",
+                "/_merovingian/admin/audit",
+            });
+            if (std::ranges::find(operator_routes, out) != operator_routes.end())
+            {
+                return out;
+            }
+            static constexpr auto media_actions = std::to_array<std::string_view>({
+                "/_merovingian/admin/media/quarantine/",
+                "/_merovingian/admin/media/release/",
+                "/_merovingian/admin/media/remove/",
+            });
+            for (auto const action : media_actions)
+            {
+                if (starts_with(out, action) && has_one_segment(std::string_view{out}.substr(action.size())))
+                {
+                    return std::string{action} + "{mediaId}";
+                }
+            }
+            return std::string{unmatched};
+        }
+
         auto constexpr review_prefix = std::string_view{"/_matrix/client/v3/admin/safety/review/"};
         if (starts_with(out, review_prefix))
         {
@@ -3903,7 +4059,10 @@ namespace
         // it keeps the shared per-IP fallback cap, but its token is not looked
         // up, so a probe of an unknown endpoint writes no access_token.rejected row.
         std::string user_key;
-        if (!req.access_token.empty() && norm != "/_matrix/client/{unmatched}")
+        // The operator surface is throttled per client key only (F-73): it has no per-user policy, and
+        // require_admin() is what looks the token up, once.
+        if (!req.access_token.empty() && norm != "/_matrix/client/{unmatched}" &&
+            !starts_with(norm, "/_merovingian/admin/"))
         {
             // Matrix v1.19 rate-limiting: per-user buckets MUST be keyed by the
             // authenticated user_id, not by the access_token. A bearer token can
@@ -6743,9 +6902,10 @@ namespace
             room_timeline_limits_built[room_id] = sub.timeline_limit;
             // The floor is the later of the request pos and the room's last send; the room's
             // last send alone decides what counts as resent (`expanded_timeline`).
-            auto room = sync::build_room_response(
-                rt.homeserver, room_id, user, sub, room_since, is_initial, store, lazy_already_sent, ignored_senders,
-                history_visibility, *unread_classifier, expansion, room_last_ordering, visible_event_ordering);
+            auto room =
+                sync::build_room_response(rt.homeserver, room_id, user, sub, room_since, is_initial, store,
+                                          lazy_already_sent, ignored_senders, history_visibility, *unread_classifier,
+                                          expansion, room_last_ordering, visible_event_ordering, device_id);
             if (!room.lazy_members_included.empty())
             {
                 lazy_members_included_by_room[room_id] = room.lazy_members_included;
@@ -7210,33 +7370,6 @@ namespace
     }
 
     // Compute the next unique version string for a user's key backup.
-    // Finds the highest existing numeric version for this user and returns
-    // (max + 1) as a decimal string.  Starts at "1" when none exist.
-    [[nodiscard]] auto key_backup_next_version(database::PersistentStore const& store, std::string_view user_id)
-        -> std::string
-    {
-        std::uint64_t max_ver = 0U;
-        for (auto const& v : store.key_backup_versions)
-        {
-            if (v.user_id != user_id)
-            {
-                continue;
-            }
-            try
-            {
-                auto const n = static_cast<std::uint64_t>(std::stoull(v.version));
-                if (n > max_ver)
-                {
-                    max_ver = n;
-                }
-            }
-            catch (...)
-            { /* non-numeric version — skip */
-            }
-        }
-        return std::to_string(max_ver + 1U);
-    }
-
     // Extract the value of the `version` query parameter from a request target.
     // Returns an empty string_view if the parameter is absent.
     [[nodiscard]] auto extract_key_backup_version_param(std::string_view target) noexcept -> std::string_view
@@ -7357,9 +7490,6 @@ namespace
                                std::string_view device_id, std::string_view payload) -> void
     {
         auto const plan = auth::make_key_api_boundary_plan(route, user, device_id);
-        rt.key_api_records.push_back({std::string{user}, std::string{device_id},
-                                      auth::key_api_endpoint_name(route.endpoint),
-                                      auth::redacted_key_payload_summary(payload), plan.database_statements.size()});
         append_local_audit(rt.homeserver.database, observability::AuditCategory::auth, plan.audit_event_type, user,
                            device_id, auth::redacted_key_payload_summary(payload));
     }
@@ -8354,6 +8484,15 @@ namespace
         return resp(200U, *claim_response);
     }
 
+    // The most bytes a client-chosen event type or transaction ID may have where it is part of an idempotency
+    // key: the Matrix identifier limit (F-54, ADR-0381).
+    inline constexpr std::size_t max_client_txn_part_bytes = 255U;
+
+    [[nodiscard]] auto client_txn_part_is_too_long(std::string_view part) noexcept -> bool
+    {
+        return part.size() > max_client_txn_part_bytes;
+    }
+
     // PUT /_matrix/client/v3/sendToDevice/{eventType}/{txnId}
     // Parses the event type and client txnId from the path. The txnId is not
     // sent over federation as is: the EDU's message_id is derived from it, the
@@ -8392,12 +8531,19 @@ namespace
     // so a retry with the same transaction ID is processed, not replayed (R02,
     // ADR-0164).
     [[nodiscard]] auto handle_send_to_device(ClientServerRuntime& rt, std::string_view event_type,
-                                             std::string_view txn_id, std::string_view sender, std::string_view body)
-        -> LocalHttpResponse
+                                             std::string_view txn_id, std::string_view sender,
+                                             std::string_view sender_device, std::string_view body) -> LocalHttpResponse
     {
-        // CS API §10.5.1: idempotent send — replay {} for a seen txn_id.
+        // The two client-chosen parts of the idempotency key are bounded, or a client could make this server
+        // keep arbitrarily long keys for 7 days (F-54, ADR-0381).
+        if (client_txn_part_is_too_long(event_type) || client_txn_part_is_too_long(txn_id))
+        {
+            return err(400U, "M_INVALID_PARAM", "the event type and the transaction ID are at most 255 bytes each");
+        }
+        // CS API §10.5.1: idempotent send — replay {} for a seen txn_id, from the same device (F-52, ADR-0380).
         // room_id is empty ("") as sentinel for to-device entries.
-        if (database::find_client_txn_event_id(rt.homeserver.database.persistent_store, sender, "", event_type, txn_id)
+        if (database::find_client_txn_event_id(rt.homeserver.database.persistent_store, sender, sender_device, "",
+                                               event_type, txn_id)
                 .has_value())
         {
             return resp(200U, "{}");
@@ -8539,7 +8685,9 @@ namespace
         // derivation is deterministic, so a retry still carries the same id.
         if (!remote_messages.empty())
         {
-            auto const message_id = federation::derive_direct_to_device_message_id(sender, event_type, txn_id);
+            // Per sender and device: two devices of one user may reuse a txnId (F-52, ADR-0380).
+            auto const message_id =
+                federation::derive_direct_to_device_message_id(sender, sender_device, event_type, txn_id);
             if (!message_id.has_value())
             {
                 return err(500U, "M_UNKNOWN", "The to-device message could not be queued for a remote server");
@@ -8577,7 +8725,8 @@ namespace
         auto const queued_locally = !local_messages.empty();
         if (!database::enqueue_to_device_messages_with_client_txn(
                 rt.homeserver.database.persistent_store, std::move(local_messages),
-                {std::string{sender}, "", std::string{event_type}, std::string{txn_id}, ""}))
+                {std::string{sender}, "", std::string{event_type}, std::string{txn_id}, "",
+                 std::string{sender_device}}))
         {
             return err(500U, "M_UNKNOWN", "The to-device message could not be stored");
         }
@@ -11228,6 +11377,38 @@ namespace
         return held.size() + added.size() > rt.limits.max_key_signatures_per_user;
     }
 
+    // Spec (POST /keys/device_signing/upload, 403): "The public key of one of the keys is the same as
+    // one of the user's device IDs". True when any uploaded master, self-signing or user-signing key
+    // has a key ID that is the ID of a device `user` owns. One pass over the device table, whatever the
+    // upload holds (at most three keys). Checked before anything is stored, so a refused upload leaves
+    // the user's cross-signing keys as they were.
+    [[nodiscard]] auto cross_signing_upload_names_a_device(ClientServerRuntime const& rt, std::string_view user,
+                                                           canonicaljson::Object const& body) -> bool
+    {
+        auto key_ids = std::set<std::string, std::less<>>{};
+        for (auto const* key_type : {"master_key", "self_signing_key", "user_signing_key"})
+        {
+            auto const* key = object_member(body, key_type);
+            auto const* key_object = key == nullptr ? nullptr : std::get_if<canonicaljson::Object>(&key->storage());
+            if (key_object == nullptr)
+            {
+                continue;
+            }
+            for (auto& key_id : federation::cross_signing_key_ids(*key_object))
+            {
+                key_ids.insert(std::move(key_id));
+            }
+        }
+        if (key_ids.empty())
+        {
+            return false;
+        }
+        return std::ranges::any_of(rt.homeserver.database.persistent_store.devices,
+                                   [&key_ids, user](database::PersistentDevice const& device) {
+                                       return device.user_id == user && key_ids.contains(device.device_id);
+                                   });
+    }
+
     [[nodiscard]] auto store_key_api_payload(ClientServerRuntime& rt, auth::KeyApiEndpoint endpoint,
                                              std::string_view user, std::string_view /*device_id*/,
                                              LocalHttpRequest const& req, std::string_view version) -> bool
@@ -11305,6 +11486,9 @@ namespace
             return stored;
         }
         case auth::KeyApiEndpoint::create_key_backup_version:
+            // A new version's number is chosen by database::create_key_backup_version, in one transaction with
+            // its counter (F-60, ADR-0384); the route handler calls it directly.
+            return false;
         case auth::KeyApiEndpoint::update_key_backup_version:
             return database::store_key_backup_version(store, {std::string{user}, std::string{version}, req.body});
         case auth::KeyApiEndpoint::put_room_key_backup: {
@@ -11639,6 +11823,10 @@ namespace
                                    std::to_string(max_uploaded_key_document_bytes) + " bytes");
                 }
             }
+            if (cross_signing_upload_names_a_device(rt, user, *cs_body))
+            {
+                return err(403U, "M_FORBIDDEN", "a cross-signing key may not have the ID of one of the user's devices");
+            }
             if (!database::sync_stream_has_write_reserve(rt.homeserver.database.persistent_store) ||
                 !store_key_api_payload(rt, route.endpoint, user, device_id, req, {}))
             {
@@ -11696,13 +11884,14 @@ namespace
                 return resp(200U, key_api_success_body(route.endpoint));
             }
         case auth::KeyApiEndpoint::create_key_backup_version: {
-            // Generate a unique version for this new backup.
-            auto const new_ver = key_backup_next_version(rt.homeserver.database.persistent_store, user);
-            if (!store_key_api_payload(rt, route.endpoint, user, device_id, req, new_ver))
+            // A number is never issued twice to a user, even after its version was deleted (F-60, ADR-0384).
+            auto const new_ver =
+                database::create_key_backup_version(rt.homeserver.database.persistent_store, user, req.body);
+            if (!new_ver.has_value())
             {
                 return err(500U, "M_UNKNOWN", "key API persistence failed");
             }
-            return resp(200U, json_serialize(json_obj({json_member("version", json_str(new_ver))})));
+            return resp(200U, json_serialize(json_obj({json_member("version", json_str(*new_ver))})));
         }
         case auth::KeyApiEndpoint::update_key_backup_version: {
             // Version comes from the path: PUT /room_keys/version/{version}
@@ -11713,6 +11902,40 @@ namespace
             if (clean_ver.empty())
             {
                 return err(400U, "M_UNRECOGNIZED", "missing version in path");
+            }
+            // Spec (PUT /room_keys/version/{version}): 404 when the backup does not exist, so an update never
+            // creates a version; 400 when the algorithm is not the backup's current one or a `version` in the
+            // body is not the path's.
+            auto const* const held =
+                key_backup_version_for_user(rt.homeserver.database.persistent_store, user, clean_ver);
+            if (held == nullptr)
+            {
+                return resp(404U, matrix_error("M_NOT_FOUND", "key backup version not found"));
+            }
+            auto const update = parsed_json_object(req.body);
+            if (!update.has_value())
+            {
+                return err(400U, "M_BAD_JSON", "the request body must be a JSON object");
+            }
+            auto const* const algorithm = string_member(*update, "algorithm");
+            auto const held_object = parsed_json_object(held->json);
+            auto const* const held_algorithm =
+                held_object.has_value() ? string_member(*held_object, "algorithm") : nullptr;
+            if (algorithm == nullptr || (held_algorithm != nullptr && *algorithm != *held_algorithm))
+            {
+                return err(400U, "M_INVALID_PARAM", "algorithm must be the algorithm the backup already uses");
+            }
+            if (object_member_as_object(*update, "auth_data") == nullptr)
+            {
+                return err(400U, "M_INVALID_PARAM", "auth_data must be an object");
+            }
+            if (object_member(*update, "version") != nullptr)
+            {
+                auto const* const body_version = string_member(*update, "version");
+                if (body_version == nullptr || *body_version != clean_ver)
+                {
+                    return err(400U, "M_INVALID_PARAM", "version in the body must be the version in the path");
+                }
             }
             if (!store_key_api_payload(rt, route.endpoint, user, device_id, req, clean_ver))
             {
@@ -12368,11 +12591,18 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             // Spec (v1.17): "If the given device ID is not known to belong
             // to the user, the server will return a 400 M_UNKNOWN_DEVICE
             // error."
-            auto const device_known = std::ranges::any_of(
-                rt.homeserver.database.persistent_store.devices,
-                [&effective_user_id, &requested_device_id](database::PersistentDevice const& device) {
-                    return device.user_id == effective_user_id && device.device_id == *requested_device_id;
-                });
+            //
+            // persistent_store.devices is changed under runtime.mutex by login, registration and
+            // device deletion, and this prologue runs before the request lock is taken (AUTH-1),
+            // so the read takes the lock itself (F-66).
+            auto const device_known = [&]() {
+                auto const devices_lock = std::lock_guard<RuntimeMutex>{rt.homeserver.mutex};
+                return std::ranges::any_of(
+                    rt.homeserver.database.persistent_store.devices,
+                    [&effective_user_id, &requested_device_id](database::PersistentDevice const& device) {
+                        return device.user_id == effective_user_id && device.device_id == *requested_device_id;
+                    });
+            }();
             if (!device_known)
             {
                 return dispatch_err(req, rt, 400U, "M_UNKNOWN_DEVICE",
@@ -12694,8 +12924,17 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             // is the whole point of an alias namespace.
             auto* const alias_outbound = rt.homeserver.outbound_client.get();
             auto* const alias_discovery = rt.homeserver.cached_discovery.get();
-            if (alias_outbound != nullptr && alias_discovery != nullptr)
+            if (alias_outbound != nullptr && alias_discovery != nullptr &&
+                std::ranges::any_of(rt.homeserver.appservices.all(), [&room_alias](auto const& registration) {
+                    return appservice::any_namespace_matches(registration.namespaces.aliases, room_alias);
+                }))
             {
+                // F-68 (ADR-0417): as for the profile lookup, one slot for the whole loop.
+                auto const proxy_slot = admit_client_proxy(rt, req);
+                if (!proxy_slot.has_value())
+                {
+                    return client_proxy_refused(req, rt);
+                }
                 for (auto const& registration : rt.homeserver.appservices.all())
                 {
                     // Spec: only query an appservice about aliases in its own
@@ -13559,11 +13798,21 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
         // The device the token belongs to, read before logout revokes the token: logout also deletes
         // the device (spec POST /logout), and the runtime's device list is this layer's to update.
         auto const logged_out_session = authenticated_session(rt.homeserver, req.access_token);
+        // The servers to tell, read before the device is removed.
+        auto const destinations = logged_out_session.has_value()
+                                      ? remote_servers_for_user(rt.homeserver, logged_out_session->user_id)
+                                      : std::vector<std::string>{};
         auto const r = call_local(req);
         if (r.status == 200U && logged_out_session.has_value())
         {
             erase_runtime_device(rt, logged_out_session->user_id, logged_out_session->device_id);
             std::ignore = record_shared_room_device_changes(rt, logged_out_session->user_id, NotifyOwnDevices::no);
+            // logout deletes the device, but only announce it if the row really went.
+            announce_deleted_devices(rt, logged_out_session->user_id,
+                                     devices_removed_since(rt.homeserver.database.persistent_store,
+                                                           logged_out_session->user_id,
+                                                           {logged_out_session->device_id}),
+                                     destinations);
         }
         // actor is not yet resolved here (pre-auth gate); log token presence only
         log_diagnostic(r.status == 200U ? "account.logout.accepted" : "account.logout.rejected",
@@ -13649,8 +13898,21 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             // server 404s exactly the users a bridge materialises on demand.
             auto* const user_outbound = rt.homeserver.outbound_client.get();
             auto* const user_discovery = rt.homeserver.cached_discovery.get();
-            if (user_outbound != nullptr && user_discovery != nullptr)
+            if (user_outbound != nullptr && user_discovery != nullptr &&
+                std::ranges::any_of(rt.homeserver.appservices.all(), [&target_user](auto const& registration) {
+                    return appservice::any_namespace_matches(registration.namespaces.users, target_user);
+                }))
             {
+                // F-68 (ADR-0417), ADR-0079, ADR-0181: reachable without authentication, and each
+                // query holds this request thread until the appservice answers or times out, so the
+                // loop runs under one slot of the client outbound budget, taken only when a
+                // registration will be asked and held until the loop ends. A server with no
+                // matching appservice never answers 429 here.
+                auto const proxy_slot = admit_client_proxy(rt, req);
+                if (!proxy_slot.has_value())
+                {
+                    return client_proxy_refused(req, rt);
+                }
                 for (auto const& registration : rt.homeserver.appservices.all())
                 {
                     // Spec: "The homeserver will only query user IDs inside the
@@ -14389,6 +14651,9 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
 
     if (req.method == "POST" && target_path(req.target) == "/_matrix/client/v3/logout/all")
     {
+        // The devices and the servers to tell, read before the devices are removed.
+        auto const devices_before = device_ids_of_user(rt.homeserver.database.persistent_store, *user);
+        auto const destinations = remote_servers_for_user(rt.homeserver, *user);
         auto const r = logout_all_local_user(rt.homeserver, req.access_token);
         if (r.ok)
         {
@@ -14397,6 +14662,9 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                 return device.user_id == *user;
             });
             std::ignore = record_shared_room_device_changes(rt, *user, NotifyOwnDevices::no);
+            announce_deleted_devices(
+                rt, *user, devices_removed_since(rt.homeserver.database.persistent_store, *user, devices_before),
+                destinations);
         }
         log_diagnostic(r.ok ? "account.logout_all.accepted" : "account.logout_all.rejected",
                        {
@@ -15888,13 +16156,54 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                 return dispatch_err(req, rt, 400U, "M_BAD_JSON", "profile update body must be a JSON object");
             }
             auto& store = rt.homeserver.database.persistent_store;
-            if (!database::find_profile(store, *user).has_value() && !database::store_profile(store, {*user, {}, {}}))
+            auto const field = is_displayname ? std::string_view{"displayname"} : std::string_view{"avatar_url"};
+            // Spec (setProfileField): a body without the key named in the path is 400 M_MISSING_PARAM; "For
+            // `displayname`, the value MUST be a string", so valid JSON of another type (null included) is
+            // 400 M_INVALID_PARAM. Either way nothing is stored: an empty string is the only way to clear a field.
+            auto const* const member = object_member(*obj, field);
+            if (member == nullptr)
+            {
+                return dispatch_err(req, rt, 400U, "M_MISSING_PARAM",
+                                    "the request body must contain the key " + std::string{field});
+            }
+            auto const* const val = std::get_if<std::string>(&member->storage());
+            if (val == nullptr)
+            {
+                return dispatch_err(req, rt, 400U, "M_INVALID_PARAM", std::string{field} + " must be a string");
+            }
+            auto const value = std::string_view{*val};
+            // Spec: "For `avatar_url`, the value MUST be an MXC URI string". The empty string stays
+            // accepted as the way this server's clients clear the avatar (ADR-0406).
+            if (is_avatar_url && !value.empty() && !media::mxc_uri_is_valid(value))
+            {
+                return dispatch_err(req, rt, 400U, "M_INVALID_PARAM", "avatar_url must be an MXC URI");
+            }
+            // Spec: "the total profile MUST be under 64 KiB"; a value that would make it larger is
+            // 400 M_PROFILE_TOO_LARGE. The profile this server stores is these two fields (it has no
+            // `m.tz` or custom fields), so the size is that of the profile object with the new value.
+            auto const existing = database::find_profile(store, *user);
+            auto const displayname_after =
+                is_displayname ? std::string{value} : (existing.has_value() ? existing->displayname : std::string{});
+            auto const avatar_url_after =
+                is_avatar_url ? std::string{value} : (existing.has_value() ? existing->avatar_url : std::string{});
+            auto const profile_json = json_serialize_checked(json_obj({
+                json_member("avatar_url", json_str(avatar_url_after)),
+                json_member("displayname", json_str(displayname_after)),
+            }));
+            // A stored field the serialiser refuses (ADR-0182 keeps such a profile usable) cannot be measured
+            // as JSON; its raw length plus the object's fixed overhead is then the size counted.
+            auto const profile_bytes = profile_json.has_value()
+                                           ? profile_json->size()
+                                           : displayname_after.size() + avatar_url_after.size() + 34U;
+            if (profile_bytes >= max_profile_bytes)
+            {
+                return dispatch_err(req, rt, 400U, "M_PROFILE_TOO_LARGE",
+                                    "the profile would exceed its maximum allowed size of 64 KiB");
+            }
+            if (!existing.has_value() && !database::store_profile(store, {*user, {}, {}}))
             {
                 return dispatch_err(req, rt, 500U, "M_UNKNOWN", "failed to persist the profile");
             }
-            auto const field = is_displayname ? std::string_view{"displayname"} : std::string_view{"avatar_url"};
-            auto const* val = string_member(*obj, field);
-            auto const value = val != nullptr ? std::string_view{*val} : std::string_view{};
             auto const updated = is_displayname ? database::update_profile_displayname(store, *user, value)
                                                 : database::update_profile_avatar_url(store, *user, value);
             if (!updated)
@@ -16146,6 +16455,8 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             return dispatch_resp(req, rt, 401U, uia_password_failure_body(uia_challenge));
         }
         auto const device_id = request_path.substr(dev_prefix.size());
+        // The servers to tell, read before the device is removed.
+        auto const destinations = remote_servers_for_user(rt.homeserver, *user);
         auto const result = delete_local_device(rt.homeserver, *user, device_id);
         if (!result.ok)
         {
@@ -16154,6 +16465,7 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
         }
         erase_runtime_device(rt, *user, device_id);
         std::ignore = record_shared_room_device_changes(rt, *user, NotifyOwnDevices::no);
+        announce_deleted_devices(rt, *user, {std::string{device_id}}, destinations);
         return dispatch_resp(req, rt, 200U, "{}");
     }
     if (req.method == "POST" && req.target == "/_matrix/client/v3/delete_devices")
@@ -16204,7 +16516,10 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             }
             return dispatch_resp(req, rt, 401U, uia_password_failure_body(uia_challenge));
         }
-        auto deleted_any = false;
+        // The servers to tell, read before any device is removed.
+        auto const destinations = remote_servers_for_user(rt.homeserver, *user);
+        auto deleted_ids = std::vector<std::string>{};
+        auto refusal = std::optional<OperationResult>{};
         for (auto const& device_id : devices)
         {
             auto const result = delete_local_device(rt.homeserver, *user, device_id);
@@ -16214,15 +16529,22 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                 {
                     continue;
                 }
-                return dispatch_err(req, rt, result.status, result.status == 400U ? "M_BAD_JSON" : "M_UNKNOWN",
-                                    result.reason);
+                refusal = result;
+                break;
             }
             erase_runtime_device(rt, *user, device_id);
-            deleted_any = true;
+            deleted_ids.push_back(device_id);
         }
-        if (deleted_any)
+        // Devices deleted before a refusal stay deleted, so they are told about too.
+        if (!deleted_ids.empty())
         {
             std::ignore = record_shared_room_device_changes(rt, *user, NotifyOwnDevices::no);
+            announce_deleted_devices(rt, *user, deleted_ids, destinations);
+        }
+        if (refusal.has_value())
+        {
+            return dispatch_err(req, rt, refusal->status, refusal->status == 400U ? "M_BAD_JSON" : "M_UNKNOWN",
+                                refusal->reason);
         }
         return dispatch_resp(req, rt, 200U, "{}");
     }
@@ -16242,7 +16564,8 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
     {
         if (auto const path = send_to_device_path_parts(req.target); path.has_value())
         {
-            return complete(handle_send_to_device(rt, path->event_type, path->txn_id, *user, req.body));
+            return complete(handle_send_to_device(rt, path->event_type, path->txn_id, *user,
+                                                  authenticated_request_device_id(rt, req.access_token), req.body));
         }
     }
     // GET /_matrix/client/v3/keys/changes[?from=...&to=...]
@@ -16749,8 +17072,15 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                 // The transaction ID is scoped to this endpoint and target, so the same txnId used
                 // on /send, or to redact another event, is a different request.
                 auto const txn_scope = std::string{"redact/"} + redact->event_id;
-                if (auto const cached = database::find_client_txn_event_id(
-                        rt.homeserver.database.persistent_store, *user, redact->room_id, txn_scope, redact->txn_id);
+                if (client_txn_part_is_too_long(redact->txn_id))
+                {
+                    return dispatch_err(req, rt, 400U, "M_INVALID_PARAM", "the transaction ID is at most 255 bytes");
+                }
+                // The device is part of the key: another device's txnId is another request (F-52, ADR-0380).
+                auto const request_device = authenticated_request_device_id(rt, req.access_token);
+                if (auto const cached =
+                        database::find_client_txn_event_id(rt.homeserver.database.persistent_store, *user,
+                                                           request_device, redact->room_id, txn_scope, redact->txn_id);
                     cached.has_value())
                 {
                     return complete({200U, json_serialize(json_obj({json_member("event_id", json_str(*cached))}))});
@@ -16804,10 +17134,9 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                         {
                             if (auto const* s = std::get_if<std::string>(&eid_it->value->storage()))
                             {
-                                std::ignore =
-                                    database::store_client_txn(rt.homeserver.database.persistent_store,
-                                                               {*user, redact->room_id, txn_scope, redact->txn_id, *s,
-                                                                authenticated_request_device_id(rt, req.access_token)});
+                                std::ignore = database::store_client_txn(
+                                    rt.homeserver.database.persistent_store,
+                                    {*user, redact->room_id, txn_scope, redact->txn_id, *s, request_device});
                             }
                         }
                     }
@@ -16822,9 +17151,21 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                     return dispatch_err(req, rt, 400U, "M_INVALID_PARAM",
                                         "ts must be an integer origin_server_ts in milliseconds");
                 }
-                // CS API §10.5.1: idempotent send — replay the original response.
-                if (auto const cached = database::find_client_txn_event_id(
-                        rt.homeserver.database.persistent_store, *user, path->room_id, path->event_type, path->txn_id);
+                // A room event's type is under the size limits, answered as they all are, 413 M_TOO_LARGE.
+                if (client_txn_part_is_too_long(path->event_type))
+                {
+                    return dispatch_err(req, rt, 413U, "M_TOO_LARGE", "the event type is at most 255 bytes");
+                }
+                if (client_txn_part_is_too_long(path->txn_id))
+                {
+                    return dispatch_err(req, rt, 400U, "M_INVALID_PARAM", "the transaction ID is at most 255 bytes");
+                }
+                // CS API §10.5.1: idempotent send — replay the original response to the same device (F-52,
+                // ADR-0380): a transaction ID is scoped to a device, so another device's is another request.
+                auto const request_device = authenticated_request_device_id(rt, req.access_token);
+                if (auto const cached = database::find_client_txn_event_id(rt.homeserver.database.persistent_store,
+                                                                           *user, request_device, path->room_id,
+                                                                           path->event_type, path->txn_id);
                     cached.has_value())
                 {
                     return complete({200U, json_serialize(json_obj({json_member("event_id", json_str(*cached))}))});
@@ -16877,8 +17218,7 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                             {
                                 std::ignore = database::store_client_txn(
                                     rt.homeserver.database.persistent_store,
-                                    {*user, path->room_id, path->event_type, path->txn_id, *s,
-                                     authenticated_request_device_id(rt, req.access_token)});
+                                    {*user, path->room_id, path->event_type, path->txn_id, *s, request_device});
                             }
                         }
                     }
@@ -17385,7 +17725,21 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                     // The roster as of a point in the room's history: the user's departure for
                     // someone who left (never later, whatever `at` says), or the requested
                     // position. Read from the state recorded at that point (ADR-0064).
-                    auto const state_ids = sync::room_state_event_ids(store, room_id, access, at_position);
+                    // The roster at a position is the state recorded for the newest event at or before it,
+                    // and state is readable only where the event is: a position from before the caller's
+                    // window (a `joined` room's history before their join) is refused, not answered with
+                    // the members of that time (ADR-0414). One scan finds the event and one visibility
+                    // check judges it; the members are not judged one by one, which would cost a lookup
+                    // for each under runtime.mutex.
+                    auto const* const anchor = sync::state_anchor_event(store, room_id, access, at_position);
+                    if (anchor != nullptr && at_position.has_value() &&
+                        !sync::HistoryVisibility{store, *user}.can_see(*anchor))
+                    {
+                        return dispatch_err(req, rt, 403U, "M_FORBIDDEN",
+                                            "that point in the room is not visible to you");
+                    }
+                    auto const state_ids = anchor == nullptr ? std::optional<std::vector<std::string>>{std::in_place}
+                                                             : sync::state_event_ids_after(store, *anchor);
                     if (!state_ids.has_value())
                     {
                         return dispatch_err(req, rt, 403U, "M_FORBIDDEN", "user is not a member of this room");
@@ -17949,6 +18303,18 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
 
             if (body_obj != nullptr)
             {
+                // Appendices, "Event IDs": an event ID is at most 255 bytes. Each value is judged
+                // before any is stored, so a bad one leaves no marker behind, and an oversized one
+                // is never kept, shown to the room or sent to other servers (F-53).
+                for (auto const marker_key : {"m.read", "m.fully_read", "m.read.private"})
+                {
+                    auto const* marker = string_member(*body_obj, marker_key);
+                    if (marker != nullptr && !marker->empty() && !events::event_id_is_acceptable_in_receipt(*marker))
+                    {
+                        return dispatch_err(req, rt, 400U, "M_INVALID_PARAM",
+                                            std::string{marker_key} + " must be an event ID of at most 255 bytes");
+                    }
+                }
                 // m.read — federated read receipt. The body of /read_markers has no
                 // thread_id, so both receipts it sets are unthreaded.
                 auto const* m_read = string_member(*body_obj, "m.read");
@@ -18025,6 +18391,14 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                     auto const event_id = core::percent_decode_path_component(after_receipt.substr(slash_pos + 1U));
                     if (!event_id.empty())
                     {
+                        // Appendices, "Event IDs": at most 255 bytes, and the endpoint types it as an
+                        // Event ID. Checked before anything is stored or sent on (F-53). The spec does
+                        // not make an unknown event an error, so existence is not asked.
+                        if (!events::event_id_is_acceptable_in_receipt(event_id))
+                        {
+                            return dispatch_err(req, rt, 400U, "M_INVALID_PARAM",
+                                                "eventId must be an event ID of at most 255 bytes");
+                        }
                         // The receipt endpoint accepts an empty body, but any
                         // present body MUST be valid JSON.
                         auto thread_id = std::string{};
@@ -19298,13 +19672,6 @@ auto joined_room_count(ClientServerRuntime const& rt, std::string_view user) noe
 {
     return static_cast<std::size_t>(std::ranges::count_if(rt.homeserver.database.rooms, [user](LocalRoom const& room) {
         return joined(room, user);
-    }));
-}
-
-auto key_api_record_count(ClientServerRuntime const& rt, std::string_view user) noexcept -> std::size_t
-{
-    return static_cast<std::size_t>(std::ranges::count_if(rt.key_api_records, [user](ClientKeyApiRecord const& record) {
-        return record.user_id == user;
     }));
 }
 

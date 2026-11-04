@@ -157,6 +157,13 @@ events after the leave to a left room's timeline.
 
 ## Viewer-dependent `unsigned`
 
+A client's `unsigned` is never the stored one, filtered: `unsigned` is outside every signature, so a remote
+sender can put anything in it (`m.relations`, `redacted_because`, `prev_content`, `age`, `transaction_id`,
+`membership`). `client_event_with_id` and sliding sync's `client_event_json` drop it and build it from what the
+server computes: `replaces_state`, `redacted_because` and the viewer's values below (ADR-0402). A new client-event
+serializer does the same; a new `unsigned` field is added to what the server computes, never passed through.
+Sliding sync applies `ViewerEventUnsigned` too (`build_room_response` takes the request's `device_id`).
+
 `unsigned.membership` and `unsigned.transaction_id` depend on who asks, so they are added per
 request by `ViewerEventUnsigned`, never stored. `transaction_id` is given only to the device
 that sent the event (`client_txn_ids.device_id`; a transaction ID is scoped to a device, and a
@@ -192,7 +199,12 @@ production) about every unread event, and counts only events after
 highlight from the event type or `m.mentions` here. Only `accepted` events the
 user may see count: the walk asks `unread.visible()` (`HistoryVisibility::can_see`,
 the request's own filter for `/sync` and sliding sync) before it classifies,
-because a backfilled event from before the join is ordered after it.
+because a backfilled event from before the join is ordered after it. `visible()` is also
+false for a non-state event from a sender the user has ignored (Ignoring Users: the client
+no longer receives it; state events still count). The classifier resolves the user's
+`m.ignored_user_list` once, at construction (`trust_safety::resolve_ignored_users`), and
+`visible()` parses an event's JSON only when its sender is ignored, so this adds no per-event
+scan; /sync, sliding sync and the push badge all get it through the classifier.
 
 Build one classifier per request and pass it to every count in that request
 (`/sync`, `compute_room_list`, `build_room_response`). It loads the user's rules
@@ -238,8 +250,11 @@ nothing else decides what a user may see** (ADR-0084; audit CSAZ-2, CSAZ-3).
   replace it with a local depth: after a federated join the join's predecessors are not held (ADR-0311).
 - It fails closed. A broken group chain, a group naming an event the store lacks, or a
   rejected or soft-failed event means not visible. Never substitute the room's current state.
-  An event with no state group (pre-ADR-0064 history) is judged by rule 2 alone from the user's
-  own membership timeline; an undeterminable timeline denies.
+  An event with no state group that is not an outlier (pre-ADR-0064 history, stored `accepted`) is judged by rule 2
+  alone from the user's own membership timeline; an undeterminable timeline denies.
+  An outlier with no state group was fetched as history (ADR-0069, ADR-0070): its place in the room is unknown and
+  its stream ordering is the fetch time, so it is denied (ADR-0415) until a snapshot gives it a state group, when
+  the ordinary check applies. Do not judge a group-less outlier by rule 2.
   The one exception is the user's own `m.room.member` event held as an outlier with no state group
   (a received invite, the leave that rejected it): it is visible to that user, who was sent it already
   (ADR-0304). Do not widen it to other events or other users.
@@ -247,7 +262,11 @@ nothing else decides what a user may see** (ADR-0084; audit CSAZ-2, CSAZ-3).
   may this user read?": `current` (joined), `as_of` (was joined and left, was kicked or banned:
   the state recorded at the event that ended the join, `boundary_event_id`), or `none` (knock,
   invite, declined invite, never joined, forgotten). `room_state_event_ids()` returns the state
-  for it, optionally at an `at` position, never later than the boundary. It gates `initialSync`,
+  for it, optionally at an `at` position, never later than the boundary. The state at a position is the state
+  recorded for `state_anchor_event()`, the newest accepted event at or before it, and is readable only where that
+  event is: a client-chosen `at` whose anchor `can_see` rejects is `403 M_FORBIDDEN` (ADR-0414, the lower bound
+  ADR-0084 lacked). Judge the anchor, never the members one by one: a roster holds members who joined before the
+  caller, and a lookup per member under `runtime.mutex` is the F-10 cost. It gates `initialSync`,
   `/members`, `/joined_members` (current only), `/state`, `/state/{type}/{key}` and the `state` of
   `/sync`'s `rooms.leave` (ADR-0357).
 - A user with no read access may still peek events (not `/members` or `/state`) when the

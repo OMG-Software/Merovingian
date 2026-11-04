@@ -506,14 +506,29 @@ its parent; this is not database rollback or strict cancellation of admitted wor
 Worker propagation uses a per-task thread-local RAII parent scope, not a shared
 mutable origin or per-request rewiring of shared callbacks. Ordinary requests
 without main-owned identity cannot authorize EDUs. Parent IDs are routing values,
-not capabilities, and matching origin does not establish signed-body content
-binding. No persisted format or cryptographic derivation changes. Main/worker
+not capabilities, and matching origin alone does not establish signed-body content
+binding; the digest binding below does. No persisted format or cryptographic derivation changes. Main/worker
 must restart together; missing parent fields fail closed. Normal post-format
 origin and lifecycle regressions, migrated worker/sync fixtures and the actual
 socket-HTTP/separate-worker mixed PDU/EDU control pass. Independent source review
 and fresh combined verification remain pending; this is not whole-finding
 acceptance or adversarial restart-race coverage.
 See [ADR-0142](adr/0142-bind-worker-edu-relays-to-live-main-verified-requests.md).
+
+### Worker EDU relays are bound to the verified body (F-74, ADR-0395)
+
+Origin correlation proves a relay names a server main authenticated, not that the EDU was in anything that server
+sent. For a signature-verified `PUT /_matrix/federation/v1/send/{txnId}`, `WorkerPool::handle` takes the EDUs of the
+body main holds (`federation::extract_transaction_edus`, the same lossless parse and canonical serialisation the
+worker's `/send` handler applies) and passes one digest per EDU occurrence, `federation::edu_relay_digest` over the
+length-prefixed type and the canonical content, to `IpcChannel::send_request`. `handle_edu_ingest_request` hashes the
+relayed `(edu_type, content_json)` before taking `runtime.mutex` and admits it only through
+`IpcChannel::consume_pending_edu`, which re-applies the origin, liveness and deadline checks and marks the first equal
+unused digest used, so each EDU in the body is relayed at most as many times as it was sent. A relay with no such
+digest is refused with `rejected_invalid`, logged at warning level, and never reaches `edu_sink`. A body with a float,
+an out-of-range integer, a duplicate key or more EDUs than `security.federation.max_transaction_edus` yields no digests,
+which matches the worker refusing that transaction whole. The worker still parses the EDUs and does all routing; main
+adds one hash and one scan of at most the transaction's EDU limit under the pending lock, which never covers a sink call.
 
 ### IPC reader/dispatch split
 

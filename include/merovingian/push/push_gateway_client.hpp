@@ -6,8 +6,12 @@
 #include "merovingian/config/config.hpp"
 #include "merovingian/federation/cached_server_discovery.hpp"
 #include "merovingian/http/outbound_client.hpp"
+#include "merovingian/push/gateway_in_flight_limiter.hpp"
 
+#include <chrono>
+#include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <map>
 #include <optional>
 #include <string>
@@ -112,22 +116,42 @@ struct PushGatewayResult final
     std::vector<std::string> rejected_pushkeys{};
     http::OutboundError error{http::OutboundError::network_error};
     std::string error_detail{};
+    // The request was not sent because too many were already in flight to this gateway host or
+    // address (GatewayInFlightLimiter, F-79). Not a failure of the gateway: the caller retries it.
+    bool busy{false};
 };
 
 // What a delivery says about whether its gateway host can be reached
 // (OUT-3, ADR-0151). Only `transport_failure` counts toward opening the host's
 // circuit: any HTTP answer, a 5xx or 429 included, is about one notification,
 // and a host shared by many users must not be closed to all of them by one
-// user's pusher. `not_attempted` (delivery disabled, or a URL or response this
-// server refused) neither counts nor resets.
+// user's pusher. `not_attempted` (delivery disabled, a URL or response this
+// server refused, or a request held back by GatewayInFlightLimiter) neither
+// counts nor resets. `slow_answer` is an HTTP answer that took more than half
+// the total timeout (F-79, ADR-0409): it counts toward the circuit like a
+// transport failure, because a gateway answering just inside the timeout holds
+// a delivery slot as long as one that never answers, and unlike a 5xx, one
+// user's pusher data cannot easily make a shared host slow.
 enum class GatewayCircuitOutcome : std::uint8_t
 {
     reachable,
     transport_failure,
     not_attempted,
+    slow_answer,
 };
 
 [[nodiscard]] auto gateway_circuit_outcome(PushGatewayResult const& result) noexcept -> GatewayCircuitOutcome;
+
+// gateway_circuit_outcome(result), except that an HTTP answer that took longer than half of
+// `total_timeout` is `slow_answer`. `elapsed` is how long the request took.
+[[nodiscard]] auto gateway_circuit_outcome(PushGatewayResult const& result, std::chrono::milliseconds elapsed,
+                                           std::chrono::seconds total_timeout) noexcept -> GatewayCircuitOutcome;
+
+// How many requests may be in flight to one gateway host, and to one resolved address, out of
+// `config.max_in_flight_deliveries` (F-79, ADR-0409): an eighth and a quarter, at least two each (or the whole budget
+// when it is smaller), so a small budget is not serialised behind one loopback or shared address.
+[[nodiscard]] auto push_gateway_host_in_flight_cap(config::PushConfig const& config) noexcept -> std::size_t;
+[[nodiscard]] auto push_gateway_address_in_flight_cap(config::PushConfig const& config) noexcept -> std::size_t;
 
 // Whether the gateway answered and listed `pushkey` as rejected. The spec's
 // `rejected` names "all pushkeys given in the notification request that are not
@@ -169,9 +193,15 @@ struct TestForcedPushGatewayResolution final
 class PushGatewayClient final
 {
 public:
-    PushGatewayClient(
-        http::OutboundClient& outbound, federation::CachedServerDiscovery& discovery, config::PushConfig const& config,
-        std::map<std::string, TestForcedPushGatewayResolution> const* forced_resolution = nullptr) noexcept;
+    // With `limiter`, notify() takes a slot on the gateway host and on every address it resolves to
+    // for the length of the request, and returns `busy` when either is full (F-79).
+    PushGatewayClient(http::OutboundClient& outbound, federation::CachedServerDiscovery& discovery,
+                      config::PushConfig const& config,
+                      std::map<std::string, TestForcedPushGatewayResolution> const* forced_resolution = nullptr,
+                      std::optional<std::reference_wrapper<GatewayInFlightLimiter>> limiter = std::nullopt) noexcept;
+
+    // The whole-request timeout this client sends with (`config.total_timeout_seconds`).
+    [[nodiscard]] auto total_timeout() const noexcept -> std::chrono::seconds;
 
     // POST /_matrix/push/v1/notify at `gateway_url` (the pusher's
     // `data.url`, required to be an HTTPS URL with path
@@ -188,6 +218,7 @@ private:
     // production; when non-null and keyed by the gateway host, notify() uses
     // the entry's pinned addresses + in-memory CA bundle instead of discovery.
     std::map<std::string, TestForcedPushGatewayResolution> const* test_forced_resolution_{nullptr};
+    std::optional<std::reference_wrapper<GatewayInFlightLimiter>> limiter_{};
 };
 
 } // namespace merovingian::push

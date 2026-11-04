@@ -436,8 +436,7 @@ SCENARIO("make_event_signing_payload fails for a non-object JSON value", "[event
 // make_event_signing_payload (with RoomVersionPolicy)
 // ---------------------------------------------------------------------------
 
-SCENARIO("make_event_signing_payload with policy redacts and strips event_id",
-         "[events][event-signer][payload][redaction]")
+SCENARIO("make_event_signing_payload with policy redacts the event", "[events][event-signer][payload][redaction]")
 {
     GIVEN("a valid room event and a default room version policy")
     {
@@ -449,13 +448,12 @@ SCENARIO("make_event_signing_payload with policy redacts and strips event_id",
         {
             auto const result = merovingian::events::make_event_signing_payload(event, policy);
 
-            THEN("the payload serialises without signatures, unsigned, or event_id")
+            THEN("the payload serialises without signatures or unsigned")
             {
                 REQUIRE(result.error == merovingian::canonicaljson::CanonicalJsonError::none);
                 REQUIRE_FALSE(result.output.empty());
                 REQUIRE(result.output.find("\"signatures\"") == std::string::npos);
                 REQUIRE(result.output.find("\"unsigned\"") == std::string::npos);
-                REQUIRE(result.output.find("\"event_id\"") == std::string::npos);
             }
         }
     }

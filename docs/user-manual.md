@@ -183,6 +183,10 @@ answers 503 until you restart the server
 A NetBSD server refuses to start, because NetBSD has no in-process confinement for
 the thumbnail decoder
 ([ADR-0378](adr/0378-probe-elf-hardening-in-memory-and-keep-netbsd-refused.md)).
+For the same reason the thumbnail worker refuses to decode on NetBSD, so there are no
+thumbnails there (`404`) until the worker can be confined from outside the server
+process
+([ADR-0419](adr/0419-the-thumbnail-decoder-refuses-to-run-without-a-platform-sandbox.md)).
 
 Linux packages create the `merovingian` system user and group, install the systemd
 unit, and stage the example configuration at `/etc/merovingian/
@@ -625,12 +629,20 @@ row (a DNS, connection, TLS or timeout failure) is not contacted for
 probe until one reaches it, and deliveries skipped meanwhile are logged
 (`push.delivery.circuit_open`) and retried like failed ones (below). Any HTTP answer, a 5xx or 429 included, counts as
 reaching the host: a gateway shared by many users is never closed to all of them
-because it keeps refusing one user's pusher. A gateway's `rejected` list removes only
-the pushers whose pushkeys it names. OUT-3, ADR-0151.
+because it keeps refusing one user's pusher. The exception is an answer slower than half
+of `total_timeout_seconds`, which counts against the host like an unreachable gateway
+(`push.delivery.slow_gateway`): a gateway answering just inside the timeout would
+otherwise hold a delivery slot as long as one that never answers. At most an eighth of
+`max_in_flight_deliveries` requests are in flight to one gateway host, and a quarter to
+one resolved address; a request over either is retried (below), not counted against the
+host. A gateway's `rejected` list removes only
+the pushers whose pushkeys it names. OUT-3, ADR-0151, ADR-0409.
 
 The in-flight limit counts recipient batches, not whole events: gateways for one
 recipient run sequentially in that recipient's task. For global limit `G`, each
-recipient can hold at most `G > 1 ? min(8, G - 1) : 1` batches. At either bound,
+recipient can hold at most `G > 1 ? min(8, G - 1) : 1` batches. A batch stops contacting
+gateways after twice `total_timeout_seconds` and queues the pushers it has not reached for
+retry (`push.delivery.deferred`), so it holds its slot for that and one attempt. At either bound,
 only that batch is dropped; dropped batches are not retried. At `G=1`, delivery
 remains serial and there is no reserved parallel capacity for another recipient.
 Use at least two slots for single-recipient isolation. Several recipients can
@@ -640,10 +652,14 @@ See [ADR-0140](adr/0140-isolate-push-delivery-capacity-per-recipient.md).
 A notification the gateway answers with an HTTP error status, or that could not reach the
 gateway, is sent again 5 seconds later, then after 10, 20 and so on up to 10 minutes, and given up
 after 8 retries, about 20 minutes after the first attempt (`push.delivery.gave_up`). One
-`push-retry` thread sends retries; they never hold a request thread. At most 1,024 notifications
+`push-retry` thread sends retries; they never hold a request thread. It takes due retries one
+recipient at a time in turn, waits at most 10 seconds for a gateway to answer a retry, and
+starts no attempt after 30 seconds of one run, leaving the rest queued for the next
+(ADR-0410). At most 1,024 notifications
 wait for a retry, 32 per recipient; past that a retry is dropped and logged
 (`push.delivery.retry_dropped`). A pushkey the gateway rejects stops its retries along with its
-pusher, and a retry whose pusher has been removed is not sent. Retries are kept in memory and do
+pusher, and a retry whose pusher has been removed, or whose account has been deactivated, is
+not sent. Deactivating an account deletes its pushers. Retries are kept in memory and do
 not survive a restart. These limits are fixed. See
 [ADR-0206](adr/0206-retry-failed-push-notifications-from-a-bounded-in-memory-queue.md).
 
@@ -1106,8 +1122,8 @@ rooms.
 |---|---|---|
 | `security.federation.enabled` | `true` | Set `false` to run a non-federating server. |
 | `security.federation.default_policy` | `allow` | Set `deny` for allow-list federation. Requires `allowed_servers`. |
-| `security.federation.allowed_servers` | (empty) | Comma-separated server names allowed when `default_policy=deny`. |
-| `security.federation.denied_servers` | (empty) | Comma-separated server names always blocked. |
+| `security.federation.allowed_servers` | (empty) | Comma-separated server names allowed when `default_policy=deny`. See [Federation policy](#federation-policy-reach) for what this covers. |
+| `security.federation.denied_servers` | (empty) | Comma-separated server names always blocked: their requests, events they wrote, and everything outbound. |
 | `security.federation.require_valid_tls` | `true` | Disable only in controlled test labs. |
 | `security.federation.verify_json_signatures` | `true` | Disable only in controlled test labs. |
 | `security.federation.deny_ip_ranges` | private/loopback ranges | IPv4/IPv6 literals or CIDRs blocked during remote discovery/fetching, including public ranges. Keep the defaults; built-in SSRF blocks cannot be disabled, except for the private networks named in `allow_private_ip_ranges`. Every entry must be a well-formed address or CIDR range (prefix no longer than the address): a malformed entry is a startup error, because the boundary would otherwise treat it as denying every address. |
@@ -2574,6 +2590,22 @@ security.federation.denied_servers=bad.example
 
 Deny-by-default federation requires a non-empty `allowed_servers` list.
 
+<a id="federation-policy-reach"></a>
+These lists mean this server has nothing to do with the named server, whichever way the contact comes:
+
+- A request from it is refused.
+- An event it wrote is refused wherever it comes from: a `/send` by another server, a federation worker relay,
+  backfill, or a `send_join` answer. Its signing keys are not fetched. An event descending from a refused one has a
+  gap in its history here. With `default_policy=deny`, a room created on a server not in `allowed_servers` cannot be
+  joined, because its create event is refused (ADR-0390).
+- Nothing is sent to it: no PDUs, EDUs, membership calls, key queries or media requests. Rows already queued for it
+  are dropped at the next start. `sendToDevice` to it answers 200 and sends nothing, and media from it answers 404
+  (ADR-0391).
+
+Names are compared as exact strings, so `example.org:8448` is a different name from `example.org`: list each form a
+server uses. Admin federation rules also apply to events a server wrote, but not to outbound traffic, which reads only
+these two lists.
+
 ### Federation worker
 
 When federation is enabled, the worker is mandatory. Startup fails if the worker
@@ -2672,9 +2704,10 @@ admin endpoint:
 curl 'http://127.0.0.1:8008/_merovingian/admin/audit?category=policy'
 ```
 
-The endpoint lists the most recent 1 024 audit rows the running process holds; its
-first line ends in `evicted=<n>` once older rows have left that window, and the
-`audit_log` table keeps every row. Rejections that any unauthenticated client can
+The endpoint answers a JSON object (`application/json`) whose `entries` array holds one
+object per matching row, the most recent 1 024 audit rows the running process holds;
+`audit_events` is the retained count and `evicted` appears once older rows have left that
+window, and the `audit_log` table keeps every row. Rejections that any unauthenticated client can
 trigger (`access_token.rejected`, `rate_limit.exceeded`, `request.rejected`) are
 written at most 10 times per kind per 60 seconds; the first row after a busier
 window carries `suppressed=<n>` in its reason. `actor`, `target` and `reason` are
@@ -2693,7 +2726,7 @@ a non-admin user returns `403`. Implemented routes:
 | `GET` | `/_merovingian/admin/health` | Health summary. |
 | `GET` | `/_merovingian/admin/metrics` | Prometheus-format server metrics. |
 | `GET` | `/_merovingian/admin/media/metrics` | Media-repository metrics. |
-| `GET` | `/_merovingian/admin/audit` | Audit log query (`?category=`, `?event_type=`). |
+| `GET` | `/_merovingian/admin/audit` | Audit log query (`?category=`, `?event_type=`); a JSON object with an `entries` array. |
 | `POST` | `/_merovingian/admin/media/quarantine/{mediaId}` | Quarantine a stored media item. |
 | `POST` | `/_merovingian/admin/media/release/{mediaId}` | Release a quarantined media item. |
 | `POST` | `/_merovingian/admin/media/remove/{mediaId}` | Remove a stored media item. |

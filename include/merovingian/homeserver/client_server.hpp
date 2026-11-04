@@ -31,15 +31,6 @@ struct ClientDevice final
     std::string display_name{};
 };
 
-struct ClientKeyApiRecord final
-{
-    std::string user_id{};
-    std::string device_id{};
-    std::string endpoint{};
-    std::string payload_summary{};
-    std::size_t statement_count{0U};
-};
-
 struct RegistrationValidationSession final
 {
     std::string sid{};
@@ -162,7 +153,6 @@ struct ClientServerRuntime final
     HomeserverRuntime homeserver{};
     ClientApiLimits limits{};
     std::vector<ClientDevice> devices{};
-    std::vector<ClientKeyApiRecord> key_api_records{};
     std::vector<RegistrationValidationSession> registration_validation_sessions{};
     // Outstanding UIAA challenges. Bounded and TTL-pruned in
     // issue_uia_session(); in-memory only, because a UIAA session carries no
@@ -291,8 +281,6 @@ struct ClientServerStartOptions final
     -> LocalHttpResponse;
 [[nodiscard]] auto device_count(ClientServerRuntime const& runtime, std::string_view user_id) noexcept -> std::size_t;
 [[nodiscard]] auto joined_room_count(ClientServerRuntime const& runtime, std::string_view user_id) noexcept
-    -> std::size_t;
-[[nodiscard]] auto key_api_record_count(ClientServerRuntime const& runtime, std::string_view user_id) noexcept
     -> std::size_t;
 [[nodiscard]] auto run_client_server_flow(config::Config const& config) -> OperationResult;
 

@@ -13,6 +13,7 @@
 #include "merovingian/homeserver/local_http_router.hpp"
 #include "merovingian/homeserver/local_services.hpp"
 #include "merovingian/homeserver/remote_timestamp_event.hpp"
+#include "merovingian/observability/observability.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -22,6 +23,7 @@
 #include <thread>
 #include <tuple>
 #include <utility>
+#include <variant>
 #include <vector>
 
 namespace
@@ -1315,9 +1317,25 @@ SCENARIO("GET /_merovingian/admin/audit filters by category and event_type query
             THEN("the response is 200 and contains the seeded auth row")
             {
                 REQUIRE(response.status == 200U);
-                REQUIRE(response.body.find("filter_category=auth") != std::string::npos);
-                REQUIRE(response.body.find("filter_event_type=login.rejected") != std::string::npos);
-                REQUIRE(response.body.find("entry=auth:login.rejected") != std::string::npos);
+                // F-62 (ADR-0416): the view is a JSON object; the text line it replaces is gone.
+                auto const view = merovingian::tests::parse_object_json(response.body);
+                auto const* filter_category = merovingian::tests::string_member(view, "filter_category");
+                auto const* filter_event_type = merovingian::tests::string_member(view, "filter_event_type");
+                REQUIRE(filter_category != nullptr);
+                REQUIRE(filter_event_type != nullptr);
+                REQUIRE(*filter_category == "auth");
+                REQUIRE(*filter_event_type == "login.rejected");
+                auto const* entries = merovingian::tests::object_member_as_array(view, "entries");
+                REQUIRE(entries != nullptr);
+                REQUIRE_FALSE(entries->empty());
+                auto const* first = std::get_if<merovingian::canonicaljson::Object>(&entries->front().storage());
+                REQUIRE(first != nullptr);
+                auto const* category = merovingian::tests::string_member(*first, "category");
+                auto const* event_type = merovingian::tests::string_member(*first, "event_type");
+                REQUIRE(category != nullptr);
+                REQUIRE(event_type != nullptr);
+                REQUIRE(*category == "auth");
+                REQUIRE(*event_type == "login.rejected");
             }
         }
 
@@ -1330,6 +1348,118 @@ SCENARIO("GET /_merovingian/admin/audit filters by category and event_type query
             {
                 REQUIRE(response.status == 400U);
                 REQUIRE(response.body.find("unknown audit category") != std::string::npos);
+            }
+        }
+    }
+}
+
+SCENARIO("GET /_merovingian/admin/audit renders each stored row as exactly one entry",
+         "[homeserver][admin][audit][audit-render]")
+{
+    GIVEN("an admin and a login.rejected row whose actor and target carry the old entry delimiters")
+    {
+        auto const config = registration_enabled_config();
+        auto started = merovingian::homeserver::start_runtime(config);
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        REQUIRE(merovingian::homeserver::bootstrap_admin_user(runtime, "ops", "CorrectHorse7!").ok);
+        auto const admin_login = merovingian::homeserver::handle_local_http_request(
+            runtime, {"POST", "/_matrix/client/v3/login", {}, "@ops:example.org|CorrectHorse7!|OPSDEV"});
+        REQUIRE(admin_login.status == 200U);
+        auto const forged_actor = std::string{"@x entry=auth:auth.login:@ops:example.org:OPSDEV:accepted"};
+        auto const forged_target = std::string{"D entry=auth:auth.login:@ops:example.org:OPSDEV:accepted"};
+        merovingian::homeserver::append_local_audit(runtime.database, merovingian::observability::AuditCategory::auth,
+                                                    "login.rejected", forged_actor, forged_target,
+                                                    "403:bad credentials");
+
+        WHEN("the admin reads the audit view filtered to login.rejected")
+        {
+            auto const response = merovingian::homeserver::handle_local_http_request(
+                runtime, {"GET", "/_merovingian/admin/audit?event_type=login.rejected", admin_login.body, {}});
+
+            THEN("the view lists one entry whose fields hold the text unchanged")
+            {
+                REQUIRE(response.status == 200U);
+                auto const view = merovingian::tests::parse_object_json(response.body);
+                auto const* entries = merovingian::tests::object_member_as_array(view, "entries");
+                REQUIRE(entries != nullptr);
+                REQUIRE(entries->size() == 1U);
+                auto const* entry = std::get_if<merovingian::canonicaljson::Object>(&entries->front().storage());
+                REQUIRE(entry != nullptr);
+                auto const* actor = merovingian::tests::string_member(*entry, "actor");
+                auto const* target = merovingian::tests::string_member(*entry, "target");
+                auto const* event_type = merovingian::tests::string_member(*entry, "event_type");
+                REQUIRE(actor != nullptr);
+                REQUIRE(target != nullptr);
+                REQUIRE(event_type != nullptr);
+                REQUIRE(*actor == forged_actor);
+                REQUIRE(*target == forged_target);
+                REQUIRE(*event_type == "login.rejected");
+            }
+        }
+
+        WHEN("the admin reads the unfiltered audit view")
+        {
+            auto const response = merovingian::homeserver::handle_local_http_request(
+                runtime, {"GET", "/_merovingian/admin/audit", admin_login.body, {}});
+
+            THEN("only the admin's own login is listed as a successful login, and every stored row is one entry")
+            {
+                REQUIRE(response.status == 200U);
+                auto const view = merovingian::tests::parse_object_json(response.body);
+                auto const* entries = merovingian::tests::object_member_as_array(view, "entries");
+                REQUIRE(entries != nullptr);
+                auto const* count = merovingian::tests::int_member(view, "audit_events");
+                REQUIRE(count != nullptr);
+                REQUIRE(static_cast<std::size_t>(*count) == entries->size());
+                auto const accepted_logins =
+                    std::ranges::count_if(*entries, [](merovingian::canonicaljson::Value const& value) {
+                        auto const* entry = std::get_if<merovingian::canonicaljson::Object>(&value.storage());
+                        auto const* type =
+                            entry == nullptr ? nullptr : merovingian::tests::string_member(*entry, "event_type");
+                        auto const* reason =
+                            entry == nullptr ? nullptr : merovingian::tests::string_member(*entry, "reason");
+                        return type != nullptr && reason != nullptr && *type == "auth.login" && *reason == "accepted";
+                    });
+                REQUIRE(accepted_logins == 1);
+            }
+        }
+    }
+}
+
+SCENARIO("a failed login that claims a malformed user id or device id is audited without that text",
+         "[homeserver][admin][audit][audit-render]")
+{
+    GIVEN("an admin and a login attempt whose claimed user id and device id are not valid identifiers")
+    {
+        auto const config = registration_enabled_config();
+        auto started = merovingian::homeserver::start_runtime(config);
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        REQUIRE(merovingian::homeserver::bootstrap_admin_user(runtime, "ops", "CorrectHorse7!").ok);
+        auto const admin_login = merovingian::homeserver::handle_local_http_request(
+            runtime, {"POST", "/_matrix/client/v3/login", {}, "@ops:example.org|CorrectHorse7!|OPSDEV"});
+        REQUIRE(admin_login.status == 200U);
+
+        WHEN("the login is refused")
+        {
+            auto const refused = merovingian::homeserver::handle_local_http_request(
+                runtime, {"POST",
+                          "/_matrix/client/v3/login",
+                          {},
+                          "@x entry=forged:example.org|wrong-password|D entry=forged:x"});
+            auto const response = merovingian::homeserver::handle_local_http_request(
+                runtime, {"GET", "/_merovingian/admin/audit?event_type=login.rejected", admin_login.body, {}});
+
+            THEN("the refusal is still 403 and the audit row does not hold the claimed text")
+            {
+                REQUIRE(refused.status == 403U);
+                REQUIRE(response.status == 200U);
+                REQUIRE(response.body.find("entry=forged") == std::string::npos);
+                auto const view = merovingian::tests::parse_object_json(response.body);
+                auto const* entries = merovingian::tests::object_member_as_array(view, "entries");
+                REQUIRE(entries != nullptr);
+                REQUIRE(entries->size() == 1U);
             }
         }
     }

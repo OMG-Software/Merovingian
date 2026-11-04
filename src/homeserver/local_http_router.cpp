@@ -18,6 +18,7 @@
 #include "merovingian/events/event_signer.hpp"
 #include "merovingian/events/limits.hpp"
 #include "merovingian/events/redaction.hpp"
+#include "merovingian/events/unsigned_data.hpp"
 #include "merovingian/federation/edu_idempotence.hpp"
 #include "merovingian/federation/event_query.hpp"
 #include "merovingian/federation/inbound_ingestion.hpp"
@@ -1701,6 +1702,18 @@ namespace
                     return {federation::EduDispositionStatus::rejected_invalid,
                             "typing EDU for a room this server has no membership in"};
                 }
+                // Spec, Server-Server API "Typing Notifications": a receiving server "should verify
+                // that the user is in the room and belongs to the server sending the EDU"; "Server
+                // Access Control Lists (ACLs)": ACLs apply to m.typing and an EDU from a denied
+                // server MUST be ignored (F-55). The dispatcher checks the ACL once, but a worker
+                // relay carries content the worker chose, so it is judged here, at the mutation
+                // boundary, as the receipt case does. An ignored EDU is accepted, not an error: a
+                // transaction may carry EDUs of other rooms and users.
+                if (!user_is_joined_in_room(*rt, room_id, user_id) ||
+                    !federation::room_server_acl_allows(rt->database.persistent_store, room_id, envelope.origin))
+                {
+                    return {federation::EduDispositionStatus::accepted, {}};
+                }
                 auto const previous_users = current_typing_users_in_room(*rt, room_id);
                 auto existing = std::ranges::find_if(rt->typing_users, [&](auto const& t) {
                     return t.room_id == room_id && t.user_id == user_id;
@@ -1719,10 +1732,23 @@ namespace
                     {
                         // Backstop for a peer that is a legitimate member of a
                         // very large room. Typing state is ephemeral, so the
-                        // oldest entry is already the least useful one.
+                        // oldest entry is already the least useful one. Only a
+                        // remote user's entry is evicted (F-55): the table is
+                        // shared with this server's own users, and a peer must
+                        // not be able to clear their typing. With none to
+                        // evict, the new entry is dropped.
                         if (rt->typing_users.size() >= max_inbound_typing_entries)
                         {
-                            rt->typing_users.erase(rt->typing_users.begin());
+                            auto const& local_server = rt->config.server().server_name;
+                            auto const oldest_remote =
+                                std::ranges::find_if(rt->typing_users, [&local_server](auto const& entry) {
+                                    return server_name_from_user_id(entry.user_id) != local_server;
+                                });
+                            if (oldest_remote == rt->typing_users.end())
+                            {
+                                return {federation::EduDispositionStatus::accepted, {}};
+                            }
+                            rt->typing_users.erase(oldest_remote);
                         }
                         rt->typing_users.push_back({room_id, user_id, true, std::uint64_t{0U}, expires_at});
                     }
@@ -1822,6 +1848,13 @@ namespace
                             {
                                 return {federation::EduDispositionStatus::rejected_invalid,
                                         "receipt event_ids entries must be strings"};
+                            }
+                            // Appendices, "Event IDs": at most 255 bytes. An event ID of the wrong
+                            // shape or size is ignored, not stored, shown to the room's members or
+                            // sent on (F-53); the rest of the EDU is still handled.
+                            if (!events::event_id_is_acceptable_in_receipt(*first_event_id))
+                            {
+                                continue;
                             }
                             auto const* data = object_member_as_object(*receipt, "data");
                             auto const* ts_value = data == nullptr ? nullptr : object_member_as_int(*data, "ts");
@@ -2693,6 +2726,29 @@ namespace
             {
                 federate_accepted_membership_event(*rt, room_id, accepted_event_id, stored_json,
                                                    server_name_from_user_id(envelope.sender));
+                // Spec, Application Service API "Pushing events": every event in a room an application
+                // service is interested in is sent to it. No transaction brings this event again (the
+                // requesting server is excluded from the fan-out and a re-sent copy is answered
+                // already_stored), so this is the one place it can be queued (F-51). It writes outbox
+                // rows only, with no network I/O, so it is safe under rt->mutex. A rejected or
+                // soft-failed event never reaches here.
+                auto const member_event_target =
+                    envelope.event_type == "m.room.member" && envelope.state_key.has_value()
+                        ? std::string_view{*envelope.state_key}
+                        : std::string_view{};
+                auto const appservice_room = std::ranges::find_if(rt->database.rooms, [&](LocalRoom const& candidate) {
+                    return candidate.room_id == room_id;
+                });
+                if (appservice_room != rt->database.rooms.end())
+                {
+                    enqueue_appservice_delivery(*rt, *appservice_room, accepted_event_id, event_stream_ordering,
+                                                envelope.sender, member_event_target);
+                }
+                else
+                {
+                    enqueue_appservice_delivery(*rt, room_id, {}, accepted_event_id, event_stream_ordering,
+                                                envelope.sender, member_event_target);
+                }
             }
 
             // The answer's events are copied out once, now that the join is accepted. Per Matrix
@@ -2741,6 +2797,10 @@ namespace
             {
                 return {false, 400U, "malformed invite event", {}};
             }
+            // The inviting server's `unsigned` (the v1 invite carries `invite_room_state` there) is covered by
+            // no signature, and the stored and returned copy must not hold it (ADR-0402). The invite's room
+            // state comes from the request's own `invite_room_state` field, never from this object.
+            parsed.value = events::without_unsigned(parsed.value);
             // The rules the event is redacted and signed under: the room's own
             // version where this server holds it, else the one the request
             // carries (handle_invite fills it for v1 too). Only a room with no
@@ -3078,6 +3138,21 @@ namespace
             return federation::room_server_acl_allows(rt->database.persistent_store, room_id, server_name);
         };
 
+        // ADR-0390: an admin's rule for the server that wrote an event. Read at call time because a worker sets
+        // the flag after wiring: its store is no authority over rules, and main judges what it relays.
+        runtime.federation.server_policy_refusal_provider = [rt](std::string_view server_name) -> std::string {
+            if (rt->federation_policy_decided_upstream)
+            {
+                return {};
+            }
+            auto const decision = evaluate_inbound_federation_policy(*rt, server_name, false);
+            if (decision.allowed)
+            {
+                return {};
+            }
+            return decision.reason.public_summary.empty() ? decision.reason.code : decision.reason.public_summary;
+        };
+
         if (outbound && discovery)
         {
             // Prefer the TTL-bounded discovery cache so repeated key resolutions
@@ -3128,6 +3203,19 @@ namespace
                     runtime.database.persistent_store, *outbound, *discovery, timeout, key_clock,
                     runtime.config.server().server_name, mirror_refresh);
             }
+            // ADR-0391: a key fetch is outbound traffic like any other, so a server the operator excludes is not
+            // asked for one on any path. Only the config is read here: this runs on key-resolution tasks, which
+            // must not wait for runtime.mutex (ADR-0390 judges the admin's rules before they start).
+            runtime.federation.remote_key_resolver =
+                [policy = runtime.federation.config, resolver = std::move(runtime.federation.remote_key_resolver)](
+                    std::string_view server_name,
+                    std::string_view key_id) -> std::optional<federation::FederationRemoteRuntime> {
+                if (!federation::federation_server_policy(policy, server_name).allowed)
+                {
+                    return std::nullopt;
+                }
+                return resolver(server_name, key_id);
+            };
             auto key = ensure_runtime_server_signing_key(runtime);
             auto constexpr expected_secret_bytes = crypto::ed25519_secret_key_bytes;
             if (!key.has_value() || runtime.database.signing_secret_key.bytes().size() != expected_secret_bytes)
@@ -3143,6 +3231,9 @@ namespace
             dispatch_config.max_retries = runtime.federation.config.outbound_max_retries;
             dispatch_config.delivery_threads = runtime.federation.config.outbound_delivery_threads;
             dispatch_config.key_id = key->key_id;
+            dispatch_config.destination_refusal = [policy = runtime.federation.config](std::string_view destination) {
+                return federation::federation_server_policy(policy, destination).reason;
+            };
             // Move the signing key into the worker's own mlocked, zeroised
             // SecretBuffer rather than an unpinned std::string. The runtime
             // retains its own SecretBuffer; both are wiped independently.
@@ -3827,8 +3918,30 @@ namespace
             }
         }
 
+        // ADR-0390: the operator's policy holds for the server that wrote the event, whichever peer served it, and
+        // before any of its keys is looked up. An event we already hold has been answered above.
+        if (auto const refusal =
+                federation::operator_policy_refusal(runtime.federation, sender_domain_from_user_id(pdu.sender));
+            !refusal.empty())
+        {
+            log_diagnostic(
+                "backfill.policy_rejected",
+                {
+                    {"event_id", pdu.event_id, false},
+                    {"room_id",  pdu.room_id,  false},
+                    {"reason",   refusal,      false}
+            });
+            return false;
+        }
+
         auto effective_pdu = parsed.value;
-        auto stored_json = std::string{event_json};
+        // What the origin put in `unsigned` is covered by no signature or hash, so it is never stored (ADR-0402).
+        auto stripped_json = events::without_unsigned_json(event_json);
+        if (!stripped_json.has_value())
+        {
+            return false;
+        }
+        auto stored_json = std::move(*stripped_json);
         if (!events::verify_pdu_content_hash(effective_pdu))
         {
             auto const redaction = events::redact_event(effective_pdu, policy);
@@ -4628,7 +4741,8 @@ namespace
     // canonical JSON (no floats, integers in range) and with a valid envelope (identifier and type
     // lengths, a `state_key` of at most 255 bytes). Spec: Client-Server "Size limits" and the
     // Appendices' Canonical JSON.
-    [[nodiscard]] auto returned_pdu_is_well_formed(std::string_view json) -> bool
+    [[nodiscard]] auto returned_pdu_is_well_formed(std::string_view json, rooms::RoomVersionPolicy const& policy)
+        -> bool
     {
         if (json.size() > events::max_event_size_bytes)
         {
@@ -4636,7 +4750,8 @@ namespace
         }
         auto const parsed = canonicaljson::parse_lossless(json);
         return parsed.error == canonicaljson::ParseError::none &&
-               events::parse_event_envelope(parsed.value).error.empty();
+               events::parse_event_envelope(parsed.value).error.empty() &&
+               federation::pdu_format_violation(parsed.value, policy).empty();
     }
 
     [[nodiscard]] auto backfill_missing_pdu_references(HomeserverRuntime& runtime, std::string_view room_id,
@@ -4710,7 +4825,7 @@ namespace
                     // "as usual", and is neither stored nor held. The origin was asked for the
                     // events the gap is made of, so one that is unusable is its answer, and
                     // nothing is fetched to work around it.
-                    if (!returned_pdu_is_well_formed(json))
+                    if (!returned_pdu_is_well_formed(json, policy))
                     {
                         returned_invalid_event = true;
                         continue;
@@ -5681,7 +5796,9 @@ auto wire_federation_callbacks(HomeserverRuntime& runtime) -> void
         return response(200U, admin_metrics_summary(runtime),
                         observability_headers(correlation, "text/plain; version=0.0.4; charset=utf-8"));
     }
-    if (request.method == "GET" && starts_with(request.target, "/_merovingian/admin/audit"))
+    // The path alone is compared (F-73): `/_merovingian/admin/audit-anything` once matched this prefix too,
+    // so a path the rate limiter files under the fallback counter was served as the audit view.
+    if (request.method == "GET" && request.target.substr(0U, request.target.find('?')) == "/_merovingian/admin/audit")
     {
         if (auto const denied = admin_auth_denied(runtime, request.access_token, correlation); denied.has_value())
         {
@@ -5719,8 +5836,9 @@ auto wire_federation_callbacks(HomeserverRuntime& runtime) -> void
         }
         // The admin auth gate at the top of this block already returned 401/403
         // for non-admin callers, so reaching here means the caller is an admin.
+        // F-62 (ADR-0416): the view is a JSON object, not the text line it once was.
         return response(200U, admin_audit_summary(runtime, category_filter, event_type_filter),
-                        observability_headers(correlation, "text/plain; charset=utf-8"));
+                        observability_headers(correlation, "application/json"));
     }
     if (request.method == "GET" && request.target.substr(0U, request.target.find('?')) == "/_matrix/key/v2/server")
     {

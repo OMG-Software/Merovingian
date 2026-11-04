@@ -28,11 +28,13 @@
 #include "merovingian/canonicaljson/value.hpp"
 #include "merovingian/config/config.hpp"
 #include "merovingian/core/query_params.hpp"
+#include "merovingian/events/limits.hpp"
 #include "merovingian/federation/inbound_ingestion.hpp"
 #include "merovingian/federation/inbound_request.hpp"
 #include "merovingian/federation/key_query.hpp"
 #include "merovingian/federation/membership_endpoints.hpp"
 #include "merovingian/federation/runtime_federation.hpp"
+#include "merovingian/federation/server_acl.hpp"
 #include "merovingian/homeserver/federation_request_routing.hpp"
 #include "merovingian/homeserver/local_http_router.hpp"
 #include "merovingian/homeserver/runtime.hpp"
@@ -3853,6 +3855,130 @@ SCENARIO("GET /timestamp_to_event/{roomId} answers an authenticated server throu
             THEN("the answer is 501 Not Implemented, as for every unwired route")
             {
                 REQUIRE(response.status == 501U);
+            }
+        }
+    }
+}
+
+// Client-Server API > Server Access Control Lists (ACLs) for rooms
+// (client-server-api.md, m.room.server_acl): the ACLs are applied in order, and the
+// last step is "5. Otherwise, deny." `allow` "defaults to an empty list when not
+// provided, effectively disallowing every server."
+SCENARIO("A server ACL without an allow entry disallows every server", "[conformance][federation][acl][acl-order]")
+{
+    using merovingian::federation::evaluate_server_acl;
+    using merovingian::federation::parse_server_acl;
+    using merovingian::federation::ServerAclDecision;
+
+    auto const acl_of = [](std::string_view const content) {
+        auto const parsed = merovingian::canonicaljson::parse_json(content);
+        REQUIRE(parsed.error == merovingian::canonicaljson::ParseError::none);
+        return parse_server_acl(parsed.value);
+    };
+
+    GIVEN("server ACL content that gives no allow list")
+    {
+        auto const only_deny = acl_of(R"({"deny":["evil.example"]})");
+        auto const nothing = acl_of("{}");
+        auto const empty_allow = acl_of(R"({"allow":[]})");
+
+        WHEN("a server that no list names is evaluated")
+        {
+            auto const under_only_deny = evaluate_server_acl("good.example", only_deny);
+            auto const under_nothing = evaluate_server_acl("good.example", nothing);
+            auto const under_empty_allow = evaluate_server_acl("good.example:8448", empty_allow);
+
+            THEN("the server is denied by the final step")
+            {
+                REQUIRE(under_only_deny.decision == ServerAclDecision::deny);
+                REQUIRE(under_nothing.decision == ServerAclDecision::deny);
+                REQUIRE(under_empty_allow.decision == ServerAclDecision::deny);
+            }
+        }
+    }
+
+    GIVEN("server ACL content that allows every server and denies one")
+    {
+        auto const acl = acl_of(R"({"allow":["*"],"deny":["evil.example"]})");
+
+        WHEN("each is evaluated")
+        {
+            auto const allowed = evaluate_server_acl("good.example", acl);
+            auto const denied = evaluate_server_acl("evil.example", acl);
+
+            THEN("only the server matching the allow list and not the deny list is allowed")
+            {
+                REQUIRE(allowed.decision == ServerAclDecision::allow);
+                REQUIRE(denied.decision == ServerAclDecision::deny);
+            }
+        }
+    }
+}
+
+// Server-Server API > Checks performed on receipt of a PDU, step 1: "Is a valid event, otherwise it is dropped."
+// rooms/v12.md Event format: prev_events "must contain less than or equal to 20 events", auth_events at most 10.
+// Client-Server API > Size limits: the complete event "MUST NOT be larger than 65536 bytes".
+// rooms/v3.md Event format: "the `event_id` field is no longer included."
+SCENARIO("A PDU outside its room version's event format is recognised by one shared check",
+         "[conformance][federation][pdu-format]")
+{
+    using merovingian::federation::pdu_format_violation;
+    auto const* policy = merovingian::rooms::find_room_version_policy("12");
+    REQUIRE(policy != nullptr);
+
+    auto const event_of = [](std::string const& prev_events, std::string const& auth_events,
+                             std::string const& extra = {}) {
+        auto const parsed = merovingian::canonicaljson::parse_lossless(
+            R"({"auth_events":)" + auth_events + R"(,"content":{"body":"x"},"depth":1,)" + extra +
+            R"("origin_server_ts":1,"prev_events":)" + prev_events +
+            R"(,"room_id":"!r:example.org","sender":"@a:example.org","type":"m.room.message"})");
+        REQUIRE(parsed.error == merovingian::canonicaljson::ParseError::none);
+        return parsed.value;
+    };
+    auto const ids = [](std::size_t count) {
+        auto text = std::string{"["};
+        for (auto index = std::size_t{0U}; index < count; ++index)
+        {
+            text += (index == 0U ? "\"$e" : ",\"$e") + std::to_string(index) + "\"";
+        }
+        return text + "]";
+    };
+
+    GIVEN("events at the limits of the format")
+    {
+        auto const at_limit = event_of(ids(20U), ids(10U));
+
+        WHEN("they are checked")
+        {
+            auto const violation = pdu_format_violation(at_limit, *policy);
+
+            THEN("they pass")
+            {
+                REQUIRE(violation.empty());
+            }
+        }
+    }
+
+    GIVEN("events that each break one rule of the format")
+    {
+        auto const too_many_prev = event_of(ids(21U), ids(1U));
+        auto const too_many_auth = event_of(ids(1U), ids(11U));
+        auto const prev_not_strings = event_of(R"(["$a",7])", ids(1U));
+        auto const auth_not_array = event_of(ids(1U), R"("$a")");
+        auto const carries_event_id = event_of(ids(1U), ids(1U), R"("event_id":"$forged",)");
+        auto const too_large = event_of(
+            ids(1U), ids(1U), R"("padding":")" + std::string(merovingian::events::max_event_size_bytes, 'x') + R"(",)");
+
+        WHEN("they are checked")
+        {
+            THEN("each is refused")
+            {
+                REQUIRE_FALSE(pdu_format_violation(too_many_prev, *policy).empty());
+                REQUIRE_FALSE(pdu_format_violation(too_many_auth, *policy).empty());
+                REQUIRE_FALSE(pdu_format_violation(prev_not_strings, *policy).empty());
+                REQUIRE_FALSE(pdu_format_violation(auth_not_array, *policy).empty());
+                REQUIRE_FALSE(pdu_format_violation(carries_event_id, *policy).empty());
+                REQUIRE_FALSE(pdu_format_violation(too_large, *policy).empty());
             }
         }
     }

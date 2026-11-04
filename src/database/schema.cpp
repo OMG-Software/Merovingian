@@ -103,8 +103,12 @@ namespace
         SchemaTableDefinition{
                               "key_backup_versions",     "user_id TEXT NOT NULL, version TEXT NOT NULL, json TEXT NOT NULL, PRIMARY KEY (user_id, version)"             },
         SchemaTableDefinition{
+                              "key_backup_version_counters",
+                              "user_id TEXT PRIMARY KEY, last_version TEXT NOT NULL"                                                                                    },
+        SchemaTableDefinition{
                               "key_backup_sessions",     "user_id TEXT NOT NULL, version TEXT NOT NULL, room_id TEXT NOT NULL, session_id TEXT NOT NULL, "
-            "json TEXT NOT NULL, PRIMARY KEY (user_id, version, room_id, session_id)"                               },
+            "json TEXT NOT NULL, PRIMARY KEY (user_id, version, room_id, session_id), "
+            "FOREIGN KEY (user_id, version) REFERENCES key_backup_versions (user_id, version) ON DELETE CASCADE"    },
         SchemaTableDefinition{
                               "media",                   "media_id TEXT PRIMARY KEY, owner_user_id TEXT NOT NULL, content_type TEXT NOT "
                      "NULL, size_bytes TEXT NOT NULL, hash_algorithm TEXT NOT NULL, digest TEXT NOT "
@@ -155,7 +159,8 @@ namespace
         SchemaTableDefinition{"client_txn_ids",
                               "user_id TEXT NOT NULL, room_id TEXT NOT NULL, event_type TEXT NOT NULL, "
                               "txn_id TEXT NOT NULL, event_id TEXT NOT NULL, device_id TEXT NOT NULL DEFAULT '', "
-                              "PRIMARY KEY (user_id, room_id, event_type, txn_id)"                                                                                      },
+                              "created_at_ms TEXT NOT NULL DEFAULT '0', "
+                              "PRIMARY KEY (user_id, device_id, room_id, event_type, txn_id)"                                                                                      },
         SchemaTableDefinition{"pushers",
                               "user_id TEXT NOT NULL, app_id TEXT NOT NULL, pushkey TEXT NOT NULL, "
                               "kind TEXT NOT NULL, app_display_name TEXT NOT NULL DEFAULT '', "

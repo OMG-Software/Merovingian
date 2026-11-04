@@ -63,27 +63,6 @@ namespace
         return stripped;
     }
 
-    // Like clone_without_unsigned_and_signatures but also strips event_id.
-    // Room versions 4+ derive event_id from the content hash — it is never part
-    // of the canonical event body. Federation senders (e.g. Synapse) commonly
-    // attach event_id to outbound PDUs as a receiver convenience, but the
-    // signing payload they computed when creating the event did NOT include it.
-    // We must strip it before verification so our payload matches theirs.
-    [[nodiscard]] auto clone_without_unsigned_signatures_and_event_id(canonicaljson::Object const& object)
-        -> canonicaljson::Object
-    {
-        auto stripped = canonicaljson::Object{};
-        stripped.reserve(object.size());
-        for (auto const& member : object)
-        {
-            if (member.key != "unsigned" && member.key != "signatures" && member.key != "event_id")
-            {
-                stripped.push_back(canonicaljson::make_member(member.key, *member.value));
-            }
-        }
-        return stripped;
-    }
-
     [[nodiscard]] auto sodium_is_ready() noexcept -> bool
     {
         static auto const ready = sodium_init() >= 0;
@@ -308,15 +287,8 @@ auto make_event_signing_payload(canonicaljson::Value const& event, rooms::RoomVe
         return {{}, canonicaljson::CanonicalJsonError::invalid_string};
     }
 
-    // For room versions that use reference-hash event IDs (room v4+), event_id is
-    // not part of the canonical event body — it is derived from the content hash.
-    if (policy.event_id_format == rooms::EventIdFormat::reference_hash)
-    {
-        return canonicaljson::serialize_canonical_strict(
-            canonicaljson::Value{clone_without_unsigned_signatures_and_event_id(*redacted_obj)});
-    }
-
-    // Legacy room versions (1–3) include event_id in the event body itself.
+    // Spec: "Signing events" strips what redaction removes, then signatures and unsigned; nothing else. Redaction
+    // keeps a top-level event_id, so it is signed, as it is hashed into the reference-hash event ID (ADR-0397).
     return canonicaljson::serialize_canonical_strict(
         canonicaljson::Value{clone_without_unsigned_and_signatures(*redacted_obj)});
 }

@@ -52,6 +52,9 @@ struct ParseResult final
 [[nodiscard]] auto utf8_is_valid(std::string_view value) noexcept -> bool;
 // Canonical JSON parser: rejects floating-point/exponent numbers per Matrix v1.19.
 [[nodiscard]] auto parse_lossless(std::string_view input) -> ParseResult;
+// parse_lossless, except that a number it would refuse for being a float or out of range is kept as a RawNumber
+// with the bytes it arrived with. For rebuilding bytes someone else signed (ADR-0398); never for what is hashed.
+[[nodiscard]] auto parse_preserving_numbers(std::string_view input) -> ParseResult;
 // General JSON parser: accepts doubles/exponents while still enforcing depth,
 // UTF-8, and duplicate-key constraints. Use for non-signing payloads such as
 // account data and room tags.

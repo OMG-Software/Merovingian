@@ -163,6 +163,12 @@ using EduSink = std::function<EduDispositionResult(InboundEduEnvelope const&)>;
 // event for the room version. The returned envelope's `signatures` are not
 // re-verified here — the caller has already done that through
 // authorize_federation_pdu.
+// Why a received event is outside its room version's event format, empty when it is not: the canonical size limit,
+// prev_events and auth_events as arrays within their caps, and no event_id from room version 3 on. One check for
+// every path that takes events from another server, including those that hold them as parsed values (ADR-0399).
+[[nodiscard]] auto pdu_format_violation(canonicaljson::Value const& event, rooms::RoomVersionPolicy const& policy)
+    -> std::string;
+
 [[nodiscard]] auto parse_inbound_pdu_envelope(std::string_view pdu_json) -> std::optional<InboundPduEnvelope>;
 // Overload that accepts a pre-resolved room version string, avoiding the
 // hardcoded "12" default when the caller already knows the correct version
@@ -186,6 +192,13 @@ using EduSink = std::function<EduDispositionResult(InboundEduEnvelope const&)>;
 // content is a canonical JSON object.
 [[nodiscard]] auto parse_inbound_edu_envelope(std::string_view edu_type, std::string_view origin,
                                               std::string_view content_json) -> std::optional<InboundEduEnvelope>;
+
+// The digest main binds a worker-relayed EDU to (F-74, ADR-0395): the hash of the (edu_type, content)
+// pair, with the type length-prefixed so no (type, content) split can collide with another. `content_json`
+// is the canonical serialisation `extract_transaction_edus` produces, which is what a worker relays
+// byte for byte. nullopt only if the hash fails.
+[[nodiscard]] auto edu_relay_digest(std::string_view edu_type, std::string_view content_json)
+    -> std::optional<std::string>;
 
 // Validates an EDU content shape per type. The handler uses this as a
 // gate before invoking the production sink so a malformed EDU never

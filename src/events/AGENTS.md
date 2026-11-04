@@ -13,6 +13,7 @@ Spec authority: ../../docs/matrix-v1.19-spec/server-server-api.md
 | `authorization.cpp` | Authorization rules — room-version-aware; called before persisting any PDU |
 | `state_resolution.cpp` | State resolution v2 algorithm — do not inline resolution elsewhere |
 | `redaction.cpp` | Strip non-essential keys per room-version redaction algorithm |
+| `unsigned_data.cpp` | `without_unsigned` / `without_unsigned_json`: a received PDU without its top-level `unsigned`, which every ingestion path stores it through (ADR-0402) |
 | `redaction_validity.cpp` | Where a room version keeps `redacts`, and whether a redaction applies to its target ("Handling redactions") |
 
 ## Event IDs are room-version dependent
@@ -43,6 +44,9 @@ EventEnvelope → redact → canonical JSON → SHA-256 (content hash) → injec
 ```
 
 Call `event_signer.hpp` — do not call `crypto/signing_service.hpp` directly.
+
+The signing payload removes what redaction removes, then `signatures` and `unsigned`, and nothing else. A top-level
+`event_id` stays in it, as it stays in the reference hash, so one signature cannot cover two event IDs (ADR-0397).
 
 ## Authorization rules
 

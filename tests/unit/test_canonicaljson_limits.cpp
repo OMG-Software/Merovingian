@@ -182,3 +182,55 @@ SCENARIO("Permissive JSON parsing refuses integers outside the canonical range w
         }
     }
 }
+
+// ADR-0398: X-Matrix authentication rebuilds the signed bytes from the numbers as they were sent.
+SCENARIO("Numbers Canonical JSON cannot represent can be kept exactly as they were received",
+         "[canonicaljson][raw-numbers]")
+{
+    GIVEN("a body holding a float, an exponent, an out-of-range integer and a negative zero, keys out of order")
+    {
+        auto const body = std::string_view{R"({"z":1.50,"y":1E5,"x":9007199254740993,"w":-0,"v":[7,{"b":2,"a":1.0}]})"};
+
+        WHEN("it is parsed keeping those numbers and serialized")
+        {
+            auto const parsed = merovingian::canonicaljson::parse_preserving_numbers(body);
+            REQUIRE(parsed.error == merovingian::canonicaljson::ParseError::none);
+            auto const general = merovingian::canonicaljson::serialize_canonical(parsed.value);
+            auto const strict = merovingian::canonicaljson::serialize_canonical_strict(parsed.value);
+
+            THEN("each number's bytes survive, the keys are sorted, and the strict path used for hashes refuses it")
+            {
+                REQUIRE(general.error == merovingian::canonicaljson::CanonicalJsonError::none);
+                REQUIRE(general.output == R"({"v":[7,{"a":1.0,"b":2}],"w":-0,"x":9007199254740993,"y":1E5,"z":1.50})");
+                REQUIRE(strict.error != merovingian::canonicaljson::CanonicalJsonError::none);
+            }
+        }
+
+        WHEN("it is parsed by the canonical parser")
+        {
+            auto const parsed = merovingian::canonicaljson::parse_lossless(body);
+
+            THEN("it is still refused")
+            {
+                REQUIRE(parsed.error != merovingian::canonicaljson::ParseError::none);
+            }
+        }
+    }
+
+    GIVEN("text that is not JSON, and a bad number form")
+    {
+        WHEN("it is parsed keeping numbers")
+        {
+            auto const not_json = merovingian::canonicaljson::parse_preserving_numbers(R"({"a":)");
+            auto const leading_zero = merovingian::canonicaljson::parse_preserving_numbers(R"({"a":007})");
+            auto const duplicate = merovingian::canonicaljson::parse_preserving_numbers(R"({"a":1.5,"a":2})");
+
+            THEN("every other rule of the parser still holds")
+            {
+                REQUIRE(not_json.error != merovingian::canonicaljson::ParseError::none);
+                REQUIRE(leading_zero.error != merovingian::canonicaljson::ParseError::none);
+                REQUIRE(duplicate.error == merovingian::canonicaljson::ParseError::duplicate_object_key);
+            }
+        }
+    }
+}

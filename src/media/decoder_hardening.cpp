@@ -88,7 +88,17 @@ DecoderHardeningOps::DecoderHardeningOps()
 #elif defined(__FreeBSD__)
     , apply_capsicum(real_apply_capsicum)
 #endif
+    , platform_sandbox_available(decoder_platform_sandbox_available())
 {
+}
+
+auto decoder_platform_sandbox_available() noexcept -> bool
+{
+#if defined(__linux__) || defined(__OpenBSD__) || defined(__FreeBSD__)
+    return true;
+#else
+    return false;
+#endif
 }
 
 auto decoder_hardening_is_sanitizer_build() noexcept -> bool
@@ -126,6 +136,14 @@ auto decoder_memory_limit_name() noexcept -> std::string_view
 
 auto apply_decoder_hardening(DecoderHardeningOps const& ops) -> DecoderHardeningResult
 {
+    // ADR-0419: with no in-process sandbox the decoder must not run. This comes
+    // before any control is applied, so the refusal changes nothing in the
+    // calling process.
+    if (!ops.platform_sandbox_available)
+    {
+        return {.accepted = false, .failed_control = "no platform decoder sandbox"};
+    }
+
     auto const sanitizer_build = decoder_hardening_is_sanitizer_build();
 
     if (!sanitizer_build)
@@ -198,6 +216,10 @@ auto apply_decoder_hardening(DecoderHardeningOps const& ops) -> DecoderHardening
     {
         return {.accepted = false, .failed_control = "cap_enter"};
     }
+#else
+    // No in-process primitive on this platform (NetBSD). Refused even if the
+    // ops table claims otherwise: the result must never be "accepted" here.
+    return {.accepted = false, .failed_control = "no platform decoder sandbox"};
 #endif
 
     return {.accepted = true, .failed_control = {}};

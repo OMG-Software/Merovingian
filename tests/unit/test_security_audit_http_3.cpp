@@ -615,3 +615,78 @@ SCENARIO("HTTP-3 rate-limits only the push-rule route the spec marks rate-limite
         }
     }
 }
+
+SCENARIO("HTTP-3 counts an admin route apart from unknown client paths", "[security][http][http-3][rate-limit][f73]")
+{
+    GIVEN("a runtime whose admin tier allows two requests per window and whose generic tier is the default")
+    {
+        auto started = start_with_limits(
+            {
+        },
+            {}, {{"admin", {2U, 60U}}});
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+
+        WHEN("a client key sends enough unknown client paths to fill the admin allowance, then an admin request")
+        {
+            auto const junk_one = request(runtime, "/_matrix/client/v3/mystery/one");
+            auto const junk_two = request(runtime, "/_matrix/client/v3/mystery/two");
+            auto const junk_three = request(runtime, "/_matrix/client/v3/mystery/three");
+            auto const admin = request(runtime, "/_merovingian/admin/health");
+
+            THEN("the admin request is not refused because of that traffic")
+            {
+                CHECK(junk_one == 404U);
+                CHECK(junk_two == 404U);
+                CHECK(junk_three == 404U);
+                CHECK(admin != 429U);
+            }
+        }
+
+        WHEN("a client key uses the admin allowance of one route and then asks for another admin route")
+        {
+            auto const health_one = request(runtime, "/_merovingian/admin/health");
+            auto const health_two = request(runtime, "/_merovingian/admin/health");
+            auto const health_three = request(runtime, "/_merovingian/admin/health");
+            auto const metrics = request(runtime, "/_merovingian/admin/metrics");
+
+            THEN("each admin route has its own count under the admin policy")
+            {
+                CHECK(health_one != 429U);
+                CHECK(health_two != 429U);
+                CHECK(health_three == 429U);
+                CHECK(metrics != 429U);
+            }
+        }
+
+        WHEN("a client key varies the media identifier of a moderation route")
+        {
+            auto const first = request(runtime, "/_merovingian/admin/media/quarantine/one");
+            auto const second = request(runtime, "/_merovingian/admin/media/quarantine/two");
+            auto const third = request(runtime, "/_merovingian/admin/media/quarantine/three");
+
+            THEN("the identifiers share one count")
+            {
+                CHECK(first != 429U);
+                CHECK(second != 429U);
+                CHECK(third == 429U);
+            }
+        }
+
+        WHEN("a client key invents admin paths the server does not serve")
+        {
+            auto const first = request(runtime, "/_merovingian/admin/invented/one");
+            auto const second = request(runtime, "/_merovingian/admin/invented/two");
+            auto const third = request(runtime, "/_merovingian/admin/invented/three");
+            auto const real = request(runtime, "/_merovingian/admin/health");
+
+            THEN("invented paths share one bounded count and do not take a served route's allowance")
+            {
+                CHECK(first != 429U);
+                CHECK(second != 429U);
+                CHECK(third == 429U);
+                CHECK(real != 429U);
+            }
+        }
+    }
+}

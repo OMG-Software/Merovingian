@@ -277,8 +277,10 @@ Implemented now:
   room-version fixtures, full auth rule steps, and v2 state resolution
 - **inbound federation PDU size and field-count limits enforced before
   hashing/authorization (0.12.13, M3).** Raw PDU JSON is capped at 65 536
-  bytes, `prev_events` at 20, and `auth_events` at 10, all checked in
-  `parse_inbound_pdu_envelope` before any content hashing or signature work.
+  bytes, `prev_events` at 20, and `auth_events` at 10, all checked by
+  `pdu_format_violation` before any content hashing or signature work, on every
+  path that takes events from another server: `parse_inbound_pdu_envelope`,
+  `returned_pdu_is_well_formed` and `filter_verified_send_join_events` (ADR-0399).
   `sender`, `room_id`, `state_key`, and `type` are capped at 255 bytes by
   `matrix_id_is_valid` and `parse_event_envelope`. See
   `include/merovingian/events/limits.hpp` and
@@ -331,6 +333,10 @@ The event signing payload follows the Matrix event signing pipeline:
 3. Serialize as canonical JSON.
 4. Sign the canonical bytes with the active Ed25519 provider and store the
    signature as Matrix unpadded Base64 under `signatures.<server>.<key_id>`.
+
+Nothing else is removed. A top-level `event_id` is kept by redaction, so it is signed, as it is hashed into the
+reference-hash event ID: adding the field to a signed event breaks the signature instead of giving it a second ID.
+From room version 3 on such a PDU is refused outright (rooms/v3.md, ADR-0397).
 
 Step 3 uses `canonicaljson::serialize_canonical_strict()`, not the general-purpose
 `serialize_canonical()` — it fails closed with `CanonicalJsonError::float_not_allowed`
@@ -1149,6 +1155,17 @@ until it applies. `sync::HistoryVisibility::can_see` is the one check every clie
 Clients are served `unsigned.redacted_because` on a redacted event (`database::attach_redacted_because`,
 called by `client_event_with_id` and the sliding sync builder) and `redacts` in both locations on a redaction
 event (`database::add_redaction_compat`, rooms/v11.md).
+
+### `unsigned` is never stored from a remote server, and never served from a stored copy (ADR-0402)
+
+`unsigned` is outside the content hash, the reference hash and every signature, so the server that relayed an
+event chose it. Every path that stores a received PDU removes it first (`events::without_unsigned`,
+`events/unsigned_data.hpp`): `parse_inbound_pdu_envelope`, `verify_and_store_backfilled_event`, the `send_join`
+state and auth-chain writer, a knock's stored `knock_room_state`, the inbound invite handler and the signed
+`make_join`/`make_leave`/`make_knock` template. The event ID, content hash and signatures are unchanged by it. A
+client's `unsigned` is built from what this server computes (`replaces_state`, `redacted_because`, and the viewer's
+`transaction_id`, `membership` and `prev_content` through `sync::ViewerEventUnsigned`), in `client_event_with_id`
+and in sliding sync alike, never from a stored copy with a list of keys removed. `age` is not served.
 
 ### The algorithm
 

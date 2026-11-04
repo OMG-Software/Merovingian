@@ -147,7 +147,7 @@ Federation is the highest-risk surface: **all input comes from untrusted remote 
    and filled with `record` only after the EDU's messages have committed in one transaction
    (`database::enqueue_to_device_messages`), so a failed store never makes the resend look like
    a replay (ADR-0166). Our own outbound `message_id` is `derive_direct_to_device_message_id`
-   (sender, event type, txn id), never the raw client txn id. One EDU queues at most
+   (sender, sender device, event type, txn id), never the raw client txn id (ADR-0380). One EDU queues at most
    `max_inbound_direct_to_device_deliveries` messages, and a message whose content is over `max_to_device_message_bytes`
    is dropped alone, not the EDU (ADR-0335). A `m.device_list_update` /
    `m.signing_key_update` writes a `device_list_changes` row only for local users who share a
@@ -274,7 +274,7 @@ Federation is the highest-risk surface: **all input comes from untrusted remote 
    `handle_pdu_ingest_request`, `handle_membership_ingest_request` and `handle_invite_ingest_request` read
    `room_server_acl_allows` from main's store under `runtime.mutex` for the transport origin (before any key lookup) and,
    for `pdu_ingest` and `membership_ingest`, for the verified sender's server, and judge the origin's federation policy
-   rule; `edu_ingest` judges the rule for the origin main authenticated. A refused PDU is `PduIngestionStatus::rejected_acl`,
+   rule; `edu_ingest` judges the rule for the origin main authenticated and admits only an EDU whose digest the verified `/send` body carried, once per occurrence (F-74, ADR-0395; `extract_transaction_edus` and `edu_relay_digest` are the one definition of that digest). A refused PDU is `PduIngestionStatus::rejected_acl`,
    which `/send` reports as an `error` entry (a rejection is stored and silent, the opposite of the spec's "ignored with an
    error"). `load_room_server_acl` reads the ACL through `find_current_state_event_id`. A new relay does the same.
 19. **The state at an event is the state this server recorded, never a walk of the event graph (F-25, F-26, ADR-0363).**
@@ -293,6 +293,23 @@ Federation is the highest-risk surface: **all input comes from untrusted remote 
    functions hold no static state, take no lock and return owned data; the caller guards the store. Read current state
    with `find_current_state_event_id` and `for_each_room_state_row`, never a scan of `store.state` (ADR-0344).
 
+20. **The operator's policy covers an event's author, and everything outbound (F-72, F-69, ADR-0390, ADR-0391).** A path that
+   takes an event from another server asks `operator_policy_refusal` about the server of its `sender`, before any key is
+   looked up. A worker's provider answers nothing, because main decides. An outbound path asks `federation_server_policy`, the
+   config lists only, because it must not wait on `runtime.mutex`. A new path does the same.
+20. **A received event is held to its room version's format by `pdu_format_violation` (F-56, F-57, ADR-0397, ADR-0399).**
+   Size, `prev_events` and `auth_events` caps, and no top-level `event_id` from room version 3 on. A new path taking events from
+   another server calls it. `make_event_signing_payload` is the spec's pseudocode: do not strip anything else from it.
+20. **A number outside Canonical JSON is that PDU's error (F-83, ADR-0398).** `parse_preserving_numbers` is for rebuilding
+   what a peer signed and reading a `/send` body, never for anything this server hashes, signs or stores.
+20. **A received PDU is stored without its `unsigned` (F-70, ADR-0402).** `unsigned` is outside the content hash, the
+   reference hash and every signature, so the relaying server chose it, third parties' events included.
+   `parse_inbound_pdu_envelope` removes it (`events::without_unsigned_json`), so `/send`, the worker relays and the
+   membership acceptor store `InboundPduEnvelope::json` without it; backfill (`verify_and_store_backfilled_event`),
+   the `send_join` state writer and the invite handler do the same. A new path that stores a PDU another server sent
+   calls the helper, and refuses the PDU if it returns nothing. `invite_room_state` and `knock_room_state` are taken
+   from the request or answer field, never from an event's `unsigned`. Removing it changes no event ID or signature check.
+
 ## Key files
 
 | File | Responsibility |
@@ -304,8 +321,8 @@ Federation is the highest-risk surface: **all input comes from untrusted remote 
 | `remote_key_cache.cpp` | Caches remote server signing keys with validity TTL |
 | `invite_room_state.cpp` | `validate_invite_room_state`: the `invite_room_state` checks of an inbound v12+ invite (rule 14) |
 | `membership_endpoints.cpp` | /make_join, /send_join, /make_leave, /send_leave (a refused template carries `error_status`, e.g. 403 `M_FORBIDDEN` for a restricted room) |
-| `key_query.cpp` | E2EE key responses served over federation, key EDU contents, filtering remote key-query responses |
-| `key_signatures.cpp` | The one place uploaded key signatures are merged into published keys (visibility per ADR-0060) |
+| `key_query.cpp` | E2EE key responses served over federation, key EDU contents (`build_device_list_update_content`, and `build_device_deleted_update_content` for a removed device: `deleted: true`, no keys), filtering remote key-query responses |
+| `key_signatures.cpp` | The one place uploaded key signatures are merged into published keys (visibility per ADR-0060); also `cross_signing_key_ids` and `device_id_names_cross_signing_key`, the device-ID versus cross-signing-key-ID test |
 | `security.cpp` | Federation-layer security checks (rate limits, origin validation, SSRF address policy) |
 | `transactions.cpp` | Transaction batching and deduplication |
 | `server_acl.cpp` | Parses and evaluates `m.room.server_acl` allow/deny lists |

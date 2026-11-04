@@ -10,7 +10,9 @@
 
 #include "merovingian/core/file_descriptor.hpp"
 #include "merovingian/crypto/ipc_auth_key.hpp"
+#include "merovingian/federation/inbound_ingestion.hpp"
 #include "merovingian/homeserver/local_http_router.hpp"
+#include "merovingian/homeserver/worker_pool.hpp"
 #include "merovingian/ipc/channel.hpp"
 #include "merovingian/ipc/federation_ipc_frames.hpp"
 #include "merovingian/net/thread_pool.hpp"
@@ -1119,6 +1121,257 @@ SCENARIO("expired or stopped pending requests cannot authorize EDU relays", "[ip
                 REQUIRE(reply.wait_for(std::chrono::seconds{3}) == std::future_status::ready);
                 CHECK_FALSE(reply.get().has_value());
                 CHECK_FALSE(pair.server->matches_pending_origin(parent, "a.remote.example"));
+            }
+        }
+    }
+}
+
+// F-74 (security audit run 2, ADR-0395): an EDU a worker relays is admitted only against a digest of an EDU that
+// the main-verified request body carried, once per occurrence. Spec: server-server-api.md "Transactions" (the
+// EDUs of a transaction are the sending server's, authenticated by the X-Matrix signature over the request).
+SCENARIO("a pending request admits each EDU of its verified body once", "[ipc][f74-edu-binding]")
+{
+    GIVEN("a pending request whose verified body carried two EDUs, one of them twice")
+    {
+        auto pair = make_channel_pair();
+        auto observed_promise = std::promise<std::uint64_t>{};
+        auto observed = observed_promise.get_future();
+        auto const stop = Fed12StopChannels{pair};
+        pair.client->set_request_handler([&](std::uint64_t id, std::string) {
+            observed_promise.set_value(id);
+        });
+        pair.server->start();
+        pair.client->start();
+        auto reply = std::async(std::launch::async, [&] {
+            return pair.server->send_request(
+                R"({"type":"fed_request"})", std::chrono::seconds{10}, "a.remote.example",
+                std::vector<std::string>{"digest-typing", "digest-receipt", "digest-typing"});
+        });
+        REQUIRE(observed.wait_for(std::chrono::seconds{3}) == std::future_status::ready);
+        auto const parent = observed.get();
+
+        // A repeated EDU is one admission per occurrence, so a replay runs out of digests.
+        WHEN("the EDUs are admitted one by one")
+        {
+            auto const first = pair.server->consume_pending_edu(parent, "a.remote.example", "digest-typing");
+            auto const first_again = pair.server->consume_pending_edu(parent, "a.remote.example", "digest-typing");
+            auto const first_third = pair.server->consume_pending_edu(parent, "a.remote.example", "digest-typing");
+            auto const second = pair.server->consume_pending_edu(parent, "a.remote.example", "digest-receipt");
+            auto const second_again = pair.server->consume_pending_edu(parent, "a.remote.example", "digest-receipt");
+
+            THEN("each occurrence is admitted once and no more")
+            {
+                CHECK(first);
+                CHECK(first_again);
+                CHECK_FALSE(first_third);
+                CHECK(second);
+                CHECK_FALSE(second_again);
+            }
+        }
+        // A wrong guess must consume nothing, or a worker could burn a genuine EDU's place.
+        WHEN("an EDU whose digest the body did not carry is offered")
+        {
+            auto const absent = pair.server->consume_pending_edu(parent, "a.remote.example", "digest-forged");
+            auto const empty = pair.server->consume_pending_edu(parent, "a.remote.example", "");
+            auto const genuine = pair.server->consume_pending_edu(parent, "a.remote.example", "digest-receipt");
+
+            THEN("it is refused, and a refusal does not use up a genuine EDU")
+            {
+                CHECK_FALSE(absent);
+                CHECK_FALSE(empty);
+                CHECK(genuine);
+            }
+        }
+        // A digest is necessary, not sufficient: the origin, parent and channel checks stay in force.
+        WHEN("a genuine EDU is offered under another origin, another parent, or the worker's own end of the channel")
+        {
+            auto const other_origin = pair.server->consume_pending_edu(parent, "b.remote.example", "digest-receipt");
+            auto const empty_origin = pair.server->consume_pending_edu(parent, "", "digest-receipt");
+            auto const other_parent =
+                pair.server->consume_pending_edu(parent + 1U, "a.remote.example", "digest-receipt");
+            auto const wrong_channel = pair.client->consume_pending_edu(parent, "a.remote.example", "digest-receipt");
+            auto const rightful = pair.server->consume_pending_edu(parent, "a.remote.example", "digest-receipt");
+
+            THEN("the origin check still applies, and only the owning channel and parent admit it")
+            {
+                CHECK_FALSE(other_origin);
+                CHECK_FALSE(empty_origin);
+                CHECK_FALSE(other_parent);
+                CHECK_FALSE(wrong_channel);
+                CHECK(rightful);
+            }
+        }
+
+        pair.client->send_response(parent, R"({"type":"fed_response"})");
+        REQUIRE(reply.wait_for(std::chrono::seconds{3}) == std::future_status::ready);
+        std::ignore = reply.get();
+
+        WHEN("the request has completed")
+        {
+            THEN("its digests admit nothing")
+            {
+                CHECK_FALSE(pair.server->consume_pending_edu(parent, "a.remote.example", "digest-receipt"));
+            }
+        }
+    }
+
+    // Every other request binds no digests, so a matching origin alone is no longer enough.
+    GIVEN("a pending request sent with no digests, as for any request that is not a verified /send")
+    {
+        auto pair = make_channel_pair();
+        auto observed_promise = std::promise<std::uint64_t>{};
+        auto observed = observed_promise.get_future();
+        auto const stop = Fed12StopChannels{pair};
+        pair.client->set_request_handler([&](std::uint64_t id, std::string) {
+            observed_promise.set_value(id);
+        });
+        pair.server->start();
+        pair.client->start();
+        auto reply = std::async(std::launch::async, [&] {
+            return pair.server->send_request(R"({"type":"fed_request"})", std::chrono::seconds{10}, "a.remote.example");
+        });
+        REQUIRE(observed.wait_for(std::chrono::seconds{3}) == std::future_status::ready);
+        auto const parent = observed.get();
+
+        WHEN("any EDU is offered under its live, correct origin")
+        {
+            auto const admitted = pair.server->consume_pending_edu(parent, "a.remote.example", "digest-typing");
+            auto const origin_only = pair.server->matches_pending_origin(parent, "a.remote.example");
+
+            THEN("none is admitted, though the origin alone still matches")
+            {
+                CHECK_FALSE(admitted);
+                CHECK(origin_only);
+            }
+        }
+
+        pair.client->send_response(parent, R"({"type":"fed_response"})");
+        REQUIRE(reply.wait_for(std::chrono::seconds{3}) == std::future_status::ready);
+        std::ignore = reply.get();
+    }
+}
+
+// F-74 (ADR-0395): the digests main binds relayed EDUs to come from the body it authenticated, by the same
+// parse and canonical serialisation the worker's /send handler applies, so an honest relay always matches.
+SCENARIO("a verified /send body yields one digest per EDU it carries", "[ipc][f74-edu-binding][f74-digests]")
+{
+    GIVEN("a signature-verified PUT /send whose body has two EDUs with their keys out of canonical order")
+    {
+        auto request = merovingian::homeserver::LocalHttpRequest{};
+        request.method = "PUT";
+        request.target = "/_matrix/federation/v1/send/txn1";
+        request.sig_verified = true;
+        request.verified_origin = "a.remote.example";
+        request.body =
+            R"({"pdus":[],"origin_server_ts":5,"origin":"a.remote.example","edus":[)"
+            R"({"edu_type":"m.typing","content":{"typing":true,"user_id":"@u:a.remote.example","room_id":"!r:x"}},)"
+            R"({"content":{"z":"café","a":1},"edu_type":"m.presence"}]})";
+        constexpr auto limit = std::uint32_t{100U};
+
+        WHEN("the digests are computed")
+        {
+            auto const digests = merovingian::homeserver::verified_send_edu_digests(request, limit);
+            // The worker relays the canonical content: keys sorted, no insignificant whitespace, raw UTF-8.
+            auto const typing = merovingian::federation::edu_relay_digest(
+                "m.typing", R"({"room_id":"!r:x","typing":true,"user_id":"@u:a.remote.example"})");
+            auto const presence =
+                merovingian::federation::edu_relay_digest("m.presence", "{\"a\":1,\"z\":\"caf\xC3\xA9\"}");
+
+            THEN("they are the digests of the canonical (edu_type, content) pairs, in body order")
+            {
+                REQUIRE(typing.has_value());
+                REQUIRE(presence.has_value());
+                REQUIRE(digests.size() == 2U);
+                CHECK(digests[0] == *typing);
+                CHECK(digests[1] == *presence);
+            }
+        }
+        // One digest per occurrence, so a pending request admits the EDU that many times and no more.
+        WHEN("the same EDU occurs twice in the body")
+        {
+            request.body =
+                R"({"pdus":[],"origin_server_ts":5,"origin":"a.remote.example","edus":[)"
+                R"({"edu_type":"m.typing","content":{"room_id":"!r:x"}},{"edu_type":"m.typing","content":{"room_id":"!r:x"}}]})";
+            auto const digests = merovingian::homeserver::verified_send_edu_digests(request, limit);
+
+            THEN("each occurrence has its own digest")
+            {
+                REQUIRE(digests.size() == 2U);
+                CHECK(digests[0] == digests[1]);
+            }
+        }
+        // The two fields are framed, so moving bytes between type and content cannot collide.
+        WHEN("the type and content could be split differently to the same bytes")
+        {
+            auto const first = merovingian::federation::edu_relay_digest("m.a", "{}");
+            auto const second = merovingian::federation::edu_relay_digest("m.a{", "}");
+            auto const third = merovingian::federation::edu_relay_digest("m.a", "{} ");
+
+            THEN("the digests differ")
+            {
+                REQUIRE(first.has_value());
+                REQUIRE(second.has_value());
+                REQUIRE(third.has_value());
+                CHECK(*first != *second);
+                CHECK(*first != *third);
+            }
+        }
+        // Only a body main itself authenticated may bind anything.
+        WHEN("the request was not signature-verified, is another endpoint, or has no verified origin")
+        {
+            auto unsigned_request = request;
+            unsigned_request.sig_verified = false;
+            auto other_endpoint = request;
+            other_endpoint.target = "/_matrix/federation/v1/invite/!r:x/$e";
+            auto get_request = request;
+            get_request.method = "GET";
+            auto no_origin = request;
+            no_origin.verified_origin.clear();
+
+            THEN("no digest is produced, so no EDU can be relayed under it")
+            {
+                CHECK(merovingian::homeserver::verified_send_edu_digests(unsigned_request, limit).empty());
+                CHECK(merovingian::homeserver::verified_send_edu_digests(other_endpoint, limit).empty());
+                CHECK(merovingian::homeserver::verified_send_edu_digests(get_request, limit).empty());
+                CHECK(merovingian::homeserver::verified_send_edu_digests(no_origin, limit).empty());
+            }
+        }
+        WHEN("an EDU holds a float or an out-of-range integer, or the body has a duplicate key or is not a transaction")
+        {
+            auto const with_content = [&](std::string const& content) {
+                auto bad = request;
+                bad.body = R"({"pdus":[],"origin_server_ts":5,"origin":"a.remote.example","edus":[)"
+                           R"({"edu_type":"m.typing","content":)" +
+                           content + "}]}";
+                return merovingian::homeserver::verified_send_edu_digests(bad, limit);
+            };
+            auto not_a_transaction = request;
+            not_a_transaction.body = R"({"edus":[{"edu_type":"m.typing","content":{}}]})";
+            auto not_json = request;
+            not_json.body = "not json";
+
+            auto two_edus = request;
+            two_edus.body = R"({"pdus":[],"origin_server_ts":5,"origin":"a.remote.example","edus":[)"
+                            R"({"edu_type":"m.typing","content":{"a":1.5}},)"
+                            R"({"edu_type":"m.typing","content":{"a":1}}]})";
+
+            THEN("no digest exists for it, as the worker drops or refuses it, and an EDU beside it is still bound")
+            {
+                CHECK(merovingian::homeserver::verified_send_edu_digests(two_edus, limit).size() == 1U);
+                CHECK(with_content(R"({"a":1.5})").empty());
+                CHECK(with_content(R"({"a":9007199254740993})").empty());
+                CHECK(with_content(R"({"a":1,"a":2})").empty());
+                CHECK(merovingian::homeserver::verified_send_edu_digests(not_a_transaction, limit).empty());
+                CHECK(merovingian::homeserver::verified_send_edu_digests(not_json, limit).empty());
+            }
+        }
+        WHEN("the body carries more EDUs than the transaction limit")
+        {
+            auto const digests = merovingian::homeserver::verified_send_edu_digests(request, 1U);
+
+            THEN("none is bound, because the worker refuses such a transaction whole")
+            {
+                CHECK(digests.empty());
             }
         }
     }

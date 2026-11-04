@@ -32,7 +32,11 @@ Retries of failed notifications (ADR-0206) log `push.delivery.retry_scheduled` a
 `push.delivery.gave_up` (last retry failed) at warning. Each carries `recipient`;
 `retry_abandoned` carries `reason`, and the others `attempts`. `push.delivery.circuit_open` is a
 warning with `gateway_host` and `recipient`, logged when a delivery or retry skips a gateway whose
-circuit is open.
+circuit is open. `push.delivery.slow_gateway` (warning, `gateway_host` and `elapsed_ms`) is logged
+when a gateway answered after more than half the total timeout and was counted against its circuit
+(ADR-0409), and `push.delivery.deferred` (warning, `recipient`) when a recipient batch ran past its
+deadline and queued a pusher unattempted. `account.deactivated.pusher_removal_failed` (warning,
+`user_id`) is logged when a pusher of a deactivated account could not be deleted.
 
 ## Room creation failures
 
@@ -104,11 +108,18 @@ line shows.
 
 ## Per-module level overrides (0.5.0)
 
-`--debug` lowers the **default** level to `debug` for every module that
-does not have an explicit override. To narrow the firehose to the
-modules you care about, set `log_modules.<name>=<level>` keys in
-`merovingian.conf`. See `docs/log-filtering.md` for the full recipe and
-the list of recognised module names.
+`--debug` lowers the **console sink** threshold to `debug`. It does not change
+the module default, which stays `info`, so a module logs at `debug` or `trace`
+only when `log_modules.<name>` (or `log_modules.*`) says so, and the line then
+reaches the console only with `--debug` and the log file always (its threshold
+is `trace`). Set `log_modules.<name>=<level>` keys in `merovingian.conf` to
+raise one module; `docs/log-filtering.md` has the recipe and the list of
+recognised module names.
+
+The `outbound_client` module logs `request.success`, `request.error` and
+`request.redirect_rejected` at debug. Their `url` field is the scheme, host,
+port and path of the request, never its query (ADR-0418): a query can carry an
+identity server's `client_secret`, or text a user chose.
 
 ## Join Failure Diagnostics
 

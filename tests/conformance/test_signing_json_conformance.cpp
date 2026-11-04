@@ -645,3 +645,77 @@ SCENARIO("Spec crypto test vector: content-bearing event content hash matches sp
         }
     }
 }
+
+// Spec: Matrix v1.19 Appendices — Cryptographic Test Vectors, Event Signing
+// URL:  ../../docs/matrix-v1.19-spec/appendices.md#event-signing
+//
+// The second vector carries a top-level event_id and its published signature covers it: it verifies only with
+// event_id in the signed bytes, so a server may not strip that key from the signing payload (ADR-0397).
+SCENARIO("The spec's event signing vectors verify with the spec's key", "[conformance][signing][spec-vector]")
+{
+    GIVEN("the published signing key and the two signed events the spec gives")
+    {
+        REQUIRE(sodium_init() >= 0);
+        // The spec prints this seed ending "XA1", whose last character has non-zero trailing bits that a strict decoder
+        // refuses. "XA0" is the same 32 bytes.
+        auto const seed = merovingian::events::matrix_bytes_from_base64("YJDBA9Xnr2sVqXD9Vj7XVUnmFZcZrlw8Md7kMW+3XA0");
+        REQUIRE(seed.size() == crypto_sign_SEEDBYTES);
+        auto public_key = merovingian::crypto::Ed25519PublicKey{std::string(crypto_sign_PUBLICKEYBYTES, '\0')};
+        auto secret_key = std::string(crypto_sign_SECRETKEYBYTES, '\0');
+        REQUIRE(crypto_sign_seed_keypair(reinterpret_cast<unsigned char*>(public_key.bytes.data()),
+                                         reinterpret_cast<unsigned char*>(secret_key.data()),
+                                         reinterpret_cast<unsigned char const*>(seed.data())) == 0);
+        auto provider = LibsodiumEd25519Provider{};
+        auto const key_id = merovingian::events::SigningKeyId{"domain", "ed25519:1"};
+        // Both vectors keep "origin" through redaction, which is the redaction algorithm before room version 11.
+        auto const* policy = merovingian::rooms::find_room_version_policy("10");
+        REQUIRE(policy != nullptr);
+
+        auto const minimal = merovingian::canonicaljson::parse_lossless(
+            R"({"auth_events":[],"content":{},"depth":3,"hashes":{"sha256":"5jM4wQpv6lnBo7CLIghJuHdW+s2CMBJPUOGOC89ncos"},)"
+            R"("origin":"domain","origin_server_ts":1000000,"prev_events":[],"room_id":"!x:domain","sender":"@a:domain",)"
+            R"("signatures":{"domain":{"ed25519:1":"KxwGjPSDEtvnFgU00fwFz+l6d2pJM6XBIaMEn81SXPTRl16AqLAYqfIReFGZlHi5KLjAWbOoMszkwsQma+lYAg"}},)"
+            R"("type":"X","unsigned":{"age_ts":1000000}})");
+        auto const redactable_body = std::string{
+            R"("hashes":{"sha256":"onLKD1bGljeBWQhWZ1kaP9SorVmRQNdN5aM2JYU2n/g"},"origin":"domain",)"
+            R"("origin_server_ts":1000000,"room_id":"!r:domain","sender":"@u:domain",)"
+            R"("signatures":{"domain":{"ed25519:1":"Wm+VzmOUOz08Ds+0NTWb1d4CZrVsJSikkeRxh6aCcUwu6pNC78FunoD7KNWzqFn241eYHYMGCA5McEiVPdhzBA"}},)"
+            R"("type":"m.room.message","unsigned":{"age_ts":1000000}})"};
+        auto const content = std::string{R"({"content":{"body":"Here is the message content"},)"};
+        auto const redactable =
+            merovingian::canonicaljson::parse_lossless(content + R"("event_id":"$0:domain",)" + redactable_body);
+        auto const without_event_id = merovingian::canonicaljson::parse_lossless(content + redactable_body);
+        REQUIRE(minimal.error == merovingian::canonicaljson::ParseError::none);
+        REQUIRE(redactable.error == merovingian::canonicaljson::ParseError::none);
+        REQUIRE(without_event_id.error == merovingian::canonicaljson::ParseError::none);
+
+        WHEN("each is verified as published")
+        {
+            auto const minimal_result =
+                merovingian::events::verify_event_signature(minimal.value, *policy, key_id, public_key, provider);
+            auto const redactable_result =
+                merovingian::events::verify_event_signature(redactable.value, *policy, key_id, public_key, provider);
+
+            THEN("both signatures and both content hashes hold")
+            {
+                REQUIRE(minimal_result.valid);
+                REQUIRE(redactable_result.valid);
+                REQUIRE(merovingian::events::make_content_hash(minimal.value).sha256 ==
+                        "5jM4wQpv6lnBo7CLIghJuHdW+s2CMBJPUOGOC89ncos");
+                REQUIRE(merovingian::events::make_content_hash(redactable.value).sha256 ==
+                        "onLKD1bGljeBWQhWZ1kaP9SorVmRQNdN5aM2JYU2n/g");
+            }
+        }
+
+        WHEN("the event_id is removed from the second event")
+        {
+            auto const result = merovingian::events::verify_event_signature(without_event_id.value, *policy, key_id,
+                                                                            public_key, provider);
+
+            THEN("its signature no longer holds, because event_id was part of what was signed")
+            {
+                REQUIRE_FALSE(result.valid);
+            }
+        }
+    }
+}

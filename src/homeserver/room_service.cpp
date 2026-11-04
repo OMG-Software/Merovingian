@@ -24,6 +24,7 @@
 #include "merovingian/events/event_signer.hpp"
 #include "merovingian/events/limits.hpp"
 #include "merovingian/events/redaction.hpp"
+#include "merovingian/events/unsigned_data.hpp"
 #include "merovingian/federation/cached_server_discovery.hpp"
 #include "merovingian/federation/inbound_request.hpp"
 #include "merovingian/federation/membership_endpoints.hpp"
@@ -1320,6 +1321,11 @@ namespace
                 auto refused = std::vector<std::string>{};
                 for (auto const& destination : remote_servers)
                 {
+                    // ADR-0391: not a refusal to report; the operator said this server gets nothing.
+                    if (!federation::federation_server_policy(runtime.federation.config, destination).allowed)
+                    {
+                        continue;
+                    }
                     auto const tx_id = federation::make_federation_transaction_id();
                     auto target = "/_matrix/federation/v1/send/" + tx_id;
                     auto transaction =
@@ -2584,6 +2590,18 @@ auto apply_membership_to_roster(HomeserverRuntime& runtime, std::string_view roo
                                              {"reason", "deadline exceeded", false}
         });
         return {false, "deadline exceeded"};
+    }
+    // ADR-0391: every signed call this process makes goes through here, so a server the operator excludes is
+    // not called, by a join, a query or a proxied worker call. The caller answers as for any server that failed.
+    if (auto policy = federation::federation_server_policy(runtime.federation.config, transaction.destination);
+        !policy.allowed)
+    {
+        log_diagnostic(diagnostic_event,
+                       {
+                           {"destination", transaction.destination, false},
+                           {"reason",      policy.reason,           false}
+        });
+        return {false, std::move(policy.reason)};
     }
     // Test-only: bypass discover_server() entirely when the destination has a
     // forced resolution wired (see TestOnlyForcedOutboundResolution in
@@ -4313,7 +4331,8 @@ namespace
         {
             continue;
         }
-        auto const serialized = canonicaljson::serialize_canonical(state_entry);
+        // The resident's `unsigned` on an entry is covered by no signature (ADR-0402).
+        auto const serialized = canonicaljson::serialize_canonical(events::without_unsigned(state_entry));
         if (serialized.error == canonicaljson::CanonicalJsonError::none)
         {
             auto const parsed = events::parse_event_envelope(state_entry);
@@ -4536,6 +4555,36 @@ auto filter_verified_send_join_events(HomeserverRuntime& runtime, canonicaljson:
     {
         return {};
     }
+    // ADR-0390: the operator's policy for each server that wrote part of the answer. Asked once per server, since
+    // a large room's answer has thousands of events and the admin's rules are read under runtime.mutex.
+    auto policy_refused_servers = std::map<std::string, bool, std::less<>>{};
+    // Spec: "Checks performed on receipt of a PDU", step 1. A resident's answer is held to the room version's event
+    // format like any other received event, so what breaks it is dropped before a key is fetched for it (ADR-0399).
+    auto in_format = std::vector<std::reference_wrapper<canonicaljson::Value const>>{};
+    in_format.reserve(events.size());
+    for (auto const& entry : events)
+    {
+        if (auto const violation = federation::pdu_format_violation(entry, policy); !violation.empty())
+        {
+            log_diagnostic("room.join.state_event_rejected",
+                           {
+                               {"reason", violation, false}
+            },
+                           observability::LogEventSeverity::warning);
+            continue;
+        }
+        in_format.emplace_back(entry);
+    }
+    auto const refused_by_policy = [&runtime, &policy_refused_servers](std::string_view server) {
+        auto const known = policy_refused_servers.find(server);
+        if (known != policy_refused_servers.end())
+        {
+            return known->second;
+        }
+        auto const refused = !federation::operator_policy_refusal(runtime.federation, server).empty();
+        policy_refused_servers.emplace(std::string{server}, refused);
+        return refused;
+    };
     // Pre-resolve distinct (sender_domain, key_id) pairs in parallel so a state
     // array carrying one m.room.member per room member (thousands for a large
     // room) does not pay N serial key discovery+fetch round trips. Mirrors the
@@ -4549,7 +4598,7 @@ auto filter_verified_send_join_events(HomeserverRuntime& runtime, canonicaljson:
     {
         auto distinct_pairs = std::vector<std::pair<std::string, std::string>>{};
         auto seen = std::set<std::pair<std::string, std::string>>{};
-        for (auto const& entry : events)
+        for (canonicaljson::Value const& entry : in_format)
         {
             auto const parsed = events::parse_event_envelope(entry);
             if (!parsed.error.empty())
@@ -4562,7 +4611,8 @@ auto filter_verified_send_join_events(HomeserverRuntime& runtime, canonicaljson:
             // without restricted joins has no such rule to check (ADR-0356).
             if (auto const authorising =
                     policy.restricted_join_rule ? federation::join_authorising_signature_key(entry) : std::nullopt;
-                authorising.has_value() && authorising->server_name != our_server)
+                authorising.has_value() && authorising->server_name != our_server &&
+                !refused_by_policy(authorising->server_name))
             {
                 for (auto const& authorising_key_id : authorising->key_ids)
                 {
@@ -4574,7 +4624,7 @@ auto filter_verified_send_join_events(HomeserverRuntime& runtime, canonicaljson:
                 }
             }
             auto const dom = sender_domain_from_user_id(parsed.event.sender);
-            if (dom.empty() || dom == our_server)
+            if (dom.empty() || dom == our_server || refused_by_policy(dom))
             {
                 continue;
             }
@@ -4640,8 +4690,8 @@ auto filter_verified_send_join_events(HomeserverRuntime& runtime, canonicaljson:
     // whose sender-domain key was not found, or whose signature does not
     // verify, is silently dropped — never persisted.
     auto verified = canonicaljson::Array{};
-    verified.reserve(events.size());
-    for (auto const& entry : events)
+    verified.reserve(in_format.size());
+    for (canonicaljson::Value const& entry : in_format)
     {
         auto const parsed = events::parse_event_envelope(entry);
         if (!parsed.error.empty())
@@ -4651,6 +4701,16 @@ auto filter_verified_send_join_events(HomeserverRuntime& runtime, canonicaljson:
         auto const dom = sender_domain_from_user_id(parsed.event.sender);
         if (dom.empty())
         {
+            continue;
+        }
+        if (refused_by_policy(dom))
+        {
+            log_diagnostic("room.join.state_event_rejected",
+                           {
+                               {"sender_domain", std::string{dom},                      false},
+                               {"reason",        "server is denied by operator policy", false}
+            },
+                           observability::LogEventSeverity::warning);
             continue;
         }
         if (federation::signature_key_ids_for_server(parsed.event.signatures, dom).empty())
@@ -5883,7 +5943,7 @@ namespace
             {
                 continue; // FED-1: already filtered; kept at the writer as well
             }
-            auto const serialized = canonicaljson::serialize_canonical(auth_entry);
+            auto const serialized = canonicaljson::serialize_canonical(events::without_unsigned(auth_entry));
             if (serialized.error == canonicaljson::CanonicalJsonError::none)
             {
                 auto const parsed = events::parse_event_envelope(auth_entry);
@@ -7746,7 +7806,7 @@ namespace
                 runtime, filter_send_join_events_for_room(*knock_state, room_id, *policy), *policy, our_server);
             for (auto const& entry : verified)
             {
-                if (auto serialized = canonicaljson::serialize_canonical(entry);
+                if (auto serialized = canonicaljson::serialize_canonical(events::without_unsigned(entry));
                     serialized.error == canonicaljson::CanonicalJsonError::none)
                 {
                     outcome.knock_state_json.push_back(std::move(serialized.output));
@@ -7859,6 +7919,35 @@ namespace
     // event_id_only field trim are computed per recipient/per pusher, so each
     // delivery gets its own PushGatewayNotification even though several may
     // share the same event).
+    // Hashes a string_view the same as the string it views, so a set of strings is searched without
+    // building one.
+    struct TransparentStringHash final
+    {
+        using is_transparent = void;
+
+        [[nodiscard]] auto operator()(std::string_view text) const noexcept -> std::size_t
+        {
+            return std::hash<std::string_view>{}(text);
+        }
+    };
+
+    // The local users who exist and are not deactivated: what asserted_user_is_active answers for
+    // each of them, from one pass over runtime.database.users. A user with no row is not in it,
+    // which is how asserted_user_is_active treats one too.
+    [[nodiscard]] auto active_local_user_ids(HomeserverRuntime const& runtime)
+        -> std::unordered_set<std::string, TransparentStringHash, std::equal_to<>>
+    {
+        auto active = std::unordered_set<std::string, TransparentStringHash, std::equal_to<>>{};
+        for (auto const& user : runtime.database.users)
+        {
+            if (!user.deactivated)
+            {
+                active.insert(user.user_id);
+            }
+        }
+        return active;
+    }
+
     struct PendingPushDelivery final
     {
         database::PersistentPusher pusher{};
@@ -8046,6 +8135,8 @@ namespace
             return membership != nullptr ? *membership : std::string{};
         }();
 
+        // Built on the first recipient with a pusher (see the check below).
+        auto active_users = std::optional<std::unordered_set<std::string, TransparentStringHash, std::equal_to<>>>{};
         auto recipients = room.members;
         for (auto const& extra : extra_recipients)
         {
@@ -8129,6 +8220,19 @@ namespace
             auto const max_pushers_per_delivery =
                 static_cast<std::size_t>(runtime.config.server().push.max_pushers_per_delivery);
             if (pushers.empty())
+            {
+                continue;
+            }
+            // A deactivated account keeps no pusher (ADR-0411), and nobody can sign in to it to
+            // remove one that survived, so it is never notified, as email_push.cpp does not mail it.
+            // The users are read once per call, on the first recipient with a pusher, not once per
+            // recipient: this runs under runtime.mutex for every event. Recipients are local here
+            // (remote members were skipped above), and a user with no row is not active.
+            if (!active_users.has_value())
+            {
+                active_users = active_local_user_ids(runtime);
+            }
+            if (!active_users->contains(member))
             {
                 continue;
             }
@@ -8242,9 +8346,15 @@ namespace
     // its response to the client.
     auto run_pending_push_deliveries(HomeserverRuntime& runtime, std::vector<PendingPushDelivery> deliveries) -> void
     {
-        auto client =
-            push::PushGatewayClient{*runtime.outbound_client, *runtime.cached_discovery, runtime.config.server().push,
-                                    &runtime.test_forced_push_gateway_resolution};
+        auto client = push::PushGatewayClient{
+            *runtime.outbound_client, *runtime.cached_discovery, runtime.config.server().push,
+            &runtime.test_forced_push_gateway_resolution, std::ref(*runtime.push_gateway_in_flight_)};
+        // F-79 (ADR-0409): this batch holds one of the in-flight slots until the loop ends, and each
+        // attempt can take the whole timeout. Past the deadline the pushers not yet reached are
+        // queued for retry instead of being contacted now, so the slot is held for the deadline and
+        // one attempt, not for as many timeouts as the recipient has pushers.
+        auto const batch_started = std::chrono::steady_clock::now();
+        auto const batch_deadline = push_batch_deadline(runtime.config.server().push);
         for (auto& delivery : deliveries)
         {
             auto attempt = push::PushRetry{};
@@ -8253,6 +8363,11 @@ namespace
             attempt.pushkey = delivery.pusher.pushkey;
             attempt.gateway_url = delivery.pusher.data_url;
             attempt.notification = std::move(delivery.notification);
+            if (std::chrono::steady_clock::now() - batch_started >= batch_deadline)
+            {
+                defer_push_delivery(runtime, std::move(attempt), std::chrono::steady_clock::now());
+                continue;
+            }
             attempt_push_delivery(runtime, client, std::move(attempt), std::chrono::steady_clock::now());
         }
     }
@@ -9034,33 +9149,16 @@ auto deliver_federation_push_notifications(HomeserverRuntime& runtime, federatio
     {
         return canonicaljson::Value{canonicaljson::Object{}};
     }
-    // `unsigned.transaction_id` and `unsigned.membership` describe the client reading the event
-    // (CS API, ClientEvent), and `unsigned` is outside the event's signatures, so a remote sender
-    // can put anything there. This server computes both per viewer (sync::ViewerEventUnsigned) and
-    // never passes on a stored copy of either.
-    auto const viewer_specific = [](std::string_view key) noexcept {
-        return key == "transaction_id" || key == "membership";
-    };
+    // `unsigned` is outside the event's signatures, so whoever relayed the event can put anything in it
+    // (CS API, ClientEvent `unsigned`; SS API "Signing events"). The client's `unsigned` is therefore never
+    // built from the stored copy, with a list of keys to drop: it is built from what this server computes,
+    // which is `replaces_state` below, `redacted_because` (attach_redacted_because), and the viewer's own
+    // `transaction_id`, `membership` and `prev_content` that sync::ViewerEventUnsigned adds per request
+    // (ADR-0402). This server writes no `unsigned` of its own into a stored event.
     auto client_obj = *obj;
-    for (auto& member : client_obj)
-    {
-        if (member.key == "unsigned")
-        {
-            if (auto const* stored_unsigned = std::get_if<canonicaljson::Object>(&member.value->storage());
-                stored_unsigned != nullptr)
-            {
-                auto kept = canonicaljson::Object{};
-                for (auto const& entry : *stored_unsigned)
-                {
-                    if (!viewer_specific(entry.key))
-                    {
-                        kept.push_back(entry);
-                    }
-                }
-                member.value = std::make_unique<canonicaljson::Value>(canonicaljson::Value{std::move(kept)});
-            }
-        }
-    }
+    std::erase_if(client_obj, [](canonicaljson::ObjectMember const& member) {
+        return member.key == "unsigned";
+    });
     client_obj.push_back(canonicaljson::make_member("event_id", canonicaljson::Value{event.event_id}));
     // ClientEvent `room_id` is required everywhere but /sync. Room version 12 omits it from
     // the m.room.create PDU only, so a client still gets the room it belongs to.
@@ -9088,43 +9186,10 @@ auto deliver_federation_push_notifications(HomeserverRuntime& runtime, federatio
         if (transition != nullptr && !transition->previous_event_id.empty())
         {
             auto unsigned_object = canonicaljson::Object{};
-            for (auto const& member : *obj)
-            {
-                if (member.key == "unsigned")
-                {
-                    if (auto const* existing = std::get_if<canonicaljson::Object>(&member.value->storage());
-                        existing != nullptr)
-                    {
-                        for (auto const& unsigned_member : *existing)
-                        {
-                            if (unsigned_member.key != "replaces_state" && !viewer_specific(unsigned_member.key))
-                            {
-                                unsigned_object.push_back(unsigned_member);
-                            }
-                        }
-                    }
-                    break;
-                }
-            }
             unsigned_object.push_back(
                 canonicaljson::make_member("replaces_state", canonicaljson::Value{transition->previous_event_id}));
-
-            auto unsigned_replaced = false;
-            for (auto& member : client_obj)
-            {
-                if (member.key == "unsigned")
-                {
-                    member.value =
-                        std::make_unique<canonicaljson::Value>(canonicaljson::Value{std::move(unsigned_object)});
-                    unsigned_replaced = true;
-                    break;
-                }
-            }
-            if (!unsigned_replaced)
-            {
-                client_obj.push_back(
-                    canonicaljson::make_member("unsigned", canonicaljson::Value{std::move(unsigned_object)}));
-            }
+            client_obj.push_back(
+                canonicaljson::make_member("unsigned", canonicaljson::Value{std::move(unsigned_object)}));
         }
     }
     // CSAZ-11: a redacted event carries unsigned.redacted_because (the stored JSON is already the
@@ -9673,8 +9738,10 @@ auto validate_make_join_response(std::string_view requested_room_id, std::string
 auto claim_membership_event_template(canonicaljson::Object& event, std::string_view our_server_name,
                                      std::int64_t now_ms) -> void
 {
+    // The resident's template is signed and stored as this server's own event, so an `unsigned` it carries
+    // (covered by no signature) is dropped with the `event_id` (ADR-0402).
     std::erase_if(event, [](canonicaljson::ObjectMember const& member) {
-        return member.key == "event_id";
+        return member.key == "event_id" || member.key == "unsigned";
     });
     replace_or_add_member(event, "origin", canonicaljson::Value{std::string{our_server_name}});
     replace_or_add_member(event, "origin_server_ts", canonicaljson::Value{now_ms});

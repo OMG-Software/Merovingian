@@ -1049,6 +1049,23 @@ namespace
             }
         }
 
+        if (table_load_profile_includes("key_backup_version_counters", profile))
+        {
+            auto counters = query_rows(connection, "postgresql_load_key_backup_version_counters",
+                                       "SELECT user_id, last_version FROM key_backup_version_counters");
+            if (!counters.ok)
+            {
+                return false;
+            }
+            for (auto const& row : counters.rows)
+            {
+                if (row.size() >= 2U)
+                {
+                    store.key_backup_version_high_water[row[0]] = parse_u64(row[1]);
+                }
+            }
+        }
+
         if (table_load_profile_includes("key_backup_sessions", profile))
         {
             auto key_backup_sessions =
@@ -1389,16 +1406,17 @@ namespace
         {
             auto client_txns =
                 query_rows(connection, "postgresql_load_client_txn_ids",
-                           "SELECT user_id, room_id, event_type, txn_id, event_id, device_id FROM client_txn_ids");
+                           "SELECT user_id, room_id, event_type, txn_id, event_id, device_id, created_at_ms FROM "
+                           "client_txn_ids");
             if (!client_txns.ok)
             {
                 return false;
             }
             for (auto const& row : client_txns.rows)
             {
-                if (row.size() >= 6U)
+                if (row.size() >= 7U)
                 {
-                    store.client_txn_ids.push_back({row[0], row[1], row[2], row[3], row[4], row[5]});
+                    store.client_txn_ids.push_back({row[0], row[1], row[2], row[3], row[4], row[5], parse_u64(row[6])});
                 }
             }
         }

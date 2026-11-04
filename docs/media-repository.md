@@ -343,6 +343,13 @@ The worker requires the system `libpng` and `libjpeg-turbo` libraries. When they
 are not present at build time the worker is not built and every thumbnail request
 returns `404`.
 
+The worker decodes only inside a platform sandbox (Linux seccomp, OpenBSD `pledge`,
+FreeBSD Capsicum). NetBSD has none, so there the worker refuses with
+`no platform decoder sandbox` before reading its input and every thumbnail request
+returns `404` through the same worker-failure path: no thumbnails on NetBSD until
+privilege separation comes from outside the server process
+([ADR-0419](adr/0419-the-thumbnail-decoder-refuses-to-run-without-a-platform-sandbox.md)).
+
 ## Response security headers
 
 Client-facing download and thumbnail responses previously carried only
