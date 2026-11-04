@@ -837,3 +837,41 @@ SCENARIO("GET /members?at= returns the whole roster for the tokens of a lazy-loa
         }
     }
 }
+
+// Spec: Lazy-loading room members: the server "MAY assume that clients will remember membership events they
+// have already been sent". A client may discard a room when it leaves it, so after a rejoin it may no longer
+// hold a member the server acknowledged before; the tracker is not consulted for a room the user has just
+// joined (ADR-0450), though the spec's redundancy permission is only ever a MAY.
+SCENARIO("A rejoin sends the timeline senders' membership again although the client acknowledged it before",
+         "[conformance][client-server][sync][lazy-sync]")
+{
+    GIVEN("alice has been sent bob's membership and has acknowledged it")
+    {
+        auto started = merovingian::homeserver::start_client_server(lazy_config());
+        REQUIRE(started.started);
+        auto& rt = started.runtime;
+        auto const alice = register_user(rt, "alice");
+        auto const bob = register_user(rt, "bob");
+        auto const room = create_room(rt, alice, "public_chat");
+        join_room(rt, bob, room);
+        std::ignore = say(rt, bob, room, "one");
+        auto const first = sync(rt, alice, k_lazy_one_event);
+        REQUIRE(state_members(first, "join", room).contains(user_id("bob")));
+        std::ignore = say(rt, bob, room, "two");
+        auto const second = sync(rt, alice, k_lazy_one_event, first.next_batch);
+        REQUIRE(state_members(second, "join", room).empty());
+
+        WHEN("alice leaves, rejoins, bob speaks, and alice syncs from her last token")
+        {
+            REQUIRE(call(rt, "POST", "/_matrix/client/v3/rooms/" + room + "/leave", alice, "{}").status == 200U);
+            join_room(rt, alice, room);
+            std::ignore = say(rt, bob, room, "three");
+            auto const rejoined = sync(rt, alice, k_lazy_one_event, second.next_batch);
+
+            THEN("bob's unchanged membership is in state, and so is her own")
+            {
+                REQUIRE(state_members(rejoined, "join", room) == Keys{user_id("alice"), user_id("bob")});
+            }
+        }
+    }
+}

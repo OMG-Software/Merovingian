@@ -36,9 +36,10 @@ auto record_one(LazyMemberTracker& tracker, LazyMemberTracker::StreamKey const& 
 } // namespace
 
 // Spec: client-server-api.md "Lazy-loading room members": "the server MAY assume that clients will remember
-// membership events they have already been sent". A member counts as held only once the client has proved it
-// received the response (ADR-0450).
-SCENARIO("A member is acknowledged only by a since token at or past its response on every component",
+// membership events they have already been sent". A member counts as held only once the client has presented
+// the exact `next_batch` of the response that carried it, and then for every later token (ADR-0450). "At or
+// past" is not proof: a later response can cover an earlier one the client never received.
+SCENARIO("A member is acknowledged only after an exact since settles it, then by any token past it on every component",
          "[sync][lazy-sync][lazy-tracker]")
 {
     GIVEN("a member recorded under the next_batch (10, 20, 30)")
@@ -47,56 +48,131 @@ SCENARIO("A member is acknowledged only by a since token at or past its response
         auto const key = key_for();
         record_one(tracker, key, "!r:x", "@bob:x", "$m1", {10U, 20U, 30U}, std::nullopt);
 
-        WHEN("the next request presents exactly that token")
+        WHEN("no request has presented that token yet")
         {
-            THEN("the member is acknowledged")
+            THEN("the member is not acknowledged: the client may never have received the response")
+            {
+                REQUIRE_FALSE(tracker.is_acknowledged(key, "!r:x", "@bob:x", "$m1", {10U, 20U, 30U}));
+                REQUIRE_FALSE(tracker.is_acknowledged(key, "!r:x", "@bob:x", "$m1", {99U, 99U, 99U}));
+            }
+        }
+        WHEN("a request presents exactly that token")
+        {
+            tracker.begin_request(key, StreamToken{10U, 20U, 30U});
+
+            THEN("the member is acknowledged at that token")
             {
                 REQUIRE(tracker.is_acknowledged(key, "!r:x", "@bob:x", "$m1", {10U, 20U, 30U}));
             }
-        }
-        WHEN("the next request presents a token behind on the event ordering")
-        {
-            THEN("the member is not acknowledged")
+            THEN("a token behind on the event ordering does not acknowledge it")
             {
                 REQUIRE_FALSE(tracker.is_acknowledged(key, "!r:x", "@bob:x", "$m1", {9U, 20U, 30U}));
             }
-        }
-        WHEN("the next request presents a token behind on the membership ordering")
-        {
-            THEN("the member is not acknowledged")
+            THEN("a token behind on the membership ordering does not acknowledge it")
             {
                 REQUIRE_FALSE(tracker.is_acknowledged(key, "!r:x", "@bob:x", "$m1", {10U, 19U, 30U}));
             }
-        }
-        WHEN("the next request presents a token behind on the sync stream id")
-        {
-            THEN("the member is not acknowledged")
+            THEN("a token behind on the sync stream id does not acknowledge it")
             {
                 REQUIRE_FALSE(tracker.is_acknowledged(key, "!r:x", "@bob:x", "$m1", {10U, 20U, 29U}));
             }
-        }
-        WHEN("the next request presents a token past it on every component")
-        {
-            THEN("the member is acknowledged")
+            THEN("a token past it on every component acknowledges it")
             {
                 REQUIRE(tracker.is_acknowledged(key, "!r:x", "@bob:x", "$m1", {11U, 21U, 31U}));
             }
-        }
-        WHEN("the member's event has changed")
-        {
-            THEN("it is not acknowledged")
+            THEN("a changed event is not acknowledged")
             {
                 REQUIRE_FALSE(tracker.is_acknowledged(key, "!r:x", "@bob:x", "$m2", {11U, 21U, 31U}));
             }
-        }
-        WHEN("another room, user, device or filter asks")
-        {
-            THEN("none is acknowledged")
+            THEN("another room, user, device or filter acknowledges nothing")
             {
                 REQUIRE_FALSE(tracker.is_acknowledged(key, "!other:x", "@bob:x", "$m1", {11U, 21U, 31U}));
                 REQUIRE_FALSE(tracker.is_acknowledged(key, "!r:x", "@carol:x", "$m1", {11U, 21U, 31U}));
                 REQUIRE_FALSE(tracker.is_acknowledged(key_for("DEV2"), "!r:x", "@bob:x", "$m1", {11U, 21U, 31U}));
                 REQUIRE_FALSE(tracker.is_acknowledged(key_for("DEV", "G"), "!r:x", "@bob:x", "$m1", {11U, 21U, 31U}));
+            }
+        }
+    }
+}
+
+// A client aborts a long-poll and retries the same `since` while the first request is still running. The first
+// answers a dead connection; the second answers later, without the member (limited). The client presents the
+// second's token, which is past the first's, but it never received the member.
+SCENARIO("A later response's token does not acknowledge a member an earlier, lost response carried",
+         "[sync][lazy-sync][lazy-tracker]")
+{
+    GIVEN("a member recorded at R1 = (10, 10, 10) by a response the client never received")
+    {
+        auto tracker = LazyMemberTracker{};
+        auto const key = key_for();
+        record_one(tracker, key, "!r:x", "@bob:x", "$m1", {10U, 10U, 10U}, StreamToken{5U, 5U, 5U});
+
+        WHEN("the client presents R2 = (12, 12, 12), the token of a different response, past R1")
+        {
+            tracker.begin_request(key, StreamToken{12U, 12U, 12U});
+
+            THEN("the member is not acknowledged and its entry is gone")
+            {
+                REQUIRE_FALSE(tracker.is_acknowledged(key, "!r:x", "@bob:x", "$m1", {12U, 12U, 12U}));
+                REQUIRE_FALSE(tracker.is_acknowledged(key, "!r:x", "@bob:x", "$m1", {99U, 99U, 99U}));
+                REQUIRE(tracker.member_count() == 0U);
+            }
+        }
+    }
+}
+
+SCENARIO("A settled member stays held across later tokens and is dropped by an older one",
+         "[sync][lazy-sync][lazy-tracker]")
+{
+    GIVEN("a member recorded at R1 and settled by a request presenting exactly R1")
+    {
+        auto tracker = LazyMemberTracker{};
+        auto const key = key_for();
+        auto const r1 = StreamToken{10U, 10U, 10U};
+        record_one(tracker, key, "!r:x", "@bob:x", "$m1", r1, StreamToken{5U, 5U, 5U});
+        tracker.begin_request(key, r1);
+
+        WHEN("a later request presents R3 past R1")
+        {
+            tracker.begin_request(key, StreamToken{30U, 30U, 30U});
+
+            THEN("the member is still acknowledged")
+            {
+                REQUIRE(tracker.is_acknowledged(key, "!r:x", "@bob:x", "$m1", {30U, 30U, 30U}));
+                REQUIRE(tracker.member_count() == 1U);
+            }
+        }
+        WHEN("a request presents a token older than R1")
+        {
+            tracker.begin_request(key, StreamToken{9U, 9U, 9U});
+
+            THEN("the entry is deleted")
+            {
+                REQUIRE_FALSE(tracker.is_acknowledged(key, "!r:x", "@bob:x", "$m1", {30U, 30U, 30U}));
+                REQUIRE(tracker.member_count() == 0U);
+            }
+        }
+        WHEN("the member is sent again at R2 and a request presents R3, not R2")
+        {
+            auto const r2 = StreamToken{20U, 20U, 20U};
+            record_one(tracker, key, "!r:x", "@bob:x", "$m1", r2, r1);
+            tracker.begin_request(key, StreamToken{30U, 30U, 30U});
+
+            THEN("the entry is deleted: the client never presented the response that re-sent it")
+            {
+                REQUIRE_FALSE(tracker.is_acknowledged(key, "!r:x", "@bob:x", "$m1", {40U, 40U, 40U}));
+                REQUIRE(tracker.member_count() == 0U);
+            }
+        }
+        WHEN("the member is sent again at R2 and a request presents exactly R2")
+        {
+            auto const r2 = StreamToken{20U, 20U, 20U};
+            record_one(tracker, key, "!r:x", "@bob:x", "$m1", r2, r1);
+            tracker.begin_request(key, r2);
+
+            THEN("it is acknowledged again")
+            {
+                REQUIRE(tracker.is_acknowledged(key, "!r:x", "@bob:x", "$m1", {20U, 20U, 20U}));
             }
         }
     }
@@ -139,7 +215,8 @@ SCENARIO("A request whose since does not cover an entry deletes it", "[sync][laz
 
             THEN("this stream is untouched")
             {
-                REQUIRE(tracker.is_acknowledged(key, "!r:x", "@bob:x", "$b", {30U, 30U, 30U}));
+                REQUIRE(tracker.member_count() == 2U);
+                REQUIRE(tracker.key_count() == 1U);
             }
         }
     }
@@ -203,6 +280,8 @@ SCENARIO("A request that cannot be tracked is never acknowledged", "[sync][lazy-
             auto const key = key_for("DEV", exact);
             record_one(tracker, key, "!r:x", "@bob:x", "$b", {1U, 1U, 1U}, std::nullopt);
 
+            tracker.begin_request(key, StreamToken{1U, 1U, 1U});
+
             THEN("it is tracked")
             {
                 REQUIRE(tracker.is_acknowledged(key, "!r:x", "@bob:x", "$b", {9U, 9U, 9U}));
@@ -230,6 +309,8 @@ SCENARIO("Every cap holds and eviction leads to a resend, never an omission", "[
             record_one(tracker, key, "!r:x", "@b:x", "$b", {1U, 1U, 1U}, std::nullopt);
             record_one(tracker, key, "!r:x", "@c:x", "$c", {1U, 1U, 1U}, std::nullopt);
 
+            tracker.begin_request(key, StreamToken{1U, 1U, 1U});
+
             THEN("the room holds two and the least recently used one is sent again")
             {
                 REQUIRE(tracker.member_count() == 2U);
@@ -242,6 +323,8 @@ SCENARIO("Every cap holds and eviction leads to a resend, never an omission", "[
         {
             record_one(tracker, key, "!r:x", "@a:x", "$a", {1U, 1U, 1U}, std::nullopt);
             record_one(tracker, key, "!r:x", "@b:x", "$b", {1U, 1U, 1U}, std::nullopt);
+            tracker.begin_request(key, StreamToken{1U, 1U, 1U});
+
             REQUIRE(tracker.is_acknowledged(key, "!r:x", "@a:x", "$a", late));
             record_one(tracker, key, "!r:x", "@c:x", "$c", {1U, 1U, 1U}, std::nullopt);
 
@@ -257,6 +340,8 @@ SCENARIO("Every cap holds and eviction leads to a resend, never an omission", "[
             record_one(tracker, key, "!2:x", "@a:x", "$a", {1U, 1U, 1U}, std::nullopt);
             record_one(tracker, key, "!3:x", "@a:x", "$a", {1U, 1U, 1U}, std::nullopt);
 
+            tracker.begin_request(key, StreamToken{1U, 1U, 1U});
+
             THEN("two rooms are held and the oldest room's member is sent again")
             {
                 REQUIRE(tracker.member_count() == 2U);
@@ -269,6 +354,9 @@ SCENARIO("Every cap holds and eviction leads to a resend, never an omission", "[
             record_one(tracker, key_for("D1"), "!r:x", "@a:x", "$a", {1U, 1U, 1U}, std::nullopt);
             record_one(tracker, key_for("D2"), "!r:x", "@a:x", "$a", {1U, 1U, 1U}, std::nullopt);
             record_one(tracker, key_for("D3"), "!r:x", "@a:x", "$a", {1U, 1U, 1U}, std::nullopt);
+
+            tracker.begin_request(key_for("D1"), StreamToken{1U, 1U, 1U});
+            tracker.begin_request(key_for("D3"), StreamToken{1U, 1U, 1U});
 
             THEN("two streams are held and the oldest stream's member is sent again")
             {
@@ -285,6 +373,9 @@ SCENARIO("Every cap holds and eviction leads to a resend, never an omission", "[
                 record_one(tracker, key_for(device), "!1:x", "@b:x", "$b", {1U, 1U, 1U}, std::nullopt);
                 record_one(tracker, key_for(device), "!2:x", "@a:x", "$a", {1U, 1U, 1U}, std::nullopt);
             }
+
+            tracker.begin_request(key_for("D1"), StreamToken{1U, 1U, 1U});
+            tracker.begin_request(key_for("D2"), StreamToken{1U, 1U, 1U});
 
             THEN("the total never exceeds the cap and the evicted stream is simply resent")
             {
