@@ -5021,6 +5021,9 @@ namespace
             // Do not consult the tracker: a client may discard a room when it leaves it, so after a rejoin it may no
             // longer hold a member the tracker says it does (ADR-0450). What is sent is still recorded.
             bool ignore_tracker{false};
+            // The user's current membership, a leave, is already in `state`: no earlier member event of their own
+            // may follow it, or a client applying `state` in order would show them joined again.
+            bool exclude_own{false};
         };
 
         LazyRoomSelector(LazySyncRequest& request, std::string_view room_id, Plan plan)
@@ -5038,6 +5041,10 @@ namespace
         // Whether `event`, the member state event for `state_key`, goes in `state`; notes it when it does.
         [[nodiscard]] auto keep(database::PersistentEvent const& event, std::string_view state_key) -> bool
         {
+            if (plan_.exclude_own && state_key == plan_.own_user_id)
+            {
+                return false;
+            }
             auto const forced = (plan_.gap_after.has_value() && event.stream_ordering > *plan_.gap_after) ||
                                 (plan_.own_forced && state_key == plan_.own_user_id);
             if (!forced)
@@ -5909,6 +5916,12 @@ namespace
         // initial sync tells them only what an incremental one does: their own leave or ban, when the
         // timeline does not carry it.
         auto const reads_room_state = request.access.kind != sync::RoomReadKind::none;
+        // An incremental sync's state is the delta since `since`; the leave is part of it when the timeline does not
+        // carry it. (An initial sync that reads the room builds its state from the room's state instead.)
+        auto const leave_in_state =
+            (request.since_ordering.has_value() || !reads_room_state) && !leave_in_timeline &&
+            leave_event != store.events.end() &&
+            sync::event_passes_filter(filter.room.state, stored_event_type(*leave_event), leave_event->sender_user_id);
         // ADR-0450: with lazy-loading, the member events of `state` are the timeline senders' (and the user's
         // own on an initial sync), by the same rules as a joined room.
         auto senders = std::vector<std::string>{};
@@ -5922,6 +5935,7 @@ namespace
             }
             senders.assign(plan.senders.begin(), plan.senders.end());
             plan.own_user_id = std::string{request.user_id};
+            plan.exclude_own = leave_in_state;
             if (request.since_ordering.has_value())
             {
                 // An incremental left room's state is a delta: only the members the rules above name.
@@ -5981,12 +5995,8 @@ namespace
                 }
             }
         }
-        else if (!leave_in_timeline && leave_event != store.events.end() &&
-                 sync::event_passes_filter(filter.room.state, stored_event_type(*leave_event),
-                                           leave_event->sender_user_id))
+        else if (leave_in_state)
         {
-            // An incremental sync's state is the delta since `since`; the leave is part of it when
-            // the timeline does not carry it.
             state_events.push_back(viewer_unsigned.apply(*leave_event, client_event_with_id(store, *leave_event)));
         }
         if (request.since_ordering.has_value() && selector.has_value() && window_begin != matched.end())

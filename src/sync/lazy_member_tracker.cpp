@@ -108,13 +108,11 @@ namespace
             return items_;
         }
 
-        auto rebuild_index() -> void
+        // Erases the entry at `position` from the list and the index; returns the position after it.
+        auto erase_at(typename List::iterator position) -> typename List::iterator
         {
-            index_.clear();
-            for (auto it = items_.begin(); it != items_.end(); ++it)
-            {
-                index_.emplace(it->first, it);
-            }
+            index_.erase(position->first);
+            return items_.erase(position);
         }
 
     private:
@@ -261,20 +259,18 @@ auto LazyMemberTracker::begin_request(StreamKey const& key, std::optional<Stream
             }
             else
             {
-                member = members.items().erase(member);
+                member = members.erase_at(member);
             }
         }
-        members.rebuild_index();
         if (members.empty())
         {
-            room = stream.rooms.items().erase(room);
+            room = stream.rooms.erase_at(room);
         }
         else
         {
             ++room;
         }
     }
-    stream.rooms.rebuild_index();
     state_->total_members -= stream.members - remaining;
     stream.members = remaining;
     stream.pending = 0U;
