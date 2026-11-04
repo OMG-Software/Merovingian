@@ -674,6 +674,11 @@ auto build_reload_plan(Config const& current, Config const& next) -> ReloadPlan
         add_change(plan, "security.refresh_token_lifetime_ms");
     }
 
+    if (current.security().audit_log_retention_days != next.security().audit_log_retention_days)
+    {
+        add_change(plan, "security.audit_log_retention_days");
+    }
+
     if (current.federation_worker().request_timeout_seconds != next.federation_worker().request_timeout_seconds)
     {
         add_change(plan, "federation.worker.request_timeout_seconds");

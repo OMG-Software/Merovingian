@@ -740,6 +740,13 @@ auto validate(Config const& config) -> std::vector<ConfigValidationFinding>
         findings.push_back({"security.refresh_token_lifetime_ms", "must not exceed 31536000000 ms (365 days)"});
     }
 
+    if (config.security().audit_log_retention_days != 0U &&
+        (config.security().audit_log_retention_days < min_audit_log_retention_days ||
+         config.security().audit_log_retention_days > max_audit_log_retention_days))
+    {
+        findings.push_back({"security.audit_log_retention_days", "must be 0 (keep every row) or 30..3650 days"});
+    }
+
     if (config.server().server_name.empty())
     {
         findings.push_back({"server.server_name", "server name must not be empty"});

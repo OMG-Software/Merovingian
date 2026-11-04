@@ -132,7 +132,7 @@ namespace
         SchemaTableDefinition{"rate_limits",             "scope TEXT NOT NULL, key TEXT NOT NULL, count TEXT NOT NULL, reset_ts "
                                              "TEXT NOT NULL, PRIMARY KEY (scope, key)"                                      },
         SchemaTableDefinition{"audit_log",               "category TEXT NOT NULL, event_type TEXT NOT NULL, actor TEXT NOT NULL, "
-                                           "target TEXT NOT NULL, reason TEXT NOT NULL"                                       },
+                                           "target TEXT NOT NULL, reason TEXT NOT NULL, created_at_ms TEXT NOT NULL DEFAULT '0'"},
         SchemaTableDefinition{"policy_rules",            "rule_id TEXT PRIMARY KEY, scope TEXT NOT NULL, entity TEXT NOT NULL, "
                                               "action TEXT NOT NULL, reason TEXT NOT NULL"                                 },
         SchemaTableDefinition{"admin_actions",
@@ -227,13 +227,16 @@ namespace
     // The secondary indexes v1 creates, after every table. Each serves a lookup
     // outside its table's primary key: an event's children (ADR-0064), a
     // device's to-device queue by age (ADR-0117), a room's deferred PDUs
-    // (ADR-0165), and a user's pending uploads (ADR-0212).
+    // (ADR-0165), a user's pending uploads (ADR-0212), and the two tables a cold room is reloaded from by
+    // `room_id` alone (ADR-0490).
     constexpr auto core_indexes = std::array{
         SchemaIndexDefinition{"event_edges_prev_event_id",            "event_edges",           "prev_event_id"},
         SchemaIndexDefinition{"idx_to_device_messages_recipient_age", "to_device_messages",
                               "target_user_id, target_device_id, created_at_ms"                               },
         SchemaIndexDefinition{"idx_deferred_pdus_room_id",            "deferred_pdus",         "room_id"      },
         SchemaIndexDefinition{"idx_media_pending_uploads_owner",      "media_pending_uploads", "owner_user_id"},
+        SchemaIndexDefinition{"idx_events_room_id",                   "events",                "room_id"      },
+        SchemaIndexDefinition{"idx_state_groups_room_id",             "state_groups",          "room_id"      },
     };
 
     [[nodiscard]] auto index_sql(SchemaIndexDefinition const& index, std::string_view prefix)

@@ -359,15 +359,25 @@ or memory, so the audit-append layer bounds the volume.
   log line and no audit work.
 - **Bounded in-memory windows.** `LocalDatabase::audit_events` and
   `PersistentStore::audit_log` hold the most recent `max_in_memory_audit_events`
-  (1 024) rows and drop the oldest first. The `audit_log` table holds every row.
+  (1 024) rows and drop the oldest first. The `audit_log` table holds every row
+  younger than `security.audit_log_retention_days` (see "Retention" below).
   `PersistentStore::audit_log_evicted` counts rows that have left the window, and
   `audit_events_appended_total` reports `size + evicted` so it stays monotonic.
   Startup hydration keeps the newest rows in insertion order on both backends:
   SQLite streams `ORDER BY rowid` through the window; PostgreSQL fetches the newest
   `max_in_memory_audit_events` rows (`ORDER BY ctid DESC LIMIT`) and replays them
-  oldest first. `audit_log` has no ordering column (migration 001), so on PostgreSQL
-  the physical position `ctid` stands in for insertion order; that holds because the
-  table is append-only.
+  oldest first. `audit_log` has no key, so PostgreSQL orders by `created_at_ms` and,
+  within one millisecond, by `ctid` (retention deletes rows, so `ctid` alone is no
+  longer insertion order).
+- **Retention (ADR-0489).** `security.audit_log_retention_days` (default 365; `0`
+  keeps every row; otherwise 30..3650, refused at parse time otherwise) ages
+  `audit_log` rows by their `created_at_ms`. The hourly `retention-sweep` job deletes
+  rows older than that in transactions of at most 500 rows, taking `runtime.mutex`
+  for one batch at a time and at most 20 batches per sweep, and records each purge as
+  an `audit.retention.purged` row (written after the deletion) giving the cutoff, the
+  period and the batch count. A row stamped `0` is never deleted. The in-memory
+  `LocalDatabase::audit_events` window carries no timestamp and can show rows older
+  than the period until they leave the window.
 - **`GET /_merovingian/admin/audit` shows the window.** It lists the retained
   rows in `entries`, with `audit_events` set to the retained count and `evicted`
   set to `<n>` once older rows have left the window. Query the `audit_log`
@@ -585,4 +595,4 @@ into the durable audit rows.
 
 - Distributed tracing beyond the local request-correlation contract above.
 - Operator dashboards.
-- Retention and export policy for production audit archives.
+- Export policy for production audit archives (retention is `security.audit_log_retention_days`, ADR-0489).

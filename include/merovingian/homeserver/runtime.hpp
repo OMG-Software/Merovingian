@@ -18,6 +18,7 @@
 #include "merovingian/homeserver/media_upload_notifier.hpp"
 #include "merovingian/homeserver/remote_media_fetch_coalescer.hpp"
 #include "merovingian/homeserver/runtime_mutex.hpp"
+#include "merovingian/homeserver/session_table.hpp"
 #include "merovingian/http/in_flight_budget.hpp"
 #include "merovingian/http/outbound_client.hpp"
 #include "merovingian/identity/identity_client.hpp"
@@ -121,21 +122,6 @@ struct LocalUser final
     bool deactivated{false};
 };
 
-struct LocalSession final
-{
-    std::string user_id{};
-    std::string device_id{};
-    std::string access_token_hash{};
-    bool revoked{false};
-    // Server-side access-token expiry mirrored from PersistentAccessToken. nullopt
-    // = no expiry. find_session rejects an expired session even when not revoked.
-    std::optional<std::chrono::system_clock::time_point> expires_at{};
-    // Mirrored from PersistentAccessToken: the refresh token this access token
-    // replaced. Its first successful use revokes that refresh token and clears
-    // this field (ADR-0074).
-    std::string predecessor_refresh_hash{};
-};
-
 // When the appservice drainer may next try an appservice that has just failed, and the delay it
 // will apply if that attempt fails too (doubling from 1 s up to a 5 minute cap).
 struct AppserviceDeliveryBackoff final
@@ -198,7 +184,7 @@ struct LocalDatabase final
     std::uint64_t next_event_id{1U};
     std::vector<std::string> tables{};
     std::vector<LocalUser> users{};
-    std::vector<LocalSession> sessions{};
+    SessionTable sessions{};
     std::vector<LocalRoom> rooms{};
     // Bounded window over the most recent `database::max_in_memory_audit_events`
     // audit events (AUTH-1); the oldest is dropped first. The durable copy of

@@ -1384,6 +1384,13 @@ namespace
                 add_parse_finding(findings, std::string{key}, "expected integer millisecond value");
             }
         }
+        else if (key == "security.audit_log_retention_days")
+        {
+            if (!parse_u32_value(value, security.audit_log_retention_days))
+            {
+                add_parse_finding(findings, std::string{key}, "expected non-negative integer day count");
+            }
+        }
         else if (key == "security.encryption.default_for_new_rooms")
         {
             if (!parse_bool_value(value, security.encryption.default_for_new_rooms))

@@ -928,10 +928,13 @@ namespace
                          }) &&
                // AUTH-1: stream rows in insertion order into the bounded in-memory
                // window, so hydrating a long-lived audit_log keeps only the newest rows.
-               load_rows(connection, "SELECT category, event_type, actor, target, reason FROM audit_log ORDER BY rowid",
+               load_rows(connection,
+                         "SELECT category, event_type, actor, target, reason, created_at_ms FROM audit_log ORDER BY "
+                         "rowid",
                          [&store](sqlite3_stmt& row) {
                              remember_audit_event(store, {column_text(row, 0), column_text(row, 1), column_text(row, 2),
-                                                          column_text(row, 3), column_text(row, 4)});
+                                                          column_text(row, 3), column_text(row, 4),
+                                                          parse_u64(column_text(row, 5))});
                          }) &&
                load_rows(connection, "SELECT admin_user_id, action, target FROM admin_actions",
                          [&store](sqlite3_stmt& row) {
@@ -1876,6 +1879,33 @@ namespace detail
             return std::nullopt;
         }
         return rows;
+    }
+
+    auto audit_rows_older_than_exist_in_sqlite(std::string const& path, std::uint64_t cutoff_ms)
+        -> std::optional<bool>
+    {
+        if (path.empty())
+        {
+            return std::nullopt;
+        }
+        auto connection = open_sqlite_connection(path, true);
+        if (!connection.has_value())
+        {
+            return std::nullopt;
+        }
+        auto found = false;
+        auto const ok = load_rows_bound(
+            **connection,
+            "SELECT 1 FROM audit_log WHERE CAST(created_at_ms AS INTEGER) > 0 AND CAST(created_at_ms AS INTEGER) < "
+            "CAST(?1 AS INTEGER) LIMIT 1",
+            {std::to_string(cutoff_ms)}, [&found](sqlite3_stmt&) {
+                found = true;
+            });
+        if (!ok)
+        {
+            return std::nullopt;
+        }
+        return found;
     }
 
     auto load_remote_signing_keys_from_sqlite(std::string const& path, std::string_view server_name)

@@ -911,7 +911,14 @@ struct SecurityConfig final
     // advertised TTL matches the enforced one.
     std::int64_t access_token_lifetime_ms{3600000};
     std::int64_t refresh_token_lifetime_ms{2592000000};
+    // How long `audit_log` rows are kept, in days (ADR-0489). 0 keeps every row for ever. A non-zero value is
+    // 30..3650 (`min_audit_log_retention_days`, `max_audit_log_retention_days`): evidence is never kept for less
+    // than a month. A row is deleted only once it is older than this, and each deletion is itself audited.
+    std::uint32_t audit_log_retention_days{365U};
 };
+
+inline constexpr std::uint32_t min_audit_log_retention_days = 30U;
+inline constexpr std::uint32_t max_audit_log_retention_days = 3650U;
 
 class Config final
 {

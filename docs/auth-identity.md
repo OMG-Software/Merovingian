@@ -219,6 +219,12 @@ production-gated.
   application service's namespace, then checked like a chosen name (0.12.38, conformance audit R12,
   ADR-0198). An empty `username` is still `400 M_INVALID_USERNAME`, and
   `m.login.application_service` registration still requires one.
+- The in-memory session table (`LocalDatabase::sessions`, `homeserver::SessionTable`) is looked up through an
+  index of token-hash digests, so an authenticated request does not scan every session; each candidate is still
+  confirmed with the constant-time hash comparison. Revoked sessions, and access tokens expired for seven days,
+  are erased by the hourly `retention-sweep` job along with their `access_tokens` rows; expired refresh tokens
+  are deleted too, but a revoked refresh token that has not expired is kept so reuse is still detected
+  (ADR-0488).
 - Server-side access and refresh token expiry is enforced. `PersistentAccessToken`,
   `PersistentRefreshToken`, and `LocalSession` carry an `expires_at` field set at issuance from
   configurable `security.access_token_lifetime_ms` (default 1h) and

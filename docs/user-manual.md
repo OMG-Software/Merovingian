@@ -1070,6 +1070,7 @@ legacy validation formats are not a fallback for new issuance.
 |---|---|---|
 | `security.access_token_lifetime_ms` | `3600000` (1 hour) | Milliseconds, `0..2592000000` inclusive (30-day maximum); `0` disables expiry. |
 | `security.refresh_token_lifetime_ms` | `2592000000` (30 days) | Milliseconds, `0..31536000000` inclusive (365-day maximum); `0` disables expiry. |
+| `security.audit_log_retention_days` | `365` | How long `audit_log` rows are kept. `0` keeps every row for ever; otherwise `30..3650` (anything else is refused at start-up). An hourly job deletes older rows in small batches and writes an `audit.retention.purged` audit row for every purge. Raise it, or use `0`, if you must keep evidence longer. Reloadable. Sessions and tokens that can no longer authenticate (revoked or long-expired access tokens, expired refresh tokens) are deleted by the same job; there is nothing to configure. |
 
 Configuration parsing and typed validation report field-specific findings for
 negative or oversized lifetimes. These are project admission limits, not Matrix
@@ -1702,7 +1703,7 @@ take effect.
 | `database.pool_size` | Restart required |
 | `server.turn.*` | Reloadable |
 | `security.trust_safety.*` | Reloadable |
-| `security.access_token_lifetime_ms` / `security.refresh_token_lifetime_ms` | Reloadable |
+| `security.access_token_lifetime_ms` / `security.refresh_token_lifetime_ms` / `security.audit_log_retention_days` | Reloadable |
 | `security.login_throttle.*` | Reloadable |
 | Other `listeners.*` keys (except `reverse_proxy`) | Reloadable |
 | `security.registration.*` (except `token_file`) | Reloadable |
@@ -2744,7 +2745,7 @@ curl 'http://127.0.0.1:8008/_merovingian/admin/audit?category=policy'
 The endpoint answers a JSON object (`application/json`) whose `entries` array holds one
 object per matching row, the most recent 1 024 audit rows the running process holds;
 `audit_events` is the retained count and `evicted` appears once older rows have left that
-window, and the `audit_log` table keeps every row. Rejections that any unauthenticated client can
+window, and the `audit_log` table keeps every row younger than `security.audit_log_retention_days`. Rejections that any unauthenticated client can
 trigger (`access_token.rejected`, `rate_limit.exceeded`, `request.rejected`) are
 written at most 10 times per kind per 60 seconds; the first row after a busier
 window carries `suppressed=<n>` in its reason. `actor`, `target` and `reason` are

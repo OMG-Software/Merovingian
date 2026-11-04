@@ -730,7 +730,7 @@ SCENARIO("Homeserver rejects a legacy seed-derived v3 hash once v3 is master-key
             hash.push_back(hex[(b >> 4U) & 0x0FU]);
             hash.push_back(hex[b & 0x0FU]);
         }
-        runtime.database.sessions.front().access_token_hash = hash;
+        runtime.database.sessions.set_access_token_hash(runtime.database.sessions.front(), hash);
 
         WHEN("the token is presented for authentication")
         {

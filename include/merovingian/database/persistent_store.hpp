@@ -18,6 +18,7 @@
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <span>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -512,6 +513,9 @@ struct PersistentAuditEvent final
     std::string actor{};
     std::string target{};
     std::string reason{};
+    // Unix milliseconds the row was appended. 0 means "not stamped yet": `append_audit_event` stamps it, and a
+    // row the table holds with 0 is never deleted by retention (ADR-0489).
+    std::uint64_t created_at_ms{0U};
 };
 
 struct PersistentAdminAction final
@@ -1460,6 +1464,16 @@ auto set_write_connection_limit(PersistentStore& store, std::uint32_t limit) -> 
 // Connections ever opened for persisted writes (both backends' pools).
 [[nodiscard]] auto write_connections_opened(PersistentStore const& store) -> std::uint64_t;
 [[nodiscard]] auto store_user(PersistentStore& store, PersistentUser user) -> bool;
+// P13 (ADR-0491): the account and its empty profile row in ONE transaction, so a registration commits once and
+// cannot leave an account without a profile. False (nothing stored) when the user exists or the write fails.
+[[nodiscard]] auto store_user_with_profile(PersistentStore& store, PersistentUser user, PersistentProfile profile)
+    -> bool;
+// P13 (ADR-0491): everything a logout revokes in ONE transaction: the presented access token, the device's refresh
+// tokens and the device's access tokens. False (nothing revoked, in the database or in memory) when the write
+// fails; true means all three are durable. A revocation is one-way (ADR-0052), so committing them together can
+// only make a failed logout retryable from the start, never leave one token alive beside a revoked sibling.
+[[nodiscard]] auto revoke_device_credentials(PersistentStore& store, std::string_view access_token_hash,
+                                             std::string_view user_id, std::string_view device_id) -> bool;
 [[nodiscard]] auto update_user_password(PersistentStore& store, std::string_view user_id, std::string_view new_hash)
     -> bool;
 // Sets the locked/suspended flags of a server-local user. Used by the admin
@@ -2164,6 +2178,36 @@ auto rebuild_notification_index(PersistentStore& store) -> void;
 // pagination and filtering.
 [[nodiscard]] auto list_notifications_for_user(PersistentStore const& store, std::string_view user_id)
     -> std::vector<PersistentNotification>;
+// ADR-0488: credential rows that can no longer authenticate anyone. An access token row is unusable once it is
+// revoked (revocation is one-way, ADR-0052) or has been expired for `expired_access_grace`, which keeps the "token
+// expired" audit reason for a while. A refresh token row is unusable once it has expired: an expired refresh token
+// is refused before the reuse check, so deleting it changes no answer. A REVOKED refresh token that has not
+// expired is kept, because presenting it is how a stolen, rotated token is detected (ADR-0074).
+struct UnusableCredentials final
+{
+    std::vector<std::string> access_token_hashes{};
+    std::vector<std::string> refresh_token_hashes{};
+};
+[[nodiscard]] auto collect_unusable_credentials(PersistentStore const& store,
+                                                std::chrono::system_clock::time_point now,
+                                                std::chrono::system_clock::duration expired_access_grace)
+    -> UnusableCredentials;
+// Deletes the named rows from the database in ONE transaction, so a caller bounds its batch by the size of the
+// spans. Memory is untouched: pass what was deleted to `forget_credentials` once the whole sweep is done, which
+// makes one pass over each vector instead of one per batch.
+[[nodiscard]] auto delete_credential_rows(PersistentStore& store, std::span<std::string const> access_token_hashes,
+                                          std::span<std::string const> refresh_token_hashes) -> bool;
+auto forget_credentials(PersistentStore& store, UnusableCredentials const& deleted) -> void;
+// ADR-0489: audit retention. `cutoff_ms` is Unix milliseconds; rows stamped 0 are never touched.
+// Whether any durable row older than the cutoff exists (nullopt: the backend could not be read). Reads on a
+// connection of its own, so a caller may hold no lock.
+[[nodiscard]] auto audit_rows_older_than_exist(PersistentStore const& store, std::uint64_t cutoff_ms)
+    -> std::optional<bool>;
+// Deletes at most `limit` such rows in one transaction. False when the write failed.
+[[nodiscard]] auto delete_audit_rows_older_than(PersistentStore& store, std::uint64_t cutoff_ms, std::size_t limit)
+    -> bool;
+// Drops the in-memory window's rows older than the cutoff and returns how many.
+auto forget_audit_events_older_than(PersistentStore& store, std::uint64_t cutoff_ms) -> std::size_t;
 // Insert an OpenID token row. Persists it, mirrors it into the in-memory
 // vector, and then prunes every already-expired row (across all users) so
 // `openid_tokens` cannot grow without bound -- the time-based analogue of
@@ -2397,6 +2441,11 @@ namespace detail
     [[nodiscard]] auto load_audit_events_from_postgresql(std::string_view conninfo, std::string_view runtime_role,
                                                          std::string_view prefix, std::size_t limit)
         -> std::optional<std::vector<PersistentAuditEvent>>;
+    [[nodiscard]] auto audit_rows_older_than_exist_in_sqlite(std::string const& path, std::uint64_t cutoff_ms)
+        -> std::optional<bool>;
+    [[nodiscard]] auto audit_rows_older_than_exist_in_postgresql(std::string_view conninfo,
+                                                                 std::string_view runtime_role,
+                                                                 std::uint64_t cutoff_ms) -> std::optional<bool>;
     // Test seam: called with each table's name once that table's rows of a
     // room snapshot have been read, so a test can commit between two reads.
     // Production callers pass none.
