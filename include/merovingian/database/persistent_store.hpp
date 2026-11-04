@@ -9,6 +9,7 @@
 #include "merovingian/events/event.hpp"
 
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -907,6 +908,35 @@ struct DeferredPduAwaits final
 
 struct PersistentStore;
 
+// A count of rows a read examined. Readers hold the store only by const reference, so it is mutable in the
+// store, and relaxed atomic so that two readers sharing the store cannot race on it. A test reads the
+// difference across an operation to prove how many rows it looked at, never how long it took.
+class ExaminedRows final
+{
+public:
+    ExaminedRows() noexcept = default;
+    ExaminedRows(ExaminedRows const& other) noexcept
+        : count_{other.count_.load(std::memory_order_relaxed)}
+    {
+    }
+    auto operator=(ExaminedRows const& other) noexcept -> ExaminedRows&
+    {
+        count_.store(other.count_.load(std::memory_order_relaxed), std::memory_order_relaxed);
+        return *this;
+    }
+    auto add(std::uint64_t rows) const noexcept -> void
+    {
+        count_.fetch_add(rows, std::memory_order_relaxed);
+    }
+    [[nodiscard]] auto value() const noexcept -> std::uint64_t
+    {
+        return count_.load(std::memory_order_relaxed);
+    }
+
+private:
+    mutable std::atomic<std::uint64_t> count_{0U};
+};
+
 namespace detail
 {
     // DB-7, ADR-0154: each backend's pool of write connections, defined in its
@@ -973,6 +1003,9 @@ struct PersistentStore final
         , admin_actions{other.admin_actions}
         , policy_rules{other.policy_rules}
         , account_data{other.account_data}
+        , account_data_user_index{other.account_data_user_index}
+        , account_data_indexed_rows{other.account_data_indexed_rows}
+        , account_data_rows_examined{other.account_data_rows_examined}
         , receipts{other.receipts}
         , to_device_messages{other.to_device_messages}
         , device_list_changes{other.device_list_changes}
@@ -987,6 +1020,9 @@ struct PersistentStore final
         , client_txn_indexed_rows{other.client_txn_indexed_rows}
         , pushers{other.pushers}
         , notifications{other.notifications}
+        , notification_user_index{other.notification_user_index}
+        , notification_indexed_rows{other.notification_indexed_rows}
+        , notification_rows_examined{other.notification_rows_examined}
         , openid_tokens{other.openid_tokens}
         , login_tokens{other.login_tokens}
         , appservice_txn_cursors{other.appservice_txn_cursors}
@@ -1000,6 +1036,7 @@ struct PersistentStore final
         , forward_extremities{other.forward_extremities}
         , captured_statements{other.captured_statements}
         , statement_capture_capacity{other.statement_capture_capacity}
+        , committed_transactions{other.committed_transactions}
         , force_next_persist_failures{other.force_next_persist_failures}
         , force_failure_statement_names{other.force_failure_statement_names}
         , statement_capture_mutex{std::make_unique<std::mutex>()}
@@ -1069,6 +1106,9 @@ struct PersistentStore final
         admin_actions = other.admin_actions;
         policy_rules = other.policy_rules;
         account_data = other.account_data;
+        account_data_user_index = other.account_data_user_index;
+        account_data_indexed_rows = other.account_data_indexed_rows;
+        account_data_rows_examined = other.account_data_rows_examined;
         receipts = other.receipts;
         to_device_messages = other.to_device_messages;
         device_list_changes = other.device_list_changes;
@@ -1083,6 +1123,9 @@ struct PersistentStore final
         client_txn_indexed_rows = other.client_txn_indexed_rows;
         pushers = other.pushers;
         notifications = other.notifications;
+        notification_user_index = other.notification_user_index;
+        notification_indexed_rows = other.notification_indexed_rows;
+        notification_rows_examined = other.notification_rows_examined;
         openid_tokens = other.openid_tokens;
         login_tokens = other.login_tokens;
         appservice_txn_cursors = other.appservice_txn_cursors;
@@ -1096,6 +1139,7 @@ struct PersistentStore final
         forward_extremities = other.forward_extremities;
         captured_statements = other.captured_statements;
         statement_capture_capacity = other.statement_capture_capacity;
+        committed_transactions = other.committed_transactions;
         force_next_persist_failures = other.force_next_persist_failures;
         force_failure_statement_names = other.force_failure_statement_names;
         statement_capture_mutex = std::make_unique<std::mutex>();
@@ -1195,6 +1239,13 @@ struct PersistentStore final
     std::vector<PersistentAdminAction> admin_actions{};
     std::vector<PersistentPolicyRule> policy_rules{};
     std::vector<PersistentAccountData> account_data{};
+    // Positions in `account_data` of each user's rows (ADR-0440), so the per-recipient push and ignore
+    // lookups read one user's few rows, not the table. Maintained by the account-data writers, rebuilt
+    // after hydration; trusted only while `account_data_indexed_rows == account_data.size()`, otherwise a
+    // lookup scans the vector. Rows are only ever appended or replaced in place.
+    std::unordered_map<std::string, std::vector<std::size_t>> account_data_user_index{};
+    std::size_t account_data_indexed_rows{0U};
+    ExaminedRows account_data_rows_examined{};
     // Read receipts, local and federated. Write through store_receipt and
     // remove_receipt so the database row and this mirror stay in step.
     std::vector<PersistentReceipt> receipts{};
@@ -1221,6 +1272,12 @@ struct PersistentStore final
     std::size_t client_txn_indexed_rows{0U};
     std::vector<PersistentPusher> pushers{};
     std::vector<PersistentNotification> notifications{};
+    // Positions in `notifications` of each user's rows (ADR-0440). Same trust rule as
+    // `account_data_user_index`. Rows are appended, replaced in place, or erased by moving the last row into
+    // the gap, so the vector's order carries no meaning: read through `list_notifications_for_user`.
+    std::unordered_map<std::string, std::vector<std::size_t>> notification_user_index{};
+    std::size_t notification_indexed_rows{0U};
+    ExaminedRows notification_rows_examined{};
     std::vector<PersistentOpenidToken> openid_tokens{};
     std::vector<PersistentLoginToken> login_tokens{};
     std::vector<PersistentAppserviceTxnCursor> appservice_txn_cursors{};
@@ -1252,6 +1309,10 @@ struct PersistentStore final
     // most recent statements; the oldest is dropped first.
     std::deque<PreparedStatement> captured_statements{};
     std::size_t statement_capture_capacity{0U};
+    // Transactions `commit_persistent_transaction` committed over the store's life, guarded by
+    // `statement_capture_mutex` (read it through `committed_transaction_count`). A test reads the difference to
+    // prove that an event's rows share one commit, not one commit each (ADR-0440, ADR-0441).
+    std::uint64_t committed_transactions{0U};
     // Test-only counter: when non-zero the memory backend decrements this and
     // returns false from the next that many persist operations, simulating a
     // durable-store failure without involving a real database. Production never
@@ -1895,6 +1956,16 @@ inline constexpr std::size_t max_account_data_row_bytes{262144U};
 // Returns false, writing nothing, for a missing user or type, content over
 // `max_account_data_row_bytes`, or a failed write.
 [[nodiscard]] auto store_account_data(PersistentStore& store, PersistentAccountData data) -> bool;
+// Brings `account_data_user_index` in step with `account_data`. Hydration calls it; the writers keep it so.
+auto rebuild_account_data_index(PersistentStore& store) -> void;
+// Visits the rows of `user_id` only (ADR-0440): through the index while it is in step, else by scan. Adds the rows
+// it looked at to `store.account_data_rows_examined`.
+auto for_each_user_account_data(PersistentStore const& store, std::string_view user_id,
+                                std::function<void(PersistentAccountData const&)> const& visit) -> void;
+// The content of the row (user_id, room_id, event_type), or nullopt. Looks at the user's rows only.
+[[nodiscard]] auto find_account_data_content(PersistentStore const& store, std::string_view user_id,
+                                             std::string_view room_id, std::string_view event_type)
+    -> std::optional<std::string>;
 
 // Outcome of store_global_account_data_within_cap and store_room_account_data_within_cap.
 enum class CappedAccountDataStore
@@ -2036,6 +2107,14 @@ enum class CappedAccountDataStore
 // write failure.
 [[nodiscard]] auto store_notification(PersistentStore& store, PersistentNotification notification,
                                       std::size_t max_per_user = 1000U) -> bool;
+// Upserts every notification in one transaction (ADR-0440) and prunes each notified user's oldest rows beyond
+// `max_per_user` in that same transaction. All rows and prunes are durable together or none is, and the in-memory
+// mirror changes only after the commit. Returns false, writing nothing, if any row has an empty user_id, room_id
+// or event_id, or the commit fails. An empty batch succeeds and commits nothing.
+[[nodiscard]] auto store_notifications(PersistentStore& store, std::vector<PersistentNotification> notifications,
+                                       std::size_t max_per_user = 1000U) -> bool;
+// Brings `notification_user_index` in step with `notifications`.
+auto rebuild_notification_index(PersistentStore& store) -> void;
 // Return every notification recorded for user_id, in insertion
 // (stream_ordering) order ascending. Callers apply from/limit/only
 // pagination and filtering.
@@ -2217,6 +2296,9 @@ inline constexpr auto sync_stream_write_reserve = std::uint64_t{1U} << 20U;
 // capture and drops anything held. Intended for tests that assert on the SQL and
 // bound parameters a store operation produced; production never calls it.
 auto enable_statement_capture(PersistentStore& store, std::size_t capacity) -> void;
+// How many non-empty transactions `commit_persistent_transaction` has committed on this store. Counts commits,
+// whatever the number of statements in each. Test-facing; production never reads it.
+[[nodiscard]] auto committed_transaction_count(PersistentStore const& store) -> std::uint64_t;
 // Test-only: make the next `count` memory-backend persist operations fail. This
 // lets revocation paths prove they do not ignore a durable-store write failure.
 // Production never calls this.

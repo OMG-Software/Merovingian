@@ -70,14 +70,12 @@ auto parse_ignored_user_list(std::string_view content_json) -> std::unordered_se
 auto resolve_ignored_users(database::PersistentStore const& store, std::string_view user_id)
     -> std::unordered_set<std::string>
 {
-    auto const row = std::ranges::find_if(store.account_data, [&](database::PersistentAccountData const& data) {
-        return data.user_id == user_id && data.room_id.empty() && data.event_type == "m.ignored_user_list";
-    });
-    if (row == store.account_data.end())
+    auto const content = database::find_account_data_content(store, user_id, std::string_view{}, "m.ignored_user_list");
+    if (!content.has_value())
     {
         return {};
     }
-    return parse_ignored_user_list(row->content_json);
+    return parse_ignored_user_list(*content);
 }
 
 auto is_delivery_suppressed(std::unordered_set<std::string> const& ignored_senders, std::string_view sender,

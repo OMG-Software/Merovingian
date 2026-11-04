@@ -8165,6 +8165,8 @@ namespace
             return membership != nullptr ? *membership : std::string{};
         }();
 
+        // The history rows of every recipient this event notifies, committed together after the loop (ADR-0440).
+        auto notified = std::vector<database::PersistentNotification>{};
         // Built on the first recipient with a pusher (see the check below).
         auto active_users = std::optional<std::unordered_set<std::string, TransparentStringHash, std::equal_to<>>>{};
         auto recipients = room.members;
@@ -8235,12 +8237,9 @@ namespace
             // profile_tag is left empty: it names a specific pusher's
             // configured tag, but this recording happens once per (user,
             // event) rather than once per pusher.
-            std::ignore = database::store_notification(
-                store,
-                database::PersistentNotification{
-                    std::string{member}, room.room_id, composed.event_id, persisted_stream_ordering, notification_ts,
-                    push_notification_actions_json(result), std::string{}, result.tweak_highlight},
-                static_cast<std::size_t>(runtime.config.server().client_api.max_notifications_retained_per_user));
+            notified.push_back(database::PersistentNotification{
+                std::string{member}, room.room_id, composed.event_id, persisted_stream_ordering, notification_ts,
+                push_notification_actions_json(result), std::string{}, result.tweak_highlight});
 
             if (!push_delivery_enabled && !email_delivery_enabled)
             {
@@ -8353,6 +8352,18 @@ namespace
 
                 deliveries.push_back(PendingPushDelivery{pusher, std::move(notification)});
             }
+        }
+        // One transaction for the whole event, not one commit per recipient. A failure writes none of the rows and
+        // leaves memory equal to the database; the push deliveries above do not depend on them.
+        if (!database::store_notifications(
+                store, std::move(notified),
+                static_cast<std::size_t>(runtime.config.server().client_api.max_notifications_retained_per_user)))
+        {
+            log_diagnostic("push.notification_history.persist_failed",
+                           {
+                               {"event_id", composed.event_id, false}
+            },
+                           observability::LogEventSeverity::warning);
         }
         return deliveries;
     }

@@ -88,6 +88,18 @@ state.size()` and the row a position names still matches. Every code path that a
 calls `note_state_row_appended` or `rebuild_state_index` (the two writers in `persistent_store.cpp`, `reload_room`,
 and both hydration paths); a new one must too. Do not scan `state` for one key or one room in a handler.
 
+## Per-user and per-ID indexes (ADR-0440, ADR-0441)
+
+`account_data_user_index`, `notification_user_index` and `federation_transaction_index` follow the state index's rule:
+trusted only while `*_indexed_rows` equals the vector's size and the rows a position names match, else a lookup
+scans. Writers call their `ensure_*` first, so they heal; hydration calls `rebuild_account_data_index`,
+`rebuild_notification_index` and `rebuild_federation_transaction_index`. Look a user's account data up with
+`find_account_data_content` / `for_each_user_account_data`, never by looping `store.account_data`. `store.notifications`
+has no order (rows are erased by moving the last into the gap): use `list_notifications_for_user`. One event's
+notifications are written by `store_notifications` and its outbound transactions by `store_federation_transactions`,
+each in one transaction with the mirror changed after the commit. Tests prove cost with `committed_transaction_count`
+and the `*_rows_examined` counters, not time.
+
 ## Backend selection
 
 The backend is chosen at startup from config (`database.engine = sqlite | postgresql`).

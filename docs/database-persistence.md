@@ -275,8 +275,8 @@ value. Test fixtures that do not exercise persistence select it through
   persist and list rows, following the same pattern as `PersistentPusher`
   above; implemented for both SQLite and PostgreSQL, hydrated on backend
   open. `room_service.cpp`'s `build_pending_push_deliveries()` calls
-  `store_notification` for every local recipient whose push rule evaluation
-  resolves `notify: true` — **unconditionally**, regardless of
+  `store_notifications` once per event, with a row for every local recipient whose push rule evaluation
+  resolves `notify: true` — in one transaction, **unconditionally**, regardless of
   `server.push.enabled` or whether that recipient has a registered pusher:
   `GET /notifications` returns events the user "has been, or would have
   been, notified about" (spec), so a user with push turned off must still
@@ -288,9 +288,9 @@ value. Test fixtures that do not exercise persistence select it through
   `m.read.private` receipts in that room (unthreaded, or the one for the
   event's thread), so it always reflects the latest receipt without a
   write-side update on every receipt change.
-  **Retention:** `store_notification` prunes the oldest rows for that
-  `user_id` beyond `server.client_api.max_notifications_retained_per_user`
-  (default 1,000, valid range 1..100,000), after every insert. The same policy
+  **Retention:** `store_notifications` prunes, in the same transaction as the inserts, the oldest rows for each
+  notified `user_id` beyond `server.client_api.max_notifications_retained_per_user`
+  (default 1,000, valid range 1..100,000). The mirror changes only after the commit (ADR-0440). The same policy
   applies to the in-memory mirror and SQLite/PostgreSQL persistence; rows with
   the oldest stream ordering are removed first. It is independent of
   `server.push.max_in_flight_deliveries`, which bounds background tasks rather

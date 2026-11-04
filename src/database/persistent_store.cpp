@@ -574,6 +574,7 @@ auto write_connections_opened(PersistentStore const& store) -> std::uint64_t
         // configured capacity. Password hashes and token hashes must not outlive
         // the commit in process memory.
         auto const lk = std::lock_guard{*store.statement_capture_mutex};
+        ++store.committed_transactions;
         if (store.statement_capture_capacity != 0U)
         {
             for (auto const& statement : statements)
@@ -4304,6 +4305,129 @@ namespace
 
 } // namespace
 
+namespace
+{
+
+    auto const no_positions = std::vector<std::size_t>{};
+
+    [[nodiscard]] auto account_data_index_in_step(PersistentStore const& store) noexcept -> bool
+    {
+        return store.account_data_indexed_rows == store.account_data.size();
+    }
+
+    // Brings the index in step with `account_data`; a writer calls this first, so that it can keep it so.
+    auto ensure_account_data_index(PersistentStore& store) -> void
+    {
+        if (!account_data_index_in_step(store))
+        {
+            rebuild_account_data_index(store);
+        }
+    }
+
+    auto append_account_data_row(PersistentStore& store, PersistentAccountData data) -> void
+    {
+        auto const position = store.account_data.size();
+        store.account_data_user_index[data.user_id].push_back(position);
+        store.account_data.push_back(std::move(data));
+        store.account_data_indexed_rows = store.account_data.size();
+    }
+
+    // The positions of `user_id`'s rows from the index, or nullptr when the index cannot be trusted for this
+    // user (out of step, or a position that no longer names one of the user's rows). An empty answer is real.
+    [[nodiscard]] auto indexed_account_data_positions(PersistentStore const& store, std::string_view user_id)
+        -> std::vector<std::size_t> const*
+    {
+        if (!account_data_index_in_step(store))
+        {
+            return nullptr;
+        }
+        auto const entry = store.account_data_user_index.find(std::string{user_id});
+        if (entry == store.account_data_user_index.end())
+        {
+            return &no_positions;
+        }
+        auto const names_the_user = [&](std::size_t position) {
+            return position < store.account_data.size() && store.account_data[position].user_id == user_id;
+        };
+        return std::ranges::all_of(entry->second, names_the_user) ? &entry->second : nullptr;
+    }
+
+    [[nodiscard]] auto find_account_data_position(PersistentStore const& store, std::string_view user_id,
+                                                  std::string_view room_id, std::string_view event_type)
+        -> std::optional<std::size_t>
+    {
+        auto const matches = [&](PersistentAccountData const& row) {
+            return row.user_id == user_id && row.room_id == room_id && row.event_type == event_type;
+        };
+        if (auto const* positions = indexed_account_data_positions(store, user_id); positions != nullptr)
+        {
+            store.account_data_rows_examined.add(positions->size());
+            for (auto const position : *positions)
+            {
+                if (matches(store.account_data[position]))
+                {
+                    return position;
+                }
+            }
+            return std::nullopt;
+        }
+        store.account_data_rows_examined.add(store.account_data.size());
+        for (auto position = std::size_t{0U}; position < store.account_data.size(); ++position)
+        {
+            if (matches(store.account_data[position]))
+            {
+                return position;
+            }
+        }
+        return std::nullopt;
+    }
+
+} // namespace
+
+auto rebuild_account_data_index(PersistentStore& store) -> void
+{
+    store.account_data_user_index.clear();
+    for (auto position = std::size_t{0U}; position < store.account_data.size(); ++position)
+    {
+        store.account_data_user_index[store.account_data[position].user_id].push_back(position);
+    }
+    store.account_data_indexed_rows = store.account_data.size();
+}
+
+auto for_each_user_account_data(PersistentStore const& store, std::string_view user_id,
+                                std::function<void(PersistentAccountData const&)> const& visit) -> void
+{
+    if (auto const* positions = indexed_account_data_positions(store, user_id); positions != nullptr)
+    {
+        store.account_data_rows_examined.add(positions->size());
+        for (auto const position : *positions)
+        {
+            visit(store.account_data[position]);
+        }
+        return;
+    }
+    store.account_data_rows_examined.add(store.account_data.size());
+    for (auto const& row : store.account_data)
+    {
+        if (row.user_id == user_id)
+        {
+            visit(row);
+        }
+    }
+}
+
+[[nodiscard]] auto find_account_data_content(PersistentStore const& store, std::string_view user_id,
+                                             std::string_view room_id, std::string_view event_type)
+    -> std::optional<std::string>
+{
+    auto const position = find_account_data_position(store, user_id, room_id, event_type);
+    if (!position.has_value())
+    {
+        return std::nullopt;
+    }
+    return store.account_data[*position].content_json;
+}
+
 [[nodiscard]] auto store_account_data(PersistentStore& store, PersistentAccountData data) -> bool
 {
     if (data.user_id.empty() || data.event_type.empty() || data.content_json.size() > max_account_data_row_bytes)
@@ -4314,16 +4438,14 @@ namespace
     {
         return false;
     }
-    auto const existing = std::ranges::find_if(store.account_data, [&data](PersistentAccountData const& current) {
-        return current.user_id == data.user_id && current.room_id == data.room_id &&
-               current.event_type == data.event_type;
-    });
-    if (existing != store.account_data.end())
+    ensure_account_data_index(store);
+    if (auto const existing = find_account_data_position(store, data.user_id, data.room_id, data.event_type);
+        existing.has_value())
     {
-        *existing = std::move(data);
+        store.account_data[*existing] = std::move(data);
         return true;
     }
-    store.account_data.push_back(std::move(data));
+    append_account_data_row(store, std::move(data));
     return true;
 }
 
@@ -4343,17 +4465,22 @@ namespace
         }
         auto held_types = std::size_t{0U};
         auto existing = std::optional<std::size_t>{};
-        for (auto index = std::size_t{0U}; index < store.account_data.size(); ++index)
+        ensure_account_data_index(store);
+        if (auto const* positions = indexed_account_data_positions(store, data.user_id); positions != nullptr)
         {
-            auto const& row = store.account_data[index];
-            if (row.user_id != data.user_id || row.room_id != data.room_id)
+            store.account_data_rows_examined.add(positions->size());
+            for (auto const index : *positions)
             {
-                continue;
-            }
-            ++held_types;
-            if (row.event_type == data.event_type)
-            {
-                existing = index;
+                auto const& row = store.account_data[index];
+                if (row.room_id != data.room_id)
+                {
+                    continue;
+                }
+                ++held_types;
+                if (row.event_type == data.event_type)
+                {
+                    existing = index;
+                }
             }
         }
         if (!existing.has_value() && held_types >= max_types)
@@ -4370,7 +4497,7 @@ namespace
         }
         else
         {
-            store.account_data.push_back(std::move(data));
+            append_account_data_row(store, std::move(data));
         }
         return CappedAccountDataStore::stored;
     }
@@ -5407,97 +5534,229 @@ auto restore_sync_stream_id(PersistentStore& store) -> void
     return result;
 }
 
+namespace
+{
+
+    [[nodiscard]] auto notification_index_in_step(PersistentStore const& store) noexcept -> bool
+    {
+        return store.notification_indexed_rows == store.notifications.size();
+    }
+
+    auto ensure_notification_index(PersistentStore& store) -> void
+    {
+        if (!notification_index_in_step(store))
+        {
+            rebuild_notification_index(store);
+        }
+    }
+
+    // The positions of `user_id`'s rows, or nullptr when the index cannot be trusted for this user.
+    [[nodiscard]] auto indexed_notification_positions(PersistentStore const& store, std::string_view user_id)
+        -> std::vector<std::size_t> const*
+    {
+        if (!notification_index_in_step(store))
+        {
+            return nullptr;
+        }
+        auto const entry = store.notification_user_index.find(std::string{user_id});
+        if (entry == store.notification_user_index.end())
+        {
+            return &no_positions;
+        }
+        auto const names_the_user = [&](std::size_t position) {
+            return position < store.notifications.size() && store.notifications[position].user_id == user_id;
+        };
+        return std::ranges::all_of(entry->second, names_the_user) ? &entry->second : nullptr;
+    }
+
+    // Replaces the user's row for the same event, or appends. The index must be in step.
+    auto upsert_notification_row(PersistentStore& store, PersistentNotification notification) -> void
+    {
+        auto& positions = store.notification_user_index[notification.user_id];
+        for (auto const position : positions)
+        {
+            if (store.notifications[position].event_id == notification.event_id)
+            {
+                store.notifications[position] = std::move(notification);
+                return;
+            }
+        }
+        positions.push_back(store.notifications.size());
+        store.notifications.push_back(std::move(notification));
+        store.notification_indexed_rows = store.notifications.size();
+    }
+
+    // Removes one row by moving the last row into its place, so the cost does not grow with the table.
+    auto erase_notification_row(PersistentStore& store, std::string const& user_id, std::string const& event_id) -> void
+    {
+        auto const entry = store.notification_user_index.find(user_id);
+        if (entry == store.notification_user_index.end())
+        {
+            return;
+        }
+        auto& positions = entry->second;
+        auto const found = std::ranges::find_if(positions, [&](std::size_t position) {
+            return store.notifications[position].event_id == event_id;
+        });
+        if (found == positions.end())
+        {
+            return;
+        }
+        auto const position = *found;
+        *found = positions.back();
+        positions.pop_back();
+        if (positions.empty())
+        {
+            store.notification_user_index.erase(entry);
+        }
+        auto const last = store.notifications.size() - 1U;
+        if (position != last)
+        {
+            auto& moved_positions = store.notification_user_index[store.notifications[last].user_id];
+            std::ranges::replace(moved_positions, last, position);
+            store.notifications[position] = std::move(store.notifications[last]);
+        }
+        store.notifications.pop_back();
+        store.notification_indexed_rows = store.notifications.size();
+    }
+
+    struct HeldNotification final
+    {
+        std::string event_id{};
+        std::uint64_t stream_ordering{0U};
+    };
+
+} // namespace
+
+auto rebuild_notification_index(PersistentStore& store) -> void
+{
+    store.notification_user_index.clear();
+    for (auto position = std::size_t{0U}; position < store.notifications.size(); ++position)
+    {
+        store.notification_user_index[store.notifications[position].user_id].push_back(position);
+    }
+    store.notification_indexed_rows = store.notifications.size();
+}
+
+[[nodiscard]] auto store_notifications(PersistentStore& store, std::vector<PersistentNotification> notifications,
+                                       std::size_t max_per_user) -> bool
+{
+    if (notifications.empty())
+    {
+        return true;
+    }
+    if (std::ranges::any_of(notifications, [](PersistentNotification const& notification) {
+            return notification.user_id.empty() || notification.room_id.empty() || notification.event_id.empty();
+        }))
+    {
+        return false;
+    }
+    ensure_notification_index(store);
+
+    auto statements = std::vector<PreparedStatement>{};
+    statements.reserve(notifications.size());
+    // Each notified user's rows after the batch, to decide which are over the cap before anything is written.
+    auto held_by_user = std::unordered_map<std::string, std::vector<HeldNotification>>{};
+    auto users_in_order = std::vector<std::string>{};
+    for (auto const& notification : notifications)
+    {
+        statements.push_back(record_statement(
+            "upsert_notification",
+            "INSERT INTO notifications (user_id, room_id, event_id, stream_ordering, ts, actions, profile_tag, "
+            "highlight) VALUES ($1, $2, $3, $4, $5, $6, $7, $8) ON CONFLICT (user_id, event_id) DO UPDATE SET "
+            "room_id = $2, stream_ordering = $4, ts = $5, actions = $6, profile_tag = $7, highlight = $8",
+            {public_value(notification.user_id), public_value(notification.room_id),
+             public_value(notification.event_id), public_value(std::to_string(notification.stream_ordering)),
+             public_value(std::to_string(notification.ts)), public_value(notification.actions),
+             public_value(notification.profile_tag), public_value(notification.highlight ? "true" : "false")}));
+        auto [held, first_for_user] = held_by_user.try_emplace(notification.user_id);
+        if (first_for_user)
+        {
+            users_in_order.push_back(notification.user_id);
+            if (auto const* positions = indexed_notification_positions(store, notification.user_id);
+                positions != nullptr)
+            {
+                store.notification_rows_examined.add(positions->size());
+                for (auto const position : *positions)
+                {
+                    held->second.push_back(
+                        {store.notifications[position].event_id, store.notifications[position].stream_ordering});
+                }
+            }
+        }
+        auto const same_event = std::ranges::find(held->second, notification.event_id, &HeldNotification::event_id);
+        if (same_event != held->second.end())
+        {
+            same_event->stream_ordering = notification.stream_ordering;
+        }
+        else
+        {
+            held->second.push_back({notification.event_id, notification.stream_ordering});
+        }
+    }
+
+    // Bound each user's history so it cannot grow without limit under sustained message volume: the oldest rows
+    // beyond `max_per_user` go, in the same transaction as the rows that made them excess.
+    auto victims = std::vector<std::pair<std::string, std::string>>{};
+    for (auto const& user_id : users_in_order)
+    {
+        auto& held = held_by_user[user_id];
+        if (held.size() <= max_per_user)
+        {
+            continue;
+        }
+        std::ranges::stable_sort(held, {}, &HeldNotification::stream_ordering);
+        auto const excess = held.size() - max_per_user;
+        for (auto index = std::size_t{0U}; index < excess; ++index)
+        {
+            victims.emplace_back(user_id, held[index].event_id);
+            statements.push_back(record_statement("prune_notification",
+                                                  "DELETE FROM notifications WHERE user_id = $1 AND event_id = $2",
+                                                  {public_value(user_id), public_value(held[index].event_id)}));
+        }
+    }
+
+    // One commit for the event's rows (ADR-0440). The mirror changes only after it, so a failed commit leaves the
+    // in-memory rows and the database equal (CSAZ-10).
+    if (!commit_persistent_transaction(store, statements))
+    {
+        return false;
+    }
+    for (auto& notification : notifications)
+    {
+        upsert_notification_row(store, std::move(notification));
+    }
+    for (auto const& [user_id, event_id] : victims)
+    {
+        erase_notification_row(store, user_id, event_id);
+    }
+    return true;
+}
+
 [[nodiscard]] auto store_notification(PersistentStore& store, PersistentNotification notification,
                                       std::size_t max_per_user) -> bool
 {
-    if (notification.user_id.empty() || notification.room_id.empty() || notification.event_id.empty())
-    {
-        return false;
-    }
-    auto const statement = record_statement(
-        "upsert_notification",
-        "INSERT INTO notifications (user_id, room_id, event_id, stream_ordering, ts, actions, profile_tag, "
-        "highlight) VALUES ($1, $2, $3, $4, $5, $6, $7, $8) ON CONFLICT (user_id, event_id) DO UPDATE SET "
-        "room_id = $2, stream_ordering = $4, ts = $5, actions = $6, profile_tag = $7, highlight = $8",
-        {public_value(notification.user_id), public_value(notification.room_id), public_value(notification.event_id),
-         public_value(std::to_string(notification.stream_ordering)), public_value(std::to_string(notification.ts)),
-         public_value(notification.actions), public_value(notification.profile_tag),
-         public_value(notification.highlight ? "true" : "false")});
-    if (!record_and_persist(store, statement))
-    {
-        return false;
-    }
-    // Keep the in-memory mirror in sync; replace the existing entry if present.
-    auto const existing =
-        std::ranges::find_if(store.notifications, [&notification](PersistentNotification const& current) {
-            return current.user_id == notification.user_id && current.event_id == notification.event_id;
-        });
-    if (existing != store.notifications.end())
-    {
-        *existing = notification;
-    }
-    else
-    {
-        store.notifications.push_back(notification);
-    }
-
-    // Bound this user's notification history so it cannot grow without limit
-    // under sustained message volume. The caller supplies the operational
-    // retention policy; direct callers use the API's documented default.
-    auto user_row_count = std::size_t{0U};
-    for (auto const& row : store.notifications)
-    {
-        if (row.user_id == notification.user_id)
-        {
-            ++user_row_count;
-        }
-    }
-    if (user_row_count > max_per_user)
-    {
-        auto user_rows = std::vector<PersistentNotification const*>{};
-        user_rows.reserve(user_row_count);
-        for (auto const& row : store.notifications)
-        {
-            if (row.user_id == notification.user_id)
-            {
-                user_rows.push_back(&row);
-            }
-        }
-        std::ranges::sort(user_rows, [](PersistentNotification const* lhs, PersistentNotification const* rhs) {
-            return lhs->stream_ordering < rhs->stream_ordering;
-        });
-        // Copy the event ids of the oldest rows to delete before mutating
-        // store.notifications -- erasing invalidates the pointers in
-        // user_rows, but not these already-copied strings.
-        auto const excess = user_row_count - max_per_user;
-        auto to_delete = std::vector<std::string>{};
-        to_delete.reserve(excess);
-        for (auto i = std::size_t{0U}; i < excess; ++i)
-        {
-            to_delete.push_back(user_rows[i]->event_id);
-        }
-        for (auto const& stale_event_id : to_delete)
-        {
-            std::ignore = record_and_persist(
-                store,
-                record_statement("prune_notification", "DELETE FROM notifications WHERE user_id = $1 AND event_id = $2",
-                                 {public_value(notification.user_id), public_value(stale_event_id)}));
-            auto const stale = std::ranges::find_if(store.notifications, [&](PersistentNotification const& current) {
-                return current.user_id == notification.user_id && current.event_id == stale_event_id;
-            });
-            if (stale != store.notifications.end())
-            {
-                store.notifications.erase(stale);
-            }
-        }
-    }
-    return true;
+    auto batch = std::vector<PersistentNotification>{};
+    batch.push_back(std::move(notification));
+    return store_notifications(store, std::move(batch), max_per_user);
 }
 
 [[nodiscard]] auto list_notifications_for_user(PersistentStore const& store, std::string_view user_id)
     -> std::vector<PersistentNotification>
 {
     auto result = std::vector<PersistentNotification>{};
+    if (auto const* positions = indexed_notification_positions(store, user_id); positions != nullptr)
+    {
+        store.notification_rows_examined.add(positions->size());
+        result.reserve(positions->size());
+        for (auto const position : *positions)
+        {
+            result.push_back(store.notifications[position]);
+        }
+        std::ranges::stable_sort(result, {}, &PersistentNotification::stream_ordering);
+        return result;
+    }
+    store.notification_rows_examined.add(store.notifications.size());
     for (auto const& notification : store.notifications)
     {
         if (notification.user_id == user_id)
@@ -6364,6 +6623,12 @@ auto rebuild_client_txn_index(PersistentStore& store) -> void
     }
     append_client_txn(store, std::move(record));
     return true;
+}
+
+[[nodiscard]] auto committed_transaction_count(PersistentStore const& store) -> std::uint64_t
+{
+    auto const lk = std::lock_guard{*store.statement_capture_mutex};
+    return store.committed_transactions;
 }
 
 auto enable_statement_capture(PersistentStore& store, std::size_t capacity) -> void
