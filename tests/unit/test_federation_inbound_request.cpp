@@ -709,6 +709,55 @@ SCENARIO("Inbound federation handles non-transaction endpoints with PDU validati
     }
 }
 
+SCENARIO("Inbound federation refuses an invite whose event has no depth", "[federation][inbound][invite][depth]")
+{
+    GIVEN("a signed v2 invite whose event omits the required depth")
+    {
+        auto runtime = merovingian::federation::make_federation_runtime_state(runtime_config());
+        auto const origin = std::string{"matrix.example.org"};
+        auto const key_id = std::string{"ed25519:auto"};
+        auto const token = std::string{"verify-token"};
+        merovingian::federation::upsert_remote(runtime, remote_for(origin, key_id, token));
+        auto const unsigned_invite_json = std::string{
+            "{\"type\":\"m.room.member\",\"state_key\":\"@alice:matrix.example.org\",\"sender\":\"@alice:matrix."
+            "example.org\",\"room_id\":\"!room1:example.org\",\"content\":{\"membership\":\"invite\"},\"origin_"
+            "server_ts\":1000,\"prev_events\":[],\"auth_events\":[]}"};
+        auto const invite_event_json =
+            merovingian::federation::test::make_signed_event_json(unsigned_invite_json, origin, key_id, token, "12");
+        REQUIRE_FALSE(invite_event_json.empty());
+
+        auto invite_seen = std::make_shared<bool>(false);
+        runtime.invite_handler = [invite_seen](merovingian::federation::InviteRequest const& request) {
+            *invite_seen = true;
+            auto result = merovingian::federation::InviteAcceptResult{};
+            result.accepted = true;
+            result.status = 200U;
+            result.signed_event_json = request.invite_event_json;
+            return result;
+        };
+        runtime.room_version_resolver = [](std::string_view) {
+            return std::string{"10"};
+        };
+        auto request = signed_request(origin, key_id, token, invite_event_json);
+        request.target = "/_matrix/federation/v1/invite/!room1:example.org/" +
+                         merovingian::federation::test::reference_hash_event_id(invite_event_json, "12");
+        request.signature = merovingian::federation::make_federation_signature(
+            origin, request.destination, request.method, request.target, request.body,
+            merovingian::federation::test::keypair_from_seed(token).secret_key);
+
+        WHEN("the request is handled")
+        {
+            auto const response = merovingian::federation::handle_inbound_federation_request(runtime, request);
+
+            THEN("it is refused as malformed and the invite handler never runs")
+            {
+                REQUIRE(response.status == 400U);
+                REQUIRE_FALSE(*invite_seen);
+            }
+        }
+    }
+}
+
 SCENARIO("Inbound federation rejects malformed send targets and unsigned PDUs", "[federation][inbound][security]")
 {
     GIVEN("a runtime with malformed transaction requests")

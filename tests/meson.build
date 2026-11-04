@@ -288,6 +288,7 @@ shell = find_program('sh')
       'unit/test_federation_denied_ranges.cpp',
       'unit/test_federation_private_range_allowlist.cpp',
       'unit/test_cached_server_discovery_bounds.cpp',
+      'unit/test_server_discovery_redirects.cpp',
       'unit/test_server_discovery_system_resolver.cpp',
       'unit/test_outbound_discovery_cache.cpp',
       'unit/test_remote_key_read_through.cpp',

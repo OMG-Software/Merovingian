@@ -577,6 +577,29 @@ auto discover_server(LiteralDiscoveryOptIn, std::string_view server_name, std::s
     return result;
 }
 
+auto fetch_well_known_following_redirects(std::string_view server_name, std::uint32_t timeout_seconds,
+                                           ServerDiscoveryNetwork& network, WellKnownHopFetcher const& fetch_hop)
+    -> WellKnownServerResult
+{
+    // Placeholder until the redirect logic lands: the first request only.
+    auto const url = "https://" + std::string{server_name} + "/.well-known/matrix/server";
+    auto addresses = network.lookup_addresses(server_name, 443U);
+    if (!addresses.ok)
+    {
+        return {false, false, {}, "well-known host address is disallowed or unresolved"};
+    }
+    auto const response = fetch_hop(url, addresses.addresses, timeout_seconds);
+    if (!response.transport_ok)
+    {
+        return {false, false, {}, response.error};
+    }
+    if (response.status != 200U)
+    {
+        return {false, true, {}, "well-known not present"};
+    }
+    return {true, true, response.body, {}};
+}
+
 auto discover_server(std::string_view server_name, ServerDiscoveryNetwork& network, std::uint32_t timeout_seconds,
                      std::vector<std::string> const& denied_ranges) -> ServerDiscoveryResult
 {

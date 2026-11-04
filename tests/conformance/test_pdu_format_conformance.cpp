@@ -31,11 +31,14 @@
 #include "merovingian/events/event_id.hpp"
 #include "merovingian/federation/inbound_ingestion.hpp"
 #include "merovingian/federation/inbound_request.hpp"
+#include "merovingian/rooms/room_version_policy.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
 #include <optional>
 #include <string>
+#include <utility>
+#include <vector>
 
 namespace
 {
@@ -396,6 +399,77 @@ SCENARIO("PDU envelope extracts depth correctly from the JSON", "[pdu][format][c
                 // Spec MUST: state events carry a state_key field.
                 REQUIRE(envelope->state_key.has_value());
                 REQUIRE(envelope->state_key.value().empty()); // state_key is "" for create
+            }
+        }
+    }
+}
+
+// Spec: Room Versions 3 to 12, "Event format" (depth)
+// Endpoint / Section: Server-Server API "PDUs"; rooms/v11.md `depth`, rooms/v1.md `depth`
+// URL: ../../docs/matrix-v1.19-spec/rooms/v11.md
+//
+// `depth` is "**Required:** The maximum depth of the `prev_events`, plus one", an integer below 2^53 - 1 (2^63 - 1 before
+// room version 6; Canonical JSON admits nothing above 2^53 - 1). A PDU whose depth is missing, negative or not an
+// integer is malformed and is refused like any other malformed PDU, never stored with a depth of 0.
+SCENARIO("A PDU whose depth is missing, negative or not an integer is refused", "[pdu][format][conformance][depth]")
+{
+    auto const with_depth = [](std::string const& depth_member) {
+        return std::string{"{\"type\":\"m.room.message\","
+                           "\"room_id\":\"!room:example.org\","
+                           "\"sender\":\"@alice:example.org\","
+                           "\"content\":{\"msgtype\":\"m.text\",\"body\":\"hi\"},"} +
+               depth_member +
+               "\"hashes\":{\"sha256\":\"x\"},"
+               "\"origin_server_ts\":2000,"
+               "\"prev_events\":[\"$prev:example.org\"],"
+               "\"auth_events\":[\"$create:example.org\"],"
+               "\"signatures\":{}}";
+    };
+
+    GIVEN("PDUs whose depth is absent, negative, fractional, a string or beyond 2^53 - 1")
+    {
+        auto const malformed = std::vector<std::pair<std::string, std::string>>{
+            {"missing",    with_depth("")                            },
+            {"negative",   with_depth("\"depth\":-1,")               },
+            {"fractional", with_depth("\"depth\":1.5,")              },
+            {"string",     with_depth("\"depth\":\"7\",")            },
+            {"null",       with_depth("\"depth\":null,")             },
+            {"too large",  with_depth("\"depth\":9007199254740992,") },
+        };
+
+        WHEN("each is parsed as an inbound PDU and checked against the room version's format")
+        {
+            THEN("none is accepted and none is stored with a depth of 0")
+            {
+                for (auto const& [label, json] : malformed)
+                {
+                    CAPTURE(label);
+                    // Spec MUST: depth is required and an integer.
+                    REQUIRE_FALSE(merovingian::federation::parse_inbound_pdu_envelope(json, "11").has_value());
+                    auto const parsed = merovingian::canonicaljson::parse_lossless(json);
+                    REQUIRE(parsed.error == merovingian::canonicaljson::ParseError::none);
+                    auto const* policy = merovingian::rooms::find_room_version_policy("11");
+                    REQUIRE(policy != nullptr);
+                    REQUIRE_FALSE(merovingian::federation::pdu_format_violation(parsed.value, *policy).empty());
+                }
+            }
+        }
+    }
+
+    GIVEN("PDUs whose depth is 0 or the largest value Canonical JSON admits")
+    {
+        WHEN("each is parsed as an inbound PDU")
+        {
+            auto const zero = merovingian::federation::parse_inbound_pdu_envelope(with_depth("\"depth\":0,"), "11");
+            auto const largest =
+                merovingian::federation::parse_inbound_pdu_envelope(with_depth("\"depth\":9007199254740991,"), "11");
+
+            THEN("both are accepted with the depth they carry")
+            {
+                REQUIRE(zero.has_value());
+                REQUIRE(zero->depth == 0U);
+                REQUIRE(largest.has_value());
+                REQUIRE(largest->depth == 9007199254740991ULL);
             }
         }
     }
