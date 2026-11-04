@@ -2,6 +2,7 @@ sync_sources = files(
   'bundled_aggregations.cpp',
   'device_list_delta.cpp',
   'history_visibility.cpp',
+  'lazy_member_tracker.cpp',
   'read_markers.cpp',
   'receipt_content_builder.cpp',
   'receipt_visibility.cpp',
