@@ -132,12 +132,11 @@ SCENARIO("Sessions that can no longer authenticate are erased and the rest stay 
         auto const same = [](LocalSession const& session, std::string const& hash) {
             return session.access_token_hash == hash;
         };
-        auto const now = std::chrono::system_clock::now();
 
         WHEN("the unusable sessions are erased")
         {
-            auto const removed = table.erase_if([now](LocalSession const& session) {
-                return merovingian::homeserver::session_is_unusable(session, now, std::chrono::seconds{0});
+            auto const removed = table.erase_if([](LocalSession const& session) {
+                return session.revoked;
             });
 
             THEN("only the live ones remain and each is still found by its hash")
@@ -151,28 +150,6 @@ SCENARIO("Sessions that can no longer authenticate are erased and the rest stay 
                     REQUIRE(found != nullptr);
                     REQUIRE(found->access_token_hash == hash_of(number));
                 }
-            }
-        }
-    }
-}
-
-SCENARIO("An expired session is unusable only once its grace period has passed", "[homeserver][session_table][p7]")
-{
-    GIVEN("a session that expired an hour ago and one that never expires")
-    {
-        auto const now = std::chrono::system_clock::now();
-        auto expired = session_with(1U);
-        expired.expires_at = now - std::chrono::hours{1};
-        auto const forever = session_with(2U);
-
-        WHEN("the sessions are judged with and without a grace period")
-        {
-            THEN("grace keeps the expired one, and a session without expiry is never unusable")
-            {
-                using merovingian::homeserver::session_is_unusable;
-                REQUIRE(session_is_unusable(expired, now, std::chrono::seconds{0}));
-                REQUIRE_FALSE(session_is_unusable(expired, now, std::chrono::hours{2}));
-                REQUIRE_FALSE(session_is_unusable(forever, now, std::chrono::seconds{0}));
             }
         }
     }

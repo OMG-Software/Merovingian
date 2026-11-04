@@ -2188,8 +2188,7 @@ struct UnusableCredentials final
     std::vector<std::string> access_token_hashes{};
     std::vector<std::string> refresh_token_hashes{};
 };
-[[nodiscard]] auto collect_unusable_credentials(PersistentStore const& store,
-                                                std::chrono::system_clock::time_point now,
+[[nodiscard]] auto collect_unusable_credentials(PersistentStore const& store, std::chrono::system_clock::time_point now,
                                                 std::chrono::system_clock::duration expired_access_grace)
     -> UnusableCredentials;
 // Deletes the named rows from the database in ONE transaction, so a caller bounds its batch by the size of the
@@ -2444,8 +2443,8 @@ namespace detail
     [[nodiscard]] auto audit_rows_older_than_exist_in_sqlite(std::string const& path, std::uint64_t cutoff_ms)
         -> std::optional<bool>;
     [[nodiscard]] auto audit_rows_older_than_exist_in_postgresql(std::string_view conninfo,
-                                                                 std::string_view runtime_role,
-                                                                 std::uint64_t cutoff_ms) -> std::optional<bool>;
+                                                                 std::string_view runtime_role, std::uint64_t cutoff_ms)
+        -> std::optional<bool>;
     // Test seam: called with each table's name once that table's rows of a
     // room snapshot have been read, so a test can commit between two reads.
     // Production callers pass none.

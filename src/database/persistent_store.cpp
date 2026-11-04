@@ -674,24 +674,26 @@ auto write_connections_opened(PersistentStore const& store) -> std::uint64_t
     statements.push_back(record_statement("revoke_access_token",
                                           "UPDATE access_tokens SET revoked = $1 WHERE token_hash = $2",
                                           {
-                                              {"true",                        false},
+                                              {"true",                         false},
                                               {std::string{access_token_hash}, true }
     }));
-    statements.push_back(record_statement("revoke_device_refresh_tokens",
-                                          "UPDATE refresh_tokens SET revoked = $1 WHERE user_id = $2 AND "
-                                          "device_id = $3",
-                                          {
-                                              {"true",                 false},
-                                              {std::string{user_id},   false},
-                                              {std::string{device_id}, false}
+    statements.push_back(
+        record_statement("revoke_device_refresh_tokens",
+                         "UPDATE refresh_tokens SET revoked = $1 WHERE user_id = $2 AND "
+                         "device_id = $3",
+                         {
+                             {"true",                 false},
+                             {std::string{user_id},   false},
+                             {std::string{device_id}, false}
     }));
-    statements.push_back(record_statement("revoke_device_access_tokens",
-                                          "UPDATE access_tokens SET revoked = $1 WHERE user_id = $2 AND "
-                                          "device_id = $3",
-                                          {
-                                              {"true",                 false},
-                                              {std::string{user_id},   false},
-                                              {std::string{device_id}, false}
+    statements.push_back(
+        record_statement("revoke_device_access_tokens",
+                         "UPDATE access_tokens SET revoked = $1 WHERE user_id = $2 AND "
+                         "device_id = $3",
+                         {
+                             {"true",                 false},
+                             {std::string{user_id},   false},
+                             {std::string{device_id}, false}
     }));
     if (!commit_persistent_transaction(store, statements))
     {
@@ -4306,13 +4308,12 @@ auto read_media_blob(MediaBlobRead const& read) -> std::optional<std::string>
     statements.push_back(record_statement(
         "moderate_media_admin_action", "INSERT INTO admin_actions VALUES ($1, $2, $3)",
         {public_value(action.admin_user_id), public_value(action.action), public_value(action.target)}));
-    statements.push_back(
-        record_statement("moderate_media_audit",
-                         "INSERT INTO audit_log (category, event_type, actor, target, reason, created_at_ms) VALUES "
-                         "($1, $2, $3, $4, $5, $6)",
-                         {public_value(audit.category), public_value(audit.event_type), public_value(audit.actor),
-                          public_value(audit.target), public_value(audit.reason),
-                          public_value(std::to_string(current_epoch_ms()))}));
+    statements.push_back(record_statement(
+        "moderate_media_audit",
+        "INSERT INTO audit_log (category, event_type, actor, target, reason, created_at_ms) VALUES "
+        "($1, $2, $3, $4, $5, $6)",
+        {public_value(audit.category), public_value(audit.event_type), public_value(audit.actor),
+         public_value(audit.target), public_value(audit.reason), public_value(std::to_string(current_epoch_ms()))}));
     if (!commit_persistent_transaction(store, statements))
     {
         return false;
@@ -4468,17 +4469,17 @@ auto read_media_blob(MediaBlobRead const& read) -> std::optional<std::string>
     {
         event.created_at_ms = current_epoch_ms();
     }
-    if (!record_and_persist(
-            store, record_statement("append_audit",
-                                    "INSERT INTO audit_log (category, event_type, actor, target, reason, "
-                                    "created_at_ms) VALUES ($1, $2, $3, $4, $5, $6)",
-                                    {
-                                        {event.category,                      false},
-                                        {event.event_type,                    false},
-                                        {event.actor,                         false},
-                                        {event.target,                        false},
-                                        {event.reason,                        false},
-                                        {std::to_string(event.created_at_ms), false}
+    if (!record_and_persist(store,
+                            record_statement("append_audit",
+                                             "INSERT INTO audit_log (category, event_type, actor, target, reason, "
+                                             "created_at_ms) VALUES ($1, $2, $3, $4, $5, $6)",
+                                             {
+                                                 {event.category,                      false},
+                                                 {event.event_type,                    false},
+                                                 {event.actor,                         false},
+                                                 {event.target,                        false},
+                                                 {event.reason,                        false},
+                                                 {std::to_string(event.created_at_ms), false}
     })))
     {
         return false;
@@ -4529,12 +4530,12 @@ auto remember_audit_event(PersistentStore& store, PersistentAuditEvent event) ->
     auto const row_name = std::string{postgresql ? "ctid" : "rowid"};
     auto const integer = std::string{postgresql ? "BIGINT" : "INTEGER"};
     auto const stamp = "CAST(created_at_ms AS " + integer + ")";
-    return record_and_persist(
-        store, record_statement("delete_expired_audit_rows",
-                                "DELETE FROM audit_log WHERE " + row_name + " IN (SELECT " + row_name +
-                                    " FROM audit_log WHERE " + stamp + " > 0 AND " + stamp + " < CAST($1 AS " +
-                                    integer + ") LIMIT " + std::to_string(limit) + ")",
-                                {public_value(std::to_string(cutoff_ms))}));
+    return record_and_persist(store, record_statement("delete_expired_audit_rows",
+                                                      "DELETE FROM audit_log WHERE " + row_name + " IN (SELECT " +
+                                                          row_name + " FROM audit_log WHERE " + stamp + " > 0 AND " +
+                                                          stamp + " < CAST($1 AS " + integer + ") LIMIT " +
+                                                          std::to_string(limit) + ")",
+                                                      {public_value(std::to_string(cutoff_ms))}));
 }
 
 auto forget_audit_events_older_than(PersistentStore& store, std::uint64_t cutoff_ms) -> std::size_t
@@ -4550,8 +4551,7 @@ auto forget_audit_events_older_than(PersistentStore& store, std::uint64_t cutoff
     return removed;
 }
 
-[[nodiscard]] auto collect_unusable_credentials(PersistentStore const& store,
-                                                std::chrono::system_clock::time_point now,
+[[nodiscard]] auto collect_unusable_credentials(PersistentStore const& store, std::chrono::system_clock::time_point now,
                                                 std::chrono::system_clock::duration expired_access_grace)
     -> UnusableCredentials
 {
@@ -4581,12 +4581,18 @@ auto forget_audit_events_older_than(PersistentStore& store, std::uint64_t cutoff
     for (auto const& hash : access_token_hashes)
     {
         statements.push_back(record_statement("delete_unusable_access_token",
-                                              "DELETE FROM access_tokens WHERE token_hash = $1", {{hash, true}}));
+                                              "DELETE FROM access_tokens WHERE token_hash = $1",
+                                              {
+                                                  {hash, true}
+        }));
     }
     for (auto const& hash : refresh_token_hashes)
     {
         statements.push_back(record_statement("delete_unusable_refresh_token",
-                                              "DELETE FROM refresh_tokens WHERE token_hash = $1", {{hash, true}}));
+                                              "DELETE FROM refresh_tokens WHERE token_hash = $1",
+                                              {
+                                                  {hash, true}
+        }));
     }
     return commit_persistent_transaction(store, statements);
 }

@@ -607,9 +607,9 @@ namespace
                                                  std::chrono::system_clock::time_point now) -> bool
     {
         return database.sessions.find(token_hashes, [now](LocalSession const& session, std::string const& hash) {
-                   return token_hash_matches(session.access_token_hash, hash) && !session.revoked &&
-                          is_expired(session.expires_at, now);
-               }) != nullptr;
+            return token_hash_matches(session.access_token_hash, hash) && !session.revoked &&
+                   is_expired(session.expires_at, now);
+        }) != nullptr;
     }
 
     // One-shot migration of a v3 access token to the master-key-derived v4 hash.
@@ -1879,8 +1879,8 @@ auto logout_local_user(HomeserverRuntime& runtime, std::string_view access_token
 
     // P13 (ADR-0491): the presented token, the device's refresh tokens and the device's access tokens are
     // revoked in one transaction; the checks below confirm the store agrees before anything is marked.
-    std::ignore = database::revoke_device_credentials(runtime.database.persistent_store, persisted_hash, user_id,
-                                                      device_id);
+    std::ignore =
+        database::revoke_device_credentials(runtime.database.persistent_store, persisted_hash, user_id, device_id);
     if (!access_token_is_revoked(runtime.database.persistent_store, persisted_hash))
     {
         return make_operation_result(false, {}, "token revocation persistence failed", 500U);

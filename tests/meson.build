@@ -622,6 +622,7 @@ shell = find_program('sh')
       'integration/test_homeserver_vertical_slice_flow.cpp',
       'integration/test_retention_sweep_flow.cpp',
       'integration/test_commit_grouping_flow.cpp',
+      'integration/test_postgresql_retention_flow.cpp',
       'integration/test_http_server_listener_flow.cpp',
       'integration/test_http_worker_fairness_flow.cpp',
       'integration/test_join_room_flow.cpp',

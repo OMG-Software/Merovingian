@@ -11,16 +11,6 @@
 namespace merovingian::homeserver
 {
 
-auto session_is_unusable(LocalSession const& session, std::chrono::system_clock::time_point now,
-                         std::chrono::system_clock::duration grace) noexcept -> bool
-{
-    if (session.revoked)
-    {
-        return true;
-    }
-    return session.expires_at.has_value() && *session.expires_at + grace <= now;
-}
-
 auto SessionTable::reserve(std::size_t capacity) -> void
 {
     sessions_.reserve(capacity);

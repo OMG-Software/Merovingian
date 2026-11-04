@@ -24,10 +24,4 @@ struct LocalSession final
     std::string predecessor_refresh_hash{};
 };
 
-// True when the session can never authenticate again: revoked is one-way (ADR-0052) and a finite expiry only
-// moves further into the past. A session that expired less than `grace` ago is kept, so that the "token
-// expired" audit reason survives for a while after the expiry.
-[[nodiscard]] auto session_is_unusable(LocalSession const& session, std::chrono::system_clock::time_point now,
-                                       std::chrono::system_clock::duration grace) noexcept -> bool;
-
 } // namespace merovingian::homeserver

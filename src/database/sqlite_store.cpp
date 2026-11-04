@@ -1881,8 +1881,7 @@ namespace detail
         return rows;
     }
 
-    auto audit_rows_older_than_exist_in_sqlite(std::string const& path, std::uint64_t cutoff_ms)
-        -> std::optional<bool>
+    auto audit_rows_older_than_exist_in_sqlite(std::string const& path, std::uint64_t cutoff_ms) -> std::optional<bool>
     {
         if (path.empty())
         {
