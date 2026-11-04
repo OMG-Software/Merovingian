@@ -1148,6 +1148,15 @@ media-fetch-pool task.
   the class rather than the one instance.
   Source: [ADR-0052](adr/0052-revocation-of-credentials-is-one-way.md); `src/auth/AGENTS.md`.
 
+- **A revocation made of several commits must stay retryable: perform the step a repeat reports
+  as "already done" last, and mark in-memory sessions revoked only after the durable writes
+  succeed.** Device deletion revokes tokens, verifies the store, marks sessions, answers 404 if
+  there was no row, then deletes the row.
+  Why: deleting the row first made the 404 the retry gate, so a failed token revocation could
+  never be repeated and the token stayed live while a bulk delete reported success.
+  Source: [ADR-0407](adr/0407-delete-the-device-row-after-its-tokens-are-revoked.md);
+  `src/auth/AGENTS.md`.
+
 - **Never retain committed statements in production; in-memory mirrors of append-only tables
   are bounded windows.** Statement capture is opt-in, bounded and off by default;
   `PersistentStore::audit_log` keeps only the newest 1 024 rows.

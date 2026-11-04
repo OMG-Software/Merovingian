@@ -1822,7 +1822,11 @@ auto logout_local_user(HomeserverRuntime& runtime, std::string_view access_token
     auto persisted_hash = std::string{};
     auto revoked_any = false;
 
-    for (auto& session : runtime.database.sessions)
+    // F-67: find the session but do not mark it revoked yet. Marking it before the persists below
+    // closed the retry gate on a failure: the client's retry then found no live session and was
+    // answered unauthenticated, while the refresh token the failure left unrevoked could still mint.
+    // The sessions are marked once every persist has succeeded.
+    for (auto const& session : runtime.database.sessions)
     {
         if (matches_any_token_hash(session.access_token_hash, token_hashes) && !session.revoked)
         {
@@ -1832,7 +1836,6 @@ auto logout_local_user(HomeserverRuntime& runtime, std::string_view access_token
                 device_id = session.device_id;
                 persisted_hash = session.access_token_hash;
             }
-            session.revoked = true;
             revoked_any = true;
         }
     }
@@ -1912,6 +1915,11 @@ auto logout_all_local_user(HomeserverRuntime& runtime, std::string_view access_t
     if (!user_tokens_are_revoked(runtime.database.persistent_store, session->user_id))
     {
         return make_operation_result(false, {}, "session revocation persistence failed", 500U);
+    }
+    // F-77: the user's OpenID tokens are credentials derived from the sessions just revoked.
+    if (!database::revoke_openid_tokens_for_user(runtime.database.persistent_store, session->user_id))
+    {
+        return make_operation_result(false, {}, "openid token revocation persistence failed", 500U);
     }
     for (auto& candidate : runtime.database.sessions)
     {
@@ -2043,6 +2051,11 @@ auto deactivate_local_user(HomeserverRuntime& runtime, std::string_view access_t
     {
         return make_operation_result(false, {}, "token revocation failed during deactivation", 500U);
     }
+    // F-77: OpenID tokens are credentials of the account too, kept in a table of their own (ADR-0031).
+    if (!database::revoke_openid_tokens_for_user(runtime.database.persistent_store, session->user_id))
+    {
+        return make_operation_result(false, {}, "openid token revocation failed during deactivation", 500U);
+    }
     for (auto& candidate : runtime.database.sessions)
     {
         if (candidate.user_id == session->user_id)
@@ -2086,15 +2099,23 @@ auto delete_local_device(HomeserverRuntime& runtime, std::string_view user_id, s
     {
         return make_operation_result(false, {}, "invalid device", 400U);
     }
-    if (!database::delete_device(runtime.database.persistent_store, user_id, device_id))
-    {
-        return make_operation_result(false, {}, "device not found", 404U);
-    }
-    std::ignore = database::revoke_access_tokens_for_device(runtime.database.persistent_store, user_id, device_id);
-    std::ignore = database::revoke_refresh_tokens_for_device(runtime.database.persistent_store, user_id, device_id);
+    // F-67: the same order as logout_all_local_user. The device row is deleted last, so that a
+    // failure anywhere leaves the device present and the call retryable, and a retry (or a repeat
+    // of a call that answered 404) still revokes tokens an earlier failure left behind. Deleting
+    // the row first made it the retry gate: the retry saw "not found" and never revoked.
+    auto const device_known = std::ranges::any_of(runtime.database.persistent_store.devices,
+                                                  [&user_id, &device_id](database::PersistentDevice const& device) {
+                                                      return device.user_id == user_id && device.device_id == device_id;
+                                                  });
+    // Revoke only when a token is still live, so a repeated delete of a gone device writes nothing.
     if (!device_tokens_are_revoked(runtime.database.persistent_store, user_id, device_id))
     {
-        return make_operation_result(false, {}, "token revocation persistence failed", 500U);
+        std::ignore = database::revoke_access_tokens_for_device(runtime.database.persistent_store, user_id, device_id);
+        std::ignore = database::revoke_refresh_tokens_for_device(runtime.database.persistent_store, user_id, device_id);
+        if (!device_tokens_are_revoked(runtime.database.persistent_store, user_id, device_id))
+        {
+            return make_operation_result(false, {}, "token revocation persistence failed", 500U);
+        }
     }
     for (auto& session : runtime.database.sessions)
     {
@@ -2102,6 +2123,14 @@ auto delete_local_device(HomeserverRuntime& runtime, std::string_view user_id, s
         {
             session.revoked = true;
         }
+    }
+    if (!device_known)
+    {
+        return make_operation_result(false, {}, "device not found", 404U);
+    }
+    if (!database::delete_device(runtime.database.persistent_store, user_id, device_id))
+    {
+        return make_operation_result(false, {}, "device deletion failed", 500U);
     }
     append_local_audit(runtime.database, observability::AuditCategory::auth, "device.deleted", user_id, device_id,
                        "deleted");
@@ -2199,6 +2228,12 @@ auto change_local_user_password(HomeserverRuntime& runtime, std::string_view acc
         if (!user_tokens_except_device_are_revoked(runtime.database.persistent_store, user_id, session->device_id))
         {
             return make_operation_result(false, {}, "token revocation persistence failed", 500U);
+        }
+        // F-77: an OpenID token is not tied to a device, so the other devices' tokens cannot be told
+        // apart from this one's; all of the user's go.
+        if (!database::revoke_openid_tokens_for_user(runtime.database.persistent_store, user_id))
+        {
+            return make_operation_result(false, {}, "openid token revocation persistence failed", 500U);
         }
         for (auto& candidate : runtime.database.sessions)
         {
@@ -2414,6 +2449,14 @@ auto federation_openid_userinfo(HomeserverRuntime const& runtime, std::string_vi
         // are the same 401 response).
         if (matches_any_token_hash(row.token_hash, candidate_hashes) && row.expires_at > now)
         {
+            // F-77, defence in depth: the revocation paths delete a user's rows, but a token must
+            // also never name an account that is gone or closed (a row restored by a failed write,
+            // or one minted in the moment before a deactivation).
+            auto const* const owner = find_user(runtime.database, row.user_id);
+            if (owner == nullptr || owner->deactivated)
+            {
+                return std::nullopt;
+            }
             return row.user_id;
         }
     }

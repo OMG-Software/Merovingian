@@ -312,6 +312,9 @@ value. Test fixtures that do not exercise persistence select it through
   function that ever reads this table back; the ordinary client-server auth
   gate (`authenticated_user`) never consults it, and `federation_openid_
   userinfo` never consults `access_tokens`/`sessions`. **Retention:**
+  `revoke_openid_tokens_for_user` deletes a user's rows from the table and the
+  in-memory vector (deactivation, logout everywhere, password change with
+  `logout_devices`; returns `false` on a write failure, ADR-0408).
   `store_openid_token` sweeps every already-expired row (across all users, not
   just the one being inserted) on each insert — appropriate because an OpenID
   token's natural bound is its own short expiry (one hour; see

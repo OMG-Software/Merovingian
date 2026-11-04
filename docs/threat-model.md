@@ -1391,6 +1391,10 @@ threat it closes; the controls above are the standing defences these reinforce.
   authentication requirement generally. Mitigated by dispatching it
   entirely outside `federation::handle_inbound_federation_request`, in the
   same homeserver-router bypass used for `GET /_matrix/key/v2/server`.
+  A minted token does not outlive its account (F-77, ADR-0408): deactivation,
+  logout everywhere and a password change that logs out other devices delete
+  the user's `openid_tokens` rows, and `federation_openid_userinfo` refuses a
+  missing or deactivated user.
 
 - **Open redirect and login-token exfiltration via SSO `redirectUrl`
   (identified and mitigated during implementation, v0.12.1):** `GET

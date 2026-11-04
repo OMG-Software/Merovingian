@@ -2039,6 +2039,12 @@ enum class CappedAccountDataStore
 // than a row count. Returns false on an empty user_id/token_hash or a
 // backend write failure.
 [[nodiscard]] auto store_openid_token(PersistentStore& store, PersistentOpenidToken token) -> bool;
+// Deletes every OpenID token row of `user_id`, from the backend and from the in-memory
+// vector. Returns true when no row of the user remains (including when there never was
+// one) and false on a backend write failure, which leaves the in-memory rows in place so
+// the caller can retry. Unlike the access-token revocations, the answer is a bool: a
+// zero count here is not ambiguous because the caller only needs "none left".
+[[nodiscard]] auto revoke_openid_tokens_for_user(PersistentStore& store, std::string_view user_id) -> bool;
 // Insert a login token row (see PersistentLoginToken). Persists it, mirrors
 // it into the in-memory vector, then prunes every already-expired row
 // (across all users) so `login_tokens` cannot grow without bound -- the

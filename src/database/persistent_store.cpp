@@ -5501,6 +5501,26 @@ auto restore_sync_stream_id(PersistentStore& store) -> void
     return true;
 }
 
+[[nodiscard]] auto revoke_openid_tokens_for_user(PersistentStore& store, std::string_view user_id) -> bool
+{
+    auto const held = [user_id](PersistentOpenidToken const& row) {
+        return row.user_id == user_id;
+    };
+    // Rows are mirrored into memory only after they were persisted, so no held row means no stored row.
+    if (!std::ranges::any_of(store.openid_tokens, held))
+    {
+        return true;
+    }
+    if (!record_and_persist(store,
+                            record_statement("revoke_openid_tokens_for_user",
+                                             "DELETE FROM openid_tokens WHERE user_id = $1", {public_value(user_id)})))
+    {
+        return false;
+    }
+    std::erase_if(store.openid_tokens, held);
+    return true;
+}
+
 [[nodiscard]] auto store_login_token(PersistentStore& store, PersistentLoginToken token) -> bool
 {
     if (token.user_id.empty() || !token_is_hash(token.token_hash))
