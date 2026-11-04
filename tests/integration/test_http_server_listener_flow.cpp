@@ -1966,9 +1966,10 @@ SCENARIO("sync admission bounds one account across devices without holding the r
             auto const request =
                 (sliding ? "POST /_matrix/client/unstable/org.matrix.simplified_msc3575/sync?pos="
                          : "GET /_matrix/client/v3/sync?since=") +
-                // set_presence=offline: this test is about admission of parked polls; a /sync that marks
-                // its user online changes the stream and is answered at once instead of parking.
-                since + "&timeout=1500" + (sliding ? "" : "&set_presence=offline") +
+                // set_presence=offline: this test is about admission of parked polls; a poll that marks
+                // its user online changes the stream and is answered at once instead of parking. Sliding sync
+                // marks its user online too since ADR-0495, and reads the parameter from the URL.
+                since + "&timeout=1500&set_presence=offline" +
                 " HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer " + token +
                 (sliding ? "\r\nConnection: close\r\nContent-Length: 2\r\n\r\n{}" : "\r\nConnection: close\r\n\r\n");
             REQUIRE(send_all(client.get(), request));
