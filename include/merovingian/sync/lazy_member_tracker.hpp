@@ -23,13 +23,14 @@ namespace merovingian::sync
 // never reports a member as held unless the client has proved it has the response that carried it.
 //
 // Acknowledgement, not "sent". A response can be lost on the wire, and the server cannot know. What it does
-// know is the `since` token a later request presents: a client that presents a token at or past the
-// `next_batch` of a response has, by that, received everything in it (it cannot hold a later token otherwise).
-// So an entry holds the member's event ID and the `next_batch` of the response that carried it, and counts as
-// redundant only when the request's `since` is at or past that token on all three components. A request whose
-// `since` does not cover an entry proves the client never saw that response (a retry of an older token), and
-// `begin_request` deletes it; without that, a retry that pushes the sender's events into the gap would let a
-// later token make the stale entry look acknowledged (ADR-0450).
+// know is the `since` token a later request presents. `next_batch` is opaque and clients echo it verbatim, so
+// only an exact match proves the client received that response; "at or past" does not (a client that aborts a
+// long-poll and retries the same `since` can be answered after the aborted request recorded a member, with a
+// token past the aborted one's, yet it never received the member). So `record` always stores an entry
+// *pending* with the event ID and the `next_batch` that carried it. `begin_request` settles a pending entry
+// whose token equals the request's `since` on all three components and deletes any other pending entry; it
+// also deletes a settled entry the `since` does not cover (a retry of an older token). `is_acknowledged` is true
+// only for a settled entry with the same event ID whose token `since` covers (ADR-0450).
 //
 // Keyed by (user, device, the request's `filter` value verbatim, room), so two filter streams of one device
 // and two devices of one user are tracked apart. A request with no device ID, or a filter longer than

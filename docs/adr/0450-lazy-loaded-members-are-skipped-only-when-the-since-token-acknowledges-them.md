@@ -14,7 +14,9 @@ lost after the server built it, and the server cannot tell. A record that says "
 
 * A set of (user, device, room, member) the server has sent
 * An acknowledgement-based record: an entry holds the member's event ID and the `next_batch` of the response that carried
-  it, and counts only when a later request's `since` is at or past that token on all three components
+  it, and counts only once a request has presented exactly that token as its `since`
+* The same record, but counting as soon as a later request's `since` is at or past that token on all three components
+  (rejected, see below)
 * No record: always send every timeline sender's member (valid, wasteful)
 
 ## Decision Outcome
@@ -24,12 +26,25 @@ Chosen option: the acknowledgement-based `sync::LazyMemberTracker`.
 The rejected sent set breaks on this sequence. Response R1 (`since` T0) carries bob's member event and is lost. The
 client retries with T0. R2 is `limited`, so bob's earlier events fall into the gap and bob is no timeline sender: R2 does
 not carry bob, and the sent set still says he was sent. Bob next speaks in a response with `since` T2; the set says
-"sent", so his member is skipped and the client has never seen it. The tracker prevents this by two rules:
+"sent", so his member is skipped and the client has never seen it. The tracker prevents this by these rules:
 
-* A tracked member is redundant only if its stored event ID equals the current member event ID and the request's `since`
-  covers the stored token on `event_ordering`, `membership_ordering` and `sync_stream_id`.
-* At the start of a request with a `since`, every entry that `since` does not cover is deleted. A retry of an older token
-  proves the client never received that response. A request with no `since` deletes everything under its key.
+* Every entry is recorded *pending*, also when a member is sent again. A pending entry is never redundant.
+* At the start of a request with a `since`, a pending entry whose token equals `since` on all three components becomes
+  *settled*, and any other pending entry is deleted. A client echoes `next_batch` verbatim and it is opaque, so only an
+  exact match proves it received that response.
+* A settled entry is deleted if `since` does not cover its token (a retry of an older token proves the client never
+  received a response it was sent). A request with no `since` deletes everything under its key.
+* A member is redundant only if its entry is settled, its stored event ID equals the current member event ID and the
+  request's `since` covers the stored token on `event_ordering`, `membership_ordering` and `sync_stream_id`.
+* A room the user has just joined (or rejoined) in this response's window does not consult the tracker, though what it
+  sends is still recorded: a client may discard a room on leave, so after a rejoin it may no longer hold a member the
+  tracker says it does.
+
+The first version accepted a `since` "at or past" the stored token. That fails when a client aborts a long-poll and
+retries the same `since` while the first request still runs. Request B begins at S0. Request A (also S0) records Bob at
+R1 and answers a dead connection. B answers at R2 >= R1 with Bob pushed out of its timeline into the gap by `limit`, so B
+did not send him. The client presents R2, which covers R1, so Bob counted as held though the client never received him,
+and his member was omitted the next time he spoke. Under the exact rule R2 is not R1, so the entry is deleted.
 
 Keys are (user, device, the request's `filter` value verbatim, room); two filter streams of one device, and two devices of
 one user, are tracked apart. A request with no device ID, or a `filter` over 2048 bytes (untracked, chosen over

@@ -3,7 +3,9 @@
 #include "merovingian/sync/lazy_member_tracker.hpp"
 
 #include <algorithm>
+#include <functional>
 #include <list>
+#include <optional>
 #include <unordered_map>
 #include <utility>
 
@@ -13,7 +15,7 @@ namespace merovingian::sync
 namespace
 {
 
-    // Whether a client holding `since` has received the response whose `next_batch` is `token`.
+    // Whether a client holding `since` has received everything up to the response whose `next_batch` is `token`.
     [[nodiscard]] auto covers(StreamToken since, StreamToken token) noexcept -> bool
     {
         return since.event_ordering >= token.event_ordering && since.membership_ordering >= token.membership_ordering &&
@@ -42,23 +44,24 @@ namespace
         using Item = std::pair<std::string, Value>;
         using List = std::list<Item>;
 
-        [[nodiscard]] auto find(std::string const& key) -> Value*
+        // The entry for `key`, made most recent, or nothing.
+        [[nodiscard]] auto find(std::string const& key) -> std::optional<std::reference_wrapper<Value>>
         {
             auto const found = index_.find(key);
             if (found == index_.end())
             {
-                return nullptr;
+                return std::nullopt;
             }
             items_.splice(items_.begin(), items_, found->second);
-            return &found->second->second;
+            return std::ref(found->second->second);
         }
 
         // The entry for `key`, created empty (and made most recent) when absent.
         [[nodiscard]] auto get_or_create(std::string const& key) -> Value&
         {
-            if (auto* existing = find(key); existing != nullptr)
+            if (auto existing = find(key); existing.has_value())
             {
-                return *existing;
+                return existing->get();
             }
             items_.emplace_front(key, Value{});
             index_.emplace(key, items_.begin());
@@ -123,6 +126,10 @@ namespace
     {
         std::string event_id{};
         StreamToken token{};
+        // Recorded, and no request has yet presented exactly `token`: the client may never have received the response.
+        // A later token does not prove receipt (a retried long-poll can answer after the aborted one, past its token),
+        // so only an exact match settles an entry.
+        bool pending{true};
     };
 
     using RoomMembers = LruMap<MemberEntry>;
@@ -131,10 +138,20 @@ namespace
     {
         LruMap<RoomMembers> rooms{};
         // The component-wise maximum of every token recorded and still held (never lowered on eviction, so it
-        // can only make a request scan when it need not). A `since` that covers it covers every entry.
+        // can only make a request scan when it need not).
         StreamToken highest{};
         std::size_t members{0U};
+        // How many of the stream's entries are pending. While any is, a request must scan: `since` covering `highest`
+        // proves nothing about them.
+        std::size_t pending{0U};
     };
+
+    [[nodiscard]] auto pending_in(RoomMembers const& room) -> std::size_t
+    {
+        return static_cast<std::size_t>(std::ranges::count_if(room.items(), [](RoomMembers::Item const& item) {
+            return item.second.pending;
+        }));
+    }
 
     // Length-prefixed, so no (user, device, filter) triple can collide with another.
     [[nodiscard]] auto stream_key(LazyMemberTracker::StreamKey const& key) -> std::string
@@ -169,9 +186,9 @@ struct LazyMemberTracker::State final
 
     auto drop_stream(std::string const& id) -> void
     {
-        if (auto* stream = streams.find(id); stream != nullptr)
+        if (auto stream = streams.find(id); stream.has_value())
         {
-            total_members -= stream->members;
+            total_members -= stream->get().members;
         }
         streams.erase(id);
     }
@@ -211,23 +228,34 @@ auto LazyMemberTracker::begin_request(StreamKey const& key, std::optional<Stream
         state_->drop_stream(id);
         return;
     }
-    auto* stream = state_->streams.find(id);
-    if (stream == nullptr || covers(*since, stream->highest))
+    auto found = state_->streams.find(id);
+    if (!found.has_value())
     {
         return;
     }
-    // Some entry is not covered: the client presented a token older than a response it was sent, so it
-    // never received that response. Delete what `since` does not cover.
+    auto& stream = found->get();
+    if (stream.pending == 0U && covers(*since, stream.highest))
+    {
+        return;
+    }
+    // A pending entry is settled by a request presenting exactly its token and deleted by any other: the client
+    // presented some other response's token, so it cannot be shown to hold this one. A settled entry stays while
+    // `since` covers it; one `since` does not cover is deleted (a retry of an older token).
     auto highest = StreamToken{};
     auto remaining = std::size_t{0U};
-    for (auto room = stream->rooms.items().begin(); room != stream->rooms.items().end();)
+    for (auto room = stream.rooms.items().begin(); room != stream.rooms.items().end();)
     {
         auto& members = room->second;
         for (auto member = members.items().begin(); member != members.items().end();)
         {
-            if (covers(*since, member->second.token))
+            auto& entry = member->second;
+            if (entry.pending && same_token(*since, entry.token))
             {
-                highest = component_max(highest, member->second.token);
+                entry.pending = false;
+            }
+            if (!entry.pending && covers(*since, entry.token))
+            {
+                highest = component_max(highest, entry.token);
                 ++remaining;
                 ++member;
             }
@@ -239,17 +267,18 @@ auto LazyMemberTracker::begin_request(StreamKey const& key, std::optional<Stream
         members.rebuild_index();
         if (members.empty())
         {
-            room = stream->rooms.items().erase(room);
+            room = stream.rooms.items().erase(room);
         }
         else
         {
             ++room;
         }
     }
-    stream->rooms.rebuild_index();
-    state_->total_members -= stream->members - remaining;
-    stream->members = remaining;
-    stream->highest = highest;
+    stream.rooms.rebuild_index();
+    state_->total_members -= stream.members - remaining;
+    stream.members = remaining;
+    stream.pending = 0U;
+    stream.highest = highest;
     if (remaining == 0U)
     {
         state_->streams.erase(id);
@@ -264,18 +293,19 @@ auto LazyMemberTracker::is_acknowledged(StreamKey const& key, std::string_view r
     {
         return false;
     }
-    auto* stream = state_->streams.find(stream_key(key));
-    if (stream == nullptr)
+    auto stream = state_->streams.find(stream_key(key));
+    if (!stream.has_value())
     {
         return false;
     }
-    auto* room = stream->rooms.find(std::string{room_id});
-    if (room == nullptr)
+    auto room = stream->get().rooms.find(std::string{room_id});
+    if (!room.has_value())
     {
         return false;
     }
-    auto* entry = room->find(std::string{member_user_id});
-    return entry != nullptr && entry->event_id == event_id && covers(since, entry->token);
+    auto entry = room->get().find(std::string{member_user_id});
+    return entry.has_value() && !entry->get().pending && entry->get().event_id == event_id &&
+           covers(since, entry->get().token);
 }
 
 auto LazyMemberTracker::record(StreamKey const& key, std::string_view room_id, std::span<SentMember const> members,
@@ -298,18 +328,27 @@ auto LazyMemberTracker::record(StreamKey const& key, std::string_view room_id, s
     for (auto const& member : members)
     {
         auto const user = std::string{member.user_id};
-        if (auto* existing = room.find(user); existing != nullptr)
+        if (auto existing = room.find(user); existing.has_value())
         {
-            existing->event_id = std::string{member.event_id};
-            existing->token = next_batch;
+            // Sent again: whatever it was, it is now the carrier of a response the client has not yet presented.
+            if (!existing->get().pending)
+            {
+                ++stream.pending;
+            }
+            existing->get() = MemberEntry{std::string{member.event_id}, next_batch, true};
             continue;
         }
-        room.get_or_create(user) = MemberEntry{std::string{member.event_id}, next_batch};
+        room.get_or_create(user) = MemberEntry{std::string{member.event_id}, next_batch, true};
         ++stream.members;
+        ++stream.pending;
         ++state_->total_members;
         while (room.size() > state_->limits.max_members_per_room)
         {
-            std::ignore = room.pop_oldest();
+            auto const evicted = room.pop_oldest();
+            if (evicted.second.pending)
+            {
+                --stream.pending;
+            }
             --stream.members;
             --state_->total_members;
         }
@@ -317,6 +356,7 @@ auto LazyMemberTracker::record(StreamKey const& key, std::string_view room_id, s
     while (stream.rooms.size() > state_->limits.max_rooms_per_key)
     {
         auto evicted = stream.rooms.pop_oldest();
+        stream.pending -= pending_in(evicted.second);
         stream.members -= evicted.second.size();
         state_->total_members -= evicted.second.size();
     }

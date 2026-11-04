@@ -5018,6 +5018,9 @@ namespace
             std::optional<std::uint64_t> gap_after{};
             // Drop every state event that is not a member event (an incremental left room's state is a delta).
             bool members_only{false};
+            // Do not consult the tracker: a client may discard a room when it leaves it, so after a rejoin it may no
+            // longer hold a member the tracker says it does (ADR-0450). What is sent is still recorded.
+            bool ignore_tracker{false};
         };
 
         LazyRoomSelector(LazySyncRequest& request, std::string_view room_id, Plan plan)
@@ -5039,7 +5042,8 @@ namespace
                                 (plan_.own_forced && state_key == plan_.own_user_id);
             if (!forced)
             {
-                if (!plan_.senders.contains(state_key) || request_.acknowledged(room_id_, state_key, event.event_id))
+                if (!plan_.senders.contains(state_key) ||
+                    (!plan_.ignore_tracker && request_.acknowledged(room_id_, state_key, event.event_id)))
                 {
                     return false;
                 }
@@ -6277,6 +6281,7 @@ namespace
                 }
                 lazy_senders.assign(plan.senders.begin(), plan.senders.end());
                 plan.own_user_id = std::string{user};
+                plan.ignore_tracker = newly_joined;
                 plan.own_forced = (!since_token.has_value() || full_state || newly_joined) &&
                                   !timeline_carries_join_of(timeline_events, user);
                 if (since_token.has_value() && limited)

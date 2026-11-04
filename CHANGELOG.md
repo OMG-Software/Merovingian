@@ -9,8 +9,9 @@ Lazy-loading of room members on `/sync` and `/context`.
   (as of the timeline's start, on an incremental sync too), every member change in the gap of a `limited` sync, and the
   user's own membership when they join or ask for `full_state`. A member the client has acknowledged is skipped: the
   server remembers, in memory per user, device, `filter` and room, the event it sent and the `next_batch` that carried it,
-  and skips it only when a later `since` covers that token on all three components and the member event is unchanged. A
-  retry of an older `since` forgets what that token does not cover, so a lost response cannot lose a member.
+  and skips it only once a request has presented exactly that token as its `since` (a later token proves nothing, as a
+  retried long-poll can answer past a response the client never received), the member event is unchanged, and the
+  room was not just joined. Any other `since` forgets what it does not confirm, so a lost response cannot lose a member.
   `include_redundant_members=true` and `full_state=true` skip nothing. The state filter's `types` and `senders` apply to
   the members, and `lazy_load_members` on `room.timeline` does nothing, as the spec has it. The tracker is bounded (1024
   streams, 64 rooms and 64 members each, 131072 members in all, least recently used out; a `filter` over 2048 bytes is

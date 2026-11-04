@@ -335,9 +335,12 @@ initial sync, `full_state=true` or a join in the window, unless the join is in t
 `LazyRoomSelector` (`client_server.cpp`) inside the state builders; a sync that builds no state calls
 `build_lazy_sender_members`. Look a member up by key (`member_event_at_timeline_start`), never by scanning the room's state.
 
-`LazyMemberTracker` skips a member only when the client has acknowledged that exact event: its `since` covers the
-`next_batch` of the response that carried it on all three components. `begin_request` runs after the long-poll wait and
-deletes entries `since` does not cover; `record_sent` runs after the body is built. Its mutex is a leaf below
+`LazyMemberTracker` skips a member only when the client has acknowledged that exact event: an entry is recorded
+pending, a request whose `since` equals its token exactly settles it (any other `since` deletes a pending entry; "at or
+past" is not proof, a retried long-poll can answer past a token the client never received), and only a settled entry
+whose token the `since` covers is redundant. A room the user just (re)joined does not consult the tracker.
+`begin_request` runs after the long-poll wait and deletes entries `since` does not cover; `record_sent` runs after the
+body is built. Its mutex is a leaf below
 `homeserver.mutex`; do not call out of it or take another lock inside it. Do not replace it with a "sent" set (ADR-0450 has
 the lost-response sequence that breaks it). `/messages` and `/context` stay stateless (ADR-0451). A change to a rule above
 changes the tracker's tests with it.
