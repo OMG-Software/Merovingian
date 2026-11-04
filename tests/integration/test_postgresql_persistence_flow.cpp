@@ -32,6 +32,7 @@
 #include <merovingian/database/schema.hpp>
 #include <merovingian/events/event_id.hpp>
 #include <merovingian/events/event_signer.hpp>
+#include <merovingian/federation/remote_key_cache.hpp>
 #include <merovingian/homeserver/local_http_router.hpp>
 #include <merovingian/homeserver/room_service.hpp>
 #include <merovingian/homeserver/runtime.hpp>
@@ -287,6 +288,65 @@ SCENARIO("PostgreSQL to-device messages reload in numeric stream-id order across
                     }
                 }
                 REQUIRE(ids == std::vector<std::uint64_t>{boundary - 2U, boundary - 1U, boundary, boundary + 1U});
+            }
+        }
+    }
+}
+
+// HF-B F1: a key a remote lists under old_verify_keys is stored as a retired row, and stays retired
+// through a restart, a re-listing under verify_keys and a later expiry.
+SCENARIO("PostgreSQL retired remote signing keys survive a reload and stay retired",
+         "[database][postgresql][integration][restart][old-keys]")
+{
+    GIVEN("a live PostgreSQL store that cached a response listing one current and one retired key")
+    {
+        auto const uri = postgresql_uri_from_environment();
+        if (uri.empty())
+        {
+            SUCCEED("skipped: MEROVINGIAN_TEST_POSTGRESQL_URI is not set");
+            return;
+        }
+        auto opened = merovingian::database::open_postgresql_persistent_store(uri);
+        REQUIRE(opened.ok);
+        auto const server = "pg-retired-" + unique_test_suffix() + ".example.org";
+        auto const key_a = std::string{"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"};
+        auto const key_b = std::string{"BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB"};
+        constexpr auto fetched_at = std::uint64_t{1'800'000'000'000U};
+        auto response = merovingian::federation::RemoteKeyResponse{};
+        response.server_name = server;
+        response.valid_until_ts = fetched_at + 1'000'000U;
+        response.verify_keys = {
+            {"ed25519:cur", key_a}
+        };
+        response.old_verify_keys = {
+            {"ed25519:old", key_b, 5000U}
+        };
+        REQUIRE(merovingian::federation::cache_remote_server_keys(opened.store, response, fetched_at));
+
+        WHEN("the old key is listed again with a later expiry and under verify_keys, and the store is reopened")
+        {
+            response.old_verify_keys = {
+                {"ed25519:old", key_b, 9000U}
+            };
+            REQUIRE(merovingian::federation::cache_remote_server_keys(opened.store, response, fetched_at));
+            response.verify_keys.push_back({"ed25519:old", key_b});
+            response.old_verify_keys.clear();
+            REQUIRE(merovingian::federation::cache_remote_server_keys(opened.store, response, fetched_at));
+            opened = {};
+            auto reopened = merovingian::database::open_postgresql_persistent_store(uri);
+            REQUIRE(reopened.ok);
+
+            THEN("the old key is still retired with the earliest expiry and the current key is not")
+            {
+                auto const old_row =
+                    merovingian::database::find_server_signing_key(reopened.store, server, "ed25519:old");
+                REQUIRE(old_row.has_value());
+                REQUIRE(old_row->expired_ts == 5000U);
+                REQUIRE(old_row->valid_until_ts == 5000U);
+                auto const current =
+                    merovingian::database::find_server_signing_key(reopened.store, server, "ed25519:cur");
+                REQUIRE(current.has_value());
+                REQUIRE(current->expired_ts == 0U);
             }
         }
     }

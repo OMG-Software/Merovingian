@@ -101,6 +101,15 @@ value. Test fixtures that do not exercise persistence select it through
   through `store_server_signing_key`, `find_server_signing_key` and
   `snapshot_server_signing_keys` (a copy for callers that iterate). The lock is
   never held across the database write or a network call.
+- `server_signing_keys.expired_ts` (`TEXT NOT NULL DEFAULT ''`, v1 step, ADR-0425) marks a remote server's retired
+  key, one it listed under `old_verify_keys`; empty means current. `PersistentServerSigningKey::expired_ts` is 0 for
+  a current key. A retired row has `valid_until_ts` equal to `expired_ts`, capped at the fetch time, and it is
+  one-way: `store_server_signing_key` keeps a retired row retired whatever a later write says, keeps its public key,
+  takes the smaller expiry, and retires a current row written with an expiry at once (the SQL upsert applies the same
+  rule, so concurrent writers cannot raise an expiry). A row that holds a secret, this server's own key, never takes an
+  expiry: such a write returns false. Both loaders and the backend half of `refresh_remote_signing_keys` select the
+  column (the worker role is granted it in `provision-federation-worker-role.sql`), and nothing deletes or prunes a
+  row by `valid_until_ts`.
 - Media bytes are not hydrated (ADR-0119). The SQLite and PostgreSQL loaders read
   `media_blobs` without its `bytes` column; `prepare_media_blob_read` (under the
   runtime mutex) and `read_media_blob` (without it) fetch one blob's bytes per
@@ -1119,7 +1128,7 @@ Two independent mechanisms close this, together:
    `SELECT` that never names `secret_key` at all, leaving
    `PersistentServerSigningKey::secret_key` empty for every worker-loaded
    row; and `provision-federation-worker-role.sql` grants
-   `SELECT (server_name, key_id, public_key, valid_until_ts)` — a
+   `SELECT (server_name, key_id, public_key, valid_until_ts, expired_ts)` — a
    PostgreSQL column-level grant — so even a bug that widened the C++ query
    back to five columns would be refused at the database. The worker's
    *write* attempt (caching a freshly-fetched key) is expected to fail under
@@ -1137,7 +1146,7 @@ Two independent mechanisms close this, together:
    fresh connection and a TLS handshake) in the worker. The resolver the worker
    runs is built with `KeyMirrorRefresh::on_miss`: when it finds no usable key in
    the mirror it first calls `database::refresh_remote_signing_keys`, which
-   re-reads that one server's rows with the same four-column `SELECT` (never
+   re-reads that one server's rows with the same five-column `SELECT` (never
    `secret_key`; `detail::load_remote_signing_keys_from_sqlite` and
    `…_from_postgresql`) and merges them into the mirror under
    `server_signing_keys_mutex`, leaving a row that holds a secret alone. Only a

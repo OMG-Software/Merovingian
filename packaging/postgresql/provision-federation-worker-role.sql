@@ -108,7 +108,7 @@ GRANT SELECT ON forward_extremities TO :fed_worker_role;
 -- database-level backstop that makes that true even if a future bug widened
 -- the C++ query -- PostgreSQL itself refuses a query naming a column this
 -- role was never granted.
-GRANT SELECT (server_name, key_id, public_key, valid_until_ts) ON server_signing_keys TO :fed_worker_role;
+GRANT SELECT (server_name, key_id, public_key, valid_until_ts, expired_ts) ON server_signing_keys TO :fed_worker_role;
 
 -- Schema bookkeeping: needed for ANY store to open (schema-version check),
 -- not gated by TableLoadProfile at all -- see

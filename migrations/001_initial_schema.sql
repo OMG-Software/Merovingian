@@ -10,7 +10,7 @@ CREATE TABLE "access_tokens" (user_id TEXT NOT NULL, device_id TEXT NOT NULL, to
 -- statement create_refresh_tokens
 CREATE TABLE "refresh_tokens" (token_hash TEXT PRIMARY KEY, user_id TEXT NOT NULL, device_id TEXT NOT NULL, revoked TEXT NOT NULL, expires_at TEXT NOT NULL DEFAULT '', predecessor_hash TEXT NOT NULL DEFAULT '')
 -- statement create_server_signing_keys
-CREATE TABLE "server_signing_keys" (server_name TEXT NOT NULL, key_id TEXT NOT NULL, public_key TEXT NOT NULL, valid_until_ts TEXT NOT NULL, secret_key BLOB NOT NULL DEFAULT '', PRIMARY KEY (server_name, key_id))
+CREATE TABLE "server_signing_keys" (server_name TEXT NOT NULL, key_id TEXT NOT NULL, public_key TEXT NOT NULL, valid_until_ts TEXT NOT NULL, secret_key BLOB NOT NULL DEFAULT '', expired_ts TEXT NOT NULL DEFAULT '', PRIMARY KEY (server_name, key_id))
 -- statement create_rooms
 CREATE TABLE "rooms" (room_id TEXT PRIMARY KEY, creator_user_id TEXT NOT NULL, directory_public TEXT NOT NULL DEFAULT 'false')
 -- statement create_room_aliases

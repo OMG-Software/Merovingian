@@ -3283,7 +3283,7 @@ namespace
             auto cached_key = runtime.cached_pdu_key_lookup
                                   ? runtime.cached_pdu_key_lookup(request.origin, request.key_id)
                                   : std::nullopt;
-            if (cached_key.has_value() && cached_key->server_name == request.origin &&
+            if (cached_key.has_value() && !cached_key->retired && cached_key->server_name == request.origin &&
                 cached_key->key_id == request.key_id && !cached_key->public_key_bytes.empty() &&
                 (cached_key->valid_until_ts == 0U || request.now_ts < cached_key->valid_until_ts))
             {

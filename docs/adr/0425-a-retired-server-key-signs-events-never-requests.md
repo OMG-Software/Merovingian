@@ -28,8 +28,34 @@ integer above zero, key material that is not 32 bytes, an ID that is also a curr
 response its `verify_keys`. The response signature already covers the member. The expiry is capped at the moment of
 the fetch, as a current key's validity is capped at seven days.
 
+### Retired keys are stored durably (follow-up)
+
+A fresh fetch per event does not work: backfilling thousands of events signed by one old key would spend the capped
+key-resolution budget once per event and refuse them, and a remote that has gone offline could never have its old
+events verified. `server_signing_keys` therefore gains `expired_ts TEXT NOT NULL DEFAULT ''` (edited in the v1 step
+in place, ADR-0224) and `cache_remote_server_keys` writes each `old_verify_keys` entry as a retired row, `expired_ts`
+capped at the fetch time and `valid_until_ts` equal to it.
+
+Retirement is one way and the earliest expiry wins, enforced in `store_server_signing_key` and in the SQL upsert:
+
+* a later listing with a smaller `expired_ts` lowers the stored value; a larger one never raises it;
+* a later listing under `verify_keys` does not turn the row back into a current key, and does not replace its public
+  key;
+* a key cached as current that a response lists under `old_verify_keys` is retired at once, rather than running out
+  its seven-day cache window;
+* a row that holds a secret (this server's own key) never takes an expiry.
+
+`remote_key_needs_refresh` is true for every retired row (its `valid_until_ts` is in the past), so the resolver, the
+worker mirror refresh and the PDU key lookup judge a cached key with `cached_remote_key_usable`: a retired row is a
+cache hit with no fetch. `find_any_cached_remote_key` skips retired rows, and the X-Matrix paths refuse them.
+
+Rejected alternatives:
+
+* An in-memory cache of retired keys. It would not survive a restart, a federation worker would not see main's, and a
+  remote that went offline could not be re-fetched.
+* Letting a re-listing under `verify_keys` revive a retired key. A remote (or anyone able to alter a response) could
+  then make a key it already retired authenticate requests again.
+
 ### Negative Consequences
 
-* Old keys are not persisted: `server_signing_keys` has no column for `expired_ts` or for "retired", and writing a
-  retired key as a row would make it indistinguishable from a live one. A retired key id therefore resolves from a
-  fresh fetch each time (subject to the existing key-resolution budgets). Persisting them needs a schema change.
+* A schema column, so databases created before it must be recreated (no upgrade shim before 1.0.0, ADR-0224).

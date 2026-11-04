@@ -77,6 +77,7 @@ PersistentServerSigningKey::PersistentServerSigningKey(PersistentServerSigningKe
     , public_key{other.public_key}
     , valid_until_ts{other.valid_until_ts}
     , secret_key{other.secret_key}
+    , expired_ts{other.expired_ts}
 {
 }
 
@@ -92,6 +93,7 @@ auto PersistentServerSigningKey::operator=(PersistentServerSigningKey const& oth
         public_key = other.public_key;
         valid_until_ts = other.valid_until_ts;
         secret_key = other.secret_key;
+        expired_ts = other.expired_ts;
     }
     return *this;
 }
@@ -102,6 +104,7 @@ PersistentServerSigningKey::PersistentServerSigningKey(PersistentServerSigningKe
     , public_key{std::move(other.public_key)}
     , valid_until_ts{other.valid_until_ts}
     , secret_key{std::move(other.secret_key)}
+    , expired_ts{other.expired_ts}
 {
     // A moved-from std::string is valid but unspecified: with the small-string
     // optimisation it may still hold the original characters. Wipe it.
@@ -118,6 +121,7 @@ auto PersistentServerSigningKey::operator=(PersistentServerSigningKey&& other) n
         public_key = std::move(other.public_key);
         valid_until_ts = other.valid_until_ts;
         secret_key = std::move(other.secret_key);
+        expired_ts = other.expired_ts;
         wipe_secret_string(other.secret_key);
     }
     return *this;
@@ -1094,13 +1098,23 @@ auto write_connections_opened(PersistentStore const& store) -> std::uint64_t
     {
         return false;
     }
+    // A retired row is valid until it expired and no longer, and never holds a secret: this server's own keys
+    // are retired by moving valid_until_ts, not by an expiry (ADR-0425).
+    if (key.expired_ts != 0U)
+    {
+        if (!key.secret_key.empty())
+        {
+            return false;
+        }
+        key.valid_until_ts = key.expired_ts;
+    }
     // FED-1 (ADR-0083): a row that holds a secret is a key this server
     // generated, and its public key is what our own signatures are verified
     // against. A write without a secret (a key fetched over federation, or a
-    // retirement) may change its validity but never its public key. Checked
-    // here, before the upsert, so neither the database row nor the in-memory
-    // mirror is touched; done in C++ so it does not depend on how the backend
-    // stores secret_key.
+    // retirement) may change its validity but never its public key, and no
+    // write may give it an expiry. Checked here, before the upsert, so
+    // neither the database row nor the in-memory mirror is touched; done in
+    // C++ so it does not depend on how the backend stores secret_key.
     if (key.secret_key.empty())
     {
         auto const lock = std::lock_guard{*store.server_signing_keys_mutex};
@@ -1109,7 +1123,7 @@ auto write_connections_opened(PersistentStore const& store) -> std::uint64_t
                 return row.server_name == key.server_name && row.key_id == key.key_id;
             });
         if (existing != store.server_signing_keys.end() && !existing->secret_key.empty() &&
-            existing->public_key != key.public_key)
+            (existing->public_key != key.public_key || key.expired_ts != 0U))
         {
             log_diagnostic("server_signing_key.rejected",
                            {
@@ -1121,20 +1135,33 @@ auto write_connections_opened(PersistentStore const& store) -> std::uint64_t
             return false;
         }
     }
-    if (!record_and_persist(
-            store, record_statement(
-                       "upsert_server_signing_key",
-                       "INSERT INTO server_signing_keys VALUES ($1, $2, $3, $4, $5) ON CONFLICT (server_name, key_id) "
-                       "DO UPDATE SET public_key = $3, valid_until_ts = $4, "
-                       "secret_key = CASE WHEN $5 = '' THEN server_signing_keys.secret_key ELSE $5 END",
-                       {
-                           public_value(key.server_name),
-                           public_value(key.key_id),
-                           public_value(key.public_key),
-                           public_value(std::to_string(key.valid_until_ts)),
-                           // `secret_key` is a BLOB column: bind it as binary so it is
-                           // byte-exact on PostgreSQL (still sensitive: never traced).
-                           {key.secret_key, true, true}
+    // Retirement is one way and the earliest expiry wins. The SQL applies the same rule against the stored
+    // row, so two writers cannot raise an expiry between them; the in-memory merge below mirrors it.
+    auto const expired_text = key.expired_ts == 0U ? std::string{} : std::to_string(key.expired_ts);
+    auto const earliest_expiry =
+        "CASE WHEN CAST($6 AS TEXT) = '' THEN server_signing_keys.expired_ts "
+        "WHEN server_signing_keys.expired_ts = '' THEN CAST($6 AS TEXT) "
+        "WHEN CAST(CAST($6 AS TEXT) AS BIGINT) < CAST(server_signing_keys.expired_ts AS BIGINT) THEN CAST($6 AS TEXT) "
+        "ELSE server_signing_keys.expired_ts END";
+    auto const upsert =
+        std::string{"INSERT INTO server_signing_keys VALUES ($1, $2, $3, $4, $5, $6) ON CONFLICT (server_name, key_id) "
+                    "DO UPDATE SET public_key = CASE WHEN server_signing_keys.expired_ts = '' THEN $3 "
+                    "ELSE server_signing_keys.public_key END, valid_until_ts = CASE WHEN CAST($6 AS TEXT) = '' AND "
+                    "server_signing_keys.expired_ts = '' THEN $4 WHEN CAST($6 AS TEXT) = '' THEN "
+                    "server_signing_keys.expired_ts WHEN server_signing_keys.expired_ts = '' THEN CAST($6 AS TEXT) "
+                    "WHEN CAST(CAST($6 AS TEXT) AS BIGINT) < CAST(server_signing_keys.expired_ts AS BIGINT) THEN "
+                    "CAST($6 AS TEXT) ELSE server_signing_keys.expired_ts END, expired_ts = "} +
+        earliest_expiry + ", secret_key = CASE WHEN $5 = '' THEN server_signing_keys.secret_key ELSE $5 END";
+    if (!record_and_persist(store, record_statement("upsert_server_signing_key", upsert,
+                                                    {
+                                                        public_value(key.server_name),
+                                                        public_value(key.key_id),
+                                                        public_value(key.public_key),
+                                                        public_value(std::to_string(key.valid_until_ts)),
+                                                        // `secret_key` is a BLOB column: bind it as binary so it is
+                                                        // byte-exact on PostgreSQL (still sensitive: never traced).
+                                                        {key.secret_key, true, true},
+                                                        public_value(expired_text),
     })))
     {
         return false;
@@ -1146,8 +1173,16 @@ auto write_connections_opened(PersistentStore const& store) -> std::uint64_t
         });
     if (existing != store.server_signing_keys.end())
     {
-        existing->public_key = std::move(key.public_key);
-        existing->valid_until_ts = key.valid_until_ts;
+        if (existing->expired_ts == 0U)
+        {
+            existing->public_key = std::move(key.public_key);
+        }
+        if (key.expired_ts != 0U)
+        {
+            existing->expired_ts =
+                existing->expired_ts == 0U ? key.expired_ts : std::min(existing->expired_ts, key.expired_ts);
+        }
+        existing->valid_until_ts = existing->expired_ts != 0U ? existing->expired_ts : key.valid_until_ts;
         if (!key.secret_key.empty())
         {
             existing->secret_key = std::move(key.secret_key);
@@ -1207,8 +1242,18 @@ auto write_connections_opened(PersistentStore const& store) -> std::uint64_t
         }
         else if (existing->secret_key.empty())
         {
-            existing->public_key = std::move(row.public_key);
-            existing->valid_until_ts = row.valid_until_ts;
+            // The database is authoritative, but retirement is one way here too: a retired row stays retired
+            // and keeps its key and the earlier expiry.
+            if (existing->expired_ts == 0U)
+            {
+                existing->public_key = std::move(row.public_key);
+            }
+            if (row.expired_ts != 0U)
+            {
+                existing->expired_ts =
+                    existing->expired_ts == 0U ? row.expired_ts : std::min(existing->expired_ts, row.expired_ts);
+            }
+            existing->valid_until_ts = existing->expired_ts != 0U ? existing->expired_ts : row.valid_until_ts;
         }
     }
     return true;

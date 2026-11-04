@@ -26,11 +26,13 @@
 #include <array>
 #include <cstdint>
 #include <filesystem>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <string_view>
 #include <system_error>
 #include <utility>
+#include <vector>
 
 #include <sodium.h>
 #include <stdlib.h>
@@ -188,7 +190,13 @@ struct ResolverFixture final
     merovingian::database::PersistentStoreOpenResult opened;
     merovingian::http::OutboundClient client{};
     std::string body;
+    int fetches{0};
     merovingian::federation::RemoteKeyResolver resolver{};
+
+    [[nodiscard]] auto store_path() const -> std::string
+    {
+        return (scratch.path / "store.db").string();
+    }
 
     explicit ResolverFixture(std::string response_body)
         : opened{merovingian::database::open_sqlite_persistent_store((scratch.path / "store.db").string())}
@@ -204,6 +212,7 @@ struct ResolverFixture final
                 return allowed_discovery(server_name);
             },
             [this](merovingian::http::OutboundClient&, std::string_view server_name, std::uint32_t) {
+                ++fetches;
                 return merovingian::federation::parse_and_verify_remote_key_response(body, server_name);
             },
             "local.example.org");
@@ -323,7 +332,8 @@ SCENARIO("The key resolver answers a retired key id from the fetched response, a
         {
             auto const resolved = fixture.resolver("remote.example.org", "ed25519:old");
 
-            THEN("its key is returned marked retired, valid only until it expired, and is not cached as a live key")
+            THEN("its key is returned marked retired, valid only until it expired, and is cached as a retired key, "
+                 "never a live one")
             {
                 REQUIRE(resolved.has_value());
                 REQUIRE(resolved->signing_key.retired);
@@ -331,9 +341,11 @@ SCENARIO("The key resolver answers a retired key id from the fetched response, a
                 REQUIRE(resolved->signing_key.valid_until_ts == old_expired_ts);
                 REQUIRE(merovingian::events::matrix_base64_from_bytes(resolved->signing_key.public_key_bytes) ==
                         published.old_key_base64);
-                REQUIRE_FALSE(merovingian::federation::find_cached_remote_key(fixture.opened.store,
-                                                                              "remote.example.org", "ed25519:old")
-                                  .has_value());
+                auto const cached_key = merovingian::federation::find_cached_remote_key(
+                    fixture.opened.store, "remote.example.org", "ed25519:old");
+                REQUIRE(cached_key.has_value());
+                REQUIRE(cached_key->retired);
+                REQUIRE(cached_key->expired_ts == old_expired_ts);
             }
         }
 
@@ -431,6 +443,326 @@ SCENARIO("A retired key verifies only events sent before it expired", "[federati
             THEN("the retired key is accepted as any key is")
             {
                 REQUIRE(decision.accepted);
+            }
+        }
+    }
+}
+
+namespace
+{
+[[nodiscard]] auto response_with(std::vector<std::pair<std::string, std::string>> current,
+                                 std::vector<merovingian::federation::RemoteOldVerifyKey> old)
+    -> merovingian::federation::RemoteKeyResponse
+{
+    auto response = merovingian::federation::RemoteKeyResponse{};
+    response.server_name = "remote.example.org";
+    response.valid_until_ts = now_ms + 30U * day_ms;
+    for (auto& [key_id, key] : current)
+    {
+        response.verify_keys.push_back({std::move(key_id), std::move(key)});
+    }
+    response.old_verify_keys = std::move(old);
+    return response;
+}
+
+[[nodiscard]] auto cached(merovingian::database::PersistentStore const& store, std::string_view key_id)
+    -> std::optional<merovingian::federation::FederationKeyRecord>
+{
+    return merovingian::federation::find_cached_remote_key(store, "remote.example.org", key_id);
+}
+} // namespace
+
+SCENARIO("A retired key is persisted and outlives a reload", "[federation][remote-key-cache][old-keys][persist]")
+{
+    GIVEN("a store that cached a response listing a retired key")
+    {
+        auto const published = signed_response_with_old_key("remote.example.org", old_expired_ts);
+        auto fixture = ResolverFixture{published.body};
+        REQUIRE(fixture.resolver("remote.example.org", "ed25519:old").has_value());
+
+        WHEN("the same database is opened again")
+        {
+            auto reopened = merovingian::database::open_sqlite_persistent_store(fixture.store_path());
+            REQUIRE(reopened.ok);
+
+            THEN("the key is still retired, with its expiry, and the current key is not")
+            {
+                auto const old_key = cached(reopened.store, "ed25519:old");
+                REQUIRE(old_key.has_value());
+                REQUIRE(old_key->retired);
+                REQUIRE(old_key->expired_ts == old_expired_ts);
+                REQUIRE(old_key->valid_until_ts == old_expired_ts);
+                REQUIRE(merovingian::events::matrix_base64_from_bytes(old_key->public_key_bytes) ==
+                        published.old_key_base64);
+                auto const current = cached(reopened.store, "ed25519:cur");
+                REQUIRE(current.has_value());
+                REQUIRE_FALSE(current->retired);
+            }
+        }
+    }
+}
+
+SCENARIO("A cached retired key is answered without a fetch", "[federation][remote-key-cache][old-keys][resolver]")
+{
+    GIVEN("a resolver that already fetched a response listing a retired key")
+    {
+        auto const published = signed_response_with_old_key("remote.example.org", old_expired_ts);
+        auto fixture = ResolverFixture{published.body};
+        REQUIRE(fixture.resolver("remote.example.org", "ed25519:old").has_value());
+        REQUIRE(fixture.fetches == 1);
+
+        WHEN("the retired key id is resolved again")
+        {
+            auto const again = fixture.resolver("remote.example.org", "ed25519:old");
+
+            THEN("it is a cache hit: still retired and nothing is fetched")
+            {
+                REQUIRE(again.has_value());
+                REQUIRE(again->signing_key.retired);
+                REQUIRE(again->signing_key.expired_ts == old_expired_ts);
+                REQUIRE(fixture.fetches == 1);
+            }
+        }
+    }
+
+    GIVEN("a worker whose key mirror predates the key main cached")
+    {
+        auto const published = signed_response_with_old_key("remote.example.org", old_expired_ts);
+        auto main_fixture = ResolverFixture{published.body};
+        auto worker = merovingian::database::open_sqlite_persistent_store(
+            main_fixture.store_path(), merovingian::database::TableLoadProfile::federation_worker);
+        REQUIRE(worker.ok);
+        REQUIRE(main_fixture.resolver("remote.example.org", "ed25519:old").has_value());
+        REQUIRE_FALSE(cached(worker.store, "ed25519:old").has_value());
+        auto worker_fetches = 0;
+        auto client = merovingian::http::OutboundClient{};
+        auto resolver = merovingian::federation::make_remote_key_resolver(
+            worker.store, client, 1U,
+            [] {
+                return now_ms;
+            },
+            [](std::string_view server_name, std::uint32_t) {
+                return allowed_discovery(server_name);
+            },
+            [&worker_fetches](merovingian::http::OutboundClient&, std::string_view, std::uint32_t) {
+                ++worker_fetches;
+                return merovingian::federation::RemoteKeyFetchResult{};
+            },
+            "local.example.org", merovingian::federation::KeyMirrorRefresh::on_miss);
+
+        WHEN("the worker resolves the retired key id")
+        {
+            auto const resolved = resolver("remote.example.org", "ed25519:old");
+
+            THEN("it reads the retired row from the database and fetches nothing")
+            {
+                REQUIRE(resolved.has_value());
+                REQUIRE(resolved->signing_key.retired);
+                REQUIRE(resolved->signing_key.expired_ts == old_expired_ts);
+                REQUIRE(worker_fetches == 0);
+            }
+        }
+    }
+}
+
+SCENARIO("A key once listed as retired stays retired and keeps the earliest expiry",
+         "[federation][remote-key-cache][old-keys][persist]")
+{
+    GIVEN("a store holding a current key")
+    {
+        auto scratch = DatabaseScratch{};
+        auto const path = (scratch.path / "store.db").string();
+        auto opened = merovingian::database::open_sqlite_persistent_store(path);
+        REQUIRE(opened.ok);
+        auto const key = fresh_public_key_base64();
+        auto const other = fresh_public_key_base64();
+        REQUIRE(merovingian::federation::cache_remote_server_keys(opened.store,
+                                                                  response_with(
+                                                                      {
+                                                                          {"ed25519:k", key}
+        },
+                                                                      {}),
+                                                                  now_ms));
+        REQUIRE_FALSE(cached(opened.store, "ed25519:k")->retired);
+
+        WHEN("a later response lists that key under old_verify_keys")
+        {
+            REQUIRE(merovingian::federation::cache_remote_server_keys(opened.store,
+                                                                      response_with(
+                                                                          {
+                                                                              {"ed25519:o", other}
+            },
+                                                                          {{"ed25519:k", key, 5000U}}),
+                                                                      now_ms));
+
+            THEN("it is retired at once, valid only until it expired")
+            {
+                auto const record = cached(opened.store, "ed25519:k");
+                REQUIRE(record.has_value());
+                REQUIRE(record->retired);
+                REQUIRE(record->expired_ts == 5000U);
+                REQUIRE(record->valid_until_ts == 5000U);
+            }
+        }
+
+        WHEN("it is retired, then listed again with a later and then an earlier expiry")
+        {
+            REQUIRE(merovingian::federation::cache_remote_server_keys(opened.store,
+                                                                      response_with(
+                                                                          {
+                                                                              {"ed25519:o", other}
+            },
+                                                                          {{"ed25519:k", key, 5000U}}),
+                                                                      now_ms));
+            REQUIRE(merovingian::federation::cache_remote_server_keys(opened.store,
+                                                                      response_with(
+                                                                          {
+                                                                              {"ed25519:o", other}
+            },
+                                                                          {{"ed25519:k", key, 9000U}}),
+                                                                      now_ms));
+            auto const after_later = cached(opened.store, "ed25519:k");
+            REQUIRE(merovingian::federation::cache_remote_server_keys(opened.store,
+                                                                      response_with(
+                                                                          {
+                                                                              {"ed25519:o", other}
+            },
+                                                                          {{"ed25519:k", key, 3000U}}),
+                                                                      now_ms));
+            auto const after_earlier = cached(opened.store, "ed25519:k");
+            auto reopened = merovingian::database::open_sqlite_persistent_store(path);
+            REQUIRE(reopened.ok);
+            auto const reloaded = cached(reopened.store, "ed25519:k");
+
+            THEN("a later expiry never raises the stored one and an earlier one lowers it, durably")
+            {
+                REQUIRE(after_later->expired_ts == 5000U);
+                REQUIRE(after_earlier->expired_ts == 3000U);
+                REQUIRE(after_earlier->valid_until_ts == 3000U);
+                REQUIRE(reloaded->expired_ts == 3000U);
+            }
+        }
+
+        WHEN("it is retired and a later response lists it under verify_keys again")
+        {
+            REQUIRE(merovingian::federation::cache_remote_server_keys(opened.store,
+                                                                      response_with(
+                                                                          {
+                                                                              {"ed25519:o", other}
+            },
+                                                                          {{"ed25519:k", key, 5000U}}),
+                                                                      now_ms));
+            REQUIRE(merovingian::federation::cache_remote_server_keys(opened.store,
+                                                                      response_with(
+                                                                          {
+                                                                              {"ed25519:k", key  },
+                                                                              {"ed25519:o", other}
+            },
+                                                                          {}),
+                                                                      now_ms));
+            auto const in_memory = cached(opened.store, "ed25519:k");
+            auto reopened = merovingian::database::open_sqlite_persistent_store(path);
+            REQUIRE(reopened.ok);
+            auto const reloaded = cached(reopened.store, "ed25519:k");
+
+            THEN("it is still retired with its expiry, in memory and after a reload")
+            {
+                REQUIRE(in_memory->retired);
+                REQUIRE(in_memory->expired_ts == 5000U);
+                REQUIRE(reloaded->retired);
+                REQUIRE(reloaded->expired_ts == 5000U);
+            }
+        }
+
+        WHEN("a retirement is written for a row that holds this server's own secret")
+        {
+            auto own = merovingian::database::PersistentServerSigningKey{"remote.example.org", "ed25519:own", key,
+                                                                         now_ms + day_ms, "sealed-secret"};
+            REQUIRE(merovingian::database::store_server_signing_key(opened.store, own));
+            auto retirement =
+                merovingian::database::PersistentServerSigningKey{"remote.example.org", "ed25519:own", key, 5000U};
+            retirement.expired_ts = 5000U;
+            auto with_secret = own;
+            with_secret.key_id = "ed25519:own2";
+            with_secret.expired_ts = 5000U;
+
+            THEN("neither takes effect: own keys never get an expiry")
+            {
+                REQUIRE_FALSE(merovingian::database::store_server_signing_key(opened.store, retirement));
+                REQUIRE_FALSE(merovingian::database::store_server_signing_key(opened.store, with_secret));
+                auto const row =
+                    merovingian::database::find_server_signing_key(opened.store, "remote.example.org", "ed25519:own");
+                REQUIRE(row->expired_ts == 0U);
+                REQUIRE(row->valid_until_ts == now_ms + day_ms);
+            }
+        }
+    }
+}
+
+SCENARIO("Cached retired keys are never treated as current", "[federation][remote-key-cache][old-keys]")
+{
+    GIVEN("a store holding a retired key and a current one for the same server")
+    {
+        auto scratch = DatabaseScratch{};
+        auto opened = merovingian::database::open_sqlite_persistent_store((scratch.path / "store.db").string());
+        REQUIRE(opened.ok);
+        auto const retired_key = fresh_public_key_base64();
+        REQUIRE(merovingian::federation::cache_remote_server_keys(opened.store,
+                                                                  response_with(
+                                                                      {
+                                                                          {"ed25519:cur", fresh_public_key_base64()}
+        },
+                                                                      {{"ed25519:old", retired_key, old_expired_ts}}),
+                                                                  now_ms));
+
+        WHEN("any cached key is asked for by server name alone")
+        {
+            auto const any = merovingian::federation::find_any_cached_remote_key(opened.store, "remote.example.org");
+
+            THEN("only the current key can be returned")
+            {
+                REQUIRE(any.has_value());
+                REQUIRE(any->key_id == "ed25519:cur");
+                REQUIRE_FALSE(any->retired);
+            }
+        }
+
+        WHEN("the freshness of the cached keys is judged long after the retired one expired")
+        {
+            auto const retired = cached(opened.store, "ed25519:old");
+            auto const current = cached(opened.store, "ed25519:cur");
+            auto request = merovingian::federation::SignedFederationRequest{};
+            request.origin = "remote.example.org";
+            request.key_id = "ed25519:old";
+            request.now_ts = old_expired_ts - 1U;
+            request.canonical_json_verified = true;
+            request.body = "{}";
+            auto const decision = merovingian::federation::verify_signed_federation_request(request, *retired);
+
+            THEN("the retired key is usable from the cache and still never valid for a request")
+            {
+                REQUIRE(merovingian::federation::cached_remote_key_usable(*retired, now_ms + 400U * day_ms));
+                REQUIRE_FALSE(merovingian::federation::cached_remote_key_usable(*current, now_ms + 400U * day_ms));
+                REQUIRE_FALSE(decision.accepted);
+                REQUIRE(decision.status == 403U);
+            }
+        }
+
+        WHEN("an event sent before and one sent at the expiry are checked against the cached key")
+        {
+            auto const retired = cached(opened.store, "ed25519:old");
+            auto const* v10 = merovingian::rooms::find_room_version_policy("10");
+            REQUIRE(v10 != nullptr);
+            auto const before = merovingian::federation::check_signing_key_valid_for_event(
+                *retired, event_at(static_cast<std::int64_t>(old_expired_ts) - 1), *v10);
+            auto const at = merovingian::federation::check_signing_key_valid_for_event(
+                *retired, event_at(static_cast<std::int64_t>(old_expired_ts)), *v10);
+
+            THEN("the first verifies with no network and the second is refused")
+            {
+                REQUIRE(before.accepted);
+                REQUIRE_FALSE(at.accepted);
+                REQUIRE(at.status == 403U);
             }
         }
     }

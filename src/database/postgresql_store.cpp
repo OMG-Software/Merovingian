@@ -620,7 +620,27 @@ namespace
         {
             auto server_signing_keys =
                 query_rows(connection, "postgresql_load_server_signing_keys",
-                           "SELECT server_name, key_id, public_key, valid_until_ts, secret_key FROM "
+                           "SELECT server_name, key_id, public_key, valid_until_ts, secret_key, expired_ts FROM "
+                           "server_signing_keys ORDER BY server_name, key_id");
+            if (!server_signing_keys.ok)
+            {
+                return false;
+            }
+            for (auto const& row : server_signing_keys.rows)
+            {
+                if (row.size() >= 6U)
+                {
+                    auto key = PersistentServerSigningKey{row[0], row[1], row[2], parse_u64(row[3]), row[4]};
+                    key.expired_ts = parse_u64(row[5]);
+                    store.server_signing_keys.push_back(std::move(key));
+                }
+            }
+        }
+        else if (table_load_profile_includes("server_signing_keys", profile))
+        {
+            auto server_signing_keys =
+                query_rows(connection, "postgresql_load_server_signing_keys_no_secret",
+                           "SELECT server_name, key_id, public_key, valid_until_ts, expired_ts FROM "
                            "server_signing_keys ORDER BY server_name, key_id");
             if (!server_signing_keys.ok)
             {
@@ -630,24 +650,9 @@ namespace
             {
                 if (row.size() >= 5U)
                 {
-                    store.server_signing_keys.push_back({row[0], row[1], row[2], parse_u64(row[3]), row[4]});
-                }
-            }
-        }
-        else if (table_load_profile_includes("server_signing_keys", profile))
-        {
-            auto server_signing_keys = query_rows(connection, "postgresql_load_server_signing_keys_no_secret",
-                                                  "SELECT server_name, key_id, public_key, valid_until_ts FROM "
-                                                  "server_signing_keys ORDER BY server_name, key_id");
-            if (!server_signing_keys.ok)
-            {
-                return false;
-            }
-            for (auto const& row : server_signing_keys.rows)
-            {
-                if (row.size() >= 4U)
-                {
-                    store.server_signing_keys.push_back({row[0], row[1], row[2], parse_u64(row[3]), {}});
+                    auto key = PersistentServerSigningKey{row[0], row[1], row[2], parse_u64(row[3]), {}};
+                    key.expired_ts = parse_u64(row[4]);
+                    store.server_signing_keys.push_back(std::move(key));
                 }
             }
         }
@@ -2787,7 +2792,8 @@ namespace detail
         // selects: secret_key is never named, and the role could not read it.
         auto result = opened.connection.execute(
             {"postgresql_load_remote_signing_keys",
-             "SELECT server_name, key_id, public_key, valid_until_ts FROM server_signing_keys WHERE server_name = $1",
+             "SELECT server_name, key_id, public_key, valid_until_ts, expired_ts FROM server_signing_keys WHERE "
+             "server_name = $1",
              {{std::string{server_name}, false}}});
         if (!result.ok)
         {
@@ -2796,9 +2802,11 @@ namespace detail
         auto keys = std::vector<PersistentServerSigningKey>{};
         for (auto const& row : result.rows)
         {
-            if (row.size() >= 4U)
+            if (row.size() >= 5U)
             {
-                keys.push_back({row[0], row[1], row[2], parse_u64(row[3]), {}});
+                auto key = PersistentServerSigningKey{row[0], row[1], row[2], parse_u64(row[3]), {}};
+                key.expired_ts = parse_u64(row[4]);
+                keys.push_back(std::move(key));
             }
         }
         return keys;

@@ -239,6 +239,10 @@ struct PersistentServerSigningKey final
     std::string public_key{};
     std::uint64_t valid_until_ts{0U};
     std::string secret_key{}; // at-rest ciphertext (legacy rows: plaintext base64)
+    // Non-zero for a key a remote server published under old_verify_keys: the time it stopped using it.
+    // Retirement is one way and the earliest expiry wins (store_server_signing_key); `valid_until_ts` of
+    // such a row equals this. Never set on a row that holds a secret: this server's own keys.
+    std::uint64_t expired_ts{0U};
 
     PersistentServerSigningKey() = default;
     PersistentServerSigningKey(std::string server_name_value, std::string key_id_value, std::string public_key_value,
@@ -1419,6 +1423,11 @@ auto set_write_connection_limit(PersistentStore& store, std::uint32_t limit) -> 
 [[nodiscard]] auto update_device_display_name(PersistentStore& store, std::string_view user_id,
                                               std::string_view device_id, std::string_view display_name) -> bool;
 [[nodiscard]] auto delete_device(PersistentStore& store, std::string_view user_id, std::string_view device_id) -> bool;
+// Upserts a signing key. Retirement (`expired_ts` != 0, a key a remote listed under old_verify_keys) is one
+// way and the earliest expiry wins: a row already retired stays retired whatever a later write says, keeps
+// its public key and takes the smaller of the two expiries; a current row written with an expiry becomes
+// retired at once, with `valid_until_ts` set to it. A row that holds a secret (this server's own key) never
+// takes an expiry: such a write returns false and changes nothing.
 [[nodiscard]] auto store_server_signing_key(PersistentStore& store, PersistentServerSigningKey key) -> bool;
 [[nodiscard]] auto find_server_signing_key(PersistentStore const& store, std::string_view server_name,
                                            std::string_view key_id) -> std::optional<PersistentServerSigningKey>;
@@ -2239,8 +2248,8 @@ namespace detail
     [[nodiscard]] auto load_room_snapshot_from_backend(PersistentStore const& store, std::string_view room_id)
         -> std::optional<RoomReloadSnapshot>;
     // Backend half of refresh_remote_signing_keys: `server_name`'s rows from
-    // server_signing_keys, selecting server_name, key_id, public_key and
-    // valid_until_ts only (never secret_key, so each row's secret_key is
+    // server_signing_keys, selecting server_name, key_id, public_key,
+    // valid_until_ts and expired_ts only (never secret_key, so each row's secret_key is
     // empty). nullopt on a connection/query failure and for a backend with no
     // database; an unknown server is a successful empty result.
     [[nodiscard]] auto load_remote_signing_keys_from_backend(PersistentStore const& store, std::string_view server_name)

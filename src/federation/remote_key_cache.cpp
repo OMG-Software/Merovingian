@@ -386,6 +386,13 @@ auto remote_key_needs_refresh(std::uint64_t valid_until_ts, std::uint64_t now_ts
     return (valid_until_ts - now_ts) <= refresh_slack_ms;
 }
 
+auto cached_remote_key_usable(FederationKeyRecord const& key, std::uint64_t now_ts) noexcept -> bool
+{
+    // A retired key's valid_until_ts (its expiry) is in the past, so remote_key_needs_refresh is true for it
+    // for ever; refetching would never change it. It is judged per event against expired_ts instead.
+    return key.retired || !remote_key_needs_refresh(key.valid_until_ts, now_ts);
+}
+
 auto cache_remote_server_keys(database::PersistentStore& store, RemoteKeyResponse const& response,
                               std::uint64_t fetched_at_ms) -> bool
 {
@@ -408,6 +415,28 @@ auto cache_remote_server_keys(database::PersistentStore& store, RemoteKeyRespons
             all_ok = false;
         }
     }
+    // old_verify_keys: a retired row per entry. A server cannot have stopped using a key in the future, so the
+    // expiry is capped at the fetch time, as in fetched_old_key_record. The store keeps retirement one way and
+    // the earliest expiry (ADR-0425), and refuses an expiry on a row holding a secret.
+    for (auto const& old_key : response.old_verify_keys)
+    {
+        auto const expired_ts = std::min(old_key.expired_ts, fetched_at_ms);
+        if (expired_ts == 0U)
+        {
+            continue;
+        }
+        auto persistent = database::PersistentServerSigningKey{
+            response.server_name,
+            old_key.key_id,
+            old_key.public_key_base64,
+            expired_ts,
+        };
+        persistent.expired_ts = expired_ts;
+        if (!database::store_server_signing_key(store, std::move(persistent)))
+        {
+            all_ok = false;
+        }
+    }
     return all_ok;
 }
 
@@ -424,6 +453,8 @@ auto find_cached_remote_key(database::PersistentStore const& store, std::string_
     record.key_id = persistent->key_id;
     record.public_key_bytes = events::matrix_bytes_from_base64(persistent->public_key);
     record.valid_until_ts = persistent->valid_until_ts;
+    record.retired = persistent->expired_ts != 0U;
+    record.expired_ts = persistent->expired_ts;
     auto constexpr expected_public_bytes = crypto::ed25519_public_key_bytes;
     if (record.public_key_bytes.size() != expected_public_bytes)
     {
@@ -462,7 +493,9 @@ auto find_any_cached_remote_key(database::PersistentStore const& store, std::str
 {
     for (auto const& persistent : database::snapshot_server_signing_keys(store))
     {
-        if (persistent.server_name != server_name)
+        // A retired key is only valid for events; this lookup serves callers that want a key to authenticate
+        // with, so it never returns one.
+        if (persistent.server_name != server_name || persistent.expired_ts != 0U)
         {
             continue;
         }
@@ -614,7 +647,7 @@ namespace
             // main trusts it. An absent or lapsed row still falls through to a
             // verified fetch.
             if (mirror_refresh == KeyMirrorRefresh::on_miss &&
-                (!cached_key.has_value() || remote_key_needs_refresh(cached_key->valid_until_ts, now)))
+                (!cached_key.has_value() || !cached_remote_key_usable(*cached_key, now)))
             {
                 if (database::refresh_remote_signing_keys(store, server_name))
                 {
@@ -635,8 +668,7 @@ namespace
                                                      {"reason",      discovery.reason,         false},
                 });
             }
-            if (cached_key.has_value() && !remote_key_needs_refresh(cached_key->valid_until_ts, now) &&
-                discovery.discovery_allowed)
+            if (cached_key.has_value() && cached_remote_key_usable(*cached_key, now) && discovery.discovery_allowed)
             {
                 log_resolver("cache.hit", {
                                               {"server_name", std::string{server_name},                   false},

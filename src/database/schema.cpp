@@ -33,7 +33,7 @@ namespace
         SchemaTableDefinition{"server_signing_keys",
                               "server_name TEXT NOT NULL, key_id TEXT NOT NULL, public_key TEXT NOT NULL, "
                               "valid_until_ts TEXT NOT NULL, secret_key BLOB NOT NULL DEFAULT '', "
-                              "PRIMARY KEY (server_name, key_id)"                                                                                                       },
+                              "expired_ts TEXT NOT NULL DEFAULT '', PRIMARY KEY (server_name, key_id)"                                                                                                       },
         SchemaTableDefinition{
                               "rooms",                   "room_id TEXT PRIMARY KEY, creator_user_id TEXT NOT NULL, directory_public TEXT NOT NULL DEFAULT 'false'"      },
         SchemaTableDefinition{

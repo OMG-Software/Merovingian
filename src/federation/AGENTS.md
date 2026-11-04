@@ -47,8 +47,12 @@ Federation is the highest-risk surface: **all input comes from untrusted remote 
    response parser reads it (`RemoteKeyResponse::old_verify_keys`) and the resolver returns it as a
    `FederationKeyRecord` with `retired` set: `verify_signed_federation_request` refuses it, the X-Matrix paths never
    install it as a remote's request key, and `check_signing_key_valid_for_event` accepts it only when
-   `origin_server_ts < expired_ts` (ADR-0425). It is not written to the key cache (no schema column), so it resolves
-   from a fresh fetch. A malformed entry is skipped alone.
+   `origin_server_ts < expired_ts` (ADR-0425). `cache_remote_server_keys` stores it as a retired row
+   (`server_signing_keys.expired_ts`, `valid_until_ts` equal to it): retirement is one way, the earliest expiry wins,
+   a later listing under `verify_keys` never revives it, and a current key a response now lists under
+   `old_verify_keys` is retired at once. A retired cached row is a cache hit (`cached_remote_key_usable`): the resolver
+   never fetches for it, a worker's mirror refresh returns it as retired, `find_any_cached_remote_key` skips it, and
+   nothing prunes it by `valid_until_ts`. A malformed entry is skipped alone.
 
    A `send_join` naming one of THIS server's users as `join_authorised_via_users_server`
    cannot carry our signature yet: the request layer and the worker relay leave that one check

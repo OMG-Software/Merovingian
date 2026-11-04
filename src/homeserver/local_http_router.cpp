@@ -3175,7 +3175,7 @@ namespace
                     return federation::find_own_server_signing_key(store, server_name, key_id);
                 }
                 auto key = federation::find_cached_remote_key(store, server_name, key_id);
-                if (key.has_value() && !federation::remote_key_needs_refresh(key->valid_until_ts, key_clock()))
+                if (key.has_value() && federation::cached_remote_key_usable(*key, key_clock()))
                 {
                     return key;
                 }
@@ -6326,7 +6326,6 @@ auto wire_federation_callbacks(HomeserverRuntime& runtime) -> void
             // 502 signals a server-side failure instead.
             return response(502U, matrix_error("M_UNKNOWN", "malformed federation authorization"));
         }
-
     }
 
     // F-21 (ADR-0358): a federation worker is not asked to judge a request: main applied the admin's policy
