@@ -8,8 +8,8 @@
 #include "merovingian/homeserver/runtime.hpp"
 #include "merovingian/http/connection_limiter.hpp"
 #include "merovingian/http/rate_limit.hpp"
-#include "merovingian/sync/sliding_sync.hpp"
 #include "merovingian/sync/lazy_member_tracker.hpp"
+#include "merovingian/sync/sliding_sync.hpp"
 #include "merovingian/sync/sync_notifier.hpp"
 
 #include <chrono>
