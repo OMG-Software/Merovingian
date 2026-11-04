@@ -28,6 +28,7 @@
 #include "merovingian/crypto/generic_hash.hpp"
 #include "merovingian/crypto/random.hpp"
 #include "merovingian/database/persistent_store.hpp"
+#include "merovingian/events/event_id.hpp"
 #include "merovingian/events/event_signer.hpp"
 #include "merovingian/federation/edu_idempotence.hpp"
 #include "merovingian/federation/event_query.hpp"
@@ -18292,6 +18293,18 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
 
             if (body_obj != nullptr)
             {
+                // Appendices, "Event IDs": an event ID is at most 255 bytes. Each value is judged
+                // before any is stored, so a bad one leaves no marker behind, and an oversized one
+                // is never kept, shown to the room or sent to other servers (F-53).
+                for (auto const marker_key : {"m.read", "m.fully_read", "m.read.private"})
+                {
+                    auto const* marker = string_member(*body_obj, marker_key);
+                    if (marker != nullptr && !marker->empty() && !events::event_id_is_acceptable_in_receipt(*marker))
+                    {
+                        return dispatch_err(req, rt, 400U, "M_INVALID_PARAM",
+                                            std::string{marker_key} + " must be an event ID of at most 255 bytes");
+                    }
+                }
                 // m.read — federated read receipt. The body of /read_markers has no
                 // thread_id, so both receipts it sets are unthreaded.
                 auto const* m_read = string_member(*body_obj, "m.read");
@@ -18368,6 +18381,14 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                     auto const event_id = core::percent_decode_path_component(after_receipt.substr(slash_pos + 1U));
                     if (!event_id.empty())
                     {
+                        // Appendices, "Event IDs": at most 255 bytes, and the endpoint types it as an
+                        // Event ID. Checked before anything is stored or sent on (F-53). The spec does
+                        // not make an unknown event an error, so existence is not asked.
+                        if (!events::event_id_is_acceptable_in_receipt(event_id))
+                        {
+                            return dispatch_err(req, rt, 400U, "M_INVALID_PARAM",
+                                                "eventId must be an event ID of at most 255 bytes");
+                        }
                         // The receipt endpoint accepts an empty body, but any
                         // present body MUST be valid JSON.
                         auto thread_id = std::string{};

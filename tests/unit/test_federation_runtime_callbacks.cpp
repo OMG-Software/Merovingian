@@ -1349,6 +1349,9 @@ SCENARIO("Typing EDU parses a user_id containing an escaped quote correctly inst
         // parsing behaviour under test can be reached.
         runtime.database.persistent_store.memberships.push_back(
             {"!room:matrix.example.org", "@local:example.org", "join", 1U});
+        // The typing user must be joined to the room (F-55).
+        runtime.database.persistent_store.memberships.push_back(
+            {"!room:matrix.example.org", R"(@a"b:matrix.example.org)", "join", 2U});
 
         auto request = merovingian::homeserver::LocalHttpRequest{};
         request.method = "PUT";
@@ -1524,6 +1527,14 @@ namespace
     return R"({"room_id":")" + room + R"(","user_id":")" + user + R"(","typing":true})";
 }
 
+// A remote user joined to `room`. An inbound typing EDU is applied only for a joined user (F-55,
+// Server-Server API "Typing Notifications"), so a scenario about typing joins its typists first.
+auto join_remote_user(merovingian::homeserver::HomeserverRuntime& runtime, std::string const& room,
+                      std::string const& user) -> void
+{
+    runtime.database.persistent_store.memberships.push_back({room, user, "join", 2U});
+}
+
 } // namespace
 
 SCENARIO("A typing EDU for a room this server is not in is rejected", "[homeserver][federation][typing][security]")
@@ -1533,6 +1544,7 @@ SCENARIO("A typing EDU for a room this server is not in is rejected", "[homeserv
         auto const origin = std::string{"matrix.example.org"};
         auto const key_id = std::string{"ed25519:auto"};
         auto runtime = edu_runtime(origin, key_id, "typing-bound-seed", {"!known:matrix.example.org"});
+        join_remote_user(*runtime, "!known:matrix.example.org", "@a:matrix.example.org");
 
         WHEN("the remote sends typing for a room id the server has never heard of")
         {
@@ -1578,6 +1590,7 @@ SCENARIO("Typing state stays bounded when a peer floods a room it is legitimatel
         auto const origin = std::string{"matrix.example.org"};
         auto const key_id = std::string{"ed25519:auto"};
         auto runtime = edu_runtime(origin, key_id, "typing-cap-seed", {"!busy:matrix.example.org"});
+        join_remote_user(*runtime, "!busy:matrix.example.org", "@overflow:matrix.example.org");
 
         // Fill directly rather than through the wire path: the cap is what is
         // under test, not the parser, and thousands of signed transactions
@@ -1625,6 +1638,8 @@ SCENARIO("A typing EDU waits for runtime.mutex before touching typing state",
         auto const origin = std::string{"matrix.example.org"};
         auto const key_id = std::string{"ed25519:auto"};
         auto runtime = edu_runtime(origin, key_id, "typing-lock-seed", {"!room:matrix.example.org"});
+        join_remote_user(*runtime, "!room:matrix.example.org", "@first:matrix.example.org");
+        join_remote_user(*runtime, "!room:matrix.example.org", "@second:matrix.example.org");
         // A first transaction wires the federation callbacks, edu_sink among them.
         REQUIRE(merovingian::homeserver::handle_federation_http_request(
                     *runtime, edu_request(origin, key_id, "txn-typing-lock-wire", "m.typing",
@@ -1735,6 +1750,7 @@ SCENARIO("A typing EDU that sets a user typing wakes the typing-expiry job", "[h
         auto const origin = std::string{"matrix.example.org"};
         auto const key_id = std::string{"ed25519:auto"};
         auto runtime = edu_runtime(origin, key_id, "typing-wake-seed", {"!room:matrix.example.org"});
+        join_remote_user(*runtime, "!room:matrix.example.org", "@remote:matrix.example.org");
         auto wakes = 0;
         runtime->typing_expiry_wake = [&wakes]() {
             ++wakes;
@@ -1822,6 +1838,7 @@ SCENARIO("A remote user's typing expires when their server stops refreshing it",
         auto const origin = std::string{"matrix.example.org"};
         auto const key_id = std::string{"ed25519:auto"};
         auto runtime = edu_runtime(origin, key_id, "typing-expiry-seed", {"!room:matrix.example.org"});
+        join_remote_user(*runtime, "!room:matrix.example.org", "@remote:matrix.example.org");
         auto const response = merovingian::homeserver::handle_federation_http_request(
             *runtime, edu_request(origin, key_id, "txn-typing-expiry", "m.typing",
                                   typing_content("!room:matrix.example.org", "@remote:matrix.example.org")));
@@ -2095,6 +2112,64 @@ SCENARIO("An inbound threaded receipt keeps its thread_id and a malformed one is
             {
                 std::ignore = response;
                 REQUIRE(runtime->database.persistent_store.receipts.empty());
+            }
+        }
+    }
+}
+
+// F-53. Appendices, "Event IDs": an event ID "MUST NOT exceed 255 bytes". A remote server's receipt
+// naming an event ID of the wrong shape or size is ignored: not stored, so not shown to the room's
+// members or sent on.
+SCENARIO("An inbound receipt whose event ID is oversized or malformed is ignored",
+         "[homeserver][federation][receipt][receipt-event-id-bounds]")
+{
+    GIVEN("a trusted remote whose user is joined to a room this server is in")
+    {
+        auto const origin = std::string{"matrix.example.org"};
+        auto const key_id = std::string{"ed25519:auto"};
+        auto runtime = edu_runtime(origin, key_id, "receipt-event-id-seed", {"!known:matrix.example.org"});
+        runtime->database.persistent_store.memberships.push_back(
+            {"!known:matrix.example.org", "@b:matrix.example.org", "join", 2U});
+        auto const receipt_for = [](std::string const& event_id) {
+            return std::string{R"({"!known:matrix.example.org":{"m.read":{"@b:matrix.example.org":)"} +
+                   R"({"event_ids":[")" + event_id + R"("],"data":{"ts":2}}}}})";
+        };
+
+        WHEN("the event ID is 256 bytes")
+        {
+            auto const response = merovingian::homeserver::handle_federation_http_request(
+                *runtime, edu_request(origin, key_id, "txn-receipt-long-event", "m.receipt",
+                                      receipt_for("$" + std::string(255U, 'a'))));
+
+            THEN("the transaction is accepted and no receipt is stored")
+            {
+                REQUIRE(response.status == 200U);
+                REQUIRE(runtime->database.persistent_store.receipts.empty());
+            }
+        }
+
+        WHEN("the event ID has no sigil")
+        {
+            auto const response = merovingian::homeserver::handle_federation_http_request(
+                *runtime, edu_request(origin, key_id, "txn-receipt-bad-event", "m.receipt", receipt_for("nosigil")));
+
+            THEN("the transaction is accepted and no receipt is stored")
+            {
+                REQUIRE(response.status == 200U);
+                REQUIRE(runtime->database.persistent_store.receipts.empty());
+            }
+        }
+
+        WHEN("the event ID is 255 bytes")
+        {
+            auto const response = merovingian::homeserver::handle_federation_http_request(
+                *runtime, edu_request(origin, key_id, "txn-receipt-max-event", "m.receipt",
+                                      receipt_for("$" + std::string(254U, 'a'))));
+
+            THEN("the receipt is stored")
+            {
+                REQUIRE(response.status == 200U);
+                REQUIRE(runtime->database.persistent_store.receipts.size() == 1U);
             }
         }
     }

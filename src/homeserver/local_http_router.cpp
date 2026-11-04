@@ -1702,6 +1702,18 @@ namespace
                     return {federation::EduDispositionStatus::rejected_invalid,
                             "typing EDU for a room this server has no membership in"};
                 }
+                // Spec, Server-Server API "Typing Notifications": a receiving server "should verify
+                // that the user is in the room and belongs to the server sending the EDU"; "Server
+                // Access Control Lists (ACLs)": ACLs apply to m.typing and an EDU from a denied
+                // server MUST be ignored (F-55). The dispatcher checks the ACL once, but a worker
+                // relay carries content the worker chose, so it is judged here, at the mutation
+                // boundary, as the receipt case does. An ignored EDU is accepted, not an error: a
+                // transaction may carry EDUs of other rooms and users.
+                if (!user_is_joined_in_room(*rt, room_id, user_id) ||
+                    !federation::room_server_acl_allows(rt->database.persistent_store, room_id, envelope.origin))
+                {
+                    return {federation::EduDispositionStatus::accepted, {}};
+                }
                 auto const previous_users = current_typing_users_in_room(*rt, room_id);
                 auto existing = std::ranges::find_if(rt->typing_users, [&](auto const& t) {
                     return t.room_id == room_id && t.user_id == user_id;
@@ -1720,10 +1732,23 @@ namespace
                     {
                         // Backstop for a peer that is a legitimate member of a
                         // very large room. Typing state is ephemeral, so the
-                        // oldest entry is already the least useful one.
+                        // oldest entry is already the least useful one. Only a
+                        // remote user's entry is evicted (F-55): the table is
+                        // shared with this server's own users, and a peer must
+                        // not be able to clear their typing. With none to
+                        // evict, the new entry is dropped.
                         if (rt->typing_users.size() >= max_inbound_typing_entries)
                         {
-                            rt->typing_users.erase(rt->typing_users.begin());
+                            auto const& local_server = rt->config.server().server_name;
+                            auto const oldest_remote =
+                                std::ranges::find_if(rt->typing_users, [&local_server](auto const& entry) {
+                                    return server_name_from_user_id(entry.user_id) != local_server;
+                                });
+                            if (oldest_remote == rt->typing_users.end())
+                            {
+                                return {federation::EduDispositionStatus::accepted, {}};
+                            }
+                            rt->typing_users.erase(oldest_remote);
                         }
                         rt->typing_users.push_back({room_id, user_id, true, std::uint64_t{0U}, expires_at});
                     }
@@ -1823,6 +1848,13 @@ namespace
                             {
                                 return {federation::EduDispositionStatus::rejected_invalid,
                                         "receipt event_ids entries must be strings"};
+                            }
+                            // Appendices, "Event IDs": at most 255 bytes. An event ID of the wrong
+                            // shape or size is ignored, not stored, shown to the room's members or
+                            // sent on (F-53); the rest of the EDU is still handled.
+                            if (!events::event_id_is_acceptable_in_receipt(*first_event_id))
+                            {
+                                continue;
                             }
                             auto const* data = object_member_as_object(*receipt, "data");
                             auto const* ts_value = data == nullptr ? nullptr : object_member_as_int(*data, "ts");
@@ -2694,6 +2726,29 @@ namespace
             {
                 federate_accepted_membership_event(*rt, room_id, accepted_event_id, stored_json,
                                                    server_name_from_user_id(envelope.sender));
+                // Spec, Application Service API "Pushing events": every event in a room an application
+                // service is interested in is sent to it. No transaction brings this event again (the
+                // requesting server is excluded from the fan-out and a re-sent copy is answered
+                // already_stored), so this is the one place it can be queued (F-51). It writes outbox
+                // rows only, with no network I/O, so it is safe under rt->mutex. A rejected or
+                // soft-failed event never reaches here.
+                auto const member_event_target =
+                    envelope.event_type == "m.room.member" && envelope.state_key.has_value()
+                        ? std::string_view{*envelope.state_key}
+                        : std::string_view{};
+                auto const appservice_room = std::ranges::find_if(rt->database.rooms, [&](LocalRoom const& candidate) {
+                    return candidate.room_id == room_id;
+                });
+                if (appservice_room != rt->database.rooms.end())
+                {
+                    enqueue_appservice_delivery(*rt, *appservice_room, accepted_event_id, event_stream_ordering,
+                                                envelope.sender, member_event_target);
+                }
+                else
+                {
+                    enqueue_appservice_delivery(*rt, room_id, {}, accepted_event_id, event_stream_ordering,
+                                                envelope.sender, member_event_target);
+                }
             }
 
             // The answer's events are copied out once, now that the join is accepted. Per Matrix

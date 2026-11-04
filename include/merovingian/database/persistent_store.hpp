@@ -1920,7 +1920,8 @@ enum class CappedAccountDataStore
 // position written back into the stored row. The row is committed before the
 // in-memory mirror changes. An optional eviction is deleted in the same
 // transaction as the upsert. Returns false on a backend failure or an empty
-// key field, without changing the mirror; allocated stream IDs are never reused.
+// key field or an event_id or thread_id over 255 bytes, without changing the mirror; allocated
+// stream IDs are never reused.
 [[nodiscard]] auto store_receipt(PersistentStore& store, PersistentReceipt receipt,
                                  std::optional<PersistentReceipt> evicted = std::nullopt) -> bool;
 // Removes the receipt with `receipt`'s key. False if there was none or the

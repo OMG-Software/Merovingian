@@ -1,5 +1,6 @@
 // SPDX-FileCopyrightText: 2026 James Chapman
 // SPDX-License-Identifier: GPL-3.0-or-later
+#include "../support/appservice_test_config.hpp"
 #include "../support/in_memory_database_config.hpp"
 //
 // Regression for Complement run 3 (0.12.59): the /send transaction carrying a locally sent
@@ -19,6 +20,7 @@
 #include "merovingian/canonicaljson/serializer.hpp"
 #include "merovingian/canonicaljson/value.hpp"
 #include "merovingian/config/config.hpp"
+#include "merovingian/database/persistent_store.hpp"
 #include "merovingian/federation/dispatch_worker.hpp"
 #include "merovingian/federation/inbound_ingestion.hpp"
 #include "merovingian/federation/membership_endpoints.hpp"
@@ -535,6 +537,149 @@ SCENARIO("A membership event accepted for a requesting server is sent on to the 
             {
                 REQUIRE(queued_pdus_for(runtime, bystander_server).empty());
                 REQUIRE(queued_pdus_for(runtime, joiner_server).empty());
+            }
+        }
+    }
+}
+
+namespace
+{
+
+// A configuration with one appservice whose rooms namespace matches every room, so any event stored
+// in a room is one it is interested in.
+[[nodiscard]] auto appservice_interested_config() -> merovingian::config::Config
+{
+    return merovingian::tests::appservice_test_config({
+        merovingian::tests::TestAppservice{
+                                           .id = "bridge", .url = std::string{"https://bridge.example"}, .rooms_regex = ".*"}
+    });
+}
+
+// How many outbox rows the appservice "bridge" holds for `event_id`.
+[[nodiscard]] auto outbox_rows_for(merovingian::homeserver::ClientServerRuntime& runtime, std::string_view event_id)
+    -> std::ptrdiff_t
+{
+    auto const lock = std::lock_guard{runtime.homeserver.mutex};
+    return std::ranges::count_if(runtime.homeserver.database.persistent_store.appservice_outbox,
+                                 [event_id](merovingian::database::PersistentAppserviceOutboxEntry const& entry) {
+                                     return entry.appservice_id == "bridge" && entry.event_id == event_id;
+                                 });
+}
+
+} // namespace
+
+// Spec: Application Service API v1.19, "Pushing events": the homeserver sends an application service
+// the events in a room its `rooms` or `aliases` namespace matches. A remote user's join, leave or
+// knock accepted by this server as the resident is such an event, so it is queued once.
+// URL: ../../docs/matrix-v1.19-spec/application-service-api.md#pushing-events
+SCENARIO("A membership event accepted as the resident is queued for an interested application service",
+         "[integration][federation][appservice][membership-acceptor-appservice]")
+{
+    using merovingian::federation::FederationEndpoint;
+
+    GIVEN("alice's public room on this server, which an application service is interested in")
+    {
+        REQUIRE(sodium_init() >= 0);
+        auto started = merovingian::homeserver::start_client_server(appservice_interested_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        auto const room = make_fanout_room(runtime, "public_chat");
+        auto const join_id = "$bob_join:" + std::string{joiner_server};
+
+        WHEN("server B's send_join for bob is accepted")
+        {
+            auto const joined =
+                accept_membership(runtime, FederationEndpoint::send_join,
+                                  membership_envelope(runtime, room.room_id, room.bob, "join", join_id, 10U));
+            REQUIRE(joined.accepted);
+
+            THEN("the application service is queued the join once")
+            {
+                REQUIRE(outbox_rows_for(runtime, join_id) == 1);
+            }
+        }
+
+        WHEN("server B's send_join is accepted on the federation worker's relay path, which holds the runtime lock")
+        {
+            auto const envelope = membership_envelope(runtime, room.room_id, room.bob, "join", join_id, 10U);
+            auto joined = merovingian::federation::MembershipAcceptResult{};
+            {
+                // handle_membership_ingest_request calls the acceptor with runtime.mutex already held.
+                auto const guard = std::unique_lock{runtime.homeserver.mutex};
+                joined = runtime.homeserver.federation.membership_acceptor(FederationEndpoint::send_join, room.room_id,
+                                                                           {}, envelope);
+            }
+            REQUIRE(joined.accepted);
+
+            THEN("the application service is queued the join once")
+            {
+                REQUIRE(outbox_rows_for(runtime, join_id) == 1);
+            }
+        }
+
+        WHEN("server B's send_leave for bob, who had joined, is accepted")
+        {
+            REQUIRE(accept_membership(runtime, FederationEndpoint::send_join,
+                                      membership_envelope(runtime, room.room_id, room.bob, "join", join_id, 10U))
+                        .accepted);
+            auto const leave_id = "$bob_leave:" + std::string{joiner_server};
+            auto const left =
+                accept_membership(runtime, FederationEndpoint::send_leave,
+                                  membership_envelope(runtime, room.room_id, room.bob, "leave", leave_id, 11U));
+            REQUIRE(left.accepted);
+
+            THEN("the application service is queued the leave once")
+            {
+                REQUIRE(outbox_rows_for(runtime, leave_id) == 1);
+            }
+        }
+
+        WHEN("a soft-failed send_join for a banned user is accepted at the protocol level")
+        {
+            // The join is built on the room's history before the ban, so it passes the auth rules
+            // against the state before it and fails them against the current state (soft failure).
+            auto const envelope = membership_envelope(runtime, room.room_id, room.bob, "join", join_id, 10U);
+            REQUIRE(call(runtime, "POST", "/_matrix/client/v3/rooms/" + room.room_id + "/ban", room.alice_token,
+                         "{\"user_id\":\"" + room.bob + "\"}")
+                        .response.status == 200U);
+            auto const result = accept_membership(runtime, FederationEndpoint::send_join, envelope);
+
+            THEN("the event is stored soft-failed and the application service is queued nothing for it")
+            {
+                REQUIRE(result.accepted);
+                {
+                    auto const lock = std::lock_guard{runtime.homeserver.mutex};
+                    REQUIRE(merovingian::database::find_event_status(runtime.homeserver.database.persistent_store,
+                                                                     join_id) ==
+                            std::optional<std::string>{"soft_failed"});
+                }
+                REQUIRE(outbox_rows_for(runtime, join_id) == 0);
+            }
+        }
+    }
+
+    GIVEN("alice's room on this server that allows knocking, which an application service is interested in")
+    {
+        REQUIRE(sodium_init() >= 0);
+        auto started = merovingian::homeserver::start_client_server(appservice_interested_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        auto const room = make_fanout_room(runtime, "public_chat");
+        REQUIRE(call(runtime, "PUT", "/_matrix/client/v3/rooms/" + room.room_id + "/state/m.room.join_rules/",
+                     room.alice_token, R"({"join_rule":"knock"})")
+                    .response.status == 200U);
+
+        WHEN("server B's send_knock for bob is accepted")
+        {
+            auto const knock_id = "$bob_knock:" + std::string{joiner_server};
+            auto const knocked =
+                accept_membership(runtime, FederationEndpoint::send_knock,
+                                  membership_envelope(runtime, room.room_id, room.bob, "knock", knock_id, 10U));
+            REQUIRE(knocked.accepted);
+
+            THEN("the application service is queued the knock once")
+            {
+                REQUIRE(outbox_rows_for(runtime, knock_id) == 1);
             }
         }
     }
