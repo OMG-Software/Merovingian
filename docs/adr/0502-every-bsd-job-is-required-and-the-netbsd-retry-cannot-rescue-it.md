@@ -1,4 +1,4 @@
-# Every BSD job is required, and the NetBSD retry cannot rescue its first build
+# Every BSD job is required, and the NetBSD retry job is deleted
 
 * Status: accepted
 * Deciders: James Chapman
