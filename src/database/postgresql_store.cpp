@@ -1375,16 +1375,16 @@ namespace
         if (table_load_profile_includes("profiles", profile))
         {
             auto profiles = query_rows(connection, "postgresql_load_profiles",
-                                       "SELECT user_id, displayname, avatar_url FROM profiles ORDER BY user_id");
+                                       "SELECT user_id, displayname, avatar_url, fields_json FROM profiles ORDER BY user_id");
             if (!profiles.ok)
             {
                 return false;
             }
             for (auto const& row : profiles.rows)
             {
-                if (row.size() >= 3U)
+                if (row.size() >= 4U)
                 {
-                    store.profiles.push_back({row[0], row[1], row[2]});
+                    store.profiles.push_back({row[0], row[1], row[2], row[3]});
                 }
             }
         }

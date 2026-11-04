@@ -5571,11 +5571,12 @@ auto restore_sync_stream_id(PersistentStore& store) -> void
     {
         return false;
     }
-    auto const statement = record_statement(
-        "upsert_profile",
-        "INSERT INTO profiles (user_id, displayname, avatar_url) VALUES ($1, $2, $3) "
-        "ON CONFLICT (user_id) DO UPDATE SET displayname = $2, avatar_url = $3",
-        {public_value(profile.user_id), public_value(profile.displayname), public_value(profile.avatar_url)});
+    auto const statement =
+        record_statement("upsert_profile",
+                         "INSERT INTO profiles (user_id, displayname, avatar_url, fields_json) VALUES ($1, $2, $3, $4) "
+                         "ON CONFLICT (user_id) DO UPDATE SET displayname = $2, avatar_url = $3, fields_json = $4",
+                         {public_value(profile.user_id), public_value(profile.displayname),
+                          public_value(profile.avatar_url), public_value(profile.fields_json)});
     if (!record_and_persist(store, statement))
     {
         return false;
@@ -6707,6 +6708,27 @@ auto rebuild_deferred_pdu_awaits(PersistentStore& store) -> void
         return false;
     }
     it->displayname = std::string{displayname};
+    return true;
+}
+
+[[nodiscard]] auto update_profile_fields(PersistentStore& store, std::string_view user_id, std::string_view fields_json)
+    -> bool
+{
+    auto const it = std::ranges::find_if(store.profiles, [user_id](PersistentProfile const& p) {
+        return p.user_id == user_id;
+    });
+    if (it == store.profiles.end())
+    {
+        return false;
+    }
+    auto const statement =
+        record_statement("update_profile_fields", "UPDATE profiles SET fields_json = $2 WHERE user_id = $1",
+                         {public_value(std::string{user_id}), public_value(std::string{fields_json})});
+    if (!record_and_persist(store, statement))
+    {
+        return false;
+    }
+    it->fields_json = std::string{fields_json};
     return true;
 }
 

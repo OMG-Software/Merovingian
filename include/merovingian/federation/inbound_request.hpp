@@ -193,6 +193,8 @@ struct FederationProfile final
     bool found{false};
     std::string displayname{};
     std::string avatar_url{};
+    // The extended fields (`m.tz` and custom keys) as one canonical JSON object; empty or `{}` for none.
+    std::string fields_json{};
 };
 
 // Resolves a local user's published profile for an inbound federation

@@ -784,6 +784,7 @@ value. Test fixtures that do not exercise persistence select it through
 - Both stores read the migration ledger in numeric order
   (`ORDER BY CAST(version AS INTEGER)`): `schema_migrations.version` is `TEXT`, and
   ordering by it alone put `'10'` before `'9'`.
+- `profiles.fields_json` holds a user's extended profile fields (`m.tz`, custom keys) as one canonical JSON object, `{}` when none (ADR-0478); `update_profile_fields` rewrites it.
 - The PostgreSQL store hydrates `profiles` like the SQLite store. Before 0.12.42 it
   wrote them but never read them back, so displaynames and avatars disappeared at
   every restart.

@@ -917,6 +917,48 @@ SCENARIO("A room alias keeps its creator across a reopen and can be deleted",
     }
 }
 
+SCENARIO("A profile keeps its extended fields across a reopen of the SQLite store",
+         "[database][persistence][profile][profile-fields]")
+{
+    GIVEN("a SQLite store with a profile that has m.tz and a custom field")
+    {
+        auto const sqlite_path = unique_sqlite_path();
+        std::filesystem::remove(sqlite_path);
+        auto opened = merovingian::database::open_sqlite_persistent_store(sqlite_path.string());
+        REQUIRE(opened.ok);
+        auto& store = opened.store;
+        REQUIRE(merovingian::database::store_profile(store, {"@alice:example.org", "Alice", "", "{}"}));
+        REQUIRE(merovingian::database::update_profile_fields(store, "@alice:example.org",
+                                                             R"({"m.tz":"Europe/London","org.example.x":1})"));
+
+        WHEN("the store is reopened")
+        {
+            auto reopened = merovingian::database::open_sqlite_persistent_store(sqlite_path.string());
+            REQUIRE(reopened.ok);
+            auto const profile = merovingian::database::find_profile(reopened.store, "@alice:example.org");
+
+            THEN("the fields and the display name are still there")
+            {
+                REQUIRE(profile.has_value());
+                REQUIRE(profile->displayname == "Alice");
+                REQUIRE(profile->fields_json == R"({"m.tz":"Europe/London","org.example.x":1})");
+            }
+        }
+
+        WHEN("the fields are updated for a user with no profile row")
+        {
+            auto const updated = merovingian::database::update_profile_fields(store, "@ghost:example.org", "{}");
+
+            THEN("the store reports failure and creates no row")
+            {
+                REQUIRE_FALSE(updated);
+                REQUIRE_FALSE(merovingian::database::find_profile(store, "@ghost:example.org").has_value());
+            }
+        }
+        std::filesystem::remove(sqlite_path);
+    }
+}
+
 SCENARIO("Account data upserts global and room-scoped rows while advancing the sync stream",
          "[database][persistence][account-data]")
 {

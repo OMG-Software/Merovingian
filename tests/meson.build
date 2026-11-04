@@ -539,6 +539,7 @@ shell = find_program('sh')
       'conformance/test_encryption_put_conformance.cpp',
       'conformance/test_room_version_table_conformance.cpp',
       'conformance/test_read_markers_conformance.cpp',
+      'conformance/test_profile_fields_conformance.cpp',
       'conformance/test_profile_propagation_conformance.cpp',
       'conformance/test_receipt_conformance.cpp',
       'conformance/test_safety_report_conformance.cpp',

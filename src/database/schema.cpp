@@ -155,7 +155,7 @@ namespace
         SchemaTableDefinition{
                               "event_stream_watermark",  "singleton INTEGER PRIMARY KEY CHECK (singleton = 1), watermark TEXT NOT NULL DEFAULT '0'"                     },
         SchemaTableDefinition{"profiles",                "user_id TEXT PRIMARY KEY, displayname TEXT NOT NULL DEFAULT '', "
-                                          "avatar_url TEXT NOT NULL DEFAULT ''"                                                },
+                                          "avatar_url TEXT NOT NULL DEFAULT '', fields_json TEXT NOT NULL DEFAULT '{}'"                                                },
         SchemaTableDefinition{"client_txn_ids",
                               "user_id TEXT NOT NULL, room_id TEXT NOT NULL, event_type TEXT NOT NULL, "
                               "txn_id TEXT NOT NULL, event_id TEXT NOT NULL, device_id TEXT NOT NULL DEFAULT '', "

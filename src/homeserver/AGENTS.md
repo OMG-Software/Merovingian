@@ -162,7 +162,7 @@ logged at warning level. A pre-v12 `create_room` holds a `RoomIdReservation` fro
 
 ## Client requests that call another server
 
-`publicRooms?server=` (GET and POST), a remote room-alias lookup (`GET /directory/room/{alias}` and `POST /join/{#alias}`), a remote user's profile (`remote_profile_response`: relays only `displayname`/`avatar_url`), remote media download or
+`publicRooms?server=` (GET and POST), a remote room-alias lookup (`GET /directory/room/{alias}` and `POST /join/{#alias}`), a remote user's profile (`remote_profile_response`: relays `displayname`/`avatar_url` strings, `m.tz` as a string and grammar-valid non-null custom keys within 64 KiB), remote media download or
 thumbnail, the `/thirdparty/*` lookups that call an appservice (ADR-0181), and the appservice
 `query_user` / `query_room_alias` hooks of `GET /profile/{userId}` and `GET /directory/room/{alias}`
 (F-68, ADR-0417: one slot for the whole loop, taken only when a registration's namespace matches the
@@ -572,7 +572,7 @@ client, sender or remote server controls, and per-user rows that requests scan m
   `state_groups`, `state_group_state`, `event_state_groups` or `events` to find a key. A retained PDU is woken through
   `take_deferred_pdus_awaiting` (ADR-0326), never by searching the retained JSON, and the retry job reads
   `deferred_pdus` in place rather than copying it.
-- `PUT /profile/{userId}/displayname|avatar_url` measures the serialised `{avatar_url, displayname}` object with the new value and refuses 64 KiB or more with `400 M_PROFILE_TOO_LARGE`; a non-empty non-MXC `avatar_url` (`media::mxc_uri_is_valid`) is `400 M_INVALID_PARAM`; an empty one clears it; a body without the key is `400 M_MISSING_PARAM` and a non-string value `400 M_INVALID_PARAM`, storing nothing (ADR-0406). A new stored profile field must be added to the measured object.
+- `PUT /profile/{userId}/displayname|avatar_url` measures the serialised `{avatar_url, displayname}` object with the new value and refuses 64 KiB or more with `400 M_PROFILE_TOO_LARGE`; a non-empty non-MXC `avatar_url` (`media::mxc_uri_is_valid`) is `400 M_INVALID_PARAM`; an empty one clears it; a body without the key is `400 M_MISSING_PARAM` and a non-string value `400 M_INVALID_PARAM`, storing nothing (ADR-0406). The measured object is `profile_size_bytes`: `avatar_url`, `displayname` and the extended fields (`profiles.fields_json`, `m.tz` and custom keys, ADR-0478). A new stored profile field must be added to it.
 - `/search` judges a room the user has left with `room_read_access_for` only when one of its
   events would be returned, so those scans stay bounded by the page (R16).
 - `POST /search`, `POST /publicRooms` and `POST /user_directory/search` match their term with one

@@ -3335,11 +3335,16 @@ namespace
                 return std::string{unmatched};
             }
             auto const suffix = slash == std::string_view::npos ? std::string_view{} : rest.substr(slash);
-            if (!suffix.empty() && suffix != "/displayname" && suffix != "/avatar_url")
+            if (suffix == "/displayname" || suffix == "/avatar_url" || suffix.empty())
             {
-                return std::string{unmatched};
+                return std::string{profile_prefix} + "{userId}" + std::string{suffix};
             }
-            return std::string{profile_prefix} + "{userId}" + std::string{suffix};
+            // /{keyName}: `m.tz` or a custom key (v1.16), one segment.
+            if (suffix.size() > 1U && suffix.find('/', 1U) == std::string_view::npos)
+            {
+                return std::string{profile_prefix} + "{userId}/{keyName}";
+            }
+            return std::string{unmatched};
         }
         auto constexpr join_prefix = std::string_view{"/_matrix/client/v3/join/"};
         if (starts_with(out, join_prefix))
@@ -11527,6 +11532,141 @@ namespace
         return local.found ? timestamp_to_event_response(req, rt, local.event_id, local.origin_server_ts) : not_found();
     }
 
+    // Spec (setProfileField, Common Namespaced Identifier Grammar): a profile key is 1 to 255 bytes, starts with
+    // [a-z] and holds only [a-z0-9-_.]; "m." is reserved for the specification, whose only extended key is
+    // `m.tz`. `displayname` and `avatar_url` fit the grammar. Over 255 bytes is M_KEY_TOO_LARGE, any other
+    // failure M_INVALID_PARAM (ADR-0478).
+    enum class ProfileKeyCheck
+    {
+        valid,
+        too_large,
+        invalid,
+    };
+
+    [[nodiscard]] auto check_profile_key(std::string_view key) -> ProfileKeyCheck
+    {
+        constexpr std::size_t max_profile_key_bytes = 255U;
+        if (key.size() > max_profile_key_bytes)
+        {
+            return ProfileKeyCheck::too_large;
+        }
+        if (key.empty() || key.front() < 'a' || key.front() > 'z')
+        {
+            return ProfileKeyCheck::invalid;
+        }
+        auto const allowed = [](char const c) {
+            return (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '-' || c == '_' || c == '.';
+        };
+        if (!std::ranges::all_of(key, allowed))
+        {
+            return ProfileKeyCheck::invalid;
+        }
+        if (key.starts_with("m.") && key != "m.tz")
+        {
+            return ProfileKeyCheck::invalid;
+        }
+        return ProfileKeyCheck::valid;
+    }
+
+    // The extended profile fields (`m.tz` and custom keys) a profile row holds, as the object they are stored as.
+    // The text is this server's own canonical output, so a parse failure yields no fields.
+    [[nodiscard]] auto stored_profile_fields(std::optional<database::PersistentProfile> const& profile)
+        -> canonicaljson::Object
+    {
+        if (!profile.has_value())
+        {
+            return {};
+        }
+        return parsed_json_object(profile->fields_json).value_or(canonicaljson::Object{});
+    }
+
+    // Spec: "the total profile MUST be under 64 KiB". The profile measured is the object a client reads back:
+    // `avatar_url`, `displayname` and the extended fields, in canonical form. A stored field the serialiser
+    // refuses (ADR-0182 keeps such a profile usable) cannot be measured as JSON; its raw length plus the
+    // object's fixed overhead is then the size counted.
+    [[nodiscard]] auto profile_size_bytes(std::string_view displayname, std::string_view avatar_url,
+                                          canonicaljson::Object const& fields) -> std::size_t
+    {
+        auto members = canonicaljson::Object{};
+        members.push_back(json_member("avatar_url", json_str(avatar_url)));
+        members.push_back(json_member("displayname", json_str(displayname)));
+        for (auto const& field : fields)
+        {
+            members.push_back(json_member(field.key, *field.value));
+        }
+        auto const serialised = json_serialize_checked(json_obj(std::move(members)));
+        if (serialised.has_value())
+        {
+            return serialised->size();
+        }
+        auto const fields_text = json_serialize_checked(json_obj(fields));
+        return displayname.size() + avatar_url.size() + 34U + (fields_text.has_value() ? fields_text->size() : 0U);
+    }
+
+    // PUT /_matrix/client/v3/profile/{userId}/{keyName} for `m.tz` and custom keys (spec v1.16). The caller has
+    // checked that the key is valid and that the path user is the authenticated user. Runs under runtime.mutex
+    // (the request lock), reads and writes only this user's profile row, and does no network call.
+    [[nodiscard]] auto put_profile_extended_field(ClientServerRuntime& rt, LocalHttpRequest const& req,
+                                                  std::string_view user, std::string_view key) -> DispatchResult
+    {
+        auto const parsed = canonicaljson::parse_lossless(req.body);
+        auto const* const body = parsed.error == canonicaljson::ParseError::none
+                                     ? std::get_if<canonicaljson::Object>(&parsed.value.storage())
+                                     : nullptr;
+        if (body == nullptr)
+        {
+            return dispatch_err(req, rt, 400U, "M_BAD_JSON", "profile update body must be a JSON object");
+        }
+        auto const* const member = object_member(*body, key);
+        if (member == nullptr)
+        {
+            return dispatch_err(req, rt, 400U, "M_MISSING_PARAM",
+                                "the request body must contain the key " + std::string{key});
+        }
+        // Spec: "An object which contains exactly one property."
+        if (body->size() != 1U)
+        {
+            return dispatch_err(req, rt, 400U, "M_BAD_JSON", "the request body must contain exactly one property");
+        }
+        // The spec lets a server reject null and tells clients to DELETE instead; a stored null would also read
+        // as "unset" over federation (ADR-0478).
+        if (std::holds_alternative<std::nullptr_t>(member->storage()))
+        {
+            return dispatch_err(req, rt, 400U, "M_INVALID_PARAM", "use DELETE to remove a profile field");
+        }
+        if (key == "m.tz" && std::get_if<std::string>(&member->storage()) == nullptr)
+        {
+            return dispatch_err(req, rt, 400U, "M_INVALID_PARAM", "m.tz must be a string");
+        }
+        auto& store = rt.homeserver.database.persistent_store;
+        auto const existing = database::find_profile(store, user);
+        auto fields = stored_profile_fields(existing);
+        std::erase_if(fields, [key](canonicaljson::ObjectMember const& field) {
+            return field.key == key;
+        });
+        fields.push_back(json_member(std::string{key}, *member));
+        auto const displayname = existing.has_value() ? existing->displayname : std::string{};
+        auto const avatar_url = existing.has_value() ? existing->avatar_url : std::string{};
+        auto const fields_text = json_serialize_checked(json_obj(fields));
+        if (!fields_text.has_value())
+        {
+            return dispatch_err(req, rt, 400U, "M_BAD_JSON", "the profile value cannot be stored");
+        }
+        if (profile_size_bytes(displayname, avatar_url, fields) >= max_profile_bytes)
+        {
+            return dispatch_err(req, rt, 400U, "M_PROFILE_TOO_LARGE",
+                                "the profile would exceed its maximum allowed size of 64 KiB");
+        }
+        auto const stored = existing.has_value()
+                                ? database::update_profile_fields(store, user, *fields_text)
+                                : database::store_profile(store, {std::string{user}, {}, {}, *fields_text});
+        if (!stored)
+        {
+            return dispatch_err(req, rt, 500U, "M_UNKNOWN", "failed to persist the profile");
+        }
+        return dispatch_resp(req, rt, 200U, "{}");
+    }
+
     // GET /_matrix/client/v3/profile/{userId}[/{keyName}] for a user of another server. Asks that server's
     // GET /_matrix/federation/v1/query/profile and relays only what the client API defines, a string
     // `displayname` and `avatar_url`: a remote answer is untrusted, so nothing else is copied (rule 6 of
@@ -11542,7 +11682,7 @@ namespace
         {
             return client_proxy_refused(req, rt);
         }
-        if (!field.empty() && field != "displayname" && field != "avatar_url")
+        if (!field.empty() && check_profile_key(field) != ProfileKeyCheck::valid)
         {
             return dispatch_err(req, rt, 404U, "M_NOT_FOUND", "profile field not found");
         }
@@ -11595,6 +11735,24 @@ namespace
             if (auto const* value = string_member(*parsed, key); value != nullptr)
             {
                 object.push_back(json_member(key, json_str(*value)));
+            }
+        }
+        // The extended fields (v1.16): `m.tz` must be a string, a custom key must meet the key grammar and
+        // hold a non-null value (null means "unset" over federation). The total is held under the profile
+        // limit, so a remote server cannot make this one relay an unbounded answer.
+        for (auto const& member : *parsed)
+        {
+            if (member.key == "displayname" || member.key == "avatar_url" ||
+                check_profile_key(member.key) != ProfileKeyCheck::valid || (!field.empty() && field != member.key) ||
+                std::holds_alternative<std::nullptr_t>(member.value->storage()) ||
+                (member.key == "m.tz" && std::get_if<std::string>(&member.value->storage()) == nullptr))
+            {
+                continue;
+            }
+            object.push_back(json_member(member.key, *member.value));
+            if (profile_size_bytes({}, {}, object) >= max_profile_bytes)
+            {
+                object.pop_back();
             }
         }
         if (!field.empty() && object.empty())
@@ -14648,13 +14806,17 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
         auto const profile = database::find_profile(store, target_user);
         auto const displayname = profile.has_value() ? profile->displayname : std::string{};
         auto const avatar_url = profile.has_value() ? profile->avatar_url : std::string{};
+        auto profile_fields = stored_profile_fields(profile);
         if (field.empty())
         {
-            return dispatch_resp(req, rt, 200U,
-                                 json_serialize(json_obj({
-                                     json_member("displayname", json_str(displayname)),
-                                     json_member("avatar_url", json_str(avatar_url)),
-                                 })));
+            auto whole = canonicaljson::Object{};
+            whole.push_back(json_member("displayname", json_str(displayname)));
+            whole.push_back(json_member("avatar_url", json_str(avatar_url)));
+            for (auto& extended : profile_fields)
+            {
+                whole.push_back(std::move(extended));
+            }
+            return dispatch_resp(req, rt, 200U, json_serialize(json_obj(std::move(whole))));
         }
         // getProfileField returns only the requested key; an unset or unknown
         // field is reported as 404 M_NOT_FOUND per the Matrix spec.
@@ -14667,6 +14829,14 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
         {
             return dispatch_resp(req, rt, 200U,
                                  json_serialize(json_obj({json_member("avatar_url", json_str(avatar_url))})));
+        }
+        // An extended field (`m.tz` or a custom key): an unset one, or a key outside the grammar, is a 404.
+        if (auto const* const stored = object_member(profile_fields, core::percent_decode_path_component(field));
+            stored != nullptr)
+        {
+            auto single = canonicaljson::Object{};
+            single.push_back(json_member(core::percent_decode_path_component(field), *stored));
+            return dispatch_resp(req, rt, 200U, json_serialize(json_obj(std::move(single))));
         }
         return dispatch_err(req, rt, 404U, "M_NOT_FOUND", "profile field not found");
     }
@@ -16338,6 +16508,9 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                              json_obj({
                                  json_member("m.change_password", json_obj({json_member("enabled", json_bool(true))})),
                                  json_member("m.3pid_changes", json_obj({json_member("enabled", json_bool(true))})),
+                                 // Spec (m.profile_fields, v1.16): every field is the user's to set; this server has
+                                 // no allowed or disallowed list.
+                                 json_member("m.profile_fields", json_obj({json_member("enabled", json_bool(true))})),
                                  json_member("m.room_versions",
                                              json_obj({
                                                  json_member("default", json_str("12")),
@@ -16876,22 +17049,14 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                 return dispatch_err(req, rt, 400U, "M_INVALID_PARAM", "avatar_url must be an MXC URI");
             }
             // Spec: "the total profile MUST be under 64 KiB"; a value that would make it larger is
-            // 400 M_PROFILE_TOO_LARGE. The profile this server stores is these two fields (it has no
-            // `m.tz` or custom fields), so the size is that of the profile object with the new value.
+            // 400 M_PROFILE_TOO_LARGE. The profile measured holds the stored extended fields too.
             auto const existing = database::find_profile(store, *user);
             auto const displayname_after =
                 is_displayname ? std::string{value} : (existing.has_value() ? existing->displayname : std::string{});
             auto const avatar_url_after =
                 is_avatar_url ? std::string{value} : (existing.has_value() ? existing->avatar_url : std::string{});
-            auto const profile_json = json_serialize_checked(json_obj({
-                json_member("avatar_url", json_str(avatar_url_after)),
-                json_member("displayname", json_str(displayname_after)),
-            }));
-            // A stored field the serialiser refuses (ADR-0182 keeps such a profile usable) cannot be measured
-            // as JSON; its raw length plus the object's fixed overhead is then the size counted.
-            auto const profile_bytes = profile_json.has_value()
-                                           ? profile_json->size()
-                                           : displayname_after.size() + avatar_url_after.size() + 34U;
+            auto const profile_bytes =
+                profile_size_bytes(displayname_after, avatar_url_after, stored_profile_fields(existing));
             if (profile_bytes >= max_profile_bytes)
             {
                 return dispatch_err(req, rt, 400U, "M_PROFILE_TOO_LARGE",
@@ -16915,6 +17080,85 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             if (!propagated.ok)
             {
                 return dispatch_err(req, rt, propagated.status, "M_UNKNOWN", propagated.reason);
+            }
+            return dispatch_resp(req, rt, 200U, "{}");
+        }
+        // PUT /profile/{userId}/{keyName} for `m.tz` and custom keys (spec v1.16).
+        if (auto const slash = path_remainder.find('/'); slash != std::string_view::npos && slash > 0U &&
+                                                         path_remainder.find('/', slash + 1U) == std::string_view::npos)
+        {
+            if (core::percent_decode_path_component(path_remainder.substr(0U, slash)) != *user)
+            {
+                return dispatch_err(req, rt, 403U, "M_FORBIDDEN", "cannot update another user's profile");
+            }
+            auto const key = core::percent_decode_path_component(path_remainder.substr(slash + 1U));
+            switch (check_profile_key(key))
+            {
+            case ProfileKeyCheck::too_large:
+                return dispatch_err(req, rt, 400U, "M_KEY_TOO_LARGE", "the profile key exceeds 255 bytes");
+            case ProfileKeyCheck::invalid:
+                return dispatch_err(req, rt, 400U, "M_INVALID_PARAM", "Invalid profile key.");
+            case ProfileKeyCheck::valid:
+                break;
+            }
+            return put_profile_extended_field(rt, req, *user, key);
+        }
+    }
+
+    // DELETE /_matrix/client/v3/profile/{userId}/{keyName}: removes the field and its key (spec v1.16). Deleting
+    // `displayname` or `avatar_url` clears the value, which is how this server stores "unset", and is sent to
+    // the user's rooms as a change is.
+    if (req.method == "DELETE" && starts_with(req.target, profile_put_prefix))
+    {
+        auto const path_remainder = request_path.substr(profile_put_prefix.size());
+        auto const slash = path_remainder.find('/');
+        if (slash != std::string_view::npos && slash > 0U &&
+            path_remainder.find('/', slash + 1U) == std::string_view::npos)
+        {
+            if (core::percent_decode_path_component(path_remainder.substr(0U, slash)) != *user)
+            {
+                return dispatch_err(req, rt, 403U, "M_FORBIDDEN", "cannot delete another user's profile field");
+            }
+            auto const key = core::percent_decode_path_component(path_remainder.substr(slash + 1U));
+            if (check_profile_key(key) != ProfileKeyCheck::valid)
+            {
+                return dispatch_err(req, rt, 400U, "M_INVALID_PARAM", "Invalid profile key.");
+            }
+            auto& store = rt.homeserver.database.persistent_store;
+            auto const existing = database::find_profile(store, *user);
+            auto changed = true;
+            if (key == "displayname" || key == "avatar_url")
+            {
+                changed = existing.has_value() &&
+                          (key == "displayname" ? !existing->displayname.empty() : !existing->avatar_url.empty());
+                if (changed && !(key == "displayname" ? database::update_profile_displayname(store, *user, {})
+                                                      : database::update_profile_avatar_url(store, *user, {})))
+                {
+                    return dispatch_err(req, rt, 500U, "M_UNKNOWN", "failed to persist the profile");
+                }
+                if (changed)
+                {
+                    auto const propagated = propagate_profile_change(rt.homeserver, req.access_token);
+                    if (!propagated.ok)
+                    {
+                        return dispatch_err(req, rt, propagated.status, "M_UNKNOWN", propagated.reason);
+                    }
+                }
+            }
+            else
+            {
+                auto fields = stored_profile_fields(existing);
+                auto const before = fields.size();
+                std::erase_if(fields, [&key](canonicaljson::ObjectMember const& field) {
+                    return field.key == key;
+                });
+                changed = fields.size() != before;
+                auto const fields_text = json_serialize_checked(json_obj(fields));
+                if (changed &&
+                    (!fields_text.has_value() || !database::update_profile_fields(store, *user, *fields_text)))
+                {
+                    return dispatch_err(req, rt, 500U, "M_UNKNOWN", "failed to persist the profile");
+                }
             }
             return dispatch_resp(req, rt, 200U, "{}");
         }

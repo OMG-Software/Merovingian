@@ -1007,9 +1007,10 @@ namespace
                          [&store](sqlite3_stmt& row) {
                              store.filters.push_back({column_text(row, 0), column_text(row, 1), column_text(row, 2)});
                          }) &&
-               load_rows(connection, "SELECT user_id, displayname, avatar_url FROM profiles",
+               load_rows(connection, "SELECT user_id, displayname, avatar_url, fields_json FROM profiles",
                          [&store](sqlite3_stmt& row) {
-                             store.profiles.push_back({column_text(row, 0), column_text(row, 1), column_text(row, 2)});
+                             store.profiles.push_back(
+                                 {column_text(row, 0), column_text(row, 1), column_text(row, 2), column_text(row, 3)});
                          }) &&
                load_rows(
                    connection, "SELECT room_alias, room_id, creator_user_id FROM room_aliases ORDER BY room_alias",

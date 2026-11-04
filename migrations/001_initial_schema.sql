@@ -96,7 +96,7 @@ CREATE TABLE "sync_stream_watermark" (singleton INTEGER PRIMARY KEY CHECK (singl
 -- statement create_event_stream_watermark
 CREATE TABLE "event_stream_watermark" (singleton INTEGER PRIMARY KEY CHECK (singleton = 1), watermark TEXT NOT NULL DEFAULT '0')
 -- statement create_profiles
-CREATE TABLE "profiles" (user_id TEXT PRIMARY KEY, displayname TEXT NOT NULL DEFAULT '', avatar_url TEXT NOT NULL DEFAULT '')
+CREATE TABLE "profiles" (user_id TEXT PRIMARY KEY, displayname TEXT NOT NULL DEFAULT '', avatar_url TEXT NOT NULL DEFAULT '', fields_json TEXT NOT NULL DEFAULT '{}')
 -- statement create_client_txn_ids
 CREATE TABLE "client_txn_ids" (user_id TEXT NOT NULL, room_id TEXT NOT NULL, event_type TEXT NOT NULL, txn_id TEXT NOT NULL, event_id TEXT NOT NULL, device_id TEXT NOT NULL DEFAULT '', created_at_ms TEXT NOT NULL DEFAULT '0', PRIMARY KEY (user_id, device_id, room_id, event_type, txn_id))
 -- statement create_pushers

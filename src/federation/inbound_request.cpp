@@ -1697,10 +1697,9 @@ namespace
         }
         // Spec v1.19 (query/profile, `field`): "Defined values are `displayname`,
         // `avatar_url` and `m.tz`. In addition to these servers MAY allow users to
-        // set additional key/value pairs." Any key is therefore a valid request;
-        // this server stores only displayname and avatar_url, so every other key
-        // (m.tz included, audit R18) is a field the user does not have, which the
-        // spec answers with 404: "the queried field does not exist".
+        // set additional key/value pairs." Any key is therefore a valid request; a key the user has not set
+        // (`m.tz` included, audit R18) is a field the user does not have, which the spec answers with 404:
+        // "the queried field does not exist".
         auto const field = query_param_value(request.target, "field");
         auto const profile = runtime.profile_query_provider(user_id);
         if (!profile.found)
@@ -1718,6 +1717,24 @@ namespace
         if ((field.empty() || field == "avatar_url") && !profile.avatar_url.empty())
         {
             response.push_back(canonicaljson::make_member("avatar_url", canonicaljson::Value{profile.avatar_url}));
+        }
+        // Spec: `field` may name `m.tz` or any additional key a user set, and then "the server MUST only return
+        // the given field"; without it the full public profile, which includes them.
+        if (auto const fields = canonicaljson::parse_lossless(profile.fields_json);
+            fields.error == canonicaljson::ParseError::none)
+        {
+            if (auto const* const object = std::get_if<canonicaljson::Object>(&fields.value.storage());
+                object != nullptr)
+            {
+                for (auto const& member : *object)
+                {
+                    if (member.key != "displayname" && member.key != "avatar_url" &&
+                        (field.empty() || field == member.key))
+                    {
+                        response.push_back(canonicaljson::make_member(member.key, *member.value));
+                    }
+                }
+            }
         }
         if (!field.empty() && response.empty())
         {

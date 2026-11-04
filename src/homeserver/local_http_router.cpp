@@ -3035,7 +3035,7 @@ namespace
             auto const profile = database::find_profile(rt->database.persistent_store, user_id);
             if (profile.has_value())
             {
-                return {true, profile->displayname, profile->avatar_url};
+                return {true, profile->displayname, profile->avatar_url, profile->fields_json};
             }
             auto const user_exists = std::ranges::any_of(rt->database.persistent_store.users,
                                                          [user_id](database::PersistentUser const& user) {
