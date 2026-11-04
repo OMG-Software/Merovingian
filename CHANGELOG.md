@@ -1,3 +1,37 @@
+## 0.12.73
+
+Lazy-loading of room members on `/sync` and `/context`.
+
+### Added
+
+- **Lazy-loading of room members on `GET /sync` (ADR-0450 to ADR-0454).** With `room.state.lazy_load_members`, a joined or
+  left room's `state` carries the non-member state it would carry without lazy-loading (the state filter and the incremental delta still apply) and only the member events of the delivered timeline's senders
+  (as of the timeline's start, on an incremental sync too), every member change in the gap of a `limited` sync, and the
+  user's own membership when they join or ask for `full_state`. A member the client has acknowledged is skipped: the
+  server remembers, in memory per user, device, `filter` and room, the event it sent and the `next_batch` that carried it,
+  and skips it only once a request has presented exactly that token as its `since` (a later token proves nothing, as a
+  retried long-poll can answer past a response the client never received), the member event is unchanged, and the
+  room was not just joined. Any other `since` forgets what it does not confirm, so a lost response cannot lose a member.
+  `include_redundant_members=true` and `full_state=true` skip nothing. The state filter's `types` and `senders` apply to
+  the members, and `lazy_load_members` on `room.timeline` does nothing, as the spec has it. The tracker is bounded (1024
+  streams, 64 rooms and 64 members each, 131072 members in all, least recently used out; a `filter` over 2048 bytes is
+  untracked) and is forgotten on restart, which only costs a resend. Invite and knock state, sliding sync, and
+  `use_state_after`/`state_after` (not implemented) are untouched.
+- **`GET /rooms/{roomId}/context/{eventId}` honours `lazy_load_members` (ADR-0451).** `state` is only the member events of
+  the senders of `events_before`, `event` and `events_after`; the filter's `types` and `senders` do not remove them.
+  Redundant members are not tracked on `/context` or `/messages`.
+
+### Fixed
+
+- **`GET /sync` honours `full_state=true` (ADR-0453).** It was parsed and ignored. A joined room's `state` is now the state
+  at the start of the timeline whatever `since` says.
+- **A left room's lazy-loaded `state` no longer ends with the user's older join.** When an incremental sync puts the leave in `state` (the timeline filter excludes `m.room.member`) and the user also sent an event in the window, their earlier join was added after the leave, so a client applying `state` in order showed them joined. No own member event is added beside the leave now. The `LruMap` behind the lazy-member tracker erases entries with `erase_at` instead of rebuilding its index on every request.
+- **A left room's lazy-loaded `state` stops at the event that ended the user's join (ADR-0450).** A user banned after leaving, whose limited timeline held only the ban, was told about members who joined after they left. When the state at the timeline's start cannot be rebuilt, the senders and the gap's member changes now come from the state as of that limit instead of being dropped.
+
+### CI
+
+- The lazy-member tracker's thread test uses `JoiningThreads`, not `std::jthread`, which the libc++ of FreeBSD and OpenBSD does not provide (ADR-0167).
+
 ## 0.12.72
 
 The high severity findings of the November project analysis (ref 8af381cf). Complement in CI was left out on the owner's

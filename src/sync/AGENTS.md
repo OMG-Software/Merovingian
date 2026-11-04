@@ -326,6 +326,26 @@ room and, when the user is local, for them. The membership acceptor (`send_join`
 `device_lists.left` for remote users. A user who joins over federation is also `changed` for
 themselves (spec: a server may add a user to `changed` when they share a new room).
 
+## Lazy-loading room members on `/sync` (ADR-0450 to ADR-0454)
+
+`room.state.lazy_load_members` (never `room.timeline`'s) turns it on. `state` then carries the non-member state the room would carry without lazy-loading (the state filter and the incremental
+delta still apply) and only
+these `m.room.member` events, each passed through the state filter first: the senders of delivered timeline events, as of
+the timeline's start; on a limited incremental sync every member change in the gap (never redundant); the user's own on an
+initial sync, `full_state=true` or a join in the window, unless the join is in the timeline. All of it is decided by
+`LazyRoomSelector` (`client_server.cpp`) inside the state builders; a sync that builds no state calls
+`build_lazy_sender_members`. Look a member up by key (`member_event_at_timeline_start`), never by scanning the room's state.
+
+`LazyMemberTracker` skips a member only when the client has acknowledged that exact event: an entry is recorded
+pending, a request whose `since` equals its token exactly settles it (any other `since` deletes a pending entry; "at or
+past" is not proof, a retried long-poll can answer past a token the client never received), and only a settled entry
+whose token the `since` covers is redundant. A room the user just (re)joined does not consult the tracker.
+`begin_request` runs after the long-poll wait and deletes entries `since` does not cover; `record_sent` runs after the
+body is built. Its mutex is a leaf below
+`homeserver.mutex`; do not call out of it or take another lock inside it. Do not replace it with a "sent" set (ADR-0450 has
+the lost-response sequence that breaks it). `/messages` and `/context` stay stateless (ADR-0451). A change to a rule above
+changes the tracker's tests with it.
+
 ## Long-poll behaviour
 
 `sync_notifier` holds requests until an event arrives or `timeout` expires. A waiter names its user

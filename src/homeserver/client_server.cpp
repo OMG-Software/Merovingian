@@ -73,6 +73,7 @@
 #include "merovingian/rooms/room_version_policy.hpp"
 #include "merovingian/sync/device_list_delta.hpp"
 #include "merovingian/sync/history_visibility.hpp"
+#include "merovingian/sync/lazy_member_tracker.hpp"
 #include "merovingian/sync/receipt_content_builder.hpp"
 #include "merovingian/sync/receipt_visibility.hpp"
 #include "merovingian/sync/room_access.hpp"
@@ -82,6 +83,7 @@
 #include "merovingian/sync/sliding_sync_parser.hpp"
 #include "merovingian/sync/sliding_sync_room_builder.hpp"
 #include "merovingian/sync/sliding_sync_room_list.hpp"
+#include "merovingian/sync/state_group_lookup.hpp"
 #include "merovingian/sync/stream_token.hpp"
 #include "merovingian/sync/sync_filter.hpp"
 #include "merovingian/sync/sync_notifier.hpp"
@@ -4904,9 +4906,183 @@ namespace
         return true;
     }
 
+    // ── Lazy-loading of room members on /sync (ADR-0450 to ADR-0452) ────────────────────────────────────────
+    // Spec (client-server-api.md, "Lazy-loading room members" and the GET /sync note): with `lazy_load_members` on the
+    // `state` filter, `state` holds the `m.room.member` events of the senders of the timeline, the syncing user's own
+    // membership when they join or ask for full state, and the membership changes in the gap of a limited sync;
+    // redundant ones may be skipped. Non-member state is untouched.
+
+    // A member event a response carried in `state`, to be recorded once the response is built.
+    struct SentLazyMember final
+    {
+        std::string room_id{};
+        std::string user_id{};
+        std::string event_id{};
+    };
+
+    // One /sync request's lazy-loading state: whether it is on, whether the tracker is consulted and fed, and the
+    // members sent so far. Lives for one run of `sync_json`, so a long-poll rerun judges redundancy afresh.
+    class LazySyncRequest final
+    {
+    public:
+        LazySyncRequest(sync::LazyMemberTracker& tracker, std::string_view user_id, std::string_view device_id,
+                        std::string_view filter, std::optional<sync::StreamToken> since, bool enabled, bool consult,
+                        bool record)
+            : tracker_{tracker}
+            , user_id_{user_id}
+            , device_id_{device_id}
+            , filter_{filter}
+            , since_{since}
+            , enabled_{enabled}
+            , consult_{consult && since.has_value()}
+            , record_{record}
+        {
+        }
+
+        [[nodiscard]] auto enabled() const noexcept -> bool
+        {
+            return enabled_;
+        }
+
+        // Applies the acknowledgement rules to the stream's entries; call once, before any `acknowledged`.
+        auto begin() -> void
+        {
+            if (enabled_)
+            {
+                tracker_.begin_request(key(), since_);
+            }
+        }
+
+        // True when the client holds exactly this member event (and the tracker is consulted).
+        [[nodiscard]] auto acknowledged(std::string_view room_id, std::string_view member_user_id,
+                                        std::string_view event_id) -> bool
+        {
+            return consult_ && tracker_.is_acknowledged(key(), room_id, member_user_id, event_id, *since_);
+        }
+
+        auto note_sent(std::string_view room_id, std::string_view member_user_id, std::string_view event_id) -> void
+        {
+            sent_.push_back({std::string{room_id}, std::string{member_user_id}, std::string{event_id}});
+        }
+
+        // Records everything sent, room by room, under the response's `next_batch`. Call after the body is built.
+        auto record_sent(sync::StreamToken next_batch) -> void
+        {
+            if (!enabled_ || !record_)
+            {
+                return;
+            }
+            auto begin_index = std::size_t{0U};
+            while (begin_index < sent_.size())
+            {
+                auto end_index = begin_index;
+                auto members = std::vector<sync::LazyMemberTracker::SentMember>{};
+                while (end_index < sent_.size() && sent_[end_index].room_id == sent_[begin_index].room_id)
+                {
+                    members.push_back({sent_[end_index].user_id, sent_[end_index].event_id});
+                    ++end_index;
+                }
+                tracker_.record(key(), sent_[begin_index].room_id, members, next_batch, since_);
+                begin_index = end_index;
+            }
+        }
+
+    private:
+        [[nodiscard]] auto key() const -> sync::LazyMemberTracker::StreamKey
+        {
+            return {user_id_, device_id_, filter_};
+        }
+
+        sync::LazyMemberTracker& tracker_;
+        std::string user_id_;
+        std::string device_id_;
+        std::string filter_;
+        std::optional<sync::StreamToken> since_;
+        bool enabled_;
+        bool consult_;
+        bool record_;
+        std::vector<SentLazyMember> sent_{};
+    };
+
+    // Decides which of one room's `m.room.member` state events a lazy response carries: those of the delivered
+    // timeline's senders unless the client holds them, the user's own when forced, and the gap's changes whoever they
+    // are about (never subject to redundancy).
+    class LazyRoomSelector final
+    {
+    public:
+        struct Plan final
+        {
+            std::set<std::string, std::less<>> senders{};
+            std::string own_user_id{};
+            bool own_forced{false};
+            // A member event above this stream ordering (and below the timeline) is a gap change.
+            std::optional<std::uint64_t> gap_after{};
+            // Drop every state event that is not a member event (an incremental left room's state is a delta).
+            bool members_only{false};
+            // Do not consult the tracker: a client may discard a room when it leaves it, so after a rejoin it may no
+            // longer hold a member the tracker says it does (ADR-0450). What is sent is still recorded.
+            bool ignore_tracker{false};
+            // The user's current membership, a leave, is already in `state`: no earlier member event of their own
+            // may follow it, or a client applying `state` in order would show them joined again.
+            bool exclude_own{false};
+        };
+
+        LazyRoomSelector(LazySyncRequest& request, std::string_view room_id, Plan plan)
+            : request_{request}
+            , room_id_{room_id}
+            , plan_{std::move(plan)}
+        {
+        }
+
+        [[nodiscard]] auto members_only() const noexcept -> bool
+        {
+            return plan_.members_only;
+        }
+
+        // Whether `event`, the member state event for `state_key`, goes in `state`; notes it when it does.
+        [[nodiscard]] auto keep(database::PersistentEvent const& event, std::string_view state_key) -> bool
+        {
+            if (plan_.exclude_own && state_key == plan_.own_user_id)
+            {
+                return false;
+            }
+            auto const forced = (plan_.gap_after.has_value() && event.stream_ordering > *plan_.gap_after) ||
+                                (plan_.own_forced && state_key == plan_.own_user_id);
+            if (!forced)
+            {
+                if (!plan_.senders.contains(state_key) ||
+                    (!plan_.ignore_tracker && request_.acknowledged(room_id_, state_key, event.event_id)))
+                {
+                    return false;
+                }
+            }
+            request_.note_sent(room_id_, state_key, event.event_id);
+            return true;
+        }
+
+    private:
+        LazySyncRequest& request_;
+        std::string room_id_;
+        Plan plan_;
+    };
+
+    using LazySelectorRef = std::optional<std::reference_wrapper<LazyRoomSelector>>;
+
+    // Applies the selector to one state event: a member event by the rules above, anything else unless the plan is
+    // members only.
+    [[nodiscard]] auto keep_lazily(LazyRoomSelector& selector, std::string_view event_type, std::string_view state_key,
+                                   database::PersistentEvent const& event) -> bool
+    {
+        if (event_type == "m.room.member")
+        {
+            return selector.keep(event, state_key);
+        }
+        return !selector.members_only();
+    }
+
     [[nodiscard]] auto build_current_state_events_array(database::PersistentStore const& store,
-                                                        sync::EventTypeFilter const& filter, std::string_view room_id)
-        -> canonicaljson::Array
+                                                        sync::EventTypeFilter const& filter, std::string_view room_id,
+                                                        LazySelectorRef lazy = std::nullopt) -> canonicaljson::Array
     {
         auto state_events = canonicaljson::Array{};
         for (auto const& state_entry : store.state)
@@ -4918,6 +5094,10 @@ namespace
             auto const event = store.events.find(state_entry.event_id);
             if (event == store.events.end() ||
                 !sync::event_passes_filter(filter, state_entry.event_type, event->sender_user_id))
+            {
+                continue;
+            }
+            if (lazy.has_value() && !keep_lazily(lazy->get(), state_entry.event_type, state_entry.state_key, *event))
             {
                 continue;
             }
@@ -4944,6 +5124,30 @@ namespace
         }
         auto const* type = string_member(*obj, "type");
         return type == nullptr ? std::string{} : *type;
+    }
+
+    // The `type` and `state_key` of a stored event, from one parse; empty strings when the JSON is not an object.
+    struct StoredEventKey final
+    {
+        std::string type{};
+        std::string state_key{};
+    };
+
+    [[nodiscard]] auto stored_event_key(database::PersistentEvent const& event) -> StoredEventKey
+    {
+        auto const parsed = canonicaljson::parse_lossless(event.json);
+        if (parsed.error != canonicaljson::ParseError::none)
+        {
+            return {};
+        }
+        auto const* obj = std::get_if<canonicaljson::Object>(&parsed.value.storage());
+        if (obj == nullptr)
+        {
+            return {};
+        }
+        auto const* type = string_member(*obj, "type");
+        auto const* state_key = string_member(*obj, "state_key");
+        return {type == nullptr ? std::string{} : *type, state_key == nullptr ? std::string{} : *state_key};
     }
 
     // Whether a stored event passes a RoomEventFilter (/messages, /context). The content is
@@ -4982,15 +5186,23 @@ namespace
     // applies to the room's current state. Unknown event IDs are skipped.
     [[nodiscard]] auto build_state_events_array_for_ids(database::PersistentStore const& store,
                                                         sync::EventTypeFilter const& filter,
-                                                        std::vector<std::string> const& state_event_ids)
-        -> canonicaljson::Array
+                                                        std::vector<std::string> const& state_event_ids,
+                                                        LazySelectorRef lazy = std::nullopt) -> canonicaljson::Array
     {
         auto state_events = canonicaljson::Array{};
         for (auto const& event_id : state_event_ids)
         {
             auto const event = store.events.find(event_id);
-            if (event == store.events.end() ||
-                !sync::event_passes_filter(filter, stored_event_type(*event), event->sender_user_id))
+            if (event == store.events.end())
+            {
+                continue;
+            }
+            auto const key = stored_event_key(*event);
+            if (!sync::event_passes_filter(filter, key.type, event->sender_user_id))
+            {
+                continue;
+            }
+            if (lazy.has_value() && !keep_lazily(lazy->get(), key.type, key.state_key, *event))
             {
                 continue;
             }
@@ -5074,7 +5286,8 @@ namespace
     [[nodiscard]] auto build_state_events_at_timeline_start(database::PersistentStore const& store,
                                                             sync::EventTypeFilter const& filter,
                                                             std::string_view room_id,
-                                                            database::PersistentEvent const& first_event)
+                                                            database::PersistentEvent const& first_event,
+                                                            LazySelectorRef lazy = std::nullopt)
         -> std::optional<canonicaljson::Array>
     {
         auto const* policy = stored_room_version_policy(store, room_id);
@@ -5089,7 +5302,7 @@ namespace
             {
                 ids.push_back(entry.event_id);
             }
-            return build_state_events_array_for_ids(store, filter, ids);
+            return build_state_events_array_for_ids(store, filter, ids, lazy);
         }
         auto const group = database::find_event_state_group(store, first_event.event_id);
         auto const after = group.has_value() ? database::read_state_group_full_state(store, *group) : std::nullopt;
@@ -5116,7 +5329,7 @@ namespace
         {
             ids.push_back(std::move(*replaced));
         }
-        return build_state_events_array_for_ids(store, filter, ids);
+        return build_state_events_array_for_ids(store, filter, ids, lazy);
     }
 
     // ADR-0247: the room's state as of `position`, for a response whose token is
@@ -5126,7 +5339,8 @@ namespace
     // follows. Failing that, the events above `position` are left out.
     [[nodiscard]] auto build_state_events_at_position(database::PersistentStore const& store,
                                                       sync::EventTypeFilter const& filter, std::string_view room_id,
-                                                      std::uint64_t position) -> canonicaljson::Array
+                                                      std::uint64_t position, LazySelectorRef lazy = std::nullopt)
+        -> canonicaljson::Array
     {
         auto earliest_above = store.events.end();
         auto ids = std::vector<std::string>{};
@@ -5151,7 +5365,7 @@ namespace
         }
         if (earliest_above == store.events.end())
         {
-            return build_current_state_events_array(store, filter, room_id);
+            return build_current_state_events_array(store, filter, room_id, lazy);
         }
         if (auto const* policy = stored_room_version_policy(store, room_id); policy != nullptr)
         {
@@ -5163,7 +5377,7 @@ namespace
                 {
                     before_ids.push_back(entry.event_id);
                 }
-                return build_state_events_array_for_ids(store, filter, before_ids);
+                return build_state_events_array_for_ids(store, filter, before_ids, lazy);
             }
         }
         // Each key held above `position` keeps the value it held before, where its
@@ -5179,7 +5393,94 @@ namespace
                 }
             }
         }
-        return build_state_events_array_for_ids(store, filter, ids);
+        return build_state_events_array_for_ids(store, filter, ids, lazy);
+    }
+
+    // Whether a timeline carries the join of `user_id`: the join then tells the client everything the spec's "own
+    // membership" rule is for, and `state` need not repeat it.
+    [[nodiscard]] auto timeline_carries_join_of(canonicaljson::Array const& events, std::string_view user_id) -> bool
+    {
+        return std::ranges::any_of(events, [&](canonicaljson::Value const& value) {
+            auto const* event = std::get_if<canonicaljson::Object>(&value.storage());
+            if (event == nullptr)
+            {
+                return false;
+            }
+            auto const* type = string_member(*event, "type");
+            auto const* state_key = string_member(*event, "state_key");
+            auto const* content = object_member_as_object(*event, "content");
+            auto const* membership = content == nullptr ? nullptr : string_member(*content, "membership");
+            return type != nullptr && *type == "m.room.member" && state_key != nullptr && *state_key == user_id &&
+                   membership != nullptr && *membership == "join";
+        });
+    }
+
+    // The `m.room.member` event of `sender` in force at the start of a timeline whose first event is `first_event`,
+    // or nullopt when they had none. Cost: two hash lookups (the current state index, the event table) when the
+    // sender's membership has not changed since the timeline began, which is nearly always; otherwise one walk of
+    // the state group chain of `first_event` (its rows once, at most the delta depth plus one groups), never a scan of
+    // the room's state or events. When the chain cannot be read the current member event stands in: sending a
+    // member too many is valid, omitting one is not.
+    [[nodiscard]] auto member_event_at_timeline_start(database::PersistentStore const& store, std::string_view room_id,
+                                                      database::PersistentEvent const& first_event,
+                                                      std::string_view sender) -> std::optional<std::string>
+    {
+        auto const current = database::find_current_state_event_id(store, room_id, "m.room.member", sender);
+        if (current.has_value())
+        {
+            auto const event = store.events.find(*current);
+            if (event != store.events.end() && event->stream_ordering < first_event.stream_ordering)
+            {
+                return current;
+            }
+        }
+        auto const group = store.event_state_groups.state_group_of(first_event.event_id);
+        if (!group.has_value())
+        {
+            return current;
+        }
+        auto const found = sync::lookup_state_in_group(store, *group, "m.room.member", sender);
+        switch (found.outcome)
+        {
+        case sync::GroupLookup::found:
+            // The group is the state after `first_event`; when it is the sender's own member event, the one it replaced
+            // was in force at the start.
+            return found.event_id == first_event.event_id ? replaced_state_event_id(store, first_event)
+                                                          : std::optional<std::string>{std::string{found.event_id}};
+        case sync::GroupLookup::absent:
+            return std::nullopt;
+        case sync::GroupLookup::broken:
+            break;
+        }
+        return current;
+    }
+
+    // The member events a lazy response carries when `state` is not otherwise built: those of `senders`, as they were
+    // at the start of the timeline whose first event is `first_event`, that the selector keeps.
+    [[nodiscard]] auto build_lazy_sender_members(database::PersistentStore const& store,
+                                                 sync::EventTypeFilter const& filter,
+                                                 database::PersistentEvent const& first_event,
+                                                 std::vector<std::string> const& senders, LazyRoomSelector& selector)
+        -> canonicaljson::Array
+    {
+        auto members = canonicaljson::Array{};
+        for (auto const& sender : senders)
+        {
+            auto const event_id = member_event_at_timeline_start(store, first_event.room_id, first_event, sender);
+            if (!event_id.has_value())
+            {
+                continue;
+            }
+            auto const event = store.events.find(*event_id);
+            if (event == store.events.end() ||
+                !sync::event_passes_filter(filter, "m.room.member", event->sender_user_id) ||
+                !selector.keep(*event, sender))
+            {
+                continue;
+            }
+            members.push_back(client_event_with_id(store, *event));
+        }
+        return members;
     }
 
     // Spec: GET /messages `state` is "a list of state events relevant to showing
@@ -5556,7 +5857,7 @@ namespace
                                        sync::HistoryVisibility& history_visibility,
                                        sync::ViewerEventUnsigned& viewer_unsigned,
                                        std::unordered_set<std::string> const& ignored_senders,
-                                       LeftRoomRequest const& request) -> canonicaljson::Value
+                                       LeftRoomRequest const& request, LazySyncRequest& lazy) -> canonicaljson::Value
     {
         // The user's current m.room.member event is the one that ended their stay.
         auto const member_state = std::ranges::find_if(store.state, [&](database::PersistentStateEvent const& entry) {
@@ -5616,6 +5917,42 @@ namespace
         // initial sync tells them only what an incremental one does: their own leave or ban, when the
         // timeline does not carry it.
         auto const reads_room_state = request.access.kind != sync::RoomReadKind::none;
+        // An incremental sync's state is the delta since `since`; the leave is part of it when the timeline does not
+        // carry it. (An initial sync that reads the room builds its state from the room's state instead.)
+        auto const leave_in_state =
+            (request.since_ordering.has_value() || !reads_room_state) && !leave_in_timeline &&
+            leave_event != store.events.end() &&
+            sync::event_passes_filter(filter.room.state, stored_event_type(*leave_event), leave_event->sender_user_id);
+        // ADR-0450: with lazy-loading, the member events of `state` are the timeline senders' (and the user's
+        // own on an initial sync), by the same rules as a joined room.
+        auto senders = std::vector<std::string>{};
+        auto selector = std::optional<LazyRoomSelector>{};
+        if (lazy.enabled() && reads_room_state)
+        {
+            auto plan = LazyRoomSelector::Plan{};
+            for (auto it = window_begin; it != matched.end(); ++it)
+            {
+                plan.senders.insert((*it)->sender_user_id);
+            }
+            senders.assign(plan.senders.begin(), plan.senders.end());
+            plan.own_user_id = std::string{request.user_id};
+            plan.exclude_own = leave_in_state;
+            if (request.since_ordering.has_value())
+            {
+                // An incremental left room's state is a delta: only the members the rules above name.
+                plan.members_only = true;
+                if (limited)
+                {
+                    plan.gap_after = since_ordering;
+                }
+            }
+            else
+            {
+                plan.own_forced = !timeline_carries_join_of(timeline_events, request.user_id);
+            }
+            selector.emplace(lazy, request.room_id, std::move(plan));
+        }
+        auto const lazy_ref = selector.has_value() ? LazySelectorRef{std::ref(*selector)} : LazySelectorRef{};
         if (!request.since_ordering.has_value() && reads_room_state)
         {
             // An initial sync: all state up to the start of the timeline, or, with no timeline
@@ -5628,14 +5965,14 @@ namespace
                 if (auto const ids = sync::room_state_event_ids(store, request.room_id, request.access, std::nullopt);
                     ids.has_value())
                 {
-                    state_events = build_state_events_array_for_ids(store, filter.room.state, *ids);
+                    state_events = build_state_events_array_for_ids(store, filter.room.state, *ids, lazy_ref);
                 }
             }
             else
             {
                 auto at_start = window_begin != matched.end()
                                     ? build_state_events_at_timeline_start(store, filter.room.state, request.room_id,
-                                                                           **window_begin)
+                                                                           **window_begin, lazy_ref)
                                     : std::optional<canonicaljson::Array>{};
                 if (at_start.has_value())
                 {
@@ -5653,19 +5990,54 @@ namespace
                             {
                                 ids.push_back(entry.event_id);
                             }
-                            state_events = build_state_events_array_for_ids(store, filter.room.state, ids);
+                            state_events = build_state_events_array_for_ids(store, filter.room.state, ids, lazy_ref);
                         }
                     }
                 }
             }
         }
-        else if (!leave_in_timeline && leave_event != store.events.end() &&
-                 sync::event_passes_filter(filter.room.state, stored_event_type(*leave_event),
-                                           leave_event->sender_user_id))
+        else if (leave_in_state)
         {
-            // An incremental sync's state is the delta since `since`; the leave is part of it when
-            // the timeline does not carry it.
             state_events.push_back(viewer_unsigned.apply(*leave_event, client_event_with_id(store, *leave_event)));
+        }
+        if (request.since_ordering.has_value() && selector.has_value() && window_begin != matched.end())
+        {
+            // ADR-0450: the lazy members of an incremental left room, besides the leave itself. A limited timeline also
+            // owes the member changes of the gap, so it reads whole state. The user reads the room only as of the event
+            // that ended their join, however late the timeline's first event is: a ban after the leave must not show
+            // who joined since.
+            auto const as_of = request.access.kind == sync::RoomReadKind::as_of;
+            auto const limited_members = [&]() -> canonicaljson::Array {
+                if (as_of && (*window_begin)->stream_ordering > request.access.boundary_ordering)
+                {
+                    if (auto const ids =
+                            sync::room_state_event_ids(store, request.room_id, request.access, std::nullopt);
+                        ids.has_value())
+                    {
+                        return build_state_events_array_for_ids(store, filter.room.state, *ids, lazy_ref);
+                    }
+                }
+                else if (auto at_start = build_state_events_at_timeline_start(store, filter.room.state, request.room_id,
+                                                                              **window_begin, lazy_ref);
+                         at_start.has_value())
+                {
+                    return std::move(*at_start);
+                }
+                auto const position = as_of ? std::min(upper_bound, request.access.boundary_ordering) : upper_bound;
+                return build_state_events_at_position(store, filter.room.state, request.room_id, position, lazy_ref);
+            };
+            auto lazy_members =
+                limited ? limited_members()
+                        : build_lazy_sender_members(store, filter.room.state, **window_begin, senders, *selector);
+            for (auto& member : lazy_members)
+            {
+                auto const* member_event = std::get_if<canonicaljson::Object>(&member.storage());
+                auto const* member_id = member_event == nullptr ? nullptr : string_member(*member_event, "event_id");
+                if (member_id == nullptr || leave_event == store.events.end() || *member_id != leave_event->event_id)
+                {
+                    state_events.push_back(std::move(member));
+                }
+            }
         }
 
         return json_obj({
@@ -5765,6 +6137,17 @@ namespace
                 };
             }
         }
+
+        // ADR-0450: lazy-loading is on only for the `state` filter. The tracker is consulted only by a request that
+        // may omit a redundant member (not include_redundant_members, not full_state), and fed by one that may; it
+        // is begun here, after any long-poll wait, so a rerun judges afresh and records only what it returns.
+        auto const full_state = request.full_state.value_or(false);
+        auto const lazy_on = filter.present && filter.room.state.lazy_load_members;
+        auto const may_omit = lazy_on && !filter.room.state.include_redundant_members;
+        auto lazy = LazySyncRequest{
+            *rt.lazy_member_tracker, user,    device_id, request.filter.value_or(std::string{}), since_token, lazy_on,
+            may_omit && !full_state, may_omit};
+        lazy.begin();
 
         auto const sync_stream_upper_bound = store.next_sync_stream_id;
         // ADR-0247: the one event position this response names. The timeline
@@ -5917,15 +6300,45 @@ namespace
             auto const newly_joined =
                 since_token.has_value() && joined_membership_changed_since(store, room.room_id, user, since_ordering);
             auto state_events = canonicaljson::Array{};
-            if (!since_token.has_value() || newly_joined || limited)
+            // Spec (GET /sync, `full_state`): "all state events will be returned, even if since is non-empty".
+            auto const state_path = !since_token.has_value() || newly_joined || limited || full_state;
+            auto lazy_senders = std::vector<std::string>{};
+            auto selector = std::optional<LazyRoomSelector>{};
+            if (lazy.enabled() && (state_path || window_begin != matched.end()))
             {
-                auto at_start =
-                    window_begin != matched.end()
-                        ? build_state_events_at_timeline_start(store, filter.room.state, room.room_id, **window_begin)
-                        : std::nullopt;
-                state_events = at_start.has_value() ? std::move(*at_start)
-                                                    : build_state_events_at_position(store, filter.room.state,
-                                                                                     room.room_id, sync_position);
+                auto plan = LazyRoomSelector::Plan{};
+                for (auto it = window_begin; it != matched.end(); ++it)
+                {
+                    plan.senders.insert((*it)->sender_user_id);
+                }
+                lazy_senders.assign(plan.senders.begin(), plan.senders.end());
+                plan.own_user_id = std::string{user};
+                plan.ignore_tracker = newly_joined;
+                plan.own_forced = (!since_token.has_value() || full_state || newly_joined) &&
+                                  !timeline_carries_join_of(timeline_events, user);
+                if (since_token.has_value() && limited)
+                {
+                    plan.gap_after = since_ordering;
+                }
+                selector.emplace(lazy, room.room_id, std::move(plan));
+            }
+            auto const lazy_ref = selector.has_value() ? LazySelectorRef{std::ref(*selector)} : LazySelectorRef{};
+            if (state_path)
+            {
+                auto at_start = window_begin != matched.end()
+                                    ? build_state_events_at_timeline_start(store, filter.room.state, room.room_id,
+                                                                           **window_begin, lazy_ref)
+                                    : std::nullopt;
+                state_events = at_start.has_value()
+                                   ? std::move(*at_start)
+                                   : build_state_events_at_position(store, filter.room.state, room.room_id,
+                                                                    sync_position, lazy_ref);
+            }
+            else if (selector.has_value())
+            {
+                // Nothing else is sent, so the lazy members are the whole of `state`: no state is built or scanned.
+                state_events =
+                    build_lazy_sender_members(store, filter.room.state, **window_begin, lazy_senders, *selector);
             }
             auto ephemeral_events = build_room_ephemeral_events_array(
                 rt.homeserver, room.room_id, user, since_sync_stream_id, max_observed_sync_stream_id, ignored_senders);
@@ -6080,7 +6493,8 @@ namespace
                         store, filter, history_visibility, viewer_unsigned, ignored_senders,
                         {membership.room_id, user, membership.stream_ordering,
                          since_token.has_value() ? std::optional<std::uint64_t>{since_ordering} : std::nullopt,
-                         sync_position, timeline_cap, sync::room_read_access_for(store, membership.room_id, user)});
+                         sync_position, timeline_cap, sync::room_read_access_for(store, membership.room_id, user)},
+                        lazy);
                     leave_members.push_back(json_member(membership.room_id, left_room));
                     ++leave_count;
                 }
@@ -6156,6 +6570,8 @@ namespace
             json_member("device_one_time_keys_count", canonicaljson::Value{std::move(otk_counts)}),
             json_member("device_unused_fallback_key_types", json_arr(std::move(fallback_key_types))),
         }));
+        // ADR-0450: only now, with the body built, are the members it carries recorded.
+        lazy.record_sent(next_token);
         return DispatchResult{
             DispatchResult::Status::complete, {200U, std::move(body)},
              {}
@@ -9886,6 +10302,8 @@ namespace
         auto const before_limit = limit / 2U;
         auto const after_limit = limit - before_limit;
 
+        // The senders of the events returned (`event` included), for lazy-loading.
+        auto chunk_senders = std::unordered_set<std::string>{target.sender_user_id};
         auto events_before = canonicaljson::Array{};
         auto start_token = std::to_string(target.stream_ordering);
         if (room_allowed && target_index > 0U)
@@ -9906,6 +10324,7 @@ namespace
                     continue;
                 }
                 events_before.push_back(aggregations.apply(*candidate, client_event_with_id(store, *candidate)));
+                chunk_senders.insert(candidate->sender_user_id);
                 start_token = std::to_string(candidate->stream_ordering);
             }
         }
@@ -9936,6 +10355,7 @@ namespace
                     continue;
                 }
                 events_after.push_back(aggregations.apply(*candidate, client_event_with_id(store, *candidate)));
+                chunk_senders.insert(candidate->sender_user_id);
                 end_token = std::to_string(candidate->stream_ordering);
                 last_returned_event_id = candidate->event_id;
             }
@@ -9948,10 +10368,16 @@ namespace
         // event-DAG walk the federation /state and /state_ids endpoints use
         // (federation::resolve_state_event_ids_at), pinned to
         // `last_returned_event_id` rather than left at "current".
-        auto state = room_allowed ? build_state_events_array_for_ids(
-                                        store, filter.timeline,
-                                        federation::resolve_state_event_ids_at(store, room_id, last_returned_event_id))
-                                  : canonicaljson::Array{};
+        // ADR-0451: with lazy-loading the state is the returned events' senders' memberships and nothing else, and
+        // the filter's own `types` and `senders` (they select the chunk's events) must not remove them; as on
+        // /messages, redundant members are not tracked, which the spec permits.
+        auto state = room_allowed
+                         ? apply_lazy_member_loading(
+                               filter.timeline, chunk_senders,
+                               build_state_events_array_for_ids(
+                                   store, filter.timeline.lazy_load_members ? sync::EventTypeFilter{} : filter.timeline,
+                                   federation::resolve_state_event_ids_at(store, room_id, last_returned_event_id)))
+                         : canonicaljson::Array{};
 
         return json_serialize(json_obj({
             json_member("start", json_str(start_token)),

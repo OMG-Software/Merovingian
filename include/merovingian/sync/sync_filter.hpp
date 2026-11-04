@@ -33,7 +33,11 @@ struct EventTypeFilter final
     // is set the server may send only the membership events of the senders
     // appearing in the returned events, instead of the room's whole member
     // list; include_redundant_members suppresses the de-duplication the spec
-    // otherwise permits across repeat calls.
+    // otherwise permits across repeat calls. On GET /sync only `room.state`'s
+    // flag counts (the spec supports lazy-loading there on the state filter
+    // only; the same flag on `room.timeline` is parsed and ignored) and the
+    // state filter's types/senders apply to the member events (ADR-0452). On
+    // /messages and /context the filter's flag is read from the flat filter.
     bool lazy_load_members{false};
     bool include_redundant_members{false};
     // RoomEventFilter: "If true, enables per-thread notification counts. Only

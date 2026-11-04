@@ -8,6 +8,7 @@
 #include "merovingian/homeserver/runtime.hpp"
 #include "merovingian/http/connection_limiter.hpp"
 #include "merovingian/http/rate_limit.hpp"
+#include "merovingian/sync/lazy_member_tracker.hpp"
 #include "merovingian/sync/sliding_sync.hpp"
 #include "merovingian/sync/sync_notifier.hpp"
 
@@ -183,6 +184,10 @@ struct ClientServerRuntime final
     // instance the first time something sync-relevant happens, so legacy
     // callers that never touch /sync are unaffected.
     std::unique_ptr<sync::SyncNotifier> sync_notifier{};
+    // Which lazy-loaded membership events each /sync stream has been sent (ADR-0450). Heap-held because it owns a
+    // mutex. Its mutex is a leaf below `homeserver.mutex`: /sync calls into it while holding the runtime mutex and
+    // it never takes anything itself. In memory only; a restart sends every client its members again.
+    std::unique_ptr<sync::LazyMemberTracker> lazy_member_tracker{std::make_unique<sync::LazyMemberTracker>()};
     // HTTP-4: shared admission for v3 and sliding-sync waits. Slots outlive the
     // initial dispatch and are released on completion, disconnect or failed handoff.
     std::unique_ptr<http::InFlightBudget> sync_user_budget{std::make_unique<http::InFlightBudget>()};
