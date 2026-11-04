@@ -679,8 +679,8 @@ value. Test fixtures that do not exercise persistence select it through
     same for `database::prepare_store_event_with_state(`.
   - `PduStateConflictContext` / `state_conflict_resolver` (the older,
     never-production-reached conflict-resolution plumbing this phase was
-    meant to replace) are still left in place unchanged and unused —
-    phase B2 removes them.
+    meant to replace) were left in place here and removed in phase B2
+    (ADR-0064).
 
   A real bug was found and fixed along the way: `database::store_state`'s
   `state_transitions` insert had no `ON CONFLICT` handling, but its primary
@@ -1084,8 +1084,8 @@ Two independent mechanisms close this, together:
    `DELETE` — since the worker's own `PersistentStore` is a read-only
    snapshot for room-scoped federation reads and every write it needs is
    relayed to main over IPC (`src/federation_worker/AGENTS.md` rule 3; the
-   one exception found during review is `state_conflict_resolver`, covered
-   below).
+   one exception found during review, `state_conflict_resolver`, covered
+   below, was removed by ADR-0064).
 
 2. **A load profile for PostgreSQL-backed workers.**
    `database::TableLoadProfile` and `database::table_load_profile_includes`
@@ -1172,21 +1172,13 @@ Two independent mechanisms close this, together:
    in-memory least-privilege boundary. This remains an open gap requiring
    profile-aware SQLite hydration and a regression test.
 
-   **One dormant write path found during review:** `state_conflict_resolver`
-   (`local_http_router.cpp:1255`, wired unconditionally by
-   `wire_federation_callbacks`, never overridden by the worker) calls
-   `database::store_state` — a write to `current_state` — when a PDU's
-   ingestion result carries a populated `state_conflict`. In the worker,
-   `pdu_sink` is *always* the IPC-relay override
-   (`federation_worker::deserialize_pdu_ingest_result`), which never
-   populates `PduIngestionResult::state_conflict`, so this resolver is
-   registered but never actually invoked from inside the worker today. It
-   is not relayed and not removed: `current_state` is already in the
-   allowlist for reads, the write path is currently unreachable, and — were
-   a future change to make it reachable — the SELECT-only grant would
-   refuse the `INSERT`/`UPDATE` rather than silently succeed, so the
-   failure mode stays fail-closed even if this invariant is ever broken by
-   accident.
+   **One dormant write path found during review, since removed:**
+   `state_conflict_resolver` called `database::store_state` (a write to
+   `current_state`) when a PDU's ingestion result carried a populated
+   `state_conflict`, and was wired unconditionally. Nothing ever set
+   `state_conflict`, so it was never invoked from the worker or from main.
+   ADR-0064 deleted the resolver, `PduStateConflictContext` and
+   `PduIngestionResult::state_conflict`.
 
    `federation_worker_table_allowlist` (C++) and
    `provision-federation-worker-role.sql`'s per-table `GRANT SELECT` list
