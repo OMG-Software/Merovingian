@@ -2037,28 +2037,24 @@ namespace
 
 } // namespace
 
-// Permanently deactivates the caller's account (spec: POST
-// /_matrix/client/v3/account/deactivate). Irreversible by design.
-//
-// The caller (client_server.cpp) is responsible for the UIA password
-// re-authentication; by the time this runs, ownership of the account is proven.
+// Permanently deactivates `user_id`: the one deactivation, run for the account's owner after UIA (spec:
+// POST /_matrix/client/v3/account/deactivate, through deactivate_local_user) and for an administrator
+// (POST /_merovingian/admin/accounts/{userId}, ADR-0506). The caller has already proven who may do it.
+// Repeating it on a deactivated account runs every step again, which is how a deactivation that failed
+// part way is completed. Irreversible by design.
 //
 // The localpart is never reissued: the users row is retained with
 // deactivated = true, so make_user's existing duplicate check keeps rejecting
 // a re-registration of the same user_id.
-auto deactivate_local_user(HomeserverRuntime& runtime, std::string_view access_token) -> OperationResult
+auto deactivate_user_account(HomeserverRuntime& runtime, std::string_view user_id, DeactivationAudit const& audit)
+    -> OperationResult
 {
-    auto const session = authenticated_session(runtime, access_token);
-    if (!session.has_value())
-    {
-        return make_operation_result(false, {}, "unauthenticated", 401U);
-    }
-    auto* user = find_user(runtime.database, session->user_id);
+    auto* user = find_user(runtime.database, user_id);
     if (user == nullptr)
     {
         return make_operation_result(false, {}, "unknown user", 404U);
     }
-    if (!database::set_user_deactivated(runtime.database.persistent_store, session->user_id))
+    if (!database::set_user_deactivated(runtime.database.persistent_store, user_id))
     {
         return make_operation_result(false, {}, "deactivation persistence failed", 500U);
     }
@@ -2080,20 +2076,20 @@ auto deactivate_local_user(HomeserverRuntime& runtime, std::string_view access_t
     // What must not pass is a persistence failure, which store_* surfaces by
     // leaving the row unchanged; both calls are re-checked below against the
     // store to make the outcome, not the return count, the thing that decides.
-    std::ignore = database::revoke_access_tokens_for_user(runtime.database.persistent_store, session->user_id);
-    std::ignore = database::revoke_refresh_tokens_for_user(runtime.database.persistent_store, session->user_id);
-    if (!user_tokens_are_revoked(runtime.database.persistent_store, session->user_id))
+    std::ignore = database::revoke_access_tokens_for_user(runtime.database.persistent_store, user_id);
+    std::ignore = database::revoke_refresh_tokens_for_user(runtime.database.persistent_store, user_id);
+    if (!user_tokens_are_revoked(runtime.database.persistent_store, user_id))
     {
         return make_operation_result(false, {}, "token revocation failed during deactivation", 500U);
     }
     // F-77: OpenID tokens are credentials of the account too, kept in a table of their own (ADR-0031).
-    if (!database::revoke_openid_tokens_for_user(runtime.database.persistent_store, session->user_id))
+    if (!database::revoke_openid_tokens_for_user(runtime.database.persistent_store, user_id))
     {
         return make_operation_result(false, {}, "openid token revocation failed during deactivation", 500U);
     }
     for (auto& candidate : runtime.database.sessions)
     {
-        if (candidate.user_id == session->user_id)
+        if (candidate.user_id == user_id)
         {
             candidate.revoked = true;
         }
@@ -2102,29 +2098,78 @@ auto deactivate_local_user(HomeserverRuntime& runtime, std::string_view access_t
     // that an earlier compromised session registered would keep receiving the account's room
     // messages. Delivery also refuses a deactivated recipient, so a pusher that could not be deleted
     // sends nothing.
-    if (!delete_pushers_of_user(runtime, session->user_id, std::nullopt))
+    if (!delete_pushers_of_user(runtime, user_id, std::nullopt))
     {
         log_diagnostic("account.deactivated.pusher_removal_failed",
                        {
-                           {"user_id", session->user_id, false}
+                           {"user_id", std::string{user_id}, false}
         },
                        observability::LogEventSeverity::warning);
     }
     // The password hash is replaced with a value no password can produce, so a
     // credential leak predating deactivation cannot be replayed even if a future
     // change were to soften the login gate.
-    std::ignore = database::update_user_password(runtime.database.persistent_store, session->user_id, "!deactivated");
-    user->password_hash = "!deactivated";
+    // The in-memory hash follows the stored one only when the write took, so the two never disagree;
+    // the deactivated flag, already durable, is what closes the login gate either way.
+    if (database::update_user_password(runtime.database.persistent_store, user_id, "!deactivated"))
+    {
+        user->password_hash = "!deactivated";
+    }
 
-    append_local_audit(runtime.database, observability::AuditCategory::auth, "auth.account_deactivated",
-                       session->user_id, session->device_id, "deactivated");
+    append_local_audit(runtime.database, observability::AuditCategory::auth, "auth.account_deactivated", audit.actor,
+                       audit.target, audit.reason);
     log_diagnostic("account.deactivated",
                    {
-                       {"user_id",   session->user_id,   false},
-                       {"device_id", session->device_id, false}
+                       {"user_id", std::string{user_id}, false},
+                       {"actor",   audit.actor,          false}
     },
                    observability::LogEventSeverity::info);
-    return make_operation_result(true, session->user_id);
+    return make_operation_result(true, std::string{user_id});
+}
+
+auto deactivate_local_user(HomeserverRuntime& runtime, std::string_view access_token) -> OperationResult
+{
+    auto const session = authenticated_session(runtime, access_token);
+    if (!session.has_value())
+    {
+        return make_operation_result(false, {}, "unauthenticated", 401U);
+    }
+    return deactivate_user_account(runtime, session->user_id, {session->user_id, session->device_id, "deactivated"});
+}
+
+auto set_local_user_moderation(HomeserverRuntime& runtime, std::string_view admin_id, std::string_view user_id,
+                               bool suspended, bool locked, std::string_view audit_event, std::string_view reason_code)
+    -> OperationResult
+{
+    // Persist first. set_user_account_state changes its own mirror only after the write took, and the
+    // LocalUser copy is changed only after that, so a failed write leaves both copies as they were.
+    if (!database::set_user_account_state(runtime.database.persistent_store, user_id, suspended, locked))
+    {
+        return make_operation_result(false, {}, "failed to persist account state", 500U);
+    }
+    auto* const user = find_user(runtime.database, user_id);
+    if (user == nullptr)
+    {
+        return make_operation_result(false, {}, "unknown user", 404U);
+    }
+    user->suspended = suspended;
+    user->locked = locked;
+    append_local_audit(runtime.database, observability::AuditCategory::admin, audit_event, admin_id, user_id,
+                       reason_code);
+    return make_operation_result(true, std::string{user_id});
+}
+
+auto local_account_summary(HomeserverRuntime const& runtime, std::string_view user_id) -> std::optional<AccountSummary>
+{
+    auto const* const user = find_user(runtime.database, user_id);
+    if (user == nullptr)
+    {
+        return std::nullopt;
+    }
+    auto const& devices = runtime.database.persistent_store.devices;
+    return AccountSummary{
+        user->deactivated, user->locked, user->suspended, user->admin,
+        static_cast<std::size_t>(std::ranges::count(devices, user_id, &database::PersistentDevice::user_id))};
 }
 
 auto delete_local_device(HomeserverRuntime& runtime, std::string_view user_id, std::string_view device_id)

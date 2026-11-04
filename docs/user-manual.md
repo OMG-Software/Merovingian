@@ -2785,13 +2785,37 @@ a non-admin user returns `403`. Implemented routes:
 | `POST` | `/_merovingian/admin/media/quarantine/{mediaId}` | Quarantine a stored media item. |
 | `POST` | `/_merovingian/admin/media/release/{mediaId}` | Release a quarantined media item. |
 | `POST` | `/_merovingian/admin/media/remove/{mediaId}` | Remove a stored media item. |
+| `GET` | `/_merovingian/admin/accounts/{userId}` | Summary of one local account. |
+| `POST` | `/_merovingian/admin/accounts/{userId}` | `deactivate`, `lock`, `unlock`, `suspend` or `unsuspend` an account. |
+| `POST` | `/_merovingian/admin/review/{targetType}/{targetId}` | Hold a target for review. |
 
-`/_merovingian/admin/accounts/{userId}`, `/_merovingian/admin/review/{targetType}/{targetId}`,
-and `/_merovingian/admin/shutdown` appear in `observability::admin_routes()`
-(`include/merovingian/observability/observability.hpp`,
-`src/observability/observability.cpp`) but are not wired into either HTTP
-dispatcher (`src/homeserver/local_http_router.cpp`,
-`src/homeserver/client_server.cpp`) — they are unreachable today.
+#### Managing an account
+
+`GET /_merovingian/admin/accounts/{userId}` reports on one account of this server. `{userId}` is the full Matrix
+user ID, percent-encoded (`@alice:example.org` is `%40alice%3Aexample.org`). The answer is a JSON object saying
+whether the account is `deactivated`, `locked`, `suspended` or an `admin`, and how many `devices` it has. It never
+shows a password, a password hash or a token.
+
+`POST /_merovingian/admin/accounts/{userId}` with a JSON body `{"action": "..."}` changes it:
+
+| Action | Effect |
+|---|---|
+| `lock` / `unlock` | A locked user's next request is refused with `M_USER_LOCKED`; their sessions are kept. |
+| `suspend` / `unsuspend` | A suspended user can read but not act (`M_USER_SUSPENDED`). |
+| `deactivate` | Closes the account for good: every token and pusher is removed, login is refused, and the name is never reissued. It needs `"confirm": true` in the body; without it the request is refused and nothing happens. It does not unbind identity-server addresses. |
+
+The answer to a successful action is the same summary, after the change. Asking again for something already in effect
+is not an error (`200`). Once an account is deactivated, the four other actions are refused with `409`. You cannot act on
+your own account or on another administrator (`403`), and a user who is not on this server is `400`; an unknown local
+user is `404`. Every action is recorded in the audit log under your user ID. Errors come back as a line of plain text.
+
+#### Holding a target for review
+
+`POST /_merovingian/admin/review/{targetType}/{targetId}` (`media`, `room`, `federation` or `federation_server`; the ID
+percent-encoded; an optional `{"reason": "..."}` body) holds the target for review. It is the same operation as
+`POST /_matrix/client/v3/admin/safety/review/{targetType}/{targetId}`: the two cannot differ.
+
+There is no route that stops the server. Stop it with the service manager.
 
 ## Maintenance
 

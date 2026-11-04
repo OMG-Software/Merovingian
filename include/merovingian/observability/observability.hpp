@@ -22,14 +22,22 @@ enum class AdminSurface
     loopback_http,
 };
 
+// One value per operator route this server serves under /_merovingian/admin/. The table behind
+// admin_routes() is the only list of them (ADR-0504): the dispatcher, the local router and the rate
+// limiter's counter key all read it. There is deliberately no operation that stops the server
+// (ADR-0505).
 enum class AdminOperation
 {
     health,
     metrics,
+    media_metrics,
     audit_query,
+    account_summary,
     account_action,
     review_action,
-    shutdown,
+    media_quarantine,
+    media_release,
+    media_remove,
 };
 
 enum class AuditCategory
@@ -178,8 +186,16 @@ private:
 [[nodiscard]] auto health_status_name(HealthStatus status) noexcept -> char const*;
 [[nodiscard]] auto metric_type_name(MetricType type) noexcept -> char const*;
 [[nodiscard]] auto admin_surface_is_safe(AdminControlSurface const& surface) noexcept -> bool;
-[[nodiscard]] auto admin_routes() -> std::vector<AdminRoute>;
+// Every operator route, in declaration order. The same list on every call.
+[[nodiscard]] auto admin_routes() -> std::vector<AdminRoute> const&;
+// The route that serves `method` on `target`, or {matched = false}. `target` may carry a query string,
+// which is ignored. A `{name}` in a template matches exactly one non-empty path segment, so a path with
+// a missing or an extra segment matches nothing.
 [[nodiscard]] auto match_admin_route(std::string_view method, std::string_view target) -> AdminRouteMatch;
+// As match_admin_route for a path whatever the method: the first route whose template fits. Its
+// `path_template` is the fixed counter key the rate limiter files every request to that route under
+// (F-73), so a client cannot make counter keys by inventing paths.
+[[nodiscard]] auto match_admin_path(std::string_view target) -> AdminRouteMatch;
 [[nodiscard]] auto make_audit_event(AuditCategory category, std::string_view event_type, std::string_view actor,
                                     std::string_view target, std::string_view reason_code, std::string_view request_id)
     -> AuditLogEvent;

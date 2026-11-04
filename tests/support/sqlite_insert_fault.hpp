@@ -26,7 +26,7 @@ struct SqliteCloser final
     }
 };
 
-// R02: makes every INSERT into one table of the server's database file fail
+// R02: makes every INSERT (or, with `event` = "UPDATE", every UPDATE) into one table of the server's database file fail
 // from a second connection, so the server's own transaction aborts and rolls
 // back exactly as a failed commit would. A non-empty `when` limits the fault to
 // rows matching that SQL condition over NEW (for example
@@ -37,7 +37,7 @@ class SqliteInsertFault final
 {
 public:
     SqliteInsertFault(std::filesystem::path const& path, std::string_view table, std::string_view name,
-                      std::string_view when = {})
+                      std::string_view when = {}, std::string_view event = "INSERT")
         : drop_sql_{"DROP TRIGGER IF EXISTS " + std::string{name}}
     {
         auto* raw_connection = static_cast<sqlite3*>(nullptr);
@@ -46,8 +46,8 @@ public:
         REQUIRE(status == SQLITE_OK);
         REQUIRE(connection_ != nullptr);
         auto const condition = when.empty() ? std::string{} : " WHEN " + std::string{when};
-        REQUIRE(execute("CREATE TRIGGER " + std::string{name} + " BEFORE INSERT ON " + std::string{table} + condition +
-                        " BEGIN SELECT RAISE(ABORT, 'injected write failure'); END"));
+        REQUIRE(execute("CREATE TRIGGER " + std::string{name} + " BEFORE " + std::string{event} + " ON " +
+                        std::string{table} + condition + " BEGIN SELECT RAISE(ABORT, 'injected write failure'); END"));
         active_ = true;
     }
 

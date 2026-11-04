@@ -839,8 +839,10 @@ directory-alias, device, user-data, room-tag, presence, key-backup and SSO
 identity-provider components into route templates. All unmatched paths share
 one fallback bucket, while known static endpoints keep separate keys. The
 operator surface is recognised too (F-73): each fixed `/_merovingian/admin/`
-route has its own key, the three media moderation routes one key each
-(`/_merovingian/admin/media/{quarantine|release|remove}/{mediaId}`), and any other
+route has its own key, and the key of a route with an identifier is its template
+(`/_merovingian/admin/accounts/{userId}`, `/_merovingian/admin/review/{targetType}/{targetId}`,
+`/_merovingian/admin/media/{quarantine|release|remove}/{mediaId}`). The keys are read from the table
+`observability::admin_routes()` (`match_admin_path`, ADR-0504), not from a second list. Any other
 path under the prefix stays in the fallback, so a client cannot mint counter keys
 by inventing admin paths. The admin tier policy is unchanged: it is chosen from
 the raw path, so these keys are still counted at 30/60s. Policy
@@ -906,7 +908,7 @@ cannot delay it. It says nothing of the database or the federation worker; `/_me
 
 ### Admin routes
 
-`/_merovingian/admin/*` (health, metrics, audit, media moderation) is served on
+`/_merovingian/admin/*` (health, metrics, audit, accounts, review, media moderation) is served on
 the public client listener. The client-server dispatcher routes the
 `/_merovingian/admin/` prefix to the local router **before** the general
 user-token gate, so `require_admin()` owns the auth outcome: 401

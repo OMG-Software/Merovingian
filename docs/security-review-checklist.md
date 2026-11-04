@@ -13,6 +13,17 @@ Use this checklist for every release candidate.
 - Admin bootstrap is explicit and cannot be claimed by enabling public
   registration.
 
+## Operator surface
+
+- Every `/_merovingian/admin/*` route is a row in `observability::admin_routes()`; the dispatcher answers 404 to
+  anything the table does not declare, and `normalized_target` files requests under the row's template (ADR-0504).
+  No route stops the process (ADR-0505).
+- Authentication (401 missing or invalid, 403 not an administrator) comes before any lookup of the target, so a
+  non-administrator cannot learn whether an account exists.
+- The account route refuses non-local IDs (400), the caller's own account and other administrators (403), and
+  deactivation without `"confirm": true` (400). Its summary carries no hash or token. It reads at most
+  4096 bytes of body.
+
 ## Federation
 
 - Request signatures are verified with Matrix canonical JSON.

@@ -23,6 +23,7 @@
 - Device and key APIs
 - E2EE /keys/upload signature validation (verifies one-time and fallback key signatures against the device's own identity key, rejecting unverifiable keys with 400 M_INVALID_SIGNATURE)
 - Token handling
+- The operator surface (`/_merovingian/admin/*`): one route table (`observability::admin_routes()`) that the dispatcher, the router and the rate limiter all read (ADR-0504); administrators can lock, suspend and permanently deactivate accounts (`confirm` required, ADR-0506); there is no route that stops the process (ADR-0505)
 - Server signing-key persistence
 - Media handling
 - Image decoding (thumbnail generation; isolated in a sandboxed worker)

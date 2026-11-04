@@ -6,6 +6,7 @@
 #include "merovingian/config/config.hpp"
 #include "merovingian/homeserver/runtime.hpp"
 
+#include <cstddef>
 #include <cstdint>
 #include <optional>
 #include <string>
@@ -101,6 +102,39 @@ struct AdminAuthResult
 // there is deliberately no reactivate counterpart. The caller must have
 // completed UIA before calling this.
 [[nodiscard]] auto deactivate_local_user(HomeserverRuntime& runtime, std::string_view access_token) -> OperationResult;
+
+// Who and what the audit row of a deactivation names (`auth.account_deactivated`): the owner's own
+// deactivation records the user and the device, an administrator's records the administrator and the user.
+struct DeactivationAudit final
+{
+    std::string actor{};
+    std::string target{};
+    std::string reason{};
+};
+
+// The one deactivation, for `user_id` (see the definition). Call under runtime.mutex.
+[[nodiscard]] auto deactivate_user_account(HomeserverRuntime& runtime, std::string_view user_id,
+                                           DeactivationAudit const& audit) -> OperationResult;
+
+// Sets both moderation flags of a server-local user: persists, then mirrors into the LocalUser, then audits
+// `audit_event` (category admin) with `admin_id` as the actor. The one write behind the spec's lock and
+// suspend endpoints and the operator accounts route. A failed write changes nothing in memory.
+[[nodiscard]] auto set_local_user_moderation(HomeserverRuntime& runtime, std::string_view admin_id,
+                                             std::string_view user_id, bool suspended, bool locked,
+                                             std::string_view audit_event, std::string_view reason_code)
+    -> OperationResult;
+
+// What the operator accounts route reports about an account. Nothing here is a credential.
+struct AccountSummary final
+{
+    bool deactivated{false};
+    bool locked{false};
+    bool suspended{false};
+    bool admin{false};
+    std::size_t devices{0U};
+};
+[[nodiscard]] auto local_account_summary(HomeserverRuntime const& runtime, std::string_view user_id)
+    -> std::optional<AccountSummary>;
 [[nodiscard]] auto delete_local_device(HomeserverRuntime& runtime, std::string_view user_id, std::string_view device_id)
     -> OperationResult;
 [[nodiscard]] auto change_local_user_password(HomeserverRuntime& runtime, std::string_view access_token,

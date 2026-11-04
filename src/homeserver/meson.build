@@ -19,6 +19,7 @@ homeserver_sources = files(
   'local_services.cpp',
   'media_service.cpp',
   'media_upload_notifier.cpp',
+  'operator_admin.cpp',
   'url_preview_service.cpp',
   'periodic_job.cpp',
   'presence_service.cpp',

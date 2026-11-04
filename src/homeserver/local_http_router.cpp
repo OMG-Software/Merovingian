@@ -35,6 +35,7 @@
 #include "merovingian/homeserver/deferred_pdu_retry.hpp"
 #include "merovingian/homeserver/federation_request_routing.hpp"
 #include "merovingian/homeserver/media_service.hpp"
+#include "merovingian/homeserver/operator_admin.hpp"
 #include "merovingian/homeserver/presence_service.hpp"
 #include "merovingian/homeserver/request_lock.hpp"
 #include "merovingian/homeserver/restricted_join.hpp"
@@ -5789,7 +5790,13 @@ auto wire_federation_callbacks(HomeserverRuntime& runtime) -> void
     // A route is the path: the query string is part of `request.target` and is read by the handlers that
     // take parameters (ADR-0420).
     auto const request_path = std::string_view{request.target}.substr(0U, request.target.find('?'));
-    if (request.method == "GET" && request_path == "/_merovingian/admin/health")
+    // The operator routes are the table in observability::admin_routes() (ADR-0504): a route is served by
+    // asking the table what the request is, never by comparing a path here.
+    auto const admin_route = observability::match_admin_route(request.method, request_path);
+    auto const is_admin_operation = [&admin_route](observability::AdminOperation operation) {
+        return admin_route.matched && admin_route.route.operation == operation;
+    };
+    if (is_admin_operation(observability::AdminOperation::health))
     {
         if (auto const denied = admin_auth_denied(runtime, request.access_token, correlation); denied.has_value())
         {
@@ -5798,7 +5805,7 @@ auto wire_federation_callbacks(HomeserverRuntime& runtime) -> void
         return response(200U, admin_health_summary(runtime),
                         observability_headers(correlation, "text/plain; charset=utf-8"));
     }
-    if (request.method == "GET" && request_path == "/_merovingian/admin/media/metrics")
+    if (is_admin_operation(observability::AdminOperation::media_metrics))
     {
         if (auto const denied = admin_auth_denied(runtime, request.access_token, correlation); denied.has_value())
         {
@@ -5807,7 +5814,7 @@ auto wire_federation_callbacks(HomeserverRuntime& runtime) -> void
         return response(200U, media_metrics_summary(runtime),
                         observability_headers(correlation, "text/plain; charset=utf-8"));
     }
-    if (request.method == "GET" && request_path == "/_merovingian/admin/metrics")
+    if (is_admin_operation(observability::AdminOperation::metrics))
     {
         if (auto const denied = admin_auth_denied(runtime, request.access_token, correlation); denied.has_value())
         {
@@ -5818,7 +5825,7 @@ auto wire_federation_callbacks(HomeserverRuntime& runtime) -> void
     }
     // The path alone is compared (F-73): `/_merovingian/admin/audit-anything` once matched this prefix too,
     // so a path the rate limiter files under the fallback counter was served as the audit view.
-    if (request.method == "GET" && request.target.substr(0U, request.target.find('?')) == "/_merovingian/admin/audit")
+    if (is_admin_operation(observability::AdminOperation::audit_query))
     {
         if (auto const denied = admin_auth_denied(runtime, request.access_token, correlation); denied.has_value())
         {
@@ -5859,6 +5866,29 @@ auto wire_federation_callbacks(HomeserverRuntime& runtime) -> void
         // F-62 (ADR-0416): the view is a JSON object, not the text line it once was.
         return response(200U, admin_audit_summary(runtime, category_filter, event_type_filter),
                         observability_headers(correlation, "application/json"));
+    }
+    // GET and POST /_merovingian/admin/accounts/{userId} and POST /_merovingian/admin/review/{targetType}/{targetId}
+    // (G5, ADR-0504). Authentication first, so a caller who is not an administrator learns nothing about
+    // whether the account exists; the handlers run here under runtime.mutex and make no network call.
+    if (is_admin_operation(observability::AdminOperation::account_summary) ||
+        is_admin_operation(observability::AdminOperation::account_action) ||
+        is_admin_operation(observability::AdminOperation::review_action))
+    {
+        auto const admin = require_admin(runtime, request.access_token);
+        if (!admin.user_id.has_value())
+        {
+            return *admin_auth_denied(runtime, request.access_token, correlation);
+        }
+        auto constexpr accounts_prefix = std::string_view{"/_merovingian/admin/accounts/"};
+        auto constexpr review_prefix = std::string_view{"/_merovingian/admin/review/"};
+        auto const reply = is_admin_operation(observability::AdminOperation::review_action)
+                               ? operator_review_request(runtime, *admin.user_id,
+                                                         request_path.substr(review_prefix.size()), request.body)
+                               : operator_account_request(runtime, *admin.user_id, request.method,
+                                                          request_path.substr(accounts_prefix.size()), request.body);
+        return response(
+            reply.status, reply.body,
+            observability_headers(correlation, reply.json ? "application/json" : "text/plain; charset=utf-8"));
     }
     if (request.method == "GET" && request.target.substr(0U, request.target.find('?')) == "/_matrix/key/v2/server")
     {
@@ -6047,7 +6077,7 @@ auto wire_federation_callbacks(HomeserverRuntime& runtime) -> void
         return response_from_media_operation(result);
     }
     auto constexpr quarantine_prefix = std::string_view{"/_merovingian/admin/media/quarantine/"};
-    if (request.method == "POST" && starts_with(request.target, quarantine_prefix))
+    if (is_admin_operation(observability::AdminOperation::media_quarantine))
     {
         auto const media_id = admin_media_id_from_suffix(path_suffix(request.target, quarantine_prefix));
         if (!media_id.has_value())
@@ -6058,7 +6088,7 @@ auto wire_federation_callbacks(HomeserverRuntime& runtime) -> void
         return response_from_media_operation(result);
     }
     auto constexpr release_prefix = std::string_view{"/_merovingian/admin/media/release/"};
-    if (request.method == "POST" && starts_with(request.target, release_prefix))
+    if (is_admin_operation(observability::AdminOperation::media_release))
     {
         auto const media_id = admin_media_id_from_suffix(path_suffix(request.target, release_prefix));
         if (!media_id.has_value())
@@ -6069,7 +6099,7 @@ auto wire_federation_callbacks(HomeserverRuntime& runtime) -> void
         return response_from_media_operation(result);
     }
     auto constexpr remove_prefix = std::string_view{"/_merovingian/admin/media/remove/"};
-    if (request.method == "POST" && starts_with(request.target, remove_prefix))
+    if (is_admin_operation(observability::AdminOperation::media_remove))
     {
         auto const media_id = admin_media_id_from_suffix(path_suffix(request.target, remove_prefix));
         if (!media_id.has_value())

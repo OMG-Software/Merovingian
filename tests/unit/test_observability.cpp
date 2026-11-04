@@ -44,8 +44,7 @@ SCENARIO("Admin control surfaces default to local-only safe exposure", "[observa
     }
 }
 
-SCENARIO("Admin routes expose health, metrics, audit, account, review, and shutdown operations",
-         "[observability][admin]")
+SCENARIO("Admin routes expose health, metrics, audit, account and review operations", "[observability][admin]")
 {
     GIVEN("admin route targets")
     {
@@ -58,7 +57,6 @@ SCENARIO("Admin routes expose health, metrics, audit, account, review, and shutd
                 "POST", "/_merovingian/admin/accounts/@alice:example.org");
             auto const review =
                 merovingian::observability::match_admin_route("POST", "/_merovingian/admin/review/media/media123");
-            auto const shutdown = merovingian::observability::match_admin_route("POST", "/_merovingian/admin/shutdown");
             auto const incomplete_review =
                 merovingian::observability::match_admin_route("POST", "/_merovingian/admin/review/media");
 
@@ -70,8 +68,89 @@ SCENARIO("Admin routes expose health, metrics, audit, account, review, and shutd
                 REQUIRE(audit.matched);
                 REQUIRE(account.matched);
                 REQUIRE(review.matched);
-                REQUIRE(shutdown.matched);
                 REQUIRE_FALSE(incomplete_review.matched);
+            }
+        }
+    }
+}
+
+// G5 (ADR-0504, ADR-0505): the table is the one list of operator routes.
+SCENARIO("The operator route table is strict and offers no way to stop the server", "[observability][admin][g5]")
+{
+    using merovingian::observability::match_admin_path;
+    using merovingian::observability::match_admin_route;
+
+    GIVEN("the declared operator routes")
+    {
+        auto const& routes = merovingian::observability::admin_routes();
+
+        WHEN("a shutdown request is matched")
+        {
+            auto const shutdown = match_admin_route("POST", "/_merovingian/admin/shutdown");
+
+            THEN("no route is declared for it, under any method")
+            {
+                REQUIRE_FALSE(shutdown.matched);
+                REQUIRE_FALSE(match_admin_route("GET", "/_merovingian/admin/shutdown").matched);
+                REQUIRE_FALSE(match_admin_path("/_merovingian/admin/shutdown").matched);
+                for (auto const& route : routes)
+                {
+                    REQUIRE(route.path_template.find("shutdown") == std::string::npos);
+                }
+            }
+        }
+
+        WHEN("paths with an extra, an empty or a missing segment are matched")
+        {
+            THEN("none matches")
+            {
+                REQUIRE_FALSE(match_admin_route("POST", "/_merovingian/admin/accounts/@a:b/extra").matched);
+                REQUIRE_FALSE(match_admin_route("POST", "/_merovingian/admin/accounts/").matched);
+                REQUIRE_FALSE(match_admin_route("POST", "/_merovingian/admin/accounts").matched);
+                REQUIRE_FALSE(match_admin_route("POST", "/_merovingian/admin/review/media/a/b").matched);
+                REQUIRE_FALSE(match_admin_route("POST", "/_merovingian/admin/review//a").matched);
+                REQUIRE_FALSE(match_admin_route("GET", "/_merovingian/admin/health/").matched);
+                REQUIRE_FALSE(match_admin_route("GET", "/_merovingian/admin/audit-anything").matched);
+            }
+        }
+
+        WHEN("a query string follows a declared path")
+        {
+            auto const audit = match_admin_route("GET", "/_merovingian/admin/audit?category=policy");
+
+            THEN("the route still matches")
+            {
+                REQUIRE(audit.matched);
+            }
+        }
+
+        WHEN("a path is matched without a method")
+        {
+            auto const first = match_admin_path("/_merovingian/admin/accounts/%40a%3Ab");
+            auto const second = match_admin_path("/_merovingian/admin/accounts/%40c%3Ad");
+
+            THEN("every value of a variable segment gives the same fixed counter key")
+            {
+                REQUIRE(first.matched);
+                REQUIRE(second.matched);
+                REQUIRE(first.route.path_template == "/_merovingian/admin/accounts/{userId}");
+                REQUIRE(first.route.path_template == second.route.path_template);
+            }
+        }
+
+        WHEN("the table is read twice")
+        {
+            THEN("it is the same list, with no method and template pair declared twice")
+            {
+                REQUIRE(&merovingian::observability::admin_routes() == &routes);
+                for (auto left = std::size_t{0U}; left < routes.size(); ++left)
+                {
+                    for (auto right = left + 1U; right < routes.size(); ++right)
+                    {
+                        REQUIRE_FALSE((routes[left].method == routes[right].method &&
+                                       routes[left].path_template == routes[right].path_template));
+                    }
+                }
             }
         }
     }

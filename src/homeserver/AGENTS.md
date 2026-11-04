@@ -79,9 +79,8 @@ is `declared_mime|sniffed_mime|scanner_clean|bytes` — the pipe-delimited wrapp
    a variable component (an ID, type or key) needs a template and a row in the HTTP-3
    scenario "gives every implemented dynamic client route its own coalesced bucket"
    in `tests/unit/test_security_audit_http_3.cpp` (ADR-0092); a fixed path needs an
-   entry in `static_routes` (an operator route under `/_merovingian/admin/` goes in
-   `operator_routes` or `media_actions` inside `normalized_target`, F-73, or its requests share
-   one counter with every unknown path) and a row in `client_static_route_allow` listing EVERY
+   entry in `static_routes` (an operator route under `/_merovingian/admin/` goes in the table
+   `observability::admin_routes()` instead, see "Adding an operator route" below) and a row in `client_static_route_allow` listing EVERY
    method it serves (a method missing there is answered `405 M_UNRECOGNIZED`
    before authentication). A path the matcher cannot place is answered
    `404 M_UNRECOGNIZED` before authentication (`client_route_is_known`, ADR-0230), so
@@ -118,6 +117,24 @@ and no access token are answered before the authentication gate. Rules for chang
 
 `GET /_merovingian/health` is answered in `http_server.cpp` before `route_request`, from `ctx.dispatcher->running()`. It
 must never take `runtime.mutex` or any other lock, never read the database and never put anything in the body.
+## Adding an operator route (`/_merovingian/admin/...`, ADR-0504)
+
+The table `observability::admin_routes()` is the only list of operator routes. A route is:
+
+1. a row in `admin_routes()` (method, template with `{name}` for one segment) and a value of `AdminOperation`;
+2. a branch in `handle_local_http_request` that asks `is_admin_operation(AdminOperation::...)`, never compares a path.
+   Call `admin_auth_denied` (401 missing or invalid token, 403 not an administrator) first, before any lookup of what
+   the request names, so a non-administrator learns nothing about it;
+3. no change to `normalized_target`: it files the request under the row's template (`match_admin_path`), and an
+   unmatched path under `/_matrix/client/{unmatched}`. `handle_client_server_request` answers 404 `route not found` to a
+   path or method the table does not declare. The `[g5]` walk in `tests/integration/test_operator_admin_flow.cpp` calls
+   every declared route as an administrator and fails if one is answered as a route that does not exist.
+
+The operator surface answers errors with a plain-text line and results with JSON (`OperatorReply`, no Matrix `errcode`).
+Put the logic in `operator_admin.cpp`, taking `HomeserverRuntime&`: it runs under `runtime.mutex` and must not make a
+blocking network call. The account actions share their writes with the client API (`set_local_user_moderation`,
+`deactivate_user_account`), and the review route shares `apply_admin_review` with the client route. There is no route that
+stops the server (ADR-0505); do not add one.
 
 ## Routes match the path, not the target (ADR-0420)
 
