@@ -67,7 +67,13 @@ is full.
 - Admin health summaries through `/_merovingian/admin/health`.
 - Admin metrics summaries through `/_merovingian/admin/metrics`.
 - Admin audit summaries through `/_merovingian/admin/audit` (with
-  `?category=` and `?event_type=` query-string filters).
+  `?category=` and `?event_type=` query-string filters). The answer is
+  `application/json` (ADR-0416): an object with `audit_events` (the retained row
+  count), `evicted` (once older rows have left the window), `filter_category` and
+  `filter_event_type` (when given) and `entries`, an array holding one object per
+  matching row with `category`, `event_type`, `actor`, `target` and `reason`. The
+  fields are JSON strings, so a value such as a failed login's claimed user ID can
+  never read as another entry.
 - Structured log redaction helpers. `contains_sensitive_marker` (used by
   `sanitize_query`/`sanitized_http_target` to redact query-string values)
   recognizes the bare key `token` as sensitive, in addition to
@@ -358,8 +364,8 @@ or memory, so the audit-append layer bounds the volume.
   the physical position `ctid` stands in for insertion order; that holds because the
   table is append-only.
 - **`GET /_merovingian/admin/audit` shows the window.** It lists the retained
-  rows, and its first line reads `audit events=<retained>` plus
-  ` evicted=<n>` once older rows have left the window. Query the `audit_log`
+  rows in `entries`, with `audit_events` set to the retained count and `evicted`
+  set to `<n>` once older rows have left the window. Query the `audit_log`
   table for older history.
 - **The safety-report listing does not use the window.**
   `/_matrix/client/v3/admin/safety/reports` calls
@@ -378,6 +384,14 @@ or memory, so the audit-append layer bounds the volume.
   `log_diagnostic_audit` are cut to the same length before they are logged.
   A login `user` or `device_id` of up to the 64 KiB body cap is therefore recorded
   as at most 255 bytes; login semantics are unchanged.
+- **A failed login records only well-formed identifiers (F-62, ADR-0416).** The
+  actor and target of `login.rejected` and `login.throttled` are the claimed user
+  ID and device ID only when they pass `auth::user_id_is_valid` and
+  `auth::device_id_is_valid`; otherwise the row holds `(invalid user id)` or
+  `(invalid device id)`. The 403 the client receives is the same either way, and
+  the diagnostic log line keeps the claimed text as one field value. Whatever a
+  row holds, the admin view quotes it as a JSON string, so this narrows what an
+  unauthenticated caller can write; it is not what keeps the view unambiguous.
 - **Path-only audit targets (OPS-2, ADR-0136).** `sanitized_audit_target` discards
   the entire query string before logging or storing an audit target, including
   unknown and percent-encoded parameter names. `append_local_audit` and
@@ -499,6 +513,17 @@ available only when the process starts with --debug; it is not an audit event
 and is never persisted. Its connection identifier data is limited to presence
 and byte length, and it contains no request bodies, tokens, event content, or
 encryption material.
+
+## Outbound client request diagnostics (F-76, ADR-0418)
+
+`http::OutboundClient::perform` logs one debug line per request under the `outbound_client` module:
+`request.success` (`url`, `method`, `http_status`), `request.redirect_rejected` (the same fields; a
+3xx is refused, not followed) and `request.error` (`url`, `method`, `error`). A request that fails
+before any I/O logs `request.failed` with `error` and `detail` only. `url` is the scheme, host, port
+and path of the parsed URL (`loggable_url`) and never the query: the logger redacts by field name, and
+a query can carry an identity server's `client_secret` and `sid`, a user's preview URL or a pusher's
+gateway URL. Userinfo cannot appear, because the URL parser refuses it. The module logs at debug only
+when `log_modules.outbound_client` (or `log_modules.*`) says so, and `--debug` alone does not.
 
 ## Scrape/export contract
 

@@ -828,7 +828,13 @@ keeps admission eviction expected O(1) instead of scanning all 100,000 entries.
 their action names. It coalesces variable room, event, transaction, media,
 directory-alias, device, user-data, room-tag, presence, key-backup and SSO
 identity-provider components into route templates. All unmatched paths share
-one fallback bucket, while known static endpoints keep separate keys. Policy
+one fallback bucket, while known static endpoints keep separate keys. The
+operator surface is recognised too (F-73): each fixed `/_merovingian/admin/`
+route has its own key, the three media moderation routes one key each
+(`/_merovingian/admin/media/{quarantine|release|remove}/{mediaId}`), and any other
+path under the prefix stays in the fallback, so a client cannot mint counter keys
+by inventing admin paths. The admin tier policy is unchanged: it is chosen from
+the raw path, so these keys are still counted at 30/60s. Policy
 lookup, for operator policies and the built-in refinements alike, checks both
 the normalized template and the original query-free target. Operators can
 therefore configure route-wide template prefixes without losing existing
@@ -893,8 +899,11 @@ user-token gate, so `require_admin()` owns the auth outcome: 401
 inherit the same `allow()` rate-limit gate as every other client-server
 request — throttled exactly once per request, no double-count — under the
 admin-tier default (30/60s, operator-tunable via
-`client_rate_limits.tier.admin` or a per-prefix entry). Operator-only and
-low-volume, but still throttled against brute-force token guessing.
+`client_rate_limits.tier.admin` or a per-prefix entry), counted per client key
+and per admin route apart from unknown client paths (F-73). There is no
+per-user bucket for them: `require_admin()` looks the token up, once.
+Operator-only and low-volume, but still throttled against brute-force token
+guessing.
 
 ### In-memory counter trade-off
 
@@ -1138,12 +1147,16 @@ Rules:
   separate configuration key would let an operator raise the caps above the
   pool size, which is the defect. Tests lower the deadline through
   `runtime.client_outbound_proxy_policy`.
+- **Appservice query hooks.** `GET /profile/{userId}` and
+  `GET /directory/room/{roomAlias}` take one slot for the whole loop over the
+  registrations that `query_user` / `query_room_alias` will ask, only when one
+  matches, and answer `429 M_LIMIT_EXCEEDED` with `retry_after_ms` when none is
+  free (F-68, ADR-0417, refining ADR-0079 and ADR-0181).
 - **Not covered.** Outbound calls to operator-configured destinations that an
-  unauthenticated client can still trigger (appservice `query_user` and
-  `query_room_alias`, the identity-server `requestToken` routes, the
-  trust-safety policy server) are not under this budget: the destination is
-  chosen by the operator, not the caller. They still hold a thread for the round
-  trip. The policy server has a budget of its own (`policy_server_budget`, ADR-0361):
+  unauthenticated client can still trigger (the identity-server `requestToken`
+  routes, the trust-safety policy server) are not under this budget: the
+  destination is chosen by the operator, not the caller. They still hold a thread
+  for the round trip. The policy server has a budget of its own (`policy_server_budget`, ADR-0361):
   a quarter of the request pool, half of that per surface, with a refused call
   treated as no decision.
 

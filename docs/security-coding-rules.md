@@ -776,6 +776,19 @@ quickly finding everything a given `AGENTS.md` file contributed.
   Why: it holds a request-pool thread for up to the appservice timeout (ADR-0079).
   Source: `src/homeserver/AGENTS.md`.
 
+- **`GET /profile/{userId}` and `GET /directory/room/{alias}` take one client-outbound slot for the
+  whole appservice query loop, and only when a registration's namespace matches the identifier**
+  (ADR-0417).
+  Why: both are unauthenticated and each query holds a request-pool thread for the appservice timeout;
+  a server with no matching appservice must never answer 429.
+  Source: `src/homeserver/AGENTS.md`.
+
+- **The admin audit view quotes every field as JSON, and the outbound client logs a URL without its
+  query** (ADR-0416, ADR-0418).
+  Why: audit actors and targets are text an unauthenticated caller chose, and the logger redacts by
+  field name, so a URL's query can carry a credential under the non-sensitive key `url`.
+  Source: `src/observability/AGENTS.md`, `src/http/AGENTS.md`.
+
 - **An appservice's `?ts=` reaches the event composer only through `LocalHttpRequest::origin_server_ts`,
   which the dispatcher clears on every request and sets only for a validated masquerade (as_token)
   request on `PUT /send` and `PUT /state`. Never pass `ts` on through the rewritten target's query

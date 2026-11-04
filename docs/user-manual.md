@@ -2672,9 +2672,10 @@ admin endpoint:
 curl 'http://127.0.0.1:8008/_merovingian/admin/audit?category=policy'
 ```
 
-The endpoint lists the most recent 1 024 audit rows the running process holds; its
-first line ends in `evicted=<n>` once older rows have left that window, and the
-`audit_log` table keeps every row. Rejections that any unauthenticated client can
+The endpoint answers a JSON object (`application/json`) whose `entries` array holds one
+object per matching row, the most recent 1 024 audit rows the running process holds;
+`audit_events` is the retained count and `evicted` appears once older rows have left that
+window, and the `audit_log` table keeps every row. Rejections that any unauthenticated client can
 trigger (`access_token.rejected`, `rate_limit.exceeded`, `request.rejected`) are
 written at most 10 times per kind per 60 seconds; the first row after a busier
 window carries `suppressed=<n>` in its reason. `actor`, `target` and `reason` are
@@ -2693,7 +2694,7 @@ a non-admin user returns `403`. Implemented routes:
 | `GET` | `/_merovingian/admin/health` | Health summary. |
 | `GET` | `/_merovingian/admin/metrics` | Prometheus-format server metrics. |
 | `GET` | `/_merovingian/admin/media/metrics` | Media-repository metrics. |
-| `GET` | `/_merovingian/admin/audit` | Audit log query (`?category=`, `?event_type=`). |
+| `GET` | `/_merovingian/admin/audit` | Audit log query (`?category=`, `?event_type=`); a JSON object with an `entries` array. |
 | `POST` | `/_merovingian/admin/media/quarantine/{mediaId}` | Quarantine a stored media item. |
 | `POST` | `/_merovingian/admin/media/release/{mediaId}` | Release a quarantined media item. |
 | `POST` | `/_merovingian/admin/media/remove/{mediaId}` | Remove a stored media item. |

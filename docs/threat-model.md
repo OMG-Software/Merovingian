@@ -1041,7 +1041,11 @@ threat it closes; the controls above are the standing defences these reinforce.
   `runtime.mutex` for the network call.
   **(v0.12.9)** `client_secret` and `sid` are additionally bound as *sensitive*
   prepared-statement values, so they never reach a query trace or diagnostic
-  log — closing the leak path that did not require a DB read at all. They
+  log — closing the leak path that did not require a DB read at all.
+  **(F-76, ADR-0418)** The outbound client's own debug lines (`request.success`,
+  `request.error`, `request.redirect_rejected`) log the request URL without its
+  query, which is where `getValidated3pid` carries them; before, `url` held the
+  whole URL. They
   remain plaintext at rest: that is the residual risk this entry documents, and
   removing it means either encrypting the column or moving to homeserver-signed
   unbind (auth mode 1), both of which are schema/protocol changes rather than a
@@ -2316,8 +2320,9 @@ membership. No whole-finding or release acceptance is claimed. See proposed
   threads stay available to everything that does not leave this server. Threads are still
   blocked while a call is in flight: the fix bounds how many, and a separate pool or an
   asynchronous proxy path was rejected for now. Outbound calls to operator-configured
-  destinations that an unauthenticated client can trigger (appservice `query_user` and
-  `query_room_alias`, identity-server `requestToken`) are not under the budget. DNS lookups
+  destinations that an unauthenticated client can trigger (identity-server `requestToken`)
+  are not under the budget; the appservice `query_user` and `query_room_alias` hooks of
+  `GET /profile` and `GET /directory/room` are, one slot per request (ADR-0417). DNS lookups
   inside server discovery are bounded by the resolver, not by the deadline. Clients behind a
   shared address that is not a configured trusted proxy share one per-client slot.
 

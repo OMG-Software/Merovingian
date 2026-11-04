@@ -3594,6 +3594,40 @@ namespace
             return std::string{unmatched};
         }
 
+        // F-73 (ADR-0092): the operator surface this dispatcher serves has its own counters. Left in the
+        // fallback, an admin request shares one count with every unknown client path, and the admin
+        // tier's small allowance is compared with a count that cheaper traffic from the same client
+        // key raised. A path that is none of these stays in the fallback, so a client cannot make
+        // counter keys by inventing admin paths: the keys are the fixed routes plus one per moderation
+        // action, whatever media identifier follows.
+        auto constexpr operator_prefix = std::string_view{"/_merovingian/admin/"};
+        if (starts_with(out, operator_prefix))
+        {
+            static constexpr auto operator_routes = std::to_array<std::string_view>({
+                "/_merovingian/admin/health",
+                "/_merovingian/admin/metrics",
+                "/_merovingian/admin/media/metrics",
+                "/_merovingian/admin/audit",
+            });
+            if (std::ranges::find(operator_routes, out) != operator_routes.end())
+            {
+                return out;
+            }
+            static constexpr auto media_actions = std::to_array<std::string_view>({
+                "/_merovingian/admin/media/quarantine/",
+                "/_merovingian/admin/media/release/",
+                "/_merovingian/admin/media/remove/",
+            });
+            for (auto const action : media_actions)
+            {
+                if (starts_with(out, action) && has_one_segment(std::string_view{out}.substr(action.size())))
+                {
+                    return std::string{action} + "{mediaId}";
+                }
+            }
+            return std::string{unmatched};
+        }
+
         auto constexpr review_prefix = std::string_view{"/_matrix/client/v3/admin/safety/review/"};
         if (starts_with(out, review_prefix))
         {
@@ -3903,7 +3937,10 @@ namespace
         // it keeps the shared per-IP fallback cap, but its token is not looked
         // up, so a probe of an unknown endpoint writes no access_token.rejected row.
         std::string user_key;
-        if (!req.access_token.empty() && norm != "/_matrix/client/{unmatched}")
+        // The operator surface is throttled per client key only (F-73): it has no per-user policy, and
+        // require_admin() is what looks the token up, once.
+        if (!req.access_token.empty() && norm != "/_matrix/client/{unmatched}" &&
+            !starts_with(norm, "/_merovingian/admin/"))
         {
             // Matrix v1.19 rate-limiting: per-user buckets MUST be keyed by the
             // authenticated user_id, not by the access_token. A bearer token can
@@ -12694,8 +12731,17 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             // is the whole point of an alias namespace.
             auto* const alias_outbound = rt.homeserver.outbound_client.get();
             auto* const alias_discovery = rt.homeserver.cached_discovery.get();
-            if (alias_outbound != nullptr && alias_discovery != nullptr)
+            if (alias_outbound != nullptr && alias_discovery != nullptr &&
+                std::ranges::any_of(rt.homeserver.appservices.all(), [&room_alias](auto const& registration) {
+                    return appservice::any_namespace_matches(registration.namespaces.aliases, room_alias);
+                }))
             {
+                // F-68 (ADR-0417): as for the profile lookup, one slot for the whole loop.
+                auto const proxy_slot = admit_client_proxy(rt, req);
+                if (!proxy_slot.has_value())
+                {
+                    return client_proxy_refused(req, rt);
+                }
                 for (auto const& registration : rt.homeserver.appservices.all())
                 {
                     // Spec: only query an appservice about aliases in its own
@@ -13649,8 +13695,21 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             // server 404s exactly the users a bridge materialises on demand.
             auto* const user_outbound = rt.homeserver.outbound_client.get();
             auto* const user_discovery = rt.homeserver.cached_discovery.get();
-            if (user_outbound != nullptr && user_discovery != nullptr)
+            if (user_outbound != nullptr && user_discovery != nullptr &&
+                std::ranges::any_of(rt.homeserver.appservices.all(), [&target_user](auto const& registration) {
+                    return appservice::any_namespace_matches(registration.namespaces.users, target_user);
+                }))
             {
+                // F-68 (ADR-0417), ADR-0079, ADR-0181: reachable without authentication, and each
+                // query holds this request thread until the appservice answers or times out, so the
+                // loop runs under one slot of the client outbound budget, taken only when a
+                // registration will be asked and held until the loop ends. A server with no
+                // matching appservice never answers 429 here.
+                auto const proxy_slot = admit_client_proxy(rt, req);
+                if (!proxy_slot.has_value())
+                {
+                    return client_proxy_refused(req, rt);
+                }
                 for (auto const& registration : rt.homeserver.appservices.all())
                 {
                     // Spec: "The homeserver will only query user IDs inside the
