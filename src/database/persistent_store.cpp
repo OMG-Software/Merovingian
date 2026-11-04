@@ -5947,9 +5947,9 @@ auto rebuild_notification_index(PersistentStore& store) -> void
     {
         upsert_notification_row(store, std::move(notification));
     }
-    for (auto const& [user_id, event_id] : victims)
+    for (auto const& victim : victims)
     {
-        erase_notification_row(store, user_id, event_id);
+        erase_notification_row(store, victim.first, victim.second);
     }
     return true;
 }
