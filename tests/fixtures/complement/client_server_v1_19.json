@@ -218,7 +218,8 @@
       "path": "/_matrix/client/v3/devices/DEVICE1",
       "auth_from": "refreshed_token",
       "expect_status": 200,
-      "expect_keys_present": ["device_id", "display_name"]
+      "expect_keys_present": ["device_id"],
+      "expect_keys_absent": ["display_name"]
     },
     {
       "method": "GET",
