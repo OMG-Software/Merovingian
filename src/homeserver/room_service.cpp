@@ -300,27 +300,20 @@ namespace
     [[nodiscard]] auto record_room_share_ended_device_changes(HomeserverRuntime& runtime, std::string_view room_id,
                                                               std::string_view departing_user_id) -> bool;
 
+    // One hash lookup on a hit (ADR-0496). Every caller holds runtime.mutex.
     [[nodiscard]] auto find_room(LocalDatabase& database, std::string_view room_id) -> LocalRoom*
     {
-        auto const iterator = std::ranges::find_if(database.rooms, [room_id](LocalRoom const& room) {
-            return room.room_id == room_id;
-        });
-        return iterator == database.rooms.end() ? nullptr : &(*iterator);
+        return find_local_room(database, room_id);
     }
 
     [[nodiscard]] auto find_room(LocalDatabase const& database, std::string_view room_id) -> LocalRoom const*
     {
-        auto const iterator = std::ranges::find_if(database.rooms, [room_id](LocalRoom const& room) {
-            return room.room_id == room_id;
-        });
-        return iterator == database.rooms.end() ? nullptr : &(*iterator);
+        return find_local_room(database, room_id);
     }
 
     [[nodiscard]] auto room_has_member(LocalRoom const& room, std::string_view user_id) noexcept -> bool
     {
-        return std::ranges::any_of(room.members, [user_id](std::string const& member) {
-            return member == user_id;
-        });
+        return room.members.contains(user_id);
     }
 
     // Extract the server name from a Matrix room ID (!opaque:server_name): everything after the
@@ -8768,6 +8761,12 @@ namespace
         }
         append_local_audit(runtime.database, observability::AuditCategory::admin, "room.event_sent", user_id, room_id,
                            "stored");
+        // Presence, "Last active ago": sending a message is a pro-active event. A state event (the profile change
+        // that send_event_as_user also carries) is not the user's doing, so it does not count (ADR-0492).
+        if (!composed->state_key.has_value())
+        {
+            note_local_message_activity(runtime, user_id);
+        }
         log_diagnostic("room.event.accepted",
                        {
                            {"actor",       user_id,                                         false},

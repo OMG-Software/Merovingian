@@ -166,6 +166,9 @@ struct SlidingSyncRequest final
     // These are used when the query parameters are absent.
     std::optional<std::string> pos{};
     std::optional<std::uint64_t> timeout{};
+    // MSC4186 request body `set_presence`, as sent. A value that is not a string is kept as the empty string, which
+    // is no presence mode, so the handler answers it 400 M_INVALID_PARAM like any other unknown value.
+    std::optional<std::string> set_presence{};
 };
 
 // ──────────────────────────────────────────────────────────────────────────────

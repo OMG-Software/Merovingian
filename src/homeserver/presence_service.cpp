@@ -181,19 +181,30 @@ auto record_presence(HomeserverRuntime& runtime, database::PersistentPresence ro
     return true;
 }
 
-auto expire_idle_presence(HomeserverRuntime& runtime, std::int64_t now_ms) -> std::vector<database::PersistentPresence>
+auto expire_idle_presence(HomeserverRuntime& runtime, std::int64_t now_ms, std::size_t max_changes)
+    -> std::vector<database::PersistentPresence>
 {
     auto changed = std::vector<database::PersistentPresence>{};
     if (!presence_enabled(runtime))
     {
         return changed;
     }
-    // Chosen first, written after: recording a row must not run while the rows are being walked.
+    // Chosen first, written after: recording a row must not run while the rows are being walked. At most `max_changes`
+    // are chosen; the rest are found by the next pass.
     auto idle = std::vector<database::PersistentPresence>{};
-    for (auto const& row : runtime.database.persistent_store.presence_states)
+    for (auto& row : runtime.database.persistent_store.presence_states)
     {
-        if (row.presence == "online" && is_local_user(runtime, row.user_id) &&
-            presence_last_active_ago(row, now_ms) > presence_idle_timeout_ms)
+        if (row.presence != "online" || !is_local_user(runtime, row.user_id))
+        {
+            continue;
+        }
+        if (row.observed_at_ms <= 0)
+        {
+            // Loaded from the database: `observed_at_ms` is not stored, so the stored last active time would never
+            // advance. The clock starts the first time the row is seen here (ADR-0492).
+            row.observed_at_ms = now_ms;
+        }
+        if (idle.size() < max_changes && presence_last_active_ago(row, now_ms) > presence_idle_timeout_ms)
         {
             idle.push_back(row);
         }
@@ -211,6 +222,26 @@ auto expire_idle_presence(HomeserverRuntime& runtime, std::int64_t now_ms) -> st
         }
     }
     return changed;
+}
+
+auto note_local_message_activity(HomeserverRuntime& runtime, std::string_view user_id) -> void
+{
+    if (!presence_enabled(runtime))
+    {
+        return;
+    }
+    auto& rows = runtime.database.persistent_store.presence_states;
+    auto const row = std::ranges::find_if(rows, [user_id](database::PersistentPresence const& current) {
+        return current.user_id == user_id;
+    });
+    // No row is made for a user who has none, and a state the user chose (unavailable, offline) is not changed.
+    if (row == rows.end() || row->presence != "online")
+    {
+        return;
+    }
+    row->last_active_ago = 0;
+    row->observed_at_ms = presence_now_ms();
+    row->currently_active = true;
 }
 
 auto read_presence(HomeserverRuntime const& runtime, std::string_view requester, std::string_view target)

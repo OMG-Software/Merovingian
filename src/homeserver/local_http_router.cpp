@@ -5635,23 +5635,18 @@ auto ingest_pdu_event(HomeserverRuntime& runtime, federation::InboundPduEnvelope
 auto apply_runtime_membership(LocalDatabase& database, std::string_view room_id, std::string_view user_id,
                               std::string_view membership) -> void
 {
-    auto room = std::ranges::find_if(database.rooms, [&](LocalRoom const& current) {
-        return current.room_id == room_id;
-    });
-    if (room == database.rooms.end())
+    auto* const room = find_local_room(database, room_id);
+    if (room == nullptr)
     {
         return;
     }
-    auto const member = std::ranges::find_if(room->members, [&](std::string const& member_id) {
-        return member_id == user_id;
-    });
-    if (membership == "join" && member == room->members.end())
+    if (membership == "join")
     {
-        room->members.emplace_back(user_id);
+        std::ignore = room->members.add(std::string{user_id});
     }
-    else if ((membership == "leave" || membership == "ban") && member != room->members.end())
+    else if (membership == "leave" || membership == "ban")
     {
-        room->members.erase(member);
+        std::ignore = room->members.remove(user_id);
     }
 }
 

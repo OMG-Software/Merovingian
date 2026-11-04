@@ -451,11 +451,12 @@ namespace
     {
         auto const& server_name = runtime.config.server().server_name;
         auto servers = std::vector<std::string>{};
+        // Each server once, in the order the members name them. A set answers "seen" in one lookup; searching the list
+        // per member made a large room cost members x servers (ADR-0494 has the same rule for the fan-out).
+        auto seen = std::unordered_set<std::string>{};
         for (auto const& room : runtime.database.rooms)
         {
-            if (!std::ranges::any_of(room.members, [user_id](auto const& m) {
-                    return m == user_id;
-                }))
+            if (!room.members.contains(user_id))
             {
                 continue;
             }
@@ -466,7 +467,7 @@ namespace
                 {
                     continue;
                 }
-                if (server != server_name && std::ranges::find(servers, server) == servers.end())
+                if (server != server_name && seen.emplace(server).second)
                 {
                     servers.emplace_back(server);
                 }
@@ -4273,9 +4274,7 @@ namespace
 
     [[nodiscard]] auto joined(LocalRoom const& room, std::string_view user) -> bool
     {
-        return std::ranges::any_of(room.members, [user](std::string const& member) {
-            return member == user;
-        });
+        return room.members.contains(user);
     }
 
     // Appendices, "Room IDs": `!opaque_id` or `!opaque_id:domain`, at most 255 bytes, with no
@@ -17675,6 +17674,27 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
         {
             return dispatch_err(req, rt, 400U, "M_INVALID_PARAM", std::string{*violation});
         }
+        // MSC4186 request body `set_presence`; the URL's is read when the body has none (ADR-0495). Judged like /sync's
+        // before anything is done: an unknown value is 400 M_INVALID_PARAM.
+        auto const set_presence_text = sliding_req->set_presence.has_value()
+                                           ? std::optional<std::string>{*sliding_req->set_presence}
+                                           : query_param_value(req.target, "set_presence");
+        auto const sliding_presence_mode = parse_sync_presence_mode(
+            set_presence_text.has_value() ? std::optional<std::string_view>{*set_presence_text} : std::nullopt);
+        if (!sliding_presence_mode.has_value())
+        {
+            return dispatch_err(req, rt, 400U, "M_INVALID_PARAM",
+                                "set_presence must be online, offline or unavailable");
+        }
+        if (auto const changed = apply_sync_presence(rt.homeserver, *user, *sliding_presence_mode); changed.has_value())
+        {
+            log_diagnostic("presence.sync.set", {
+                                                    {"actor",    *user,             false},
+                                                    {"presence", changed->presence, false}
+            });
+            broadcast_presence_edu(rt.homeserver, *changed);
+            std::ignore = ensure_sync_notifier(rt);
+        }
         // Prefer query-string pos/timeout; fall back to the newer body-level fields.
         auto pos = sync::parse_sliding_sync_pos(req.target);
         if (!pos.has_value() && sliding_req->pos.has_value())
@@ -20472,7 +20492,10 @@ auto run_presence_idle_sweep(ClientServerRuntime& runtime) -> std::chrono::milli
         // Wakes long-polling syncs of the users who share a room with the ones now idle.
         std::ignore = ensure_sync_notifier(runtime);
     }
-    return presence_idle_sweep_interval;
+    // A pass that hit its bound leaves users for the next one, which should follow soon, with the lock free in between.
+    return changed.size() >= presence_idle_max_per_pass
+               ? std::chrono::duration_cast<std::chrono::milliseconds>(presence_idle_catch_up_interval)
+               : std::chrono::duration_cast<std::chrono::milliseconds>(presence_idle_sweep_interval);
 }
 
 auto set_account_data(ClientServerRuntime& runtime, database::PersistentAccountData data) -> bool

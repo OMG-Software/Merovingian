@@ -34,3 +34,21 @@ share a room with them and wakes long-polling syncs. A user's own next `/sync` w
 A user is `unavailable` at most `presence_idle_sweep_interval` after crossing the threshold. Sending a message does not
 bump the last active time today (only `/sync` and `PUT /presence` do), so a user whose client syncs with
 `set_presence=offline` and only sends messages becomes `unavailable`.
+
+## Amendments (same day, after review)
+
+* **A message counts as activity.** The spec's "Last active ago" names "sending a message to a room" as a pro-active event.
+  `send_event_as_user` calls `note_local_message_activity` after it stores a non-state event: an `online` row gets
+  `last_active_ago` 0, `observed_at_ms` now and `currently_active` true, in memory (no stream position, no EDU, like the
+  still-online case of `apply_sync_presence`). It makes no row for a user who has none and does not touch `unavailable` or
+  `offline`. State events do not count: profile propagation sends them through the same function, and they are not the
+  user's doing. Without this a user who only sends messages was set `unavailable`.
+* **Sliding sync marks the user active** through `set_presence` (ADR-0495).
+* **The clock starts at the first pass.** `observed_at_ms` is not persisted, and `presence_last_active_ago` adds elapsed
+  time only when it is above 0, so a row loaded `online` with `last_active_ago` 0 would read 0 for ever and never be
+  swept. The sweep sets `observed_at_ms` to now on any local `online` row that has none; the idle time runs from the first
+  pass after start-up.
+* **A pass is bounded.** Each user set unavailable costs a commit, a linear `find_if` in `upsert_presence`, an appservice
+  queue entry and `remote_servers_for_user` (a scan of every room's members), all under `runtime.mutex`. A pass takes at
+  most `presence_idle_max_per_pass` (100) users and, if it took that many, the job sleeps `presence_idle_catch_up_interval`
+  (1 s) instead of the ordinary 30 s, so the lock is free in between and the rest follow.

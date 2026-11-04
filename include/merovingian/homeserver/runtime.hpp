@@ -17,6 +17,7 @@
 #include "merovingian/homeserver/client_outbound_proxy.hpp"
 #include "merovingian/homeserver/media_upload_notifier.hpp"
 #include "merovingian/homeserver/remote_media_fetch_coalescer.hpp"
+#include "merovingian/homeserver/room_members.hpp"
 #include "merovingian/homeserver/runtime_mutex.hpp"
 #include "merovingian/http/in_flight_budget.hpp"
 #include "merovingian/http/outbound_client.hpp"
@@ -182,7 +183,8 @@ struct LocalRoom final
 {
     std::string room_id{};
     std::string creator_user_id{};
-    std::vector<std::string> members{};
+    // The joined members; written only through RoomMembers' methods (ADR-0496).
+    RoomMembers members{};
     // True when the room has been explicitly published to the public room directory
     // via PUT /_matrix/client/v3/directory/list/room/{roomId}. Private by default.
     bool directory_public{false};
@@ -200,6 +202,12 @@ struct LocalDatabase final
     std::vector<LocalUser> users{};
     std::vector<LocalSession> sessions{};
     std::vector<LocalRoom> rooms{};
+    // Position in `rooms` of each room ID (ADR-0496): the first room holding the ID. Trusted only while
+    // `room_indexed_rows == rooms.size()` and the room a position names carries the ID asked for; a lookup that
+    // fails either test scans and rebuilds, so a caller that edits `rooms` directly (hydration, a test) loses speed,
+    // never correctness. `mutable` because lookups are const: every reader holds `runtime.mutex`.
+    mutable std::unordered_map<std::string, std::size_t> room_position_index{};
+    mutable std::size_t room_indexed_rows{0U};
     // Bounded window over the most recent `database::max_in_memory_audit_events`
     // audit events (AUTH-1); the oldest is dropped first. The durable copy of
     // every event is the audit_log table, reachable through `persistent_store`.
@@ -235,6 +243,12 @@ struct LocalDatabase final
     // runtime.mutex; entries are added and removed only by PendingStreamOrdering.
     std::multiset<std::uint64_t> pending_stream_orderings{};
 };
+
+// The room with `room_id` in `database.rooms` (the first, if two share the ID), or nullptr. One hash lookup on a hit; a
+// miss is settled by a scan, so the answer is the same as scanning `rooms` whatever has edited it (ADR-0496). The
+// caller holds runtime.mutex: the position index is written from a const lookup.
+[[nodiscard]] auto find_local_room(LocalDatabase& database, std::string_view room_id) -> LocalRoom*;
+[[nodiscard]] auto find_local_room(LocalDatabase const& database, std::string_view room_id) -> LocalRoom const*;
 
 // Caps on the in-memory ephemeral state a federating peer can create
 // (0.12.5 audit, findings 12 and 13).

@@ -81,9 +81,18 @@ inline constexpr auto presence_idle_catch_up_interval = std::chrono::seconds{1};
 // whose presence is `online` and whose last active time (`presence_last_active_ago`) at `now_ms` is over
 // `presence_idle_timeout_ms`. A remote user's presence is their own server's to say, and `unavailable` and
 // `offline` are not idle. Returns the rows as stored, for the caller to tell other servers about and to wake
-// syncs for. The caller holds runtime.mutex. Does nothing with presence off.
-[[nodiscard]] auto expire_idle_presence(HomeserverRuntime& runtime, std::int64_t now_ms)
+// syncs for. At most `max_changes` rows are set; the caller sleeps `presence_idle_catch_up_interval` when it got that
+// many. A row with no observation time (loaded from the database) gets one, so its clock runs from the first pass.
+// The caller holds runtime.mutex. Does nothing with presence off.
+[[nodiscard]] auto expire_idle_presence(HomeserverRuntime& runtime, std::int64_t now_ms,
+                                        std::size_t max_changes = presence_idle_max_per_pass)
     -> std::vector<database::PersistentPresence>;
+
+// CS API "Presence", "Last active ago": "A pro-active event may be sending a message to a room". A local user's
+// message just stored makes an `online` row current: last active 0, observed now, currently active. In memory, like the
+// still-online case of `apply_sync_presence`: no stream position, no EDU. Makes no row for a user who has none and does
+// not change a state the user chose. The caller holds runtime.mutex.
+auto note_local_message_activity(HomeserverRuntime& runtime, std::string_view user_id) -> void;
 
 // How a GET /presence/{userId}/status is answered.
 enum class PresenceReadStatus : std::uint8_t
