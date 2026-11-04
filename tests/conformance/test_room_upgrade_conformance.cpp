@@ -79,7 +79,8 @@ struct Reply final
     return *token;
 }
 
-[[nodiscard]] auto create_room(ClientServerRuntime& rt, std::string const& token, std::string const& body) -> std::string
+[[nodiscard]] auto create_room(ClientServerRuntime& rt, std::string const& token, std::string const& body)
+    -> std::string
 {
     auto const reply = call(rt, "POST", "/_matrix/client/v3/createRoom", token, body);
     REQUIRE(reply.status == 200U);
@@ -112,7 +113,8 @@ auto invite_and_join(ClientServerRuntime& rt, std::string const& inviter, std::s
     return *replacement;
 }
 
-[[nodiscard]] auto alias_target(ClientServerRuntime& rt, std::string const& token, std::string const& alias) -> std::string
+[[nodiscard]] auto alias_target(ClientServerRuntime& rt, std::string const& token, std::string const& alias)
+    -> std::string
 {
     auto const reply = call(rt, "GET", "/_matrix/client/v3/directory/room/" + alias, token);
     if (reply.status != 200U)
@@ -203,8 +205,8 @@ SCENARIO("Upgrading a room stops its members sending and inviting in the old roo
         REQUIRE(started.started);
         auto& rt = started.runtime;
         auto const alice = register_and_login(rt, "alice");
-        auto const room_id = create_room(
-            rt, alice, R"({"preset":"public_chat","power_level_content_override":{"users_default":60}})");
+        auto const room_id =
+            create_room(rt, alice, R"({"preset":"public_chat","power_level_content_override":{"users_default":60}})");
 
         WHEN("alice upgrades the room")
         {
@@ -231,10 +233,10 @@ SCENARIO("An upgrade by a user who cannot change the old room's power levels sti
         auto& rt = started.runtime;
         auto const alice = register_and_login(rt, "alice");
         auto const bob = register_and_login(rt, "bob");
-        auto const room_id = create_room(
-            rt, alice,
-            R"({"preset":"public_chat","power_level_content_override":{"users":{"@bob:example.org":50},)"
-            R"("events":{"m.room.power_levels":100,"m.room.tombstone":50}}})");
+        auto const room_id =
+            create_room(rt, alice,
+                        R"({"preset":"public_chat","power_level_content_override":{"users":{"@bob:example.org":50},)"
+                        R"("events":{"m.room.power_levels":100,"m.room.tombstone":50}}})");
         invite_and_join(rt, alice, room_id, "bob", bob);
 
         WHEN("bob upgrades the room")
