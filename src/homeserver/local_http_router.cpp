@@ -4741,7 +4741,8 @@ namespace
     // canonical JSON (no floats, integers in range) and with a valid envelope (identifier and type
     // lengths, a `state_key` of at most 255 bytes). Spec: Client-Server "Size limits" and the
     // Appendices' Canonical JSON.
-    [[nodiscard]] auto returned_pdu_is_well_formed(std::string_view json) -> bool
+    [[nodiscard]] auto returned_pdu_is_well_formed(std::string_view json, rooms::RoomVersionPolicy const& policy)
+        -> bool
     {
         if (json.size() > events::max_event_size_bytes)
         {
@@ -4749,7 +4750,8 @@ namespace
         }
         auto const parsed = canonicaljson::parse_lossless(json);
         return parsed.error == canonicaljson::ParseError::none &&
-               events::parse_event_envelope(parsed.value).error.empty();
+               events::parse_event_envelope(parsed.value).error.empty() &&
+               federation::pdu_format_violation(parsed.value, policy).empty();
     }
 
     [[nodiscard]] auto backfill_missing_pdu_references(HomeserverRuntime& runtime, std::string_view room_id,
@@ -4823,7 +4825,7 @@ namespace
                     // "as usual", and is neither stored nor held. The origin was asked for the
                     // events the gap is made of, so one that is unusable is its answer, and
                     // nothing is fetched to work around it.
-                    if (!returned_pdu_is_well_formed(json))
+                    if (!returned_pdu_is_well_formed(json, policy))
                     {
                         returned_invalid_event = true;
                         continue;

@@ -1122,8 +1122,8 @@ rooms.
 |---|---|---|
 | `security.federation.enabled` | `true` | Set `false` to run a non-federating server. |
 | `security.federation.default_policy` | `allow` | Set `deny` for allow-list federation. Requires `allowed_servers`. |
-| `security.federation.allowed_servers` | (empty) | Comma-separated server names allowed when `default_policy=deny`. |
-| `security.federation.denied_servers` | (empty) | Comma-separated server names always blocked. |
+| `security.federation.allowed_servers` | (empty) | Comma-separated server names allowed when `default_policy=deny`. See [Federation policy](#federation-policy-reach) for what this covers. |
+| `security.federation.denied_servers` | (empty) | Comma-separated server names always blocked: their requests, events they wrote, and everything outbound. |
 | `security.federation.require_valid_tls` | `true` | Disable only in controlled test labs. |
 | `security.federation.verify_json_signatures` | `true` | Disable only in controlled test labs. |
 | `security.federation.deny_ip_ranges` | private/loopback ranges | IPv4/IPv6 literals or CIDRs blocked during remote discovery/fetching, including public ranges. Keep the defaults; built-in SSRF blocks cannot be disabled, except for the private networks named in `allow_private_ip_ranges`. Every entry must be a well-formed address or CIDR range (prefix no longer than the address): a malformed entry is a startup error, because the boundary would otherwise treat it as denying every address. |
@@ -2589,6 +2589,22 @@ security.federation.denied_servers=bad.example
 ```
 
 Deny-by-default federation requires a non-empty `allowed_servers` list.
+
+<a id="federation-policy-reach"></a>
+These lists mean this server has nothing to do with the named server, whichever way the contact comes:
+
+- A request from it is refused.
+- An event it wrote is refused wherever it comes from: a `/send` by another server, a federation worker relay,
+  backfill, or a `send_join` answer. Its signing keys are not fetched. An event descending from a refused one has a
+  gap in its history here. With `default_policy=deny`, a room created on a server not in `allowed_servers` cannot be
+  joined, because its create event is refused (ADR-0390).
+- Nothing is sent to it: no PDUs, EDUs, membership calls, key queries or media requests. Rows already queued for it
+  are dropped at the next start. `sendToDevice` to it answers 200 and sends nothing, and media from it answers 404
+  (ADR-0391).
+
+Names are compared as exact strings, so `example.org:8448` is a different name from `example.org`: list each form a
+server uses. Admin federation rules also apply to events a server wrote, but not to outbound traffic, which reads only
+these two lists.
 
 ### Federation worker
 

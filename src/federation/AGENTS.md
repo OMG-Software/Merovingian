@@ -293,6 +293,15 @@ Federation is the highest-risk surface: **all input comes from untrusted remote 
    functions hold no static state, take no lock and return owned data; the caller guards the store. Read current state
    with `find_current_state_event_id` and `for_each_room_state_row`, never a scan of `store.state` (ADR-0344).
 
+20. **The operator's policy covers an event's author, and everything outbound (F-72, F-69, ADR-0390, ADR-0391).** A path that
+   takes an event from another server asks `operator_policy_refusal` about the server of its `sender`, before any key is
+   looked up. A worker's provider answers nothing, because main decides. An outbound path asks `federation_server_policy`, the
+   config lists only, because it must not wait on `runtime.mutex`. A new path does the same.
+20. **A received event is held to its room version's format by `pdu_format_violation` (F-56, F-57, ADR-0397, ADR-0399).**
+   Size, `prev_events` and `auth_events` caps, and no top-level `event_id` from room version 3 on. A new path taking events from
+   another server calls it. `make_event_signing_payload` is the spec's pseudocode: do not strip anything else from it.
+20. **A number outside Canonical JSON is that PDU's error (F-83, ADR-0398).** `parse_preserving_numbers` is for rebuilding
+   what a peer signed and reading a `/send` body, never for anything this server hashes, signs or stores.
 20. **A received PDU is stored without its `unsigned` (F-70, ADR-0402).** `unsigned` is outside the content hash, the
    reference hash and every signature, so the relaying server chose it, third parties' events included.
    `parse_inbound_pdu_envelope` removes it (`events::without_unsigned_json`), so `/send`, the worker relays and the

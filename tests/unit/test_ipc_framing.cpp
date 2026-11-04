@@ -1329,7 +1329,7 @@ SCENARIO("a verified /send body yields one digest per EDU it carries", "[ipc][f7
                 CHECK(merovingian::homeserver::verified_send_edu_digests(no_origin, limit).empty());
             }
         }
-        WHEN("the body has a float, an out-of-range integer, a duplicate key, or is not a transaction")
+        WHEN("an EDU holds a float or an out-of-range integer, or the body has a duplicate key or is not a transaction")
         {
             auto const with_content = [&](std::string const& content) {
                 auto bad = request;
@@ -1343,8 +1343,14 @@ SCENARIO("a verified /send body yields one digest per EDU it carries", "[ipc][f7
             auto not_json = request;
             not_json.body = "not json";
 
-            THEN("the whole body is refused, exactly as the worker refuses it, so no digest exists")
+            auto two_edus = request;
+            two_edus.body = R"({"pdus":[],"origin_server_ts":5,"origin":"a.remote.example","edus":[)"
+                            R"({"edu_type":"m.typing","content":{"a":1.5}},)"
+                            R"({"edu_type":"m.typing","content":{"a":1}}]})";
+
+            THEN("no digest exists for it, as the worker drops or refuses it, and an EDU beside it is still bound")
             {
+                CHECK(merovingian::homeserver::verified_send_edu_digests(two_edus, limit).size() == 1U);
                 CHECK(with_content(R"({"a":1.5})").empty());
                 CHECK(with_content(R"({"a":9007199254740993})").empty());
                 CHECK(with_content(R"({"a":1,"a":2})").empty());

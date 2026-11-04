@@ -4558,6 +4558,23 @@ auto filter_verified_send_join_events(HomeserverRuntime& runtime, canonicaljson:
     // ADR-0390: the operator's policy for each server that wrote part of the answer. Asked once per server, since
     // a large room's answer has thousands of events and the admin's rules are read under runtime.mutex.
     auto policy_refused_servers = std::map<std::string, bool, std::less<>>{};
+    // Spec: "Checks performed on receipt of a PDU", step 1. A resident's answer is held to the room version's event
+    // format like any other received event, so what breaks it is dropped before a key is fetched for it (ADR-0399).
+    auto in_format = std::vector<std::reference_wrapper<canonicaljson::Value const>>{};
+    in_format.reserve(events.size());
+    for (auto const& entry : events)
+    {
+        if (auto const violation = federation::pdu_format_violation(entry, policy); !violation.empty())
+        {
+            log_diagnostic("room.join.state_event_rejected",
+                           {
+                               {"reason", violation, false}
+            },
+                           observability::LogEventSeverity::warning);
+            continue;
+        }
+        in_format.emplace_back(entry);
+    }
     auto const refused_by_policy = [&runtime, &policy_refused_servers](std::string_view server) {
         auto const known = policy_refused_servers.find(server);
         if (known != policy_refused_servers.end())
@@ -4581,7 +4598,7 @@ auto filter_verified_send_join_events(HomeserverRuntime& runtime, canonicaljson:
     {
         auto distinct_pairs = std::vector<std::pair<std::string, std::string>>{};
         auto seen = std::set<std::pair<std::string, std::string>>{};
-        for (auto const& entry : events)
+        for (canonicaljson::Value const& entry : in_format)
         {
             auto const parsed = events::parse_event_envelope(entry);
             if (!parsed.error.empty())
@@ -4673,8 +4690,8 @@ auto filter_verified_send_join_events(HomeserverRuntime& runtime, canonicaljson:
     // whose sender-domain key was not found, or whose signature does not
     // verify, is silently dropped — never persisted.
     auto verified = canonicaljson::Array{};
-    verified.reserve(events.size());
-    for (auto const& entry : events)
+    verified.reserve(in_format.size());
+    for (canonicaljson::Value const& entry : in_format)
     {
         auto const parsed = events::parse_event_envelope(entry);
         if (!parsed.error.empty())

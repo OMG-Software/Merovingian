@@ -45,6 +45,9 @@ EventEnvelope → redact → canonical JSON → SHA-256 (content hash) → injec
 
 Call `event_signer.hpp` — do not call `crypto/signing_service.hpp` directly.
 
+The signing payload removes what redaction removes, then `signatures` and `unsigned`, and nothing else. A top-level
+`event_id` stays in it, as it stays in the reference hash, so one signature cannot cover two event IDs (ADR-0397).
+
 ## Authorization rules
 
 `authorization.hpp` is room-version-aware. Always pass the correct `RoomVersionPolicy`

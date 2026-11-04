@@ -31,10 +31,18 @@ struct ObjectMember final
 using Array = std::vector<Value>;
 using Object = std::vector<ObjectMember>;
 
+// A number Canonical JSON cannot represent (a float, or an integer outside its range), exactly as it was received.
+// Only parse_preserving_numbers makes one; serialize_canonical writes it back verbatim and
+// serialize_canonical_strict refuses it, so it can never reach a hash or a signature this server makes.
+struct RawNumber final
+{
+    std::string token{};
+};
+
 class Value final
 {
 public:
-    using Storage = std::variant<std::nullptr_t, bool, std::int64_t, double, std::string, Array, Object>;
+    using Storage = std::variant<std::nullptr_t, bool, std::int64_t, double, std::string, Array, Object, RawNumber>;
 
     Value() = default;
     explicit Value(std::nullptr_t value);
@@ -44,6 +52,7 @@ public:
     explicit Value(std::string value);
     explicit Value(Array value);
     explicit Value(Object value);
+    explicit Value(RawNumber value);
 
     Value(Value&& other) noexcept = default;
     auto operator=(Value&& other) noexcept -> Value& = default;

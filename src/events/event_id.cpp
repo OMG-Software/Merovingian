@@ -183,6 +183,29 @@ auto make_reference_hash_event_id(canonicaljson::Value const& event, rooms::Room
     return {"$" + hash.sha256, {}};
 }
 
+auto make_noncanonical_event_id_label(canonicaljson::Value const& event, rooms::RoomVersionPolicy const& policy)
+    -> EventIdResult
+{
+    auto const redacted = redact_event(event, policy);
+    auto const* object = std::get_if<canonicaljson::Object>(&redacted.event.storage());
+    if (!redacted.error.empty() || object == nullptr)
+    {
+        return {{}, redacted.error.empty() ? "event is not an object" : redacted.error};
+    }
+    auto const serialized = canonicaljson::serialize_canonical(
+        canonicaljson::Value{clone_without_fields(*object, {"signatures", "unsigned"})});
+    if (serialized.error != canonicaljson::CanonicalJsonError::none)
+    {
+        return {{}, canonicaljson::canonical_json_error_name(serialized.error)};
+    }
+    auto const hash = sha256_base64(serialized.output, policy.event_id_url_safe_base64);
+    if (!hash.error.empty())
+    {
+        return {{}, hash.error};
+    }
+    return {"$" + hash.sha256, {}};
+}
+
 auto verify_pdu_content_hash(canonicaljson::Value const& event) -> bool
 {
     // Spec: Matrix Server-Server API v1.19 — Calculating the Content Hash for an Event

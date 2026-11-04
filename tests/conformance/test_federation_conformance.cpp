@@ -28,6 +28,7 @@
 #include "merovingian/canonicaljson/value.hpp"
 #include "merovingian/config/config.hpp"
 #include "merovingian/core/query_params.hpp"
+#include "merovingian/events/limits.hpp"
 #include "merovingian/federation/inbound_ingestion.hpp"
 #include "merovingian/federation/inbound_request.hpp"
 #include "merovingian/federation/key_query.hpp"
@@ -3909,6 +3910,75 @@ SCENARIO("A server ACL without an allow entry disallows every server", "[conform
             {
                 REQUIRE(allowed.decision == ServerAclDecision::allow);
                 REQUIRE(denied.decision == ServerAclDecision::deny);
+            }
+        }
+    }
+}
+
+// Server-Server API > Checks performed on receipt of a PDU, step 1: "Is a valid event, otherwise it is dropped."
+// rooms/v12.md Event format: prev_events "must contain less than or equal to 20 events", auth_events at most 10.
+// Client-Server API > Size limits: the complete event "MUST NOT be larger than 65536 bytes".
+// rooms/v3.md Event format: "the `event_id` field is no longer included."
+SCENARIO("A PDU outside its room version's event format is recognised by one shared check",
+         "[conformance][federation][pdu-format]")
+{
+    using merovingian::federation::pdu_format_violation;
+    auto const* policy = merovingian::rooms::find_room_version_policy("12");
+    REQUIRE(policy != nullptr);
+
+    auto const event_of = [](std::string const& prev_events, std::string const& auth_events,
+                             std::string const& extra = {}) {
+        auto const parsed = merovingian::canonicaljson::parse_lossless(
+            R"({"auth_events":)" + auth_events + R"(,"content":{"body":"x"},"depth":1,)" + extra +
+            R"("origin_server_ts":1,"prev_events":)" + prev_events +
+            R"(,"room_id":"!r:example.org","sender":"@a:example.org","type":"m.room.message"})");
+        REQUIRE(parsed.error == merovingian::canonicaljson::ParseError::none);
+        return parsed.value;
+    };
+    auto const ids = [](std::size_t count) {
+        auto text = std::string{"["};
+        for (auto index = std::size_t{0U}; index < count; ++index)
+        {
+            text += (index == 0U ? "\"$e" : ",\"$e") + std::to_string(index) + "\"";
+        }
+        return text + "]";
+    };
+
+    GIVEN("events at the limits of the format")
+    {
+        auto const at_limit = event_of(ids(20U), ids(10U));
+
+        WHEN("they are checked")
+        {
+            auto const violation = pdu_format_violation(at_limit, *policy);
+
+            THEN("they pass")
+            {
+                REQUIRE(violation.empty());
+            }
+        }
+    }
+
+    GIVEN("events that each break one rule of the format")
+    {
+        auto const too_many_prev = event_of(ids(21U), ids(1U));
+        auto const too_many_auth = event_of(ids(1U), ids(11U));
+        auto const prev_not_strings = event_of(R"(["$a",7])", ids(1U));
+        auto const auth_not_array = event_of(ids(1U), R"("$a")");
+        auto const carries_event_id = event_of(ids(1U), ids(1U), R"("event_id":"$forged",)");
+        auto const too_large = event_of(
+            ids(1U), ids(1U), R"("padding":")" + std::string(merovingian::events::max_event_size_bytes, 'x') + R"(",)");
+
+        WHEN("they are checked")
+        {
+            THEN("each is refused")
+            {
+                REQUIRE_FALSE(pdu_format_violation(too_many_prev, *policy).empty());
+                REQUIRE_FALSE(pdu_format_violation(too_many_auth, *policy).empty());
+                REQUIRE_FALSE(pdu_format_violation(prev_not_strings, *policy).empty());
+                REQUIRE_FALSE(pdu_format_violation(auth_not_array, *policy).empty());
+                REQUIRE_FALSE(pdu_format_violation(carries_event_id, *policy).empty());
+                REQUIRE_FALSE(pdu_format_violation(too_large, *policy).empty());
             }
         }
     }

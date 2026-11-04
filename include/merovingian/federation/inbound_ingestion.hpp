@@ -163,6 +163,12 @@ using EduSink = std::function<EduDispositionResult(InboundEduEnvelope const&)>;
 // event for the room version. The returned envelope's `signatures` are not
 // re-verified here — the caller has already done that through
 // authorize_federation_pdu.
+// Why a received event is outside its room version's event format, empty when it is not: the canonical size limit,
+// prev_events and auth_events as arrays within their caps, and no event_id from room version 3 on. One check for
+// every path that takes events from another server, including those that hold them as parsed values (ADR-0399).
+[[nodiscard]] auto pdu_format_violation(canonicaljson::Value const& event, rooms::RoomVersionPolicy const& policy)
+    -> std::string;
+
 [[nodiscard]] auto parse_inbound_pdu_envelope(std::string_view pdu_json) -> std::optional<InboundPduEnvelope>;
 // Overload that accepts a pre-resolved room version string, avoiding the
 // hardcoded "12" default when the caller already knows the correct version

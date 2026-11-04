@@ -139,7 +139,7 @@
 * [0137 - Reject NUL before mutation and path decoding](0137-reject-nul-before-mutation-and-path-decoding.md)
 * [0138 - Require explicit remote PostgreSQL TLS policy](0138-require-explicit-remote-postgresql-tls-policy.md)
 * [0139 - Suppress PostgreSQL connection options in diagnostics](0139-suppress-postgresql-connection-options-in-diagnostics.md)
-* [0140 - Isolate push delivery capacity per recipient](0140-isolate-push-delivery-capacity-per-recipient.md)
+* [0140 - Isolate push delivery capacity per recipient](0140-isolate-push-delivery-capacity-per-recipient.md) — Fairness residual refined by ADR-0409
 * [0141 - Bound configured token lifetimes without coercion](0141-bound-configured-token-lifetimes-without-coercion.md)
 * [0142 - Bind worker EDU relays to live main-verified requests](0142-bind-worker-edu-relays-to-live-main-verified-requests.md)
 * [0143 - Bound thumbnail crop intermediates by the existing pixel budget](0143-bound-thumbnail-crop-intermediates-by-pixel-budget.md)
@@ -150,7 +150,7 @@
 * [0148 - Packaging paths pass `--buildtype=release` explicitly; `default_options` keeps Meson's default](0148-packaging-paths-pass-buildtype-release-explicitly.md)
 * [0149 - Membership rows commit with their event, and are reconciled from current state at startup](0149-membership-rows-commit-with-their-event-and-are-reconciled-at-startup.md)
 * [0150 - Legacy float power levels are read by the auth rules, but never hashed](0150-legacy-float-power-levels-are-read-by-the-auth-rules-but-never-hashed.md)
-* [0151 - Cap pusher registration and break the circuit to failing gateways](0151-cap-pusher-registration-and-break-the-circuit-to-failing-gateways.md)
+* [0151 - Cap pusher registration and break the circuit to failing gateways](0151-cap-pusher-registration-and-break-the-circuit-to-failing-gateways.md) — Partly superseded by ADR-0409: a gateway need not answer promptly; a slow answer counts against the circuit
 * [0152 - Cache thumbnails in memory and cap concurrent decodes per requester](0152-cache-thumbnails-in-memory-and-cap-concurrent-decodes-per-requester.md)
 * [0153 - Split the key-resolution budgets across federation worker shards](0153-split-key-resolution-budgets-across-worker-shards.md)
 * [0154 - Pool database write connections up to database.pool_size](0154-pool-database-write-connections.md)
@@ -193,7 +193,7 @@
 * [0199 - Typing expires on a periodic job, with a ceiling for clients and a timeout for federation](0199-typing-expires-on-a-periodic-job-with-a-ceiling-and-a-federation-timeout.md)
 * [0204 - Keep a user's push rules as their m.push_rules account data, applied over the current defaults](0204-keep-a-users-push-rules-as-their-m-push-rules-account-data.md)
 * [0205 - Count unread notifications by the user's push rules at read time, from the start of their join](0205-count-unread-notifications-by-push-rules-at-read-time.md)
-* [0206 - Retry failed push notifications from a bounded in-memory queue on one job thread](0206-retry-failed-push-notifications-from-a-bounded-in-memory-queue.md)
+* [0206 - Retry failed push notifications from a bounded in-memory queue on one job thread](0206-retry-failed-push-notifications-from-a-bounded-in-memory-queue.md) — Its one-at-a-time delay is bounded by ADR-0410
 * [0207 - Count the push badge in one bounded walk of the store, and saturate it](0207-saturate-the-push-badge-unread-count.md)
 * [0211 - Media file names are validated and encoded before they reach a header](0211-media-file-names-are-validated-and-encoded-before-they-reach-a-header.md)
 * [0212 - Asynchronous uploads reserve media IDs durably and wait for content on the media fetch pool](0212-asynchronous-uploads-reserve-durably-and-wait-on-the-media-fetch-pool.md)
@@ -395,3 +395,26 @@
 * [0225 - A local event falls back to the newest forward extremity when their state cannot be resolved](0225-a-local-event-falls-back-to-the-newest-forward-extremity-when-their-state-cannot-be-resolved.md) — Partly superseded by ADR-0373: the fallback event's state before is the room's current state, not the cited extremity's, and the consequences about a retired fork's ban no longer hold
 * [0390 - The operator's federation policy also covers the server that wrote an event](0390-the-operators-federation-policy-also-covers-the-server-that-wrote-an-event.md) — Refused on every ingest path by the sender's domain, before any key is fetched, whoever carries the event
 * [0391 - Nothing goes out to a server the operator's policy excludes](0391-nothing-goes-out-to-a-server-the-operators-policy-excludes.md) — Config lists gate every delivery chokepoint; queued rows for an excluded destination are dropped on replay
+* [0380 - Client transaction IDs are scoped to the device, and a request with no device has its own scope](0380-client-transaction-ids-are-scoped-to-the-device-and-a-request-with-no-device-has-its-own-scope.md) — Supersedes the "keyed by user, not device" consequence of ADR-0258; refines ADR-0166: the to-device `message_id` includes the sender device
+* [0381 - To-device transaction records are kept for seven days, and a client-chosen key part is at most 255 bytes](0381-to-device-transaction-records-are-kept-for-seven-days.md) — Refines ADR-0258: to-device rows are pruned, room-send rows are not
+* [0384 - A key backup version number is never reissued, and deleting a version deletes its sessions](0384-a-key-backup-version-number-is-never-reissued-and-deleting-a-version-deletes-its-sessions.md)
+* [0385 - A receipt names an event ID by shape and size only](0385-a-receipt-names-an-event-id-by-shape-and-size-only.md) — A receipt or read marker's event ID is checked for shape (v3 `+` and `/` allowed) and 255 bytes, never for existence
+* [0386 - An inbound typing flood evicts only remote typing](0386-an-inbound-typing-flood-evicts-only-remote-typing.md) — At the typing cap the oldest remote entry goes, the new one is dropped if none is remote; refines ADR-0199
+* [0395 - Bind worker EDU relays to the EDUs of the verified body by digest](0395-bind-worker-edu-relays-to-the-edus-of-the-verified-body-by-digest.md) — Refines ADR-0142: a relayed EDU must match an unused digest of an EDU in the verified `/send` body; ADR-0398 refines what a float does
+* [0397 - A top-level event_id is signed, and refused on a reference-hash PDU](0397-a-top-level-event-id-is-signed-and-refused-on-a-reference-hash-pdu.md) — Reverses 0.4.26: the signing payload is the spec's pseudocode, so one signature cannot cover two event IDs
+* [0398 - A number outside Canonical JSON costs one PDU, not the transaction](0398-a-number-outside-canonical-json-costs-one-pdu-not-the-transaction.md) — Refines ADR-0150: authentication reads the numbers as received, the PDU gets its own error, hashing stays strict
+* [0399 - One check holds every received event to its room version's format](0399-one-check-holds-every-received-event-to-its-room-versions-format.md) — `pdu_format_violation` runs on every path that takes events from another server
+* [0402 - A client's unsigned is built from what the server computes, and a received PDU is stored without it](0402-unsigned-is-built-from-what-the-server-computes-never-stored-from-a-remote-pdu.md) — Refines ADR-0258: no read path serves a stored `unsigned`; sliding sync carries the viewer's `membership` and `transaction_id`
+* [0404 - A removed device is announced with a stream position of its own](0404-a-removed-device-is-announced-with-a-stream-position-of-its-own.md) — Refines ADR-0317: each deleted device's `m.device_list_update` takes its own sync-counter position and `prev_id` chains within one request
+* [0406 - The profile is bounded as one serialised object, and an empty avatar_url still clears it](0406-the-profile-is-bounded-as-one-object-and-an-empty-avatar-url-clears-it.md) — Refines ADR-0182: a profile of 64 KiB or more is 400 M_PROFILE_TOO_LARGE, a non-MXC avatar_url is 400 M_INVALID_PARAM
+* [0407 - Delete the device row after its tokens are revoked](0407-delete-the-device-row-after-its-tokens-are-revoked.md) — Refines ADR-0116: the step a repeat reports as already done runs last, so a failed device deletion stays retryable
+* [0408 - OpenID tokens end with the credentials they were minted from](0408-openid-tokens-end-with-the-credentials-they-were-minted-from.md) — Refines ADR-0031: deactivation, logout everywhere and a password change delete the user's OpenID rows, and userinfo refuses a missing or deactivated user
+* [0409 - Count a slow gateway answer as a failure, bound a delivery batch by a deadline, and cap requests per gateway host and address](0409-count-a-slow-gateway-answer-as-a-failure-and-bound-a-delivery-batch.md) — Refines ADR-0140's fairness residual; corrects ADR-0151's promptness assumption
+* [0410 - Bound the push retry thread by time, take retries one recipient at a time in turn, and use a shorter timeout for retries](0410-bound-the-push-retry-thread-by-time-and-take-retries-in-turn.md) — Updates the negative consequence of ADR-0206
+* [0411 - A deactivated account keeps no pusher and is never delivered to](0411-a-deactivated-account-keeps-no-pusher-and-is-never-delivered-to.md) — Alongside ADR-0264, which still governs logout and device deletion
+* [0414 - GET /members?at= is refused when the event at that position is not visible to the caller](0414-members-at-is-refused-when-its-event-is-not-visible-to-the-caller.md) — Extends ADR-0084
+* [0415 - An outlier with no state group is not judged by its stream ordering](0415-an-outlier-with-no-state-group-is-not-judged-by-its-stream-ordering.md) — Amends ADR-0084: a group-less outlier is denied; rule 2 stays for non-outlier rows
+* [0416 - The admin audit view is a JSON object with one object per row](0416-the-admin-audit-view-is-a-json-object-with-one-object-per-row.md)
+* [0417 - Appservice query hooks on unauthenticated client routes take a proxy slot](0417-appservice-query-hooks-on-unauthenticated-client-routes-take-a-proxy-slot.md) — Refines ADR-0079 and ADR-0181: `GET /profile` and `GET /directory/room` take one slot for the appservice query loop, only when a registration matches
+* [0418 - The outbound client logs a URL without its query](0418-the-outbound-client-logs-an-url-without-its-query.md)
+* [0419 - The thumbnail decoder refuses to run without a platform sandbox](0419-the-thumbnail-decoder-refuses-to-run-without-a-platform-sandbox.md) — NetBSD has no in-process decoder sandbox, so the worker refuses to decode there instead of running on rlimits alone

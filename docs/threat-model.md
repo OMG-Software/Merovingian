@@ -2866,3 +2866,25 @@ nothing, all from trusting the worker's view or the hook's transport.
   shorter deadlines, a backoff for slow successes, and a circuit check before discovery. **Residual risk:** an attacker with many
   server names joined to active rooms can occupy several threads, about 40 s per name per backoff period; an honest peer slower
   than 10 s is throttled until it answers quickly. Tests: `[f20]`.
+
+### An excluded server reached through another server, and one signature covering many event IDs (0.12.71, F-72, F-69, F-57, F-56, F-83)
+
+- **An excluded server's events through a third party (F-72, ADR-0390).** `denied_servers`, `allowed_servers` and the admin
+  rules judged the request's origin, so any allowed server could carry an excluded server's events, and this server
+  contacted the excluded server for its keys. They now also judge the sender's server on every ingest path, before any
+  key lookup. **Residual risk:** the key resolver gate reads the lists only, so a server excluded by an admin rule alone
+  is stopped at the ingest paths, not at the resolver. The lists are exact strings, so a server under a second name, such
+  as with an explicit port, is not matched.
+- **Traffic to an excluded server (F-69, ADR-0391).** Outbound paths are gated at their chokepoints, and queued rows are
+  dropped on replay. **Residual risk:** admin rules do not gate outbound traffic, because delivery threads must not wait on
+  `runtime.mutex`.
+- **One signature, many event IDs (F-57, ADR-0397).** The signing payload left out a top-level `event_id` while the reference
+  hash kept it, so a relay could mint new IDs for a genuine event. The payload now follows the spec, and a v3+ PDU carrying
+  the field is refused.
+- **Format limits on one path only (F-56, ADR-0399).** Events taken from backfill, fetches and `send_join` answers were not
+  held to the size and reference caps. One check now covers them. **Residual risk:** identifier grammar is not checked in
+  that function.
+- **One number sinking a transaction (F-83, ADR-0398).** A float in one PDU failed the whole `/send` as a bad signature, so
+  a peer could lose a batch and be charged against its budget. Authentication now reads the numbers as received; only a
+  signature that was checked and failed is charged. **Residual risk:** events in room versions 3 to 5 holding such a number
+  stay unsupported, a recorded deviation from the spec.

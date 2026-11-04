@@ -777,3 +777,57 @@ SCENARIO("sendToDevice answers 200 and queues nothing for a server the operator 
         }
     }
 }
+
+// Server-Server API > Checks performed on receipt of a PDU, step 1, and the room version's event format. A send_join
+// answer is events received from a remote server like any other, so what breaks the format is not stored. The
+// oversized event below is genuinely signed: a signature does not make it valid.
+SCENARIO("A send_join answer loses events outside the room version's event format",
+         "[integration][federation][send-join-format][pdu-format]")
+{
+    GIVEN("a joining server, and a resident's answer holding a valid event and ones breaking each format rule")
+    {
+        auto started = merovingian::homeserver::start_client_server(acl_test_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        merovingian::homeserver::wire_federation_callbacks(runtime.homeserver);
+        auto const key_id = std::string{"ed25519:auto"};
+        auto const key_seed = std::string{"send-join-format-key"};
+        runtime.homeserver.federation.cached_pdu_key_lookup = {};
+        runtime.homeserver.federation.remote_key_resolver =
+            counting_key_resolver(std::make_shared<std::atomic<int>>(0), {}, key_seed);
+
+        auto const event_of = [&](std::string const& prev_events, std::string const& body) {
+            auto const unsigned_json =
+                std::string{R"({"auth_events":[],"content":{"body":")"} + body +
+                R"(","msgtype":"m.text"},"depth":1,"origin_server_ts":1,"prev_events":)" + prev_events +
+                R"(,"room_id":"!joining:good.example","sender":"@someone:good.example","type":"m.room.message"})";
+            return merovingian::canonicaljson::parse_lossless(
+                       merovingian::federation::test::make_signed_event_json(unsigned_json, "good.example", key_id,
+                                                                             key_seed, "12"))
+                .value;
+        };
+        auto twenty_one = std::string{"["};
+        for (auto index = 0; index < 21; ++index)
+        {
+            twenty_one += (index == 0 ? "\"$e" : ",\"$e") + std::to_string(index) + "\"";
+        }
+        twenty_one += "]";
+        auto answer = merovingian::canonicaljson::Array{};
+        answer.push_back(event_of("[]", "valid"));
+        answer.push_back(event_of(twenty_one, "too many prev_events"));
+        answer.push_back(event_of("[]", std::string(70000U, 'x')));
+        auto const* policy = merovingian::rooms::find_room_version_policy("12");
+        REQUIRE(policy != nullptr);
+
+        WHEN("the answer is filtered")
+        {
+            auto const kept = merovingian::homeserver::filter_verified_send_join_events(runtime.homeserver, answer,
+                                                                                        *policy, local_server_name);
+
+            THEN("only the valid event is kept")
+            {
+                REQUIRE(kept.size() == 1U);
+            }
+        }
+    }
+}

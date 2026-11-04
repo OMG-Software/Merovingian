@@ -92,7 +92,9 @@ namespace
         auto object = canonicaljson::Object{};
         if (!body.empty())
         {
-            auto parsed = canonicaljson::parse_lossless(body);
+            // The numbers go back as they came: authentication is about the bytes that were signed, and whether
+            // this server can handle a number in them is decided later, PDU by PDU (ADR-0398).
+            auto parsed = canonicaljson::parse_preserving_numbers(body);
             if (parsed.error != canonicaljson::ParseError::none)
             {
                 return std::nullopt;
@@ -829,6 +831,43 @@ namespace
         return nullptr;
     }
 
+    // The ID to report an error under for a PDU refused only for a number Canonical JSON cannot represent, or empty
+    // when `encoded` is refused for anything else. ADR-0150: such an event cannot be hashed, so it is not handled.
+    [[nodiscard]] auto noncanonical_number_pdu_id(std::string_view encoded, RoomVersionResolver const& version_resolver)
+        -> std::string
+    {
+        auto const strict = canonicaljson::parse_lossless(encoded);
+        if (strict.error != canonicaljson::ParseError::invalid_number &&
+            strict.error != canonicaljson::ParseError::integer_out_of_range)
+        {
+            return {};
+        }
+        auto const parsed = canonicaljson::parse_preserving_numbers(encoded);
+        auto const* root = parsed.error == canonicaljson::ParseError::none
+                               ? std::get_if<canonicaljson::Object>(&parsed.value.storage())
+                               : nullptr;
+        if (root == nullptr)
+        {
+            return {};
+        }
+        auto const string_field = [root](std::string_view name) {
+            auto const* value = find_canonical_member(*root, name);
+            auto const* text = value == nullptr ? nullptr : std::get_if<std::string>(&value->storage());
+            return text == nullptr ? std::string{} : *text;
+        };
+        auto const resolved = version_resolver ? version_resolver(string_field("room_id")) : std::string{};
+        auto const* policy = rooms::find_room_version_policy(resolved.empty() ? std::string_view{"12"} : resolved);
+        if (policy == nullptr)
+        {
+            return {};
+        }
+        if (policy->event_id_format != rooms::EventIdFormat::reference_hash)
+        {
+            return string_field("event_id");
+        }
+        return events::make_noncanonical_event_id_label(parsed.value, *policy).event_id;
+    }
+
     [[nodiscard]] auto parse_transaction_body(std::string_view body) -> ParsedTransactionBody
     {
         if (body.empty())
@@ -838,7 +877,9 @@ namespace
             return parsed_body;
         }
 
-        auto const parsed = canonicaljson::parse_lossless(body);
+        // One PDU's or EDU's number does not decide the transaction (ADR-0398). Main and a worker both read the body
+        // here, so the EDU bytes main binds a relay to and the bytes the worker relays stay identical (ADR-0395).
+        auto const parsed = canonicaljson::parse_preserving_numbers(body);
         if (parsed.error != canonicaljson::ParseError::none)
         {
             auto parsed_body = ParsedTransactionBody{};
@@ -917,12 +958,15 @@ namespace
                 {
                     continue;
                 }
-                auto content_canonical = serialize_canonical_value(*content_value);
-                if (content_canonical.empty())
+                // A number outside Canonical JSON drops this EDU alone, and nothing is bound or relayed for it
+                // (ADR-0398): EDU sinks are only ever handed what the strict serializer accepts.
+                auto content_canonical = canonicaljson::serialize_canonical_strict(*content_value);
+                if (content_canonical.error != canonicaljson::CanonicalJsonError::none ||
+                    content_canonical.output.empty())
                 {
                     continue;
                 }
-                parsed_body.edus.emplace_back(*type_text, std::move(content_canonical));
+                parsed_body.edus.emplace_back(*type_text, std::move(content_canonical.output));
             }
         }
 
@@ -946,6 +990,15 @@ namespace
     {
         auto const out = canonicaljson::serialize_canonical(canonicaljson::Value{std::move(object)});
         return out.error == canonicaljson::CanonicalJsonError::none ? out.output : std::string{};
+    }
+
+    // The same event can fail twice in one transaction, and a JSON object cannot name it twice: the serializer would
+    // refuse the whole answer, so the peer would get an empty 200 for every PDU in it. The first error stands.
+    void keep_first_error_per_event(canonicaljson::Object& pdu_errors)
+    {
+        std::ranges::stable_sort(pdu_errors, {}, &canonicaljson::ObjectMember::key);
+        auto const repeated = std::ranges::unique(pdu_errors, {}, &canonicaljson::ObjectMember::key);
+        pdu_errors.erase(repeated.begin(), repeated.end());
     }
 
     [[nodiscard]] auto build_array_value(std::vector<std::string> const& canonical_json_entries) -> canonicaljson::Value
@@ -2452,6 +2505,11 @@ auto verify_signed_federation_request(SignedFederationRequest const& request, Fe
     }
     auto const payload =
         federation_request_payload(request.origin, request.destination, request.method, request.target, request.body);
+    // A body that is not JSON gives nothing to check a signature against, so it says nothing about the signature.
+    if (!payload.has_value())
+    {
+        return make_decision(false, 400U, "request body is not valid JSON");
+    }
     auto const signature = events::matrix_bytes_from_base64(request.signature);
     auto const verify_result = payload.has_value() ? std::optional<crypto::VerificationResult>{crypto::ed25519_verify(
                                                          crypto::Ed25519PublicKey{std::string{key.public_key_bytes}},
@@ -3322,7 +3380,11 @@ namespace
         auto const request_signature = verify_signed_federation_request(request, remote.signing_key);
         if (!request_signature.accepted)
         {
-            charge_bad_signature(runtime, request.remote_addr);
+            // ADR-0398: only a signature that was checked and failed is a bad signature.
+            if (request_signature.status != 400U)
+            {
+                charge_bad_signature(runtime, request.remote_addr);
+            }
             log_diagnostic("request.rejected",
                            {
                                {"origin", request.origin,                                       false},
@@ -3797,6 +3859,23 @@ namespace
             {
                 processed_pdu_ids.push_back(pdu.event_id);
             }
+            // ADR-0398: this PDU's error, not the transaction's, and no reflection on the peer. Not counted among
+            // verification failures: nothing was verified.
+            else if (auto const label = noncanonical_number_pdu_id(encoded_pdu, runtime.room_version_resolver);
+                     !label.empty())
+            {
+                log_diagnostic("pdu.rejected", {
+                                                   {"origin",         request.origin,                  false},
+                                                   {"transaction_id", transaction.transaction_id,      false},
+                                                   {"event_id",       label,                           false},
+                                                   {"reason",         "number outside Canonical JSON", false}
+                });
+                pdu_errors.push_back(canonicaljson::make_member(
+                    label,
+                    canonicaljson::Value{canonicaljson::Object{canonicaljson::make_member(
+                        "error", canonicaljson::Value{std::string{"PDU holds a number outside Canonical JSON"}})}}));
+                continue;
+            }
             // For relayed PDUs (sender domain != transport origin), the transport peer's
             // signing key cannot verify the sender's PDU signature. Resolve the sender
             // domain's key separately so authorize_federation_pdu can perform real
@@ -4067,6 +4146,7 @@ namespace
             }
             auto const reason = std::string{"local signing-key resolution admission unavailable"};
             audit_federation(runtime, "federation.key_resolution_overloaded", request.origin, request.target, reason);
+            keep_first_error_per_event(pdu_errors);
             return {503U, serialize_response_object(canonicaljson::Object{
                               canonicaljson::make_member("errcode", canonicaljson::Value{std::string{"M_UNKNOWN"}}),
                               canonicaljson::make_member("error", canonicaljson::Value{reason}),
@@ -4163,6 +4243,7 @@ namespace
                     canonicaljson::make_member(event_id, canonicaljson::Value{canonicaljson::Object{}}));
             }
         }
+        keep_first_error_per_event(pdu_errors);
         auto answer = serialize_response_object(canonicaljson::Object{
             canonicaljson::make_member("pdus", canonicaljson::Value{std::move(pdu_errors)}),
         });

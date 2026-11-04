@@ -59,9 +59,10 @@ gap with the smallest main-side check and leaves the EDU parsing and routing in 
 * Any other verified request, an unverified one, a body that is not a valid transaction, or one the lossless
   parse refuses gets no digests, so nothing can be relayed under it.
 * Honest relays match because the worker relays exactly the content string it parsed with the same function:
-  key order and whitespace are canonicalised before both digests; a float, an integer outside the canonical
-  range, a duplicate key or an over-deep or over-large body make `parse_lossless` fail on both sides, so the
-  worker answers 400 and relays nothing while main binds nothing.
+  key order and whitespace are canonicalised before both digests; a duplicate key or an over-deep or
+  over-large body makes the parse fail on both sides, so the worker answers 400 and relays nothing while main
+  binds nothing. An EDU holding a float or an integer outside the canonical range is dropped alone on both
+  sides ([ADR-0398](0398-a-number-outside-canonical-json-costs-one-pdu-not-the-transaction.md)).
 
 ### Positive Consequences
 

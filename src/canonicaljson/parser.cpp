@@ -158,7 +158,8 @@ namespace
     // yyjson owns parsed values through the document; conversion copies into
     // Merovingian's canonical JSON tree before the document is released.
     // NOLINTNEXTLINE(misc-no-recursion)
-    [[nodiscard]] auto convert_yyjson_value(MerovingianYyjsonValue* value, std::size_t depth) -> ConvertResult
+    [[nodiscard]] auto convert_yyjson_value(MerovingianYyjsonValue* value, std::size_t depth,
+                                            bool preserve_numbers = false) -> ConvertResult
     {
         if (depth > max_depth)
         {
@@ -178,8 +179,17 @@ namespace
         case MEROVINGIAN_YYJSON_TYPE_RAW: {
             auto length = std::size_t{0U};
             auto const* raw = merovingian_yyjson_raw_data(value, &length);
-            return raw == nullptr ? ConvertResult{{}, ParseError::unexpected_token}
-                                  : raw_number_as_int64({raw, length});
+            if (raw == nullptr)
+            {
+                return {{}, ParseError::unexpected_token};
+            }
+            auto converted = raw_number_as_int64({raw, length});
+            if (preserve_numbers &&
+                (converted.error == ParseError::invalid_number || converted.error == ParseError::integer_out_of_range))
+            {
+                return {Value{RawNumber{std::string{raw, length}}}, ParseError::none};
+            }
+            return converted;
         }
         case MEROVINGIAN_YYJSON_TYPE_NUMBER: {
             if (merovingian_yyjson_number_is_integer(value) != 0)
@@ -209,15 +219,17 @@ namespace
             {
                 Array* array;
                 std::size_t depth;
+                bool preserve_numbers;
                 ParseError error{ParseError::none};
             };
 
-            auto context = ArrayContext{&array, depth};
+            auto context = ArrayContext{&array, depth, preserve_numbers};
             auto const completed = merovingian_yyjson_array_foreach(
                 value,
                 [](MerovingianYyjsonValue* item, void* user_data) -> int {
                     auto& callback_context = *static_cast<ArrayContext*>(user_data);
-                    auto converted = convert_yyjson_value(item, callback_context.depth + 1U);
+                    auto converted =
+                        convert_yyjson_value(item, callback_context.depth + 1U, callback_context.preserve_numbers);
                     if (converted.error != ParseError::none)
                     {
                         callback_context.error = converted.error;
@@ -251,6 +263,7 @@ namespace
             {
                 Object* object;
                 std::size_t depth;
+                bool preserve_numbers;
                 // Tracks keys already inserted into *object so the duplicate
                 // check below is O(1) amortized per member instead of the
                 // previous O(n) std::ranges::any_of scan, which made the
@@ -265,7 +278,7 @@ namespace
                 ParseError error{ParseError::none};
             };
 
-            auto context = ObjectContext{&object, depth, {}};
+            auto context = ObjectContext{&object, depth, preserve_numbers, {}};
             auto const completed = merovingian_yyjson_object_foreach(
                 value,
                 [](char const* key_data, std::size_t key_length, MerovingianYyjsonValue* member_value,
@@ -283,7 +296,8 @@ namespace
                         return 0;
                     }
 
-                    auto converted = convert_yyjson_value(member_value, callback_context.depth + 1U);
+                    auto converted = convert_yyjson_value(member_value, callback_context.depth + 1U,
+                                                          callback_context.preserve_numbers);
                     if (converted.error != ParseError::none)
                     {
                         callback_context.error = converted.error;
@@ -405,39 +419,54 @@ auto utf8_is_valid(std::string_view value) noexcept -> bool
     return true;
 }
 
+namespace
+{
+
+    [[nodiscard]] auto parse_with_raw_numbers(std::string_view input, bool preserve_numbers) -> ParseResult
+    {
+        if (input_is_blank(input))
+        {
+            return {{}, ParseError::unexpected_end};
+        }
+
+        if (!utf8_is_valid(input))
+        {
+            return {{}, ParseError::invalid_string};
+        }
+
+        auto owned_input = std::string{input};
+        auto error = MEROVINGIAN_YYJSON_READ_SUCCESS;
+        auto* raw_document = merovingian_yyjson_read_raw_numbers(owned_input.data(), owned_input.size(), &error);
+        auto document = YyjsonDocument{raw_document};
+        if (document == nullptr)
+        {
+            return {{}, map_yyjson_error(error)};
+        }
+
+        // C5: reject trailing-garbage payloads. yyjson stops after one value by
+        // default when no flag is set, but it does not surface the bytes-read
+        // count as an error code; we have to compare document->dat_read against
+        // the input length ourselves. A successful read that did not consume
+        // every byte is treated as trailing_data, per canonical JSON.
+        if (merovingian_yyjson_doc_bytes_read(document.get()) != owned_input.size())
+        {
+            return {{}, ParseError::trailing_data};
+        }
+
+        auto converted = convert_yyjson_value(merovingian_yyjson_doc_root(document.get()), 0U, preserve_numbers);
+        return {std::move(converted.value), converted.error};
+    }
+
+} // namespace
+
 auto parse_lossless(std::string_view input) -> ParseResult
 {
-    if (input_is_blank(input))
-    {
-        return {{}, ParseError::unexpected_end};
-    }
+    return parse_with_raw_numbers(input, false);
+}
 
-    if (!utf8_is_valid(input))
-    {
-        return {{}, ParseError::invalid_string};
-    }
-
-    auto owned_input = std::string{input};
-    auto error = MEROVINGIAN_YYJSON_READ_SUCCESS;
-    auto* raw_document = merovingian_yyjson_read_raw_numbers(owned_input.data(), owned_input.size(), &error);
-    auto document = YyjsonDocument{raw_document};
-    if (document == nullptr)
-    {
-        return {{}, map_yyjson_error(error)};
-    }
-
-    // C5: reject trailing-garbage payloads. yyjson stops after one value by
-    // default when no flag is set, but it does not surface the bytes-read
-    // count as an error code; we have to compare document->dat_read against
-    // the input length ourselves. A successful read that did not consume
-    // every byte is treated as trailing_data, per canonical JSON.
-    if (merovingian_yyjson_doc_bytes_read(document.get()) != owned_input.size())
-    {
-        return {{}, ParseError::trailing_data};
-    }
-
-    auto converted = convert_yyjson_value(merovingian_yyjson_doc_root(document.get()), 0U);
-    return {std::move(converted.value), converted.error};
+auto parse_preserving_numbers(std::string_view input) -> ParseResult
+{
+    return parse_with_raw_numbers(input, true);
 }
 
 auto parse_json(std::string_view input) -> ParseResult

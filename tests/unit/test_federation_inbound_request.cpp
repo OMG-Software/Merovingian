@@ -5237,3 +5237,200 @@ SCENARIO("Room read statuses round-trip through their wire names", "[federation]
         }
     }
 }
+
+// rooms/v3.md, v4.md, v5.md: servers "MUST NOT strictly enforce" Canonical JSON for those versions, and the
+// appendix says they SHOULD handle such JSON where possible. Authentication is therefore not decided by one PDU's
+// number encoding, and a PDU this server cannot hash is that PDU's error, not the transaction's (ADR-0398).
+SCENARIO("A number Canonical JSON cannot represent costs one PDU, not the transaction",
+         "[federation][send-transaction][noncanonical-number]")
+{
+    auto const origin = std::string{"remote.example.org"};
+    auto const key_id = std::string{"ed25519:auto"};
+    auto const token = std::string{"number-token"};
+    // Redaction strips `content`, so `depth` is what makes two of these different events.
+    auto const bad_pdu = [&origin](std::string_view number, int depth = 1) {
+        return std::string{R"({"auth_events":[],"content":{"body":"x","n":)"} + std::string{number} + R"(},"depth":)" +
+               std::to_string(depth) +
+               R"(,"hashes":{"sha256":"x"},"origin_server_ts":1,)"
+               R"("prev_events":[],"room_id":"!room:example.org","sender":"@alice:)" +
+               origin + R"(","signatures":{},"type":"m.room.message"})";
+    };
+
+    GIVEN("a federation runtime that knows the peer and sinks accepted PDUs")
+    {
+        auto config = runtime_config();
+        config.max_transaction_bytes = 65536U;
+        auto runtime = merovingian::federation::make_federation_runtime_state(config);
+        merovingian::federation::upsert_remote(runtime, remote_for(origin, key_id, token));
+        auto sunk = std::make_shared<std::vector<std::string>>();
+        runtime.pdu_sink = [sunk](merovingian::federation::InboundPduEnvelope const& envelope)
+            -> merovingian::federation::PduIngestionResult {
+            sunk->push_back(envelope.event_id);
+            return {merovingian::federation::PduIngestionStatus::accepted, {}};
+        };
+        auto const good_pdu = signed_json_pdu(origin, key_id, token);
+
+        WHEN("a correctly signed transaction carries a float PDU, an out-of-range PDU and a valid PDU")
+        {
+            auto const request = signed_request(
+                origin, key_id, token,
+                transaction_body_pdus(origin, {bad_pdu("1.5", 1), bad_pdu("9007199254740993", 2), good_pdu}));
+            auto const response = merovingian::federation::handle_inbound_federation_request(runtime, request);
+
+            THEN("it is answered 200, with an error for each bad PDU, and the valid PDU is taken")
+            {
+                REQUIRE(response.status == 200U);
+                auto const parsed = merovingian::canonicaljson::parse_lossless(response.body);
+                REQUIRE(parsed.error == merovingian::canonicaljson::ParseError::none);
+                auto const* root = std::get_if<merovingian::canonicaljson::Object>(&parsed.value.storage());
+                REQUIRE(root != nullptr);
+                auto const pdus = std::ranges::find_if(*root, [](auto const& member) {
+                    return member.key == "pdus";
+                });
+                REQUIRE(pdus != root->end());
+                auto const* results = std::get_if<merovingian::canonicaljson::Object>(&pdus->value->storage());
+                REQUIRE(results != nullptr);
+                auto errors = std::size_t{0U};
+                for (auto const& result : *results)
+                {
+                    CHECK_FALSE(result.key.empty());
+                    auto const* entry = std::get_if<merovingian::canonicaljson::Object>(&result.value->storage());
+                    REQUIRE(entry != nullptr);
+                    errors += entry->empty() ? 0U : 1U;
+                }
+                REQUIRE(errors == 2U);
+                REQUIRE(sunk->size() == 1U);
+            }
+        }
+
+        WHEN("a transaction carries the same refused PDU twice")
+        {
+            auto const request =
+                signed_request(origin, key_id, token, transaction_body_pdus(origin, {bad_pdu("1.5"), bad_pdu("1.5")}));
+            auto const response = merovingian::federation::handle_inbound_federation_request(runtime, request);
+
+            THEN("the answer still names it, once, in a well-formed body")
+            {
+                REQUIRE(response.status == 200U);
+                auto const parsed = merovingian::canonicaljson::parse_lossless(response.body);
+                REQUIRE(parsed.error == merovingian::canonicaljson::ParseError::none);
+                REQUIRE(response.body.find(R"("error")") != std::string::npos);
+                REQUIRE(response.body.find(R"("error")") == response.body.rfind(R"("error")"));
+            }
+        }
+
+        WHEN("the same transaction's signature is forged")
+        {
+            auto request =
+                signed_request(origin, key_id, "another-key", transaction_body_pdus(origin, {bad_pdu("1.5")}));
+            auto const response = merovingian::federation::handle_inbound_federation_request(runtime, request);
+
+            THEN("it is refused, and tolerating the number has not weakened authentication")
+            {
+                REQUIRE(response.status == 403U);
+                REQUIRE(sunk->empty());
+            }
+        }
+    }
+
+    GIVEN("a peer whose address has a bad-signature budget of one")
+    {
+        auto config = runtime_config();
+        config.bad_signature_per_ip_rate = {1U, 60U};
+        auto runtime = merovingian::federation::make_federation_runtime_state(config);
+        merovingian::federation::upsert_remote(runtime, remote_for(origin, key_id, token));
+
+        WHEN("it repeatedly sends a body that is not JSON, so no signed payload can be built")
+        {
+            auto request = signed_request(origin, key_id, token, transaction_body_pdus(origin, {}));
+            request.body = "{not json";
+            request.remote_addr = "203.0.113.7";
+            auto const first = merovingian::federation::handle_inbound_federation_request(runtime, request);
+            auto const second = merovingian::federation::handle_inbound_federation_request(runtime, request);
+            auto const third = merovingian::federation::handle_inbound_federation_request(runtime, request);
+
+            THEN("each is refused as a bad body and the signature budget is not charged")
+            {
+                REQUIRE(first.status == 400U);
+                REQUIRE(second.status == 400U);
+                REQUIRE(third.status == 400U);
+            }
+        }
+
+        WHEN("it repeatedly sends a valid body with a forged signature")
+        {
+            auto request = signed_request(origin, key_id, "another-key", transaction_body_pdus(origin, {}));
+            request.remote_addr = "203.0.113.7";
+            auto const first = merovingian::federation::handle_inbound_federation_request(runtime, request);
+            auto const second = merovingian::federation::handle_inbound_federation_request(runtime, request);
+
+            THEN("the first is a bad signature and the budget then refuses the second")
+            {
+                REQUIRE(first.status == 403U);
+                REQUIRE(second.status == 429U);
+            }
+        }
+    }
+}
+
+// rooms/v3.md: "the `event_id` field is no longer included", and the signature covers a top-level event_id.
+// One signed event has one ID: a peer cannot mint another by adding the field to a genuine event (ADR-0397).
+SCENARIO("A relayed PDU with an added event_id is refused and creates no new event",
+         "[federation][send-transaction][event-id]")
+{
+    auto const origin = std::string{"relay.example.org"};
+    auto const sender_server = std::string{"author.example.org"};
+    auto const key_id = std::string{"ed25519:auto"};
+
+    GIVEN("a runtime holding the keys of a relay and of the server that wrote a genuine event")
+    {
+        auto config = runtime_config();
+        config.max_transaction_bytes = 65536U;
+        auto runtime = merovingian::federation::make_federation_runtime_state(config);
+        merovingian::federation::upsert_remote(runtime, remote_for(origin, key_id, "relay-token"));
+        runtime.remote_key_resolver = [&sender_server, &key_id](std::string_view server_name, std::string_view)
+            -> std::optional<merovingian::federation::FederationRemoteRuntime> {
+            if (server_name != sender_server)
+            {
+                return std::nullopt;
+            }
+            return remote_for(sender_server, key_id, "author-token");
+        };
+        auto sunk = std::make_shared<std::vector<std::string>>();
+        runtime.pdu_sink = [sunk](merovingian::federation::InboundPduEnvelope const& envelope)
+            -> merovingian::federation::PduIngestionResult {
+            sunk->push_back(envelope.event_id);
+            return {merovingian::federation::PduIngestionStatus::accepted, {}};
+        };
+
+        auto genuine = signed_json_pdu(sender_server, key_id, "author-token");
+        auto const opening = genuine.find("\"auth_events\"");
+        REQUIRE(opening != std::string::npos);
+        auto with_added_id = genuine;
+        with_added_id.insert(opening + std::string_view{"\"auth_events\":[],"}.size(), R"("event_id":"$minted",)");
+
+        WHEN("the relay sends the event with an added event_id")
+        {
+            auto const request = signed_request(origin, key_id, "relay-token", transaction_body(origin, with_added_id));
+            auto const response = merovingian::federation::handle_inbound_federation_request(runtime, request);
+
+            THEN("the transaction succeeds and the event is not taken in")
+            {
+                REQUIRE(response.status == 200U);
+                REQUIRE(sunk->empty());
+            }
+        }
+
+        WHEN("the relay sends the event as it was written")
+        {
+            auto const request = signed_request(origin, key_id, "relay-token", transaction_body(origin, genuine));
+            auto const response = merovingian::federation::handle_inbound_federation_request(runtime, request);
+
+            THEN("it is taken in, so the refusal above is the added field's")
+            {
+                REQUIRE(response.status == 200U);
+                REQUIRE(sunk->size() == 1U);
+            }
+        }
+    }
+}

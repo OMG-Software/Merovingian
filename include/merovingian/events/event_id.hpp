@@ -51,6 +51,11 @@ struct EventHashResult final
 //
 // Returns true when the event's hashes.sha256 field matches the computed
 // SHA-256 content hash. Returns false when the field is absent or incorrect.
+// The event ID a sender would have computed for an event holding RawNumbers, hashed over those bytes. It labels a
+// per-PDU error for the sender and nothing else: such an event is not stored or verified here (ADR-0398).
+[[nodiscard]] auto make_noncanonical_event_id_label(canonicaljson::Value const& event,
+                                                    rooms::RoomVersionPolicy const& policy) -> EventIdResult;
+
 [[nodiscard]] auto verify_pdu_content_hash(canonicaljson::Value const& event) -> bool;
 
 } // namespace merovingian::events

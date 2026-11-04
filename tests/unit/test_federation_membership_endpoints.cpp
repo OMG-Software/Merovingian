@@ -559,7 +559,7 @@ SCENARIO("Send_join auth_chain must not include message events", "[federation][m
         // back are not independently re-verified as PDUs, so they stay as
         // plain literals.
         auto const member_event_unsigned_json = std::string{
-            R"({"type":"m.room.member","state_key":"@alice:remote.example.org","content":{"membership":"join"},"event_id":"$member:local.example.org","room_id":"!room:local.example.org","sender":"@alice:remote.example.org","origin_server_ts":1000001,"depth":2,"prev_events":["$create:local.example.org"],"auth_events":["$create:local.example.org"]})"};
+            R"({"type":"m.room.member","state_key":"@alice:remote.example.org","content":{"membership":"join"},"room_id":"!room:local.example.org","sender":"@alice:remote.example.org","origin_server_ts":1000001,"depth":2,"prev_events":["$create:local.example.org"],"auth_events":["$create:local.example.org"]})"};
         auto const member_event_json = merovingian::federation::test::make_signed_event_json(
             member_event_unsigned_json, origin, key_id, token, "12");
         REQUIRE_FALSE(member_event_json.empty());
@@ -648,7 +648,7 @@ SCENARIO("Send_join auth_chain contains only state events", "[federation][member
         // back by the acceptor test double and are not independently
         // re-verified as PDUs, so they stay as plain literals.
         auto const member_event_unsigned_json = std::string{
-            R"({"type":"m.room.member","state_key":"@alice:remote.example.org","content":{"membership":"join"},"event_id":"$member:local.example.org","room_id":"!room:local.example.org","sender":"@alice:remote.example.org","origin_server_ts":1000001,"depth":2,"prev_events":["$create:local.example.org"],"auth_events":["$create:local.example.org"]})"};
+            R"({"type":"m.room.member","state_key":"@alice:remote.example.org","content":{"membership":"join"},"room_id":"!room:local.example.org","sender":"@alice:remote.example.org","origin_server_ts":1000001,"depth":2,"prev_events":["$create:local.example.org"],"auth_events":["$create:local.example.org"]})"};
         auto const member_event_json = merovingian::federation::test::make_signed_event_json(
             member_event_unsigned_json, origin, key_id, token, "12");
         REQUIRE_FALSE(member_event_json.empty());
