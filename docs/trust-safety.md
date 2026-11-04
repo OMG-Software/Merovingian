@@ -38,7 +38,15 @@ This capability note describes runtime-wired trust-and-safety behavior.
 - Admin report listing through
   `GET /_matrix/client/v3/admin/safety/reports`.
 - Admin review actions through
-  `POST /_matrix/client/v3/admin/safety/review/{targetType}/{targetId}`.
+  `POST /_matrix/client/v3/admin/safety/review/{targetType}/{targetId}` and, for an operator,
+  `POST /_merovingian/admin/review/{targetType}/{targetId}`. Both call `apply_admin_review`
+  (`homeserver/operator_admin.cpp`), so the stored policy rule, the audit row and the admin action row are the same;
+  only the rendering of a refusal differs (a Matrix error object on the client route, a plain-text line on the
+  operator route, ADR-0504). Target types are `media`, `room`, `federation` and `federation_server`; the identifier is
+  percent-decoded once (#454).
+- Operator account actions through `POST /_merovingian/admin/accounts/{userId}` (`lock`, `unlock`, `suspend`,
+  `unsuspend`, and `deactivate` with `"confirm": true`, ADR-0506), with the summary at `GET` on the same path. Lock and
+  suspend use `set_local_user_moderation`, the write the spec's `/admin/lock` and `/admin/suspend` endpoints use.
 - Admin policy-rule management through
   `GET /_matrix/client/v3/admin/safety/policy_rules`,
   `PUT /_matrix/client/v3/admin/safety/policy_rules/{scope}/{entity}`, and
