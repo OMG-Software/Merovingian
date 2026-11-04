@@ -1121,6 +1121,12 @@ request for an unencrypted room. No such entry means the request is
 unspecified. An entry under a non-empty `state_key` does not count. A refused
 request is answered `400 M_INVALID_ROOM_STATE` and nothing is stored.
 
+Setting `m.room.encryption` later with `PUT /rooms/{roomId}/state/m.room.encryption`
+is refused with `400 M_BAD_JSON` unless `content.algorithm` is exactly
+`m.megolm.v1.aes-sha2`, so an empty body cannot switch encryption off. This
+applies to clients and appservices on this server only; events from other
+servers are not checked.
+
 A room is encrypted when the request asks for it, or when the request is
 unspecified and encryption is required or on by default. Encryption is required
 for a direct room (`is_direct`) with `require_for_direct_messages`, for a
