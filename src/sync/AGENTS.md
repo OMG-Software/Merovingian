@@ -319,7 +319,12 @@ themselves (spec: a server may add a user to `changed` when they share a new roo
 those users' waiters, a publish with no scope wakes everyone. Scope a publish only when the affected set is certain
 (`sync_audience_of_room`: the room's joined and invited members, the sender, the user a membership event is about);
 receipts, typing, presence, device lists, account data, to-device, joins, leaves and the rest stay broadcasts. Never
-read membership after publishing to decide whom to wake. A long-poll for a user takes a cursor (`observe`) and waits on
+read membership after publishing to decide whom to wake. Every publish moves generations even when the positions
+did not advance (callers publish the visible position read at publish time, which can equal an earlier publish's); a scope
+that is present and empty moves positions only. `PublishedStreamOrdering` (the reservation an inbound PDU holds while it
+commits) ends with a broadcast when the visible position then passes its ordering (events were held behind it) and with an
+empty scope otherwise; the PDU's own scoped publish does the waking, so a new path that stores an event under one publishes
+its own scoped wake after the event is applied. A long-poll for a user takes a cursor (`observe`) and waits on
 it; it is rerun only when its user's generation or the broadcast generation moved, never for the positions moving. All
 three transports run `long_poll_wait`: cursor, then the positions check, then the rerun, and after a wake the NEW cursor
 before the rerun, so a publish between the two costs one extra rerun, never a lost one. Do not erase a user's entry when

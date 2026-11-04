@@ -45,42 +45,42 @@ auto SyncNotifier::publish(std::uint64_t new_stream_ordering, std::uint64_t new_
             sync_stream_id_ = new_sync_stream_id;
             changed = true;
         }
-        if (changed)
+        // The generations move and the waiters are signalled in the hold that moved the counters, so a waiter
+        // either saw them at entry or is signalled here (ADR-0437). They move whether or not the positions
+        // advanced: a caller publishes the visible position read at publish time, which can equal the position
+        // an earlier publish carried for another writer's event.
+        if (changed && waiting_anyone_ > 0U)
         {
-            // The generations move and the waiters are signalled in the hold that moved the counters, so
-            // a waiter either saw them at entry or is signalled here (ADR-0437).
-            if (waiting_anyone_ > 0U)
+            ++signals_sent_;
+            anyone_.notify_all();
+        }
+        if (!scope.has_value())
+        {
+            ++broadcast_generation_;
+            for (auto& entry : by_user_)
             {
-                ++signals_sent_;
-                anyone_.notify_all();
-            }
-            if (!scope.has_value())
-            {
-                ++broadcast_generation_;
-                for (auto& entry : by_user_)
+                if (entry.second.waiters > 0U)
                 {
-                    if (entry.second.waiters > 0U)
-                    {
-                        ++signals_sent_;
-                        entry.second.wake.notify_all();
-                    }
+                    ++signals_sent_;
+                    entry.second.wake.notify_all();
                 }
             }
-            else
+        }
+        else
+        {
+            for (auto const& user : *scope)
             {
-                for (auto const& user : *scope)
+                // A user with no entry has never observed: there is no cursor to miss this publish.
+                auto const waiters = by_user_.find(user);
+                if (waiters == by_user_.end())
                 {
-                    auto const waiters = by_user_.find(user);
-                    if (waiters == by_user_.end())
-                    {
-                        continue;
-                    }
-                    ++waiters->second.generation;
-                    if (waiters->second.waiters > 0U)
-                    {
-                        ++signals_sent_;
-                        waiters->second.wake.notify_all();
-                    }
+                    continue;
+                }
+                ++waiters->second.generation;
+                if (waiters->second.waiters > 0U)
+                {
+                    ++signals_sent_;
+                    waiters->second.wake.notify_all();
                 }
             }
         }

@@ -26,7 +26,12 @@ one room woke every parked `/sync`, each of which then rebuilt its response unde
 
 Chosen option 2. `publish(stream_ordering, sync_stream_id, scope)`: with no scope it is a broadcast (the broadcast
 generation moves and every waiter wakes); with a scope, the generation of each named user moves and only that user's
-waiters (and any waiter that named no user) wake. The notifier never reads room membership: the scope is passed in as
+waiters (and any waiter that named no user) wake; a scope that is present and empty moves the positions only and wakes no
+user. Every publish moves generations, whether or not the positions advanced: every caller publishes the visible position
+read at publish time, so one writer's publish can carry the position of another writer's event, and a publish that did not
+look like an advance would otherwise lose its wake-up. Equal or lower positions are still ignored for the counters (the
+position-overload waiters wake only on an advance). A user with no entry has never observed, so there is no cursor to miss
+the publish. The notifier never reads room membership: the scope is passed in as
 data, taken by the caller under `runtime.mutex` at the publish site.
 
 A long-poll for a user holds a cursor (`observe(user)`: the user's generation and the broadcast generation, taken under
@@ -40,10 +45,28 @@ between the two causes at most one harmless extra rerun, never a lost one; on a 
 (the peer peek) runs. Shutdown (`running`) and the 1 s slice are the transport's. A waiter that names no user keeps the
 position behaviour and wakes on every publish.
 
+### Ending a stream-ordering reservation (`PublishedStreamOrdering`)
+
+An inbound PDU reserves its stream ordering, commits with `runtime.mutex` released and applies. Ending the reservation moves
+the visible position past events that were applied behind it. Its destructor therefore reads `visible` after releasing: if
+`visible` is above the released ordering it publishes with no scope (a broadcast); otherwise it publishes an empty scope
+(positions only). The PDU's own scoped publish (`pdu_sink`) wakes its room's audience. Why no wake-up is lost: an event not
+visible at its own scoped publish has an ordering above some pending ordering; when the last such pending ordering ends,
+`visible` reaches at least that event's ordering, which is above the ordering just released, so that release broadcasts. An
+event that is visible at its own scoped publish wakes its audience there, because every publish moves generations. An early
+wake finds nothing and sleeps again. With 5, 6 and 7 pending and released 7, 6, 5, the first two release nothing (the oldest
+is still pending, `visible` stays 4) and the third broadcasts (`visible` is 7, above 5). A reservation whose commit failed
+holds nothing behind it and wakes no user. A path that relied on the destructor to wake anyone needs its own publish after
+its event is applied.
+
 Only a publish whose affected set is certain is scoped (`sync_audience_of_room`: the room's joined and invited members, the
 sender, and the user whose membership the event changes, including one it removes): `send_event_as_user`,
 `store_composed_membership` and the federation PDU sink. Receipts, typing, presence, device lists, account data, to-device,
-joins, leaves, forgets, knocks, room creation and profile changes stay broadcasts. A new publish site stays a broadcast until
+joins, leaves, forgets, knocks, room creation and profile changes stay broadcasts: their affected sets are not computed at
+the publish site today (a receipt or typing change concerns the room's members across servers, a to-device message one
+device, account data one user, and each is published from code that has no audience helper), so a broadcast is the safe
+answer. Federation PDUs are scoped by the `pdu_sink`; events held behind an older pending ordering are announced by a
+broadcast when that ordering ends. A new publish site stays a broadcast until
 someone can show the set exactly. The audience reads the room's membership rows through a per-room index of
 `PersistentStore::memberships` (`for_each_room_membership_row`), so an event send does not scan every room's memberships.
 

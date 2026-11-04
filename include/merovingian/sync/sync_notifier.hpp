@@ -72,11 +72,12 @@ public:
     auto operator=(SyncNotifier&&) -> SyncNotifier& = delete;
     ~SyncNotifier() = default;
 
-    // Record that one or both stream counters have advanced. Values
-    // equal to or less than the current counter are ignored for that
-    // counter. When either advanced: with no `scope` every parked waiter
-    // is woken; with a `scope` the waiters of the named users, and any
-    // waiter that named no user, are.
+    // Record a change. Values equal to or less than the current counter are ignored for that counter, and the waiters
+    // that named no user wake only when a counter advanced. Every publish moves generations whether or not a counter
+    // advanced, because a caller publishes the visible position read at publish time, which can equal the position
+    // another writer's publish carried: with no `scope` the broadcast generation moves and every user's waiters wake;
+    // with a `scope` each named user's generation moves and their waiters wake; a scope that is present and empty
+    // wakes no user.
     auto publish(std::uint64_t new_stream_ordering, std::uint64_t new_sync_stream_id,
                  std::optional<AffectedUsers> scope = std::nullopt) -> void;
 

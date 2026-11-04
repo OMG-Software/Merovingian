@@ -813,3 +813,110 @@ SCENARIO("A room event's sync audience is its joined and invited members, its se
         }
     }
 }
+
+// ADR-0437: a publish moves generations whether or not the positions advanced. Every caller publishes the visible
+// position read at publish time, so one writer's publish can carry the position of another writer's event.
+SCENARIO("A publish that does not advance the positions still wakes the users it names",
+         "[scoped-federation][notifier][scoped]")
+{
+    GIVEN("the positions raised to 5 by a publish scoped to bob")
+    {
+        auto notifier = SyncNotifier{};
+        auto const bobs = users({bob});
+        notifier.publish(5U, 5U, bobs);
+        auto const cursor = notifier.observe(alice);
+        auto const bobs_cursor = notifier.observe(bob);
+
+        WHEN("a publish at the same positions is scoped to alice")
+        {
+            auto const alices = users({alice});
+            notifier.publish(5U, 5U, alices);
+
+            THEN("alice's cursor moved, and bob's did not")
+            {
+                REQUIRE(notifier.wait_for_change(cursor, std::chrono::milliseconds{0}));
+                REQUIRE_FALSE(notifier.wait_for_change(bobs_cursor, std::chrono::milliseconds{0}));
+            }
+        }
+        WHEN("a publish at the same positions names no scope")
+        {
+            notifier.publish(5U, 5U);
+
+            THEN("every cursor moved")
+            {
+                REQUIRE(notifier.wait_for_change(cursor, std::chrono::milliseconds{0}));
+                REQUIRE(notifier.wait_for_change(bobs_cursor, std::chrono::milliseconds{0}));
+            }
+        }
+        WHEN("a publish at lower positions is scoped to alice")
+        {
+            auto const alices = users({alice});
+            notifier.publish(2U, 2U, alices);
+
+            THEN("alice's cursor moved, though the positions stayed")
+            {
+                REQUIRE(notifier.wait_for_change(cursor, std::chrono::milliseconds{0}));
+                REQUIRE_FALSE(notifier.wait_for_change(5U, 5U, std::chrono::milliseconds{0}));
+            }
+        }
+    }
+
+    GIVEN("a waiter for alice parked, repeated to catch a race")
+    {
+        WHEN("a no-advance publish scoped to alice is made")
+        {
+            THEN("she wakes")
+            {
+                for (auto round = 0; round < 200; ++round)
+                {
+                    auto notifier = SyncNotifier{};
+                    auto const bobs = users({bob});
+                    notifier.publish(5U, 5U, bobs);
+                    auto waiter = ParkedWaiter{notifier, alice, 1U};
+
+                    auto const alices = users({alice});
+                    notifier.publish(5U, 5U, alices);
+                    REQUIRE(waiter.join());
+                }
+            }
+        }
+    }
+}
+
+// ADR-0437: a scope that is present and empty moves the positions and wakes no user.
+SCENARIO("A publish with an empty scope moves the positions and wakes no user", "[scoped-federation][notifier][scoped]")
+{
+    GIVEN("a waiter for alice parked and a waiter that named no user")
+    {
+        auto notifier = SyncNotifier{};
+        auto anyone = std::atomic<bool>{false};
+        auto anyone_thread = std::thread{[&] {
+            anyone.store(notifier.wait_for_change(0U, 0U, std::chrono::seconds{60}));
+        }};
+        while (notifier.waiting() < 1U)
+        {
+            std::this_thread::yield();
+        }
+        auto waiter = ParkedWaiter{notifier, alice, 2U};
+        auto const cursor = notifier.observe(alice);
+
+        WHEN("a publish names an empty scope")
+        {
+            auto const nobody = std::vector<std::string>{};
+            notifier.publish(1U, 0U, nobody);
+            anyone_thread.join();
+
+            THEN("the position waiter wakes, alice's cursor does not move and she is not signalled")
+            {
+                REQUIRE(anyone.load());
+                REQUIRE_FALSE(notifier.wait_for_change(cursor, std::chrono::milliseconds{0}));
+                REQUIRE(notifier.signals_sent() == 1U);
+                REQUIRE(notifier.waiting() == 1U);
+                // Alice still wakes for a publish that concerns her.
+                auto const alices = users({alice});
+                notifier.publish(2U, 0U, alices);
+                REQUIRE(waiter.join());
+            }
+        }
+    }
+}
