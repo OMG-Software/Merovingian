@@ -7595,7 +7595,8 @@ namespace
 [[nodiscard]] auto invite_user_by_threepid(HomeserverRuntime& runtime, std::string_view access_token,
                                            std::string_view room_id, std::string_view id_server,
                                            std::string_view medium, std::string_view address,
-                                           std::string_view id_access_token) -> OperationResult
+                                           std::string_view id_access_token, std::uint32_t max_total_seconds)
+    -> OperationResult
 {
     // The identity server — not the homeserver — generates the invite token and
     // the ephemeral key that signs the join-side `signed` blob. A local-only
@@ -7665,9 +7666,18 @@ namespace
         {
             return third_party_invite_failure("identity server is not reachable", 502U);
         }
-        auto id_client = merovingian::identity::IdentityServerClient{
-            *runtime.outbound_client, *runtime.cached_discovery, runtime.config.server().identity_server,
-            &runtime.test_forced_identity_resolution};
+        // A caller that shares one deadline among several calls (createRoom's invite_3pid, ADR-0474) passes
+        // what is left of it; the configured timeouts then never exceed that.
+        auto bounded_config = runtime.config.server().identity_server;
+        if (max_total_seconds != 0U)
+        {
+            bounded_config.total_timeout_seconds = std::min(bounded_config.total_timeout_seconds, max_total_seconds);
+            bounded_config.connect_timeout_seconds =
+                std::min(bounded_config.connect_timeout_seconds, bounded_config.total_timeout_seconds);
+        }
+        auto id_client =
+            merovingian::identity::IdentityServerClient{*runtime.outbound_client, *runtime.cached_discovery,
+                                                        bounded_config, &runtime.test_forced_identity_resolution};
         auto const invite = id_client.store_invite(base_url, id_access_token, medium, address, room_id, *user_id);
         if (!invite.ok)
         {
@@ -9556,6 +9566,33 @@ auto deliver_federation_push_notifications(HomeserverRuntime& runtime, federatio
 
 namespace
 {
+    // May this user read events of this room at all? Spec (Room History Visibility): "In all cases except
+    // `world_readable`, a user needs to join a room to view events in that room"; a user who was joined keeps
+    // the events they were allowed to see. Which events they then see is decided per event by
+    // sync::HistoryVisibility (src/homeserver/AGENTS.md, "Read paths that return room events or state").
+    [[nodiscard]] auto may_read_room_events(database::PersistentStore const& store, std::string_view room_id,
+                                            std::string_view user_id) -> bool
+    {
+        return sync::room_read_access_for(store, room_id, user_id).kind != sync::RoomReadKind::none ||
+               sync::room_is_world_readable(store, room_id);
+    }
+
+    // GET /relations?recurse=true (ADR-0475): the most levels of relationships walked, direct ones being the
+    // first. The spec asks for at least 3 and sets no maximum.
+    constexpr auto relations_max_depth = std::int64_t{3};
+    // The most relation-bearing events offered to the walk beyond the first level, however the graph is
+    // shaped, so a client that builds a wide tree cannot make one request do unbounded work under the lock.
+    constexpr auto relations_max_indirect_examined = std::size_t{2048U};
+
+    // An event whose content carries an `m.relates_to` naming an event.
+    struct RelationEdge final
+    {
+        database::PersistentEvent const* event{nullptr};
+        std::string target{};
+        std::optional<std::string> rel_type{};
+        std::optional<std::string> event_type{};
+    };
+
     [[nodiscard]] auto parse_stream_ordering_token(std::optional<std::string> const& token)
         -> std::optional<std::uint64_t>
     {
@@ -9585,8 +9622,11 @@ namespace
         return make_operation_result(false, {}, "unauthenticated", 401U);
     }
 
+    // Spec: "404 The parent event was not found or the user does not have permission to read this event
+    // (it might be contained in history that is not accessible to the user)". A user who left, or a peek of a
+    // world_readable room, is not refused here: the per-event HistoryVisibility below decides.
     auto const* room = find_room(runtime.database, request.room_id);
-    if (room == nullptr || !room_has_member(*room, *user_id))
+    if (room == nullptr || !may_read_room_events(runtime.database.persistent_store, request.room_id, *user_id))
     {
         return make_operation_result(false, {}, "not joined or unknown room", 404U);
     }
@@ -9605,74 +9645,117 @@ namespace
         return make_operation_result(false, {}, "parent event not found", 404U);
     }
 
-    auto matches = std::vector<database::PersistentEvent const*>{};
+    // One pass over the room's events collects those that relate to an event; an event with no
+    // `m.relates_to` costs a substring search, not a parse. The edges are then grouped by target.
+    auto edges = std::vector<RelationEdge>{};
     for (auto const& event : store.events.room_in_stream_order(request.room_id))
     {
-        if (request.event_type.has_value())
+        if (event.json.find("\"m.relates_to\"") == std::string::npos)
         {
-            auto const parsed_type = canonicaljson::parse_lossless(event.json);
-            if (parsed_type.error != canonicaljson::ParseError::none)
-            {
-                continue;
-            }
-            auto const* event_obj = std::get_if<canonicaljson::Object>(&parsed_type.value.storage());
-            if (event_obj == nullptr)
-            {
-                continue;
-            }
-            auto const* type = string_member(*event_obj, "type");
-            if (type == nullptr || *type != *request.event_type)
-            {
-                continue;
-            }
+            continue;
         }
-
         auto const parsed = canonicaljson::parse_lossless(event.json);
         if (parsed.error != canonicaljson::ParseError::none)
         {
             continue;
         }
         auto const* event_obj = std::get_if<canonicaljson::Object>(&parsed.value.storage());
-        if (event_obj == nullptr)
+        auto const* content_value = event_obj == nullptr ? nullptr : object_member(*event_obj, "content");
+        auto const* content_obj =
+            content_value == nullptr ? nullptr : std::get_if<canonicaljson::Object>(&content_value->storage());
+        auto const* relates_value = content_obj == nullptr ? nullptr : object_member(*content_obj, "m.relates_to");
+        auto const* relates_obj =
+            relates_value == nullptr ? nullptr : std::get_if<canonicaljson::Object>(&relates_value->storage());
+        auto const* related_event_id = relates_obj == nullptr ? nullptr : string_member(*relates_obj, "event_id");
+        if (related_event_id == nullptr)
         {
             continue;
         }
-        auto const* content_value = object_member(*event_obj, "content");
-        if (content_value == nullptr)
+        auto edge = RelationEdge{&event, *related_event_id, std::nullopt, std::nullopt};
+        if (auto const* rel_type = string_member(*relates_obj, "rel_type"); rel_type != nullptr)
         {
-            continue;
+            edge.rel_type = *rel_type;
         }
-        auto const* content_obj = std::get_if<canonicaljson::Object>(&content_value->storage());
-        if (content_obj == nullptr)
+        if (auto const* type = string_member(*event_obj, "type"); type != nullptr)
         {
-            continue;
+            edge.event_type = *type;
         }
-        auto const* relates_value = object_member(*content_obj, "m.relates_to");
-        if (relates_value == nullptr)
-        {
-            continue;
-        }
-        auto const* relates_obj = std::get_if<canonicaljson::Object>(&relates_value->storage());
-        if (relates_obj == nullptr)
-        {
-            continue;
-        }
-        auto const* related_event_id = string_member(*relates_obj, "event_id");
-        if (related_event_id == nullptr || *related_event_id != request.event_id)
-        {
-            continue;
-        }
-        auto const* rel_type = string_member(*relates_obj, "rel_type");
-        if (request.rel_type.has_value() && (rel_type == nullptr || *rel_type != *request.rel_type))
-        {
-            continue;
-        }
-        if (!visibility.can_see(event))
-        {
-            continue;
-        }
+        edges.push_back(std::move(edge));
+    }
+    auto edges_by_target = std::unordered_map<std::string_view, std::vector<std::size_t>>{};
+    for (auto index = std::size_t{0U}; index < edges.size(); ++index)
+    {
+        edges_by_target[edges[index].target].push_back(index);
+    }
 
-        matches.push_back(&event);
+    // Level 1 is the direct relations of the parent. With `recurse=true` each level after it is the
+    // relations of the events the level before returned (never of an event the filters or the viewer's
+    // history visibility left out: "Events ... whose only relation to the original given event is through a
+    // non-matching intermediate event, will not be included"). The walk stops after relations_max_depth
+    // levels or when it has offered relations_max_indirect_examined events beyond the first level; the
+    // response reports the levels it completed.
+    auto const recurse = request.recurse.value_or(false);
+    auto matches = std::vector<database::PersistentEvent const*>{};
+    auto seen = std::unordered_set<std::string>{request.event_id};
+    auto frontier = std::vector<std::string_view>{request.event_id};
+    auto indirect_examined = std::size_t{0U};
+    auto levels_completed = std::int64_t{0};
+    auto const levels_wanted = recurse ? relations_max_depth : std::int64_t{1};
+    for (auto level = std::int64_t{1}; level <= levels_wanted; ++level)
+    {
+        auto next_frontier = std::vector<std::string_view>{};
+        auto stopped = false;
+        for (auto const target : frontier)
+        {
+            auto const children = edges_by_target.find(target);
+            if (children == edges_by_target.end())
+            {
+                continue;
+            }
+            for (auto const index : children->second)
+            {
+                if (level > 1)
+                {
+                    if (indirect_examined == relations_max_indirect_examined)
+                    {
+                        stopped = true;
+                        break;
+                    }
+                    ++indirect_examined;
+                }
+                auto const& edge = edges[index];
+                if (request.event_type.has_value() &&
+                    (!edge.event_type.has_value() || *edge.event_type != *request.event_type))
+                {
+                    continue;
+                }
+                if (request.rel_type.has_value() && (!edge.rel_type.has_value() || *edge.rel_type != *request.rel_type))
+                {
+                    continue;
+                }
+                if (!visibility.can_see(*edge.event) || !seen.insert(edge.event->event_id).second)
+                {
+                    continue;
+                }
+                matches.push_back(edge.event);
+                next_frontier.push_back(edge.event->event_id);
+            }
+            if (stopped)
+            {
+                break;
+            }
+        }
+        if (stopped)
+        {
+            break;
+        }
+        // A level with nothing to walk from completes every level after it as well.
+        levels_completed = next_frontier.empty() ? levels_wanted : level;
+        if (next_frontier.empty())
+        {
+            break;
+        }
+        frontier = std::move(next_frontier);
     }
 
     auto const forward = request.dir.has_value() && *request.dir == "f";
@@ -9781,9 +9864,8 @@ namespace
     }
     if (request.recurse.has_value())
     {
-        // Direct relations only for now; still report the depth the client asked for.
-        response.push_back(
-            canonicaljson::make_member("recursion_depth", canonicaljson::Value{static_cast<std::int64_t>(0)}));
+        // Spec: mandatory when `recurse` was supplied: "the actual depth to which the server recursed".
+        response.push_back(canonicaljson::make_member("recursion_depth", canonicaljson::Value{levels_completed}));
     }
 
     auto serialized = canonicaljson::serialize_canonical(canonicaljson::Value{std::move(response)});
@@ -9823,7 +9905,7 @@ namespace
     // Spec 403: "The user cannot view or peek on the room ... The room does not
     // exist."
     auto const* room = find_room(runtime.database, request.room_id);
-    if (room == nullptr || !room_has_member(*room, *user_id))
+    if (room == nullptr || !may_read_room_events(runtime.database.persistent_store, request.room_id, *user_id))
     {
         return make_operation_result(false, {}, "cannot view threads in this room", 403U);
     }

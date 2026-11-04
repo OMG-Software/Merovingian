@@ -5459,6 +5459,26 @@ namespace
     return true;
 }
 
+[[nodiscard]] auto reassign_room_alias(PersistentStore& store, std::string_view room_alias,
+                                       std::string_view new_room_id) -> bool
+{
+    auto const it = std::ranges::find_if(store.room_aliases, [room_alias](PersistentRoomAlias const& alias) {
+        return alias.room_alias == room_alias;
+    });
+    if (it == store.room_aliases.end() || !room_exists(store, std::string{new_room_id}))
+    {
+        return false;
+    }
+    if (!record_and_persist(
+            store, record_statement("reassign_room_alias", "UPDATE room_aliases SET room_id = $2 WHERE room_alias = $1",
+                                    {public_value(std::string{room_alias}), public_value(std::string{new_room_id})})))
+    {
+        return false;
+    }
+    it->room_id = std::string{new_room_id};
+    return true;
+}
+
 [[nodiscard]] auto persist_sync_stream_watermark(PersistentStore& store, std::uint64_t watermark) -> bool
 {
     return record_and_persist(

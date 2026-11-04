@@ -10103,6 +10103,45 @@ namespace
         return options;
     }
 
+    // The old room's power levels after an upgrade (spec, "Room Upgrades", "Server behaviour"): "the power levels
+    // in the old room should also be modified to prevent sending of events and inviting new users. For example,
+    // setting `events_default` and `invite` to the greater of `50` and `users_default + 1`." Both are only ever
+    // raised: a room that already asks for more keeps it. Nullopt when the room has no power levels event or
+    // holds a value this cannot compute with (a pre-version-10 string level), so nothing is sent (ADR-0476).
+    [[nodiscard]] auto closed_power_levels_content(database::PersistentStore const& store, std::string_view room_id)
+        -> std::optional<std::string>
+    {
+        auto const index = build_state_index(store);
+        auto content = current_state_content(store, index, room_id, "m.room.power_levels");
+        if (!content.has_value())
+        {
+            return std::nullopt;
+        }
+        auto const level_of = [&content](std::string_view key, std::int64_t fallback) -> std::optional<std::int64_t> {
+            if (object_member(*content, key) == nullptr)
+            {
+                return fallback;
+            }
+            auto const* value = integer_member(*content, key);
+            return value == nullptr ? std::nullopt : std::optional<std::int64_t>{*value};
+        };
+        auto const users_default = level_of("users_default", 0);
+        auto const events_default = level_of("events_default", 0);
+        auto const invite = level_of("invite", 0);
+        if (!users_default.has_value() || !events_default.has_value() || !invite.has_value())
+        {
+            return std::nullopt;
+        }
+        auto const closed_level = std::max<std::int64_t>(50, *users_default + 1);
+        std::erase_if(*content, [](canonicaljson::ObjectMember const& member) {
+            return member.key == "events_default" || member.key == "invite";
+        });
+        content->push_back(
+            json_member("events_default", canonicaljson::Value{std::max(closed_level, *events_default)}));
+        content->push_back(json_member("invite", canonicaljson::Value{std::max(closed_level, *invite)}));
+        return json_serialize(json_obj(std::move(*content)));
+    }
+
     // May this user reach an endpoint that returns room events? Spec (Room History Visibility):
     // "In all cases except `world_readable`, a user needs to join a room to view events in that
     // room." A user who was joined keeps the events they were allowed to see (`as_of`), and a
@@ -17374,7 +17413,9 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             auto const* array = value == nullptr ? nullptr : std::get_if<canonicaljson::Array>(&value->storage());
             return array == nullptr ? 0U : array->size();
         };
-        if (entries_in("invite") > rt.limits.max_create_room_invites ||
+        // `invite_3pid` entries are invites too (ADR-0474): each costs an identity-server round trip and a
+        // stored event, so they share the cap with `invite`.
+        if (entries_in("invite") + entries_in("invite_3pid") > rt.limits.max_create_room_invites ||
             entries_in("initial_state") > rt.limits.max_create_room_initial_state)
         {
             return dispatch_err(req, rt, 400U, "M_TOO_LARGE", "too many invite or initial_state entries");
@@ -17403,6 +17444,49 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
         if (rooms::find_room_version_policy(room_version) == nullptr)
         {
             return dispatch_err(req, rt, 400U, "M_UNSUPPORTED_ROOM_VERSION", "unsupported room version");
+        }
+        // Spec (createRoom, `invite_3pid`): a list of {id_server, medium, address, id_access_token}. All of it that
+        // can be judged without the identity server is judged before the room exists (ADR-0474).
+        struct ThreepidInvite final
+        {
+            std::string id_server{};
+            std::string medium{};
+            std::string address{};
+            std::string id_access_token{};
+        };
+        auto threepid_invites = std::vector<ThreepidInvite>{};
+        if (auto const* raw = object_member(body, "invite_3pid"); raw != nullptr)
+        {
+            auto const* entries = std::get_if<canonicaljson::Array>(&raw->storage());
+            if (entries == nullptr)
+            {
+                return dispatch_err(req, rt, 400U, "M_BAD_JSON", "invite_3pid must be a list");
+            }
+            for (auto const& value : *entries)
+            {
+                auto const* object = std::get_if<canonicaljson::Object>(&value.storage());
+                auto const* id_server = object == nullptr ? nullptr : string_member(*object, "id_server");
+                auto const* medium = object == nullptr ? nullptr : string_member(*object, "medium");
+                auto const* address = object == nullptr ? nullptr : string_member(*object, "address");
+                if (id_server == nullptr || id_server->empty() || medium == nullptr || medium->empty() ||
+                    address == nullptr || address->empty())
+                {
+                    return dispatch_err(req, rt, 400U, "M_BAD_JSON",
+                                        "each invite_3pid entry needs id_server, medium and address");
+                }
+                auto const* token = string_member(*object, "id_access_token");
+                if (object_member(*object, "id_access_token") != nullptr &&
+                    (token == nullptr || !merovingian::identity::id_access_token_is_valid(*token)))
+                {
+                    return dispatch_err(req, rt, 400U, "M_INVALID_PARAM", invalid_id_access_token_message);
+                }
+                if (!resolve_trusted_identity_base_url(rt.homeserver.config.server().identity_server, *id_server)
+                         .has_value())
+                {
+                    return dispatch_err(req, rt, 400U, "M_SERVER_NOT_TRUSTED", "identity server is not trusted");
+                }
+                threepid_invites.push_back({*id_server, *medium, *address, token == nullptr ? std::string{} : *token});
+            }
         }
         auto const* room_alias_name = string_member(body, "room_alias_name");
         if (room_alias_name != nullptr && !room_alias_name->empty())
@@ -17492,8 +17576,9 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             auto const server = server_name_from_user_id(invitee);
             return !server.empty() && server != rt.homeserver.config.server().server_name;
         });
-        auto const invite_slot = any_remote_invitee ? admit_client_proxy_waiting(rt, req, guard, invite_deadline)
-                                                    : std::optional<http::InFlightBudget::Slot>{};
+        auto const invite_slot = any_remote_invitee || !threepid_invites.empty()
+                                     ? admit_client_proxy_waiting(rt, req, guard, invite_deadline)
+                                     : std::optional<http::InFlightBudget::Slot>{};
         for (auto const& invitee : invitees)
         {
             auto const invitee_server = server_name_from_user_id(invitee);
@@ -17568,6 +17653,31 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                                                                  {"invitee", invitee,         false},
                                                                  {"reason",  delivery.reason, false}
                 });
+            }
+        }
+        // Each identity-server store-invite is a blocking call on this thread: they share the slot and the
+        // deadline above, and each is given at most what is left of it. An entry the slot or the time does not
+        // cover, or the identity server fails, is logged and skipped; the room stays (ADR-0474).
+        for (auto const& threepid : threepid_invites)
+        {
+            auto const seconds_left = invite_deadline.remaining_seconds();
+            auto const stored =
+                invite_slot.has_value() && seconds_left != 0U
+                    ? merovingian::homeserver::invite_user_by_threepid(
+                          rt.homeserver, req.access_token, room_id, threepid.id_server, threepid.medium,
+                          threepid.address, threepid.id_access_token, seconds_left)
+                    : merovingian::homeserver::make_operation_result(false, {}, "no slot or time left", 504U);
+            if (!stored.ok)
+            {
+                log_diagnostic("room.create.invite_3pid_failed",
+                               {
+                                   {"actor",   *user,                         false},
+                                   {"room_id", room_id,                       false},
+                                   {"medium",  threepid.medium,               false},
+                                   {"status",  std::to_string(stored.status), false},
+                                   {"reason",  stored.reason,                 false}
+                },
+                               observability::LogEventSeverity::warning);
             }
         }
         log_diagnostic("room.create.accepted", {
@@ -19389,6 +19499,55 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                                                             {"reason",      "tombstone was refused", false}
                 });
                 return dispatch_err(req, rt, tombstone.status, error_code_for(tombstone), tombstone.body);
+            }
+            // Spec: "Moves any local aliases to the new room." The tombstone is already sent, so a failed
+            // write is reported as a server fault rather than a success that leaves an alias on the old room.
+            auto const aliases_to_move = std::invoke([&] {
+                auto moved = std::vector<std::string>{};
+                for (auto const& alias : rt.homeserver.database.persistent_store.room_aliases)
+                {
+                    if (alias.room_id == room_id)
+                    {
+                        moved.push_back(alias.room_alias);
+                    }
+                }
+                return moved;
+            });
+            for (auto const& alias : aliases_to_move)
+            {
+                if (!database::reassign_room_alias(rt.homeserver.database.persistent_store, alias, new_room_id))
+                {
+                    log_diagnostic("room.upgrade.alias_not_moved", {
+                                                                       {"actor",       *user,       false},
+                                                                       {"old_room_id", room_id,     false},
+                                                                       {"new_room_id", new_room_id, false},
+                                                                       {"alias",       alias,       false}
+                    });
+                    return dispatch_err(req, rt, 500U, "M_UNKNOWN", "failed to move a room alias to the new room");
+                }
+                append_local_audit(rt.homeserver.database, observability::AuditCategory::admin, "room_alias.moved",
+                                   *user, alias, new_room_id);
+            }
+            // Spec: "If possible, the power levels in the old room should also be modified". Sent as the
+            // upgrader; a refusal (they may not change power levels there) leaves the old room as it was and
+            // does not fail the upgrade.
+            if (auto const closed = closed_power_levels_content(rt.homeserver.database.persistent_store, room_id);
+                closed.has_value())
+            {
+                auto closing_req = req;
+                closing_req.method = "POST";
+                closing_req.target = "/_matrix/client/v3/rooms/" + room_id + "/send";
+                closing_req.body =
+                    event_body_from_content("m.room.power_levels", *closed, std::string{""}).value_or("");
+                if (auto const closing = call_local(closing_req); closing.status != 200U)
+                {
+                    log_diagnostic("room.upgrade.old_room_power_levels_unchanged",
+                                   {
+                                       {"actor",       *user,                          false},
+                                       {"old_room_id", room_id,                        false},
+                                       {"status",      std::to_string(closing.status), false}
+                    });
+                }
             }
             log_diagnostic("room.upgrade.accepted", {
                                                         {"actor",       *user,            false},

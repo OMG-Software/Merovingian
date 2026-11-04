@@ -536,6 +536,14 @@ client, sender or remote server controls, and per-user rows that requests scan m
   (`federation::accept_remote_key_claim_response`), never overwrites a user the response already holds, and answers
   500 if the response cannot be serialised: use `json_serialize_checked` on any response that holds members a remote
   server chose (ADR-0337).
+- `POST /createRoom` `invite_3pid` entries are counted with `invite` against `max_create_room_invites`, are validated
+  (shape, `id_access_token`, trusted `id_server`) before `create_room`, and are sent afterwards with
+  `invite_user_by_threepid(..., max_total_seconds)` under the one ADR-0079 slot and `invite_deadline` of the remote
+  invites; each call's timeouts are clamped to what is left of the deadline (ADR-0474). A failure leaves the room.
+- `GET /relations?recurse=true` walks at most 3 levels and offers at most 2048 events beyond the first level; it
+  continues only through events that pass the filters and `HistoryVisibility` (ADR-0475). Keep both bounds.
+- `POST /upgrade` sends the tombstone, then moves the old room's aliases (`reassign_room_alias`) and tries to raise its
+  `events_default` and `invite`, as the upgrader; the last step is best effort (ADR-0476).
 - `POST /createRoom` refuses past `max_create_room_invites` or `max_create_room_initial_state` with
   `400 M_TOO_LARGE` before `create_room` is called (ADR-0316): `create_room` stores one event per entry under
   the lock.
