@@ -41,6 +41,7 @@ The medium severity findings of the November project analysis.
 - `merovingian-crypto` links OpenSSL.
 - The HMAC-SHA1 call the coturn REST API requires is marked `NOSONAR(cpp:S4790)`, with the reason, at that one call (ADR-0480).
 - Every BSD CI job is required. `continue-on-error` is gone from the OpenBSD and NetBSD suites and the NetBSD package job. The NetBSD retry job is deleted because it could no longer change a run's result, and a missing NetBSD artifact now stops staging (ADR-0502).
+- The BSD jobs delete their build tree once the artifact tarball exists, so a dropped connection while the VM copies about 2 GB back no longer fails a job whose tests passed.
 - The fuzz runner builds the libraries with AddressSanitizer, UBSan and coverage counters, and runs 14 targets (ADR-0503).
 - `server.identity_server.default_server` and `security.logging.structured` are removed (nothing read them) and are now refused as unknown keys; `redact_tokens` and `redact_event_content` accept only `true`, as before.
 - An `allowed_bind_domains` entry that is empty or holds `@`, `*` or whitespace is a start-up configuration finding.

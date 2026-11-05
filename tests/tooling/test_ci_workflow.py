@@ -112,6 +112,29 @@ class CiWorkflowTests(unittest.TestCase):
                 f"{job}: continue-on-error would let a failing BSD suite pass",
             )
 
+    def test_every_bsd_job_drops_its_build_tree_before_the_vm_copies_back(self) -> None:
+        # GIVEN the repository CI workflow.
+        workflow = CI_WORKFLOW.read_text(encoding="utf-8")
+
+        # WHEN each BSD job's text is read, up to the next top-level job.
+        for job, platform in (
+            ("freebsd-build-and-test", "freebsd"),
+            ("openbsd-build-and-test", "openbsd"),
+            ("netbsd-build-and-test", "netbsd"),
+        ):
+            pattern = r"^  " + job + r":\n(.*?)(?=^  [A-Za-z0-9_-]+:\n|\Z)"
+            match = re.search(pattern, workflow, re.MULTILINE | re.DOTALL)
+            self.assertIsNotNone(match, f"{job} is missing")
+            text = match.group(1)
+
+            # THEN the build tree is removed once the artifact tarball exists: the VM
+            # action copies the whole workspace back over one connection, and a dropped
+            # connection during that copy fails a job whose tests passed.
+            tarball = text.find(f"-czf merovingian-{platform}-artifacts.tar.gz")
+            removal = text.find("rm -rf build\n", tarball)
+            self.assertGreater(tarball, -1, f"{job}: no artifact tarball")
+            self.assertGreater(removal, tarball, f"{job}: build tree still copied back")
+
     def test_tier_one_linux_distro_platforms_have_build_and_test_jobs(self) -> None:
         # GIVEN the repository CI workflow.
         self.assertTrue(CI_WORKFLOW.is_file(), "CI workflow is missing")
