@@ -714,9 +714,11 @@ shell = find_program('sh')
   )
 
 # Integration tests spawn real dependencies (PostgreSQL, SQLite, thumbnail
-# worker) and can be slow under sanitizers and on emulated BSD runners;
-# give them the same headroom as the load-test suite.
-  test('integration-tests', integration_tests, timeout: 900, depends: thumbnail_test_depends)
+# worker) and can be slow under sanitizers and on emulated BSD runners.
+# The limit is 30 minutes on every platform (ADR-0509). scripts/build-bsd.sh
+# doubles every limit by default, so the BSDs set half of it here.
+  integration_tests_timeout = host_machine.system() in ['freebsd', 'netbsd', 'openbsd'] ? 900 : 1800
+  test('integration-tests', integration_tests, timeout: integration_tests_timeout, depends: thumbnail_test_depends)
 
   if get_option('build_live_tests')
     live_integration_tests = executable(

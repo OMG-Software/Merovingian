@@ -469,6 +469,7 @@
 * [0494 - A sliding sync room's timeline is built newest first, for its window and one more event only](0494-a-sliding-sync-timeline-is-built-newest-first-for-its-window-only.md)
 * [0495 - Sliding sync reads `set_presence` from the body or the URL, and the body wins](0495-sliding-sync-reads-set-presence-from-the-body-or-the-url-and-the-body-wins.md)
 * [0496 - `LocalRoom::members` is a class with a hash set, and `LocalDatabase::rooms` has a guarded position index](0496-room-members-are-a-class-and-the-room-list-has-a-guarded-id-index.md)
+* [0509 - The integration test limit is thirty minutes on every platform](0509-the-integration-test-limit-is-thirty-minutes-on-every-platform.md)
 * [0497 - The greatest `origin_server_ts` of a room's events is kept in the event table](0497-the-newest-origin-server-ts-of-a-room-is-kept-in-the-event-table.md)
 * [0460 - One listing and one strict request reader serve every published room directory endpoint](0460-one-listing-and-one-strict-reader-serve-the-published-room-directory.md)
 * [0461 - A federation worker relays the published room directory to main](0461-a-federation-worker-relays-the-published-room-directory-to-main.md)
