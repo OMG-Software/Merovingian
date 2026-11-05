@@ -61,6 +61,7 @@ SCENARIO("createRoom judges invite_3pid before creating the room, and keeps the 
 {
     GIVEN("a registered user and no trusted identity server")
     {
+        // Arrange: boot an isolated homeserver instance and create a user who can create rooms.
         auto started = merovingian::homeserver::start_client_server(config_with_registration());
         REQUIRE(started.started);
         auto& rt = started.runtime;
@@ -76,6 +77,7 @@ SCENARIO("createRoom judges invite_3pid before creating the room, and keeps the 
              "/_matrix/client/v3/login",
              {},
              R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@alice:example.org"},"password":"CorrectHorse7!","device_id":"D"})"});
+        // Capture the bearer token used by all createRoom requests in this scenario.
         auto const login_body = merovingian::tests::parse_object(login.response.body);
         auto const* token_member = merovingian::tests::string_member(login_body, "access_token");
         REQUIRE(token_member != nullptr);
