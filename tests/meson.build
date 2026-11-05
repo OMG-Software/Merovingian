@@ -37,6 +37,12 @@ shell = find_program('sh')
   )
 
   test(
+    'ci-run-scope-tooling',
+    python,
+    args: [meson.project_source_root() / 'tests' / 'tooling' / 'test_ci_run_scope.py'],
+  )
+
+  test(
     'catch2-bdd-tests',
     shell,
     args: [meson.project_source_root() / 'scripts' / 'check-catch2-bdd-tests.sh', meson.project_source_root()],

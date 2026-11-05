@@ -53,7 +53,14 @@ timeout kills it. Connect with `merovingian::tests::connect_within`
 OpenBSD 7.9 a blocking connect to the test's own in-process listener never
 returned. Bound reads and writes with `poll` or `SO_RCVTIMEO`/`SO_SNDTIMEO`.
 
-## Live PostgreSQL scenarios that need a quiet store
+## Live PostgreSQL scenarios
+
+A scenario that reaches PostgreSQL carries the `[postgresql]` tag, because that tag is the whole of what the
+`postgres-integration` job runs ([ADR-0511](adr/0511-a-commit-runs-each-workflow-once.md)). `tests/tooling/test_ci_run_scope.py`
+checks for it, but it reads the scenario's own text, so it cannot see a helper that opens a connection for the scenario. Without
+`MEROVINGIAN_TEST_POSTGRESQL_URI` these scenarios skip, so an untagged one passes in CI having tested nothing.
+
+### Scenarios that need a quiet store
 
 The live PostgreSQL scenarios share one database (`MEROVINGIAN_TEST_POSTGRESQL_URI`),
 and a runtime started on it replays the durable queues earlier scenarios left there

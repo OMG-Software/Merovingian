@@ -1,5 +1,5 @@
 Name:           merovingian
-Version:        0.12.75
+Version:        0.12.79
 Release:        1%{?dist}
 Summary:        Secure Matrix Protocol homeserver
 
@@ -97,6 +97,9 @@ fi
 %{_sysconfdir}/merovingian/merovingian.conf.example
 
 %changelog
+* Thu Nov 05 2026 James Chapman <claude@ping.me.uk> - 0.12.79-1
+- Remove duplicate and unneeded CI test runs
+
 * Wed Nov 04 2026 James Chapman <claude@ping.me.uk> - 0.12.75-1
 - Serve the federation published room directory
 

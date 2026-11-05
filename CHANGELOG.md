@@ -1,4 +1,23 @@
-## 0.12.75
+## 0.12.79
+
+### Changed
+
+- **A pull request's commit runs `sanitizers`, `static-analysis` and `packages` once (ADR-0511).** `sanitizers` and
+  `static-analysis` had a bare `on: push`, so every push to a pull request's branch ran them for both events, about 38 and 19
+  minutes for one commit on #560. `packages` did the same for `feature/**` branches. Their `push` trigger is now the same
+  list `ci.yml` uses, and all of them still run for every pull request and every push to `main`. A push to a branch with
+  no pull request no longer runs them. The documentation site keeps its build on both events, because it builds on every
+  branch by design and takes under a minute.
+- **`postgres-integration` runs only what uses PostgreSQL (ADR-0511).** It compiled and ran the whole suite, 33 minutes on
+  #560, and then ran the PostgreSQL scenarios in their own step, which took 22 seconds. It now builds only the integration
+  binary and runs `[postgresql]`.
+
+### Fixed
+
+- **The job's filter now selects every PostgreSQL scenario.** `[database][postgresql][integration]` missed scenarios without
+  all three tags, which ran only because the whole suite ran first. Filtering on that tag alone selects them, and
+  `tests/tooling/test_ci_run_scope.py` fails on a scenario that uses PostgreSQL without it.
+
 
 ### Added
 
