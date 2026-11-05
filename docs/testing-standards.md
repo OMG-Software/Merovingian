@@ -302,8 +302,8 @@ map, so real-server SSRF and TLS-trust behaviour is unchanged.
   catches data races. ThreadSanitizer is the only sanitizer that detects data
   races; ASan and UBSan are blind to them.
 - Any type shared across threads at runtime must have a test that exercises
-  `perform`/`run`/dispatch concurrently from multiple threads so TSan can prove
-  the access pattern is race-free. A thread-safety claim in a header comment is
+  `perform`/`run`/dispatch concurrently from multiple threads so TSan can check
+  the exercised accesses for data races. A thread-safety claim in a header comment is
   not a substitute for a test that drives the contended path. See the
   concurrency scenario in `tests/unit/test_outbound_client.cpp` for the shape:
   many threads, a release barrier so calls overlap, and an assertion that every
@@ -329,15 +329,23 @@ beside them.
 ## Catch2 example
 
 ```cpp
-TEST_CASE("SecretBuffer exposes bounded writable storage", "[core][secret]") {
-    // Given
-    auto buffer = merovingian::core::SecretBuffer{8U};
+SCENARIO("SecretBuffer exposes bounded writable storage", "[core][secret]")
+{
+    GIVEN("a buffer with eight bytes of storage")
+    {
+        auto buffer = merovingian::core::SecretBuffer{8U};
 
-    // When
-    buffer.bytes()[0] = 0xAAU;
+        WHEN("the first byte is changed")
+        {
+            buffer.bytes()[0] = 0xAAU;
 
-    // Then
-    REQUIRE(buffer.bytes()[0] == 0xAAU);
+            THEN("the change is visible and the storage size is unchanged")
+            {
+                REQUIRE(buffer.bytes()[0] == 0xAAU);
+                REQUIRE(buffer.bytes().size() == 8U);
+            }
+        }
+    }
 }
 ```
 

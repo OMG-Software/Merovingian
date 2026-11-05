@@ -97,6 +97,27 @@ The medium severity findings of the November project analysis.
 - `LocalRoom::members` is hashed and rooms are found through a verified position index (ADR-0496).
 - The event table keeps each room's newest `origin_server_ts` (ADR-0497).
 - `remote_servers_for_user` uses a seen set instead of searching its result per member.
+
+### Documentation
+
+- Reorganise the coding rules by topic. Add interface, error, borrowed-lifetime,
+  and verification guidance. Distinguish review requirements from automated checks.
+- Use `std::invoke` for generic callable dispatch and immediately invoked lambdas;
+  retain ordinary named calls (ADR-0462).
+- Align the root and security ownership rules: ban raw owning pointers and confine
+  unavoidable C API pointers to RAII wrappers (ADR-0463). Keep the direct-allocation ban.
+- State shared pointer risks and require a same-line verifying comment with the
+  ownership need and lifetime/cycle checks. Explain what the existing gate can check.
+- Correct the testing guide's BDD example and the source guide's `noexcept` claim.
+- Documentation-only changes do not require a version bump (ADR-0464).
+- Remove duplicated coding rules from the root `AGENTS.md` and make
+  `docs/coding-rules.md` mandatory for contributors and delegated agents. Preserve
+  the file-naming conventions in that guide (ADR-0465).
+- Require one class or struct per file, with a matching filename and separate
+  implementations. Forward declarations do not count as definitions (ADR-0466).
+- Require class and struct filenames to match the type name exactly, including
+  case, instead of converting it to `snake_case` (ADR-0467).
+
 ## 0.12.75
 
 ### Added

@@ -17,7 +17,7 @@ The module directories mirror `src/` (headers with no `.cpp` exist): `include/me
 - `// SPDX-...` first, then `#pragma once`, then includes
 - Quotes for project headers (`"merovingian/..."`), angle brackets for STL and third-party
 - No bare relative includes (`"name.hpp"` without the `merovingian/` prefix)
-- One primary type per file; filename matches the primary type in `snake_case`
+- Follow [the coding guide's type-per-file and filename requirements](../../docs/coding-rules.md#design-and-interfaces).
 
 ## Namespace
 

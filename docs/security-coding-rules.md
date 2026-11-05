@@ -19,7 +19,8 @@ matching entry here in the same change (see `docs/AGENTS.md`'s trigger table).
 - **Rule** — the constraint itself, usually copied near-verbatim from the source file.
 - **Why** — the concrete failure mode or vulnerability class it closes off. Where the source
   `AGENTS.md` names a CWE, it's kept here too.
-- **Source** — the `AGENTS.md` file that owns this rule day to day.
+- **Source** — the guidance file that owns this rule day to day. Project-wide
+  coding rules live in `docs/coding-rules.md`, which the root `AGENTS.md` requires.
 
 Rules are grouped by theme first (memory safety, secrets, cryptography, ...) since most
 vulnerabilities cut across module boundaries; a per-module index follows at the end for
@@ -75,29 +76,38 @@ quickly finding everything a given `AGENTS.md` file contributed.
   the happy path leaks under error conditions — for file descriptors this is exploitable as
   resource-exhaustion DoS; for secret buffers it means key material never gets zeroised.
   (CWE-401 Missing Release of Memory, CWE-459 Incomplete Cleanup.)
-  Source: root `AGENTS.md`, `security/coding-rules.md`.
+  Source: `docs/coding-rules.md`, `security/coding-rules.md`.
 
 - **No raw owning pointers — use smart pointers; prefer references over pointers.**
+  Prefer values and containers before dynamic ownership. Unavoidable C API pointers
+  must stay inside RAII wrappers; expose values, references, views, or owning handles
+  to callers (ADR-0463).
   Why: manual pointer lifetime tracking is the direct cause of use-after-free and
   double-free bugs, and a raw pointer can silently be null where a reference statically
   cannot. (CWE-401 Missing Release of Memory, CWE-416 Use After Free, CWE-476 NULL Pointer
   Dereference.)
-  Source: root `AGENTS.md`, `security/coding-rules.md`.
+  Source: `docs/coding-rules.md`, `security/coding-rules.md`.
 
-- **No naked `new`/`delete`, no manual `malloc`/`free`/`calloc`/`realloc` outside reviewed
-  low-level wrappers.**
+- **No naked `new`/`delete`, no manual `malloc`/`free`/`calloc`/`realloc` in project code.**
+  A C API wrapper is not an exemption from this rule.
   Why: manual allocation pairing is exactly the pattern that produces double-free and
   use-after-free bugs; smart pointers and containers make the pairing automatic and
   exception-safe. Enforced mechanically by `scripts/reject-unsafe.sh` as a pre-commit gate —
   if it blocks a change, fix the code, do not add an exception to the script. (CWE-415
   Double Free, CWE-416 Use After Free, CWE-401 Missing Release of Memory.)
-  Source: root `AGENTS.md`, `scripts/AGENTS.md`, `security/AGENTS.md`, `security/coding-rules.md`.
+  Source: `docs/coding-rules.md`, `scripts/AGENTS.md`, `security/AGENTS.md`, `security/coding-rules.md`.
 
 - **`std::shared_ptr` requires justification** (an explicit `// SHARED_PTR: reviewed — <reason>`
-  comment; `reject-unsafe.sh` enforces this).
+  comment on the same line as each declaration or creation of shared ownership).
+  The verifying comment must identify the owners, explain why unique ownership is
+  insufficient, and state how lifetime and reference-cycle risks were checked.
+  The marker alone is insufficient. `reject-unsafe.sh` checks `std::shared_ptr`
+  text for the marker; it cannot verify the rationale and does not detect every
+  inferred shared pointer creation.
   Why: shared ownership obscures who is responsible for lifetime and invites reference
-  cycles or unexpectedly-extended lifetimes of secret-bearing objects. Requiring a reviewed,
-  visible justification keeps shared ownership rare and auditable rather than a default.
+  cycles or unexpectedly-extended lifetimes of secret-bearing objects. It does not
+  make the pointed-to object thread-safe. Requiring a reviewed, visible justification
+  keeps shared ownership rare and auditable rather than a default.
   Source: `security/coding-rules.md`.
 
 - **`FileDescriptor` (or `core::FileDescriptor`) must be used for all raw OS file descriptors
@@ -124,12 +134,14 @@ quickly finding everything a given `AGENTS.md` file contributed.
   Source: `security/coding-rules.md`.
 
 - **Ownership policy: prefer values; prefer references for required access; use
-  `std::span`/`std::string_view` for bounded non-owning access; `not_null<T*>` only for
-  unavoidable interop.**
+  `std::span`/`std::string_view` for bounded non-owning access; keep unavoidable C API
+  pointers inside RAII wrappers.** A view does not extend its owner's lifetime.
+  Do not retain a view, reference, or iterator across destruction or invalidation.
   Why: this is the concrete decision order that keeps the "no raw owning pointers" rule
-  achievable in practice — a non-owning view type (`span`, `string_view`) documents at the
-  type level that the callee does not need to manage the referent's lifetime, which is what
-  actually prevents the ownership-confusion bugs that raw pointers invite.
+  achievable in practice. A non-owning view type (`span`, `string_view`) states that the
+  callee does not own the storage; it does not prevent a dangling view. The caller must
+  keep the storage alive and valid. Confining C API pointers keeps ownership transfer
+  and cleanup in one auditable place (ADR-0463).
   Source: `security/coding-rules.md`.
 
 ## Secrets and logging
@@ -1593,7 +1605,7 @@ media-fetch-pool task.
   Source: `security/AGENTS.md`.
 
 - **`scripts/reject-unsafe.sh` enforces a subset of these rules automatically (banned
-  patterns: raw `new`, `delete`, `malloc`, `free`, `calloc`, `realloc`,
+  patterns: raw `new`, `delete`, `malloc`, `free`, `calloc`, `realloc`, void-cast discards,
   unjustified `shared_ptr`, direct libsodium calls outside the crypto boundary, and
   unannotated manual lock release) — a new rule that can be grep-detected should be added to
   that script.**
@@ -1630,7 +1642,7 @@ For finding everything a specific file contributed, without re-reading the whole
 
 | Source file | Sections it contributed to above |
 |---|---|
-| root `AGENTS.md` | Memory safety and resource ownership |
+| `docs/coding-rules.md` (required by root `AGENTS.md`) | Memory safety and resource ownership |
 | `security/AGENTS.md`, `security/coding-rules.md` | Memory safety; Secrets and logging; Cryptography; Process |
 | `src/core/AGENTS.md` | Memory safety; Secrets and logging; Sync |
 | `src/crypto/AGENTS.md` | Secrets and logging; Cryptography |

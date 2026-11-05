@@ -8,13 +8,13 @@ new documents.
 
 | Document | What to add/update |
 |---|---|
-| `../CHANGELOG.md` (repo root) | New `## X.Y.Z` section describing what changed |
+| `../CHANGELOG.md` (repo root) | Describe what changed. Add a new `## X.Y.Z` section when the version changes; documentation-only changes can use the current version's documentation section without a bump. |
 
 ## Update when the matching domain changes
 
 | Document | Update trigger |
 |---|---|
-| `coding-rules.md` | A new project-wide coding rule is established |
+| `coding-rules.md` | A project-wide coding rule is added, changed, or removed. Maintain the rule here; the root `AGENTS.md` requires this document rather than copying its rules. |
 | `security-coding-rules.md` | A security-relevant rule is added, changed, or removed in any module `AGENTS.md` file |
 | `testing-standards.md` | A new testing convention is adopted |
 | `versioning.md` | Version scheme changes; see also the version bump table |
