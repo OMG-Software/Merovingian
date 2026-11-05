@@ -86,6 +86,7 @@ struct Reply final
 SCENARIO("GET /profile/{userId} leaves out a field the user has not set",
          "[conformance][client-server][profile][profile-unset]")
 {
+    // Baseline setup: create a user that has never set profile metadata so both fields are unset.
     GIVEN("a user who has set neither a display name nor an avatar")
     {
         auto started = merovingian::homeserver::start_client_server(profile_config());
@@ -99,6 +100,7 @@ SCENARIO("GET /profile/{userId} leaves out a field the user has not set",
 
             THEN("it is a 200 with neither field present")
             {
+                // For the aggregate profile endpoint, unset keys must be omitted rather than returned empty/null.
                 REQUIRE(reply.status == 200U);
                 auto const body = parse_object(reply.body);
                 REQUIRE(object_member(body, "displayname") == nullptr);
@@ -113,6 +115,7 @@ SCENARIO("GET /profile/{userId} leaves out a field the user has not set",
 
             THEN("each is a 404 M_NOT_FOUND with no empty value")
             {
+                // Field-specific endpoints must signal absence with M_NOT_FOUND, not with an empty value payload.
                 REQUIRE(name.status == 404U);
                 REQUIRE(avatar.status == 404U);
                 REQUIRE(name.body.find("M_NOT_FOUND") != std::string::npos);
