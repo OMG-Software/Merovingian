@@ -1625,11 +1625,6 @@ auto resolve_policy_server_hook(HomeserverRuntime& runtime, trust_safety::Policy
     return parse_policy_server_response(result.response.body, std::move(hook));
 }
 
-} // namespace merovingian::homeserver
-
-namespace merovingian::homeserver
-{
-
 namespace
 {
 

@@ -456,7 +456,7 @@ namespace
         auto const& server_name = runtime.config.server().server_name;
         auto servers = std::vector<std::string>{};
         // Each server once, in the order the members name them. A set answers "seen" in one lookup; searching the list
-        // per member made a large room cost members x servers (ADR-0494 has the same rule for the fan-out).
+        // per member made a large room cost members x servers.
         auto seen = std::unordered_set<std::string>{};
         for (auto const& room : runtime.database.rooms)
         {

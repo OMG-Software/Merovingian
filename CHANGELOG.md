@@ -30,6 +30,8 @@ The medium severity findings of the November project analysis.
 - Tooling tests that require the BSD jobs and keep the fuzz runner complete.
 - Operator account route: `GET /_merovingian/admin/accounts/{userId}` returns a summary (deactivated, locked, suspended, admin, device count; no credential), and `POST` with `{"action": ...}` deactivates (`"confirm": true` required), locks, unlocks, suspends or unsuspends a local account. Administrators cannot act on themselves or on another administrator (ADR-0504, ADR-0506).
 - Operator review route: `POST /_merovingian/admin/review/{targetType}/{targetId}` shares one implementation with `POST /_matrix/client/v3/admin/safety/review/...` (ADR-0504).
+- A local user who is `online` and inactive for over 5 minutes is set `unavailable` by a `presence-idle` job, every 30 seconds and at most 100 users a pass; servers sharing a room are told and syncs woken. A sent message counts as activity, and the clock of a row loaded after a restart starts at the first pass (ADR-0492).
+- Sliding sync reads `set_presence` from the request body or the URL, the body first. An unknown value is `400 M_INVALID_PARAM`, and a poll marks the user online as `/sync` does (ADR-0495).
 
 ### Changed
 
@@ -62,12 +64,17 @@ The medium severity findings of the November project analysis.
 - `GET /profile/{userId}`, the user directory and `/search` `profile_info` leave out a `displayname` or `avatar_url` the user has not set.
 - Registration no longer leaves an account without a profile row when the profile write fails.
 - Revoked and expired sessions and tokens are now deleted rather than kept for ever.
+- Sliding sync `account_data`: a room first entering the response on a connection gets all of its room account data (ADR-0493).
 
 ### Performance
 
 - Sessions are found through an index of token-hash digests, each match confirmed in constant time (ADR-0488).
 - Indexes on `events(room_id)` and `state_groups(room_id)` (ADR-0490).
 - Registration commits account and profile in one transaction; logout revokes device credentials in one, 5 commits down to 3 (ADR-0491).
+- Sliding sync builds a room's timeline newest first and stops at the window plus one event or at the floor; counts, heroes, required state and the room list read the room's own rows, and an event is parsed for the ignore filter only when its sender is ignored (ADR-0494).
+- `LocalRoom::members` is hashed and rooms are found through a verified position index (ADR-0496).
+- The event table keeps each room's newest `origin_server_ts` (ADR-0497).
+- `remote_servers_for_user` uses a seen set instead of searching its result per member.
 
 ## 0.12.73
 

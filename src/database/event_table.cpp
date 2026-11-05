@@ -631,11 +631,6 @@ auto EventTable::reserve(size_type capacity) -> void
     stream_order_.reserve(capacity);
 }
 
-} // namespace merovingian::database
-
-namespace merovingian::database
-{
-
 auto EventTable::room_latest_origin_server_ts(std::string_view room_id) const -> std::int64_t
 {
     auto const held = room_latest_ts_.find(room_id);
