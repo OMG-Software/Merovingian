@@ -1163,11 +1163,14 @@ constexpr auto reset_submit_path =
 SCENARIO("A user who cannot sign in resets the password with a code emailed to their address",
          "[integration][email][password-reset]")
 {
+    // This end-to-end scenario validates the complete email-based password reset flow.
+    // If SMTP is unavailable in the current environment, skip to avoid a flaky false failure.
     if (!smtp_supported(RelayMode::cleartext))
     {
         SKIP(smtp_unsupported);
     }
 
+    // Arrange baseline state: existing user session, email identity, and a relay that captures outbound mail.
     GIVEN("an account with a signed-in device, an email address on it, and a relay")
     {
         auto const relay = MockSmtpRelay{RelayMode::cleartext};
