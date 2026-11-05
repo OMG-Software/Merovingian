@@ -1,11 +1,16 @@
 // SPDX-FileCopyrightText: 2026 James Chapman
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
-// The directory request parser, its relay frames and the page limits of the listing. What the endpoints
-// answer is covered by tests/conformance/test_federation_public_rooms_conformance.cpp.
+// The directory request parser, its relay frames, the page limits of the listing, and the project's rules for
+// the handler that the spec does not state. What the spec requires of the endpoints is covered by
+// tests/conformance/test_federation_public_rooms_conformance.cpp.
 
+#include "../federation_signing_test_support.hpp"
 #include "../support/json_test_support.hpp"
+#include "merovingian/federation/inbound_request.hpp"
 #include "merovingian/federation/public_rooms.hpp"
+#include "merovingian/federation/runtime_federation.hpp"
+#include "merovingian/federation/security.hpp"
 #include "merovingian/federation/transactions.hpp"
 #include "merovingian/homeserver/public_rooms.hpp"
 #include "merovingian/ipc/federation_ipc_frames.hpp"
@@ -38,6 +43,56 @@ using merovingian::tests::string_member;
         database.rooms.push_back(std::move(room));
     }
     return database;
+}
+
+auto const remote_origin = std::string{"remote.example.org"};
+auto const remote_key_id = std::string{"ed25519:public-rooms-unit"};
+auto const remote_key_seed = std::string{"public-rooms-unit-seed"};
+auto const public_rooms_path = std::string{"/_matrix/federation/v1/publicRooms"};
+
+// The handler alone, with one remote server it trusts and no directory provider.
+[[nodiscard]] auto inbound_state() -> merovingian::federation::FederationRuntimeState
+{
+    auto config = merovingian::federation::RuntimeFederationConfig{};
+    config.enabled = true;
+    config.default_policy = "allow";
+    config.require_valid_tls = true;
+    config.verify_json_signatures = true;
+    config.max_transaction_bytes = 65536U;
+    config.remote_timeout_seconds = 30U;
+    config.server_name = "example.org";
+    auto state = merovingian::federation::make_federation_runtime_state(config);
+
+    auto remote = merovingian::federation::FederationRemoteRuntime{};
+    remote.server_name = remote_origin;
+    remote.signing_key = {remote_origin, remote_key_id, 2000U,
+                          merovingian::federation::test::keypair_from_seed(remote_key_seed).public_key};
+    remote.discovery.server_name = remote_origin;
+    remote.discovery.well_known_host = remote_origin;
+    remote.discovery.resolved_host = remote_origin;
+    remote.discovery.resolved_addresses = {"203.0.113.10"};
+    remote.discovery.tls_required = true;
+    remote.trust.reputation_score = 100U;
+    merovingian::federation::upsert_remote(state, remote);
+    return state;
+}
+
+[[nodiscard]] auto signed_request(std::string method, std::string body)
+    -> merovingian::federation::SignedFederationRequest
+{
+    auto request = merovingian::federation::SignedFederationRequest{};
+    request.method = std::move(method);
+    request.target = public_rooms_path;
+    request.origin = remote_origin;
+    request.destination = "example.org";
+    request.key_id = remote_key_id;
+    request.now_ts = 1000U;
+    request.canonical_json_verified = true;
+    request.body = std::move(body);
+    request.signature = merovingian::federation::make_federation_signature(
+        remote_origin, request.destination, request.method, request.target, request.body,
+        merovingian::federation::test::keypair_from_seed(remote_key_seed).secret_key);
+    return request;
 }
 
 [[nodiscard]] auto rooms_in(std::string const& body) -> std::size_t
@@ -277,6 +332,91 @@ SCENARIO("A directory page is bounded in rooms and in bytes, and paging always a
                 auto const answer = parse_object(body);
                 REQUIRE(string_member(answer, "next_batch") == nullptr);
                 REQUIRE(*string_member(answer, "prev_batch") == "3");
+            }
+        }
+    }
+}
+
+// ADR-0461: a worker whose relay to main brings back no listing has no answer to give. An empty `chunk` is a valid
+// answer that says this server publishes nothing, so that case must not look like one.
+SCENARIO("The publicRooms handler answers with an error when no listing can be had",
+         "[federation][public_rooms][unavailable]")
+{
+    GIVEN("a directory provider that gives no listing, as a worker's does when main refuses the relay")
+    {
+        auto state = inbound_state();
+        state.public_rooms_provider = [](PublicRoomsRequest const&) -> std::optional<std::string> {
+            return std::nullopt;
+        };
+
+        WHEN("a GET and a POST are handled")
+        {
+            auto const get =
+                merovingian::federation::handle_inbound_federation_request(state, signed_request("GET", ""));
+            auto const post =
+                merovingian::federation::handle_inbound_federation_request(state, signed_request("POST", "{}"));
+
+            THEN("both are 503 M_UNAVAILABLE, never an empty directory")
+            {
+                for (auto const& response : {get, post})
+                {
+                    REQUIRE(response.status == 503U);
+                    REQUIRE(response.body.find("M_UNAVAILABLE") != std::string::npos);
+                    REQUIRE(response.body.find("chunk") == std::string::npos);
+                }
+            }
+        }
+    }
+
+    GIVEN("no directory provider at all")
+    {
+        auto state = inbound_state();
+
+        WHEN("a GET is handled")
+        {
+            auto const response =
+                merovingian::federation::handle_inbound_federation_request(state, signed_request("GET", ""));
+
+            THEN("it is 501, with no directory in the answer")
+            {
+                REQUIRE(response.status == 501U);
+                REQUIRE(response.body.find("chunk") == std::string::npos);
+            }
+        }
+    }
+}
+
+// Project rule (src/federation/AGENTS.md): every non-/send endpoint counts against the per-origin request cap, keyed
+// by the origin X-Matrix proved. The spec marks this endpoint "Rate-limited: No", which tells a requester not to
+// expect 429; it does not require a server to accept a flood.
+SCENARIO("GET and POST /publicRooms count against the per-origin request cap", "[federation][public_rooms][rate_limit]")
+{
+    GIVEN("a per-origin cap of two requests a minute and a provider that counts its calls")
+    {
+        auto state = inbound_state();
+        state.config.per_origin_request_rate = {2U, 60U};
+        auto listings = std::size_t{0U};
+        state.public_rooms_provider = [&listings](PublicRoomsRequest const&) -> std::optional<std::string> {
+            ++listings;
+            return std::string{R"({"chunk":[]})"};
+        };
+
+        WHEN("three requests arrive from one origin")
+        {
+            auto const first =
+                merovingian::federation::handle_inbound_federation_request(state, signed_request("GET", ""));
+            auto const second =
+                merovingian::federation::handle_inbound_federation_request(state, signed_request("POST", "{}"));
+            auto const third =
+                merovingian::federation::handle_inbound_federation_request(state, signed_request("GET", ""));
+
+            THEN("the first two are answered and the third is refused before anything is listed")
+            {
+                REQUIRE(first.status == 200U);
+                REQUIRE(second.status == 200U);
+                REQUIRE(third.status == 429U);
+                REQUIRE(third.body.find("M_LIMIT_EXCEEDED") != std::string::npos);
+                REQUIRE(listings == 2U);
             }
         }
     }

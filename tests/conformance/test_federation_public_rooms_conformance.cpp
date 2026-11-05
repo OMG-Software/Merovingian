@@ -30,7 +30,6 @@
 
 #include <algorithm>
 #include <cstddef>
-#include <optional>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -331,122 +330,6 @@ SCENARIO("GET and POST /publicRooms refuse a request that is not authenticated",
             {
                 REQUIRE(response.status == 403U);
                 REQUIRE(response.body.find(fixture.cheese) == std::string::npos);
-            }
-        }
-    }
-}
-
-// Project rule (src/federation/AGENTS.md): every non-/send endpoint counts against the per-origin request
-// cap, keyed by the origin X-Matrix proved. The spec marks this endpoint "Rate-limited: No", which says a
-// requester need not expect 429 by contract, not that a server may be flooded; 429 M_LIMIT_EXCEEDED is the
-// standard answer.
-// URL: ../../docs/matrix-v1.19-spec/server-server-api.md#get_matrixfederationv1publicrooms
-SCENARIO("GET and POST /publicRooms count against the per-origin request cap",
-         "[federation][conformance][public_rooms][rate_limit]")
-{
-    GIVEN("a per-origin cap of two requests a minute")
-    {
-        auto fixture = DirectoryFixture{federation_config()};
-        auto& runtime = fixture.started.runtime;
-        runtime.homeserver.federation.config.per_origin_request_rate = {2U, 60U};
-
-        WHEN("three requests arrive from one origin")
-        {
-            auto const first = signed_call(runtime, "GET", public_rooms_path);
-            auto const second = signed_call(runtime, "POST", public_rooms_path, "{}");
-            auto const third = signed_call(runtime, "GET", public_rooms_path);
-
-            THEN("the first two are answered and the third refused with no room listed")
-            {
-                REQUIRE(first.status == 200U);
-                REQUIRE(second.status == 200U);
-                REQUIRE(third.status == 429U);
-                REQUIRE(third.body.find("M_LIMIT_EXCEEDED") != std::string::npos);
-                REQUIRE(third.body.find(fixture.cheese) == std::string::npos);
-            }
-        }
-    }
-}
-
-// Project rule (ADR-0461): a worker whose relay to main brings back no listing has no answer to give. An empty
-// `chunk` is a valid answer that says this server publishes nothing, so that case must not look like one. The
-// handler is driven directly, because handle_federation_http_request wires main's own provider on every call.
-SCENARIO("GET and POST /publicRooms answer with an error when no listing can be had",
-         "[federation][conformance][public_rooms][unavailable]")
-{
-    auto const signed_request = [](std::string method,
-                                   std::string body) -> merovingian::federation::SignedFederationRequest {
-        auto request = merovingian::federation::SignedFederationRequest{};
-        request.method = std::move(method);
-        request.target = public_rooms_path;
-        request.origin = remote_origin;
-        request.destination = "example.org";
-        request.key_id = remote_key_id;
-        request.now_ts = 1000U;
-        request.canonical_json_verified = true;
-        request.body = std::move(body);
-        request.signature = merovingian::federation::make_federation_signature(
-            remote_origin, request.destination, request.method, request.target, request.body,
-            merovingian::federation::test::keypair_from_seed(remote_key_seed).secret_key);
-        return request;
-    };
-    auto const inbound_state = []() -> merovingian::federation::FederationRuntimeState {
-        auto config = merovingian::federation::RuntimeFederationConfig{};
-        config.enabled = true;
-        config.default_policy = "allow";
-        config.require_valid_tls = true;
-        config.verify_json_signatures = true;
-        config.max_transaction_bytes = 65536U;
-        config.remote_timeout_seconds = 30U;
-        config.server_name = "example.org";
-        auto state = merovingian::federation::make_federation_runtime_state(config);
-        auto remote = trusted_remote();
-        remote.signing_key = {remote_origin, remote_key_id, 2000U,
-                              merovingian::federation::test::keypair_from_seed(remote_key_seed).public_key};
-        merovingian::federation::upsert_remote(state, remote);
-        return state;
-    };
-
-    GIVEN("a directory provider that gives no listing, as a worker's does when main refuses the relay")
-    {
-        auto state = inbound_state();
-        state.public_rooms_provider =
-            [](merovingian::federation::PublicRoomsRequest const&) -> std::optional<std::string> {
-            return std::nullopt;
-        };
-
-        WHEN("a GET and a POST are handled")
-        {
-            auto const get =
-                merovingian::federation::handle_inbound_federation_request(state, signed_request("GET", ""));
-            auto const post =
-                merovingian::federation::handle_inbound_federation_request(state, signed_request("POST", "{}"));
-
-            THEN("both are 503 M_UNAVAILABLE, never an empty directory")
-            {
-                for (auto const& response : {get, post})
-                {
-                    REQUIRE(response.status == 503U);
-                    REQUIRE(response.body.find("M_UNAVAILABLE") != std::string::npos);
-                    REQUIRE(response.body.find("chunk") == std::string::npos);
-                }
-            }
-        }
-    }
-
-    GIVEN("no directory provider at all")
-    {
-        auto state = inbound_state();
-
-        WHEN("a GET is handled")
-        {
-            auto const response =
-                merovingian::federation::handle_inbound_federation_request(state, signed_request("GET", ""));
-
-            THEN("it is 501, with no directory in the answer")
-            {
-                REQUIRE(response.status == 501U);
-                REQUIRE(response.body.find("chunk") == std::string::npos);
             }
         }
     }
