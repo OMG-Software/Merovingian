@@ -235,7 +235,7 @@ auto install_test_per_user_rate_limit_engine(ClientServerRuntime& runtime) -> vo
                                               std::vector<database::PersistentDeviceListChange> changes) -> bool;
 [[nodiscard]] auto record_device_list_change(ClientServerRuntime& runtime, database::PersistentDeviceListChange change)
     -> bool;
-[[nodiscard]] auto set_presence(ClientServerRuntime& runtime, database::PersistentPresence state) -> bool;
+[[nodiscard]] auto set_presence(ClientServerRuntime& runtime, database::PersistentPresence const& state) -> bool;
 // One pass of the "presence-idle" job (CS API "Presence", "Idle timeout"; ADR-0492): every local user whose
 // presence is `online` and whose last active time is over `presence_idle_timeout_ms` is set to `unavailable`,
 // told to the servers that share a room with them, and long-polling syncs are woken. Takes runtime.mutex for

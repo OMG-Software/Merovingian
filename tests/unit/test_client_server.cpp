@@ -3092,9 +3092,9 @@ SCENARIO("Invite and knock recipients receive only stripped room summaries",
             return std::pair{login_token(response.response.body),
                              *string_member(parse_object(response.response.body), "user_id")};
         };
-        auto const [alice_token, alice] = register_user("alice");
-        auto const [bob_token, bob] = register_user("bob");
-        auto const [carol_token, carol] = register_user("carol");
+        auto const alice_token = register_user("alice").first;
+        auto const bob_token = register_user("bob").first;
+        auto const carol_token = register_user("carol").first;
         auto const [mallory_token, mallory] = register_user("mallory");
         auto const create = merovingian::homeserver::handle_client_server_request(
             runtime,
@@ -10269,9 +10269,6 @@ SCENARIO("PUT /presence/{userId}/status persists Matrix presence and rejects inv
                 auto const response_body = parse_object(response.response.body);
                 REQUIRE(response_body.empty());
 
-                auto const stored = merovingian::database::find_profile(runtime.homeserver.database.persistent_store,
-                                                                        "@alice:example.org");
-                std::ignore = stored;
                 auto const presence = std::ranges::find_if(runtime.homeserver.database.persistent_store.presence_states,
                                                            [](auto const& state) {
                                                                return state.user_id == "@alice:example.org";

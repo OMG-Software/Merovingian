@@ -21121,7 +21121,7 @@ auto record_device_list_change(ClientServerRuntime& runtime, database::Persisten
     return stored;
 }
 
-auto set_presence(ClientServerRuntime& runtime, database::PersistentPresence state) -> bool
+auto set_presence(ClientServerRuntime& runtime, database::PersistentPresence const& state) -> bool
 {
     auto guard = std::unique_lock<RuntimeMutex>{runtime.homeserver.mutex};
     if (!presence_enabled(runtime.homeserver))
