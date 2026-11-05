@@ -766,11 +766,15 @@ SCENARIO("Inbound federation hands a valid exchange_third_party_invite to the ex
 {
     GIVEN("a runtime with an exchanger and a verified peer matrix.example.org")
     {
+        // Build a runtime that trusts `origin` so signature/origin checks pass and this test can focus on
+        // exchange_third_party_invite request-shape and caller-authorization rules.
         auto runtime = merovingian::federation::make_federation_runtime_state(runtime_config());
         auto const origin = std::string{"matrix.example.org"};
         auto const key_id = std::string{"ed25519:auto"};
         auto const token = std::string{"verify-token"};
         merovingian::federation::upsert_remote(runtime, remote_for(origin, key_id, token));
+        // Capture every exchanger invocation so assertions can verify whether malformed requests were blocked
+        // before business logic and whether valid requests were forwarded with expected payload/origin.
         auto calls = std::vector<merovingian::federation::ThirdPartyInviteExchange>{};
         auto origins = std::vector<std::string>{};
         runtime.third_party_invite_exchanger =
@@ -780,6 +784,8 @@ SCENARIO("Inbound federation hands a valid exchange_third_party_invite to the ex
                 origins.push_back(caller);
                 return merovingian::federation::ThirdPartyInviteExchangeResult{true, 200U, {}};
             };
+        // Helper that produces a minimally complete third-party-invite member event while letting each test
+        // vary one field (type/membership/room_id/state_key) to trigger the corresponding validator path.
         auto const body_for = [](std::string const& type, std::string const& membership, std::string const& room_id,
                                  std::string const& state_key) {
             return std::string{R"({"content":{"membership":")"} + membership +
