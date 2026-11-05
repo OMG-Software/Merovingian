@@ -801,8 +801,8 @@ value. Test fixtures that do not exercise persistence select it through
 - Live PostgreSQL integration coverage: a dedicated GitHub Actions workflow
   (`.github/workflows/postgres-integration.yml`) starts a PostgreSQL 16
   service, provisions a `merovingian_migration` role with DDL grants and a
-  `merovingian_runtime` role with table-level DML grants, and runs the
-  live integration scenarios at
+  `merovingian_runtime` role with table-level DML grants, and runs every
+  integration scenario tagged `[postgresql]` (ADR-0511), most of them in
   `tests/integration/test_postgresql_persistence_flow.cpp`. Scenarios
   assert: schema is bootstrapped to `current_schema_version`, previously
   persisted rows survive a close/reopen, and a runtime-role session is

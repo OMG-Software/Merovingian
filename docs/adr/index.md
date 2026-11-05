@@ -473,3 +473,4 @@
 * [0497 - The greatest `origin_server_ts` of a room's events is kept in the event table](0497-the-newest-origin-server-ts-of-a-room-is-kept-in-the-event-table.md)
 * [0460 - One listing and one strict request reader serve every published room directory endpoint](0460-one-listing-and-one-strict-reader-serve-the-published-room-directory.md)
 * [0461 - A federation worker relays the published room directory to main](0461-a-federation-worker-relays-the-published-room-directory-to-main.md)
+* [0511 - A commit runs each workflow once](0511-a-commit-runs-each-workflow-once.md)

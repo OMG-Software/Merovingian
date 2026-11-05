@@ -1,7 +1,8 @@
 name: packages
 on:
   push:
-    branches: [main, 'feature/**', 'codex/**', 'alpha-release']
+    # No 'feature/**': a pull request's branch would build every package twice for one commit (ADR-0511).
+    branches: [main, 'codex/**', 'alpha-release']
   pull_request:
     branches: [main]
 jobs:
