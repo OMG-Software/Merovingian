@@ -12204,6 +12204,165 @@ namespace
         return std::nullopt;
     }
 
+    // POST /_matrix/client/v3/keys/device_signing/upload: stores the uploaded cross-signing keys in one transaction.
+    [[nodiscard]] auto store_cross_signing_key_upload(ClientServerRuntime& rt, std::string_view user,
+                                                      LocalHttpRequest const& req) -> bool
+    {
+        auto& store = rt.homeserver.database.persistent_store;
+        auto const parsed = canonicaljson::parse_lossless(req.body);
+        if (parsed.error != canonicaljson::ParseError::none)
+        {
+            return false;
+        }
+        auto const* obj = std::get_if<canonicaljson::Object>(&parsed.value.storage());
+        if (obj == nullptr)
+        {
+            return false;
+        }
+        auto keys = std::vector<database::PersistentCrossSigningKey>{};
+        for (auto const& [key_type, key_name] : {
+                 std::pair<std::string_view, std::string_view>{"master_key",       "master"      },
+                 std::pair<std::string_view, std::string_view>{"self_signing_key", "self_signing"},
+                 std::pair<std::string_view, std::string_view>{"user_signing_key", "user_signing"},
+        })
+        {
+            auto const* value = object_member(*obj, key_type);
+            if (value == nullptr)
+            {
+                continue;
+            }
+            auto const serialized = canonicaljson::serialize_canonical(*value);
+            if (serialized.error != canonicaljson::CanonicalJsonError::none)
+            {
+                return false;
+            }
+            keys.push_back({std::string{user}, std::string{key_name}, serialized.output});
+        }
+        // One transaction: a failed write leaves the previous set of keys intact.
+        return database::store_cross_signing_keys(store, std::move(keys));
+    }
+
+    // POST /_matrix/client/v3/keys/signatures/upload: stores the uploaded key signatures.
+    [[nodiscard]] auto store_key_signature_upload(ClientServerRuntime& rt, std::string_view user,
+                                                  LocalHttpRequest const& req) -> bool
+    {
+        auto& store = rt.homeserver.database.persistent_store;
+        auto const parsed = parsed_json_object(req.body);
+        if (!parsed.has_value())
+        {
+            return false;
+        }
+        auto stored = true;
+        for (auto const& user_member : *parsed)
+        {
+            auto const* signed_keys = std::get_if<canonicaljson::Object>(&user_member.value->storage());
+            if (signed_keys == nullptr)
+            {
+                stored = false;
+                continue;
+            }
+            for (auto const& key_member : *signed_keys)
+            {
+                auto const serialized = canonicaljson::serialize_canonical(*key_member.value);
+                if (serialized.error != canonicaljson::CanonicalJsonError::none)
+                {
+                    stored = false;
+                    continue;
+                }
+                if (!database::store_key_signature(
+                        store, {std::string{user}, user_member.key, key_member.key, serialized.output}))
+                {
+                    stored = false;
+                }
+            }
+        }
+        return stored;
+    }
+
+    // PUT /_matrix/client/v3/room_keys/keys/{roomId}: stores the sessions of one room.
+    [[nodiscard]] auto store_room_key_backup_room(ClientServerRuntime& rt, std::string_view user,
+                                                  LocalHttpRequest const& req, std::string_view version) -> bool
+    {
+        auto& store = rt.homeserver.database.persistent_store;
+        auto const path = room_key_backup_path_parts(req.target);
+        if (!path.has_value() || path->session_id.has_value())
+        {
+            return false;
+        }
+        auto const body = parsed_json_object(req.body);
+        if (!body.has_value())
+        {
+            return false;
+        }
+        auto const* sessions = object_member_as_object(*body, "sessions");
+        if (sessions == nullptr)
+        {
+            return false;
+        }
+        auto stored = true;
+        for (auto const& session : *sessions)
+        {
+            auto const serialized = canonicaljson::serialize_canonical(*session.value);
+            if (serialized.error != canonicaljson::CanonicalJsonError::none)
+            {
+                stored = false;
+                continue;
+            }
+            if (!store_key_backup_session_by_rules(
+                    store, {std::string{user}, std::string{version}, path->room_id, session.key, serialized.output}))
+            {
+                stored = false;
+            }
+        }
+        return stored;
+    }
+
+    // PUT /_matrix/client/v3/room_keys/keys: stores every session of the body in one transaction.
+    [[nodiscard]] auto store_room_key_backup_batch(ClientServerRuntime& rt, std::string_view user,
+                                                   LocalHttpRequest const& req, std::string_view version) -> bool
+    {
+        auto& store = rt.homeserver.database.persistent_store;
+        // The route handler has already refused a malformed body (room_key_batch_refusal).
+        auto const body = parsed_json_object(req.body);
+        if (!body.has_value())
+        {
+            return false;
+        }
+        auto const* rooms = object_member_as_object(*body, "rooms");
+        if (rooms == nullptr)
+        {
+            return false;
+        }
+        auto sessions_to_store = std::vector<database::PersistentKeyBackupSession>{};
+        for (auto const& room : *rooms)
+        {
+            auto const* room_obj =
+                room.value == nullptr ? nullptr : std::get_if<canonicaljson::Object>(&room.value->storage());
+            auto const* sessions = room_obj == nullptr ? nullptr : object_member_as_object(*room_obj, "sessions");
+            if (sessions == nullptr)
+            {
+                return false;
+            }
+            for (auto const& session : *sessions)
+            {
+                auto const session_json = canonicaljson::serialize_canonical(*session.value);
+                if (session_json.error != canonicaljson::CanonicalJsonError::none)
+                {
+                    return false;
+                }
+                auto offered = database::PersistentKeyBackupSession{std::string{user}, std::string{version}, room.key,
+                                                                    session.key, session_json.output};
+                if (key_backup_session_is_kept(store, offered))
+                {
+                    continue;
+                }
+                sessions_to_store.push_back(std::move(offered));
+            }
+        }
+        // One transaction: a failed write stores none of the batch and the request answers 500.
+        return database::store_key_backup_sessions(store, std::move(sessions_to_store));
+    }
+
     [[nodiscard]] auto store_key_api_payload(ClientServerRuntime& rt, auth::KeyApiEndpoint endpoint,
                                              std::string_view user, std::string_view /*device_id*/,
                                              LocalHttpRequest const& req, std::string_view version) -> bool
@@ -12211,71 +12370,10 @@ namespace
         auto& store = rt.homeserver.database.persistent_store;
         switch (endpoint)
         {
-        case auth::KeyApiEndpoint::upload_cross_signing_keys: {
-            auto const parsed = canonicaljson::parse_lossless(req.body);
-            if (parsed.error != canonicaljson::ParseError::none)
-            {
-                return false;
-            }
-            auto const* obj = std::get_if<canonicaljson::Object>(&parsed.value.storage());
-            if (obj == nullptr)
-            {
-                return false;
-            }
-            auto keys = std::vector<database::PersistentCrossSigningKey>{};
-            for (auto const& [key_type, key_name] : {
-                     std::pair<std::string_view, std::string_view>{"master_key",       "master"      },
-                     std::pair<std::string_view, std::string_view>{"self_signing_key", "self_signing"},
-                     std::pair<std::string_view, std::string_view>{"user_signing_key", "user_signing"},
-            })
-            {
-                auto const* value = object_member(*obj, key_type);
-                if (value == nullptr)
-                {
-                    continue;
-                }
-                auto const serialized = canonicaljson::serialize_canonical(*value);
-                if (serialized.error != canonicaljson::CanonicalJsonError::none)
-                {
-                    return false;
-                }
-                keys.push_back({std::string{user}, std::string{key_name}, serialized.output});
-            }
-            // One transaction: a failed write leaves the previous set of keys intact.
-            return database::store_cross_signing_keys(store, std::move(keys));
-        }
-        case auth::KeyApiEndpoint::upload_signatures: {
-            auto const parsed = parsed_json_object(req.body);
-            if (!parsed.has_value())
-            {
-                return false;
-            }
-            auto stored = true;
-            for (auto const& user_member : *parsed)
-            {
-                auto const* signed_keys = std::get_if<canonicaljson::Object>(&user_member.value->storage());
-                if (signed_keys == nullptr)
-                {
-                    stored = false;
-                    continue;
-                }
-                for (auto const& key_member : *signed_keys)
-                {
-                    auto const serialized = canonicaljson::serialize_canonical(*key_member.value);
-                    if (serialized.error != canonicaljson::CanonicalJsonError::none)
-                    {
-                        stored = false;
-                        continue;
-                    }
-                    if (!database::store_key_signature(
-                            store, {std::string{user}, user_member.key, key_member.key, serialized.output}))
-                    {
-                        stored = false;
-                    }
-                }
-            }
-            return stored;
-        }
+        case auth::KeyApiEndpoint::upload_cross_signing_keys:
+            return store_cross_signing_key_upload(rt, user, req);
+        case auth::KeyApiEndpoint::upload_signatures:
+            return store_key_signature_upload(rt, user, req);
         case auth::KeyApiEndpoint::create_key_backup_version:
             // A new version's number is chosen by database::create_key_backup_version, in one transaction with
             // its counter (F-60, ADR-0384); the route handler calls it directly.
@@ -12291,80 +12389,10 @@ namespace
             return store_key_backup_session_by_rules(
                 store, {std::string{user}, std::string{version}, path->room_id, *path->session_id, req.body});
         }
-        case auth::KeyApiEndpoint::put_room_key_backup_room: {
-            auto const path = room_key_backup_path_parts(req.target);
-            if (!path.has_value() || path->session_id.has_value())
-            {
-                return false;
-            }
-            auto const body = parsed_json_object(req.body);
-            if (!body.has_value())
-            {
-                return false;
-            }
-            auto const* sessions = object_member_as_object(*body, "sessions");
-            if (sessions == nullptr)
-            {
-                return false;
-            }
-            auto stored = true;
-            for (auto const& session : *sessions)
-            {
-                auto const serialized = canonicaljson::serialize_canonical(*session.value);
-                if (serialized.error != canonicaljson::CanonicalJsonError::none)
-                {
-                    stored = false;
-                    continue;
-                }
-                if (!store_key_backup_session_by_rules(store, {std::string{user}, std::string{version}, path->room_id,
-                                                               session.key, serialized.output}))
-                {
-                    stored = false;
-                }
-            }
-            return stored;
-        }
-        case auth::KeyApiEndpoint::put_room_key_backup_batch: {
-            // The route handler has already refused a malformed body (room_key_batch_refusal).
-            auto const body = parsed_json_object(req.body);
-            if (!body.has_value())
-            {
-                return false;
-            }
-            auto const* rooms = object_member_as_object(*body, "rooms");
-            if (rooms == nullptr)
-            {
-                return false;
-            }
-            auto sessions_to_store = std::vector<database::PersistentKeyBackupSession>{};
-            for (auto const& room : *rooms)
-            {
-                auto const* room_obj =
-                    room.value == nullptr ? nullptr : std::get_if<canonicaljson::Object>(&room.value->storage());
-                auto const* sessions = room_obj == nullptr ? nullptr : object_member_as_object(*room_obj, "sessions");
-                if (sessions == nullptr)
-                {
-                    return false;
-                }
-                for (auto const& session : *sessions)
-                {
-                    auto const session_json = canonicaljson::serialize_canonical(*session.value);
-                    if (session_json.error != canonicaljson::CanonicalJsonError::none)
-                    {
-                        return false;
-                    }
-                    auto offered = database::PersistentKeyBackupSession{std::string{user}, std::string{version},
-                                                                        room.key, session.key, session_json.output};
-                    if (key_backup_session_is_kept(store, offered))
-                    {
-                        continue;
-                    }
-                    sessions_to_store.push_back(std::move(offered));
-                }
-            }
-            // One transaction: a failed write stores none of the batch and the request answers 500.
-            return database::store_key_backup_sessions(store, std::move(sessions_to_store));
-        }
+        case auth::KeyApiEndpoint::put_room_key_backup_room:
+            return store_room_key_backup_room(rt, user, req, version);
+        case auth::KeyApiEndpoint::put_room_key_backup_batch:
+            return store_room_key_backup_batch(rt, user, req, version);
         case auth::KeyApiEndpoint::delete_key_backup_version: {
             auto constexpr prefix = std::string_view{"/_matrix/client/v3/room_keys/version/"};
             auto const version_str = route_suffix(target_path(req.target), prefix);
@@ -12403,6 +12431,357 @@ namespace
         return true;
     }
 
+    // GET /_matrix/client/v3/room_keys/keys: reads every session of a backup, grouped by room.
+    [[nodiscard]] auto handle_get_room_key_backup_batch(ClientServerRuntime& rt, std::string_view user,
+                                                        LocalHttpRequest const& req) -> LocalHttpResponse
+    {
+        auto const batch_ver_param = extract_key_backup_version_param(req.target);
+        std::string_view batch_ver;
+        if (!batch_ver_param.empty())
+        {
+            if (key_backup_version_for_user(rt.homeserver.database.persistent_store, user, batch_ver_param) == nullptr)
+            {
+                return resp(404U, matrix_error("M_NOT_FOUND", "key backup version not found"));
+            }
+            batch_ver = batch_ver_param;
+        }
+        else if (auto const* current = key_backup_version_for_user(rt.homeserver.database.persistent_store, user);
+                 current != nullptr)
+        {
+            batch_ver = current->version;
+        }
+        else
+        {
+            // No version specified and no current backup: return an empty rooms object.
+            return resp(200U, json_serialize(json_obj({json_member("rooms", json_obj({}))})));
+        }
+
+        auto const& all_sessions = rt.homeserver.database.persistent_store.key_backup_sessions;
+        auto room_map = std::map<std::string, canonicaljson::Object>{};
+        for (auto const& s : all_sessions)
+        {
+            if (s.user_id == user && s.version == batch_ver)
+            {
+                room_map[s.room_id].push_back(json_member(s.session_id, json_embed_raw(s.json)));
+            }
+        }
+        auto rooms = canonicaljson::Object{};
+        for (auto& [room_id, sess_obj] : room_map)
+        {
+            rooms.push_back(json_member(room_id, json_obj({json_member("sessions", json_obj(std::move(sess_obj)))})));
+        }
+        return resp(200U, json_serialize(json_obj({json_member("rooms", json_obj(std::move(rooms)))})));
+    }
+
+    // GET /_matrix/client/v3/room_keys/keys/{roomId}[/{sessionId}]: reads one room or one session of a backup.
+    [[nodiscard]] auto handle_get_room_key_backup(ClientServerRuntime& rt, std::string_view user,
+                                                  LocalHttpRequest const& req) -> LocalHttpResponse
+    {
+        auto const get_ver_param = extract_key_backup_version_param(req.target);
+        std::string_view get_ver;
+        if (!get_ver_param.empty())
+        {
+            if (key_backup_version_for_user(rt.homeserver.database.persistent_store, user, get_ver_param) == nullptr)
+            {
+                return resp(404U, matrix_error("M_NOT_FOUND", "key backup version not found"));
+            }
+            get_ver = get_ver_param;
+        }
+        else if (auto const* current = key_backup_version_for_user(rt.homeserver.database.persistent_store, user);
+                 current != nullptr)
+        {
+            get_ver = current->version;
+        }
+        // If no version was specified and there is no current backup, get_ver
+        // remains empty so all searches below return empty/no-match results.
+
+        if (auto const path = room_key_backup_path_parts(req.target); path.has_value())
+        {
+            if (!path->session_id.has_value())
+            {
+                auto const& all_sessions = rt.homeserver.database.persistent_store.key_backup_sessions;
+                auto sessions_obj = canonicaljson::Object{};
+                for (auto const& s : all_sessions)
+                {
+                    if (s.user_id == user && s.version == get_ver && s.room_id == path->room_id)
+                    {
+                        sessions_obj.push_back(json_member(s.session_id, json_embed_raw(s.json)));
+                    }
+                }
+                return resp(200U,
+                            json_serialize(json_obj({json_member("sessions", json_obj(std::move(sessions_obj)))})));
+            }
+
+            auto const& sessions = rt.homeserver.database.persistent_store.key_backup_sessions;
+            auto const it = std::ranges::find_if(sessions, [&](auto const& s) {
+                return s.user_id == user && s.version == get_ver && s.room_id == path->room_id &&
+                       s.session_id == *path->session_id;
+            });
+            if (it == sessions.end())
+            {
+                return resp(404U, matrix_error("M_NOT_FOUND", "key backup session not found"));
+            }
+            return resp(200U, it->json);
+        }
+        auto constexpr kbprefix = std::string_view{"/_matrix/client/v3/room_keys/keys/"};
+        auto const suffix = route_suffix(req.target, kbprefix);
+        auto const clean = suffix.substr(0U, suffix.find('?'));
+        auto const separator = clean.find('/');
+        // No slash in clean suffix → room-level GET (/{roomId}), not session-level.
+        if (separator == std::string_view::npos || separator + 1U >= clean.size())
+        {
+            // Return all sessions for the room as {"sessions":{sessionId: data, ...}}.
+            auto const room_id = clean;
+            auto const& all_sessions = rt.homeserver.database.persistent_store.key_backup_sessions;
+            auto sessions_obj = canonicaljson::Object{};
+            for (auto const& s : all_sessions)
+            {
+                if (s.user_id == user && s.version == get_ver && s.room_id == room_id)
+                {
+                    sessions_obj.push_back(json_member(s.session_id, json_embed_raw(s.json)));
+                }
+            }
+            return resp(200U, json_serialize(json_obj({json_member("sessions", json_obj(std::move(sessions_obj)))})));
+        }
+        auto const room_id = clean.substr(0U, separator);
+        auto const session_id = clean.substr(separator + 1U);
+        auto const& sessions = rt.homeserver.database.persistent_store.key_backup_sessions;
+        auto const it = std::ranges::find_if(sessions, [&](auto const& s) {
+            return s.user_id == user && s.version == get_ver && s.room_id == room_id && s.session_id == session_id;
+        });
+        if (it == sessions.end())
+        {
+            return resp(404U, matrix_error("M_NOT_FOUND", "key backup session not found"));
+        }
+        return resp(200U, it->json);
+    }
+
+    // POST /_matrix/client/v3/keys/device_signing/upload: password-authenticated upload of the cross-signing keys.
+    [[nodiscard]] auto handle_upload_cross_signing_keys(ClientServerRuntime& rt, auth::KeyApiRoute const& route,
+                                                        std::string_view user, std::string_view device_id,
+                                                        LocalHttpRequest const& req) -> LocalHttpResponse
+    {
+        // Spec §11.12.1: MUST require UIA (m.login.password) to prevent key takeover.
+        auto const cs_uia = json_obj({
+            json_member("flows",
+                        json_arr({json_obj({json_member("stages", json_arr({json_str("m.login.password")}))})})),
+            json_member("params", json_obj({})),
+            json_member("session", json_str("cross_signing_upload")),
+        });
+        auto const cs_body = parsed_json_object(req.body);
+        auto const* cs_auth = cs_body.has_value() ? object_member_object(*cs_body, "auth") : nullptr;
+        if (cs_auth == nullptr)
+        {
+            return resp(401U, json_serialize(cs_uia));
+        }
+        auto const* cs_auth_type = string_member(*cs_auth, "type");
+        if (cs_auth_type == nullptr || *cs_auth_type != "m.login.password")
+        {
+            return resp(401U, json_serialize(cs_uia));
+        }
+        auto const* cs_password = string_member(*cs_auth, "password");
+        if (cs_password == nullptr || cs_password->empty())
+        {
+            return resp(401U, json_serialize(cs_uia));
+        }
+        auto const password_verified = verify_local_user_password(rt.homeserver, req.access_token, *cs_password);
+        if (!password_verified.ok)
+        {
+            if (password_verified.retry_after_ms > 0U)
+            {
+                auto const retry_after = static_cast<std::uint32_t>(std::min<std::uint64_t>(
+                    password_verified.retry_after_ms, std::numeric_limits<std::uint32_t>::max()));
+                auto response =
+                    LocalHttpResponse{429U,
+                                      matrix_error("M_LIMIT_EXCEEDED",
+                                                   "Too many password attempts. Please try again later.", retry_after),
+                                      {{"Retry-After", std::to_string((retry_after + 999U) / 1000U)}}};
+                apply_cors_headers(req, response, rt.cors);
+                return response;
+            }
+            return resp(401U, uia_password_failure_body(json_serialize(cs_uia)));
+        }
+        for (auto const* key_type : {"master_key", "self_signing_key", "user_signing_key"})
+        {
+            if (auto const* key = object_member(*cs_body, key_type); key != nullptr && key_document_too_large(*key))
+            {
+                return err(400U, "M_TOO_LARGE",
+                           std::string{key_type} + " may be at most " +
+                               std::to_string(max_uploaded_key_document_bytes) + " bytes");
+            }
+        }
+        if (auto const refusal = cross_signing_upload_refusal(rt, user, *cs_body); refusal.has_value())
+        {
+            return err(refusal->status, refusal->errcode, refusal->message);
+        }
+        if (cross_signing_upload_names_a_device(rt, user, *cs_body))
+        {
+            return err(403U, "M_FORBIDDEN", "a cross-signing key may not have the ID of one of the user's devices");
+        }
+        if (!database::sync_stream_has_write_reserve(rt.homeserver.database.persistent_store) ||
+            !store_key_api_payload(rt, route.endpoint, user, device_id, req, {}))
+        {
+            return err(500U, "M_UNKNOWN", "key API persistence failed");
+        }
+        // Spec §11.11.1: cross-signing key change MUST appear in device_lists.changed.
+        // Self-notify so the user's own other devices re-query the new keys (required
+        // for verification to complete). Also fan out to room-sharing local users and
+        // remote servers.
+        {
+            auto const recorded = record_shared_room_device_changes(rt, user, NotifyOwnDevices::yes);
+            auto const destinations = remote_servers_for_user(rt.homeserver, user);
+            broadcast_device_list_updates(rt, user, destinations);
+            // Spec v1.19 §m.signing_key_update: remote servers learn of a
+            // new master or self-signing key through this EDU. An upload of
+            // only the private user-signing key changes nothing they can see.
+            if (object_member(*cs_body, "master_key") != nullptr ||
+                object_member(*cs_body, "self_signing_key") != nullptr)
+            {
+                broadcast_signing_key_update(rt, user, destinations);
+            }
+            if (!recorded)
+            {
+                return err(500U, "M_UNKNOWN", device_list_change_unrecorded);
+            }
+        }
+        return resp(200U, key_api_success_body(route.endpoint));
+    }
+
+    // PUT /_matrix/client/v3/room_keys/version/{version}: updates the auth_data of an existing key backup.
+    [[nodiscard]] auto handle_update_key_backup_version(ClientServerRuntime& rt, auth::KeyApiRoute const& route,
+                                                        std::string_view user, std::string_view device_id,
+                                                        LocalHttpRequest const& req) -> LocalHttpResponse
+    {
+        // Version comes from the path: PUT /room_keys/version/{version}
+        auto constexpr upd_prefix = std::string_view{"/_matrix/client/v3/room_keys/version/"};
+        auto const path_ver = route_suffix(req.target, upd_prefix);
+        // Strip any query string
+        auto const clean_ver = path_ver.substr(0U, path_ver.find('?'));
+        if (clean_ver.empty())
+        {
+            return err(400U, "M_UNRECOGNIZED", "missing version in path");
+        }
+        // Spec (PUT /room_keys/version/{version}): 404 when the backup does not exist, so an update never
+        // creates a version; 400 when the algorithm is not the backup's current one or a `version` in the
+        // body is not the path's.
+        auto const* const held = key_backup_version_for_user(rt.homeserver.database.persistent_store, user, clean_ver);
+        if (held == nullptr)
+        {
+            return resp(404U, matrix_error("M_NOT_FOUND", "key backup version not found"));
+        }
+        auto const update = parsed_json_object(req.body);
+        if (!update.has_value())
+        {
+            return err(400U, "M_BAD_JSON", "the request body must be a JSON object");
+        }
+        auto const* const algorithm = string_member(*update, "algorithm");
+        auto const held_object = parsed_json_object(held->json);
+        auto const* const held_algorithm = held_object.has_value() ? string_member(*held_object, "algorithm") : nullptr;
+        if (algorithm == nullptr || (held_algorithm != nullptr && *algorithm != *held_algorithm))
+        {
+            return err(400U, "M_INVALID_PARAM", "algorithm must be the algorithm the backup already uses");
+        }
+        if (object_member_as_object(*update, "auth_data") == nullptr)
+        {
+            return err(400U, "M_INVALID_PARAM", "auth_data must be an object");
+        }
+        if (object_member(*update, "version") != nullptr)
+        {
+            auto const* const body_version = string_member(*update, "version");
+            if (body_version == nullptr || *body_version != clean_ver)
+            {
+                return err(400U, "M_INVALID_PARAM", "version in the body must be the version in the path");
+            }
+        }
+        if (!store_key_api_payload(rt, route.endpoint, user, device_id, req, clean_ver))
+        {
+            return err(500U, "M_UNKNOWN", "key API persistence failed");
+        }
+        return resp(200U, "{}");
+    }
+
+    // PUT and DELETE under /_matrix/client/v3/room_keys/keys: stores or deletes backed-up sessions in the current
+    // version.
+    [[nodiscard]] auto handle_room_key_backup_session_change(ClientServerRuntime& rt, auth::KeyApiRoute const& route,
+                                                             std::string_view user, std::string_view device_id,
+                                                             LocalHttpRequest const& req) -> LocalHttpResponse
+    {
+        // Session operations target an explicit ?version= or fall back to the
+        // user's current backup version. The resolved version must exist and
+        // be the current version (issue #404).
+        auto const session_ver_opt = resolve_key_backup_version(rt, user, req.target);
+        if (!session_ver_opt.has_value())
+        {
+            return resp(404U, matrix_error("M_NOT_FOUND", "no key backup version found"));
+        }
+        auto const session_ver = *session_ver_opt;
+        if (route.endpoint == auth::KeyApiEndpoint::put_room_key_backup_batch)
+        {
+            if (auto const refusal = room_key_batch_refusal(req.body); refusal.has_value())
+            {
+                return err(refusal->status, refusal->errcode, refusal->message);
+            }
+        }
+        if (key_backup_version_for_user(rt.homeserver.database.persistent_store, user, session_ver) == nullptr)
+        {
+            return resp(404U, matrix_error("M_NOT_FOUND", "key backup version not found"));
+        }
+        // Spec: the requested version MUST be the current backup version.
+        auto const* current_version = key_backup_version_for_user(rt.homeserver.database.persistent_store, user);
+        if (current_version == nullptr || current_version->version != session_ver)
+        {
+            return wrong_room_keys_version_response(rt.homeserver.database.persistent_store, user);
+        }
+        if (!store_key_api_payload(rt, route.endpoint, user, device_id, req, session_ver))
+        {
+            return err(500U, "M_UNKNOWN", "key API persistence failed");
+        }
+        return resp(200U, room_keys_update_response(rt.homeserver.database.persistent_store, user, session_ver));
+    }
+
+    // PUT /_matrix/client/v3/devices/{deviceId}: renames a device and announces the change.
+    [[nodiscard]] auto handle_device_list_update(ClientServerRuntime& rt, std::string_view user,
+                                                 LocalHttpRequest const& req) -> LocalHttpResponse
+    {
+        // PUT /_matrix/client/v3/devices/{deviceId} — update a device's
+        // display name and notify all local users who share a room with
+        // this user that their device list has changed.
+        auto constexpr dev_prefix = std::string_view{"/_matrix/client/v3/devices/"};
+        auto const device_id_from_path = target_path(req.target).substr(dev_prefix.size());
+        auto* device = find_device(rt, user, device_id_from_path);
+        if (device == nullptr)
+        {
+            return err(404U, "M_NOT_FOUND", "device not found");
+        }
+        auto const body = parse_device_update_body(req.body);
+        if (!body.has_value())
+        {
+            return err(400U, "M_BAD_JSON", "device update body must be Matrix JSON");
+        }
+        if (!database::sync_stream_has_write_reserve(rt.homeserver.database.persistent_store) ||
+            !database::update_device_display_name(rt.homeserver.database.persistent_store, user, device_id_from_path,
+                                                  body->display_name))
+        {
+            return err(500U, "M_UNKNOWN", "device update persistence failed");
+        }
+        device->display_name = body->display_name;
+        // Record a device list change for every local user who shares a
+        // room with the updated user so their /sync streams surface it.
+        auto const recorded = record_shared_room_device_changes(rt, user, NotifyOwnDevices::no);
+        // Spec (SS API, "Device Management"): m.device_list_update EDUs go to every server that
+        // shares a room with the user "whenever that user's device list changes ... or changes
+        // in device information such as the device's human-readable name".
+        broadcast_device_list_updates(rt, user, remote_servers_for_user(rt.homeserver, user),
+                                      std::string_view{device->device_id});
+        append_local_audit(rt.homeserver.database, observability::AuditCategory::auth, "device.updated", user,
+                           device->device_id, "display_name_updated");
+        if (!recorded)
+        {
+            return err(500U, "M_UNKNOWN", device_list_change_unrecorded);
+        }
+        return resp(200U, "{}");
+    }
+
     [[nodiscard]] auto handle_key_api_route(ClientServerRuntime& rt, auth::KeyApiRoute const& route,
                                             std::string_view user, std::string_view device_id,
                                             LocalHttpRequest const& req) -> LocalHttpResponse
@@ -12439,213 +12818,12 @@ namespace
             }
             return resp(200U, key_backup_metadata_response(rt.homeserver.database.persistent_store, *version));
         }
-        case auth::KeyApiEndpoint::get_room_key_backup_batch: {
-            auto const batch_ver_param = extract_key_backup_version_param(req.target);
-            std::string_view batch_ver;
-            if (!batch_ver_param.empty())
-            {
-                if (key_backup_version_for_user(rt.homeserver.database.persistent_store, user, batch_ver_param) ==
-                    nullptr)
-                {
-                    return resp(404U, matrix_error("M_NOT_FOUND", "key backup version not found"));
-                }
-                batch_ver = batch_ver_param;
-            }
-            else if (auto const* current = key_backup_version_for_user(rt.homeserver.database.persistent_store, user);
-                     current != nullptr)
-            {
-                batch_ver = current->version;
-            }
-            else
-            {
-                // No version specified and no current backup: return an empty rooms object.
-                return resp(200U, json_serialize(json_obj({json_member("rooms", json_obj({}))})));
-            }
-
-            auto const& all_sessions = rt.homeserver.database.persistent_store.key_backup_sessions;
-            auto room_map = std::map<std::string, canonicaljson::Object>{};
-            for (auto const& s : all_sessions)
-            {
-                if (s.user_id == user && s.version == batch_ver)
-                {
-                    room_map[s.room_id].push_back(json_member(s.session_id, json_embed_raw(s.json)));
-                }
-            }
-            auto rooms = canonicaljson::Object{};
-            for (auto& [room_id, sess_obj] : room_map)
-            {
-                rooms.push_back(
-                    json_member(room_id, json_obj({json_member("sessions", json_obj(std::move(sess_obj)))})));
-            }
-            return resp(200U, json_serialize(json_obj({json_member("rooms", json_obj(std::move(rooms)))})));
-        }
-        case auth::KeyApiEndpoint::get_room_key_backup: {
-            auto const get_ver_param = extract_key_backup_version_param(req.target);
-            std::string_view get_ver;
-            if (!get_ver_param.empty())
-            {
-                if (key_backup_version_for_user(rt.homeserver.database.persistent_store, user, get_ver_param) ==
-                    nullptr)
-                {
-                    return resp(404U, matrix_error("M_NOT_FOUND", "key backup version not found"));
-                }
-                get_ver = get_ver_param;
-            }
-            else if (auto const* current = key_backup_version_for_user(rt.homeserver.database.persistent_store, user);
-                     current != nullptr)
-            {
-                get_ver = current->version;
-            }
-            // If no version was specified and there is no current backup, get_ver
-            // remains empty so all searches below return empty/no-match results.
-
-            if (auto const path = room_key_backup_path_parts(req.target); path.has_value())
-            {
-                if (!path->session_id.has_value())
-                {
-                    auto const& all_sessions = rt.homeserver.database.persistent_store.key_backup_sessions;
-                    auto sessions_obj = canonicaljson::Object{};
-                    for (auto const& s : all_sessions)
-                    {
-                        if (s.user_id == user && s.version == get_ver && s.room_id == path->room_id)
-                        {
-                            sessions_obj.push_back(json_member(s.session_id, json_embed_raw(s.json)));
-                        }
-                    }
-                    return resp(200U,
-                                json_serialize(json_obj({json_member("sessions", json_obj(std::move(sessions_obj)))})));
-                }
-
-                auto const& sessions = rt.homeserver.database.persistent_store.key_backup_sessions;
-                auto const it = std::ranges::find_if(sessions, [&](auto const& s) {
-                    return s.user_id == user && s.version == get_ver && s.room_id == path->room_id &&
-                           s.session_id == *path->session_id;
-                });
-                if (it == sessions.end())
-                {
-                    return resp(404U, matrix_error("M_NOT_FOUND", "key backup session not found"));
-                }
-                return resp(200U, it->json);
-            }
-            auto constexpr kbprefix = std::string_view{"/_matrix/client/v3/room_keys/keys/"};
-            auto const suffix = route_suffix(req.target, kbprefix);
-            auto const clean = suffix.substr(0U, suffix.find('?'));
-            auto const separator = clean.find('/');
-            // No slash in clean suffix → room-level GET (/{roomId}), not session-level.
-            if (separator == std::string_view::npos || separator + 1U >= clean.size())
-            {
-                // Return all sessions for the room as {"sessions":{sessionId: data, ...}}.
-                auto const room_id = clean;
-                auto const& all_sessions = rt.homeserver.database.persistent_store.key_backup_sessions;
-                auto sessions_obj = canonicaljson::Object{};
-                for (auto const& s : all_sessions)
-                {
-                    if (s.user_id == user && s.version == get_ver && s.room_id == room_id)
-                    {
-                        sessions_obj.push_back(json_member(s.session_id, json_embed_raw(s.json)));
-                    }
-                }
-                return resp(200U,
-                            json_serialize(json_obj({json_member("sessions", json_obj(std::move(sessions_obj)))})));
-            }
-            auto const room_id = clean.substr(0U, separator);
-            auto const session_id = clean.substr(separator + 1U);
-            auto const& sessions = rt.homeserver.database.persistent_store.key_backup_sessions;
-            auto const it = std::ranges::find_if(sessions, [&](auto const& s) {
-                return s.user_id == user && s.version == get_ver && s.room_id == room_id && s.session_id == session_id;
-            });
-            if (it == sessions.end())
-            {
-                return resp(404U, matrix_error("M_NOT_FOUND", "key backup session not found"));
-            }
-            return resp(200U, it->json);
-        }
-        case auth::KeyApiEndpoint::upload_cross_signing_keys: {
-            // Spec §11.12.1: MUST require UIA (m.login.password) to prevent key takeover.
-            auto const cs_uia = json_obj({
-                json_member("flows",
-                            json_arr({json_obj({json_member("stages", json_arr({json_str("m.login.password")}))})})),
-                json_member("params", json_obj({})),
-                json_member("session", json_str("cross_signing_upload")),
-            });
-            auto const cs_body = parsed_json_object(req.body);
-            auto const* cs_auth = cs_body.has_value() ? object_member_object(*cs_body, "auth") : nullptr;
-            if (cs_auth == nullptr)
-            {
-                return resp(401U, json_serialize(cs_uia));
-            }
-            auto const* cs_auth_type = string_member(*cs_auth, "type");
-            if (cs_auth_type == nullptr || *cs_auth_type != "m.login.password")
-            {
-                return resp(401U, json_serialize(cs_uia));
-            }
-            auto const* cs_password = string_member(*cs_auth, "password");
-            if (cs_password == nullptr || cs_password->empty())
-            {
-                return resp(401U, json_serialize(cs_uia));
-            }
-            auto const password_verified = verify_local_user_password(rt.homeserver, req.access_token, *cs_password);
-            if (!password_verified.ok)
-            {
-                if (password_verified.retry_after_ms > 0U)
-                {
-                    auto const retry_after = static_cast<std::uint32_t>(std::min<std::uint64_t>(
-                        password_verified.retry_after_ms, std::numeric_limits<std::uint32_t>::max()));
-                    auto response = LocalHttpResponse{
-                        429U,
-                        matrix_error("M_LIMIT_EXCEEDED", "Too many password attempts. Please try again later.",
-                                     retry_after),
-                        {{"Retry-After", std::to_string((retry_after + 999U) / 1000U)}}};
-                    apply_cors_headers(req, response, rt.cors);
-                    return response;
-                }
-                return resp(401U, uia_password_failure_body(json_serialize(cs_uia)));
-            }
-            for (auto const* key_type : {"master_key", "self_signing_key", "user_signing_key"})
-            {
-                if (auto const* key = object_member(*cs_body, key_type); key != nullptr && key_document_too_large(*key))
-                {
-                    return err(400U, "M_TOO_LARGE",
-                               std::string{key_type} + " may be at most " +
-                                   std::to_string(max_uploaded_key_document_bytes) + " bytes");
-                }
-            }
-            if (auto const refusal = cross_signing_upload_refusal(rt, user, *cs_body); refusal.has_value())
-            {
-                return err(refusal->status, refusal->errcode, refusal->message);
-            }
-            if (cross_signing_upload_names_a_device(rt, user, *cs_body))
-            {
-                return err(403U, "M_FORBIDDEN", "a cross-signing key may not have the ID of one of the user's devices");
-            }
-            if (!database::sync_stream_has_write_reserve(rt.homeserver.database.persistent_store) ||
-                !store_key_api_payload(rt, route.endpoint, user, device_id, req, {}))
-            {
-                return err(500U, "M_UNKNOWN", "key API persistence failed");
-            }
-            // Spec §11.11.1: cross-signing key change MUST appear in device_lists.changed.
-            // Self-notify so the user's own other devices re-query the new keys (required
-            // for verification to complete). Also fan out to room-sharing local users and
-            // remote servers.
-            {
-                auto const recorded = record_shared_room_device_changes(rt, user, NotifyOwnDevices::yes);
-                auto const destinations = remote_servers_for_user(rt.homeserver, user);
-                broadcast_device_list_updates(rt, user, destinations);
-                // Spec v1.19 §m.signing_key_update: remote servers learn of a
-                // new master or self-signing key through this EDU. An upload of
-                // only the private user-signing key changes nothing they can see.
-                if (object_member(*cs_body, "master_key") != nullptr ||
-                    object_member(*cs_body, "self_signing_key") != nullptr)
-                {
-                    broadcast_signing_key_update(rt, user, destinations);
-                }
-                if (!recorded)
-                {
-                    return err(500U, "M_UNKNOWN", device_list_change_unrecorded);
-                }
-            }
-            return resp(200U, key_api_success_body(route.endpoint));
-        }
+        case auth::KeyApiEndpoint::get_room_key_backup_batch:
+            return handle_get_room_key_backup_batch(rt, user, req);
+        case auth::KeyApiEndpoint::get_room_key_backup:
+            return handle_get_room_key_backup(rt, user, req);
+        case auth::KeyApiEndpoint::upload_cross_signing_keys:
+            return handle_upload_cross_signing_keys(rt, route, user, device_id, req);
         case auth::KeyApiEndpoint::upload_signatures:
             if (signature_upload_has_oversized_key(req.body))
             {
@@ -12684,56 +12862,8 @@ namespace
             }
             return resp(200U, json_serialize(json_obj({json_member("version", json_str(*new_ver))})));
         }
-        case auth::KeyApiEndpoint::update_key_backup_version: {
-            // Version comes from the path: PUT /room_keys/version/{version}
-            auto constexpr upd_prefix = std::string_view{"/_matrix/client/v3/room_keys/version/"};
-            auto const path_ver = route_suffix(req.target, upd_prefix);
-            // Strip any query string
-            auto const clean_ver = path_ver.substr(0U, path_ver.find('?'));
-            if (clean_ver.empty())
-            {
-                return err(400U, "M_UNRECOGNIZED", "missing version in path");
-            }
-            // Spec (PUT /room_keys/version/{version}): 404 when the backup does not exist, so an update never
-            // creates a version; 400 when the algorithm is not the backup's current one or a `version` in the
-            // body is not the path's.
-            auto const* const held =
-                key_backup_version_for_user(rt.homeserver.database.persistent_store, user, clean_ver);
-            if (held == nullptr)
-            {
-                return resp(404U, matrix_error("M_NOT_FOUND", "key backup version not found"));
-            }
-            auto const update = parsed_json_object(req.body);
-            if (!update.has_value())
-            {
-                return err(400U, "M_BAD_JSON", "the request body must be a JSON object");
-            }
-            auto const* const algorithm = string_member(*update, "algorithm");
-            auto const held_object = parsed_json_object(held->json);
-            auto const* const held_algorithm =
-                held_object.has_value() ? string_member(*held_object, "algorithm") : nullptr;
-            if (algorithm == nullptr || (held_algorithm != nullptr && *algorithm != *held_algorithm))
-            {
-                return err(400U, "M_INVALID_PARAM", "algorithm must be the algorithm the backup already uses");
-            }
-            if (object_member_as_object(*update, "auth_data") == nullptr)
-            {
-                return err(400U, "M_INVALID_PARAM", "auth_data must be an object");
-            }
-            if (object_member(*update, "version") != nullptr)
-            {
-                auto const* const body_version = string_member(*update, "version");
-                if (body_version == nullptr || *body_version != clean_ver)
-                {
-                    return err(400U, "M_INVALID_PARAM", "version in the body must be the version in the path");
-                }
-            }
-            if (!store_key_api_payload(rt, route.endpoint, user, device_id, req, clean_ver))
-            {
-                return err(500U, "M_UNKNOWN", "key API persistence failed");
-            }
-            return resp(200U, "{}");
-        }
+        case auth::KeyApiEndpoint::update_key_backup_version:
+            return handle_update_key_backup_version(rt, route, user, device_id, req);
         case auth::KeyApiEndpoint::delete_key_backup_version:
             if (!store_key_api_payload(rt, route.endpoint, user, device_id, req, {}))
             {
@@ -12745,78 +12875,10 @@ namespace
         case auth::KeyApiEndpoint::put_room_key_backup_batch:
         case auth::KeyApiEndpoint::delete_room_key_backup_room:
         case auth::KeyApiEndpoint::delete_room_key_backup:
-        case auth::KeyApiEndpoint::delete_room_key_backup_batch: {
-            // Session operations target an explicit ?version= or fall back to the
-            // user's current backup version. The resolved version must exist and
-            // be the current version (issue #404).
-            auto const session_ver_opt = resolve_key_backup_version(rt, user, req.target);
-            if (!session_ver_opt.has_value())
-            {
-                return resp(404U, matrix_error("M_NOT_FOUND", "no key backup version found"));
-            }
-            auto const session_ver = *session_ver_opt;
-            if (route.endpoint == auth::KeyApiEndpoint::put_room_key_backup_batch)
-            {
-                if (auto const refusal = room_key_batch_refusal(req.body); refusal.has_value())
-                {
-                    return err(refusal->status, refusal->errcode, refusal->message);
-                }
-            }
-            if (key_backup_version_for_user(rt.homeserver.database.persistent_store, user, session_ver) == nullptr)
-            {
-                return resp(404U, matrix_error("M_NOT_FOUND", "key backup version not found"));
-            }
-            // Spec: the requested version MUST be the current backup version.
-            auto const* current_version = key_backup_version_for_user(rt.homeserver.database.persistent_store, user);
-            if (current_version == nullptr || current_version->version != session_ver)
-            {
-                return wrong_room_keys_version_response(rt.homeserver.database.persistent_store, user);
-            }
-            if (!store_key_api_payload(rt, route.endpoint, user, device_id, req, session_ver))
-            {
-                return err(500U, "M_UNKNOWN", "key API persistence failed");
-            }
-            return resp(200U, room_keys_update_response(rt.homeserver.database.persistent_store, user, session_ver));
-        }
-        case auth::KeyApiEndpoint::device_list_update: {
-            // PUT /_matrix/client/v3/devices/{deviceId} — update a device's
-            // display name and notify all local users who share a room with
-            // this user that their device list has changed.
-            auto constexpr dev_prefix = std::string_view{"/_matrix/client/v3/devices/"};
-            auto const device_id_from_path = target_path(req.target).substr(dev_prefix.size());
-            auto* device = find_device(rt, user, device_id_from_path);
-            if (device == nullptr)
-            {
-                return err(404U, "M_NOT_FOUND", "device not found");
-            }
-            auto const body = parse_device_update_body(req.body);
-            if (!body.has_value())
-            {
-                return err(400U, "M_BAD_JSON", "device update body must be Matrix JSON");
-            }
-            if (!database::sync_stream_has_write_reserve(rt.homeserver.database.persistent_store) ||
-                !database::update_device_display_name(rt.homeserver.database.persistent_store, user,
-                                                      device_id_from_path, body->display_name))
-            {
-                return err(500U, "M_UNKNOWN", "device update persistence failed");
-            }
-            device->display_name = body->display_name;
-            // Record a device list change for every local user who shares a
-            // room with the updated user so their /sync streams surface it.
-            auto const recorded = record_shared_room_device_changes(rt, user, NotifyOwnDevices::no);
-            // Spec (SS API, "Device Management"): m.device_list_update EDUs go to every server that
-            // shares a room with the user "whenever that user's device list changes ... or changes
-            // in device information such as the device's human-readable name".
-            broadcast_device_list_updates(rt, user, remote_servers_for_user(rt.homeserver, user),
-                                          std::string_view{device->device_id});
-            append_local_audit(rt.homeserver.database, observability::AuditCategory::auth, "device.updated", user,
-                               device->device_id, "display_name_updated");
-            if (!recorded)
-            {
-                return err(500U, "M_UNKNOWN", device_list_change_unrecorded);
-            }
-            return resp(200U, "{}");
-        }
+        case auth::KeyApiEndpoint::delete_room_key_backup_batch:
+            return handle_room_key_backup_session_change(rt, route, user, device_id, req);
+        case auth::KeyApiEndpoint::device_list_update:
+            return handle_device_list_update(rt, user, req);
         }
         return err(404U, "M_UNRECOGNIZED", "route not found");
     }
