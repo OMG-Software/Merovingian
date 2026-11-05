@@ -692,6 +692,8 @@ SCENARIO("PostgreSQL third-party IDs, filters, OpenID and refresh tokens keep th
 {
     GIVEN("a user with a device")
     {
+        // Integration tests in this file require a live PostgreSQL instance. If no URI is configured,
+        // this scenario is explicitly skipped (reported as success-with-message, not as a real pass).
         auto const uri = postgresql_uri();
         if (uri.empty())
         {
@@ -699,12 +701,16 @@ SCENARIO("PostgreSQL third-party IDs, filters, OpenID and refresh tokens keep th
             return;
         }
         auto opened = reopen(uri);
+
+        // Use a unique suffix so concurrent/previous runs do not collide on primary keys or addresses.
         auto const suffix = unique_suffix();
         auto const user_id = "@identity-" + suffix + ":example.org";
         REQUIRE(make_user(opened.store, user_id));
         REQUIRE(db::store_device(opened.store, {user_id, "DEV", ""}));
         auto const address = "alice-" + suffix + "@example.org";
 
+        // This sequence validates upsert and delete behavior for third-party IDs, then verifies that
+        // token/filter records preserve every persisted field after reopening the store from disk.
         WHEN("a third-party ID is stored unbound, stored again bound with its optional fields, and a second is deleted")
         {
             REQUIRE(db::store_account_threepid(opened.store, {user_id, "email", address, std::nullopt, std::nullopt,
