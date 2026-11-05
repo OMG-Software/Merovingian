@@ -50,8 +50,12 @@ auto const signed_ok =
 SCENARIO("An exchange_third_party_invite body is accepted only when every field is as the spec requires",
          "[federation][3pid][parsing]")
 {
+    // This scenario documents the parser contract for /exchange_third_party_invite:
+    // only spec-conformant payloads are accepted, and all other structural/value
+    // deviations are rejected.
     GIVEN("a well-formed body")
     {
+        // Happy path: matching room ID and complete required fields.
         WHEN("it is parsed against the room ID in the path")
         {
             auto const parsed = fed::parse_third_party_invite_exchange(exchange_body(signed_ok), "!r:example.org");
@@ -66,6 +70,7 @@ SCENARIO("An exchange_third_party_invite body is accepted only when every field 
             }
         }
 
+        // Path/body consistency: room mismatch must fail validation.
         WHEN("it is parsed against another room ID")
         {
             THEN("it is refused")
