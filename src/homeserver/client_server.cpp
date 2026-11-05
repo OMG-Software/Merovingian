@@ -8173,16 +8173,22 @@ namespace
             return {"M_BAD_JSON", std::move(malformed)};
         }
         auto const* user_id = string_member(object, "user_id");
+        auto const* device_id = string_member(object, "device_id");
+        auto const* keys = object_member_as_object(object, "keys");
+        // device_keys_is_malformed has already refused a missing or mistyped field. Checked again here so that no
+        // dereference below depends on a check made in another function.
+        if (user_id == nullptr || device_id == nullptr || keys == nullptr)
+        {
+            return {"M_BAD_JSON", "device_keys must carry user_id, device_id and keys"};
+        }
         if (*user_id != authenticated_user)
         {
             return {"M_INVALID_PARAM", "device_keys.user_id must match the authenticated user"};
         }
-        auto const* device_id = string_member(object, "device_id");
         if (*device_id != authenticated_device_id)
         {
             return {"M_INVALID_PARAM", "device_keys.device_id must match the authenticated device"};
         }
-        auto const* keys = object_member_as_object(object, "keys");
         auto const curve_key = string_member(*keys, "curve25519:" + std::string{authenticated_device_id});
         if (curve_key == nullptr || curve_key->empty())
         {

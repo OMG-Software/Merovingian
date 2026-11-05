@@ -21,7 +21,10 @@
 #include <string>
 #include <string_view>
 #include <system_error>
+#include <tuple>
 #include <utility>
+
+#include <sys/stat.h>
 
 namespace
 {
@@ -141,6 +144,44 @@ SCENARIO("ISO-7 the TLS private key is validated and read through one descriptor
             THEN("loading fails")
             {
                 CHECK_FALSE(result.ok());
+            }
+        }
+    }
+}
+
+SCENARIO("ISO-7 the test certificate helper never creates a file others can open", "[iso7][tls][test_support]")
+{
+    GIVEN("a process umask that would leave a created file readable and writable by everyone")
+    {
+        // umask is process-wide: restore it on every exit so later scenarios keep the runner's mask.
+        struct UmaskRestore final
+        {
+            ::mode_t previous{::umask(0)};
+            UmaskRestore() = default;
+            ~UmaskRestore()
+            {
+                std::ignore = ::umask(previous);
+            }
+            UmaskRestore(UmaskRestore const&) = delete;
+            auto operator=(UmaskRestore const&) -> UmaskRestore& = delete;
+            UmaskRestore(UmaskRestore&&) = delete;
+            auto operator=(UmaskRestore&&) -> UmaskRestore& = delete;
+        };
+        auto const restore = UmaskRestore{};
+
+        WHEN("the helper writes a certificate and its private key")
+        {
+            auto const certificate = merovingian::tests::tls_mock::write_test_tls_certificate();
+            auto const group_or_other = std::filesystem::perms::group_all | std::filesystem::perms::others_all;
+
+            THEN("neither file grants its group or other users any access")
+            {
+                auto const certificate_perms =
+                    std::filesystem::status(certificate.certificate_file).permissions() & group_or_other;
+                auto const key_perms =
+                    std::filesystem::status(certificate.private_key_file).permissions() & group_or_other;
+                CHECK(certificate_perms == std::filesystem::perms::none);
+                CHECK(key_perms == std::filesystem::perms::none);
             }
         }
     }

@@ -86,6 +86,7 @@ The medium severity findings of the November project analysis.
 - The PostgreSQL retention scenarios quote the role name they read from the environment as an SQL identifier, and the operator admin fixture takes its config by reference.
 - Reading a sliding sync hero's name and avatar is a function of its own instead of a loop that always ended on its first pass; a scenario now pins what heroes carry.
 - Sliding sync `account_data`: a room first entering the response on a connection gets all of its room account data (ADR-0493).
+- The TLS test helper creates its certificate and private key owner-only (0600) through `open`, instead of `fopen`, which left the key open to other users until it was narrowed to 0400 (CodeQL `cpp/world-writable-file-creation`). `validate_device_keys_object` checks `user_id`, `device_id` and `keys` for null where it reads them, rather than relying on an earlier check in another function (CodeQL `cpp/inconsistent-null-check`).
 
 ### Performance
 
