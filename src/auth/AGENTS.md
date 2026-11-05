@@ -27,6 +27,8 @@ UIAA and `/whoami` are implemented in `src/homeserver/client_server.cpp`, not in
    `crypto/constant_time.hpp`, never `==` or `memcmp`.
 4. **Argon2id for password hashing.** Use `crypto_pwhash` with `OPSLIMIT_INTERACTIVE` and
    `MEMLIMIT_INTERACTIVE`. Never use SHA or bcrypt for passwords.
+   The test binaries replace the cost at link time and refuse any other parameters, so changing these fails every
+   test that registers or logs in; `tests/password_cost/` pins them (ADR-0510).
 5. **Validate all user IDs** against the identifier grammar before accepting registration.
 6. **Revocation is one-way.** Never restore a revoked token; revoke more narrowly instead
    (e.g. `revoke_tokens_for_user_except_device`). See ADR-0052.

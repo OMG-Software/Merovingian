@@ -191,6 +191,7 @@ same name: `src/database/sqlite_store.cpp` and `src/federation_worker/main.cpp`.
 │   ├── integration/       #   Flow/integration tests (test_*_flow.cpp)
 │   ├── fuzz/              #   Fuzz targets
 │   ├── smoke/             #   Smoke tests
+│   ├── password_cost/     #   Proves the production Argon2id cost, in a binary without the tests' cheap hash
 │   ├── complement/        #   Docker image that runs the release package under Complement
 │   ├── fixtures/          #   Test fixtures (complement)
 │   ├── support/           #   Test helpers (json_test_support, master_key, registration_token, temp_directory, tls_mock_server)

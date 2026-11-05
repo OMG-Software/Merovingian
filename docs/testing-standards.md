@@ -44,6 +44,23 @@ production stalls turned on.
 - Prove a new scenario fails against the unfixed code before trusting it. A
   regression test that passes either way documents nothing.
 
+## Password hashing cost in the test binaries
+
+The unit, conformance and integration binaries hash passwords and registration tokens at libsodium's minimum Argon2id cost
+([ADR-0510](adr/0510-the-test-binaries-hash-passwords-at-minimum-cost.md)). `-Wl,--wrap=crypto_pwhash_str` sends the
+production code's call to `tests/support/password_hash_cost.cpp`, so no production code changes.
+
+- The override refuses any cost but the one production asks for, so a downgrade in `src/auth/password.cpp` makes every
+  registration and login fail rather than go unnoticed.
+- `merovingian-password-cost-tests` is linked without the override and proves what the shipped code does.
+- A scenario that needs the hash to take real time holds `merovingian::tests::RealPasswordHashCost` from its first line. That
+  means any scenario racing another request against the window in which the runtime lock is released around Argon2id: at
+  minimum cost that window is too short for the other thread to land in, and the scenario fails intermittently, or
+  passes without exercising the race. Verifying costs whatever the stored hash was made with, so a guard taken after the
+  user registered is too late.
+- Do not add a new test binary that registers users without the same link argument and support file, unless it exists to
+  see the real cost.
+
 ## Socket calls in integration tests
 
 Every socket call in an integration test has a deadline, so a server that never

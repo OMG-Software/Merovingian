@@ -16,6 +16,7 @@
 #include "../support/in_memory_database_config.hpp"
 #include "../support/joining_threads.hpp"
 #include "../support/master_key.hpp"
+#include "../support/password_hash_cost.hpp"
 #include "../support/registration_token.hpp"
 #include "merovingian/auth/password.hpp"
 #include "merovingian/config/config.hpp"
@@ -102,6 +103,8 @@ auto replace_stored_hash(hs::HomeserverRuntime& runtime, std::string const& user
 SCENARIO("Registration does not hold the runtime mutex while it hashes the password",
          "[integration][auth][security][audit][auth-4]")
 {
+    // Another request has to land inside the window the lock is released for, so the hash takes its real time.
+    auto const real_hash_cost = merovingian::tests::RealPasswordHashCost{};
     GIVEN("a runtime")
     {
         REQUIRE(sodium_init() >= 0);
@@ -144,6 +147,8 @@ SCENARIO("Registration does not hold the runtime mutex while it hashes the passw
 SCENARIO("Two concurrent registrations of one username produce exactly one account",
          "[integration][auth][security][audit][auth-4]")
 {
+    // Another request has to land inside the window the lock is released for, so the hash takes its real time.
+    auto const real_hash_cost = merovingian::tests::RealPasswordHashCost{};
     GIVEN("a runtime and two clients registering the same username with different passwords")
     {
         REQUIRE(sodium_init() >= 0);
@@ -206,6 +211,8 @@ SCENARIO("Two concurrent registrations of one username produce exactly one accou
 SCENARIO("A password change that races another password change is refused, not overwritten",
          "[integration][auth][security][audit][auth-4]")
 {
+    // Another request has to land inside the window the lock is released for, so the hash takes its real time.
+    auto const real_hash_cost = merovingian::tests::RealPasswordHashCost{};
     GIVEN("alice is signed in and a replacement hash is prepared for the competing change")
     {
         REQUIRE(sodium_init() >= 0);
@@ -262,6 +269,8 @@ SCENARIO("A password change that races another password change is refused, not o
 SCENARIO("A password change races a logout of the session that authorised it",
          "[integration][auth][security][audit][auth-4]")
 {
+    // Another request has to land inside the window the lock is released for, so the hash takes its real time.
+    auto const real_hash_cost = merovingian::tests::RealPasswordHashCost{};
     GIVEN("alice is signed in on one device")
     {
         REQUIRE(sodium_init() >= 0);
@@ -310,6 +319,8 @@ SCENARIO("A password change races a logout of the session that authorised it",
 SCENARIO("A user-interactive-auth password check is refused when the password changed during verification",
          "[integration][auth][security][audit][auth-4]")
 {
+    // Another request has to land inside the window the lock is released for, so the hash takes its real time.
+    auto const real_hash_cost = merovingian::tests::RealPasswordHashCost{};
     GIVEN("alice is signed in, and a replacement hash is prepared for a competing password change")
     {
         REQUIRE(sodium_init() >= 0);

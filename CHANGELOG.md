@@ -35,6 +35,12 @@ The medium severity findings of the November project analysis.
 
 ### Changed
 
+- **The unit, conformance and integration binaries hash passwords at minimum cost (ADR-0510).** Argon2id was 113 s of the
+  unit binary's 244 s, 252 s of the conformance binary's 300 s and 121 s of the integration binary's 720 s, because nearly
+  every scenario registers and logs in users. `-Wl,--wrap=crypto_pwhash_str` replaces the call in those three binaries only;
+  it changes nothing the server, the worker or a package can reach. The override refuses any cost but production's, and a
+  separate `merovingian-password-cost-tests` binary, linked without it, proves the production cost. The scenarios that race
+  a request against the Argon2id window hold `RealPasswordHashCost`, so they still exercise that window.
 - **A pull request's commit runs `sanitizers`, `static-analysis` and `packages` once (ADR-0511).** `sanitizers` and
   `static-analysis` had a bare `on: push`, so every push to a pull request's branch ran them for both events, about 38 and 19
   minutes for one commit on this pull request. `packages` did the same for `feature/**` branches. Their `push` trigger is now

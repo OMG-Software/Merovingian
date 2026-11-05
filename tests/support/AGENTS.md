@@ -11,6 +11,7 @@ Shared test utilities used across unit, conformance, and integration tests.
 | `joining_threads.hpp` | `JoiningThreads`: a set of `std::thread`s all joined on scope exit, or earlier with `join()` when a scenario asserts on what the threads did. Use it instead of `std::jthread`, which the libc++ on FreeBSD and OpenBSD does not provide |
 | `json_test_support.hpp` | JSON assertion helpers: `require_json_key()`, `parse_or_fail()` |
 | `master_key.hpp` | Deterministic Ed25519 key pair for signing in tests; do not use in production |
+| `password_hash_cost.hpp` / `.cpp` | The minimum-cost `crypto_pwhash_str` the unit, conformance and integration binaries link through `--wrap` (ADR-0510), and `RealPasswordHashCost`, the guard for a scenario that races another request against the Argon2id window |
 | `process_tasks.hpp` | `count_process_tasks()`: number of threads in this process from `/proc/self/task`; used by the no-thread-before-hardening scenarios (ISO-1) |
 | `state_group_scan.hpp` | `state_group_index_mismatch()`: compares the store's indexed state-group lookups with a linear scan of the rows (empty string when they agree); `scanned_*` give the scan answers. Used after writes, hydration and reload (ADR-0325) |
 | `room_history_fixture.hpp` | `record_joined_state_for_room()`: for a fixture that writes events straight into a `PersistentStore`, records one state group in which a user is joined and maps the room's events to it, so the history-visibility filter (CSAZ-3) lets that user read them |

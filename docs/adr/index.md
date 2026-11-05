@@ -474,3 +474,4 @@
 * [0460 - One listing and one strict request reader serve every published room directory endpoint](0460-one-listing-and-one-strict-reader-serve-the-published-room-directory.md)
 * [0461 - A federation worker relays the published room directory to main](0461-a-federation-worker-relays-the-published-room-directory-to-main.md)
 * [0511 - A commit runs each workflow once](0511-a-commit-runs-each-workflow-once.md)
+* [0510 - The test binaries hash passwords at minimum cost](0510-the-test-binaries-hash-passwords-at-minimum-cost.md)

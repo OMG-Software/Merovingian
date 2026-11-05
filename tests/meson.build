@@ -43,6 +43,12 @@ shell = find_program('sh')
   )
 
   test(
+    'password-hash-override-tooling',
+    python,
+    args: [meson.project_source_root() / 'tests' / 'tooling' / 'test_password_hash_override.py'],
+  )
+
+  test(
     'catch2-bdd-tests',
     shell,
     args: [meson.project_source_root() / 'scripts' / 'check-catch2-bdd-tests.sh', meson.project_source_root()],
@@ -202,10 +208,17 @@ shell = find_program('sh')
     args: [meson.project_source_root() / 'tests' / 'tooling' / 'test_live_integration_registration.py'],
   )
 
+  # Nearly every scenario registers and logs in users, and Argon2id at the production cost was most of these
+  # binaries' CPU time. This sends their calls to tests/support/password_hash_cost.cpp, which refuses any other
+  # cost and then hashes at the minimum. Nothing outside these three executables gets it (ADR-0510).
+  password_hash_cost_link_args = ['-Wl,--wrap=crypto_pwhash_str']
+
   unit_tests = executable(
     'merovingian-unit-tests',
     sources: files(
       'unit/test_main.cpp',
+      'support/password_hash_cost.cpp',
+      'unit/test_password_hash_cost.cpp',
       'unit/test_redaction_validity.cpp',
       'unit/test_room_power.cpp',
       'unit/test_stored_room_version.cpp',
@@ -480,16 +493,32 @@ shell = find_program('sh')
     # C++ allowlist, the same -DMEROVINGIAN_TEST_* pattern used below for
     # locating sibling test binaries. Never defined for a production target.
     cpp_args: ['-DMEROVINGIAN_TEST_SOURCE_ROOT="' + meson.project_source_root() + '"'],
+    link_args: password_hash_cost_link_args,
     dependencies: [catch2_dep, thread_dep, libsodium_dep, openssl_dep, libpq_dep, sqlite_dep, libcurl_dep, resolv_dep],
     link_with: [appservice_lib, auth_lib, canonicaljson_lib, core_lib, config_lib, crypto_lib, database_lib, email_lib, events_lib, federation_lib, federation_worker_lib, homeserver_lib, http_lib, identity_lib, ipc_lib, media_lib, net_lib, observability_lib, platform_lib, push_lib, rooms_lib, sync_lib, trust_safety_lib],
   )
 
   test('unit-tests', unit_tests, timeout: 600)
 
+  # Linked without the override above, to see the cost the shipped server hashes at.
+  password_cost_tests = executable(
+    'merovingian-password-cost-tests',
+    sources: files(
+      'integration/test_main.cpp',
+      'password_cost/test_production_password_cost.cpp',
+    ),
+    include_directories: inc,
+    dependencies: [catch2_dep, thread_dep, libsodium_dep],
+    link_with: [auth_lib, canonicaljson_lib, core_lib, crypto_lib],
+  )
+
+  test('password-cost-tests', password_cost_tests)
+
   conformance_tests = executable(
     'merovingian-conformance-tests',
     sources: files(
       'conformance/test_main.cpp',
+      'support/password_hash_cost.cpp',
       'conformance/test_account_data_conformance.cpp',
       'conformance/test_appservice_conformance.cpp',
       'conformance/test_appservice_assertion_conformance.cpp',
@@ -582,6 +611,7 @@ shell = find_program('sh')
       'conformance/test_x_matrix_auth_parsing.cpp',
     ),
     include_directories: inc,
+    link_args: password_hash_cost_link_args,
     dependencies: [catch2_dep, thread_dep, libsodium_dep, openssl_dep, libpq_dep, sqlite_dep, libcurl_dep, resolv_dep],
     link_with: [appservice_lib, auth_lib, canonicaljson_lib, core_lib, config_lib, crypto_lib, database_lib, email_lib, events_lib, federation_lib, homeserver_lib, http_lib, identity_lib, ipc_lib, media_lib, net_lib, observability_lib, platform_lib, push_lib, rooms_lib, sync_lib, trust_safety_lib],
   )
@@ -628,6 +658,7 @@ shell = find_program('sh')
     'merovingian-integration-tests',
     sources: files(
       'integration/test_main.cpp',
+      'support/password_hash_cost.cpp',
       'integration/test_appservice_delivery_flow.cpp',
       'integration/test_appservice_wave3_flow.cpp',
       'integration/test_appservice_thirdparty_flow.cpp',
@@ -713,6 +744,7 @@ shell = find_program('sh')
       'integration/test_trust_safety_policy_flow.cpp',
     ),
     include_directories: inc,
+    link_args: password_hash_cost_link_args,
     dependencies: [catch2_dep, thread_dep, libsodium_dep, openssl_dep, libpq_dep, sqlite_dep, libcurl_dep, resolv_dep],
     link_with: [appservice_lib, auth_lib, canonicaljson_lib, core_lib, config_lib, crypto_lib, database_lib, email_lib, events_lib, federation_lib, federation_worker_lib, homeserver_lib, http_lib, identity_lib, ipc_lib, media_lib, net_lib, observability_lib, platform_lib, push_lib, rooms_lib, sync_lib, trust_safety_lib],
     cpp_args: [thumbnail_test_args, thumbnail_gate_test_args, federation_worker_test_args, server_test_args,
