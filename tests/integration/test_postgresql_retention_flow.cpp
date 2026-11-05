@@ -1,10 +1,9 @@
 // SPDX-FileCopyrightText: 2026 James Chapman
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-#include "scratch_postgresql_database.hpp"
-
 #include "merovingian/database/persistent_store.hpp"
 #include "merovingian/database/postgresql_store.hpp"
+#include "scratch_postgresql_database.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -40,10 +39,29 @@ struct Clear final
     }
 };
 
+struct FreeEscaped final
+{
+    auto operator()(char* text) const noexcept -> void
+    {
+        PQfreemem(text);
+    }
+};
+
 [[nodiscard]] auto env_or_empty(char const* name) -> std::string
 {
     auto const* value = std::getenv(name);
     return value == nullptr ? std::string{} : std::string{value};
+}
+
+// `name` as a quoted SQL identifier: a role name read from the environment can only ever name a role.
+[[nodiscard]] auto quoted_identifier(std::string const& conninfo, std::string const& name) -> std::string
+{
+    auto const connection = std::unique_ptr<PGconn, Finish>{PQconnectdb(conninfo.c_str())};
+    REQUIRE(PQstatus(connection.get()) == CONNECTION_OK);
+    auto const quoted =
+        std::unique_ptr<char, FreeEscaped>{PQescapeIdentifier(connection.get(), name.c_str(), name.size())};
+    REQUIRE(quoted != nullptr);
+    return std::string{quoted.get()};
 }
 
 // Runs `sql` as the connecting (owner) role, past the store under test. Returns the first column of the first row, or
@@ -96,13 +114,14 @@ struct OpenedStore final
         auto const bootstrap = db::open_postgresql_persistent_store(conninfo);
         INFO(bootstrap.reason);
         REQUIRE(bootstrap.ok);
-        std::ignore = run_sql(conninfo, "GRANT USAGE ON SCHEMA public TO " + runtime_role);
-        std::ignore = run_sql(conninfo, "GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO " +
-                                            runtime_role);
-        std::ignore = run_sql(conninfo, "GRANT USAGE, SELECT, UPDATE ON ALL SEQUENCES IN SCHEMA public TO " +
-                                            runtime_role);
+        auto const grantee = quoted_identifier(conninfo, runtime_role);
+        std::ignore = run_sql(conninfo, "GRANT USAGE ON SCHEMA public TO " + grantee);
+        std::ignore =
+            run_sql(conninfo, "GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO " + grantee);
+        std::ignore = run_sql(conninfo, "GRANT USAGE, SELECT, UPDATE ON ALL SEQUENCES IN SCHEMA public TO " + grantee);
     }
-    auto opened = db::open_postgresql_persistent_store(conninfo, runtime_role, runtime_role.empty() ? std::string{} : migration_role);
+    auto opened = db::open_postgresql_persistent_store(conninfo, runtime_role,
+                                                       runtime_role.empty() ? std::string{} : migration_role);
     INFO(opened.reason);
     return {std::move(opened.store), opened.ok};
 }
@@ -128,13 +147,14 @@ SCENARIO("PostgreSQL audit retention deletes by age in bounded batches and keeps
         auto const now = now_ms();
         for (auto index = 0; index < 5; ++index)
         {
-            REQUIRE(db::append_audit_event(
-                store, {"policy", "pg.old", "a", "t", std::to_string(index), now - 400U * day_ms}));
+            REQUIRE(db::append_audit_event(store,
+                                           {"policy", "pg.old", "a", "t", std::to_string(index), now - 400U * day_ms}));
         }
         REQUIRE(db::append_audit_event(store, {"policy", "pg.recent", "a", "t", "recent"}));
-        std::ignore = run_sql(scratch.conninfo(),
-                "INSERT INTO audit_log (category, event_type, actor, target, reason, created_at_ms) VALUES "
-                "('policy', 'pg.unstamped', 'a', 't', 'unstamped', '0')");
+        std::ignore =
+            run_sql(scratch.conninfo(),
+                    "INSERT INTO audit_log (category, event_type, actor, target, reason, created_at_ms) VALUES "
+                    "('policy', 'pg.unstamped', 'a', 't', 'unstamped', '0')");
         auto const cutoff = now - 365U * day_ms;
 
         WHEN("the probe runs and then a batch of three is deleted")
@@ -227,7 +247,8 @@ SCENARIO("PostgreSQL audit rows keep their order after retention has freed and r
     }
 }
 
-SCENARIO("PostgreSQL credential retention deletes only the named rows", "[database][postgresql][integration][retention][pg]")
+SCENARIO("PostgreSQL credential retention deletes only the named rows",
+         "[database][postgresql][integration][retention][pg]")
 {
     GIVEN("a revoked and a live access token and an expired and a live refresh token")
     {
@@ -305,7 +326,7 @@ SCENARIO("PostgreSQL registration and logout writes commit together or not at al
         WHEN("the profile statement fails after the user statement succeeded")
         {
             std::ignore = run_sql(scratch.conninfo(),
-                    "ALTER TABLE profiles ADD CONSTRAINT refuse_boom CHECK (displayname <> 'boom')");
+                                  "ALTER TABLE profiles ADD CONSTRAINT refuse_boom CHECK (displayname <> 'boom')");
             auto const stored = db::store_user_with_profile(store, {"@bad:example.org", "hash", false, false, false},
                                                             {"@bad:example.org", "boom", ""});
 
@@ -321,18 +342,18 @@ SCENARIO("PostgreSQL registration and logout writes commit together or not at al
 
         WHEN("a device's credentials are revoked together")
         {
-            REQUIRE(db::store_access_token(store, {"@dev:example.org", "D1", "token-hash:v4:presented", false,
-                                                   std::nullopt}));
-            REQUIRE(db::store_access_token(store, {"@dev:example.org", "D1", "token-hash:v4:sibling", false,
-                                                   std::nullopt}));
-            REQUIRE(db::store_refresh_token(store, {"@dev:example.org", "D1", "token-hash:v4:refresh", false,
-                                                    std::nullopt}));
+            REQUIRE(db::store_access_token(store,
+                                           {"@dev:example.org", "D1", "token-hash:v4:presented", false, std::nullopt}));
+            REQUIRE(db::store_access_token(store,
+                                           {"@dev:example.org", "D1", "token-hash:v4:sibling", false, std::nullopt}));
+            REQUIRE(db::store_refresh_token(store,
+                                            {"@dev:example.org", "D1", "token-hash:v4:refresh", false, std::nullopt}));
             REQUIRE(db::revoke_device_credentials(store, "token-hash:v4:presented", "@dev:example.org", "D1"));
 
             THEN("every access and refresh token of the device is revoked in the database and in memory")
             {
-                REQUIRE(count_of(scratch.conninfo(), "access_tokens", "user_id = '@dev:example.org' AND revoked = 'true'") ==
-                        2);
+                REQUIRE(count_of(scratch.conninfo(), "access_tokens",
+                                 "user_id = '@dev:example.org' AND revoked = 'true'") == 2);
                 REQUIRE(count_of(scratch.conninfo(), "refresh_tokens", "revoked = 'true'") == 1);
                 for (auto const& token : store.access_tokens)
                 {
@@ -344,14 +365,16 @@ SCENARIO("PostgreSQL registration and logout writes commit together or not at al
 
         WHEN("the refresh-token revocation fails after the access-token revocation succeeded")
         {
-            REQUIRE(db::store_access_token(store, {"@fail:example.org", "D1", "token-hash:v4:fail-access", false,
-                                                   std::nullopt}));
-            REQUIRE(db::store_refresh_token(store, {"@fail:example.org", "D1", "token-hash:v4:fail-refresh", false,
-                                                    std::nullopt}));
-            std::ignore = run_sql(scratch.conninfo(),
-                    "ALTER TABLE refresh_tokens ADD CONSTRAINT keep_fail CHECK (user_id <> '@fail:example.org' OR "
-                    "revoked <> 'true')");
-            auto const revoked = db::revoke_device_credentials(store, "token-hash:v4:fail-access", "@fail:example.org", "D1");
+            REQUIRE(db::store_access_token(
+                store, {"@fail:example.org", "D1", "token-hash:v4:fail-access", false, std::nullopt}));
+            REQUIRE(db::store_refresh_token(
+                store, {"@fail:example.org", "D1", "token-hash:v4:fail-refresh", false, std::nullopt}));
+            std::ignore =
+                run_sql(scratch.conninfo(),
+                        "ALTER TABLE refresh_tokens ADD CONSTRAINT keep_fail CHECK (user_id <> '@fail:example.org' OR "
+                        "revoked <> 'true')");
+            auto const revoked =
+                db::revoke_device_credentials(store, "token-hash:v4:fail-access", "@fail:example.org", "D1");
 
             THEN("the whole revocation rolled back and memory is unchanged")
             {

@@ -116,7 +116,7 @@ struct World final
     }
 };
 
-[[nodiscard]] auto make_world(merovingian::config::Config config) -> World
+[[nodiscard]] auto make_world(merovingian::config::Config const& config) -> World
 {
     auto world = World{merovingian::homeserver::start_client_server(config), {}, {}, {}, {}};
     REQUIRE(world.started.started);
