@@ -33,8 +33,8 @@ The rest of this decision is what a later reader might otherwise undo:
   not be a number here.
 * **`limit=0` is the spec's "no limit", and the server still pages.** The page is capped at
   `server.client_api.max_public_rooms_page_size`, with `next_batch` reaching the rest, which the spec's paging fields allow.
-* **An empty `room_types` lists nothing.** The spec has "only rooms of the specified types" and "If not specified" for
-  everything. An empty list is specified, and names no type.
+* **An empty `room_types` lists nothing.** The spec calls it "An optional list of room types to search for", and says "When
+  not specified, all applicable rooms (regardless of type) are returned." An empty list is specified, and names no type.
 * **A page is at most 8 MiB, and always holds one room** (`max_public_rooms_page_bytes`). `limit` alone does not bound it: a
   room's name, topic, alias and avatar can each be an event's 64 KiB. The answer has to fit an IPC frame once escaped and
   base64-encoded (ADR-0461). At least one room per page means paging always advances.

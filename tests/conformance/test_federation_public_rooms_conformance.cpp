@@ -378,7 +378,10 @@ SCENARIO("GET /publicRooms pages with limit and since", "[federation][conformanc
             THEN("it holds two rooms and a next_batch, and no prev_batch because it is the first")
             {
                 REQUIRE(listed_room_ids(first_answer).size() == 2U);
+                // Spec: "The absence of this token means there are no more results to fetch", and a third room remains.
                 REQUIRE(string_member(first_answer, "next_batch") != nullptr);
+                // Spec: "The absence of this token means there are no results before this batch, i.e. this is the first
+                // batch."
                 REQUIRE(string_member(first_answer, "prev_batch") == nullptr);
             }
 
@@ -400,6 +403,7 @@ SCENARIO("GET /publicRooms pages with limit and since", "[federation][conformanc
                     auto expected = fixture.rooms();
                     std::ranges::sort(expected);
                     REQUIRE(seen == expected);
+                    // Spec: no next_batch means "the client should stop paginating", and nothing is left to fetch.
                     REQUIRE(string_member(second_answer, "next_batch") == nullptr);
                 }
 
@@ -408,6 +412,7 @@ SCENARIO("GET /publicRooms pages with limit and since", "[federation][conformanc
                     auto const* prev_batch = string_member(second_answer, "prev_batch");
                     REQUIRE(prev_batch != nullptr);
                     auto const again = signed_call(runtime, "GET", path + "?limit=2&since=" + *prev_batch);
+                    // Spec: prev_batch is "A pagination token that allows fetching previous results".
                     REQUIRE(listed_room_ids(again) == listed_room_ids(first_answer));
                 }
             }
@@ -418,6 +423,8 @@ SCENARIO("GET /publicRooms pages with limit and since", "[federation][conformanc
             auto const response = signed_call(runtime, "GET", path + "?limit=0");
             THEN("every room is listed")
             {
+                // Spec: `limit` "Defaults to 0 (no limit)", so the three rooms fit one batch under the default page
+                // size.
                 REQUIRE(listed_room_ids(response).size() == 3U);
             }
         }
@@ -444,6 +451,8 @@ SCENARIO("GET /publicRooms pages with limit and since", "[federation][conformanc
 
             THEN("each is refused with 400 M_INVALID_PARAM rather than restarting from the beginning")
             {
+                // The spec names no status here. Restarting from the first page would loop a paginating server
+                // (ADR-0460).
                 for (auto const& response : {bad_limit, negative_limit, huge_limit, bad_since, huge_since})
                 {
                     REQUIRE(response.status == 400U);
@@ -469,6 +478,7 @@ SCENARIO("GET /publicRooms pages with limit and since", "[federation][conformanc
             {
                 REQUIRE(listed_room_ids(huge).size() == 2U);
                 REQUIRE(listed_room_ids(none).size() == 2U);
+                // A server may answer in batches: the rest stays reachable, so "no limit" still lists every room.
                 REQUIRE(string_member(parse_object(huge.body), "next_batch") != nullptr);
                 REQUIRE(string_member(parse_object(none.body), "next_batch") != nullptr);
             }
@@ -514,6 +524,7 @@ SCENARIO("POST /publicRooms applies the filter", "[federation][conformance][publ
                 signed_call(runtime, "POST", public_rooms_path, R"({"filter":{"room_types":["m.space"]}})");
             THEN("only rooms of that type are listed")
             {
+                // Spec: `room_types` is "An optional list of room types to search for".
                 REQUIRE(listed_room_ids(response) == std::vector{fixture.space});
             }
         }
@@ -524,6 +535,7 @@ SCENARIO("POST /publicRooms applies the filter", "[federation][conformance][publ
                 signed_call(runtime, "POST", public_rooms_path, R"({"filter":{"room_types":[null]}})");
             THEN("only rooms without a type are listed")
             {
+                // Spec: "To include rooms without a room type, specify `null` within this list."
                 auto const rooms = listed_room_ids(response);
                 REQUIRE(rooms.size() == 2U);
                 REQUIRE(lists(rooms, fixture.cheese));
@@ -546,6 +558,7 @@ SCENARIO("POST /publicRooms applies the filter", "[federation][conformance][publ
             auto const response = signed_call(runtime, "POST", public_rooms_path, R"({"filter":{"room_types":[]}})");
             THEN("no type was searched for, so no room is listed")
             {
+                // Spec: only "When not specified" are all rooms returned. An empty list is specified and names no type.
                 REQUIRE(listed_room_ids(response).empty());
             }
         }
@@ -569,6 +582,8 @@ SCENARIO("POST /publicRooms applies the filter", "[federation][conformance][publ
                 REQUIRE(seen.size() == 2U);
                 REQUIRE(lists(seen, fixture.cheese));
                 REQUIRE(lists(seen, fixture.wine));
+                // The estimate counts what this filter selects, in or out of the batch, so it matches what paging will
+                // find.
                 auto const* const estimate = merovingian::tests::int_member(first_answer, "total_room_count_estimate");
                 REQUIRE(estimate != nullptr);
                 REQUIRE(*estimate == 2);
@@ -581,6 +596,7 @@ SCENARIO("POST /publicRooms applies the filter", "[federation][conformance][publ
             auto const response = signed_call(runtime, "POST", public_rooms_path, {});
             THEN("the whole directory is listed")
             {
+                // Spec: every field of the body is optional, and without a filter all applicable rooms are returned.
                 REQUIRE(listed_room_ids(response).size() == 3U);
             }
         }
@@ -593,6 +609,7 @@ SCENARIO("POST /publicRooms applies the filter", "[federation][conformance][publ
             THEN("it is refused rather than truncated")
             {
                 REQUIRE(response.status == 400U);
+                // A cut term would return the wrong rooms, so it is refused (ADR-0330).
                 REQUIRE(response.body.find("M_TOO_LARGE") != std::string::npos);
             }
         }

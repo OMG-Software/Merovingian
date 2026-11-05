@@ -159,10 +159,12 @@ SCENARIO("A worker relays a directory request as a frame main reads back with th
             {
                 REQUIRE(read.has_value());
                 REQUIRE(read->filter.generic_search_term == request.filter.generic_search_term);
+                // A null entry and a named type both survive: `null` is the spec's way to ask for rooms without a type.
                 REQUIRE(read->filter.room_types == request.filter.room_types);
                 REQUIRE(read->limit == request.limit);
                 REQUIRE(read->since_offset == request.since_offset);
                 REQUIRE(read->third_party_instance_id == request.third_party_instance_id);
+                // Left unset, so it can sit beside third_party_instance_id, which requires it to be false.
                 REQUIRE_FALSE(read->include_all_networks);
             }
         }
@@ -182,6 +184,7 @@ SCENARIO("A worker relays a directory request as a frame main reads back with th
             {
                 REQUIRE(read.has_value());
                 REQUIRE(read->filter.room_types.has_value());
+                // The frame must keep this apart from "no filter", which lists every room rather than none.
                 REQUIRE(read->filter.room_types->empty());
             }
         }
@@ -211,6 +214,7 @@ SCENARIO("A worker relays a directory request as a frame main reads back with th
         }
     }
 
+    // Main treats a worker's frame as untrusted input (ADR-0071), so each of these must end in no request at all.
     GIVEN("frames a compromised worker could send")
     {
         auto const frames = std::vector<std::string>{
@@ -244,6 +248,7 @@ SCENARIO("A worker relays a directory request as a frame main reads back with th
                 merovingian::ipc::serialize_public_rooms_ingest_result(body));
             THEN("the worker gets the same bytes")
             {
+                // The listing is a JSON text, so quotes in a room name must survive the frame's own escaping.
                 REQUIRE(read == body);
             }
         }
