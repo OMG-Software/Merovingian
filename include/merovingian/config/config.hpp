@@ -768,14 +768,15 @@ struct FederationWorkerConfig final
     std::uint32_t request_timeout_seconds{120U};
     // Number of processing threads in the worker process reserved for
     // endpoints answerable entirely from the worker's own local, room-scoped
-    // snapshot: make_join/make_leave/make_knock, backfill, query/directory,
-    // state, state_ids, get_missing_events, hierarchy. These never block on
+    // snapshot: make_leave/make_knock, backfill, state, state_ids,
+    // get_missing_events, hierarchy. These never block on
     // main and should always complete quickly.
     std::uint32_t threads{4U};
     // Number of processing threads reserved for endpoints that can block on a
     // synchronous IPC round-trip back to main (transaction PDUs/EDUs,
     // send_join/send_leave/send_knock, invite, and the query-provider relays:
-    // profile, keys, claim_keys, user_devices, event) or on outbound HTTP to a
+    // profile, directory, keys, claim_keys, user_devices, event, make_join,
+    // publicRooms) or on outbound HTTP to a
     // remote server. Deliberately a separate pool from `threads`: these
     // threads spend nearly all their time blocked on I/O rather than
     // consuming CPU, so sizing generously is cheap, whereas sharing a single

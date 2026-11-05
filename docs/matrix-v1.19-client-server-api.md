@@ -481,7 +481,7 @@ every other room, existing or not, gets the same `401 M_MISSING_TOKEN`. The body
 
 ### Security audit follow-up (0.12.17)
 
-POST /_matrix/client/v3/publicRooms runs after the shared authentication and account-state gates, including remote lookups. Directory publication is durable and independent of join rules: a published invite-only room remains listed. Presence sync includes only peers sharing a current joined membership; PUT presence requires online, offline or unavailable and an optional string status_msg. The local 1024 UTF-8 byte status cap is resource policy (ADR-0098).
+POST /_matrix/client/v3/publicRooms runs after the shared authentication and account-state gates, including remote lookups. Directory publication is durable and independent of join rules: a published invite-only room remains listed. All four `publicRooms` endpoints (client and federation) share one listing (ADR-0460): an entry carries `room_type` when the room's `m.room.create` has one, the `POST` filter honours `generic_search_term` and `room_types` (`null` is rooms without a type, an empty list is no rooms; a wrong type is 400 `M_BAD_JSON`), and a page carries `next_batch` when more rooms follow and `prev_batch` when rooms come before it. Presence sync includes only peers sharing a current joined membership; PUT presence requires online, offline or unavailable and an optional string status_msg. The local 1024 UTF-8 byte status cap is resource policy (ADR-0098).
 
 ## Application service ping, network directories and 3PID requestToken (conformance wave 3)
 

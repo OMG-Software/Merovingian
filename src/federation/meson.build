@@ -10,13 +10,14 @@ federation_sources = files(
   'key_signatures.cpp',
   'membership_endpoints.cpp',
   'outbound_membership.cpp',
-  'third_party_invite.cpp',
   'outbound_transaction.cpp',
+  'public_rooms.cpp',
   'remote_key_cache.cpp',
   'runtime_federation.cpp',
   'security.cpp',
   'server_acl.cpp',
   'server_discovery.cpp',
+  'third_party_invite.cpp',
   'transactions.cpp',
 )
 

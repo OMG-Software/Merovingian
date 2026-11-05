@@ -7,6 +7,7 @@
 #include "merovingian/events/event.hpp"
 #include "merovingian/federation/inbound_ingestion.hpp"
 #include "merovingian/federation/membership_endpoints.hpp"
+#include "merovingian/federation/public_rooms.hpp"
 #include "merovingian/federation/room_read_result.hpp"
 #include "merovingian/federation/runtime_federation.hpp"
 #include "merovingian/federation/security.hpp"
@@ -186,6 +187,11 @@ struct FederationDirectory final
 // handler responds 501 Not Implemented. The alias is percent-decoded before
 // being passed to the provider.
 using DirectoryQueryProvider = std::function<FederationDirectory(std::string_view room_alias)>;
+
+// Answers an inbound `GET` or `POST /_matrix/federation/v1/publicRooms` with its 200 response body, or
+// nothing when the answer could not be had (a worker's relay to main failed: 503). Optional: when unset
+// the handler responds 501 Not Implemented.
+using PublicRoomsProvider = std::function<std::optional<std::string>(PublicRoomsRequest const& request)>;
 
 // Result of a federation `query/profile` lookup. found=false means the user
 // is unknown to this server and the handler responds 404 M_NOT_FOUND.
@@ -394,6 +400,9 @@ struct FederationRuntimeState final
     // Optional resolver for inbound `query/directory`. When unset the handler
     // responds 501 Not Implemented.
     DirectoryQueryProvider directory_query_provider{};
+    // Optional provider for the inbound published room directory. When unset the handler responds 501
+    // Not Implemented.
+    PublicRoomsProvider public_rooms_provider{};
     // Optional resolver for inbound `query/profile`. When unset the handler
     // responds 501 Not Implemented.
     ProfileQueryProvider profile_query_provider{};

@@ -1681,6 +1681,38 @@ namespace
         return {200U, std::move(body)};
     }
 
+    // Spec: GET and POST /_matrix/federation/v1/publicRooms
+    // ../../docs/matrix-v1.19-spec/server-server-api.md#published-room-directory
+    //
+    // The request is read here, in whichever process took it, so a bad one is refused before it costs a
+    // relay; main reads the relayed copy again. The X-Matrix check and the per-origin request cap have
+    // already run in handle_inbound_federation_request.
+    [[nodiscard]] auto handle_public_rooms(FederationRuntimeState& runtime, SignedFederationRequest const& request)
+        -> FederationResponse
+    {
+        if (!runtime.public_rooms_provider)
+        {
+            return {501U, "public_rooms not implemented"};
+        }
+        auto const parsed =
+            request.method == "POST"
+                ? parse_public_rooms_body(request.body)
+                : parse_public_rooms_query(query_param_value(request.target, "limit"),
+                                           query_param_value(request.target, "since"),
+                                           query_param_value(request.target, "include_all_networks"),
+                                           query_param_value(request.target, "third_party_instance_id"));
+        if (auto const* const refusal = std::get_if<PublicRoomsRefusal>(&parsed); refusal != nullptr)
+        {
+            return {400U, homeserver::matrix_error(refusal->errcode, refusal->message)};
+        }
+        auto body = runtime.public_rooms_provider(std::get<PublicRoomsRequest>(parsed));
+        if (!body.has_value())
+        {
+            return {503U, homeserver::matrix_error("M_UNAVAILABLE", "The room directory is unavailable")};
+        }
+        return {200U, std::move(*body)};
+    }
+
     [[nodiscard]] auto handle_query_profile(FederationRuntimeState& runtime, SignedFederationRequest const& request)
         -> FederationResponse
     {
@@ -2247,6 +2279,8 @@ namespace
             return handle_backfill(runtime, request);
         case FederationEndpoint::query_directory:
             return handle_query_directory(runtime, request);
+        case FederationEndpoint::public_rooms:
+            return handle_public_rooms(runtime, request);
         case FederationEndpoint::query_profile:
             return handle_query_profile(runtime, request);
         case FederationEndpoint::query_keys:

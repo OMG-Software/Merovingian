@@ -134,6 +134,13 @@ struct HomeserverRuntime;
 [[nodiscard]] auto handle_directory_query_ingest_request(HomeserverRuntime& runtime, std::string_view request_json)
     -> std::string;
 
+// Handles a "public_rooms_ingest" IPC request (a worker relaying an inbound GET or POST
+// /_matrix/federation/v1/publicRooms). The route carries no room ID and needs the appservice registrations
+// no worker loads; main lists from its own store (ADR-0461). A malformed frame is answered with no listing
+// (503 to the requesting server).
+[[nodiscard]] auto handle_public_rooms_ingest_request(HomeserverRuntime& runtime, std::string_view request_json)
+    -> std::string;
+
 // Handles a "membership_template_ingest" IPC request (a worker relaying an
 // inbound GET /_matrix/federation/v1/make_join). A restricted room's template
 // names an authorising user only after its allow conditions are checked, and

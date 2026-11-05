@@ -945,6 +945,20 @@ auto WorkerEventLoop::run() -> void
         return deserialize_directory_query_ingest_result(*reply);
     };
 
+    // The published directory names no room, so no room_sync refreshes this snapshot for it and the request
+    // lands on one shard whatever it lists; `third_party_instance_id` also needs the appservice registrations
+    // no worker loads (ADR-0296). Main lists from its own store (ADR-0461).
+    runtime.federation.public_rooms_provider =
+        [channel_ptr](federation::PublicRoomsRequest const& request) -> std::optional<std::string> {
+        auto const reply =
+            channel_ptr->send_request(ipc::serialize_public_rooms_ingest(request), std::chrono::seconds{60});
+        if (!reply.has_value())
+        {
+            return std::nullopt;
+        }
+        return ipc::deserialize_public_rooms_ingest_result(*reply);
+    };
+
     // Override event_query_provider the same way as the three providers
     // above, but for a different reason: GET /_matrix/federation/v1/event/
     // {eventId} carries no room ID, so unlike state/state_ids/backfill/

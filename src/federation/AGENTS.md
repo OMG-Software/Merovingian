@@ -333,11 +333,17 @@ Federation is the highest-risk surface: **all input comes from untrusted remote 
 23. **Discovery follows the spec's order and redirects (ADR-0483).** `.well-known` redirects are followed by
    `fetch_well_known_following_redirects` (4 hops, each re-resolved and re-checked, one shared deadline); SRV asks
    `_matrix-fed._tcp.` and then, only if empty, the deprecated `_matrix._tcp.` (`lookup_srv_with_legacy_fallback`).
+21. **The published room directory has one listing and one request reader (ADR-0460, ADR-0461).** `parse_public_rooms_body` and
+   `parse_public_rooms_query` refuse with 400 anything unusable; never answer a bad `since` from the first page, which loops a
+   paginating server. The route names no room and reads appservice registrations, so a worker relays it to main, and main reads
+   the frame with the same parser. A worker with no listing from main answers 503, never an empty directory. The page is bounded
+   by the operator's page size and by `max_public_rooms_page_bytes`, and only published rooms are listed.
 
 ## Key files
 
 | File | Responsibility |
 |---|---|
+| `public_rooms.cpp` | Reads a published room directory request (query or body) and writes it as the relay frame's body; the listing is `homeserver/public_rooms.cpp` |
 | `inbound_request.cpp` | Parses and authenticates inbound federation HTTP requests |
 | `inbound_ingestion.cpp` | Validates, verifies, and ingests inbound PDUs |
 | `outbound_transaction.cpp` | Batches local events and delivers them to remote servers |

@@ -1439,9 +1439,10 @@ appservice's `status` and `body`) or `504 M_CONNECTION_TIMEOUT`. The call is
 bounded by `appservice.total_timeout_seconds`. An appservice can publish a room to the
 directory of one of the protocols it declares with `PUT
 /_matrix/client/v3/directory/list/appservice/{networkId}/{roomId}`, and
-`POST /publicRooms` lists those rooms for `third_party_instance_id` (the
-`instance_id` from `GET /thirdparty/protocol/{protocol}`) or together with the
-ordinary directory for `include_all_networks`. The outbound query hooks
+`POST /publicRooms`, and the federation `publicRooms` other servers call, list those
+rooms for `third_party_instance_id` (the `instance_id` from
+`GET /thirdparty/protocol/{protocol}`) or together with the ordinary directory for
+`include_all_networks`. The outbound query hooks
 (`GET /_matrix/app/v1/users/{userId}`, `GET /_matrix/app/v1/rooms/{roomAlias}`) are called on a local miss
 inside the owning appservice's namespace. Every client request that makes the server
 call an appservice (the ping, and the `GET /thirdparty/*` lookups) first takes a slot in the
@@ -3041,4 +3042,4 @@ For the complete security architecture and threat model, see
 
 ### Security audit follow-up (0.12.17)
 
-Public directory publication survives restart. Schema 18 leaves older rooms unpublished; an authorized joined user can republish them through the directory visibility endpoint. POST /_matrix/client/v3/publicRooms requires client authentication; GET remains public. Presence status messages accept at most 1024 UTF-8 bytes; invalid or oversized updates return 400 without changing presence state.
+Public directory publication survives restart. Schema 18 leaves older rooms unpublished; an authorized joined user can republish them through the directory visibility endpoint. POST /_matrix/client/v3/publicRooms requires client authentication; GET remains public. Other homeservers can read the same published rooms through GET and POST /_matrix/federation/v1/publicRooms, authenticated with X-Matrix and under the per-origin request cap: publishing a room publishes it to every server this one federates with. `server.client_api.max_public_rooms_page_size` caps a page on all of these, and a page is also at most 8 MiB. Presence status messages accept at most 1024 UTF-8 bytes; invalid or oversized updates return 400 without changing presence state.

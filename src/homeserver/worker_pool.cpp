@@ -1255,6 +1255,19 @@ auto handle_directory_query_ingest_request(HomeserverRuntime& runtime, std::stri
     return serialize_directory_query_ingest_result(directory);
 }
 
+auto handle_public_rooms_ingest_request(HomeserverRuntime& runtime, std::string_view request_json) -> std::string
+{
+    // The frame comes from the worker (ADR-0071: untrusted input), so it is read with the checks the worker
+    // applied to the remote server's request. The provider takes runtime.mutex itself and makes no network
+    // call. No origin crosses: the directory is the same for every server.
+    auto const request = ipc::deserialize_public_rooms_ingest(request_json);
+    if (!request.has_value() || !runtime.federation.public_rooms_provider)
+    {
+        return ipc::serialize_public_rooms_ingest_result(std::nullopt);
+    }
+    return ipc::serialize_public_rooms_ingest_result(runtime.federation.public_rooms_provider(*request));
+}
+
 auto handle_membership_template_ingest_request(HomeserverRuntime& runtime, std::string_view request_json) -> std::string
 {
     // The frame comes from the worker (ADR-0071: untrusted input). A template
@@ -1546,6 +1559,16 @@ WorkerPool::WorkerPool(config::FederationWorkerConfig const& cfg, HomeserverRunt
                     if (!submit_limited(handler_pool_, ch, [this, ch, id, json = std::move(json)]() mutable {
                             auto const guard = InFlightGuard{*ch};
                             ch->send_response(id, handle_directory_query_ingest_request(runtime_, json));
+                        }))
+                    {
+                        ch->send_response(id, overload_response_for(type));
+                    }
+                }
+                else if (type == "public_rooms_ingest")
+                {
+                    if (!submit_limited(handler_pool_, ch, [this, ch, id, json = std::move(json)]() mutable {
+                            auto const guard = InFlightGuard{*ch};
+                            ch->send_response(id, handle_public_rooms_ingest_request(runtime_, json));
                         }))
                     {
                         ch->send_response(id, overload_response_for(type));
