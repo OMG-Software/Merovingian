@@ -87,6 +87,7 @@ The medium severity findings of the November project analysis.
 - Reading a sliding sync hero's name and avatar is a function of its own instead of a loop that always ended on its first pass; a scenario now pins what heroes carry.
 - Sliding sync `account_data`: a room first entering the response on a connection gets all of its room account data (ADR-0493).
 - The TLS test helper creates its certificate and private key owner-only (0600) through `open`, instead of `fopen`, which left the key open to other users until it was narrowed to 0400 (CodeQL `cpp/world-writable-file-creation`). `validate_device_keys_object` checks `user_id`, `device_id` and `keys` for null where it reads them, rather than relying on an earlier check in another function (CodeQL `cpp/inconsistent-null-check`).
+- CodeQL code-quality alerts on this branch: `set_presence` takes its presence row by `const&`, not by value, so a call copies the 128-byte row once instead of twice (`cpp/large-parameter`). The ten key-API switch cases over 30 lines (cross-signing and signature uploads, key backup reads, writes, version updates and batch deletes, device-list updates) are functions of their own, moved unchanged (`cpp/long-switch`). A unit scenario no longer makes a profile lookup it threw away (`cpp/useless-expression`), and another no longer binds three user IDs it never read (`cpp/unused-local-variable`). 25 alerts on the same code were false positives and are dismissed in code scanning with the reason for each.
 
 ### Performance
 
