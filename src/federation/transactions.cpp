@@ -89,6 +89,8 @@ auto federation_endpoint_name(FederationEndpoint endpoint) noexcept -> char cons
         return "edu";
     case FederationEndpoint::query_directory:
         return "query_directory";
+    case FederationEndpoint::public_rooms:
+        return "public_rooms";
     case FederationEndpoint::query_profile:
         return "query_profile";
     case FederationEndpoint::query_keys:
@@ -136,6 +138,9 @@ auto federation_endpoint_requires_main_relay(FederationEndpoint endpoint) noexce
     // query_directory carries no room ID, so no room_sync refreshes a worker's alias table; main
     // answers from its own store.
     case FederationEndpoint::query_directory:
+    // The published directory names no room, so it lands on one shard whatever it lists, and it reads
+    // appservice registrations, which a worker never loads (ADR-0296). Main answers (ADR-0461).
+    case FederationEndpoint::public_rooms:
     case FederationEndpoint::query_keys:
     case FederationEndpoint::claim_keys:
     case FederationEndpoint::query_user_devices:
@@ -177,6 +182,8 @@ auto federation_routes() -> std::vector<FederationRoute>
         route("PUT", "/_matrix/federation/v1/send_edu/{eduType}/{txnId}", FederationEndpoint::edu),
         route("GET", "/_matrix/federation/v1/query/directory", FederationEndpoint::query_directory),
         route("GET", "/_matrix/federation/v1/query/profile", FederationEndpoint::query_profile),
+        route("GET", "/_matrix/federation/v1/publicRooms", FederationEndpoint::public_rooms),
+        route("POST", "/_matrix/federation/v1/publicRooms", FederationEndpoint::public_rooms),
         route("POST", "/_matrix/federation/v1/user/keys/query", FederationEndpoint::query_keys),
         route("POST", "/_matrix/federation/v1/user/keys/claim", FederationEndpoint::claim_keys),
         route("GET", "/_matrix/federation/v1/user/devices/{userId}", FederationEndpoint::query_user_devices),

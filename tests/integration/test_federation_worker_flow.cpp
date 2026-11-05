@@ -2944,6 +2944,64 @@ SCENARIO("handle_directory_query_ingest_request reads a room alias from main's o
     }
 }
 
+SCENARIO("handle_public_rooms_ingest_request lists the directory from main's own store",
+         "[integration][federation-worker][query-relay][public_rooms]")
+{
+    // The directory names no room, so a worker's room_sync reloads never refresh it for this route and the
+    // request lands on one shard whatever it lists. A room published through main after the worker started
+    // must still be listed, which only main's store can answer (ADR-0461).
+    GIVEN("a runtime with the default federation callbacks wired and a room published on main's own store")
+    {
+        REQUIRE(sodium_init() >= 0);
+
+        auto const tmp_dir = unique_temp_dir("merovingian-fed-worker-public-rooms");
+        auto config = make_federation_worker_config(tmp_dir);
+        config.database().sqlite_path = (tmp_dir / "public-rooms-test.sqlite3").string();
+
+        auto started = start_runtime(config);
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        merovingian::homeserver::wire_federation_callbacks(runtime);
+        REQUIRE(runtime.federation.public_rooms_provider);
+
+        auto const published = std::string{"!published:"} + config.server().server_name;
+        auto const unpublished = std::string{"!unpublished:"} + config.server().server_name;
+        auto room = merovingian::homeserver::LocalRoom{};
+        room.room_id = published;
+        room.directory_public = true;
+        runtime.database.rooms.push_back(room);
+        room.room_id = unpublished;
+        room.directory_public = false;
+        runtime.database.rooms.push_back(room);
+
+        WHEN("a frame made by the worker's serializer is handled")
+        {
+            auto const frame =
+                merovingian::ipc::serialize_public_rooms_ingest(merovingian::federation::PublicRoomsRequest{});
+            auto const reply = merovingian::homeserver::handle_public_rooms_ingest_request(runtime, frame);
+            auto const body = merovingian::ipc::deserialize_public_rooms_ingest_result(reply);
+
+            THEN("the worker receives a listing of the published room only")
+            {
+                REQUIRE(body.has_value());
+                REQUIRE(body->find(published) != std::string::npos);
+                REQUIRE(body->find(unpublished) == std::string::npos);
+            }
+        }
+
+        WHEN("a malformed frame is handled")
+        {
+            auto const reply = merovingian::homeserver::handle_public_rooms_ingest_request(
+                runtime, R"({"type":"public_rooms_ingest","request":"{\"limit\":-1}"})");
+
+            THEN("the worker receives no listing, and so answers 503 rather than an empty directory")
+            {
+                REQUIRE_FALSE(merovingian::ipc::deserialize_public_rooms_ingest_result(reply).has_value());
+            }
+        }
+    }
+}
+
 SCENARIO("handle_event_query_ingest_request reads an event from main's own store regardless of shard ownership",
          "[integration][federation-worker][query-relay]")
 {

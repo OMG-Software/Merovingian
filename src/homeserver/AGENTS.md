@@ -26,6 +26,7 @@ This is the largest and most complex module — read this file carefully before 
 | `room_power.cpp` | `may_send_state_event()`: whether a user may send a state event of a type in a room's current state, judged as the auth rules judge it (CSAZ-12) |
 | `search_room_index.cpp` | `SearchRoomIndex`: the timelines of the rooms a `POST /search` page's matches are in, from one pass over the events, for `event_context` (F-31, ADR-0333) |
 | `user_directory_search.cpp` | `matching_directory_profiles`: the profiles `POST /user_directory/search` matches, deactivated accounts read in one pass (F-50, ADR-0334) |
+| `public_rooms.cpp` | The published room directory listing behind the client and federation `publicRooms` (ADR-0460): `public_rooms_response_json`, `public_rooms_scope`, `serve_federation_public_rooms`. Reads state by index, and bounds a page in rooms and bytes |
 | `room_residency.cpp` | `room_state_is_current()`: whether held room state is current, i.e. the create event is stored and a user of this server is joined (ADR-0301) |
 | `send_join_answer_authorization.cpp` | `authorize_send_join_answer`: the auth rules over a resident's `send_join` answer, in dependency order, from the answer's own events, with `runtime.mutex` released (F-45, ADR-0369) |
 | `restricted_join.cpp` | `decide_restricted_join()`: as the resident, whether a user meets a restricted room's allow conditions and which local user authorises the join (R04, ADR-0185) |

@@ -438,3 +438,5 @@
 * [0453 - GET /sync honours full_state=true for joined rooms](0453-sync-honours-full-state.md)
 * [0454 - A sender's member event is looked up by key, never by scanning the room's state](0454-a-senders-member-is-looked-up-by-key-never-by-scanning-the-room-state.md)
 * [0448 - A client PUT of m.room.encryption must carry the listed algorithm](0448-a-client-put-of-m-room-encryption-must-carry-the-listed-algorithm.md)
+* [0460 - One listing and one strict request reader serve every published room directory endpoint](0460-one-listing-and-one-strict-reader-serve-the-published-room-directory.md)
+* [0461 - A federation worker relays the published room directory to main](0461-a-federation-worker-relays-the-published-room-directory-to-main.md)

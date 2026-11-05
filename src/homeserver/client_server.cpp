@@ -37,6 +37,7 @@
 #include "merovingian/federation/key_signatures.hpp"
 #include "merovingian/federation/outbound_membership.hpp"
 #include "merovingian/federation/outbound_transaction.hpp"
+#include "merovingian/federation/public_rooms.hpp"
 #include "merovingian/federation/security.hpp"
 #include "merovingian/homeserver/appservice_delivery.hpp"
 #include "merovingian/homeserver/appservice_ephemeral.hpp"
@@ -47,6 +48,7 @@
 #include "merovingian/homeserver/local_services.hpp"
 #include "merovingian/homeserver/media_service.hpp"
 #include "merovingian/homeserver/presence_service.hpp"
+#include "merovingian/homeserver/public_rooms.hpp"
 #include "merovingian/homeserver/push_rule_unread_classifier.hpp"
 #include "merovingian/homeserver/remote_media_fetch_scope.hpp"
 #include "merovingian/homeserver/remote_timestamp_event.hpp"
@@ -4515,154 +4517,6 @@ namespace
                         json_int(static_cast<std::int64_t>(invited_member_count(store, room_id)))),
             json_member("m.heroes", json_arr(room_heroes(rt, room_id, user))),
         });
-    }
-
-    // The prefix of every `instance_id` minted for one protocol of one appservice (ADR-0192):
-    // `<registration id>:<protocol>:`, both parts percent-encoded so the colons between them are the
-    // only colons and a registration id or protocol containing one cannot make two pairs collide.
-    [[nodiscard]] auto thirdparty_instance_id_prefix(std::string_view registration_id, std::string_view protocol)
-        -> std::string
-    {
-        return core::percent_encode_path_component(registration_id) + ":" +
-               core::percent_encode_path_component(protocol) + ":";
-    }
-
-    // Resolves a `third_party_instance_id` to the (appservice id, protocol) directory network it names:
-    // an id minted by thirdparty_protocol_json for a protocol a registration declares, followed by the
-    // instance index. Nullopt for anything else.
-    [[nodiscard]] auto directory_network_for_instance_id(appservice::AppserviceRegistry const& registry,
-                                                         std::string_view instance_id)
-        -> std::optional<std::pair<std::string, std::string>>
-    {
-        for (auto const& registration : registry.all())
-        {
-            for (auto const& protocol : registration.protocols)
-            {
-                auto const prefix = thirdparty_instance_id_prefix(registration.id, protocol);
-                if (!instance_id.starts_with(prefix))
-                {
-                    continue;
-                }
-                auto const index = instance_id.substr(prefix.size());
-                if (!index.empty() && std::ranges::all_of(index, [](char const digit) {
-                        return digit >= '0' && digit <= '9';
-                    }))
-                {
-                    return std::pair{registration.id, protocol};
-                }
-            }
-        }
-        return std::nullopt;
-    }
-
-    // Which rooms POST /publicRooms lists (Client-Server API, "Listing rooms"): the homeserver's own
-    // published directory by default; one third-party network's directory when the request names it
-    // with `third_party_instance_id`; both together, plus every network's, with `include_all_networks`.
-    struct PublicRoomsScope final
-    {
-        bool include_all_networks{false};
-        // The (appservice id, protocol) a `third_party_instance_id` resolved to; empty strings for an
-        // id that names no network, which lists nothing.
-        std::optional<std::pair<std::string, std::string>> network{};
-    };
-
-    // Spec: GET/POST /_matrix/client/v3/publicRooms
-    // ../../docs/matrix-v1.19-spec/client-server-api.md#get_matrixclientv3publicrooms
-    [[nodiscard]] auto public_rooms_filtered_json(ClientServerRuntime const& rt, std::string const& filter_term,
-                                                  std::optional<std::size_t> limit, std::size_t since_offset,
-                                                  PublicRoomsScope const& scope = {}) -> std::string
-    {
-        // One linear-time matcher for the request (ADR-0330): std::search was O(text * term) on a room name or
-        // topic of up to 64 KiB, under runtime.mutex (F-28). A term over the cap never reaches here.
-        auto matcher = core::FoldedSubstringMatcher{filter_term};
-
-        auto const& store = rt.homeserver.database.persistent_store;
-        auto const index = build_state_index(store);
-
-        // Rooms an appservice published to the networks in scope, found once rather than per room.
-        auto network_rooms = std::unordered_set<std::string_view>{};
-        for (auto const& entry : store.appservice_directory)
-        {
-            if (scope.include_all_networks ||
-                (scope.network.has_value() && entry.appservice_id == scope.network->first &&
-                 entry.network_id == scope.network->second))
-            {
-                network_rooms.insert(entry.room_id);
-            }
-        }
-
-        auto all_rooms = std::vector<canonicaljson::Object>{};
-        for (auto const& room : rt.homeserver.database.rooms)
-        {
-            auto const join_rule = room_state_string(store, index, room.room_id, "m.room.join_rules", "join_rule");
-            // A request that names one network lists only that network's rooms ("Can only be used if
-            // include_all_networks is false"); otherwise the homeserver's own directory is listed, with
-            // every network's rooms added for include_all_networks.
-            auto const listed =
-                (!scope.network.has_value() && room.directory_public) || network_rooms.contains(room.room_id);
-            if (!listed)
-                continue;
-
-            auto const name = room_state_string(store, index, room.room_id, "m.room.name", "name");
-            auto const topic = room_state_string(store, index, room.room_id, "m.room.topic", "topic");
-            auto const alias = room_state_string(store, index, room.room_id, "m.room.canonical_alias", "alias");
-
-            if (!filter_term.empty())
-            {
-                auto const matches = matcher.contains(room.room_id) || (name.has_value() && matcher.contains(*name)) ||
-                                     (topic.has_value() && matcher.contains(*topic)) ||
-                                     (alias.has_value() && matcher.contains(*alias));
-                if (!matches)
-                    continue;
-            }
-
-            auto room_entry = canonicaljson::Object{};
-            room_entry.push_back(json_member("room_id", json_str(room.room_id)));
-            room_entry.push_back(json_member(
-                "num_joined_members", json_int(static_cast<std::int64_t>(joined_member_count(rt, room.room_id)))));
-            if (join_rule.has_value())
-            {
-                room_entry.push_back(json_member("join_rule", json_str(*join_rule)));
-            }
-
-            auto const history_visibility =
-                room_state_string(store, index, room.room_id, "m.room.history_visibility", "history_visibility");
-            room_entry.push_back(json_member("world_readable", json_bool(history_visibility.has_value() &&
-                                                                         *history_visibility == "world_readable")));
-
-            auto const guest_access =
-                room_state_string(store, index, room.room_id, "m.room.guest_access", "guest_access");
-            room_entry.push_back(
-                json_member("guest_can_join", json_bool(guest_access.has_value() && *guest_access == "can_join")));
-
-            if (name.has_value())
-                room_entry.push_back(json_member("name", json_str(*name)));
-            if (topic.has_value())
-                room_entry.push_back(json_member("topic", json_str(*topic)));
-            if (alias.has_value())
-                room_entry.push_back(json_member("canonical_alias", json_str(*alias)));
-            if (auto const avatar = room_state_string(store, index, room.room_id, "m.room.avatar", "url");
-                avatar.has_value())
-                room_entry.push_back(json_member("avatar_url", json_str(*avatar)));
-
-            all_rooms.push_back(std::move(room_entry));
-        }
-
-        auto const total = static_cast<std::int64_t>(all_rooms.size());
-        auto const start = std::min(since_offset, all_rooms.size());
-        auto const end = limit.has_value() ? std::min(start + *limit, all_rooms.size()) : all_rooms.size();
-
-        auto chunk = canonicaljson::Array{};
-        for (auto i = start; i < end; ++i)
-            chunk.push_back(json_obj(std::move(all_rooms[i])));
-
-        auto response = canonicaljson::Object{};
-        response.push_back(json_member("chunk", json_arr(std::move(chunk))));
-        response.push_back(json_member("total_room_count_estimate", json_int(total)));
-        if (end < all_rooms.size())
-            response.push_back(json_member("next_batch", json_str(std::to_string(end))));
-
-        return json_serialize(json_obj(std::move(response)));
     }
 
     // Builds the federation target path for /_matrix/federation/v1/publicRooms,
@@ -12879,7 +12733,7 @@ namespace
     // unique across the whole homeserver because registration `id`s are enforced unique at load time
     // (validate_registrations, appservice/AGENTS.md) and the protocol is part of it. A client echoes
     // it back as `third_party_instance_id`, which resolves to the directory network it names
-    // (directory_network_for_instance_id, ADR-0192).
+    // (public_rooms_scope, ADR-0192).
     [[nodiscard]] auto thirdparty_protocol_json(appservice::ThirdPartyProtocol const& protocol,
                                                 std::string const& registration_id, std::string_view protocol_name)
         -> canonicaljson::Value
@@ -13544,7 +13398,8 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                 return dispatch_err(req, rt, 502U, "M_UNKNOWN", "Failed to fetch public rooms from remote server");
             return dispatch_resp(req, rt, 200U, body);
         }
-        return dispatch_resp(req, rt, 200U, public_rooms_filtered_json(rt, {}, limit, since_offset));
+        return dispatch_resp(req, rt, 200U,
+                             public_rooms_response_json(rt.homeserver.database, {}, *limit, since_offset));
     }
     auto constexpr directory_room_prefix = std::string_view{"/_matrix/client/v3/directory/room/"};
     auto constexpr directory_list_room_prefix = std::string_view{"/_matrix/client/v3/directory/list/room/"};
@@ -15142,7 +14997,7 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
     // ../../docs/matrix-v1.19-spec/client-server-api.md#post_matrixclientv3publicrooms
     if (req.method == "POST" && request_path == "/_matrix/client/v3/publicRooms")
     {
-        auto filter_term = std::string{};
+        auto filter = federation::PublicRoomsFilter{};
         auto limit = std::optional<std::size_t>{};
         auto since_raw = std::string{};      // raw string; forwarded as-is to remote
         auto since_offset = std::size_t{0U}; // parsed integer for local pagination
@@ -15151,24 +15006,16 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
 
         if (auto const body = parsed_json_object(req.body); body.has_value())
         {
+            // Before the ?server= proxy below, which would forward it.
             if (auto const* filter_val = object_member(*body, "filter"); filter_val != nullptr)
             {
-                if (auto const* filter_obj = std::get_if<canonicaljson::Object>(&filter_val->storage());
-                    filter_obj != nullptr)
+                auto parsed_filter = federation::parse_public_rooms_filter(*filter_val);
+                if (auto const* const refusal = std::get_if<federation::PublicRoomsRefusal>(&parsed_filter);
+                    refusal != nullptr)
                 {
-                    if (auto const* term = string_member(*filter_obj, "generic_search_term"); term != nullptr)
-                    {
-                        // Refused, not truncated: a cut term returns the wrong rooms (ADR-0330). Before
-                        // the ?server= proxy below, which would forward it.
-                        if (term->size() > core::max_search_term_bytes)
-                        {
-                            return dispatch_err(req, rt, 400U, "M_TOO_LARGE",
-                                                "generic_search_term is longer than " +
-                                                    std::to_string(core::max_search_term_bytes) + " bytes");
-                        }
-                        filter_term = *term;
-                    }
+                    return dispatch_err(req, rt, 400U, refusal->errcode, refusal->message);
                 }
+                filter = std::get<federation::PublicRoomsFilter>(std::move(parsed_filter));
             }
             // Spec: `include_all_networks` is "Whether or not to include all known networks/protocols from
             // application services on the homeserver. Defaults to false." and `third_party_instance_id` is
@@ -15238,16 +15085,15 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             // unfiltered requests (wider server compatibility).
             auto fed_body = std::string{};
             auto const names_a_network = include_all_networks || !third_party_instance_id.empty();
-            auto const use_post = !filter_term.empty() || names_a_network;
+            auto const filtered = !filter.generic_search_term.empty() || filter.room_types.has_value();
+            auto const use_post = filtered || names_a_network;
             auto const fed_method = use_post ? std::string_view{"POST"} : std::string_view{"GET"};
             if (use_post)
             {
                 auto body_obj = canonicaljson::Object{};
-                if (!filter_term.empty())
+                if (filtered)
                 {
-                    auto filter_obj = canonicaljson::Object{};
-                    filter_obj.push_back(json_member("generic_search_term", json_str(filter_term)));
-                    body_obj.push_back(json_member("filter", json_obj(std::move(filter_obj))));
+                    body_obj.push_back(json_member("filter", federation::public_rooms_filter_value(filter)));
                 }
                 if (include_all_networks)
                     body_obj.push_back(json_member("include_all_networks", json_bool(true)));
@@ -15273,16 +15119,9 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                 return dispatch_err(req, rt, 502U, "M_UNKNOWN", "Failed to fetch public rooms from remote server");
             return dispatch_resp(req, rt, 200U, body);
         }
-        auto scope = PublicRoomsScope{};
-        scope.include_all_networks = include_all_networks;
-        if (!third_party_instance_id.empty())
-        {
-            // An id that names no network of any registered appservice lists nothing, rather than
-            // falling back to the homeserver's own directory the client did not ask for.
-            scope.network = directory_network_for_instance_id(rt.homeserver.appservices, third_party_instance_id)
-                                .value_or(std::pair<std::string, std::string>{});
-        }
-        return dispatch_resp(req, rt, 200U, public_rooms_filtered_json(rt, filter_term, limit, since_offset, scope));
+        auto const scope = public_rooms_scope(rt.homeserver.appservices, include_all_networks, third_party_instance_id);
+        return dispatch_resp(req, rt, 200U,
+                             public_rooms_response_json(rt.homeserver.database, filter, *limit, since_offset, scope));
     }
 
     // GET /_matrix/client/v1/media/download/{serverName}/{mediaId}

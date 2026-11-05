@@ -770,4 +770,63 @@ auto deserialize_membership_template_ingest_result(std::string_view json)
     return tmpl;
 }
 
+auto serialize_public_rooms_ingest(federation::PublicRoomsRequest const& request) -> std::string
+{
+    auto body = std::string{R"({"type":"public_rooms_ingest","request":)"};
+    body += ipc_json_str(federation::serialize_public_rooms_request(request));
+    body += '}';
+    return body;
+}
+
+auto deserialize_public_rooms_ingest(std::string_view json) -> std::optional<federation::PublicRoomsRequest>
+{
+    auto const parsed = canonicaljson::parse_json(json);
+    auto const* obj = parsed.error == canonicaljson::ParseError::none ? object_of(parsed.value) : nullptr;
+    if (obj == nullptr)
+    {
+        return std::nullopt;
+    }
+    auto const request_json = get_str(*obj, "request");
+    if (request_json.empty())
+    {
+        return std::nullopt;
+    }
+    auto request = federation::parse_public_rooms_body(request_json);
+    if (std::holds_alternative<federation::PublicRoomsRefusal>(request))
+    {
+        return std::nullopt;
+    }
+    return std::get<federation::PublicRoomsRequest>(std::move(request));
+}
+
+auto serialize_public_rooms_ingest_result(std::optional<std::string> const& body) -> std::string
+{
+    auto result = std::string{R"({"type":"public_rooms_ingest_result","found":)"};
+    if (!body.has_value())
+    {
+        result += "false}";
+        return result;
+    }
+    result += R"(true,"body":)";
+    result += ipc_json_str(*body);
+    result += '}';
+    return result;
+}
+
+auto deserialize_public_rooms_ingest_result(std::string_view json) -> std::optional<std::string>
+{
+    auto const parsed = canonicaljson::parse_json(json);
+    auto const* obj = parsed.error == canonicaljson::ParseError::none ? object_of(parsed.value) : nullptr;
+    if (obj == nullptr || !get_bool(*obj, "found"))
+    {
+        return std::nullopt;
+    }
+    auto body = get_str(*obj, "body");
+    if (body.empty())
+    {
+        return std::nullopt;
+    }
+    return body;
+}
+
 } // namespace merovingian::ipc
