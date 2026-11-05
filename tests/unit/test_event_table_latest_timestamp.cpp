@@ -49,8 +49,13 @@ constexpr auto room_b = "!b:example.org";
 
 SCENARIO("A room's newest origin_server_ts follows its rows", "[database][event-table][p11]")
 {
+    // This scenario exercises the cached per-room maximum origin_server_ts across the full
+    // event-row lifecycle: insertion order skew, status variation, and later mutations.
+    // The invariant under test is that each room reports exactly the greatest timestamp among
+    // its current rows (independent of other rooms), with 0 for rooms with no rows.
     GIVEN("a room whose events were stored with timestamps out of order, one of them rejected")
     {
+        // Seed two rooms so we can validate both max-selection and room isolation.
         auto table = EventTable{};
         REQUIRE(table.insert(event_at("$1", 1, room_a, ts(100))));
         REQUIRE(table.insert(event_at("$2", 2, room_a, ts(300))));
@@ -182,6 +187,7 @@ SCENARIO("A room's newest origin_server_ts follows its rows", "[database][event-
         }
     }
 
+    // Hydration path: bulk insertion must produce the same per-room maxima as incremental inserts.
     GIVEN("rows added in one batch, as at hydration")
     {
         auto table = EventTable{};
