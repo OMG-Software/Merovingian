@@ -318,6 +318,30 @@ SCENARIO("A directory page is bounded in rooms and in bytes, and paging always a
             }
         }
 
+        // This server has an exact count, which the spec does not require of a server: the estimate is present
+        // "if the server has an estimate". What it counts is the spec's "total number of published rooms".
+        WHEN("a page is asked for with no filter, past the end, and with a filter that selects nothing")
+        {
+            auto const whole = merovingian::homeserver::public_rooms_response_json(database, {}, 2U, 0U);
+            auto const past_end =
+                merovingian::homeserver::public_rooms_response_json(database, {}, 2U, std::size_t{1000U});
+            auto none_selected = merovingian::federation::PublicRoomsFilter{};
+            none_selected.room_types = std::vector<std::optional<std::string>>{};
+            auto const filtered = merovingian::homeserver::public_rooms_response_json(database, none_selected, 2U, 0U);
+
+            THEN("each estimate counts the five published rooms and leaves the unpublished one out")
+            {
+                for (auto const& body : {whole, past_end, filtered})
+                {
+                    auto const answer = parse_object(body);
+                    auto const* const estimate = merovingian::tests::int_member(answer, "total_room_count_estimate");
+                    REQUIRE(estimate != nullptr);
+                    REQUIRE(*estimate == 5);
+                }
+                REQUIRE(rooms_in(filtered) == 0U);
+            }
+        }
+
         WHEN("the limit is 0, which no caller should pass")
         {
             auto const body = merovingian::homeserver::public_rooms_response_json(database, {}, 0U, 0U);

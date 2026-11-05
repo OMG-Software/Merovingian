@@ -266,9 +266,11 @@ SCENARIO("GET /publicRooms lists a published room and leaves out an unpublished 
                 REQUIRE(listed_room_ids(answer).size() == 3U);
                 REQUIRE(string_member(answer, "next_batch") == nullptr);
                 REQUIRE(string_member(answer, "prev_batch") == nullptr);
-                auto const* const estimate = merovingian::tests::int_member(answer, "total_room_count_estimate");
-                REQUIRE(estimate != nullptr);
-                REQUIRE(*estimate == 3);
+                // Spec: an `integer`, present only "if the server has an estimate", and it need not be exact.
+                if (merovingian::tests::object_member(answer, "total_room_count_estimate") != nullptr)
+                {
+                    REQUIRE(merovingian::tests::int_member(answer, "total_room_count_estimate") != nullptr);
+                }
             }
         }
     }
@@ -574,7 +576,7 @@ SCENARIO("POST /publicRooms applies the filter", "[federation][conformance][publ
             auto const second =
                 signed_call(runtime, "POST", public_rooms_path, body + R"(,"since":")" + *next_batch + "\"}");
 
-            THEN("the two batches hold the two matching rooms, and the count is of matching rooms")
+            THEN("the two batches hold the two matching rooms, and paging then stops")
             {
                 auto seen = listed_room_ids(first_answer);
                 auto const rest = listed_room_ids(second);
@@ -582,11 +584,6 @@ SCENARIO("POST /publicRooms applies the filter", "[federation][conformance][publ
                 REQUIRE(seen.size() == 2U);
                 REQUIRE(lists(seen, fixture.cheese));
                 REQUIRE(lists(seen, fixture.wine));
-                // The estimate counts what this filter selects, in or out of the batch, so it matches what paging will
-                // find.
-                auto const* const estimate = merovingian::tests::int_member(first_answer, "total_room_count_estimate");
-                REQUIRE(estimate != nullptr);
-                REQUIRE(*estimate == 2);
                 REQUIRE(string_member(parse_object(second.body), "next_batch") == nullptr);
             }
         }

@@ -218,8 +218,10 @@ auto public_rooms_response_json(LocalDatabase const& database, federation::Publi
     auto page_closed = false;
     // How far the page reached: where the next one starts.
     auto next_offset = since_offset;
-    // Every room the scope and filter select, in or out of this page.
+    // Every room the scope and filter select, in or out of this page: what the paging offsets count.
     auto selected = std::size_t{0U};
+    // Every room in scope, whatever the filter: the spec's "total number of published rooms".
+    auto published = std::size_t{0U};
     for (auto const& room : database.rooms)
     {
         // A request naming one network lists only that network's rooms ("Can only be used if
@@ -231,6 +233,7 @@ auto public_rooms_response_json(LocalDatabase const& database, federation::Publi
         {
             continue;
         }
+        ++published;
 
         // Only what the filter or this page needs is read: past the page, an unfiltered room costs a count.
         auto const may_be_in_page = !page_closed && selected >= since_offset;
@@ -308,7 +311,7 @@ auto public_rooms_response_json(LocalDatabase const& database, federation::Publi
     {
         body += R"(,"prev_batch":")" + std::to_string(start > page_size ? start - page_size : 0U) + '"';
     }
-    body += R"(,"total_room_count_estimate":)" + std::to_string(selected) + '}';
+    body += R"(,"total_room_count_estimate":)" + std::to_string(published) + '}';
     return body;
 }
 

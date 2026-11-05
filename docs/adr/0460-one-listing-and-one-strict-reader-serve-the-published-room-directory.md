@@ -52,4 +52,6 @@ The rest of this decision is what a later reader might otherwise undo:
 * A remote server can make main walk the published rooms, up to the per-origin request cap. The spec marks the endpoint
   "Rate-limited: No", which tells a requester not to expect 429; the project keeps its per-origin cap on every non-`/send`
   endpoint regardless (`check_federation_origin_request_rate`).
-* `total_room_count_estimate` is exact and costs the same walk as a page. It could be cached if directories grow large.
+* `total_room_count_estimate` is exact and costs the same walk as a page. It could be cached if directories grow large. It
+  counts the rooms in scope whatever the filter, as the spec's "total number of published rooms" says, so it can be larger
+  than what paging a filtered request will find. Paging offsets count the filtered rooms instead.

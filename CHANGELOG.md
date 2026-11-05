@@ -15,6 +15,8 @@
   alias or avatar URL is left out. A `?server=` lookup forwards `room_types`. A wrong type for `room_types` is 400 `M_BAD_JSON`.
 - **A directory page is bounded in bytes.** A page holds at most 8 MiB of rooms, whatever `limit` says, and always at least
   one, with `next_batch` reaching the rest.
+- **`total_room_count_estimate` counts published rooms.** A filtered request now gets the spec's "total number of published
+  rooms" rather than the count of rooms its filter selects.
 - **A listing no longer builds a state index per request.** Room state is read by index, and only for the rooms a page or
   filter needs.
 
