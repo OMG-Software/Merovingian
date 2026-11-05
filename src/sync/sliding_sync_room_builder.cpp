@@ -370,6 +370,38 @@ namespace
 
     // ── Heroes ──────────────────────────────────────────────────────────────
 
+    // A hero's name and avatar from the content of their member event. One that is absent, empty or not a string stays
+    // unset, as does either when the event cannot be read.
+    auto fill_hero_profile(SlidingSyncHero& hero, std::string_view member_event_json) -> void
+    {
+        auto const parsed = canonicaljson::parse_lossless(member_event_json);
+        if (parsed.error != canonicaljson::ParseError::none)
+        {
+            return;
+        }
+        auto const* root = as_object(parsed.value);
+        auto const* content_val = root != nullptr ? find_member(*root, "content") : nullptr;
+        auto const* content = content_val != nullptr ? as_object(*content_val) : nullptr;
+        if (content == nullptr)
+        {
+            return;
+        }
+        if (auto const* dn = find_member(*content, "displayname"); dn != nullptr)
+        {
+            if (auto const* s = as_string(*dn); s != nullptr && !s->empty())
+            {
+                hero.display_name = *s;
+            }
+        }
+        if (auto const* av = find_member(*content, "avatar_url"); av != nullptr)
+        {
+            if (auto const* s = as_string(*av); s != nullptr && !s->empty())
+            {
+                hero.avatar_url = *s;
+            }
+        }
+    }
+
     [[nodiscard]] auto build_heroes(database::PersistentStore const& store, std::string_view room_id,
                                     std::string_view self_user_id) -> std::vector<SlidingSyncHero>
     {
@@ -395,39 +427,9 @@ namespace
                     database::find_current_state_event_id(store, room_id, "m.room.member", hero_user_id);
                 member_event_id.has_value())
             {
-                for (auto const& ev : store.events.with_id(*member_event_id))
+                if (auto const member_event = store.events.find(*member_event_id); member_event != store.events.end())
                 {
-                    auto const parsed = canonicaljson::parse_lossless(ev.json);
-                    if (parsed.error != canonicaljson::ParseError::none)
-                    {
-                        break;
-                    }
-                    auto const* root = as_object(parsed.value);
-                    if (root == nullptr)
-                    {
-                        break;
-                    }
-                    auto const* content_val = find_member(*root, "content");
-                    auto const* content = content_val != nullptr ? as_object(*content_val) : nullptr;
-                    if (content == nullptr)
-                    {
-                        break;
-                    }
-                    if (auto const* dn = find_member(*content, "displayname"); dn != nullptr)
-                    {
-                        if (auto const* s = as_string(*dn); s != nullptr && !s->empty())
-                        {
-                            hero.display_name = *s;
-                        }
-                    }
-                    if (auto const* av = find_member(*content, "avatar_url"); av != nullptr)
-                    {
-                        if (auto const* s = as_string(*av); s != nullptr && !s->empty())
-                        {
-                            hero.avatar_url = *s;
-                        }
-                    }
-                    break;
+                    fill_hero_profile(hero, member_event->json);
                 }
             }
             heroes.push_back(std::move(hero));

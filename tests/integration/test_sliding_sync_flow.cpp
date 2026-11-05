@@ -2852,6 +2852,77 @@ SCENARIO("MSC4186 sliding sync member counts and heroes follow joins and leaves"
     }
 }
 
+SCENARIO("MSC4186 sliding sync heroes carry the name and avatar of their member event", "[sliding-sync][heroes]")
+{
+    GIVEN("a room alice is in, joined by bob who has a name and an avatar, and by carol who has neither")
+    {
+        auto const config = sliding_sync_config();
+        auto started = merovingian::homeserver::start_client_server(config);
+        REQUIRE(started.started);
+        auto& rt = started.runtime;
+        auto const alice_token = register_and_login(rt, "alice", "CorrectHorse7!", "ALICE");
+        auto const bob_token = register_and_login(rt, "bob", "CorrectHorse7!", "BOB");
+        auto const carol_token = register_and_login(rt, "carol", "CorrectHorse7!", "CAROL");
+        REQUIRE(merovingian::homeserver::handle_client_server_request(
+                    rt, {"PUT", "/_matrix/client/v3/profile/%40bob%3Aexample.org/displayname", bob_token,
+                         R"({"displayname":"Bob Hero"})"})
+                    .response.status == 200U);
+        REQUIRE(merovingian::homeserver::handle_client_server_request(
+                    rt, {"PUT", "/_matrix/client/v3/profile/%40bob%3Aexample.org/avatar_url", bob_token,
+                         R"({"avatar_url":"mxc://example.org/bobavatar"})"})
+                    .response.status == 200U);
+        auto const room_id = create_room(rt, alice_token);
+        auto const invite_and_join = [&rt, &alice_token, &room_id](std::string const& user_id,
+                                                                   std::string const& token) {
+            REQUIRE(merovingian::homeserver::handle_client_server_request(
+                        rt, {"POST", "/_matrix/client/v3/rooms/" + room_id + "/invite", alice_token,
+                             R"({"user_id":")" + user_id + R"("})"})
+                        .response.status == 200U);
+            REQUIRE(merovingian::homeserver::handle_client_server_request(
+                        rt, {"POST", "/_matrix/client/v3/rooms/" + room_id + "/join", token, "{}"})
+                        .response.status == 200U);
+        };
+        invite_and_join("@bob:example.org", bob_token);
+        invite_and_join("@carol:example.org", carol_token);
+
+        WHEN("alice asks for the room's heroes")
+        {
+            auto const result = sliding_sync(
+                rt, alice_token,
+                R"({"conn_id":"heroes","lists":{"all":{"ranges":[[0,9]],"required_state":[],"timeline_limit":1,"include_heroes":true}}})");
+            REQUIRE(result.response.status == 200U);
+            auto const rooms = rooms_object(result.response.body);
+            auto const* room = object_member_as_object(rooms, room_id);
+            REQUIRE(room != nullptr);
+            auto const* heroes = object_member_as_array(*room, "heroes");
+            REQUIRE(heroes != nullptr);
+            auto const hero_json = [heroes](std::string_view user_id) {
+                for (auto const& hero : *heroes)
+                {
+                    auto const serialized = merovingian::canonicaljson::serialize_canonical(hero);
+                    REQUIRE(serialized.error == merovingian::canonicaljson::CanonicalJsonError::none);
+                    if (serialized.output.find(user_id) != std::string::npos)
+                    {
+                        return serialized.output;
+                    }
+                }
+                return std::string{};
+            };
+
+            THEN("bob's hero entry holds his name and avatar, and carol's holds only her user ID")
+            {
+                auto const bob = hero_json("@bob:example.org");
+                REQUIRE(bob.find("Bob Hero") != std::string::npos);
+                REQUIRE(bob.find("mxc://example.org/bobavatar") != std::string::npos);
+                auto const carol = hero_json("@carol:example.org");
+                REQUIRE_FALSE(carol.empty());
+                REQUIRE(carol.find("avatar") == std::string::npos);
+                REQUIRE(carol.find("name") == std::string::npos);
+            }
+        }
+    }
+}
+
 namespace
 {
 

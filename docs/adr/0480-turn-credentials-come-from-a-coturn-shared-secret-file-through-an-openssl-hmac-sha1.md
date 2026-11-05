@@ -24,6 +24,8 @@ has no SHA-1.
   SHA-1 or HMAC by hand would be a custom primitive, which the boundary forbids. SHA-1 is allowed here for this one
   protocol: HMAC-SHA1 is not weakened by SHA-1 collisions, and coturn fixes the format. Nothing else may add SHA-1
   uses.
+  SonarQube's weak-hash rule (`cpp:S4790`) is silenced with `NOSONAR` at that one call for this reason, so the finding
+  cannot fail the quality gate; a second SHA-1 use would still be reported.
 * No constant-time comparison applies: this server only creates the MAC. The TURN server verifies it.
 * The credential ends at `now + ttl_seconds` (`server.turn.ttl_seconds`, default 24 hours); the response `ttl` is the
   same number.

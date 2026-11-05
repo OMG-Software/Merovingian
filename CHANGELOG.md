@@ -39,6 +39,7 @@ The medium severity findings of the November project analysis.
 - `profiles` gains `fields_json`; the 64 KiB profile limit counts extended fields.
 - A config naming both TURN static credentials and a shared secret is refused.
 - `merovingian-crypto` links OpenSSL.
+- The HMAC-SHA1 call the coturn REST API requires is marked `NOSONAR(cpp:S4790)`, with the reason, at that one call (ADR-0480).
 - Every BSD CI job is required. `continue-on-error` is gone from the OpenBSD and NetBSD suites and the NetBSD package job. The NetBSD retry job is deleted because it could no longer change a run's result, and a missing NetBSD artifact now stops staging (ADR-0502).
 - The fuzz runner builds the libraries with AddressSanitizer, UBSan and coverage counters, and runs 14 targets (ADR-0503).
 - `server.identity_server.default_server` and `security.logging.structured` are removed (nothing read them) and are now refused as unknown keys; `redact_tokens` and `redact_event_content` accept only `true`, as before.
@@ -64,6 +65,7 @@ The medium severity findings of the November project analysis.
 - `GET /profile/{userId}`, the user directory and `/search` `profile_info` leave out a `displayname` or `avatar_url` the user has not set.
 - Registration no longer leaves an account without a profile row when the profile write fails.
 - Revoked and expired sessions and tokens are now deleted rather than kept for ever.
+- Reading a sliding sync hero's name and avatar is a function of its own instead of a loop that always ended on its first pass; a scenario now pins what heroes carry.
 - Sliding sync `account_data`: a room first entering the response on a connection gets all of its room account data (ADR-0493).
 
 ### Performance
