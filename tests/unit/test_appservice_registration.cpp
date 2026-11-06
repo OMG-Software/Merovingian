@@ -1185,7 +1185,7 @@ SCENARIO("A registration in the form Complement writes is loaded", "[appservice]
 
         WHEN("it is loaded")
         {
-            auto const loaded = load_registrations({path.string()}, "hs1");
+            auto const loaded = load_registrations({path.string()}, "hs1", {"host.docker.internal"});
             std::filesystem::remove(path);
 
             THEN("it is accepted with its tokens, sender, URL and user namespace")
@@ -1242,6 +1242,197 @@ SCENARIO("A registration with an unknown plain key is still refused", "[appservi
                 CHECK(std::ranges::any_of(loaded.findings, [](auto const& finding) {
                     return finding.message.find("as_tokn") != std::string::npos;
                 }));
+            }
+        }
+    }
+}
+
+namespace
+{
+
+// Writes a registration whose `url` is the given JSON value text ("null" or a quoted string) and loads it
+// through load_registrations, the call that applies the cleartext rule (ADR-0515).
+[[nodiscard]] auto load_with_url(std::string const& url_json, std::vector<std::string> const& allowed_hosts = {})
+    -> merovingian::appservice::LoadRegistrationsResult
+{
+    auto const path = std::filesystem::temp_directory_path() / "merovingian-test-appservice-cleartext.json";
+    {
+        auto out = std::ofstream{path, std::ios::binary};
+        out << R"({"id": "cleartext-bridge", "url": )" << url_json
+            << R"(, "as_token": "as-token-cleartext-secret", "hs_token": "hs-token-cleartext-secret",
+                "sender_localpart": "_cleartext_bot",
+                "namespaces": {"users": [{"exclusive": true, "regex": "@_cleartext_.*"}], "aliases": [], "rooms": []}})";
+    }
+    auto loaded = load_registrations({path.string()}, "example.org", allowed_hosts);
+    std::filesystem::remove(path);
+    return loaded;
+}
+
+[[nodiscard]] auto finding_text(merovingian::appservice::LoadRegistrationsResult const& loaded) -> std::string
+{
+    auto text = std::string{};
+    for (auto const& finding : loaded.findings)
+    {
+        text += finding.source + " " + finding.message + "\n";
+    }
+    return text;
+}
+
+} // namespace
+
+// ADR-0515: the hs_token is a bearer secret sent in every request to the appservice, so plain http is
+// accepted only to a loopback IP literal or to a host the operator listed in appservice.allow_cleartext_hosts.
+SCENARIO("A cleartext appservice url must name a loopback literal or a listed host",
+         "[appservice][registration][cleartext]")
+{
+    GIVEN("registration urls that use http to a loopback IP literal")
+    {
+        auto const urls = {"http://127.0.0.1:9000", "http://127.5.6.7", "http://[::1]:9000",
+                           "http://127.0.0.1:9000/bridge"};
+
+        WHEN("each is loaded with no allowed hosts")
+        {
+            THEN("each registration is accepted")
+            {
+                for (auto const* url : urls)
+                {
+                    INFO(url);
+                    auto const loaded = load_with_url(std::string{"\""} + url + "\"");
+                    REQUIRE(loaded.findings.empty());
+                    REQUIRE(loaded.registry.size() == 1U);
+                }
+            }
+        }
+    }
+
+    GIVEN("an http url to a public name")
+    {
+        WHEN("it is loaded with no allowed hosts")
+        {
+            auto const loaded = load_with_url(R"("http://example.org")");
+
+            THEN("the registration is rejected with a finding that names no token")
+            {
+                REQUIRE(loaded.registry.size() == 0U);
+                REQUIRE(loaded.findings.size() == 1U);
+                auto const text = finding_text(loaded);
+                CHECK(text.find("cleartext") != std::string::npos);
+                CHECK(text.find("secret") == std::string::npos);
+            }
+        }
+    }
+
+    GIVEN("an http url to localhost, which is a name and not a loopback literal")
+    {
+        WHEN("it is loaded with no allowed hosts")
+        {
+            auto const rejected = load_with_url(R"("http://localhost:9000")");
+
+            THEN("it is rejected")
+            {
+                REQUIRE(rejected.registry.size() == 0U);
+                REQUIRE(rejected.findings.size() == 1U);
+            }
+        }
+
+        WHEN("it is loaded with localhost listed")
+        {
+            auto const accepted = load_with_url(R"("http://localhost:9000")", {"localhost"});
+
+            THEN("it is accepted")
+            {
+                REQUIRE(accepted.findings.empty());
+                REQUIRE(accepted.registry.size() == 1U);
+            }
+        }
+    }
+
+    GIVEN("an http url to host.docker.internal")
+    {
+        WHEN("it is loaded with the host listed in a different letter case")
+        {
+            auto const loaded = load_with_url(R"("http://host.docker.internal:9000")", {"Host.Docker.Internal"});
+
+            THEN("it is accepted, because host names compare ASCII-case-insensitively")
+            {
+                REQUIRE(loaded.findings.empty());
+                REQUIRE(loaded.registry.size() == 1U);
+            }
+        }
+
+        WHEN("it is loaded with only a different host listed")
+        {
+            auto const loaded = load_with_url(R"("http://host.docker.internal:9000")", {"docker.internal"});
+
+            THEN("it is rejected, because the match is exact and not a suffix")
+            {
+                REQUIRE(loaded.registry.size() == 0U);
+                REQUIRE(loaded.findings.size() == 1U);
+            }
+        }
+
+        WHEN("it is loaded with no hosts listed")
+        {
+            auto const loaded = load_with_url(R"("http://host.docker.internal:9000")");
+
+            THEN("it is rejected")
+            {
+                REQUIRE(loaded.registry.size() == 0U);
+            }
+        }
+    }
+
+    GIVEN("an https url to a public name")
+    {
+        WHEN("it is loaded with no allowed hosts")
+        {
+            auto const loaded = load_with_url(R"("https://example.org")");
+
+            THEN("it is accepted")
+            {
+                REQUIRE(loaded.findings.empty());
+                REQUIRE(loaded.registry.size() == 1U);
+            }
+        }
+    }
+
+    GIVEN("a null url, which means no traffic")
+    {
+        WHEN("it is loaded")
+        {
+            auto const loaded = load_with_url("null");
+
+            THEN("it is accepted")
+            {
+                REQUIRE(loaded.findings.empty());
+                REQUIRE(loaded.registry.size() == 1U);
+            }
+        }
+    }
+
+    GIVEN("urls with userinfo, a query, a scheme other than http and https, or no host")
+    {
+        auto const urls = {R"("https://user:pass@example.org")",
+                           R"("http://127.0.0.1:9000?x=1")",
+                           R"("https://example.org/bridge?access_token=abc")",
+                           R"("ftp://example.org")",
+                           R"("https://")",
+                           R"("example.org")",
+                           R"("")"};
+
+        WHEN("each is loaded")
+        {
+            THEN("each is rejected without echoing the url's credentials")
+            {
+                for (auto const* url : urls)
+                {
+                    INFO(url);
+                    auto const loaded = load_with_url(url, {"example.org"});
+                    REQUIRE(loaded.registry.size() == 0U);
+                    REQUIRE(loaded.findings.size() == 1U);
+                    CHECK(finding_text(loaded).find("pass") == std::string::npos);
+                    CHECK(finding_text(loaded).find("access_token") == std::string::npos);
+                }
             }
         }
     }

@@ -10,5 +10,5 @@ email_lib = static_library(
   email_sources,
   include_directories: inc,
   dependencies: [libcurl_dep],
-  link_with: [core_lib, http_lib, platform_lib],
+  link_with: [core_lib, http_lib, net_lib, platform_lib],
 )

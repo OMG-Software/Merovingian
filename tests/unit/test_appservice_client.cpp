@@ -27,6 +27,7 @@
 #include <string>
 #include <utility>
 #include <variant>
+#include <vector>
 
 namespace
 {
@@ -745,6 +746,165 @@ SCENARIO("thirdparty fields objects drop non-string members instead of trusting 
                 auto const* str_value = std::get_if<std::string>(&result[0].fields[0].value->storage());
                 REQUIRE(str_value != nullptr);
                 CHECK(*str_value == "#chan");
+            }
+        }
+    }
+}
+
+namespace
+{
+
+// Records the host each lookup asked for, so a test can see both that a refused url made no lookup and
+// that an accepted IPv6 url was resolved by its unbracketed address.
+struct RecordingDiscoveryNetwork final : public merovingian::federation::ServerDiscoveryNetwork
+{
+    std::vector<std::string> looked_up{};
+
+    [[nodiscard]] auto fetch_well_known(std::string_view, std::uint32_t)
+        -> merovingian::federation::WellKnownServerResult override
+    {
+        return {};
+    }
+
+    [[nodiscard]] auto lookup_srv(std::string_view) -> std::vector<merovingian::federation::SrvRecord> override
+    {
+        return {};
+    }
+
+    [[nodiscard]] auto lookup_addresses(std::string_view host, std::uint16_t)
+        -> merovingian::federation::ResolvedAddressSet override
+    {
+        looked_up.emplace_back(host);
+        return {true, {"127.0.0.1"}, {}};
+    }
+};
+
+} // namespace
+
+// ADR-0515: defence in depth behind load_registrations. The hs_token must not cross a network in cleartext,
+// so the client refuses http to a host that is neither a loopback IP literal nor listed, before any lookup.
+SCENARIO("AppserviceClient refuses cleartext http to a host that is not permitted", "[appservice][client][cleartext]")
+{
+    GIVEN("a client with no cleartext hosts allowed and a recording transport")
+    {
+        auto outbound = merovingian::http::OutboundClient{};
+        auto network = RecordingDiscoveryNetwork{};
+        auto discovery = merovingian::federation::CachedServerDiscovery{network, 60000U, []() -> std::uint64_t {
+                                                                            return 0U;
+                                                                        }};
+        auto calls = std::vector<merovingian::http::OutboundRequest>{};
+        auto policy = merovingian::config::AppserviceConfig{};
+        auto client = merovingian::appservice::AppserviceClient{
+            outbound, discovery, policy, [&calls](merovingian::http::OutboundRequest const& request) {
+                calls.push_back(request);
+                auto result = merovingian::http::OutboundResult{};
+                result.ok = true;
+                result.response.status = 200U;
+                return result;
+            }};
+        auto registration = merovingian::appservice::AppserviceRegistration{};
+        registration.id = "cleartext";
+
+        WHEN("the registration url is http to a public name")
+        {
+            registration.url = "http://example.org:9000";
+            auto const result = client.query_user(registration, "@bot:example.org");
+
+            THEN("the call fails with no lookup and no transport call")
+            {
+                CHECK_FALSE(result.ok);
+                CHECK(calls.empty());
+                CHECK(network.looked_up.empty());
+            }
+        }
+
+        WHEN("the registration url is http to localhost, a name and not a literal")
+        {
+            registration.url = "http://localhost:9000";
+            auto const result = client.query_user(registration, "@bot:example.org");
+
+            THEN("the call fails with no transport call")
+            {
+                CHECK_FALSE(result.ok);
+                CHECK(calls.empty());
+            }
+        }
+
+        WHEN("the registration url has userinfo or a query")
+        {
+            registration.url = "https://user:pass@example.org";
+            auto const with_userinfo = client.query_user(registration, "@bot:example.org");
+            registration.url = "https://example.org/bridge?x=1";
+            auto const with_query = client.query_user(registration, "@bot:example.org");
+
+            THEN("both calls fail with no transport call")
+            {
+                CHECK_FALSE(with_userinfo.ok);
+                CHECK_FALSE(with_query.ok);
+                CHECK(calls.empty());
+            }
+        }
+
+        WHEN("the registration url is http to a bracketed IPv6 loopback literal with a trailing slash")
+        {
+            registration.url = "http://[::1]:9000/bridge/";
+            auto const result = client.ping(registration, std::nullopt);
+
+            THEN("the request keeps the brackets in the url and resolves the unbracketed address")
+            {
+                REQUIRE(result.ok());
+                REQUIRE(calls.size() == 1U);
+                CHECK(calls.front().url == "http://[::1]:9000/bridge/_matrix/app/v1/ping");
+                REQUIRE(network.looked_up.size() == 1U);
+                CHECK(network.looked_up.front() == "::1");
+            }
+        }
+
+        WHEN("the registration url is https to a public name")
+        {
+            registration.url = "https://example.org/bridge";
+            auto const result = client.ping(registration, std::nullopt);
+
+            THEN("the request is sent with the default https port")
+            {
+                REQUIRE(result.ok());
+                REQUIRE(calls.size() == 1U);
+                CHECK(calls.front().url == "https://example.org:443/bridge/_matrix/app/v1/ping");
+            }
+        }
+    }
+
+    GIVEN("a client whose configuration lists host.docker.internal")
+    {
+        auto outbound = merovingian::http::OutboundClient{};
+        auto network = RecordingDiscoveryNetwork{};
+        auto discovery = merovingian::federation::CachedServerDiscovery{network, 60000U, []() -> std::uint64_t {
+                                                                            return 0U;
+                                                                        }};
+        auto calls = std::vector<merovingian::http::OutboundRequest>{};
+        auto policy = merovingian::config::AppserviceConfig{};
+        policy.allow_cleartext_hosts = {"Host.Docker.Internal"};
+        auto client = merovingian::appservice::AppserviceClient{
+            outbound, discovery, policy, [&calls](merovingian::http::OutboundRequest const& request) {
+                calls.push_back(request);
+                auto result = merovingian::http::OutboundResult{};
+                result.ok = true;
+                result.response.status = 200U;
+                return result;
+            }};
+        auto registration = merovingian::appservice::AppserviceRegistration{};
+        registration.id = "complement";
+        registration.url = "http://host.docker.internal:9000";
+
+        WHEN("the appservice is pinged")
+        {
+            auto const result = client.ping(registration, std::nullopt);
+
+            THEN("the request is sent over http to the listed host")
+            {
+                REQUIRE(result.ok());
+                REQUIRE(calls.size() == 1U);
+                CHECK(calls.front().url == "http://host.docker.internal:9000/_matrix/app/v1/ping");
             }
         }
     }

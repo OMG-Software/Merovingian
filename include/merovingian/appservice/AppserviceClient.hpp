@@ -61,20 +61,26 @@ inline constexpr auto max_ping_body_bytes = std::size_t{1024U};
     -> std::vector<ThirdPartyUser>;
 
 // Outbound Application Service API client (Matrix v1.19). Mirrors
-// push::PushGatewayClient's shape, with one deliberate difference: an
+// push::PushGatewayClient's shape, with deliberate differences: an
 // appservice's registration `url` is OPERATOR-configured (a local
-// filesystem artifact, not something a network peer can point at) — the
-// spec's own canonical registration example gives a plain
-// `http://127.0.0.1:1234` URL, which is also how most real-world bridges
-// run. Host resolution therefore goes through the SAME
+// filesystem artifact, not something a network peer can point at).
+// Host resolution therefore goes through the SAME
 // `CachedServerDiscovery`/`ServerDiscoveryNetwork` abstraction the
 // federation and push-gateway clients use (never a raw socket, never ad-hoc
 // DNS), but via `.upstream().lookup_addresses()` directly rather than the
-// higher-level `discover_server()` — the private/loopback-address rejection
+// higher-level `discover_server()` - the private/loopback-address rejection
 // that layer applies is specifically for attacker/client-influenced
-// destinations, which an operator-configured appservice URL is not. Outbound
-// requests set `OutboundRequest::allow_cleartext_http = true` for the same
-// reason; see that field's doc comment.
+// destinations, which an operator-configured appservice URL is not.
+//
+// Cleartext is restricted (ADR-0515), because every request carries the
+// hs_token: an `https` url is used as given, and an `http` url is used only
+// when its host is a loopback IP literal (127.0.0.0/8 or ::1; the name
+// `localhost` is not one) or an exact, ASCII-case-insensitive entry of
+// `AppserviceConfig::allow_cleartext_hosts`. A url with userinfo or a query
+// string is refused too. `load_registrations` applies the same rule at start-up;
+// this client applies it again before every call, and a refused call makes no
+// lookup and no connection (it fails as `OutboundError::invalid_url`).
+// `OutboundRequest::allow_cleartext_http` is set only after that check.
 class AppserviceClient final
 {
 public:
@@ -143,6 +149,7 @@ private:
     std::uint32_t connect_timeout_seconds_{10U};
     std::uint32_t total_timeout_seconds_{30U};
     std::size_t response_max_size_bytes_{16U * 1024U * 1024U};
+    std::vector<std::string> allow_cleartext_hosts_{};
     Perform perform_{};
 
     [[nodiscard]] auto perform_query(AppserviceRegistration const& registration, std::string_view path)

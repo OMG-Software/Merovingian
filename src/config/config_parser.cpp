@@ -1875,6 +1875,10 @@ namespace
         {
             appservice.registration_files = parse_string_list(value);
         }
+        else if (key == "appservice.allow_cleartext_hosts")
+        {
+            appservice.allow_cleartext_hosts = parse_string_list(value);
+        }
         else
         {
             add_parse_finding(findings, std::string{key}, "unknown configuration key");

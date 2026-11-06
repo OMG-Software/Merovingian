@@ -494,6 +494,33 @@ auto parse_duration_seconds(std::string_view value) noexcept -> DurationParseRes
 namespace
 {
 
+    // One entry of appservice.allow_cleartext_hosts (ADR-0515): a bare host name (ASCII letters, digits,
+    // `-` and `.`, no empty, leading or trailing label separator) or an IP literal without brackets.
+    // A scheme, port, path, userinfo, bracket, wildcard or whitespace makes it a finding, because such an
+    // entry could never equal the host of a parsed url and would silently allow nothing.
+    [[nodiscard]] auto cleartext_host_entry_is_valid(std::string const& entry) noexcept -> bool
+    {
+        constexpr auto max_host_length = std::size_t{253U};
+        if (entry.empty() || entry.size() > max_host_length)
+        {
+            return false;
+        }
+        auto v6 = ::in6_addr{};
+        if (entry.find(':') != std::string::npos)
+        {
+            return ::inet_pton(AF_INET6, entry.c_str(), &v6) == 1;
+        }
+        if (entry.front() == '.' || entry.back() == '.' || entry.front() == '-' ||
+            entry.find("..") != std::string::npos)
+        {
+            return false;
+        }
+        return std::ranges::all_of(entry, [](char byte) {
+            return (byte >= 'a' && byte <= 'z') || (byte >= 'A' && byte <= 'Z') || (byte >= '0' && byte <= '9') ||
+                   byte == '-' || byte == '.';
+        });
+    }
+
     // An IPv4 or IPv6 literal, optionally followed by `/` and a decimal prefix no
     // longer than the address. The federation boundary refuses every address
     // when an entry fails this (federation/security.cpp range_denies), so an
@@ -1050,6 +1077,12 @@ auto validate(Config const& config) -> std::vector<ConfigValidationFinding>
     validate_count("appservice.total_timeout_seconds", config.appservice().total_timeout_seconds, 300U);
     validate_bytes("appservice.response_max_size", config.appservice().response_max_size, 67108864U);
     validate_count("appservice.max_queued_events", config.appservice().max_queued_events, 10000000U);
+    if (!std::ranges::all_of(config.appservice().allow_cleartext_hosts, cleartext_host_entry_is_valid))
+    {
+        findings.push_back({"appservice.allow_cleartext_hosts",
+                            "every entry must be a bare host name or IP literal: no scheme, port, path, '@', "
+                            "brackets, wildcard or whitespace"});
+    }
     if (config.appservice().connect_timeout_seconds > config.appservice().total_timeout_seconds)
     {
         findings.push_back({"appservice.connect_timeout_seconds", "must not exceed total_timeout_seconds"});

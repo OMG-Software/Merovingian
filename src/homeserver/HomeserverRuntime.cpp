@@ -1181,7 +1181,8 @@ auto start_runtime(RuntimeStartOptions opts) -> RuntimeStartResult
     if (opts.load_appservices)
     {
         auto loaded =
-            appservice::load_registrations(config.appservice().registration_files, config.server().server_name);
+            appservice::load_registrations(config.appservice().registration_files, config.server().server_name,
+                                           config.appservice().allow_cleartext_hosts);
         for (auto const& finding : loaded.findings)
         {
             log_diagnostic("start.appservice_registration_rejected",
