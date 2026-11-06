@@ -3,6 +3,7 @@
 
 #include "merovingian/appservice/registration.hpp"
 
+#include "merovingian/appservice/cleartext_policy.hpp"
 #include "merovingian/canonicaljson/parser.hpp"
 #include "merovingian/canonicaljson/value.hpp"
 #include "merovingian/crypto/constant_time.hpp"
@@ -632,7 +633,8 @@ auto validate_registrations(std::vector<AppserviceRegistration> const& registrat
     return findings;
 }
 
-auto load_registrations(std::vector<std::string> const& paths, std::string_view server_name) -> LoadRegistrationsResult
+auto load_registrations(std::vector<std::string> const& paths, std::string_view server_name,
+                        std::vector<std::string> const& allowed_cleartext_hosts) -> LoadRegistrationsResult
 {
     auto result = LoadRegistrationsResult{};
     auto loaded = std::vector<AppserviceRegistration>{};
@@ -644,6 +646,16 @@ auto load_registrations(std::vector<std::string> const& paths, std::string_view 
         {
             result.findings.push_back({path, parsed.error.message()});
             continue;
+        }
+        // ADR-0515: the hs_token goes to this url in every request. A null url sends nothing and is fine.
+        if (parsed.value->url.has_value())
+        {
+            if (auto const problem = appservice_url_problem(*parsed.value->url, allowed_cleartext_hosts);
+                problem.has_value())
+            {
+                result.findings.push_back({path, "registration url rejected: " + *problem});
+                continue;
+            }
         }
         loaded.push_back(std::move(*parsed.value));
     }
