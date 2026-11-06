@@ -41,7 +41,7 @@ struct RoomListResult final
 // `by_notification_count` sort counts with. The overload above builds its own.
 [[nodiscard]] auto compute_room_list(homeserver::HomeserverRuntime const& rt, std::string_view user,
                                      SlidingSyncList const& list, std::vector<std::string> const& prev_window,
-                                     database::PersistentStore const& store, UnreadEventClassifier const& unread)
+                                     database::PersistentStore const& store, UnreadEventClassifier& unread)
     -> RoomListResult;
 
 } // namespace merovingian::sync

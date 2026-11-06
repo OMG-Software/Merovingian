@@ -63,7 +63,7 @@ SCENARIO("CopyableConditionVariable wakes a waiter before its deadline", "[core]
     GIVEN("a flag guarded by a mutex and a condition variable")
     {
         auto const mutex = merovingian::core::CopyableMutex{};
-        auto const condition = merovingian::core::CopyableConditionVariable{};
+        auto condition = merovingian::core::CopyableConditionVariable{};
         auto ready = false;
 
         WHEN("another thread sets the flag and notifies")
@@ -104,7 +104,7 @@ SCENARIO("CopyableConditionVariable wakes a waiter before its deadline", "[core]
 
         WHEN("it is copied and then used while the source's mutex is held")
         {
-            auto const copy = condition;
+            auto copy = condition;
             auto lock = mutex.acquire();
             copy.notify_one();
             auto const woke =

@@ -115,7 +115,7 @@ PushRuleUnreadClassifier::PushRuleUnreadClassifier(database::PersistentStore con
 {
 }
 
-auto PushRuleUnreadClassifier::visible(database::PersistentEvent const& event) const -> bool
+auto PushRuleUnreadClassifier::visible(database::PersistentEvent const& event) -> bool
 {
     // Ignoring Users: "the client will no longer receive events sent by that user", with the
     // exception of state events. The sender is looked up first so the event JSON is parsed only
@@ -140,7 +140,7 @@ PushRuleUnreadClassifier::PushRuleUnreadClassifier(database::PersistentStore con
 {
 }
 
-auto PushRuleUnreadClassifier::counted_after(std::string_view room_id) const -> std::optional<std::uint64_t>
+auto PushRuleUnreadClassifier::counted_after(std::string_view room_id) -> std::optional<std::uint64_t>
 {
     if (auto const cached = join_starts_.find(room_id); cached != join_starts_.end())
     {
@@ -158,7 +158,7 @@ auto PushRuleUnreadClassifier::table_walks() const noexcept -> std::uint64_t
     return table_walks_;
 }
 
-auto PushRuleUnreadClassifier::ensure_join_transitions() const -> void
+auto PushRuleUnreadClassifier::ensure_join_transitions() -> void
 {
     if (join_transitions_built_)
     {
@@ -176,7 +176,7 @@ auto PushRuleUnreadClassifier::ensure_join_transitions() const -> void
     ++table_walks_;
 }
 
-auto PushRuleUnreadClassifier::classify(std::string_view room_id, canonicaljson::Value const& event) const
+auto PushRuleUnreadClassifier::classify(std::string_view room_id, canonicaljson::Value const& event)
     -> sync::UnreadEventOutcome
 {
     auto const* root = std::get_if<canonicaljson::Object>(&event.storage());
@@ -191,7 +191,7 @@ auto PushRuleUnreadClassifier::classify(std::string_view room_id, canonicaljson:
     return {result.notify, result.notify && result.tweak_highlight};
 }
 
-auto PushRuleUnreadClassifier::room(std::string_view room_id) const -> RoomFacts const&
+auto PushRuleUnreadClassifier::room(std::string_view room_id) -> RoomFacts const&
 {
     if (auto const cached = rooms_.find(room_id); cached != rooms_.end())
     {
@@ -236,7 +236,7 @@ auto PushRuleUnreadClassifier::room(std::string_view room_id) const -> RoomFacts
     return rooms_.emplace(std::string{room_id}, std::move(facts)).first->second;
 }
 
-auto PushRuleUnreadClassifier::ensure_room_sources() const -> void
+auto PushRuleUnreadClassifier::ensure_room_sources() -> void
 {
     if (room_sources_built_)
     {

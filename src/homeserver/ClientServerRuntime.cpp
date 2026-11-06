@@ -6084,7 +6084,7 @@ namespace
         // joined room's timeline.
         auto history_visibility = sync::HistoryVisibility{store, user};
         // R15 (ADR-0205): one push-rule classifier for the request's unread counts.
-        auto const unread_classifier =
+        auto unread_classifier =
             PushRuleUnreadClassifier{store, user, rt.limits.max_push_rules_per_user, history_visibility};
         // The request's own `unsigned.transaction_id` and `unsigned.membership` on every timeline event.
         auto viewer_unsigned = sync::ViewerEventUnsigned{store, history_visibility, user, device_id};

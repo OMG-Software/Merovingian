@@ -38,12 +38,12 @@ public:
     }
     ~CopyableConditionVariable() = default;
 
-    auto notify_one() const noexcept -> void
+    auto notify_one() noexcept -> void
     {
         condition_.notify_one();
     }
 
-    auto notify_all() const noexcept -> void
+    auto notify_all() noexcept -> void
     {
         condition_.notify_all();
     }
@@ -52,14 +52,13 @@ public:
     // `lock` must own the mutex that guards the state the predicate reads.
     template <typename Clock, typename Duration, typename Predicate>
     [[nodiscard]] auto wait_until(std::unique_lock<std::mutex>& lock,
-                                  std::chrono::time_point<Clock, Duration> const& deadline, Predicate predicate) const
-        -> bool
+                                  std::chrono::time_point<Clock, Duration> const& deadline, Predicate predicate) -> bool
     {
         return condition_.wait_until(lock, deadline, std::move(predicate));
     }
 
 private:
-    mutable std::condition_variable condition_{};
+    std::condition_variable condition_{};
 };
 
 static_assert(std::is_nothrow_default_constructible_v<CopyableConditionVariable>);

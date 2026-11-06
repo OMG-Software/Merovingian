@@ -157,7 +157,14 @@ See the [header guidance](../include/merovingian/AGENTS.md) and
 - Lock `HomeserverRuntime::mutex` through `homeserver::RuntimeLock` (a
   `std::unique_lock<RuntimeMutex const>`). The mutex is not `mutable` and its
   lock functions are `const`. See
-  [ADR-0522](adr/0522-the-runtime-mutex-locks-through-const.md).
+  [ADR-0522](adr/0522-the-runtime-mutex-locks-through-const.md). It implements
+  its recursion over a plain `std::mutex`; do not swap in `std::recursive_mutex`.
+  See [ADR-0524](adr/0524-the-runtime-mutex-implements-its-recursion-over-std-mutex.md).
+- A `const` member function changes only members that are synchronised (a mutex
+  or an atomic) or that it guards with the object's own mutex. A type that is not
+  thread-safe fills its caches through non-`const` functions, never `mutable`
+  members. See
+  [ADR-0525](adr/0525-a-cache-that-is-not-thread-safe-is-not-hidden-behind-const.md).
 - Use RAII lock guards. A manual `.unlock()` or `->unlock()` in production code
   needs a same-line `// LOCK_RELEASE: reviewed — <reason>` comment. Prefer the
   existing release scope. See [ADR-0004](adr/0004-release-the-runtime-lock-through-the-mutex-not-a-guard.md).

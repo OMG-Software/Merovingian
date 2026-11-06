@@ -10,8 +10,14 @@ namespace merovingian::homeserver
 
 void RuntimeMutex::lock() const
 {
+    if (held_by_current_thread())
+    {
+        // Re-entry: the thread already holds `mutex_`.
+        depth_.fetch_add(1U);
+        return;
+    }
     mutex_.lock();
-    ++depth_;
+    depth_.store(1U);
     // Publishing the owner after the acquisition means a concurrent
     // held_by_current_thread() on another thread never sees this thread as the
     // owner before it actually is.
@@ -20,25 +26,31 @@ void RuntimeMutex::lock() const
 
 auto RuntimeMutex::try_lock() const -> bool
 {
+    if (held_by_current_thread())
+    {
+        depth_.fetch_add(1U);
+        return true;
+    }
     if (!mutex_.try_lock())
     {
         return false;
     }
-    ++depth_;
+    depth_.store(1U);
     owner_.store(std::this_thread::get_id(), std::memory_order_release);
     return true;
 }
 
 void RuntimeMutex::unlock() const
 {
-    // Clear the owner before the final release so no window exists in which the
-    // mutex is free but still reports an owner. Intermediate levels leave the
-    // owner in place: the thread genuinely still holds the mutex.
-    --depth_;
-    if (depth_ == 0U)
+    // Intermediate levels leave the owner and `mutex_` in place: the thread
+    // genuinely still holds the mutex.
+    if (depth_.fetch_sub(1U) != 1U)
     {
-        owner_.store(std::thread::id{}, std::memory_order_release);
+        return;
     }
+    // Clear the owner before the final release so no window exists in which the
+    // mutex is free but still reports an owner.
+    owner_.store(std::thread::id{}, std::memory_order_release);
     mutex_.unlock(); // LOCK_RELEASE: reviewed — this IS the runtime mutex’s unlock; the RAII scope
                      // callers are pointed at (RuntimeLockRelease) is built on top of it.
 }

@@ -3506,12 +3506,12 @@ auto ensure_crypto_provider_holds_key(HomeserverRuntime& runtime, std::string_vi
     // holds runtime.mutex (ClientServerRuntime.cpp, local_http_router.cpp) — those
     // two callers release their own outer guard first (see the unlock/call/
     // relock at each call site) so this is never a *nested* acquisition of
-    // the same recursive_mutex. Publishing it here, exactly like the other
+    // the same recursive mutex. Publishing it here, exactly like the other
     // three request-lock-scope entry points, is what lets
     // resolve_policy_server_hook's RuntimeLockRelease actually find and release
     // *this* guard — the one genuinely protecting the rest of this function —
     // during the policy-server round trip. Before this, a caller-held outer
-    // guard being double-locked here (recursive_mutex permits it, silently)
+    // guard being double-locked here (a recursive mutex permits it, silently)
     // meant RuntimeLockRelease released only the outer level while this guard
     // kept the mutex held, so the network call still ran under an
     // effectively-locked mutex: see the room-creation regression scenario in

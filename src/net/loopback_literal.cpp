@@ -40,7 +40,14 @@ auto is_loopback_ip_literal(std::string_view host) noexcept -> bool
         auto v6 = ::in6_addr{};
         if (::inet_pton(AF_INET6, text.c_str(), &v6) == 1)
         {
-            return std::memcmp(&v6, &in6addr_loopback, sizeof(v6)) == 0;
+            // ::1 as bytes. Compared as a byte array, not with memcmp over the struct, whose padding and
+            // members the standard leaves to the platform.
+            constexpr auto loopback_v6 =
+                std::array<unsigned char, 16U>{0U, 0U, 0U, 0U, 0U, 0U, 0U, 0U, 0U, 0U, 0U, 0U, 0U, 0U, 0U, 1U};
+            static_assert(sizeof(v6) == loopback_v6.size());
+            auto bytes = std::array<unsigned char, sizeof(v6)>{};
+            std::memcpy(bytes.data(), &v6, bytes.size());
+            return bytes == loopback_v6;
         }
         return false;
     }

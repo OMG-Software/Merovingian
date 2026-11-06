@@ -2287,7 +2287,7 @@ namespace
             //   - the worker-relay path (worker_pool.cpp's
             //     handle_membership_ingest_request) already holds rt->mutex when
             //     it calls this callback.
-            // rt->mutex is a std::recursive_mutex, so acquiring it here is safe in
+            // rt->mutex is recursive (RuntimeMutex), so acquiring it here is safe in
             // both cases (fresh lock or reentrant re-lock on the same thread).
             // Deliberately taking only the global mutex, not a room stripe mutex:
             // ingest_pdu_event documents a stripe-then-global lock order, and

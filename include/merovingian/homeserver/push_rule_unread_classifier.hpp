@@ -64,10 +64,10 @@ public:
     auto operator=(PushRuleUnreadClassifier&&) -> PushRuleUnreadClassifier& = delete;
     ~PushRuleUnreadClassifier() override = default;
 
-    [[nodiscard]] auto visible(database::PersistentEvent const& event) const -> bool override;
+    [[nodiscard]] auto visible(database::PersistentEvent const& event) -> bool override;
 
-    [[nodiscard]] auto counted_after(std::string_view room_id) const -> std::optional<std::uint64_t> override;
-    [[nodiscard]] auto classify(std::string_view room_id, canonicaljson::Value const& event) const
+    [[nodiscard]] auto counted_after(std::string_view room_id) -> std::optional<std::uint64_t> override;
+    [[nodiscard]] auto classify(std::string_view room_id, canonicaljson::Value const& event)
         -> sync::UnreadEventOutcome override;
 
     // Whole store tables walked so far: memberships, current state, profiles and events, each
@@ -91,9 +91,9 @@ private:
         std::optional<std::string> member_event_id{};
     };
 
-    [[nodiscard]] auto room(std::string_view room_id) const -> RoomFacts const&;
-    auto ensure_room_sources() const -> void;
-    auto ensure_join_transitions() const -> void;
+    [[nodiscard]] auto room(std::string_view room_id) -> RoomFacts const&;
+    auto ensure_room_sources() -> void;
+    auto ensure_join_transitions() -> void;
 
     std::reference_wrapper<database::PersistentStore const> store_;
     std::string user_;
@@ -104,15 +104,15 @@ private:
     // which may refer to it.
     std::optional<sync::HistoryVisibility> owned_visibility_;
     std::reference_wrapper<sync::HistoryVisibility> visibility_;
-    mutable std::map<std::string, RoomFacts, std::less<>> rooms_{};
-    mutable bool room_sources_built_{false};
-    mutable std::map<std::string, RoomSources, std::less<>> room_sources_{};
-    mutable std::string profile_display_name_{};
+    std::map<std::string, RoomFacts, std::less<>> rooms_{};
+    bool room_sources_built_{false};
+    std::map<std::string, RoomSources, std::less<>> room_sources_{};
+    std::string profile_display_name_{};
     // Built only when counted_after() asks, so classify() never scans the events for it.
-    mutable bool join_transitions_built_{false};
-    mutable std::map<std::string, std::vector<std::pair<std::uint64_t, bool>>, std::less<>> join_transitions_{};
-    mutable std::map<std::string, std::optional<std::uint64_t>, std::less<>> join_starts_{};
-    mutable std::uint64_t table_walks_{0U};
+    bool join_transitions_built_{false};
+    std::map<std::string, std::vector<std::pair<std::uint64_t, bool>>, std::less<>> join_transitions_{};
+    std::map<std::string, std::optional<std::uint64_t>, std::less<>> join_starts_{};
+    std::uint64_t table_walks_{0U};
 };
 
 // The stream position of the event that began `user`'s current join of `room_id`: the earliest

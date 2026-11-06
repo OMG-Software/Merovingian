@@ -27,6 +27,7 @@ The largest multi-type files are split into one file per class, struct or enum (
 
 ### Fixed
 
+- SonarCloud's reliability findings on this branch are fixed in code: `net::is_loopback_ip_literal` compares an IPv6 address as a byte array, not with `memcmp` over `in6_addr` (S5000); `RoomPositionIndex` touches its cache only in `find`, under its lock, and move assignment marks the cache stale; `CopyableConditionVariable`'s operations are non-`const` and its member is not `mutable`; `RuntimeMutex` implements its recursion over a plain `std::mutex` with an atomic depth (ADR-0524); and `sync::UnreadEventClassifier`'s questions are non-`const`, so `PushRuleUnreadClassifier`'s lazy caches are no longer `mutable` (ADR-0525). No behaviour changes.
 - A copy of `database::PersistentStore` now carries `state_transitions` and `state_transition_index`. The hand-written copy operations listed every member but these two, added later, so `find_state_transition` on a copy found nothing (no `unsigned.replaces_state`, and narrower history visibility and room read access). Only tests copy a store, so no running server was affected. The copy operations are now defaulted (ADR-0523). New unit test `test_persistent_store_copy.cpp` (`[store_copy]`).
 
 ## 0.12.76

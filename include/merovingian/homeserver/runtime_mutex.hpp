@@ -24,14 +24,18 @@ namespace merovingian::homeserver
 // times (`create_room` in 0.12.1, `leave_room` in 0.12.3,
 // `invite_user_by_threepid` in 0.12.6).
 //
-// `std::recursive_mutex` cannot report whether the calling thread still owns
-// it, so this type records the owner and the recursion depth alongside it.
+// The recursion is implemented here, over a plain `std::mutex`, from the owner
+// and depth this type records (ADR-0524): `std::recursive_mutex` cannot report
+// whether the calling thread owns it, so the owner had to be recorded anyway,
+// and keeping the depth in one place leaves one source of truth for both.
+// A re-entry by the owner only raises the depth; the first lock takes the mutex
+// and the last unlock releases it.
 // `RuntimeLockRelease` (request_lock.hpp) uses `held_by_current_thread()` to
 // drop *every* level the thread holds rather than only the one guard it was
 // handed, which is what makes the release primitive impossible to misuse.
 //
 // Satisfies `Lockable`, so it works with `std::unique_lock`, `std::lock_guard`
-// and `std::scoped_lock` exactly as `std::recursive_mutex` does.
+// and `std::scoped_lock` exactly as `std::recursive_mutex` would.
 class RuntimeMutex final
 {
 public:
@@ -45,6 +49,7 @@ public:
 
     // `const` so a `HomeserverRuntime const&` can still be locked; the state
     // they change is `mutable` below and is the mutex's own, not the runtime's.
+    // Every member they touch is a mutex or an atomic.
     void lock() const;
     [[nodiscard]] auto try_lock() const -> bool;
     void unlock() const;
@@ -59,16 +64,19 @@ public:
     [[nodiscard]] auto held_by_current_thread() const noexcept -> bool;
 
 private:
-    mutable std::recursive_mutex mutex_{};
+    // Held from the first lock to the last unlock, whatever the depth.
+    mutable std::mutex mutex_{};
 
     // The owning thread, or a default-constructed id when the mutex is
     // unheld. Written only by the owner while `mutex_` is held; read by any
-    // thread, so it is atomic.
+    // thread, so it is atomic. A thread that reads its own id here owns the
+    // mutex: no other thread ever writes that id.
     mutable std::atomic<std::thread::id> owner_{std::thread::id{}};
 
-    // Recursion depth of the current owner. Only ever read or written while
-    // `mutex_` is held, so it needs no synchronisation of its own.
-    mutable std::size_t depth_{0U};
+    // Recursion depth of the current owner. Only the owner reads or writes it,
+    // while it holds `mutex_`; it is atomic so that holds by construction, not
+    // only by that argument.
+    mutable std::atomic<std::size_t> depth_{0U};
 };
 
 // Every lock of the runtime mutex uses this type, so the lock is const-correct

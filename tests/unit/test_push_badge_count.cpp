@@ -72,7 +72,7 @@ auto join_room(merovingian::database::PersistentStore& store, std::string_view r
 [[nodiscard]] auto exact_total(merovingian::homeserver::HomeserverRuntime const& runtime) -> std::uint64_t
 {
     auto const& store = runtime.database.persistent_store;
-    auto const classifier = merovingian::homeserver::PushRuleUnreadClassifier{store, alice, 200U};
+    auto classifier = merovingian::homeserver::PushRuleUnreadClassifier{store, alice, 200U};
     auto total = std::uint64_t{0U};
     for (auto const& membership : store.memberships)
     {

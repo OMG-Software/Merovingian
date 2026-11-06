@@ -18,7 +18,12 @@ namespace merovingian::homeserver
 auto RoomPositionIndex::find(std::vector<LocalRoom> const& rooms, std::string_view room_id) const
     -> std::optional<std::size_t>
 {
-    auto const lock = std::scoped_lock{mutex_};
+    std::scoped_lock const lock{mutex_};
+    if (stale_.exchange(false))
+    {
+        positions_.clear();
+        indexed_rows_ = 0U;
+    }
     if (indexed_rows_ == rooms.size())
     {
         auto const found = positions_.find(std::string{room_id});

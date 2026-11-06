@@ -4,6 +4,7 @@
 
 #include "merovingian/homeserver/LocalRoom.hpp"
 
+#include <atomic>
 #include <cstddef>
 #include <mutex>
 #include <optional>
@@ -27,7 +28,9 @@ namespace merovingian::homeserver
 //
 // Copying is deleted. Moving yields an empty index, because the cache rebuilds on demand and the positions of another
 // vector mean nothing here. Both move operations are `noexcept` and take no lock: they are only valid while no other
-// thread uses either object, which holds for a `LocalDatabase` that is moved while it is private to one thread.
+// thread uses either object, which holds for a `LocalDatabase` that is moved while it is private to one thread. Move
+// assignment never touches the cache (only `find` does, under the lock): it marks the cache stale, and the next `find`
+// discards it.
 class RoomPositionIndex final
 {
 public:
@@ -37,12 +40,11 @@ public:
     RoomPositionIndex(RoomPositionIndex&& /*other*/) noexcept
     {
     }
-    // Empties this index and leaves `other` alone. No lock is taken (taking one can throw): the caller guarantees that
-    // no other thread uses this object while it is assigned to.
+    // Marks this index stale and leaves `other` alone. No lock is taken (taking one can throw): the caller guarantees
+    // that no other thread uses this object while it is assigned to.
     auto operator=(RoomPositionIndex&& /*other*/) noexcept -> RoomPositionIndex&
     {
-        positions_.clear();
-        indexed_rows_ = 0U;
+        stale_.store(true);
         return *this;
     }
     ~RoomPositionIndex() = default;
@@ -55,6 +57,8 @@ private:
     mutable std::mutex mutex_{};
     mutable std::unordered_map<std::string, std::size_t> positions_{};
     mutable std::size_t indexed_rows_{0U};
+    // Set by move assignment; `find` discards the cache when it sees it.
+    mutable std::atomic<bool> stale_{false};
 };
 
 static_assert(std::is_nothrow_default_constructible_v<std::unordered_map<std::string, std::size_t>>);

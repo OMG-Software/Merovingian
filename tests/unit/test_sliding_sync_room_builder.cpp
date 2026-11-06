@@ -53,12 +53,12 @@ public:
     {
     }
 
-    [[nodiscard]] auto counted_after(std::string_view /*room_id*/) const -> std::optional<std::uint64_t> override
+    [[nodiscard]] auto counted_after(std::string_view /*room_id*/) -> std::optional<std::uint64_t> override
     {
         return after_;
     }
 
-    [[nodiscard]] auto classify(std::string_view /*room_id*/, merovingian::canonicaljson::Value const& event) const
+    [[nodiscard]] auto classify(std::string_view /*room_id*/, merovingian::canonicaljson::Value const& event)
         -> merovingian::sync::UnreadEventOutcome override
     {
         ++calls_;
@@ -83,7 +83,7 @@ public:
         return {is_message, is_message && is_loud};
     }
 
-    [[nodiscard]] auto visible(merovingian::database::PersistentEvent const& /*event*/) const -> bool override
+    [[nodiscard]] auto visible(merovingian::database::PersistentEvent const& /*event*/) -> bool override
     {
         return true;
     }
@@ -96,7 +96,7 @@ public:
 
 private:
     std::optional<std::uint64_t> after_;
-    mutable std::size_t calls_{0U};
+    std::size_t calls_{0U};
 };
 
 // `count` messages from bob in !room:example.org at stream positions from `first`.
@@ -729,7 +729,7 @@ SCENARIO("count_notifications counts m.room.message and m.room.encrypted after r
 
         WHEN("count_notifications is called for alice with read_ordering 20")
         {
-            auto const rules = merovingian::homeserver::PushRuleUnreadClassifier{store, "@alice:example.org", 200U};
+            auto rules = merovingian::homeserver::PushRuleUnreadClassifier{store, "@alice:example.org", 200U};
             auto const count = merovingian::sync::count_notifications(store, "!room:example.org", "@alice:example.org",
                                                                       merovingian::sync::ReadMarkers{20U, {}}, rules);
 
@@ -779,7 +779,7 @@ SCENARIO("count_highlights counts only after-baseline events mentioning the user
 
         WHEN("count_highlights is called for alice with read_ordering 20")
         {
-            auto const rules = merovingian::homeserver::PushRuleUnreadClassifier{store, "@alice:example.org", 200U};
+            auto rules = merovingian::homeserver::PushRuleUnreadClassifier{store, "@alice:example.org", 200U};
             auto const count = merovingian::sync::count_highlights(store, "!room:example.org", "@alice:example.org",
                                                                    merovingian::sync::ReadMarkers{20U, {}}, rules);
 
@@ -810,9 +810,9 @@ SCENARIO("count_unread_by_thread counts what the classifier decides, after its s
 
         WHEN("the classifier counts from position 15")
         {
-            auto const counts =
-                merovingian::sync::count_unread_by_thread(store, "!room:example.org", "@alice:example.org",
-                                                          merovingian::sync::ReadMarkers{0U, {}}, StubClassifier{15U});
+            auto classifier = StubClassifier{15U};
+            auto const counts = merovingian::sync::count_unread_by_thread(
+                store, "!room:example.org", "@alice:example.org", merovingian::sync::ReadMarkers{0U, {}}, classifier);
 
             THEN("the two later messages notify and both highlight; the earlier one and the name change do not")
             {
@@ -823,9 +823,9 @@ SCENARIO("count_unread_by_thread counts what the classifier decides, after its s
 
         WHEN("the classifier counts nothing (the user is not joined)")
         {
+            auto classifier = StubClassifier{std::nullopt};
             auto const counts = merovingian::sync::count_unread_by_thread(
-                store, "!room:example.org", "@alice:example.org", merovingian::sync::ReadMarkers{0U, {}},
-                StubClassifier{std::nullopt});
+                store, "!room:example.org", "@alice:example.org", merovingian::sync::ReadMarkers{0U, {}}, classifier);
 
             THEN("nothing is unread")
             {
@@ -1156,7 +1156,7 @@ SCENARIO("Rejected and soft-failed events never count as unread", "[sync][receip
         store.events.modify(store.events.begin() + 2, [](merovingian::database::PersistentEvent& event) {
             event.status = "soft_failed";
         });
-        auto const classifier = StubClassifier{0U};
+        auto classifier = StubClassifier{0U};
 
         WHEN("alice's unread count is computed")
         {
@@ -1237,7 +1237,7 @@ SCENARIO("A late event the user may not see is not counted as unread", "[sync][r
 
         WHEN("alice's unread count is computed by her push rules")
         {
-            auto const rules = merovingian::homeserver::PushRuleUnreadClassifier{store, "@alice:example.org", 200U};
+            auto rules = merovingian::homeserver::PushRuleUnreadClassifier{store, "@alice:example.org", 200U};
             auto const count = merovingian::sync::count_notifications(store, "!room:example.org", "@alice:example.org",
                                                                       merovingian::sync::ReadMarkers{0U, {}}, rules);
 
