@@ -101,6 +101,10 @@ The medium severity findings of the November project analysis.
 
 ### Documentation
 
+- Reconcile the coding guide with the documented source-only file exception.
+- Enforce the include order: matching header, project headers, third-party/external
+  headers (including OS headers), then standard library headers. Align the guide
+  and implementation example, and add formatter regression tests (ADR-0512).
 - Reorganise the coding rules by topic. Add interface, error, borrowed-lifetime,
   and verification guidance. Distinguish review requirements from automated checks.
 - Use `std::invoke` for generic callable dispatch and immediately invoked lambdas;

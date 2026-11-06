@@ -103,18 +103,20 @@ IfMacros:
   - KJ_IF_MAYBE
 IncludeBlocks:   Regroup
 IncludeCategories:
-  # Local/project headers in quotes
+  # The matching source header is category 0 automatically. Other project headers:
   - Regex: '^"'
     Priority: 1
-  # Third-party angle includes, e.g. <fmt/...>, <gtest/...>
-  - Regex: '^<(catch2|fmt|json|sqlite|curl|sodium|libpq-fe)/'
-    Priority: 2
-  # STL/system angle includes
-  - Regex: '^<[[:alnum:]_]+>'
+  # Standard library names must be checked before the external-header fallback.
+  # Source lists: https://eel.is/c++draft/headers and /support.c.headers.
+  # Keep these names current when adopting additional standard library headers.
+  - Regex: '^<(algorithm|any|array|atomic|barrier|bit|bitset|cassert|cctype|cerrno|cfenv|cfloat|charconv|chrono|cinttypes|climits|clocale|cmath|codecvt|compare|complex|concepts|condition_variable|contracts|coroutine|csetjmp|csignal|cstdarg|cstddef|cstdint|cstdio|cstdlib|cstring|ctime|cuchar|cwchar|cwctype|debugging|deque|exception|execution|expected|filesystem|flat_map|flat_set|format|forward_list|fstream|functional|future|generator|hazard_pointer|hive|initializer_list|inplace_vector|iomanip|ios|iosfwd|iostream|istream|iterator|latch|limits|linalg|list|locale|map|mdspan|memory|memory_resource|meta|mutex|new|numbers|numeric|optional|ostream|print|queue|random|ranges|ratio|rcu|regex|scoped_allocator|semaphore|set|shared_mutex|simd|source_location|span|spanstream|sstream|stack|stacktrace|stdexcept|stdfloat|stop_token|streambuf|string|string_view|strstream|syncstream|system_error|text_encoding|thread|tuple|type_traits|typeindex|typeinfo|unordered_map|unordered_set|utility|valarray|variant|vector|version|(assert|complex|ctype|errno|fenv|float|inttypes|iso646|limits|locale|math|setjmp|signal|stdalign|stdarg|stdatomic|stdbool|stdbit|stdckdint|stddef|stdint|stdio|stdlib|string|tgmath|time|uchar|wchar|wctype)\.h)>'
     Priority: 3
-  # Fallback
+  # All other angle-bracket headers, including flat library and OS headers.
+  - Regex: '^<'
+    Priority: 2
+  # Unrecognised forms remain with external headers, before the standard library.
   - Regex: '.*'
-    Priority: 4
+    Priority: 2
 IncludeIsMainRegex: '(Test)?$'
 IncludeIsMainSourceRegex: ''
 IndentAccessModifiers: false

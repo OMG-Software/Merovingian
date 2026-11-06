@@ -481,3 +481,4 @@
 * [0465 - Root agent guidance requires the coding rules without copying them](0465-root-agent-guidance-requires-the-coding-rules-without-copying-them.md)
 * [0466 - Define one class or struct per file](0466-define-one-class-or-struct-per-file.md)
 * [0467 - Type filenames match the type name exactly](0467-type-filenames-match-the-type-name-exactly.md)
+* [0512 - Group external headers before the standard library](0512-group-external-headers-before-the-standard-library.md)

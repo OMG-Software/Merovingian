@@ -47,8 +47,10 @@ requirements are met.
   `RoomState.cpp`. Do not convert the name to `snake_case`. See
   [ADR-0467](adr/0467-type-filenames-match-the-type-name-exactly.md).
 - Put module headers in `include/merovingian/<module>/<name>.hpp` and their
-  implementations in `src/<module>/<name>.cpp`. Keep the paths aligned;
-  header-only modules and executable entry points are the documented exceptions.
+  implementations in `src/<module>/<name>.cpp`. Keep the paths aligned when
+  both files exist. Header-only types, executable entry points, and documented
+  source-only files such as `src/database/sqlite_store.cpp` do not need an
+  artificial counterpart. See the implementation guidance for layout exceptions.
 - Use the `m_` prefix for member variables. Mark non-mutating member functions `const`.
 - Add a brief function comment that explains its purpose. Document ownership,
   required locks, side effects, and error conditions where they are not clear
@@ -121,11 +123,16 @@ See the [header guidance](../include/merovingian/AGENTS.md) and
 - Use quotes for project includes: `"merovingian/module/name.hpp"`.
   Use angle brackets for standard library and third-party includes.
   Do not add bare relative project includes such as `"name.hpp"`.
-- Put a source file's matching header first. The formatter then groups project
-  headers, recognised third-party directory headers, other simple angle-bracket
-  headers, and the remaining headers. Its regular expressions do not classify
-  every header by origin: for example, `<sodium.h>` and `<poll.h>` match the same
-  simple-header category as `<string>`. Treat `.clang-format` as authoritative.
+- Group includes in this order, with a blank line between groups:
+  1. The source file's own matching header.
+  2. Other project headers.
+  3. Third-party and external headers, including OS headers.
+  4. STL and other standard library headers.
+  Sort each group alphabetically with case-sensitive ordering. `.clang-format`
+  identifies standard library headers by an explicit list of names; a header
+  without a directory prefix is not necessarily standard. Keep that list current
+  when adopting additional standard headers. See
+  [ADR-0512](adr/0512-group-external-headers-before-the-standard-library.md).
 
 ## Concurrency and portability
 

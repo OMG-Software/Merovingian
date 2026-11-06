@@ -191,6 +191,12 @@ shell = find_program('sh')
   )
 
   test(
+    'include-order-tooling',
+    python,
+    args: [meson.project_source_root() / 'tests' / 'tooling' / 'test_include_order.py'],
+  )
+
+  test(
     'hook-tooling',
     python,
     args: [meson.project_source_root() / 'tests' / 'tooling' / 'test_hooks.py'],
