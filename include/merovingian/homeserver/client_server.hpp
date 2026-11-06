@@ -3,6 +3,13 @@
 #pragma once
 
 #include "merovingian/database/persistent_store.hpp"
+// PHASE-B: forwarding includes, removed when consumers include the new headers directly.
+#include "merovingian/homeserver/ClientApiLimits.hpp"
+#include "merovingian/homeserver/ClientDevice.hpp"
+#include "merovingian/homeserver/ClientServerClock.hpp"
+#include "merovingian/homeserver/ClientServerStartOptions.hpp"
+#include "merovingian/homeserver/RegistrationValidationSession.hpp"
+#include "merovingian/homeserver/UiaSession.hpp"
 #include "merovingian/homeserver/dispatch_result.hpp"
 #include "merovingian/homeserver/local_http_router.hpp"
 #include "merovingian/homeserver/runtime.hpp"
@@ -25,47 +32,8 @@
 namespace merovingian::homeserver
 {
 
-struct ClientDevice final
-{
-    std::string user_id{};
-    std::string device_id{};
-    std::string display_name{};
-};
-
-struct RegistrationValidationSession final
-{
-    std::string sid{};
-    std::string purpose{"register"};
-    std::string medium{};
-    std::string address{};
-    std::string client_secret{};
-    std::string client_ip{};
-    std::optional<std::string> user_id{};
-    std::optional<std::string> country{};
-    std::optional<std::string> next_link{};
-    std::uint64_t send_attempt{0U};
-    std::uint64_t created_at_ms{0U};
-    std::uint64_t updated_at_ms{0U};
-    // Zero until a trusted identity server has reported this session validated
-    // (AUTH-5): this server cannot send email or SMS, so it has no way to
-    // validate a 3PID itself and a session is never born validated.
-    std::uint64_t validated_at_ms{0U};
-    // The trusted identity server that issued `sid`, and the caller's access
-    // token for it, kept so the server can ask that identity server whether the
-    // session was validated (getValidated3pid). In memory only, for the life of
-    // the session (it is pruned with the session after the validation TTL, and
-    // erased as soon as the 3PID is added or bound); never persisted or logged.
-    std::string identity_server_base_url{};
-    std::string identity_access_token{};
-    // Password reset by email only (ADR-0481): the code this server emailed, empty when none was sent (the address
-    // belongs to no account) or once the session is validated, and the wrong codes tried so far. In memory only,
-    // wiped with the session, never logged.
-    std::string reset_token{};
-    std::uint8_t token_attempts{0U};
-    // When this session's code was last emailed (wall-clock ms), zero if never: the per-address throttle reads it
-    // from every session of the address, so it survives the session that used up its tries.
-    std::uint64_t reset_sent_at_ms{0U};
-};
+// Defined in ClientServerStartResult.hpp, which holds a ClientServerRuntime by value and so includes this header.
+struct ClientServerStartResult;
 
 // Security audit run-2 F-12 (ADR-0339). The spec bounds a tag's name (255 bytes) and nothing else about
 // room tags; the server bounds the rest. A user's tags on one room hold at most `max_tags_per_room`
@@ -74,88 +42,6 @@ struct RegistrationValidationSession final
 inline constexpr std::size_t max_tag_name_bytes{255U};
 inline constexpr std::size_t max_tags_per_room{100U};
 inline constexpr std::size_t max_tag_value_bytes{1024U};
-
-struct ClientApiLimits final
-{
-    // The body limit is snapshotted from server.client_api.max_body_size at startup.
-    std::size_t max_body_bytes{1024U * 1024U};
-    std::uint32_t max_sync_rooms{1000U};
-    std::uint32_t max_sync_events_per_room{100U};
-    // POST /search has no per-room scope (unlike /messages) and no secondary
-    // full-text index (see docs/architecture.md's "Server-side search"
-    // section): it walks the joined-room subset of PersistentStore::events
-    // directly. This bounds the number of candidate events a single request
-    // will JSON-parse and text-match before it must stop and hand back a
-    // `next_batch` continuation, so one cheap authenticated request cannot
-    // force an O(store size) scan.
-    std::uint32_t max_search_events_scanned{10000U};
-    // GET /messages hides events the user may not see (m.room.history_visibility), and
-    // any number of consecutive events can be hidden. This bounds how many events one page
-    // examines before it returns what it has, with an `end` token to continue from; the spec
-    // allows it ("an empty chunk does not necessarily imply that no more events are available").
-    std::uint32_t max_messages_events_examined{10000U};
-    std::uint32_t max_messages_page_size{500U};
-    std::uint32_t max_context_events{100U};
-    std::uint32_t max_search_page_size{100U};
-    std::uint32_t max_search_context_events{100U};
-    std::uint32_t max_registration_validation_sessions{1024U};
-    std::uint32_t max_registration_validation_sessions_per_remote{16U};
-    std::uint32_t max_uia_sessions{2048U};
-    std::uint32_t max_safety_report_rows{1000U};
-    std::uint32_t max_notifications_page_size{1000U};
-    std::uint32_t max_relations_page_size{500U};
-    std::uint32_t max_public_rooms_page_size{1000U};
-    std::uint32_t max_hierarchy_rooms{1000U};
-    // CSAZ-10: per-user caps on stored end-to-end key material and filters.
-    // An upload over a cap is refused with M_TOO_LARGE; nothing is evicted.
-    std::uint32_t max_one_time_keys_per_device{1000U};
-    std::uint32_t max_key_signatures_per_user{10000U};
-    std::uint32_t max_filters_per_user{1000U};
-    // Security audit run-1 (ADR-0173): global account-data types per user.
-    std::uint32_t max_global_account_data_per_user{1000U};
-    // Conformance audit R10 (ADR-0197): client-set account-data types per user per room.
-    std::uint32_t max_room_account_data_per_room{100U};
-    // User-defined push rules per user across all five kinds; over -> M_TOO_LARGE.
-    std::uint32_t max_push_rules_per_user{200U};
-    // Security audit run-2 (ADR-0316): entries of one POST /createRoom; over -> M_TOO_LARGE.
-    std::uint32_t max_create_room_invites{100U};
-    std::uint32_t max_create_room_initial_state{100U};
-    // Security audit run-2 F-13 (ADR-0336): local deliveries (a "*" counts one per device) of one
-    // PUT /sendToDevice; over -> 413 M_TOO_LARGE, nothing queued. Inbound EDUs have their own cap.
-    std::uint32_t max_send_to_device_deliveries{1000U};
-    sync::SlidingSyncLimits sliding_sync{500U, 1024U, 1024U};
-    std::uint32_t sliding_sync_connections_per_device{16U};
-};
-
-// Wall-clock source for the rate-limit engine. The engine takes a
-// callable; we hold the state inline so the engine (a unique_ptr) can
-// borrow it. Default-constructed runtimes start at steady_clock origin.
-struct ClientServerClock final
-{
-    [[nodiscard]] auto operator()() const noexcept -> std::chrono::steady_clock::time_point
-    {
-        return std::chrono::steady_clock::now();
-    }
-};
-
-// One outstanding User-Interactive Authentication challenge (spec §User-
-// Interactive Authentication API). Issued when the server answers 401 with a
-// flow the client must complete, and consumed when the client comes back with
-// a matching `auth.session`.
-//
-// L-01/L-02 (security audit 2026-09): the session id used to be a compile-time
-// constant shared by every client and every attempt (`merovingian-ui-auth`,
-// `delete_device`, `delete_devices`). The spec treats the session id as the
-// server's handle on one in-flight attempt; a constant is not a handle, and it
-// tells an attacker exactly what to echo.
-struct UiaSession final
-{
-    std::string session_id{};
-    // The endpoint the challenge was issued for: a session minted for a device
-    // deletion must not satisfy a registration challenge.
-    std::string purpose{};
-    std::uint64_t created_at_ms{0U};
-};
 
 struct ClientServerRuntime final
 {
@@ -258,20 +144,6 @@ auto run_presence_idle_sweep(ClientServerRuntime& runtime) -> std::chrono::milli
 [[nodiscard]] auto set_room_account_data_within_cap(ClientServerRuntime& runtime, database::PersistentAccountData data,
                                                     std::size_t max_room_types) -> database::CappedAccountDataStore;
 
-struct ClientServerStartResult final
-{
-    bool started{false};
-    std::string reason{};
-    ClientServerRuntime runtime{};
-};
-
-// Startup-only options supplied by the process entry point. They are not
-// configuration-file settings and cannot change after the runtime starts.
-struct ClientServerStartOptions final
-{
-    bool debug_startup_enabled{false};
-};
-
 [[nodiscard]] auto start_client_server(config::Config const& config, ClientServerStartOptions options = {})
     -> ClientServerStartResult;
 [[nodiscard]] auto matrix_error(std::string_view errcode, std::string_view message) -> std::string;
@@ -303,3 +175,7 @@ struct ClientServerStartOptions final
 [[nodiscard]] auto run_client_server_flow(config::Config const& config) -> OperationResult;
 
 } // namespace merovingian::homeserver
+
+// PHASE-B: forwarding includes, removed when consumers include the new headers directly.
+// Last, not with the includes above: ClientServerStartResult.hpp includes this header for ClientServerRuntime.
+#include "merovingian/homeserver/ClientServerStartResult.hpp"
