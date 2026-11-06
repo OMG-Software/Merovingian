@@ -5,6 +5,7 @@
 #include "merovingian/config/FederationBackfillConfig.hpp"
 #include "merovingian/config/FederationQueryConfig.hpp"
 #include "merovingian/config/FederationStateResolutionConfig.hpp"
+#include "merovingian/config/special_use_ip_ranges.hpp"
 #include "merovingian/http/rate_limit.hpp"
 
 #include <cstdint>
@@ -24,9 +25,7 @@ struct FederationSecurityConfig final
     std::vector<std::string> denied_servers{};
     bool require_valid_tls{true};
     bool verify_json_signatures{true};
-    std::vector<std::string> deny_ip_ranges{
-        "127.0.0.0/8", "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "::1/128", "fc00::/7",
-    };
+    std::vector<std::string> deny_ip_ranges = default_federation_deny_ip_ranges();
     // The one exception to the private-address block (ADR-0231): RFC 1918 and
     // ULA networks, named as CIDRs, that federation may reach. Each entry must
     // pass private_ip_range_is_allowable(). Empty by default; meant for test

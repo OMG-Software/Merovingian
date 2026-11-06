@@ -21,6 +21,7 @@
 #include "merovingian/config/ServerConfig.hpp"
 #include "merovingian/config/SizeLimitParseResult.hpp"
 #include "merovingian/config/config_parser.hpp"
+#include "merovingian/config/special_use_ip_ranges.hpp"
 #include "merovingian/email/mailbox_address.hpp"
 #include "merovingian/email/smtp_endpoint.hpp"
 #include "merovingian/http/keep_alive.hpp"
@@ -35,10 +36,13 @@
 #include <cstdint>
 #include <limits>
 #include <optional>
+#include <stdexcept>
+#include <string>
 #include <string_view>
 #include <system_error>
 #include <tuple>
 #include <utility>
+#include <vector>
 
 namespace merovingian::config
 {
@@ -526,31 +530,96 @@ namespace
 
 } // namespace
 
-auto is_private_or_loopback_range(std::string_view range) noexcept -> bool
-{
-    return range == "127.0.0.0/8" || range == "10.0.0.0/8" || range == "172.16.0.0/12" || range == "192.168.0.0/16" ||
-           range == "::1/128" || range == "fc00::/7";
-}
-
 namespace
 {
 
-    struct PrivateBlock final
+    // One special-use IP block, held as numbers. This table is the only place
+    // the loopback, RFC 1918 and ULA blocks are written down (ADR-0516): the
+    // default deny list, is_private_or_loopback_range() and
+    // private_ip_range_is_allowable() all derive from it.
+    struct SpecialUseBlock final
     {
+        bool ipv6{false};
+        // True for the blocks allow_private_ip_ranges may name. Loopback,
+        // link-local, CGNAT, multicast, reserved and NAT64 space are
+        // deliberately not allowable.
+        bool allowable{false};
         std::array<std::uint8_t, 16U> network{};
         unsigned prefix{0U};
     };
 
-    // The networks allow_private_ip_ranges may name. Loopback, link-local,
-    // CGNAT, multicast, reserved and NAT64 space are deliberately absent.
-    constexpr auto private_v4_blocks = std::array<PrivateBlock, 3U>{
-        PrivateBlock{{10U},        8U },
-        PrivateBlock{{172U, 16U},  12U},
-        PrivateBlock{{192U, 168U}, 16U},
+    // Order is the order of the default deny list.
+    constexpr auto special_use_blocks = std::array<SpecialUseBlock, 6U>{
+        SpecialUseBlock{false, false, {127U},                                                           8U  },
+        SpecialUseBlock{false, true,  {10U},                                                            8U  },
+        SpecialUseBlock{false, true,  {172U, 16U},                                                      12U },
+        SpecialUseBlock{false, true,  {192U, 168U},                                                     16U },
+        SpecialUseBlock{true,  false, {0U, 0U, 0U, 0U, 0U, 0U, 0U, 0U, 0U, 0U, 0U, 0U, 0U, 0U, 0U, 1U}, 128U},
+        SpecialUseBlock{true,  true,  {0xFCU},                                                          7U  },
     };
-    constexpr auto private_v6_blocks = std::array<PrivateBlock, 1U>{
-        PrivateBlock{{0xFCU}, 7U},
+
+    struct ParsedCidr final
+    {
+        bool ipv6{false};
+        std::array<std::uint8_t, 16U> bytes{};
+        unsigned prefix{0U};
     };
+
+    // Parse "<address>/<digits>" with an explicit prefix no longer than the
+    // address family allows. The address is read with inet_pton, so any valid
+    // spelling of it parses to the same bytes.
+    [[nodiscard]] auto parse_cidr(std::string_view range) noexcept -> std::optional<ParsedCidr>
+    {
+        auto const slash = range.find('/');
+        if (slash == std::string_view::npos)
+        {
+            return std::nullopt;
+        }
+        auto const address = range.substr(0U, slash);
+        auto const prefix_text = range.substr(slash + 1U);
+        if (address.empty() || address.size() >= INET6_ADDRSTRLEN || prefix_text.empty() ||
+            !std::ranges::all_of(prefix_text, [](char character) {
+                return character >= '0' && character <= '9';
+            }))
+        {
+            return std::nullopt;
+        }
+        auto prefix = 0U;
+        auto const parsed = std::from_chars(prefix_text.data(), prefix_text.data() + prefix_text.size(), prefix);
+        if (parsed.ec != std::errc{} || parsed.ptr != prefix_text.data() + prefix_text.size())
+        {
+            return std::nullopt;
+        }
+
+        auto literal = std::array<char, INET6_ADDRSTRLEN>{};
+        std::ranges::copy(address, literal.begin());
+        auto result = ParsedCidr{};
+        auto v4 = in_addr{};
+        auto v6 = in6_addr{};
+        if (::inet_pton(AF_INET, literal.data(), &v4) == 1)
+        {
+            auto const value = ntohl(v4.s_addr);
+            for (auto index = 0U; index < 4U; ++index)
+            {
+                result.bytes[index] = static_cast<std::uint8_t>(value >> (24U - index * 8U));
+            }
+        }
+        else if (::inet_pton(AF_INET6, literal.data(), &v6) == 1)
+        {
+            result.ipv6 = true;
+            std::ranges::copy(v6.s6_addr, result.bytes.begin());
+        }
+        else
+        {
+            return std::nullopt;
+        }
+        if (prefix > (result.ipv6 ? 128U : 32U))
+        {
+            return std::nullopt;
+        }
+        result.prefix = prefix;
+        return result;
+    }
 
     [[nodiscard]] auto leading_bits_match(std::array<std::uint8_t, 16U> const& address,
                                           std::array<std::uint8_t, 16U> const& network, unsigned bits) noexcept -> bool
@@ -568,57 +637,47 @@ namespace
 
 } // namespace
 
+auto default_federation_deny_ip_ranges() -> std::vector<std::string>
+{
+    auto ranges = std::vector<std::string>{};
+    ranges.reserve(special_use_blocks.size());
+    for (auto const& block : special_use_blocks)
+    {
+        auto text = std::array<char, INET6_ADDRSTRLEN>{};
+        auto const family = block.ipv6 ? AF_INET6 : AF_INET;
+        // Every block in the table is a valid address and the buffer holds the longest one, so this cannot
+        // fail. Never skip a block silently: that would drop a range from the default deny list.
+        if (::inet_ntop(family, block.network.data(), text.data(), static_cast<socklen_t>(text.size())) == nullptr)
+        {
+            throw std::logic_error{"special-use IP block cannot be formatted"};
+        }
+        ranges.push_back(std::string{text.data()} + "/" + std::to_string(block.prefix));
+    }
+    return ranges;
+}
+
+auto is_private_or_loopback_range(std::string_view range) noexcept -> bool
+{
+    auto const parsed = parse_cidr(range);
+    if (!parsed.has_value())
+    {
+        return false;
+    }
+    return std::ranges::any_of(special_use_blocks, [&parsed](SpecialUseBlock const& block) {
+        return block.ipv6 == parsed->ipv6 && block.prefix == parsed->prefix && block.network == parsed->bytes;
+    });
+}
+
 auto private_ip_range_is_allowable(std::string_view range) noexcept -> bool
 {
-    auto const slash = range.find('/');
-    if (slash == std::string_view::npos)
+    auto const parsed = parse_cidr(range);
+    if (!parsed.has_value())
     {
         return false;
     }
-    auto const address = range.substr(0U, slash);
-    auto const prefix_text = range.substr(slash + 1U);
-    if (address.empty() || address.size() >= INET6_ADDRSTRLEN || prefix_text.empty() ||
-        !std::ranges::all_of(prefix_text, [](char character) {
-            return character >= '0' && character <= '9';
-        }))
-    {
-        return false;
-    }
-    auto prefix = 0U;
-    auto const parsed = std::from_chars(prefix_text.data(), prefix_text.data() + prefix_text.size(), prefix);
-    if (parsed.ec != std::errc{} || parsed.ptr != prefix_text.data() + prefix_text.size())
-    {
-        return false;
-    }
-
-    auto literal = std::array<char, INET6_ADDRSTRLEN>{};
-    std::ranges::copy(address, literal.begin());
-    auto bytes = std::array<std::uint8_t, 16U>{};
-    auto bits = 0U;
-    auto v4 = in_addr{};
-    auto v6 = in6_addr{};
-    if (::inet_pton(AF_INET, literal.data(), &v4) == 1)
-    {
-        auto const value = ntohl(v4.s_addr);
-        for (auto index = 0U; index < 4U; ++index)
-        {
-            bytes[index] = static_cast<std::uint8_t>(value >> (24U - index * 8U));
-        }
-        bits = 32U;
-    }
-    else if (::inet_pton(AF_INET6, literal.data(), &v6) == 1)
-    {
-        std::ranges::copy(v6.s6_addr, bytes.begin());
-        bits = 128U;
-    }
-    else
-    {
-        return false;
-    }
-    if (prefix > bits)
-    {
-        return false;
-    }
+    auto const& bytes = parsed->bytes;
+    auto const prefix = parsed->prefix;
+    auto const bits = parsed->ipv6 ? 128U : 32U;
 
     // No host bits: "10.0.0.5/8" reads as a host but means a network.
     for (auto bit = prefix; bit < bits; ++bit)
@@ -629,11 +688,10 @@ auto private_ip_range_is_allowable(std::string_view range) noexcept -> bool
         }
     }
 
-    auto const inside = [&bytes, prefix](PrivateBlock const& block) {
-        return prefix >= block.prefix && leading_bits_match(bytes, block.network, block.prefix);
-    };
-    return bits == 32U ? std::ranges::any_of(private_v4_blocks, inside)
-                       : std::ranges::any_of(private_v6_blocks, inside);
+    return std::ranges::any_of(special_use_blocks, [&](SpecialUseBlock const& block) {
+        return block.allowable && block.ipv6 == parsed->ipv6 && prefix >= block.prefix &&
+               leading_bits_match(bytes, block.network, block.prefix);
+    });
 }
 
 // Parse a "<max>/<window>s" rate-limit value, e.g. "20/60s" or
@@ -1798,9 +1856,9 @@ auto validate(Config const& config) -> std::vector<ConfigValidationFinding>
     // the key is treated as a module name. Empty module names are
     // rejected so a stray blank line does not insert a default for
     // every (no-name) module.
-    for (auto const& [module, level] : config.log_modules().levels)
+    for (auto const& [module_name, level] : config.log_modules().levels)
     {
-        if (module.empty())
+        if (module_name.empty())
         {
             findings.push_back({"log_modules", "log module name must not be empty"});
             break;

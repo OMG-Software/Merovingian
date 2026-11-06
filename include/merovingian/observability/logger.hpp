@@ -321,39 +321,39 @@ public:
         return m_file_sink.open(m_file_path);
     }
 
-    auto trace(std::string const& module, std::string const& message) -> void
+    auto trace(std::string const& module_name, std::string const& message) -> void
     {
-        log(LogLevel::trace, module, make_log_line("TRACE", module, message));
+        log(LogLevel::trace, module_name, make_log_line("TRACE", module_name, message));
     }
 
-    auto debug(std::string const& module, std::string const& message) -> void
+    auto debug(std::string const& module_name, std::string const& message) -> void
     {
-        log(LogLevel::debug, module, make_log_line("DEBUG", module, message));
+        log(LogLevel::debug, module_name, make_log_line("DEBUG", module_name, message));
     }
 
-    auto info(std::string const& module, std::string const& message) -> void
+    auto info(std::string const& module_name, std::string const& message) -> void
     {
-        log(LogLevel::info, module, make_log_line("INFO", module, message));
+        log(LogLevel::info, module_name, make_log_line("INFO", module_name, message));
     }
 
-    auto notice(std::string const& module, std::string const& message) -> void
+    auto notice(std::string const& module_name, std::string const& message) -> void
     {
-        log(LogLevel::notice, module, make_log_line("NOTICE", module, message));
+        log(LogLevel::notice, module_name, make_log_line("NOTICE", module_name, message));
     }
 
-    auto warning(std::string const& module, std::string const& message) -> void
+    auto warning(std::string const& module_name, std::string const& message) -> void
     {
-        log(LogLevel::warning, module, make_log_line("WARNING", module, message));
+        log(LogLevel::warning, module_name, make_log_line("WARNING", module_name, message));
     }
 
-    auto error(std::string const& module, std::string const& message) -> void
+    auto error(std::string const& module_name, std::string const& message) -> void
     {
-        log(LogLevel::error, module, make_log_line("ERROR", module, message));
+        log(LogLevel::error, module_name, make_log_line("ERROR", module_name, message));
     }
 
-    auto critical(std::string const& module, std::string const& message) -> void
+    auto critical(std::string const& module_name, std::string const& message) -> void
     {
-        log(LogLevel::critical, module, make_log_line("CRITICAL", module, message));
+        log(LogLevel::critical, module_name, make_log_line("CRITICAL", module_name, message));
     }
 
     // L-13: total messages discarded because the console/file queue was at
@@ -445,18 +445,18 @@ private:
     // AUTH-9: the module and message are escaped here, at the one place every
     // console and file line is composed, so the trailing '\n' is the only line
     // break a record can contain whatever the caller passed in.
-    static auto make_log_line(std::string const& level, std::string const& module, std::string const& message)
+    static auto make_log_line(std::string const& level, std::string const& module_name, std::string const& message)
         -> std::string
     {
         auto stream = std::ostringstream{};
-        stream << current_date_time() << "  <" << level << ">  " << escape_log_controls(module) << ":  "
+        stream << current_date_time() << "  <" << level << ">  " << escape_log_controls(module_name) << ":  "
                << escape_log_controls(message) << '\n';
         return stream.str();
     }
 
-    auto log(LogLevel level, std::string_view module, std::string const& line) -> void
+    auto log(LogLevel level, std::string_view module_name, std::string const& line) -> void
     {
-        if (static_cast<int>(module_log_level(module)) > static_cast<int>(level))
+        if (static_cast<int>(module_log_level(module_name)) > static_cast<int>(level))
         {
             return;
         }
