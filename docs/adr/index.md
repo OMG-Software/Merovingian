@@ -495,3 +495,4 @@
 * [0523 - PersistentStore copies are defaulted](0523-persistent-store-copies-are-defaulted.md)
 * [0524 - The runtime mutex implements its recursion over std::mutex](0524-the-runtime-mutex-implements-its-recursion-over-std-mutex.md)
 * [0525 - A cache that is not thread-safe is not hidden behind const](0525-a-cache-that-is-not-thread-safe-is-not-hidden-behind-const.md)
+* [0526 - The correlation slot holds the context by value](0526-the-correlation-slot-holds-the-context-by-value.md)

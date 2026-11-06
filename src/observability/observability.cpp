@@ -238,9 +238,9 @@ namespace
 namespace detail
 {
 
-    auto correlation_slot() noexcept -> CorrelationContext const*&
+    auto correlation_slot() noexcept -> std::optional<CorrelationContext>&
     {
-        thread_local auto* context = static_cast<CorrelationContext const*>(nullptr);
+        thread_local auto context = std::optional<CorrelationContext>{};
         return context;
     }
 
@@ -727,7 +727,8 @@ auto make_correlation_context(std::uint64_t sequence) -> CorrelationContext
 
 auto current_correlation_context() noexcept -> CorrelationContext const*
 {
-    return detail::correlation_slot();
+    auto const& slot = detail::correlation_slot();
+    return slot.has_value() ? &*slot : nullptr;
 }
 
 auto with_correlation_fields(CorrelationContext const& context, std::vector<StructuredLogField> fields)

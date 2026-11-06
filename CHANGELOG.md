@@ -6,7 +6,7 @@ The largest multi-type files are split into one file per class, struct or enum (
 
 - An appservice registration `url` may use `http` only when its host is a loopback IP literal (127.0.0.0/8 or `::1`) or is listed in the new `appservice.allow_cleartext_hosts` key; every other host must use `https`, because the homeserver sends the `hs_token` with each request. A registration that breaks the rule, or whose `url` has userinfo or a query, is skipped at start-up with a warning, and the client refuses such a call before any lookup (ADR-0515). The Complement configuration lists `host.docker.internal`.
 - The appservice client parses its URL with the shared libcurl-backed parser, so an IPv6 literal host and a `url` path of `/` are handled correctly. SMTP and appservices share one loopback-literal check (`net::is_loopback_ip_literal`).
-- `observability::CorrelationScope` holds its own copy of the request's correlation context and publishes a pointer to that copy, not to the caller's object, so the thread's published context cannot change or dangle while the scope is open (CodeQL `cpp/stack-address-escape`). New unit test `test_correlation_scope.cpp` (`[correlation]`).
+- `observability::CorrelationScope` no longer publishes a pointer. The thread's correlation slot holds the context by value: a scope moves its context in and puts back the one it displaced, so no address of a scope or of a caller's object is stored, and the published context cannot change or dangle while the scope is open (CodeQL `cpp/stack-address-escape`, ADR-0526). New unit test `test_correlation_scope.cpp` (`[correlation]`).
 
 ### Changed
 

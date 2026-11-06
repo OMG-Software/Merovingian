@@ -5,21 +5,20 @@
 
 #include "merovingian/observability/observability_internal.hpp"
 
+#include <optional>
 #include <utility>
 
 namespace merovingian::observability
 {
 
 CorrelationScope::CorrelationScope(CorrelationContext context) noexcept
-    : context_{std::move(context)}
-    , previous_{detail::correlation_slot()}
+    : previous_{std::exchange(detail::correlation_slot(), std::optional<CorrelationContext>{std::move(context)})}
 {
-    detail::correlation_slot() = &context_;
 }
 
 CorrelationScope::~CorrelationScope()
 {
-    detail::correlation_slot() = previous_;
+    detail::correlation_slot() = std::move(previous_);
 }
 
 } // namespace merovingian::observability

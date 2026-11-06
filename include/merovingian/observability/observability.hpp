@@ -105,6 +105,8 @@ inline constexpr auto max_log_field_value_bytes = std::size_t{2048U};
 [[nodiscard]] auto diagnostic_log_summary(std::string_view logger, std::string_view event,
                                           std::vector<StructuredLogField> fields) -> std::string;
 [[nodiscard]] auto make_correlation_context(std::uint64_t sequence) -> CorrelationContext;
+// The context the calling thread's innermost open CorrelationScope published, or null. The pointer is to the thread's
+// own slot: read it at once, since opening or closing a scope on the thread changes what it points at.
 [[nodiscard]] auto current_correlation_context() noexcept -> CorrelationContext const*;
 [[nodiscard]] auto with_correlation_fields(CorrelationContext const& context, std::vector<StructuredLogField> fields)
     -> std::vector<StructuredLogField>;
