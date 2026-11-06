@@ -482,3 +482,5 @@
 * [0466 - Define one class or struct per file](0466-define-one-class-or-struct-per-file.md)
 * [0467 - Type filenames match the type name exactly](0467-type-filenames-match-the-type-name-exactly.md)
 * [0512 - Group external headers before the standard library](0512-group-external-headers-before-the-standard-library.md)
+* [0527 - CodeQL drops every result on vendored and build directories](0527-codeql-drops-every-result-on-vendored-and-build-directories.md)
+* [0528 - CodeQL drops path injection sourced only from command-line arguments](0528-codeql-drops-path-injection-sourced-only-from-command-line-arguments.md)

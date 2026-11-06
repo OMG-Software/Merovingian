@@ -151,8 +151,10 @@ Use this checklist for every release candidate.
   (`sbom.yml`) workflows passed for the release candidate commit.
   CodeQL's report reaches code scanning through `scripts/filter_codeql_sarif.py`,
   which drops only `cpp/unused-static-function` on files under `tests/`
-  (Catch2 scenarios, ADR-0226); any other exclusion added there needs its own
-  ADR and is reviewed like a dismissed alert.
+  (Catch2 scenarios, ADR-0226), every result on the vendored `subprojects/`
+  and the `build/` directory (ADR-0527), and `cpp/path-injection` whose every
+  source is a command-line argument (ADR-0528); any other exclusion added there
+  needs its own ADR and is reviewed like a dismissed alert.
 - The SonarQube Cloud quality gate passed for the release candidate commit.
   It analyses the server (`src/`, `include/`), `packaging/` and the
   `.github/` workflows; test code and developer tooling (`tests/`,
