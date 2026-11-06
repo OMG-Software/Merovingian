@@ -25,6 +25,10 @@ The largest multi-type files are split into one file per class, struct or enum (
 - `RuntimeMutex`'s lock functions are `const` and `HomeserverRuntime::mutex` is no longer `mutable`; the runtime mutex is locked through `homeserver::RuntimeLock` (ADR-0522).
 - Identifiers named `module`, a C++20 contextual keyword, are renamed `module_name`.
 
+### Fixed
+
+- A copy of `database::PersistentStore` now carries `state_transitions` and `state_transition_index`. The hand-written copy operations listed every member but these two, added later, so `find_state_transition` on a copy found nothing (no `unsigned.replaces_state`, and narrower history visibility and room read access). Only tests copy a store, so no running server was affected. The copy operations are now defaulted (ADR-0523). New unit test `test_persistent_store_copy.cpp` (`[store_copy]`).
+
 ## 0.12.76
 
 The medium severity findings of the November project analysis.

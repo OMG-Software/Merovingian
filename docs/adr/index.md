@@ -492,3 +492,4 @@
 * [0520 - Statistics counters use the default memory order](0520-statistics-counters-use-the-default-memory-order.md)
 * [0521 - The room position index guards itself](0521-the-room-position-index-guards-itself.md)
 * [0522 - The runtime mutex locks through const](0522-the-runtime-mutex-locks-through-const.md)
+* [0523 - PersistentStore copies are defaulted](0523-persistent-store-copies-are-defaulted.md)

@@ -454,6 +454,7 @@ shell = find_program('sh')
       'unit/test_dispatch_batch.cpp',
       'unit/test_room_event_storage.cpp',
       'unit/test_key_signature_index.cpp',
+      'unit/test_persistent_store_copy.cpp',
       'unit/test_remote_media_fetch.cpp',
       'unit/test_sync_receipt_visibility.cpp',
       'unit/test_sync_room_access.cpp',

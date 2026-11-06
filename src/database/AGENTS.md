@@ -171,5 +171,6 @@ events to find it.
 
 `statement_capture_mutex` and `server_signing_keys_mutex` are `core::CopyableMutex` members held by value. A copy of the
 store gets fresh, unlocked mutexes, so copy a store only while no other thread is using it. The copy constructor and copy
-assignment stay hand-written: they do not copy `state_transitions` or `state_transition_index`, so `= default`
-would change what a copy contains.
+assignment are defaulted (ADR-0523): a copy carries every member and index. Never go back to a hand-written member list;
+one missed `state_transitions` and its index for months. A member that must not be copied gets its own copy semantics,
+as `core::CopyableMutex` has. No production code copies a store; only tests do.
