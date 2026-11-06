@@ -8,27 +8,26 @@ A Matrix homeserver built with security as the top priority: secure by design, i
 - SQLite
 - Meson build system
 
-## General Rules
-- Check the Matrix spec, we MUST conform to v1.19 of the spec.
-- The Matrix spec, v1.19, is the authority, not synapse, not your imagination, not any other code.
-- Top level namespace should be `merovingian`
-- RAII is non negotiable, use it.
-- Prefer references over pointers.
-- No raw pointers, use smart pointers.
-- No calls to new/delete, malloc/free etc. 
-- Use std::ignore rather than (void) casting.
-- Format C++ code with clang-format using the .clang-format file in the project root.
+## Required Coding Guidance
+
+Before writing, changing, generating, or reviewing code or tests, read and follow
+[docs/coding-rules.md](docs/coding-rules.md). Its requirements are binding for
+all contributors and delegated agents; the link is not optional background reading.
+Follow the security and testing guidance it references, together with the relevant
+directory `AGENTS.md` files.
+
+Keep project-wide coding rules in `docs/coding-rules.md`, not in this file.
+Before reporting code work complete, check the change against those rules and
+report any unresolved conflict or unmet requirement. See
+[ADR-0465](docs/adr/0465-root-agent-guidance-requires-the-coding-rules-without-copying-them.md).
+
+## General Workflow
+
 - If something is ambiguous, ask clarifying questions, never assume.
-- Prefer simple, readable solutions over clever ones.
 - Flag potential bugs or edge cases after the code explanation if relevant.
-- With every change, update the relevant docs. See `docs/CLAUDE.md` for the full list of which documents to update and when.
-- Use behaviour driven development in a GIVEN WHEN THEN style.
-- Tests should test behaviour and state rather than specific outcomes.
-- Create a new test(s) for the desired outcome prior to making the code change.
-- Spec conformance tests should be implemented wherever possible.
-- After code change, run the new test(s). See "Verifying Work" below — a run you did not read the result of does not count.
+- With every change, update the relevant docs. See [docs/AGENTS.md](docs/AGENTS.md) for the update table.
 - Before creating a new branch from main, pull from origin so that main is up to date.
-- Bump the version number on creating a new branch. See versioning doc for all the places where the version number needs updating.
+- Bump the version number on creating a new branch, except for documentation-only changes. See versioning doc for all the places where the version number needs updating.
 - Update the docs when code change invalidates something.
 - Record a decision in the ADR register (`docs/adr/`) whenever you make one. A
   decision qualifies when a future reader would otherwise be likely to undo it
@@ -42,7 +41,6 @@ A Matrix homeserver built with security as the top priority: secure by design, i
   [ADR-0000](docs/adr/0000-record-architecture-decisions.md) and
   [ADR-0001](docs/adr/0001-use-markdown-architectural-decision-records.md).
 - Record changes for each version in CHANGELOG.md
-- When a bug or issue is reported, check the spec docs to see if the project does what the spec says.
 - Ignore `.clwb` folder.
 - Ignore directories starting with `build` in the project root (Meson build output).
 - Always work in feature or bug branches, never main.
@@ -80,8 +78,9 @@ context produces work against the wrong assumptions, and you will not notice
 until you read the diff.
 
 - State the file paths, the spec section, and the acceptance criterion.
-- Name the binding rules explicitly: the spec is the authority, tests first in
-  GIVEN/WHEN/THEN, RAII, no raw pointers, `std::ignore` not `(void)`.
+- Require the delegate to read and follow [docs/coding-rules.md](docs/coding-rules.md)
+  and the relevant directory guidance. Identify the sections that apply; do not
+  copy a separate coding-rule list into the brief.
 - Say which branch to base on and confirm it is the current tip. Work started
   from a stale base is re-verified from scratch or thrown away.
 - Tell it to commit at every coherent boundary. Uncommitted work in a subagent
@@ -319,9 +318,6 @@ Base: docs/matrix-v1.19-spec/index.md
 # Build and test Windows
 python build.py wsl
 
-# Format all C++ code
-clang-format -i src/**/*.cpp include/merovingian/**/*.hpp
-
 # Full build via unified CLI (Linux/BSD/WSL)
 python build.py
 
@@ -329,16 +325,6 @@ python build.py
 pip install --require-hashes -r requirements-docs.txt
 mkdocs build --strict
 ```
-
-## Naming Conventions
-- **Namespace**: `merovingian::<module>::` (e.g., `merovingian::crypto::`, `merovingian::federation::`)
-- **Headers**: `include/merovingian/<module>/<name>.hpp` — one class/struct per file, filename matches primary type
-- **Sources**: `src/<module>/<name>.cpp` — mirrors header path exactly
-- **Unit tests**: `tests/unit/test_<module>.cpp` — Catch2 BDD style (GIVEN/WHEN/THEN)
-- **Integration tests**: `tests/integration/test_<module>_flow.cpp`
-- **Migrations**: `migrations/<NNN>_<description>.sql` — zero-padded sequential number
-- **Includes**: Use `#include "merovingian/module/name.hpp"` (quotes for project headers; angle brackets for STL and third-party)
-- **Test macros**: `TEST_CASE`, `SCENARIO`, `GIVEN`, `WHEN`, `THEN` from Catch2 v3
 
 ## Pull Requests
 Pull request descriptions should have the following headings:

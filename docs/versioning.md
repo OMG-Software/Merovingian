@@ -4,8 +4,9 @@
 
 Merovingian uses **`0.MINOR.PATCH`** before `1.0`.
 
-`PATCH` is the working counter: **every** branch — feature, fix, packaging, or
-documentation-only — increments it by one.
+`PATCH` is the working counter: feature, fix, and packaging branches increment
+it by one. Documentation-only changes do not require a version bump
+([ADR-0464](adr/0464-documentation-only-changes-do-not-require-a-version-bump.md)).
 
 `MINOR` is a **series marker, not a milestone.** It rolls over when a `PATCH`
 series has grown long enough to be unwieldy, or at a natural grouping of work.
@@ -27,12 +28,18 @@ or epoch. All three numbers are always present (e.g. `0.11.4`, never `0.11`).
 
 ## Bump policy
 
-**One bump per branch, when the branch is created.** Update `CHANGELOG.md`
+**One bump per branch, when the branch is created, except for documentation-only changes.** Update `CHANGELOG.md`
 and every version location below together before the branch's first commit.
 Do not increment again on intermediate commits. Before raising the PR, verify
 that the version remains consistent with the base branch; if another branch
 has used that version in the meantime, update all locations together to the
 next available patch version. There is no separate merge-time bump.
+
+For a documentation-only branch, keep the current version and add the change
+notes to its `Documentation` section in `CHANGELOG.md`. Changes to coding
+guidance and `AGENTS.md` files are documentation changes. If the branch later
+includes code, build, or packaging changes, apply the bump policy before
+committing those changes.
 
 ## Canonical source of truth
 
@@ -84,7 +91,7 @@ than the others.
 ## Release process
 
 1. Update `main` from `origin`, then create a feature or fix branch from it.
-2. Increment the patch version in every location above and add its changelog section.
+2. Unless the changes are documentation-only, increment the patch version in every location above and add its changelog section.
 3. Make the changes and keep that version for intermediate commits.
 4. Before raising the PR, check version consistency and conflicts with the base branch.
 5. Raise a PR. CI builds the configured platform artifacts and runs the test suite;
