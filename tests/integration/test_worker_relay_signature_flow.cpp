@@ -381,7 +381,7 @@ auto prepare_main_relay(homeserver::HomeserverRuntime& runtime, std::atomic<std:
 
 auto exhaust_main_admission(homeserver::HomeserverRuntime& runtime, bool occupied_slot) -> void
 {
-    auto guard = std::lock_guard{*runtime.federation.mutex};
+    auto const guard = runtime.federation.mutex.acquire();
     runtime.federation.config.key_resolution_max_in_flight = 1U;
     runtime.federation.config.key_resolution_per_ip_rate = {1U, 3600U};
     runtime.federation.key_resolution_buckets.clear();
@@ -611,7 +611,7 @@ SCENARIO("main worker relays defer key misses without mutation and retry after a
                         CHECK(runtime.federation.key_resolution_failures.empty());
 
                         {
-                            auto guard = std::lock_guard{*runtime.federation.mutex};
+                            auto const guard = runtime.federation.mutex.acquire();
                             runtime.federation.key_resolutions_in_flight = 0U;
                             runtime.federation.key_resolution_buckets.clear();
                         }

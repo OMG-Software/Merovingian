@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
+#include "merovingian/core/CopyableConditionVariable.hpp"
+#include "merovingian/core/CopyableMutex.hpp"
 #include "merovingian/federation/BadSignatureBucket.hpp"
 #include "merovingian/federation/FederationAcceptedTransaction.hpp"
 #include "merovingian/federation/FederationKeyRecord.hpp"
@@ -16,13 +18,10 @@
 #include "merovingian/federation/third_party_invite.hpp"
 #include "merovingian/observability/AuditLogEvent.hpp"
 
-#include <condition_variable>
 #include <cstddef>
 #include <cstdint>
 #include <deque>
 #include <functional>
-#include <memory>
-#include <mutex>
 #include <optional>
 #include <string_view>
 #include <vector>
@@ -36,7 +35,7 @@ struct FederationRuntimeState final
     RuntimeFederationConfig config{};
     // Protects federation-local mutable bookkeeping while homeserver-level
     // federation dispatch runs without HomeserverRuntime::mutex.
-    FederationRuntimeMutex mutex{std::make_shared<std::recursive_mutex>()};
+    core::CopyableMutex mutex{};
     std::vector<FederationRemoteRuntime> remotes{};
     // Replay-dedup ring (see #416): capped at kMaxAcceptedTransactions
     // (inbound_request.cpp) so a sustained stream of distinct transaction ids
@@ -81,7 +80,7 @@ struct FederationRuntimeState final
     std::uint32_t key_resolutions_in_flight{0U};
     // Notified after key_resolutions_in_flight is decremented, for the one
     // admission path that waits for a slot (resolve_join_state_key).
-    FederationSlotSignal key_resolution_slot_released{std::make_shared<std::condition_variable_any>()};
+    core::CopyableConditionVariable key_resolution_slot_released{};
     // Optional ingestion hooks. When set, accepted PDUs are appended to the
     // event graph via pdu_sink and accepted EDUs are routed to runtime
     // surfaces (typing tracker, receipt store, etc.) via edu_sink. Both

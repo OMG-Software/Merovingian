@@ -1166,7 +1166,7 @@ SCENARIO("main key-admission overload survives real worker socket HTTP and uncha
                     REQUIRE(wait_for_healthy(*runtime.federation_proxy, std::chrono::seconds{15}));
                     auto listener = Fed10SocketListener{client};
                     {
-                        auto guard = std::lock_guard{*runtime.federation.mutex};
+                        auto const guard = runtime.federation.mutex.acquire();
                         runtime.federation.config.key_resolution_max_in_flight = 1U;
                         runtime.federation.config.key_resolution_per_ip_rate = {1U, 3600U};
                         runtime.federation.key_resolution_buckets.clear();
@@ -1207,7 +1207,7 @@ SCENARIO("main key-admission overload survives real worker socket HTTP and uncha
                         CHECK(fed10_target_count(durable.store, event_id) == 0U);
                     }
                     {
-                        auto guard = std::lock_guard{*runtime.federation.mutex};
+                        auto const guard = runtime.federation.mutex.acquire();
                         CHECK(runtime.federation.key_resolutions_in_flight == (occupied_slot ? 1U : 0U));
                         CHECK(runtime.federation.key_resolution_failures.empty());
                         runtime.federation.key_resolution_buckets.clear();
