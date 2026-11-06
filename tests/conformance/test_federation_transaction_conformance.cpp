@@ -480,6 +480,8 @@ SCENARIO("Federation send transaction answers every PDU, an accepted one with an
 SCENARIO("Federation send transaction answers a PDU already stored as handled, not as an error",
          "[federation][transaction][conformance][pdu_duplicate]")
 {
+    // any_error is true when an entry is not an object or carries any key, which is how the spec reports a per-PDU
+    // `error`.
     auto const pdu_results = [](merovingian::federation::FederationResponse const& response)
         -> std::optional<merovingian::canonicaljson::Object> {
         auto const parsed = merovingian::canonicaljson::parse_lossless(response.body);
@@ -509,6 +511,7 @@ SCENARIO("Federation send transaction answers a PDU already stored as handled, n
     {
         auto runtime = merovingian::federation::make_federation_runtime_state(runtime_config());
         merovingian::federation::upsert_remote(runtime, remote_for_origin());
+        // The first delivery is stored; every later one hits the already_stored path this scenario is about.
         auto stored = std::make_shared<std::size_t>(0U);
         runtime.pdu_sink = [stored]([[maybe_unused]] merovingian::federation::InboundPduEnvelope const& envelope)
             -> merovingian::federation::PduIngestionResult {
@@ -543,6 +546,7 @@ SCENARIO("Federation send transaction answers a PDU already stored as handled, n
             }
         }
 
+        // The duplicate inside one transaction must be answered as handled too, not as an error.
         WHEN("the same PDU is sent twice in one transaction")
         {
             auto const body = std::string{"{\"origin\":\"remote.example.org\","
@@ -572,6 +576,7 @@ SCENARIO("Federation send transaction answers a PDU already stored as handled, n
             ++(*sink_calls);
             return {merovingian::federation::PduIngestionStatus::internal_error, "must not be reached", {}};
         };
+        // The probe lets the transaction handler answer without ever calling the sink, which fails if it is reached.
         runtime.pdu_already_stored = []([[maybe_unused]] std::string_view room_id,
                                         [[maybe_unused]] std::string_view event_id) {
             return true;
@@ -610,6 +615,7 @@ SCENARIO("Federation send transaction answers a PDU already stored as handled, n
                                         [[maybe_unused]] std::string_view event_id) {
             return true;
         };
+        // Only lookups for the third server are counted; the origin's own key is still resolved normally.
         auto relayed_lookups = std::make_shared<std::size_t>(0U);
         runtime.remote_key_resolver = [relayed_lookups](std::string_view server_name,
                                                         [[maybe_unused]] std::string_view relayed_key_id)
@@ -651,6 +657,7 @@ SCENARIO("Federation send transaction answers a PDU already stored as handled, n
         }
     }
 
+    // A genuine failure must still surface as an error, so the already-stored leniency cannot mask it.
     GIVEN("a runtime whose sink fails with an internal error")
     {
         auto runtime = merovingian::federation::make_federation_runtime_state(runtime_config());

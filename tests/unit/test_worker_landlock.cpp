@@ -96,9 +96,8 @@ struct RecordingOps final
         ops.query_abi_version = [this]() -> int {
             return abi;
         };
-        ops.create_ruleset = [this](std::uint64_t handled_access_fs, int ruleset_abi) -> int {
+        ops.create_ruleset = [this](std::uint64_t handled_access_fs, int /*ruleset_abi*/) -> int {
             handled_access_fs_requested = handled_access_fs;
-            std::ignore = ruleset_abi;
             return create_ruleset_fails ? -1 : 42;
         };
         ops.add_rule = [this](int, std::string const& path, std::uint64_t allowed_access) -> LandlockAddRuleOutcome {

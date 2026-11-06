@@ -207,9 +207,9 @@ namespace
         std::vector<std::pair<std::uint64_t, std::string>> const& timeline_events) -> std::unordered_set<std::string>
     {
         auto members = std::unordered_set<std::string>{};
-        for (auto const& [ordering, json] : timeline_events)
+        for (auto const& entry : timeline_events)
         {
-            std::ignore = ordering;
+            auto const& json = entry.second;
             auto const parsed = canonicaljson::parse_lossless(json);
             if (parsed.error != canonicaljson::ParseError::none)
             {
@@ -823,9 +823,9 @@ auto build_room_response(homeserver::HomeserverRuntime const& rt, std::string_vi
     // A room's first send on the connection has no previous send and no "previous
     // sync", so it is neither expanded nor live.
     auto const last_sent = room_last_sent_ordering.value_or(room_since_event_ordering);
-    for (auto const& [ordering, json] : timeline_events)
+    for (auto const& entry : timeline_events)
     {
-        std::ignore = json;
+        auto const ordering = entry.first;
         if (is_initial)
         {
             break;
@@ -915,10 +915,9 @@ auto build_room_response(homeserver::HomeserverRuntime const& rt, std::string_vi
         });
     }
 
-    for (auto& [ordering, json] : timeline_events)
+    for (auto& entry : timeline_events)
     {
-        resp.timeline_json.push_back(std::move(json));
-        std::ignore = ordering;
+        resp.timeline_json.push_back(std::move(entry.second));
     }
 
     return resp;

@@ -1889,19 +1889,14 @@ auto validate(Config const& config) -> std::vector<ConfigValidationFinding>
     // the key is treated as a module name. Empty module names are
     // rejected so a stray blank line does not insert a default for
     // every (no-name) module.
-    for (auto const& [module_name, level] : config.log_modules().levels)
+    // Every level value, including off (silence the module entirely), is
+    // legitimate, so only the module name is validated.
+    for (auto const& entry : config.log_modules().levels)
     {
-        if (module_name.empty())
+        if (entry.first.empty())
         {
             findings.push_back({"log_modules", "log module name must not be empty"});
             break;
-        }
-        if (level == observability::LogLevel::off)
-        {
-            // Off is a legitimate value (silence the module entirely),
-            // but we warn at validate time so the operator notices.
-            // No finding here: off is intentional, not a misconfig.
-            std::ignore = level;
         }
     }
 

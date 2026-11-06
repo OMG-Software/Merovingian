@@ -552,6 +552,8 @@ SCENARIO("Redacting another user's event needs the redact power level",
 SCENARIO("The redacts property is in content from room v11 and top-level before it",
          "[csaz-11][redaction][conformance][room-versions]")
 {
+    // Room v10 keeps redacts at the top level of the event; room v11 moved it into content. One room of each
+    // version shows both layouts through the same redaction paths.
     GIVEN("a v10 room and a v11 room, each with a message from alice")
     {
         auto started = merovingian::homeserver::start_client_server(redaction_config());
@@ -563,11 +565,13 @@ SCENARIO("The redacts property is in content from room v11 and top-level before 
         auto const v10_message = send_text(rt, alice, v10_room, "ten");
         auto const v11_message = send_text(rt, alice, v11_room, "eleven");
 
+        // PUT /redact builds the event itself, so the server chooses the layout from the room version.
         WHEN("alice redacts both with PUT /redact")
         {
             auto const v10_redaction = event_id_of(redact(rt, alice, v10_room, v10_message, "v10-1"));
             auto const v11_redaction = event_id_of(redact(rt, alice, v11_room, v11_message, "v11-1"));
 
+            // Stored form for v10: redacts at the top level and nothing under content.
             THEN("the stored v10 redaction has a top-level redacts and no content.redacts")
             {
                 auto const stored = stored_event(rt, v10_redaction);
@@ -580,6 +584,7 @@ SCENARIO("The redacts property is in content from room v11 and top-level before 
                 REQUIRE(object_member(*content, "redacts") == nullptr);
             }
 
+            // Stored form for v11: redacts under content and nothing at the top level.
             THEN("the stored v11 redaction has redacts in content and none at the top level")
             {
                 auto const stored = stored_event(rt, v11_redaction);
@@ -617,6 +622,8 @@ SCENARIO("The redacts property is in content from room v11 and top-level before 
             }
         }
 
+        // Clients may also send the redaction through PUT /send; the server must normalise it to the
+        // room version's layout so it is no weaker than the dedicated endpoint.
         WHEN("alice sends m.room.redaction through PUT /send with redacts in content, in the v10 room")
         {
             auto const reply = call(rt, "PUT", "/_matrix/client/v3/rooms/" + v10_room + "/send/m.room.redaction/sendr1",
@@ -636,6 +643,7 @@ SCENARIO("The redacts property is in content from room v11 and top-level before 
             }
         }
 
+        // Same validity checks apply on /send as on /redact: a member without redact power is refused.
         WHEN("a client sends a forbidden redaction through PUT /send")
         {
             auto const bob = register_and_login(rt, "bob");
@@ -661,6 +669,7 @@ SCENARIO("The redacts property is in content from room v11 and top-level before 
 SCENARIO("Redacting a state event keeps the room working and keeps the protected keys",
          "[csaz-11][redaction][conformance][state]")
 {
+    // Alice sets a topic; bob is joined so a second member can observe the room after the redaction.
     GIVEN("a room v10 with a topic, and a joined member bob")
     {
         auto started = merovingian::homeserver::start_client_server(redaction_config());
@@ -691,11 +700,13 @@ SCENARIO("Redacting a state event keeps the room working and keeps the protected
             return std::string{};
         }();
 
+        // A state event can be redacted like any other; redaction must not remove it from room state.
         WHEN("alice redacts the topic event")
         {
             auto const redaction = redact(rt, alice, room_id, topic_event_id, "topic-1");
             REQUIRE(redaction.status == 200U);
 
+            // Content is stripped while the event stays in current state, with unsigned.redacted_because set.
             THEN("the topic is removed from the room but the state event remains, redacted")
             {
                 auto const reply = call(rt, "GET", "/_matrix/client/v3/rooms/" + room_id + "/state", bob);
@@ -716,6 +727,7 @@ SCENARIO("Redacting a state event keeps the room working and keeps the protected
                 REQUIRE(string_member(*topic, "state_key") != nullptr);
             }
 
+            // Redaction must not wedge the room: sends and syncs still succeed afterwards.
             THEN("the room keeps working: members can still send and read")
             {
                 REQUIRE(call(rt, "PUT", "/_matrix/client/v3/rooms/" + room_id + "/send/m.room.message/after1", bob,
@@ -725,6 +737,8 @@ SCENARIO("Redacting a state event keeps the room working and keeps the protected
             }
         }
 
+        // The membership key is protected by the redaction algorithm, so redacting a join must not
+        // evict the user.
         WHEN("alice redacts bob's join event")
         {
             auto const member_event_id = [&]() {
@@ -746,6 +760,7 @@ SCENARIO("Redacting a state event keeps the room working and keeps the protected
             }();
             REQUIRE(redact(rt, alice, room_id, member_event_id, "member-1").status == 200U);
 
+            // Bob can still send, and the stored event keeps membership: join after redaction.
             THEN("bob is still joined: a redacted join still results in the user being considered joined")
             {
                 REQUIRE(call(rt, "PUT", "/_matrix/client/v3/rooms/" + room_id + "/send/m.room.message/after2", bob,

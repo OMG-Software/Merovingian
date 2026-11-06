@@ -2205,6 +2205,8 @@ SCENARIO("A send_join response's own-domain events are accepted when signed with
         REQUIRE(started.started);
         auto& runtime = started.runtime;
 
+        // A real runtime with a registered user, because the join code consults the local signing key and the user
+        // session.
         auto const reg = merovingian::homeserver::register_local_user(runtime, "alice", "CorrectHorse7!",
                                                                       merovingian::tests::registration_token);
         REQUIRE(reg.ok);
@@ -2213,6 +2215,8 @@ SCENARIO("A send_join response's own-domain events are accepted when signed with
         auto const alice = reg.value;
         auto const carol = std::string{"@carol:"} + local_server;
 
+        // The resident is a TLS mock on loopback; the forced outbound resolution routes the resident server name to it
+        // without touching DNS.
         auto const certificate = merovingian::tests::tls_mock::write_test_tls_certificate();
         auto tls_context = merovingian::homeserver::make_tls_server_context(certificate.certificate_file,
                                                                             certificate.private_key_file);
@@ -2249,6 +2253,8 @@ SCENARIO("A send_join response's own-domain events are accepted when signed with
                                    R"("content":{"membership":"join"}})",
                                room_chain.member_auth());
         auto const make_join_body = std::string{R"({"room_version":"10","event":)"} + make_join_event + "}";
+        // Carol is an own-domain member event, signed with this server key below to model a re-join echoed back by the
+        // resident.
         auto const carol_member =
             naming_auth_events(std::string{R"({"type":"m.room.member","state_key":")"} + carol + R"(","room_id":")" +
                                    room_id + R"(","sender":")" + carol +
@@ -2276,9 +2282,12 @@ SCENARIO("A send_join response's own-domain events are accepted when signed with
 
         auto const send_join_body = std::string{R"({"state":)"} + canonicaljson_array_to_string(state_array) +
                                     R"(,"auth_chain":)" + canonicaljson_array_to_string(auth_chain_array) + "}";
+        // Canned make_join and send_join answers: the mock resident serves exactly these two responses.
         auto const make_join_response = json_http_response("200 OK", make_join_body);
         auto const send_join_response = json_http_response("200 OK", send_join_body);
 
+        // The mock resident runs on its own thread while join_room talks to it; the runtime lock is taken only to
+        // inspect the store.
         WHEN("alice joins the room through the resident server")
         {
             auto captured_requests = std::vector<std::string>{};
@@ -2352,6 +2361,7 @@ SCENARIO("A joining server applies the receipt checks to a resident's send_join 
         REQUIRE(login.ok);
         auto const alice = reg.value;
 
+        // The resident is a loopback TLS mock; forced resolution sends the resident server name there instead of DNS.
         auto const certificate = merovingian::tests::tls_mock::write_test_tls_certificate();
         auto tls_context = merovingian::homeserver::make_tls_server_context(certificate.certificate_file,
                                                                             certificate.private_key_file);
@@ -2364,6 +2374,8 @@ SCENARIO("A joining server applies the receipt checks to a resident's send_join 
             merovingian::homeserver::TestOnlyForcedOutboundResolution{
                 "localhost", port, {"127.0.0.1"}, certificate.certificate_pem};
         merovingian::homeserver::wire_federation_callbacks(runtime);
+        // Only the resident server key resolves: any other origin or key id yields no key, so its signatures cannot
+        // verify.
         runtime.federation.remote_key_resolver =
             [](std::string_view server_name,
                std::string_view key_id) -> std::optional<merovingian::federation::FederationRemoteRuntime> {
@@ -2389,6 +2401,7 @@ SCENARIO("A joining server applies the receipt checks to a resident's send_join 
         auto const make_join_response =
             json_http_response("200 OK", std::string{R"({"room_version":"10","event":)"} + make_join_event + "}");
 
+        // Bob join is genuinely signed by the resident and later tampered with or refused per scenario.
         auto const bob_join = sign_test_event(
             naming_auth_events(std::string{R"({"type":"m.room.member","state_key":")"} + bob + R"(","room_id":")" +
                                    room_id + R"(","sender":")" + bob +
@@ -2397,6 +2410,7 @@ SCENARIO("A joining server applies the receipt checks to a resident's send_join 
                                room_chain.member_auth()),
             policy, resident_server, resident_key_id, resident_key_seed);
 
+        // One helper runs the join against a mock that serves the given state, so each WHEN only varies the answer.
         auto const join_with_answer = [&](merovingian::canonicaljson::Array const& state) {
             auto captured_requests = std::vector<std::string>{};
             auto server_thread = std::thread{[&]() {
@@ -2449,6 +2463,7 @@ SCENARIO("A joining server applies the receipt checks to a resident's send_join 
             }
         }
 
+        // A correctly signed event can still fail the auth rules: signature checks alone are not enough.
         WHEN("the answer lists an event the auth rules refuse")
         {
             // Bob holds power level 0; a state event needs 50.

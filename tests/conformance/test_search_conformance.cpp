@@ -669,10 +669,9 @@ SCENARIO("order_by selects rank-first or recency-first ordering", "[search][conf
 
         auto const alice = register_and_login(rt, "alice");
         auto const room_id = create_room(rt, alice, "public_chat");
-        auto const oldest = send_text_message(rt, alice, room_id, "txn-order-1", "alpha");
+        [[maybe_unused]] auto const oldest = send_text_message(rt, alice, room_id, "txn-order-1", "alpha");
         auto const highest_rank = send_text_message(rt, alice, room_id, "txn-order-2", "alpha alpha alpha");
         auto const newest = send_text_message(rt, alice, room_id, "txn-order-3", "alpha alpha");
-        std::ignore = oldest;
 
         WHEN("alice searches with the default order (rank)")
         {
@@ -727,13 +726,11 @@ SCENARIO("event_context honours before_limit and after_limit", "[search][conform
 
         auto const alice = register_and_login(rt, "alice");
         auto const room_id = create_room(rt, alice, "public_chat");
-        auto const id1 = send_text_message(rt, alice, room_id, "txn-ctx-1", "context one");
+        [[maybe_unused]] auto const id1 = send_text_message(rt, alice, room_id, "txn-ctx-1", "context one");
         auto const id2 = send_text_message(rt, alice, room_id, "txn-ctx-2", "context two");
         auto const target = send_text_message(rt, alice, room_id, "txn-ctx-3", "the quasar target message");
         auto const id4 = send_text_message(rt, alice, room_id, "txn-ctx-4", "context four");
-        auto const id5 = send_text_message(rt, alice, room_id, "txn-ctx-5", "context five");
-        std::ignore = id1;
-        std::ignore = id5;
+        [[maybe_unused]] auto const id5 = send_text_message(rt, alice, room_id, "txn-ctx-5", "context five");
 
         WHEN("alice searches with before_limit=1, after_limit=1")
         {

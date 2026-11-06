@@ -1768,7 +1768,6 @@ SCENARIO("merovingian-server drops a client that stalls part-way through a reque
                 REQUIRE(elapsed_ms < 12000);
                 // Whether the server answers first or just hangs up, it must not
                 // still be holding the request open.
-                std::ignore = response;
                 REQUIRE_FALSE(follow_response.empty());
                 REQUIRE(follow_response.starts_with("HTTP/1.1 "));
             }

@@ -243,6 +243,7 @@ SCENARIO("read receipts survive a server restart", "[receipt][receipt-persistenc
     {
         auto const path = unique_sqlite_path();
         auto const config = sqlite_config(path);
+        // The ids are declared outside the first server's scope so the restarted servers below can reuse them.
         auto alice = std::string{};
         auto bob = std::string{};
         auto room_id = std::string{};
@@ -276,6 +277,8 @@ SCENARIO("read receipts survive a server restart", "[receipt][receipt-persistenc
                                          .body,
                                      "event_id");
 
+            // One public receipt in the main timeline and one private receipt inside the thread cover both receipt
+            // types and both thread scopes.
             REQUIRE(request(started.runtime, "POST",
                             "/_matrix/client/v3/rooms/" + room_id + "/receipt/m.read/" + latest_id, alice,
                             R"({"thread_id":"main"})")
@@ -284,6 +287,7 @@ SCENARIO("read receipts survive a server restart", "[receipt][receipt-persistenc
                             "/_matrix/client/v3/rooms/" + room_id + "/receipt/m.read.private/" + thread_reply_id, alice,
                             R"({"thread_id":")" + root_id + R"("})")
                         .status == 200U);
+            // The first server is destroyed here, so only what reached the SQLite file can survive into the restarts.
             REQUIRE(notification_count(synced_room(started.runtime, alice, room_id)) == 0);
         }
 
@@ -312,6 +316,7 @@ SCENARIO("read receipts survive a server restart", "[receipt][receipt-persistenc
                 REQUIRE(thread_id != nullptr);
                 REQUIRE(*thread_id == root_id);
             }
+            // Private receipts are only ever sent to their owner, and a restart must not change that.
             THEN("Bob still sees Alice's public receipt and not her private one")
             {
                 REQUIRE(find_receipt(bob_room, latest_id, "m.read", "@alice:example.org") != nullptr);

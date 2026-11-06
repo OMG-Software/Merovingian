@@ -3914,12 +3914,11 @@ namespace
     // Returns true when the event was stored (or was already present), false when
     // it failed verification.
     [[nodiscard]] auto verify_and_store_backfilled_event(
-        HomeserverRuntime& runtime, std::string_view room_id, std::string_view origin, std::string_view event_json,
-        rooms::RoomVersionPolicy const& policy, BackfillBudget& budget,
+        HomeserverRuntime& runtime, std::string_view room_id, [[maybe_unused]] std::string_view origin,
+        std::string_view event_json, rooms::RoomVersionPolicy const& policy, BackfillBudget& budget,
         std::optional<std::vector<database::PersistentStateGroupStateEntry>> const& forced_state_before = std::nullopt,
         bool allow_auth_events_only = false) -> bool
     {
-        std::ignore = origin;
         if (budget.key_resolution_locally_denied || event_json.empty() || event_json.front() != '{')
         {
             return false;
@@ -4295,7 +4294,7 @@ namespace
             return true;
         }
 
-        auto const [stream_ordering, sync_stream_id] = [&]() {
+        [[maybe_unused]] auto const [stream_ordering, sync_stream_id] = [&]() {
             auto const ordering = allocate_stream_ordering(runtime.database);
             auto const sync_id = database::allocate_sync_stream_id(runtime.database.persistent_store);
             return std::make_pair(ordering, sync_id);
@@ -4350,7 +4349,6 @@ namespace
         {
             record_state_group(*state_after);
         }
-        std::ignore = sync_stream_id;
         return true;
     }
 
@@ -5318,7 +5316,6 @@ namespace
             // ingestion lock order even when the backfill call throws.
             auto const global_released = RuntimeLockRelease{global_guard};
             auto const stripe_released = ScopedStripeReacquire{stripe_guard};
-            std::ignore = stripe_released;
             auto const backfill = backfill_missing_pdu_references(runtime, room_id, envelope, *room_policy);
             if (backfill.locally_denied)
             {

@@ -1066,8 +1066,8 @@ per remote server, each budgeted `remote_timeout_seconds`) and remote media
 download/thumbnail fetches. One unreachable peer was enough to freeze local
 reads for 20–44 seconds at a time.
 
-The entry points now publish their guard through
-`homeserver::RequestLockScope`, and each blocking network call runs inside a
+The entry points now publish the mutex their guard locks through
+`homeserver::RequestLockScope` (never the guard's own address, ADR-0529), and each blocking network call runs inside a
 `homeserver::RuntimeLockRelease` scope that releases the mutex for the round trip
 and re-acquires it on exit — including when the call throws. Both types live in
 [`include/merovingian/homeserver/request_lock.hpp`](../include/merovingian/homeserver/request_lock.hpp).

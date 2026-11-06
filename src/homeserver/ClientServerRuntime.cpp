@@ -7154,9 +7154,9 @@ namespace
         auto const room_access = ssreq.room_subscriptions.empty() && !extensions_need_room_access
                                      ? std::map<std::string, sync::RoomAccess, std::less<>>{}
                                      : sync::room_access_index(store, user);
-        for (auto const& [room_id, sub_unused] : ssreq.room_subscriptions)
+        for (auto const& subscription : ssreq.room_subscriptions)
         {
-            std::ignore = sub_unused;
+            auto const& room_id = subscription.first;
             auto const found = room_access.find(room_id);
             switch (found == room_access.end() ? sync::RoomAccess::none : found->second)
             {
@@ -7410,10 +7410,9 @@ namespace
             }
 
             auto list_operations = std::size_t{0U};
-            for (auto const& [list_name, result] : list_results)
+            for (auto const& list_entry : list_results)
             {
-                std::ignore = list_name;
-                list_operations += result.ops.size();
+                list_operations += list_entry.second.ops.size();
             }
 
             log_diagnostic("sliding_sync.debug_response",

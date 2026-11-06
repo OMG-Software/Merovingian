@@ -12,7 +12,6 @@
 #include <algorithm>
 #include <functional>
 #include <memory>
-#include <tuple>
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
@@ -538,10 +537,9 @@ auto forward_extremities_for_new_event(database::PersistentStore const& store, s
     with_depth.resize(events::max_prev_events_per_event);
     auto result = std::vector<std::string>{};
     result.reserve(with_depth.size());
-    for (auto& [depth, id] : with_depth)
+    for (auto& entry : with_depth)
     {
-        std::ignore = depth;
-        result.push_back(std::move(id));
+        result.push_back(std::move(entry.second));
     }
     return result;
 }
@@ -593,9 +591,9 @@ auto basis_for_new_event(database::PersistentStore const& store, std::string_vie
         std::ranges::sort(newest_first, std::greater{}, [](auto const& entry) {
             return entry.first;
         });
-        for (auto const& [stream_ordering, candidate] : newest_first)
+        for (auto const& entry : newest_first)
         {
-            std::ignore = stream_ordering;
+            auto const& candidate = entry.second;
             auto alone = compute_state_before(store, room_id, policy, {candidate}, limits);
             if (!alone.ok)
             {

@@ -161,10 +161,13 @@ SCENARIO("State-group lookups agree with a scan of the rows across writes and re
         auto groups = db::StateGroupTable{};
         auto entries = db::StateGroupEntryTable{};
         auto mappings = db::EventStateGroupTable{};
+        // Many rooms, so an index that quietly covers only part of the data shows up as a mismatch with the scan.
         fill_tables(groups, entries, mappings);
 
         WHEN("they have only been written to")
         {
+            // The scan over the rows is the reference answer: the indexes are only an optimisation and must never
+            // differ from it.
             THEN("every indexed lookup equals a scan of the rows")
             {
                 REQUIRE(groups.size() == rooms_in_store * groups_per_room);
@@ -180,6 +183,7 @@ SCENARIO("State-group lookups agree with a scan of the rows across writes and re
             }
         }
 
+        // A group ID is unique state: a duplicate insert must not replace the row the existing state points at.
         WHEN("a second row with a held group ID is inserted")
         {
             auto const added = groups.insert({group_id_of(3U, 1U), "!intruder:local.example", std::nullopt, 0U});
@@ -192,6 +196,7 @@ SCENARIO("State-group lookups agree with a scan of the rows across writes and re
             }
         }
 
+        // Re-assigning moves the event's one mapping; it never leaves a stale row or adds one.
         WHEN("an event is assigned a different group")
         {
             mappings.assign(event_id_of(5U, 2U), group_id_of(5U, 0U));
@@ -209,6 +214,8 @@ SCENARIO("State-group lookups agree with a scan of the rows across writes and re
             auto const room_groups = [](db::PersistentStateGroup const& group) {
                 return group.room_id == room_id_of(7U);
             };
+            // Collect the removed group IDs first, because the entry and mapping rows are removed by group ID, not by
+            // room.
             auto removed_ids = std::vector<std::string>{};
             for (auto const& group : groups)
             {
@@ -226,6 +233,7 @@ SCENARIO("State-group lookups agree with a scan of the rows across writes and re
                 return std::ranges::find(removed_ids, mapping.state_group_id) != removed_ids.end();
             }) == groups_per_room);
 
+            // Removal renumbers rows underneath the indexes; every other room must still match its scan.
             THEN("that room finds nothing and every other room still equals a scan")
             {
                 REQUIRE(groups.find(group_id_of(7U, 0U)) == groups.end());
@@ -251,6 +259,7 @@ SCENARIO("State-group lookups agree with a scan of the rows across writes and re
                 }
             }
 
+            // Writing the same keys again proves removal left no stale index entry behind.
             AND_WHEN("the removed rows are written again")
             {
                 for (auto index = std::size_t{0U}; index < groups_per_room; ++index)
@@ -270,6 +279,7 @@ SCENARIO("State-group lookups agree with a scan of the rows across writes and re
             }
         }
 
+        // A copy owns its index: clearing the original must not empty or corrupt it.
         WHEN("the tables are copied and the original is cleared")
         {
             auto const groups_copy = groups;

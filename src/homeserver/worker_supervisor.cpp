@@ -172,13 +172,13 @@ auto WorkerSupervisor::set_request_handler(ipc::IpcChannel::RequestHandler handl
         set_channel_request_handler({});
         return;
     }
-    set_channel_request_handler([handler = std::move(handler)](
-                                    std::shared_ptr<ipc::IpcChannel> const& // SHARED_PTR: reviewed - dispatch lifetime.
-                                        receiving_channel,
-                                    std::uint64_t id, std::string json) {
-        std::ignore = receiving_channel;
-        handler(id, std::move(json));
-    });
+    set_channel_request_handler(
+        [handler = std::move(handler)](
+            [[maybe_unused]] std::shared_ptr<ipc::IpcChannel> const& // SHARED_PTR: reviewed - dispatch lifetime.
+                receiving_channel,
+            std::uint64_t id, std::string json) {
+            handler(id, std::move(json));
+        });
 }
 
 auto WorkerSupervisor::start() -> void

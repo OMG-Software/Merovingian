@@ -3738,6 +3738,8 @@ SCENARIO("GET /timestamp_to_event/{roomId} answers an authenticated server throu
             std::string origin{};
             int calls{0};
         };
+        // The provider records what it was asked, so each THEN can prove the route decoded
+        // the room ID, parsed ts/dir and passed on the authenticated origin.
         auto seen = std::make_shared<Seen>();
         runtime.timestamp_to_event_query_provider =
             [seen](std::string_view requested_room, std::int64_t ts, merovingian::database::TimeDirection direction,
@@ -3776,6 +3778,7 @@ SCENARIO("GET /timestamp_to_event/{roomId} answers an authenticated server throu
             }
         }
 
+        // Parameter order in the query string must not matter.
         WHEN("dir=b is asked for")
         {
             auto const response = get("/_matrix/federation/v1/timestamp_to_event/!room:example.org?dir=b&ts=7");
@@ -3788,6 +3791,7 @@ SCENARIO("GET /timestamp_to_event/{roomId} answers an authenticated server throu
             }
         }
 
+        // Missing or malformed ts/dir are rejected as 400 before the provider is consulted.
         WHEN("ts or dir is missing or not valid")
         {
             auto const no_ts = get("/_matrix/federation/v1/timestamp_to_event/!room:example.org?dir=f");
@@ -3805,6 +3809,7 @@ SCENARIO("GET /timestamp_to_event/{roomId} answers an authenticated server throu
             }
         }
 
+        // Not-found and forbidden are both mapped by the route; this block exercises the not-found side.
         WHEN("the provider finds no event, or refuses the origin")
         {
             runtime.timestamp_to_event_query_provider =
@@ -3856,6 +3861,7 @@ SCENARIO("GET /timestamp_to_event/{roomId} answers an authenticated server throu
         }
     }
 
+    // With no provider wired the route must say 501 rather than invent an answer.
     GIVEN("a runtime with no timestamp_to_event_query_provider installed")
     {
         auto runtime = merovingian::federation::make_federation_runtime_state(runtime_config());

@@ -223,6 +223,8 @@ SCENARIO("parse_worker_args rejects invalid or incomplete values", "[federation-
 
 SCENARIO("parse_worker_args validates --ipc-key-fd", "[federation-worker][args][worker_key_fd]")
 {
+    // The key fd carries the IPC secret to the worker, so a malformed flag must stop start-up
+    // rather than fall back to some default descriptor.
     GIVEN("--ipc-key-fd without a value")
     {
         WHEN("it is parsed")
@@ -243,6 +245,7 @@ SCENARIO("parse_worker_args validates --ipc-key-fd", "[federation-worker][args][
         }
     }
 
+    // Only decimal digits are accepted for a descriptor number.
     GIVEN("a non-numeric --ipc-key-fd")
     {
         WHEN("it is parsed")
@@ -264,6 +267,7 @@ SCENARIO("parse_worker_args validates --ipc-key-fd", "[federation-worker][args][
         }
     }
 
+    // Negative numbers are refused as non-numeric, not parsed and range-checked.
     GIVEN("a negative --ipc-key-fd")
     {
         WHEN("it is parsed")
@@ -285,6 +289,7 @@ SCENARIO("parse_worker_args validates --ipc-key-fd", "[federation-worker][args][
         }
     }
 
+    // A number too large for a descriptor is an error, not a silent truncation.
     GIVEN("an out-of-range --ipc-key-fd")
     {
         WHEN("it is parsed")
@@ -306,6 +311,37 @@ SCENARIO("parse_worker_args validates --ipc-key-fd", "[federation-worker][args][
         }
     }
 
+    // Digits past the cap are still validated but no longer accumulated, so a string far longer than an `int` holds
+    // is refused as out of range without signed overflow (UBSan reports it if accumulation runs on).
+    GIVEN("a digit string longer than any int for each descriptor option")
+    {
+        auto const huge = std::string(64U, '9');
+        for (auto const* const option : {"--ipc-fd", "--ipc-key-fd", "--db-uri-fd"})
+        {
+            WHEN(std::string{"it is passed to "} + option)
+            {
+                auto const result = parse({
+                    "merovingian-fed-worker",
+                    "--config",
+                    "/etc/merovingian.toml",
+                    "--ipc-fd",
+                    "7",
+                    "--ipc-key-fd",
+                    "8",
+                    option,
+                    huge.c_str(),
+                });
+
+                THEN("it is refused as out of range")
+                {
+                    REQUIRE(result.error.has_value());
+                    REQUIRE(result.error->find("out of range") != std::string::npos);
+                }
+            }
+        }
+    }
+
+    // The key must arrive on its own descriptor, never the IPC socket itself.
     GIVEN("an --ipc-key-fd equal to --ipc-fd")
     {
         WHEN("it is parsed")
@@ -327,6 +363,7 @@ SCENARIO("parse_worker_args validates --ipc-key-fd", "[federation-worker][args][
         }
     }
 
+    // The standard streams are reserved for stdio, so each is refused as a key descriptor.
     GIVEN("an --ipc-key-fd of 0, 1, or 2")
     {
         WHEN("stdin (0) is given")

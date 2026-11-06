@@ -967,8 +967,7 @@ SCENARIO("ingest_pdu_event backfills a missing prev_event from the sending serve
             auto server_thread = std::thread{[&]() {
                 run_body_aware_tls_server(acceptor, tls_context, http_response, &captured_request);
             }};
-            auto const join_server = merovingian::tests::tls_mock::ScopedThreadJoin{server_thread};
-            std::ignore = join_server;
+            [[maybe_unused]] auto const join_server = merovingian::tests::tls_mock::ScopedThreadJoin{server_thread};
 
             WHEN("the PDU is ingested")
             {
@@ -1086,12 +1085,16 @@ SCENARIO("A backfilled event written by a server under an admin's deny rule is n
 SCENARIO("Backfill verification obeys shared key admission and retries local denial",
          "[pdu_ingestion][backfill][fed10][fed10-backfill-admission]")
 {
+    // Main-process key admission is a shared, bounded resource; backfill verification must
+    // respect it instead of resolving keys on its own.
     GIVEN("a signed missing predecessor returned over real loopback TLS")
     {
         WHEN("its verification key is cold or cached while main admission is exhausted")
         {
             THEN("cold work is deferred without persistence and cache-only work remains available")
             {
+                // Modes 0 and 1 start with a cold key cache and 2 and 3 with a warm one; modes 0 and 2
+                // start with key-resolution capacity exhausted and 1 and 3 with it free.
                 for (auto const mode : {0U, 1U, 2U, 3U})
                 {
                     CAPTURE(mode);
@@ -1112,6 +1115,8 @@ SCENARIO("Backfill verification obeys shared key admission and retries local den
                     runtime.federation.config.backfill.max_outbound_calls = 1U;
                     runtime.federation.config.key_resolution_per_ip_rate = {1U, 3600U};
                     runtime.federation.config.key_resolution_max_in_flight = 1U;
+                    // The per-IP bucket and the in-flight counter model admission that other work has already
+                    // consumed (capacity_full) or left free.
                     runtime.federation.key_resolution_buckets.push_back(
                         {"<unknown>", capacity_full ? 0U : 1U, std::chrono::steady_clock::now()});
                     runtime.federation.key_resolutions_in_flight = capacity_full ? 1U : 0U;
@@ -1130,6 +1135,7 @@ SCENARIO("Backfill verification obeys shared key admission and retries local den
                             return remote_runtime().signing_key;
                         return std::nullopt;
                     };
+                    // Mode 3 has a warm cache and no resolver at all: cached keys must never need admission.
                     if (mode == 3U)
                         runtime.federation.remote_key_resolver = {};
                     auto certificate = merovingian::tests::tls_mock::write_test_tls_certificate("localhost");
@@ -1148,14 +1154,16 @@ SCENARIO("Backfill verification obeys shared key admission and retries local den
                         auto thread = std::thread{[&]() {
                             run_body_aware_tls_server(acceptor, tls_context, response);
                         }};
-                        auto const joined = merovingian::tests::tls_mock::ScopedThreadJoin{thread};
-                        std::ignore = joined;
+                        [[maybe_unused]] auto const joined = merovingian::tests::tls_mock::ScopedThreadJoin{thread};
                         return merovingian::homeserver::ingest_pdu_event(runtime, pdu);
                     };
+                    // Record store sizes so a deferred ingestion can be shown to have persisted nothing.
                     auto const events_before = runtime.database.persistent_store.events.size();
                     auto const groups_before = runtime.database.persistent_store.state_groups.size();
                     auto const links_before = runtime.database.persistent_store.event_state_groups.size();
                     auto const result = perform();
+                    // The first attempt never reaches the raw key resolver: cached keys need none and cold keys
+                    // are refused before resolution.
                     CHECK(raw_calls == 0U);
                     CHECK(runtime.federation.key_resolutions_in_flight == (capacity_full ? 1U : 0U));
                     CHECK(runtime.federation.key_resolution_failures.empty());
@@ -1166,6 +1174,8 @@ SCENARIO("Backfill verification obeys shared key admission and retries local den
                                                                             predecessor.event_id)
                                   .has_value());
                     }
+                    // Cold key with admission exhausted: the PDU is reported main_overloaded and nothing is stored.
+                    // Once capacity returns, the same PDU is accepted on retry with exactly one raw key lookup.
                     else
                     {
                         CHECK(result.status == PduIngestionStatus::main_overloaded);
@@ -1289,8 +1299,7 @@ SCENARIO("A backfilled event passing its auth_events but failing state-before is
             auto server_thread = std::thread{[&]() {
                 run_body_aware_tls_server(acceptor, tls_context, http_response, nullptr);
             }};
-            auto const join_server = merovingian::tests::tls_mock::ScopedThreadJoin{server_thread};
-            std::ignore = join_server;
+            [[maybe_unused]] auto const join_server = merovingian::tests::tls_mock::ScopedThreadJoin{server_thread};
 
             WHEN("the follow-up PDU referencing the missing topic is ingested")
             {
@@ -1393,6 +1402,8 @@ auto seed_ban_of_bob(HomeserverRuntime& runtime, std::string const& room_id, std
 SCENARIO("An event fetched to fill a gap is checked against the room's current state",
          "[f16][pdu_ingestion][backfill][conformance]")
 {
+    // The fetched message is bob's, on a branch from before anything happened to him, so its own
+    // auth_events still show him as a member.
     GIVEN("a room whose member bob sends a message on a branch from before anything happened to him")
     {
         auto const path = unique_sqlite_path();
@@ -1432,20 +1443,24 @@ SCENARIO("An event fetched to fill a gap is checked against the room's current s
             }
             return remote_runtime();
         };
+        // The mock origin answers /get_missing_events with the fetched message, so ingesting the later
+        // PDU forces the gap fill over real loopback TLS.
         auto const http_response =
             merovingian::tests::tls_mock::json_http_response("200 OK", get_missing_events_response(fetched.json));
         auto server_thread = std::thread{[&]() {
             run_body_aware_tls_server(acceptor, tls_context, http_response, nullptr);
         }};
-        auto const join_server = merovingian::tests::tls_mock::ScopedThreadJoin{server_thread};
-        std::ignore = join_server;
+        [[maybe_unused]] auto const join_server = merovingian::tests::tls_mock::ScopedThreadJoin{server_thread};
 
         auto const& store = runtime.database.persistent_store;
+        // Reads the stored status of the fetched event, or "absent" if nothing was stored.
         auto const status_of_fetched = [&] {
             auto const stored = store.events.find_in_room(room_id, fetched.event_id);
             return stored != store.events.end() ? stored->status : std::string{"absent"};
         };
 
+        // A fetched event is re-checked against the room's current state, not only its own auth chain:
+        // a ban applied since then makes it soft failed, so no client is given it.
         WHEN("bob has been banned in the current state and a PDU forces the message to be fetched")
         {
             seed_ban_of_bob(runtime, room_id, member_bob_id);
@@ -1468,6 +1483,8 @@ SCENARIO("An event fetched to fill a gap is checked against the room's current s
             }
         }
 
+        // An outlier that gains a state group later gets the same current-state check, so being placed
+        // in history cannot launder it past the ban.
         WHEN("bob was banned and the message is already stored as an outlier with no state of its own")
         {
             seed_ban_of_bob(runtime, room_id, member_bob_id);
@@ -1492,6 +1509,8 @@ SCENARIO("An event fetched to fill a gap is checked against the room's current s
             }
         }
 
+        // Control case: without the ban the same fetch gives an ordinary outlier, so the soft failure above
+        // comes from the ban and not from the fetch path.
         WHEN("bob is still a member and a PDU forces the message to be fetched")
         {
             std::ignore = merovingian::homeserver::ingest_pdu_event(runtime, pdu);
@@ -1576,8 +1595,7 @@ SCENARIO("A backfilled event naming a non-state event in auth_events is stored r
             auto server_thread = std::thread{[&]() {
                 run_body_aware_tls_server(acceptor, tls_context, http_response, nullptr);
             }};
-            auto const join_server = merovingian::tests::tls_mock::ScopedThreadJoin{server_thread};
-            std::ignore = join_server;
+            [[maybe_unused]] auto const join_server = merovingian::tests::tls_mock::ScopedThreadJoin{server_thread};
 
             WHEN("the PDU citing the missing event is ingested")
             {
@@ -1606,6 +1624,8 @@ SCENARIO("A backfilled event naming a non-state event in auth_events is stored r
 SCENARIO("A backfilled state event passing auth_events and state-before is stored with its after-state",
          "[pdu_ingestion][backfill]")
 {
+    // A permissive genesis lets bob's backfilled topic event pass both its auth_events and the
+    // state-before check.
     GIVEN("a fresh runtime seeded with a permissive genesis")
     {
         auto const path = unique_sqlite_path();
@@ -1629,9 +1649,11 @@ SCENARIO("A backfilled state event passing auth_events and state-before is store
                                   std::move(topic_content), {pl_id}, {create_id, pl_id, member_bob_id}, 4, 10);
         auto const topic_id = topic_pdu.event_id;
 
+        // The follow-up cites the topic as its prev_event, so ingesting it must backfill the topic first.
         auto const followup_pdu =
             make_remote_message_pdu(room_id, {topic_id}, {create_id, pl_id, member_bob_id}, 5, 20);
 
+        // The mock origin serves the topic over real loopback TLS, so signature verification and storage run.
         AND_GIVEN("a mock sending server that returns the topic event on /get_missing_events")
         {
             auto certificate = merovingian::tests::tls_mock::write_test_tls_certificate("localhost");
@@ -1663,9 +1685,9 @@ SCENARIO("A backfilled state event passing auth_events and state-before is store
             auto server_thread = std::thread{[&]() {
                 run_body_aware_tls_server(acceptor, tls_context, http_response, nullptr);
             }};
-            auto const join_server = merovingian::tests::tls_mock::ScopedThreadJoin{server_thread};
-            std::ignore = join_server;
+            [[maybe_unused]] auto const join_server = merovingian::tests::tls_mock::ScopedThreadJoin{server_thread};
 
+            // Ingesting the follow-up triggers the backfill of the missing topic event.
             WHEN("the follow-up PDU referencing the missing topic is ingested")
             {
                 auto const result = merovingian::homeserver::ingest_pdu_event(runtime, followup_pdu);
@@ -1675,6 +1697,7 @@ SCENARIO("A backfilled state event passing auth_events and state-before is store
                     REQUIRE(result.status == PduIngestionStatus::accepted);
                 }
 
+                // A backfilled event that is not at the live tip is kept as an outlier, not a timeline event.
                 THEN("the backfilled topic is stored as an outlier")
                 {
                     auto const* event = [&]() -> merovingian::database::PersistentEvent const* {
@@ -1691,6 +1714,7 @@ SCENARIO("A backfilled state event passing auth_events and state-before is store
                     REQUIRE(event->status == "outlier");
                 }
 
+                // The after-state group must contain the topic, so later state resolution sees the change.
                 THEN("the outlier's after-state group includes the topic")
                 {
                     auto const group =
@@ -1795,8 +1819,7 @@ SCENARIO("Backfill stores a /get_missing_events child that the remote lists befo
             auto server_thread = std::thread{[&]() {
                 run_body_aware_dispatch_tls_server(acceptor, tls_context, responses, nullptr);
             }};
-            auto const join_server = merovingian::tests::tls_mock::ScopedThreadJoin{server_thread};
-            std::ignore = join_server;
+            [[maybe_unused]] auto const join_server = merovingian::tests::tls_mock::ScopedThreadJoin{server_thread};
 
             WHEN("a PDU building on the child is ingested")
             {
@@ -1883,8 +1906,7 @@ SCENARIO("Backfill drops an /event/{eventId} response that is not the requested 
             auto server_thread = std::thread{[&]() {
                 run_body_aware_dispatch_tls_server(acceptor, tls_context, responses, nullptr);
             }};
-            auto const join_server = merovingian::tests::tls_mock::ScopedThreadJoin{server_thread};
-            std::ignore = join_server;
+            [[maybe_unused]] auto const join_server = merovingian::tests::tls_mock::ScopedThreadJoin{server_thread};
 
             WHEN("a PDU naming the missing event is ingested")
             {
@@ -2000,8 +2022,7 @@ SCENARIO("ingest_pdu_event falls back to /state_ids when /get_missing_events can
             auto server_thread = std::thread{[&]() {
                 run_body_aware_dispatch_tls_server(acceptor, tls_context, path_responses, &captured_requests);
             }};
-            auto const join_server = merovingian::tests::tls_mock::ScopedThreadJoin{server_thread};
-            std::ignore = join_server;
+            [[maybe_unused]] auto const join_server = merovingian::tests::tls_mock::ScopedThreadJoin{server_thread};
 
             WHEN("the PDU is ingested")
             {
@@ -2142,8 +2163,7 @@ SCENARIO("ingest_pdu_event respects the shared total backfill call budget", "[pd
             auto server_thread = std::thread{[&]() {
                 run_body_aware_dispatch_tls_server(acceptor, tls_context, path_responses, &captured_requests);
             }};
-            auto const join_server = merovingian::tests::tls_mock::ScopedThreadJoin{server_thread};
-            std::ignore = join_server;
+            [[maybe_unused]] auto const join_server = merovingian::tests::tls_mock::ScopedThreadJoin{server_thread};
 
             WHEN("the PDU is ingested")
             {
@@ -2227,8 +2247,7 @@ SCENARIO("ingest_pdu_event rejects a /state_ids response just above the configur
             auto server_thread = std::thread{[&]() {
                 run_body_aware_dispatch_tls_server(acceptor, tls_context, path_responses, &captured_requests);
             }};
-            auto const join_server = merovingian::tests::tls_mock::ScopedThreadJoin{server_thread};
-            std::ignore = join_server;
+            [[maybe_unused]] auto const join_server = merovingian::tests::tls_mock::ScopedThreadJoin{server_thread};
 
             WHEN("the incoming PDU triggers fallback recovery")
             {
@@ -2260,6 +2279,7 @@ SCENARIO("ingest_pdu_event rejects a /state_ids response just above the configur
 SCENARIO("ingest_pdu_event rejects a /state_ids snapshot containing a forged event",
          "[pdu_ingestion][backfill][conformance]")
 {
+    // The genesis state group gives the snapshot builder a known-good baseline to compare against.
     GIVEN("a fresh runtime seeded with a room genesis state group")
     {
         auto const path = unique_sqlite_path();
@@ -2284,6 +2304,7 @@ SCENARIO("ingest_pdu_event rejects a /state_ids snapshot containing a forged eve
 
         auto const pdu = make_remote_message_pdu(room_id, {mid_event_id}, auth_event_ids, 6, 20);
 
+        // The origin is the only source of the /state_ids snapshot, so its answer is untrusted input.
         AND_GIVEN("a mock sending server that returns a /state_ids snapshot with a forged state event")
         {
             auto certificate = merovingian::tests::tls_mock::write_test_tls_certificate("localhost");
@@ -2310,6 +2331,8 @@ SCENARIO("ingest_pdu_event rejects a /state_ids snapshot containing a forged eve
                 return remote_runtime();
             };
 
+            // The forged power_levels event is signed with a seed that is not the remote server's key,
+            // so signature verification of the snapshot event must fail.
             auto const wrong_seed = std::string{"pdu-backfill-test-forged-wrong-seed"};
             auto forged_pl_content = canonicaljson::Object{};
             forged_pl_content.push_back(canonicaljson::make_member(
@@ -2338,18 +2361,21 @@ SCENARIO("ingest_pdu_event rejects a /state_ids snapshot containing a forged eve
             auto server_thread = std::thread{[&]() {
                 run_body_aware_dispatch_tls_server(acceptor, tls_context, path_responses, &captured_requests);
             }};
-            auto const join_server = merovingian::tests::tls_mock::ScopedThreadJoin{server_thread};
-            std::ignore = join_server;
+            [[maybe_unused]] auto const join_server = merovingian::tests::tls_mock::ScopedThreadJoin{server_thread};
 
+            // Ingesting the PDU makes the server fetch and check the poisoned snapshot.
             WHEN("the PDU is ingested")
             {
                 auto const result = merovingian::homeserver::ingest_pdu_event(runtime, pdu);
 
+                // A bad snapshot leaves the PDU retained for a retry rather than stored.
                 THEN("the PDU is retained for a retry (deferred), not stored")
                 {
                     REQUIRE(result.status == PduIngestionStatus::deferred);
                 }
 
+                // Nothing from the snapshot may reach the store: a forged power_levels event would otherwise
+                // become local room state.
                 THEN("the forged snapshot event is not stored")
                 {
                     auto const* event = [&]() -> merovingian::database::PersistentEvent const* {
@@ -2456,8 +2482,7 @@ SCENARIO("ingest_pdu_event rejects a /state_ids snapshot containing an event fro
             auto server_thread = std::thread{[&]() {
                 run_body_aware_dispatch_tls_server(acceptor, tls_context, path_responses, &captured_requests);
             }};
-            auto const join_server = merovingian::tests::tls_mock::ScopedThreadJoin{server_thread};
-            std::ignore = join_server;
+            [[maybe_unused]] auto const join_server = merovingian::tests::tls_mock::ScopedThreadJoin{server_thread};
 
             WHEN("the PDU is ingested")
             {
@@ -2586,8 +2611,7 @@ SCENARIO("ingest_pdu_event rejects a /state_ids snapshot containing a previously
             auto server_thread = std::thread{[&]() {
                 run_body_aware_dispatch_tls_server(acceptor, tls_context, path_responses, &captured_requests);
             }};
-            auto const join_server = merovingian::tests::tls_mock::ScopedThreadJoin{server_thread};
-            std::ignore = join_server;
+            [[maybe_unused]] auto const join_server = merovingian::tests::tls_mock::ScopedThreadJoin{server_thread};
 
             WHEN("the PDU is ingested")
             {
@@ -2720,8 +2744,7 @@ SCENARIO("ingest_pdu_event rejects a /state_ids snapshot with duplicate (type, s
             auto server_thread = std::thread{[&]() {
                 run_body_aware_dispatch_tls_server(acceptor, tls_context, path_responses, &captured_requests);
             }};
-            auto const join_server = merovingian::tests::tls_mock::ScopedThreadJoin{server_thread};
-            std::ignore = join_server;
+            [[maybe_unused]] auto const join_server = merovingian::tests::tls_mock::ScopedThreadJoin{server_thread};
 
             WHEN("the PDU is ingested")
             {
@@ -2755,6 +2778,7 @@ SCENARIO("ingest_pdu_event rejects a /state_ids snapshot with duplicate (type, s
 SCENARIO("ingest_pdu_event rejects a /state_ids snapshot containing a non-state event",
          "[pdu_ingestion][backfill][conformance]")
 {
+    // The outlier below is a message, not a state event, yet the snapshot will list it as state.
     GIVEN("a fresh runtime seeded with a room that has a non-state outlier")
     {
         auto const path = unique_sqlite_path();
@@ -2793,6 +2817,7 @@ SCENARIO("ingest_pdu_event rejects a /state_ids snapshot containing a non-state 
         REQUIRE(merovingian::database::set_event_state_group(runtime.database.persistent_store, outlier_message_id,
                                                              *genesis_group));
 
+        // old and mid are the missing history behind the PDU; the mock origin supplies mid by /event.
         auto const old_event = make_remote_message_pdu(room_id, {member_bob_id}, auth_event_ids, 5, 11);
         auto const old_event_id = old_event.event_id;
         auto const mid_event = make_remote_message_pdu(room_id, {old_event_id}, auth_event_ids, 6, 12);
@@ -2800,6 +2825,7 @@ SCENARIO("ingest_pdu_event rejects a /state_ids snapshot containing a non-state 
 
         auto const pdu = make_remote_message_pdu(room_id, {mid_event_id}, auth_event_ids, 7, 20);
 
+        // The malformed snapshot names the stored message among the room's state events.
         AND_GIVEN("a mock sending server that returns a /state_ids snapshot including the non-state event")
         {
             auto certificate = merovingian::tests::tls_mock::write_test_tls_certificate("localhost");
@@ -2843,18 +2869,20 @@ SCENARIO("ingest_pdu_event rejects a /state_ids snapshot containing a non-state 
             auto server_thread = std::thread{[&]() {
                 run_body_aware_dispatch_tls_server(acceptor, tls_context, path_responses, &captured_requests);
             }};
-            auto const join_server = merovingian::tests::tls_mock::ScopedThreadJoin{server_thread};
-            std::ignore = join_server;
+            [[maybe_unused]] auto const join_server = merovingian::tests::tls_mock::ScopedThreadJoin{server_thread};
 
+            // Ingesting the PDU makes the server fetch and check the malformed snapshot.
             WHEN("the PDU is ingested")
             {
                 auto const result = merovingian::homeserver::ingest_pdu_event(runtime, pdu);
 
+                // Only state events can appear in a state snapshot; a message entry marks the whole answer bad.
                 THEN("the PDU is retained for a retry (deferred), not stored because the snapshot is malformed")
                 {
                     REQUIRE(result.status == PduIngestionStatus::deferred);
                 }
 
+                // The event the snapshot would have placed must not be stored from it.
                 THEN("the backfilled event was not stored from the malformed snapshot")
                 {
                     auto const group =
@@ -2977,8 +3005,7 @@ SCENARIO("ingest_pdu_event verifies a /state_ids snapshot state event against it
             auto server_thread = std::thread{[&]() {
                 run_body_aware_dispatch_tls_server(acceptor, tls_context, path_responses, &captured_requests);
             }};
-            auto const join_server = merovingian::tests::tls_mock::ScopedThreadJoin{server_thread};
-            std::ignore = join_server;
+            [[maybe_unused]] auto const join_server = merovingian::tests::tls_mock::ScopedThreadJoin{server_thread};
 
             WHEN("the PDU is ingested")
             {
@@ -3120,8 +3147,7 @@ SCENARIO("ingest_pdu_event does not authorise a PDU against the auth_events of a
             auto server_thread = std::thread{[&]() {
                 run_body_aware_dispatch_tls_server(acceptor, tls_context, responses, &requests);
             }};
-            auto const join_server = merovingian::tests::tls_mock::ScopedThreadJoin{server_thread};
-            std::ignore = join_server;
+            [[maybe_unused]] auto const join_server = merovingian::tests::tls_mock::ScopedThreadJoin{server_thread};
             return merovingian::homeserver::ingest_pdu_event(runtime, pdu);
         };
         auto const count_requests = [](std::vector<std::string> const& requests, std::string_view prefix) {

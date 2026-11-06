@@ -675,6 +675,7 @@ SCENARIO("An id_access_token holding a line break is refused before any identity
 SCENARIO("POST /account/3pid/add binds a 3PID only after the identity server reports the session validated",
          "[homeserver][identity][integration][auth][3pid][auth-5]")
 {
+    // The binding must follow the identity server's verdict, never the client's claim that the address is theirs.
     GIVEN("a delegated session whose identity server says it is NOT validated")
     {
         auto const outcome = [] {
@@ -703,6 +704,7 @@ SCENARIO("POST /account/3pid/add binds a 3PID only after the identity server rep
         }
     }
 
+    // The success path: validated, same address, same medium.
     GIVEN("a delegated session the identity server reports validated for the same address")
     {
         auto const outcome = [] {
@@ -721,6 +723,7 @@ SCENARIO("POST /account/3pid/add binds a 3PID only after the identity server rep
         }
     }
 
+    // A validated session for another address must not bind the address this session asked for (account takeover).
     GIVEN("a delegated session the identity server reports validated for a DIFFERENT address")
     {
         auto const outcome = [] {
@@ -738,6 +741,7 @@ SCENARIO("POST /account/3pid/add binds a 3PID only after the identity server rep
         }
     }
 
+    // The medium is part of the identity: a validated msisdn is not a validated email.
     GIVEN("a delegated session the identity server reports validated for the right address but another medium")
     {
         auto const outcome = [] {
@@ -754,6 +758,7 @@ SCENARIO("POST /account/3pid/add binds a 3PID only after the identity server rep
         }
     }
 
+    // The same checks apply to a phone number session.
     GIVEN("a delegated msisdn session")
     {
         auto const matching = [] {
@@ -780,6 +785,7 @@ SCENARIO("POST /account/3pid/add binds a 3PID only after the identity server rep
         }
     }
 
+    // Every identity server failure must fail closed: an unverifiable session never becomes a binding.
     GIVEN("an identity server that errors, answers with garbage, does not know the session or is down")
     {
         auto const server_error = [] {
@@ -824,6 +830,7 @@ SCENARIO("POST /account/3pid/add binds a 3PID only after the identity server rep
 SCENARIO("POST /account/3pid/bind and the legacy POST /account/3pid bind only a session the identity server validated",
          "[homeserver][identity][integration][auth][3pid][auth-5]")
 {
+    // Both routes (the v3 bind and the legacy one) share the validation gate: the legacy route must not be a bypass.
     GIVEN("each bind route and an identity server that says the session is NOT validated")
     {
         auto const bind = [] {
@@ -839,6 +846,7 @@ SCENARIO("POST /account/3pid/bind and the legacy POST /account/3pid bind only a 
             return drive(params);
         }();
 
+        // The identity server must never be asked to bind a session it has not validated.
         THEN("both are refused with M_SESSION_NOT_VALIDATED, the identity server is never asked to bind, and "
              "nothing is bound locally")
         {
@@ -852,6 +860,7 @@ SCENARIO("POST /account/3pid/bind and the legacy POST /account/3pid bind only a 
         }
     }
 
+    // The success path: one bind at the identity server, one local record, and the session consumed.
     GIVEN("each bind route and an identity server that says the session is validated for the same address")
     {
         auto const bind = [] {
@@ -880,6 +889,7 @@ SCENARIO("POST /account/3pid/bind and the legacy POST /account/3pid bind only a 
         }
     }
 
+    // A session validated for another address must not bind this one.
     GIVEN("each bind route and an identity server that validated a DIFFERENT address")
     {
         auto const bind = [] {
@@ -906,6 +916,7 @@ SCENARIO("POST /account/3pid/bind and the legacy POST /account/3pid bind only a 
         }
     }
 
+    // The bind target is client-chosen, so it must be on the trusted list before any request or record is made.
     GIVEN("a validated session but a bind to an identity server this server does not trust")
     {
         auto const bind = [] {

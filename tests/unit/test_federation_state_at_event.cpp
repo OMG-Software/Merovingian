@@ -342,6 +342,7 @@ SCENARIO("The state before an event with several prev_events is the resolution o
 SCENARIO("An event whose state this server never recorded is answered 404 and never walked",
          "[federation][events][state][state-at-event][security]")
 {
+    // An outlier has no recorded state; serving state for it, or for a child, would hand out a guess dressed as a fact.
     GIVEN("a room holding an outlier whose prev_event this server lacks, and a message that cites the outlier")
     {
         auto store = room_with_creator();
@@ -366,6 +367,7 @@ SCENARIO("An event whose state this server never recorded is answered 404 and ne
         }
     }
 
+    // Missing recorded state is never rebuilt by walking the event graph: the answer fails closed.
     GIVEN("a room where a state group on the chain of a prev_event is missing")
     {
         auto store = room_with_creator();
@@ -388,6 +390,8 @@ SCENARIO("An event whose state this server never recorded is answered 404 and ne
         }
     }
 
+    // The group of a state event includes the event itself, so the prev_event's intact group is not an acceptable
+    // substitute.
     GIVEN("a state event whose own recorded group is missing, though the group of its prev_event is intact")
     {
         auto store = room_with_creator();
@@ -413,6 +417,7 @@ SCENARIO("An event whose state this server never recorded is answered 404 and ne
         }
     }
 
+    // A recorded state with a hole (a missing event) or a rejected event must not be served as the room's state.
     GIVEN("a recorded state that names an event the store lacks, or a rejected one")
     {
         auto store = room_with_creator();
@@ -427,6 +432,7 @@ SCENARIO("An event whose state this server never recorded is answered 404 and ne
         });
         REQUIRE(ghost_group.has_value());
         REQUIRE(rejected_group.has_value());
+        // The two bad groups are attached to messages, whose state before them is their own recorded group.
         // Two messages whose recorded state is the bad group (a message's state before it is its own).
         store.events.push_back(make_event(message_event("$on_ghost", {"$join"}, 5U)));
         REQUIRE(db::set_event_state_group(store, "$on_ghost", *ghost_group));

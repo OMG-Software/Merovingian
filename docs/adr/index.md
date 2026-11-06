@@ -498,3 +498,4 @@
 * [0526 - The correlation slot holds the context by value](0526-the-correlation-slot-holds-the-context-by-value.md)
 * [0527 - CodeQL drops every result on vendored and build directories](0527-codeql-drops-every-result-on-vendored-and-build-directories.md)
 * [0528 - CodeQL drops path injection sourced only from command-line arguments](0528-codeql-drops-path-injection-sourced-only-from-command-line-arguments.md)
+* [0529 - Thread scopes publish values, not their own addresses](0529-thread-scopes-publish-values-not-their-own-addresses.md)

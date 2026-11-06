@@ -304,6 +304,7 @@ SCENARIO("PDU sink is invoked when a valid inbound federation transaction is acc
         auto const token = std::string{"callback-token"};
         merovingian::federation::upsert_remote(runtime, remote_for(origin, key_id, token));
 
+        // The sink records its call and the room it was given, so the test proves the parsed envelope reached it.
         auto sink_invoked = std::make_shared<bool>(false);
         auto sink_room_id = std::make_shared<std::string>();
         runtime.pdu_sink = [sink_invoked, sink_room_id](merovingian::federation::InboundPduEnvelope const& envelope)
@@ -313,6 +314,8 @@ SCENARIO("PDU sink is invoked when a valid inbound federation transaction is acc
             return {merovingian::federation::PduIngestionStatus::accepted, {}};
         };
 
+        // A genuinely signed request, so the transaction passes authentication and only the sink decides the PDU's
+        // fate.
         auto const json_pdu = signed_json_pdu(origin, key_id, token);
         auto request = merovingian::federation::SignedFederationRequest{};
         request.method = "PUT";
@@ -331,6 +334,8 @@ SCENARIO("PDU sink is invoked when a valid inbound federation transaction is acc
         {
             auto const response = merovingian::federation::handle_inbound_federation_request(runtime, request);
 
+            // Spec: the transaction response is 200 whenever the transaction itself is well formed; per-PDU results
+            // ride in the body.
             THEN("the pdu_sink callback is invoked with the parsed envelope and the transaction is accepted")
             {
                 REQUIRE(response.status == 200U);
@@ -350,6 +355,7 @@ SCENARIO("PDU sink is invoked when a valid inbound federation transaction is acc
         auto const token = std::string{"conflict-token"};
         merovingian::federation::upsert_remote(runtime, remote_for(origin, key_id, token));
 
+        // This sink returns the legacy conflict status, which the per-PDU switch must treat as a rejection.
         auto conflict_seen = std::make_shared<bool>(false);
         runtime.pdu_sink =
             [conflict_seen](
@@ -380,6 +386,7 @@ SCENARIO("PDU sink is invoked when a valid inbound federation transaction is acc
             {
                 REQUIRE(response.status == 200U);
                 REQUIRE(*conflict_seen);
+                // The rejection must leave an audit event, so an operator can see a PDU was refused.
                 auto const has_rejected_audit = [&runtime] {
                     for (auto const& ev : runtime.audit_events)
                     {
@@ -2109,13 +2116,12 @@ SCENARIO("An inbound threaded receipt keeps its thread_id and a malformed one is
 
         WHEN("the thread_id is longer than an event ID can be")
         {
-            auto const response = merovingian::homeserver::handle_federation_http_request(
+            std::ignore = merovingian::homeserver::handle_federation_http_request(
                 *runtime, edu_request(origin, key_id, "txn-receipt-long-thread", "m.receipt",
                                       receipt_with(R"({"ts":2,"thread_id":"$)" + std::string(300U, 'a') + R"("})")));
 
             THEN("no receipt is stored")
             {
-                std::ignore = response;
                 REQUIRE(runtime->database.persistent_store.receipts.empty());
             }
         }
@@ -2192,9 +2198,9 @@ SCENARIO("PDU sink overload is returned to the federation peer as a retryable 5x
         merovingian::federation::upsert_remote(runtime, remote_for(origin, key_id, token));
 
         auto sink_invoked = std::make_shared<bool>(false);
-        runtime.pdu_sink = [sink_invoked](merovingian::federation::InboundPduEnvelope const& envelope)
-            -> merovingian::federation::PduIngestionResult {
-            std::ignore = envelope;
+        runtime.pdu_sink =
+            [sink_invoked](
+                merovingian::federation::InboundPduEnvelope const&) -> merovingian::federation::PduIngestionResult {
             *sink_invoked = true;
             return {merovingian::federation::PduIngestionStatus::main_overloaded, "main at per-channel in-flight cap"};
         };

@@ -264,6 +264,7 @@ SCENARIO("Unrelated query values never become room operation path components",
         auto const path = merovingian::tests::temporary_directory() /
                           ("db6-query-path-" +
                            std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()) + ".sqlite");
+        // Each run owns its SQLite file, so the reopen checks below read only this scenario's data.
         auto const cleanup = NulHttpSqliteCleanup{path};
         database.sqlite_path = path.string();
         auto started = hs::start_client_server(merovingian::config::Config{
@@ -279,9 +280,12 @@ SCENARIO("Unrelated query values never become room operation path components",
         REQUIRE(owner.ok);
         auto const session = hs::login_local_user_by_id(runtime.homeserver, owner.value, "DB6");
         REQUIRE(session.ok);
+        // A real owner and room: every request below is valid, so a failure can only come from the query text.
         auto const room = hs::create_room(runtime.homeserver, session.value);
         REQUIRE(room.ok);
         auto const prefix = "/_matrix/client/v3/rooms/" + room.value;
+        // dispatch() fails on any escaped exception and on any status but 200: a query value must never reach a path
+        // parser.
         auto const dispatch = [&](std::string method, std::string target, std::string body) {
             auto response = std::optional<hs::LocalHttpResponse>{};
             auto escaped = false;
@@ -305,6 +309,7 @@ SCENARIO("Unrelated query values never become room operation path components",
             hs::send_event(runtime.homeserver, session.value, room.value,
                            R"({"type":"org.example.db6","state_key":"read","content":{"value":"read-control"}})");
         REQUIRE(seed.ok);
+        // The control read, taken before any query is added, is the body every later read must still equal.
         auto const read_control = dispatch("GET", prefix + "/state/org.example.db6/read", {});
         REQUIRE(read_control.has_value());
         REQUIRE(read_control->status == 200U);
@@ -313,6 +318,7 @@ SCENARIO("Unrelated query values never become room operation path components",
             THEN("IDs, transaction scope, state keys, report targets and typing subjects remain the path values")
             {
                 auto index = 0U;
+                // Cover no query, an ordinary one, an encoded NUL, an encoded percent and a literal NUL byte.
                 for (auto const& query : {
                          std::string{},
                          std::string{"?unused=ordinary"},
@@ -328,6 +334,8 @@ SCENARIO("Unrelated query values never become room operation path components",
                         dispatch("PUT", message_path + query, R"({"msgtype":"m.text","body":"query-control"})");
                     if (sent.has_value() && sent->status == 200U)
                     {
+                        // A transaction is scoped by its path ID: the stored record must exist and a replay without the
+                        // query must return the same body.
                         auto const cached =
                             db::find_client_txn_event_id(runtime.homeserver.database.persistent_store, owner.value,
                                                          "DB6", room.value, "m.room.message", txn);
@@ -341,6 +349,7 @@ SCENARIO("Unrelated query values never become room operation path components",
                         }
                         CHECK(runtime.homeserver.database.persistent_store.events.size() == count);
                     }
+                    // State keys come from the path alone: the written key must be durable after reopening SQLite.
                     auto const state_key = "write-" + suffix;
                     auto const state_path = prefix + "/state/org.example.db6/" + state_key;
                     auto const content = "{\"value\":" + suffix + "}";
@@ -364,6 +373,7 @@ SCENARIO("Unrelated query values never become room operation path components",
                     {
                         CHECK((read->body == read_control->body));
                     }
+                    // A fresh event per case gives report and redact a target that no earlier case touched.
                     auto const event = hs::send_event(
                         runtime.homeserver, session.value, room.value,
                         R"({"type":"m.room.message","content":{"msgtype":"m.text","body":"report-and-redact"}})");
@@ -392,6 +402,7 @@ SCENARIO("Unrelated query values never become room operation path components",
                             CHECK((replay->body == redacted->body));
                         }
                     }
+                    // The typing subject is the path user ID, never a value carried by the query.
                     auto const typing_path = prefix + "/typing/" + owner.value;
                     auto const typing = dispatch("PUT", typing_path + query, R"({"typing":true,"timeout":30000})");
                     if (typing.has_value() && typing->status == 200U)
@@ -424,6 +435,7 @@ SCENARIO("To-device, user metadata and knock path identities ignore unrelated qu
         auto const path = merovingian::tests::temporary_directory() /
                           ("db6-extra-query-" +
                            std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()) + ".sqlite");
+        // Each run owns its SQLite file, so the reopen checks below read only this scenario's data.
         auto const cleanup = NulHttpSqliteCleanup{path};
         database.sqlite_path = path.string();
         auto started = hs::start_client_server(merovingian::config::Config{
@@ -439,6 +451,7 @@ SCENARIO("To-device, user metadata and knock path identities ignore unrelated qu
         REQUIRE(owner.ok);
         auto const session = hs::login_local_user_by_id(runtime.homeserver, owner.value, "DB6");
         REQUIRE(session.ok);
+        // A second user is the knocker, so the knock is a cross-user action on the owner's room.
         auto const visitor = hs::register_local_user(
             runtime.homeserver, "db6_knocker",
             std::string(16U, 'r') + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()) +
@@ -447,6 +460,8 @@ SCENARIO("To-device, user metadata and knock path identities ignore unrelated qu
         REQUIRE(visitor.ok);
         auto const visitor_session = hs::login_local_user_by_id(runtime.homeserver, visitor.value, "DB6");
         REQUIRE(visitor_session.ok);
+        // request() fails on any escaped exception and on any status but 200: a query value must never reach a path
+        // parser.
         auto const request = [&](hs::LocalHttpRequest const& req) {
             auto response = std::optional<hs::LocalHttpResponse>{};
             auto escaped = false;
@@ -472,6 +487,7 @@ SCENARIO("To-device, user metadata and knock path identities ignore unrelated qu
             THEN("original transaction IDs and metadata keys are durable and the intended room receives the knock")
             {
                 auto index = 0U;
+                // Cover no query, an ordinary one, an encoded NUL, an encoded percent and a literal NUL byte.
                 for (auto const& query : {
                          std::string{},
                          std::string{"?unused=ordinary"},
@@ -484,6 +500,8 @@ SCENARIO("To-device, user metadata and knock path identities ignore unrelated qu
                     auto const txn = "device-" + suffix;
                     auto const device_path = "/_matrix/client/v3/sendToDevice/org.example.db6/" + txn;
                     auto const messages = "{\"messages\":{\"" + owner.value + "\":{\"*\":{\"value\":" + suffix + "}}}}";
+                    // To-device transactions are scoped by the path ID: the replay without the query must queue nothing
+                    // new.
                     auto const queued_before = runtime.homeserver.database.persistent_store.to_device_messages.size();
                     auto const delivered = request({"PUT", device_path + query, session.value, messages});
                     if (delivered.has_value() && delivered->status == 200U)
@@ -498,6 +516,7 @@ SCENARIO("To-device, user metadata and knock path identities ignore unrelated qu
                         CHECK(replay.has_value());
                         CHECK(runtime.homeserver.database.persistent_store.to_device_messages.size() == queued_after);
                     }
+                    // Account data is keyed by the path type; the stored row must survive reopening SQLite.
                     auto const type = "org.example.db6." + suffix;
                     auto const account_path = user_path + "/account_data/" + type;
                     auto const content = "{\"value\":" + suffix + "}";
@@ -521,6 +540,7 @@ SCENARIO("To-device, user metadata and knock path identities ignore unrelated qu
                                    row.content_json == content;
                         }));
                     }
+                    // A fresh room per case, so each tag and knock targets a room no earlier case touched.
                     auto const room = hs::create_room(runtime.homeserver, session.value);
                     REQUIRE(room.ok);
                     auto const tags_path = user_path + "/rooms/" + room.value + "/tags";
@@ -546,6 +566,7 @@ SCENARIO("To-device, user metadata and knock path identities ignore unrelated qu
                             CHECK((after->body == "{\"tags\":{}}"));
                         }
                     }
+                    // Knocking needs a knock join rule, so the room is switched to it first.
                     auto const rule = hs::send_event(
                         runtime.homeserver, session.value, room.value,
                         R"({"type":"m.room.join_rules","state_key":"","content":{"join_rule":"knock"}})");
@@ -600,6 +621,8 @@ SCENARIO("Recognized join-server query parameters reject NUL without escaping ei
         REQUIRE(owner.ok);
         auto const session = merovingian::homeserver::login_local_user_by_id(runtime.homeserver, owner.value, "DB6");
         REQUIRE(session.ok);
+        // The owner is already in the room, so a join without a bad hint succeeds; only the hint can change the
+        // outcome.
         auto const room = merovingian::homeserver::create_room(runtime.homeserver, session.value);
         REQUIRE(room.ok);
         auto const prefix = "/_matrix/client/v3/join/" + room.value + "?";
@@ -608,6 +631,7 @@ SCENARIO("Recognized join-server query parameters reject NUL without escaping ei
         {
             THEN("it returns a controlled invalid-parameter response without event or state allocation")
             {
+                // Run the same request through both dispatchers, the client-server one and the local router.
                 for (auto const through_client : {true, false})
                 {
                     auto const route = through_client ? prefix : "/_matrix/client/v3/rooms/" + room.value + "/join?";
@@ -616,6 +640,7 @@ SCENARIO("Recognized join-server query parameters reject NUL without escaping ei
                                                               .response
                                                         : merovingian::homeserver::handle_local_http_request(
                                                               runtime.homeserver, {"POST", route, session.value, "{}"});
+                    // The control join proves the route works before any NUL is added.
                     REQUIRE(control.status == 200U);
                     for (auto const& parameter : {std::string{"via="}, std::string{"server_name="}})
                     {
@@ -626,6 +651,8 @@ SCENARIO("Recognized join-server query parameters reject NUL without escaping ei
                                  std::string{"raw\0host", 8U}
                         })
                         {
+                            // Snapshot the in-memory and durable stores first: a refused hint must allocate no event,
+                            // state or stream position.
                             auto const events_before = runtime.homeserver.database.persistent_store.events.size();
                             auto const state_before = runtime.homeserver.database.persistent_store.state.size();
                             auto const stream_before = runtime.homeserver.database.next_stream_ordering;
@@ -646,6 +673,8 @@ SCENARIO("Recognized join-server query parameters reject NUL without escaping ei
                                                : merovingian::homeserver::handle_local_http_request(runtime.homeserver,
                                                                                                     request);
                             }
+                            // An escaping invalid_argument would mean the NUL reached a parser unchecked instead of
+                            // being refused.
                             catch (std::invalid_argument const&)
                             {
                                 escaped = true;
@@ -654,6 +683,8 @@ SCENARIO("Recognized join-server query parameters reject NUL without escaping ei
                             CHECK(response.has_value());
                             if (response.has_value())
                             {
+                                // The spec's error for a bad parameter is 400 M_INVALID_PARAM, never a 500 or a silent
+                                // success.
                                 CHECK(response->status == 400U);
                                 CHECK(response->body.find("M_INVALID_PARAM") != std::string::npos);
                             }
@@ -662,11 +693,14 @@ SCENARIO("Recognized join-server query parameters reject NUL without escaping ei
                             CHECK(runtime.homeserver.database.next_stream_ordering == stream_before);
                             CHECK((nul_business_snapshot(runtime.homeserver.database.persistent_store) ==
                                    snapshot_before));
+                            // Reopen SQLite to prove nothing was written durably either.
                             auto reopened_after = merovingian::database::open_sqlite_persistent_store(path.string());
                             REQUIRE(reopened_after.ok);
                             CHECK((nul_business_snapshot(reopened_after.store) == durable_before));
                         }
                     }
+                    // Hints that are merely unusual (ordinary, a literal percent sequence, an unrelated key) must still
+                    // be accepted.
                     for (auto const& query : {std::string{"via=ordinary.example"},
                                               std::string{"via=percent%2500.example"}, std::string{"unused=%00"}})
                     {

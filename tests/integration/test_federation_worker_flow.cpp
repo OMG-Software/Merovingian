@@ -185,8 +185,6 @@ auto write_file(std::filesystem::path const& path, std::string_view content) -> 
 
 [[nodiscard]] auto make_federation_worker_config(std::filesystem::path const& tmp) -> Config
 {
-    std::ignore = tmp; // the worker processes use an in-memory SQLite store
-
     auto server = ServerConfig{};
     auto database = DatabaseConfig{};
     database.backend = DatabaseBackend::sqlite;
@@ -1161,8 +1159,7 @@ SCENARIO("main key-admission overload survives real worker socket HTTP and uncha
                     }
                     runtime.federation_proxy = std::make_unique<FederationProxy>(
                         config.federation_worker(), runtime, std::string{worker_binary_path()}, config_path.string());
-                    auto const proxy_lifetime = Fed10ProxyLifetime{runtime};
-                    std::ignore = proxy_lifetime;
+                    [[maybe_unused]] auto const proxy_lifetime = Fed10ProxyLifetime{runtime};
                     REQUIRE(wait_for_healthy(*runtime.federation_proxy, std::chrono::seconds{15}));
                     auto listener = Fed10SocketListener{client};
                     {
@@ -1340,8 +1337,7 @@ SCENARIO("A retried transaction is not processed again when its room moves betwe
         };
         runtime.federation_proxy = std::make_unique<FederationProxy>(
             config.federation_worker(), runtime, std::string{worker_binary_path()}, config_path.string());
-        auto const proxy_lifetime = Fed10ProxyLifetime{runtime};
-        std::ignore = proxy_lifetime;
+        [[maybe_unused]] auto const proxy_lifetime = Fed10ProxyLifetime{runtime};
         REQUIRE(wait_for_healthy(*runtime.federation_proxy, std::chrono::seconds{15}));
         auto listener = Fed10SocketListener{client};
         auto& proxy = *runtime.federation_proxy;
@@ -4408,6 +4404,7 @@ SCENARIO("main refuses a signed request from an origin an admin denied after the
         homeserver::wire_federation_callbacks(runtime);
         auto const room_id = std::string{"!policy-authority:"} + local_server;
         fed10_persist_remote_room(runtime, room_id);
+        // The relay is a remote origin with a joined member, so its transaction passes every check except the policy.
         auto const relay_server = std::string{"203.0.113.22"};
         auto const relay_member = std::string{"@relay:"} + relay_server;
         REQUIRE(database::store_membership(runtime.database.persistent_store, {room_id, relay_member, "join"}) ==
@@ -4429,6 +4426,7 @@ SCENARIO("main refuses a signed request from an origin an admin denied after the
         auto const event_id = envelope->event_id;
         auto const body = std::string{"{\"origin\":\""} + relay_server + "\",\"origin_server_ts\":50,\"pdus\":[" +
                           signed_pdu + "],\"edus\":[]}";
+        // Build a genuinely X-Matrix signed request, so a refusal can only come from the policy, not the signature.
         auto const target = std::string{"/_matrix/federation/v1/send/policy-authority"};
         auto call = federation::OutboundCall{};
         call.transaction = federation::make_outbound_transaction(local_server, "PUT", target, relay_server, body);
@@ -4442,12 +4440,12 @@ SCENARIO("main refuses a signed request from an origin an admin denied after the
         auto const wire = "PUT " + target + " HTTP/1.1\r\nHost: localhost\r\nAuthorization: " + authorization->value +
                           "\r\nContent-Type: application/json\r\nContent-Length: " + std::to_string(body.size()) +
                           "\r\nConnection: close\r\n\r\n" + body;
+        // Start the real worker before any rule exists; the proxy lifetime guard stops it when the scenario ends.
         runtime.federation.remotes = {relay};
         runtime.federation.remote_key_resolver = genuine_key_resolver();
         runtime.federation_proxy = std::make_unique<FederationProxy>(
             config.federation_worker(), runtime, std::string{worker_binary_path()}, config_path.string());
-        auto const proxy_lifetime = Fed10ProxyLifetime{runtime};
-        std::ignore = proxy_lifetime;
+        [[maybe_unused]] auto const proxy_lifetime = Fed10ProxyLifetime{runtime};
         REQUIRE(wait_for_healthy(*runtime.federation_proxy, std::chrono::seconds{15}));
         auto listener = Fed10SocketListener{client};
 

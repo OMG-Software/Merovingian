@@ -168,10 +168,8 @@ SCENARIO("The worker child environment is allowlisted to PATH only", "[federatio
 {
     GIVEN("a parent environment containing a secret sentinel and a custom PATH")
     {
-        auto const secret = EnvGuard{"MEROVINGIAN_TEST_LEAK_SENTINEL", "super-secret-value"};
-        auto const path = EnvGuard{"PATH", "/custom/test/bin"};
-        std::ignore = secret;
-        std::ignore = path;
+        [[maybe_unused]] auto const secret = EnvGuard{"MEROVINGIAN_TEST_LEAK_SENTINEL", "super-secret-value"};
+        [[maybe_unused]] auto const path = EnvGuard{"PATH", "/custom/test/bin"};
 
         WHEN("the minimal worker env is built")
         {
@@ -206,9 +204,8 @@ SCENARIO("The worker child environment provides a default PATH when the parent h
 {
     GIVEN("a parent environment with PATH unset")
     {
-        auto const path = EnvGuard{"PATH", ""};
+        [[maybe_unused]] auto const path = EnvGuard{"PATH", ""};
         ::unsetenv("PATH");
-        std::ignore = path;
 
         WHEN("the minimal worker env is built")
         {

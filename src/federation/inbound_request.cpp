@@ -2298,10 +2298,10 @@ namespace
 
     [[nodiscard]] auto dispatch_non_transaction_endpoint(FederationRuntimeState& runtime,
                                                          SignedFederationRequest const& request,
-                                                         FederationRoute const& route, FederationRemoteRuntime& remote)
+                                                         FederationRoute const& route,
+                                                         [[maybe_unused]] FederationRemoteRuntime& remote)
         -> FederationResponse
     {
-        std::ignore = remote; // remote trust accounting is handled by the caller.
         switch (route.endpoint)
         {
         case FederationEndpoint::make_join:
@@ -3121,12 +3121,11 @@ auto verify_join_authorising_server_signature(canonicaljson::Value const& event,
     return verify_join_authorising_server_signature(event, room_version, resolve_key, verifier, deadline);
 }
 
-auto authorize_federation_pdu(FederationPdu const& pdu, std::string_view expected_origin,
+auto authorize_federation_pdu(FederationPdu const& pdu, [[maybe_unused]] std::string_view expected_origin,
                               std::optional<FederationKeyRecord> const& key,
                               RemoteKeyResolver const& remote_key_resolver, crypto::Ed25519Provider& provider)
     -> FederationDecision
 {
-    std::ignore = expected_origin;
     // A RemoteKeyResolver reports no local admission denial, so a failed
     // lookup here is reported as unresolved.
     auto const resolve_key = [&remote_key_resolver](std::string_view server_name,

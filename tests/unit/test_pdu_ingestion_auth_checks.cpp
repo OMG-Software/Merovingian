@@ -251,8 +251,9 @@ struct Genesis final
     auto const event_id = room_id + ":" + event_id_suffix;
     auto content = canonicaljson::Object{};
     content.push_back(canonicaljson::make_member("membership", canonicaljson::Value{std::string{"join"}}));
-    auto const json = build_event_json(room_id, "m.room.member", user_id, user_id, std::move(content), {prev_event_id},
-                                       {genesis.create_id, genesis.pl_id, event_id}, depth, depth + 1);
+    [[maybe_unused]] auto const json =
+        build_event_json(room_id, "m.room.member", user_id, user_id, std::move(content), {prev_event_id},
+                         {genesis.create_id, genesis.pl_id, event_id}, depth, depth + 1);
     // auth_events for a self-join name the target's own (not-yet-existing)
     // member event, which the spec permits omitting ("if any"); use just
     // create+power_levels here since the target has no prior member event.
@@ -265,7 +266,6 @@ struct Genesis final
             return c;
         }(),
         {prev_event_id}, auth_ids, depth, depth + 1);
-    std::ignore = json;
     seed_accepted_event(runtime, room_id, event_id, "m.room.member", user_id, user_id, json2, {prev_event_id},
                         static_cast<std::uint64_t>(depth));
     auto& store = runtime.database.persistent_store;
@@ -740,6 +740,7 @@ SCENARIO("Auth events selection violations are rejected", "[pdu_ingestion][auth]
 {
     GIVEN("a seeded room")
     {
+        // A SQLite-backed runtime with a seeded room genesis, which the PDUs below refer to in their auth_events.
         auto const path = unique_sqlite_path();
         std::filesystem::remove(path);
         auto started = merovingian::homeserver::start_runtime(config_with_sqlite(path));
@@ -749,6 +750,8 @@ SCENARIO("Auth events selection violations are rejected", "[pdu_ingestion][auth]
         auto const room_id = std::string{"!selection:local.example.org"};
         auto const genesis = seed_room_genesis(started.runtime, room_id, "@admin:local.example.org");
 
+        // Spec: auth_events may only name create, power_levels, join_rules, third-party invites and the sender and
+        // target memberships.
         WHEN("a PDU names an auth_event of a disallowed type")
         {
             // m.room.topic is never a permitted auth_events selection.
@@ -778,6 +781,8 @@ SCENARIO("Auth events selection violations are rejected", "[pdu_ingestion][auth]
             auto const envelope = make_envelope(room_id, "$disallowed:local.example.org", "m.room.message",
                                                 std::nullopt, "@admin:local.example.org", {genesis.admin_member_id},
                                                 {genesis.create_id, genesis.pl_id, stray_topic_id}, 3, msg_json);
+            // The PDU goes through the full ingestion path, so the rejection comes from the auth_events selection
+            // check.
             auto const result = merovingian::homeserver::ingest_pdu_event(started.runtime, envelope);
 
             THEN("it is rejected")
@@ -786,6 +791,7 @@ SCENARIO("Auth events selection violations are rejected", "[pdu_ingestion][auth]
             }
         }
 
+        // Two entries with one (type, state_key) are ambiguous, so the PDU is rejected.
         WHEN("a PDU names two auth_events sharing the same (type, state_key)")
         {
             auto const second_pl_id = room_id + ":second-pl";
@@ -815,6 +821,7 @@ SCENARIO("Auth events selection violations are rejected", "[pdu_ingestion][auth]
             }
         }
 
+        // Auth events must come from the same room, or a PDU could borrow authority from another room.
         WHEN("a PDU names an auth_event that belongs to a different room")
         {
             auto const other_room_id = std::string{"!other:local.example.org"};

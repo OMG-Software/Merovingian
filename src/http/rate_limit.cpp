@@ -149,12 +149,12 @@ auto rate_limit_policy_is_valid(RateLimitPolicy const& policy) noexcept -> bool
     return policy.max_requests > 0U && policy.window_seconds > 0U && policy.window_seconds <= 3600U;
 }
 
-auto endpoint_default_rate_limit(std::string_view method, std::string_view target) noexcept -> RateLimitPolicy
+auto endpoint_default_rate_limit([[maybe_unused]] std::string_view method, std::string_view target) noexcept
+    -> RateLimitPolicy
 {
     // `method` is retained for source compatibility; classification is
     // method-agnostic (see rate_limit_tier_for). Built-in refinements win
     // over the tier default so keys/devices keep 120/min and search 20/min.
-    std::ignore = method;
     if (auto const refinement = builtin_per_ip_refinement(target); refinement.has_value())
     {
         return *refinement;

@@ -767,10 +767,11 @@ auto WorkerEventLoop::run() -> void
     // join genuinely succeeded. See docs/architecture.md, "Federation worker
     // room staleness".
     runtime.federation.membership_acceptor =
-        [channel_ptr](federation::FederationEndpoint endpoint, std::string_view room_id, std::string_view event_id,
+        [channel_ptr](federation::FederationEndpoint endpoint, [[maybe_unused]] std::string_view room_id,
+                      [[maybe_unused]] std::string_view event_id,
                       federation::InboundPduEnvelope const& envelope) -> federation::MembershipAcceptResult {
-        std::ignore = room_id;  // envelope.room_id carries the same value
-        std::ignore = event_id; // unused by the default implementation too
+        // room_id is redundant (envelope.room_id carries the same value) and event_id is
+        // unused by the default implementation too.
         auto const json_body = serialize_membership_ingest(endpoint, envelope);
         auto const reply = channel_ptr->send_request(json_body, std::chrono::seconds{60});
         if (!reply.has_value())

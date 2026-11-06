@@ -98,10 +98,8 @@ SCENARIO("RuntimeSigningKeyStore exposes all usable active keys for the local se
         auto const server_name = std::string{"example.org"};
         auto const [active_a, keypair_a] = make_test_key(server_name, "ed25519:a0b1c2d3");
         auto const [active_b, keypair_b] = make_test_key(server_name, "ed25519:e4f5a6b7");
-        auto const [legacy_key, unused_legacy] = make_test_key(server_name, "ed25519:auto");
-        std::ignore = unused_legacy;
-        auto const [other_server, unused_other] = make_test_key("other.example", "ed25519:11111111");
-        std::ignore = unused_other;
+        [[maybe_unused]] auto const [legacy_key, unused_legacy] = make_test_key(server_name, "ed25519:auto");
+        [[maybe_unused]] auto const [other_server, unused_other] = make_test_key("other.example", "ed25519:11111111");
         auto invalid_public = active_a;
         invalid_public.key_id = "ed25519:ffffffff";
         invalid_public.public_key = "not-valid-base64!!!";
@@ -155,7 +153,6 @@ SCENARIO("sign_for_server falls back to the next active key when the preferred k
         auto const server_name = std::string{"example.org"};
         auto const [active_a, keypair_a] = make_test_key(server_name, "ed25519:a0b1c2d3");
         auto const [active_b, keypair_b] = make_test_key(server_name, "ed25519:e4f5a6b7");
-        std::ignore = keypair_a;
 
         auto real_provider = crypto::RuntimeMultiKeyEd25519Provider{
             [&] {

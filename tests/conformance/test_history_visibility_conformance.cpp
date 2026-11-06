@@ -434,6 +434,8 @@ SCENARIO("A banned user reads the room only as it was when they were banned",
 {
     GIVEN("a room where bob was joined, then banned, and the room then moved on without him")
     {
+        // Bob is banned between two messages and the room keeps moving afterwards (a message, a new member, a rename),
+        // so every read can be checked against the ban point.
         auto started = merovingian::homeserver::start_client_server(visibility_config());
         REQUIRE(started.started);
         auto& rt = started.runtime;
@@ -449,6 +451,7 @@ SCENARIO("A banned user reads the room only as it was when they were banned",
         invite_and_join(rt, alice, room_id, "carol", carol);
         set_room_name(rt, alice, room_id, "After the ban");
 
+        // initialSync is the snapshot read: both the timeline chunk and the state must stop at the ban.
         WHEN("bob calls initialSync")
         {
             auto const reply = call(rt, "GET", "/_matrix/client/v3/rooms/" + room_id + "/initialSync", bob);
@@ -471,6 +474,7 @@ SCENARIO("A banned user reads the room only as it was when they were banned",
             }
         }
 
+        // /messages is the paginated read and must apply the same cut-off as initialSync.
         WHEN("bob calls /messages")
         {
             auto const reply = messages(rt, bob, room_id);
@@ -488,6 +492,7 @@ SCENARIO("A banned user reads the room only as it was when they were banned",
             }
         }
 
+        // /members is a state read, so the roster must be the one in force at the ban.
         WHEN("bob calls /members")
         {
             auto const reply = call(rt, "GET", "/_matrix/client/v3/rooms/" + room_id + "/members", bob);
@@ -518,6 +523,7 @@ SCENARIO("A banned user reads the room only as it was when they were banned",
             }
         }
 
+        // A banned user is no longer joined, and the spec returns only joined members to a joined user.
         WHEN("bob calls /joined_members")
         {
             auto const reply = call(rt, "GET", "/_matrix/client/v3/rooms/" + room_id + "/joined_members", bob);
@@ -528,6 +534,7 @@ SCENARIO("A banned user reads the room only as it was when they were banned",
             }
         }
 
+        // Control: a joined user sees the current room, so the cut-off above is the ban and not a broken fixture.
         WHEN("alice, who is joined, calls initialSync and /members")
         {
             auto const initial = call(rt, "GET", "/_matrix/client/v3/rooms/" + room_id + "/initialSync", alice);
@@ -962,6 +969,8 @@ SCENARIO("With joined history visibility a newcomer cannot read events sent befo
 {
     GIVEN("a joined-visibility room with a message and a thread reply sent before bob joined")
     {
+        // Two events exist before bob joins (a message and a thread reply to it) and one after;
+        // every read path below is checked against all three.
         auto started = merovingian::homeserver::start_client_server(visibility_config());
         REQUIRE(started.started);
         auto& rt = started.runtime;
@@ -973,6 +982,7 @@ SCENARIO("With joined history visibility a newcomer cannot read events sent befo
         invite_and_join(rt, alice, room_id, "bob", bob);
         auto const m2 = send_text(rt, alice, room_id, "afterbobjoined");
 
+        // The paginated read is the main path where pre-join events could leak.
         WHEN("bob reads the room through /messages")
         {
             auto const reply = messages(rt, bob, room_id);
@@ -988,6 +998,7 @@ SCENARIO("With joined history visibility a newcomer cannot read events sent befo
             }
         }
 
+        // Direct lookups must answer 404 M_NOT_FOUND, the same as for an unknown event, so existence is not leaked.
         WHEN("bob requests M1 through /event and /context, and M2 through both")
         {
             auto const event = call(rt, "GET", "/_matrix/client/v3/rooms/" + room_id + "/event/" + m1, bob);
@@ -1011,6 +1022,7 @@ SCENARIO("With joined history visibility a newcomer cannot read events sent befo
             }
         }
 
+        // Search matches on text, so it must apply visibility itself rather than rely on the other read paths.
         WHEN("bob searches for the text of M1 and of M2")
         {
             THEN("only M2 is found")
@@ -1046,6 +1058,7 @@ SCENARIO("With joined history visibility a newcomer cannot read events sent befo
             }
         }
 
+        // Control: alice was joined throughout, so she must still see everything.
         WHEN("alice, who was joined throughout, reads the same room")
         {
             auto const ids = event_ids_in(messages(rt, alice, room_id).body, "chunk");
@@ -1713,6 +1726,8 @@ SCENARIO("GET /timestamp_to_event never names an event the user may not see",
 {
     GIVEN("a joined-visibility room with a message at 1000, bob's join at 2000 and a message at 3000")
     {
+        // The frozen event clock pins each event to a known millisecond, so the lookups below land between events
+        // deterministically.
         auto started = merovingian::homeserver::start_client_server(visibility_config());
         REQUIRE(started.started);
         auto& rt = started.runtime;
@@ -1729,6 +1744,7 @@ SCENARIO("GET /timestamp_to_event never names an event the user may not see",
         rt.homeserver.test_frozen_event_clock_ms = 3000;
         auto const after_join = send_text(rt, alice, room_id, "afterbobjoined");
 
+        // Looking forwards from before the hidden message: the lookup must step over it, not name it.
         WHEN("bob looks forwards from before the message sent before he joined")
         {
             auto const lookup = timestamp_lookup(rt, bob, room_id, 1000, 'f');
@@ -1743,6 +1759,7 @@ SCENARIO("GET /timestamp_to_event never names an event the user may not see",
             }
         }
 
+        // Backwards from between the hidden message and bob join: the nearest event is hidden, so the lookup skips it.
         WHEN("bob looks backwards from after the message and before his own join")
         {
             auto const lookup = timestamp_lookup(rt, bob, room_id, 1900, 'b');
@@ -1757,6 +1774,7 @@ SCENARIO("GET /timestamp_to_event never names an event the user may not see",
             }
         }
 
+        // Control: after the join, the newest event is visible and is returned as-is.
         WHEN("bob looks backwards from the end")
         {
             auto const lookup = timestamp_lookup(rt, bob, room_id, 3000, 'b');
@@ -1768,6 +1786,7 @@ SCENARIO("GET /timestamp_to_event never names an event the user may not see",
             }
         }
 
+        // Control: alice was joined throughout, so the event hidden from bob is the answer for her.
         WHEN("alice, who was joined throughout, looks for the same timestamps")
         {
             auto const forwards = timestamp_lookup(rt, alice, room_id, 1000, 'f');
@@ -1781,6 +1800,7 @@ SCENARIO("GET /timestamp_to_event never names an event the user may not see",
         }
     }
 
+    // Once bob has left, later events fall outside what he may see, in both directions.
     GIVEN("a joined-visibility room that bob left before a later message was sent")
     {
         auto started = merovingian::homeserver::start_client_server(visibility_config());
@@ -1819,6 +1839,7 @@ SCENARIO("GET /timestamp_to_event never names an event the user may not see",
         }
     }
 
+    // A banned user and a user who never joined are both checked: the first may still look back, the second may not.
     GIVEN("a room with a message and a user who was banned, and one who never joined")
     {
         auto started = merovingian::homeserver::start_client_server(visibility_config());

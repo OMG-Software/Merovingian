@@ -124,8 +124,7 @@ extern "C" auto on_seccomp_sigsys(int /*signum*/, siginfo_t* info, void* /*ucont
     auto const wr = g_blocked_pipe_wr;
     if (wr >= 0)
     {
-        auto const written = ::write(wr, msg, static_cast<std::size_t>(msg_len));
-        std::ignore = written;
+        std::ignore = ::write(wr, msg, static_cast<std::size_t>(msg_len));
     }
 
     if (report_count >= k_max_sigsys_reports)

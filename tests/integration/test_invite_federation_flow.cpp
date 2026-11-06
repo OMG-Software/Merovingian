@@ -1323,6 +1323,8 @@ SCENARIO("An invite to a user of another server is offered to that server before
          "hear of it",
          "[integration][federation][invite][remote-invite-handshake]")
 {
+    // Delia's server shares the room, so it must hear of the invite, but only after bob's server has
+    // accepted and co-signed it.
     GIVEN("alice's room on this server, which delia of a third server has joined, and bob of another server")
     {
         REQUIRE(sodium_init() >= 0);
@@ -1338,6 +1340,7 @@ SCENARIO("An invite to a user of another server is offered to that server before
         auto const invite_target = "/_matrix/client/v3/rooms/" + room_id + "/invite";
         auto const invite_body = std::string{R"({"user_id":")"} + bob + R"("})";
 
+        // The invitee server co-signs the invite event, so the stored copy carries both servers' signatures.
         WHEN("alice invites bob and bob's server accepts the invite")
         {
             auto invitee = InviteeServer{runtime, invitee_answering(InviteeAnswer::cosigned)};
@@ -1371,6 +1374,8 @@ SCENARIO("An invite to a user of another server is offered to that server before
             }
         }
 
+        // Each bad answer must be refused with 502: an empty event, a different event, a signature from another key,
+        // and an unsigned echo of the request.
         WHEN("alice invites bob and bob's server answers with an event that fails validation")
         {
             auto const answer = GENERATE(InviteeAnswer::empty_event, InviteeAnswer::another_event,
@@ -1389,6 +1394,7 @@ SCENARIO("An invite to a user of another server is offered to that server before
             }
         }
 
+        // A refusal from the invitee's server is final: no invite is stored and no other server is told.
         WHEN("alice invites bob and bob's server refuses the invite")
         {
             auto invitee = InviteeServer{runtime, [](std::string const&) {

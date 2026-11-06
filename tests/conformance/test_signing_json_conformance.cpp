@@ -60,15 +60,14 @@ namespace
 class LibsodiumEd25519Provider final : public merovingian::crypto::Ed25519Provider
 {
 public:
-    [[nodiscard]] auto sign(merovingian::crypto::Ed25519SecretKeyHandle const& key_handle, std::string_view message)
-        -> merovingian::crypto::SignatureResult override
+    [[nodiscard]] auto sign([[maybe_unused]] merovingian::crypto::Ed25519SecretKeyHandle const& key_handle,
+                            std::string_view message) -> merovingian::crypto::SignatureResult override
     {
         auto const& kp = m_keypair;
         if (kp.secret_key.size() != 64U)
         {
             return {{}, "invalid secret key length"};
         }
-        std::ignore = key_handle;
         auto sig = std::string(64U, '\0');
         if (crypto_sign_ed25519_detached(reinterpret_cast<unsigned char*>(sig.data()), nullptr,
                                          reinterpret_cast<unsigned char const*>(message.data()), message.size(),

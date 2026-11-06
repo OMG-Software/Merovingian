@@ -81,9 +81,8 @@ auto landlock_handled_access_fs(int abi) noexcept -> std::uint64_t
     return mask;
 }
 
-auto landlock_read_only_access(int abi) noexcept -> std::uint64_t
+auto landlock_read_only_access([[maybe_unused]] int abi) noexcept -> std::uint64_t
 {
-    std::ignore = abi;
     return k_access_fs_read_file | k_access_fs_read_dir;
 }
 

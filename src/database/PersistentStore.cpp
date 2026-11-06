@@ -3133,10 +3133,9 @@ namespace
         !parent_state_group_id.has_value() || (parent_depth + 1U) > events::max_state_group_delta_depth;
     if (!write_snapshot)
     {
-        for (auto const& [key, unused_event_id] : parent_map)
+        for (auto const& parent_entry : parent_map)
         {
-            std::ignore = unused_event_id;
-            if (!requested_map.contains(key))
+            if (!requested_map.contains(parent_entry.first))
             {
                 write_snapshot = true; // deltas never encode deletions
                 break;

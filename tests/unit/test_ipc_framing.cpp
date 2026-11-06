@@ -783,9 +783,8 @@ SCENARIO("IpcChannel enforces a per-channel in-flight cap and replies with an ex
         WHEN("three concurrent requests are sent")
         {
             auto futures = std::vector<std::future<std::optional<std::string>>>{};
-            for (auto i = 0; i < 3; ++i)
+            for ([[maybe_unused]] auto i = 0; i < 3; ++i)
             {
-                std::ignore = i;
                 futures.push_back(std::async(std::launch::async, [&pair]() {
                     return pair.client->send_request(R"({"type":"probe"})", std::chrono::seconds{5});
                 }));

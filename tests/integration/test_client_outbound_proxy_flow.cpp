@@ -307,6 +307,8 @@ SCENARIO("With remote_fetch_enabled=false no remote media request leaves the ser
         runtime.homeserver.discovery_network = std::make_unique<CountingDiscoveryNetwork>(discovery_calls);
         auto const peer = SilentPeer{};
         point_at(runtime, peer);
+        // Both the discovery counter and the peer's connection count must stay at zero: a refusal that still resolved
+        // or connected would leak the lookup.
         auto const token = register_and_login(runtime);
         auto const media = std::string{silent_server} + "/abc";
         auto const thumbnail_query = std::string{"?width=32&height=32&method=crop"};
@@ -324,6 +326,7 @@ SCENARIO("With remote_fetch_enabled=false no remote media request leaves the ser
             }
         }
 
+        // Thumbnails have their own routes in each API generation, so each is checked separately.
         WHEN("an unauthenticated client asks for a remote thumbnail on the legacy thumbnail route")
         {
             auto const answer =
@@ -366,6 +369,7 @@ SCENARIO("With remote_fetch_enabled=false no remote media request leaves the ser
             }
         }
 
+        // Refusals are metered but not audited, so an unauthenticated client cannot grow the durable audit log.
         WHEN("an unauthenticated client repeats the refused request")
         {
             auto const audit_rows_before = runtime.homeserver.database.audit_events.size();
@@ -381,6 +385,7 @@ SCENARIO("With remote_fetch_enabled=false no remote media request leaves the ser
             }
         }
 
+        // Local media is unaffected by the switch: it is answered from the local repository without any outbound call.
         WHEN("the request names this server's own media")
         {
             auto const answer =

@@ -26,8 +26,8 @@ SCENARIO("A copied or moved CopyableMutex has its own unlocked mutex", "[core][c
             auto const copy = source;
             auto const moved = merovingian::core::CopyableMutex{std::move(source)};
             auto assigned = merovingian::core::CopyableMutex{};
-            assigned = copy;
-            assigned = merovingian::core::CopyableMutex{moved};
+            REQUIRE(&(assigned = copy) == &assigned);
+            REQUIRE(&(assigned = merovingian::core::CopyableMutex{moved}) == &assigned);
 
             THEN("each new object can be locked while the source is held")
             {
@@ -47,7 +47,7 @@ SCENARIO("A copied or moved CopyableMutex has its own unlocked mutex", "[core][c
 
         WHEN("the locked one is assigned from the other")
         {
-            target = other;
+            REQUIRE(&(target = other) == &target);
 
             THEN("the assignment leaves it locked and the other lockable")
             {

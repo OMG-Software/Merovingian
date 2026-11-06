@@ -179,7 +179,8 @@ auto const result = [&]() {
 }();                                          // and re-acquired here
 ```
 
-Both entry points publish their guard through `homeserver::RequestLockScope`,
+Both entry points publish the mutex their guard locks through
+`homeserver::RequestLockScope` (the mutex, never the guard's address: ADR-0529),
 which is what the default-constructed form above finds. When the guard is in
 hand instead — a service function that took its own — pass it:
 `RuntimeLockRelease{guard}`. **Either form releases every recursion level this

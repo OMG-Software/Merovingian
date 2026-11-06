@@ -183,6 +183,8 @@ SCENARIO("AppserviceClient never attempts a network call for a url:null appservi
         registration.url = std::nullopt;
         registration.sender_localpart = "bot";
 
+        // The stub network resolves nothing, so a call that was attempted would fail with a different error than
+        // disabled.
         auto outbound = merovingian::http::OutboundClient{};
         auto network = StubDiscoveryNetwork{};
         auto discovery = merovingian::federation::CachedServerDiscovery{network, 60000U, []() -> std::uint64_t {
@@ -190,6 +192,7 @@ SCENARIO("AppserviceClient never attempts a network call for a url:null appservi
                                                                         }};
         auto client = merovingian::appservice::AppserviceClient{outbound, discovery};
 
+        // The transaction push is the main delivery path and must be a no-op for a url:null registration.
         WHEN("send_transaction is called")
         {
             auto const result =
@@ -202,6 +205,7 @@ SCENARIO("AppserviceClient never attempts a network call for a url:null appservi
             }
         }
 
+        // Each query surface is checked separately because each has its own early-return.
         WHEN("query_user is called")
         {
             auto const result = client.query_user(registration, "@someone:example.org");
@@ -224,6 +228,7 @@ SCENARIO("AppserviceClient never attempts a network call for a url:null appservi
             }
         }
 
+        // The third-party lookups share the same disabled check as the queries above.
         WHEN("query_thirdparty_protocol is called")
         {
             auto const result = client.query_thirdparty_protocol(registration, "irc");
@@ -273,6 +278,7 @@ SCENARIO("AppserviceClient never attempts a network call for a url:null appservi
             }
         }
 
+        // The last lookup closes the set: every outbound call on the client honours url:null.
         WHEN("query_thirdparty_user_by_protocol is called")
         {
             auto const result = client.query_thirdparty_user_by_protocol(registration, "irc", {});
@@ -412,6 +418,7 @@ SCENARIO("pinging an appservice classifies every way the call can end", "[appser
 {
     GIVEN("an appservice client whose transport is a recording stub")
     {
+        // The transport is stubbed: tests set what it answers and read back the request it saw.
         auto outbound = merovingian::http::OutboundClient{};
         auto network = ResolvableDiscoveryNetwork{};
         auto discovery = merovingian::federation::CachedServerDiscovery{network, 60000U, []() -> std::uint64_t {
@@ -459,6 +466,7 @@ SCENARIO("pinging an appservice classifies every way the call can end", "[appser
             }
         }
 
+        // Without a transaction id the body must still be a valid JSON object.
         WHEN("the appservice is pinged without a transaction id")
         {
             auto const result = client.ping(registration, std::nullopt);
@@ -483,6 +491,7 @@ SCENARIO("pinging an appservice classifies every way the call can end", "[appser
             }
         }
 
+        // 403 means the appservice does not accept our hs_token; the caller needs the status and body to report it.
         WHEN("the appservice rejects the hs_token with 403")
         {
             answer.response.status = 403U;
@@ -497,6 +506,7 @@ SCENARIO("pinging an appservice classifies every way the call can end", "[appser
             }
         }
 
+        // A hostile appservice must not make us hold an unbounded error body.
         WHEN("the appservice answers with a very long body")
         {
             answer.response.status = 500U;
@@ -524,6 +534,7 @@ SCENARIO("pinging an appservice classifies every way the call can end", "[appser
             }
         }
 
+        // Transport failures are mapped to distinct failure kinds so callers can tell slow from unreachable.
         WHEN("the transport times out")
         {
             answer.ok = false;
@@ -556,6 +567,7 @@ SCENARIO("pinging an appservice classifies every way the call can end", "[appser
             }
         }
 
+        // No url means no traffic is required, so nothing is sent and the failure says why.
         WHEN("the registration has url null")
         {
             registration.url = std::nullopt;
@@ -787,6 +799,7 @@ SCENARIO("AppserviceClient refuses cleartext http to a host that is not permitte
 {
     GIVEN("a client with no cleartext hosts allowed and a recording transport")
     {
+        // The recording transport lets each WHEN assert that no request left the process when the url is refused.
         auto outbound = merovingian::http::OutboundClient{};
         auto network = RecordingDiscoveryNetwork{};
         auto discovery = merovingian::federation::CachedServerDiscovery{network, 60000U, []() -> std::uint64_t {
@@ -818,6 +831,7 @@ SCENARIO("AppserviceClient refuses cleartext http to a host that is not permitte
             }
         }
 
+        // localhost is a name, not a loopback literal, so it could resolve anywhere and is refused.
         WHEN("the registration url is http to localhost, a name and not a literal")
         {
             registration.url = "http://localhost:9000";
@@ -830,6 +844,7 @@ SCENARIO("AppserviceClient refuses cleartext http to a host that is not permitte
             }
         }
 
+        // Credentials or a query in the url are refused so the hs_token cannot be sent to an unintended place.
         WHEN("the registration url has userinfo or a query")
         {
             registration.url = "https://user:pass@example.org";
@@ -845,6 +860,7 @@ SCENARIO("AppserviceClient refuses cleartext http to a host that is not permitte
             }
         }
 
+        // Loopback literals are the one permitted cleartext target, and brackets must survive in the url.
         WHEN("the registration url is http to a bracketed IPv6 loopback literal with a trailing slash")
         {
             registration.url = "http://[::1]:9000/bridge/";
@@ -874,6 +890,7 @@ SCENARIO("AppserviceClient refuses cleartext http to a host that is not permitte
         }
     }
 
+    // An operator may list cleartext hosts explicitly, which is the only other way http is allowed.
     GIVEN("a client whose configuration lists host.docker.internal")
     {
         auto outbound = merovingian::http::OutboundClient{};

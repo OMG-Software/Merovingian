@@ -781,6 +781,8 @@ SCENARIO("main re-verifies the signature of a /send PDU relayed by a federation 
 {
     GIVEN("a room in which the remote member may post, and main knowing the remote server's genuine key")
     {
+        // SQLite on a unique temp path gives main a real store, as in production, without sharing state between
+        // scenarios.
         auto const path = unique_sqlite_path("merovingian-worker-relay-sig-");
         std::filesystem::remove(path);
         auto started = homeserver::start_runtime(config_with_sqlite(path));
@@ -802,6 +804,7 @@ SCENARIO("main re-verifies the signature of a /send PDU relayed by a federation 
             }
         }
 
+        // The worker is untrusted: main must verify the signature itself instead of believing the relayed frame.
         WHEN("the worker relays a message signed with a key that is not the sender server's")
         {
             auto const env = parse_envelope(make_remote_message_json(room.room_id, room.prev_event_ids(),
@@ -815,6 +818,7 @@ SCENARIO("main re-verifies the signature of a /send PDU relayed by a federation 
             }
         }
 
+        // Failing closed: a key main cannot resolve means the PDU is dropped, not accepted unverified.
         WHEN("the worker relays a message whose sender key main cannot resolve")
         {
             runtime.federation.remote_key_resolver =
@@ -832,6 +836,7 @@ SCENARIO("main re-verifies the signature of a /send PDU relayed by a federation 
             }
         }
 
+        // The event ID in the frame is a claim; main recomputes it from the signed content and refuses a mismatch.
         WHEN("the worker's frame names a different event ID from the one the signed event hashes to")
         {
             auto env = parse_envelope(
@@ -872,6 +877,7 @@ SCENARIO("main re-verifies the signature of a /send PDU relayed by a federation 
                 make_remote_message_json(room.room_id, room.prev_event_ids(), room.auth_event_ids(), 4, 44));
             auto const result = homeserver::handle_pdu_ingest_request(runtime, envelope_frame("pdu_ingest", env));
 
+            // Resolving a key can block on the network, so it must happen with the runtime lock released.
             THEN("main resolved the key itself, without holding the runtime lock, and accepted the PDU")
             {
                 REQUIRE(resolver_called);

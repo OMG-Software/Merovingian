@@ -705,11 +705,14 @@ SCENARIO("Federation get_missing_events walks back from latest_events and stops 
 SCENARIO("Federation get_missing_events never returns more than the server-side cap",
          "[federation][events][missing][fed2][security]")
 {
+    // A linear chain c0..c39, with c39 as the latest event, gives every limit a known answer to compare with.
     GIVEN("a room with a chain of 40 events and a joined user from the requesting server")
     {
         auto const store = store_with_chain(40U);
         auto const latest = std::string{R"("latest_events":["$c39"])"};
 
+        // A requester-chosen limit above the server-side cap must be clamped, never trusted; the latest event
+        // itself is excluded because the requester already has it.
         WHEN("the request asks for a limit of 1000")
         {
             auto const result = merovingian::federation::build_get_missing_events_response(
@@ -726,6 +729,7 @@ SCENARIO("Federation get_missing_events never returns more than the server-side 
             }
         }
 
+        // Spec: limit defaults to 10 when it is absent.
         WHEN("the request omits limit")
         {
             auto const result = merovingian::federation::build_get_missing_events_response(
@@ -738,6 +742,7 @@ SCENARIO("Federation get_missing_events never returns more than the server-side 
             }
         }
 
+        // Zero and negative limits are not errors; they simply return no events.
         WHEN("the request asks for a limit of zero or less")
         {
             auto const zero = merovingian::federation::build_get_missing_events_response(
@@ -754,6 +759,7 @@ SCENARIO("Federation get_missing_events never returns more than the server-side 
             }
         }
 
+        // The walk stops at earliest_events: the requester already has those events and everything behind them.
         WHEN("earliest_events names $c30 and the limit is 1000")
         {
             auto const result = merovingian::federation::build_get_missing_events_response(
@@ -771,6 +777,7 @@ SCENARIO("Federation get_missing_events never returns more than the server-side 
             }
         }
 
+        // min_depth bounds the walk from below, so older events are neither returned nor traversed.
         WHEN("min_depth sits in the middle of the chain")
         {
             auto const result = merovingian::federation::build_get_missing_events_response(
@@ -786,6 +793,7 @@ SCENARIO("Federation get_missing_events never returns more than the server-side 
             }
         }
 
+        // An oversized latest_events list is refused up front so one request cannot trigger a store walk per entry.
         WHEN("the request lists an absurd number of latest_events")
         {
             auto body = std::string{R"({"earliest_events":[],"limit":10,"latest_events":[)"};

@@ -283,6 +283,8 @@ SCENARIO("sliding sync position parsing remains independent of resource policy",
 SCENARIO("sliding sync admission caps the number of lists, sort keys and bump event types",
          "[sliding-sync][limits][security][sp01]")
 {
+    // The numbers asserted here are the shipped defaults; the other givens override them with small caps to keep
+    // requests tiny.
     GIVEN("the default sliding sync policy")
     {
         auto const limits = merovingian::sync::SlidingSyncLimits{};
@@ -298,6 +300,8 @@ SCENARIO("sliding sync admission caps the number of lists, sort keys and bump ev
         }
     }
 
+    // Boundary pair for each cap: exactly at the cap is admitted, one more is rejected, so an off-by-one in either
+    // direction is caught.
     GIVEN("a request with exactly as many lists as the policy allows")
     {
         auto limits = merovingian::sync::SlidingSyncLimits{};
@@ -350,6 +354,7 @@ SCENARIO("sliding sync admission caps the number of lists, sort keys and bump ev
             }
         }
 
+        // The extra key repeats an existing one: the cap counts entries, not distinct keys.
         WHEN("the list repeats a sort key so that it has one more than the policy allows")
         {
             list.sort.emplace_back("by_recency");
@@ -364,6 +369,7 @@ SCENARIO("sliding sync admission caps the number of lists, sort keys and bump ev
         }
     }
 
+    // Bump event types are counted per list, so the cap is set on a single list rather than across the request.
     GIVEN("a list with exactly as many bump event types as the policy allows")
     {
         auto limits = merovingian::sync::SlidingSyncLimits{};
@@ -400,6 +406,8 @@ SCENARIO("sliding sync admission caps the number of lists, sort keys and bump ev
         }
     }
 
+    // The cases below use the real defaults, with no custom limits, to prove the production values are what actually
+    // gets enforced.
     GIVEN("a request that exceeds the default list, sort key and bump event type caps")
     {
         auto const limits = merovingian::sync::SlidingSyncLimits{};
@@ -412,6 +420,7 @@ SCENARIO("sliding sync admission caps the number of lists, sort keys and bump ev
                 request.lists.emplace("list" + std::to_string(i), merovingian::sync::SlidingSyncList{});
             }
 
+            // The overload without a limits argument must apply the same defaults, not an unlimited policy.
             THEN("both the explicit defaults and the default-argument overload reject it")
             {
                 auto const explicit_default = merovingian::sync::sliding_sync_request_limit_violation(request, limits);

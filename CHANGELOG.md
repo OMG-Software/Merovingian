@@ -7,6 +7,8 @@ The largest multi-type files are split into one file per class, struct or enum (
 - An appservice registration `url` may use `http` only when its host is a loopback IP literal (127.0.0.0/8 or `::1`) or is listed in the new `appservice.allow_cleartext_hosts` key; every other host must use `https`, because the homeserver sends the `hs_token` with each request. A registration that breaks the rule, or whose `url` has userinfo or a query, is skipped at start-up with a warning, and the client refuses such a call before any lookup (ADR-0515). The Complement configuration lists `host.docker.internal`.
 - The appservice client parses its URL with the shared libcurl-backed parser, so an IPv6 literal host and a `url` path of `/` are handled correctly. SMTP and appservices share one loopback-literal check (`net::is_loopback_ip_literal`).
 - `observability::CorrelationScope` no longer publishes a pointer. The thread's correlation slot holds the context by value: a scope moves its context in and puts back the one it displaced, so no address of a scope or of a caller's object is stored, and the published context cannot change or dangle while the scope is open (CodeQL `cpp/stack-address-escape`, ADR-0526). New unit test `test_correlation_scope.cpp` (`[correlation]`).
+- `homeserver::RemoteMediaFetchScope` and `homeserver::RequestLockScope` no longer publish a stack address either. The fetch slot holds the innermost scope's mode and deferral flag by value, and the request slot holds the `RuntimeMutex` the guard locks, not the guard (CodeQL `cpp/stack-address-escape`, ADR-0529). The fourth such alert, the thread's audit database pointer, is dismissed on GitHub as won't fix, with the reason recorded in ADR-0529.
+- `merovingian-fed-worker` stops accumulating `--ipc-fd`, `--ipc-key-fd` and `--db-uri-fd` digits once the value passes 65535. A long digit string used to overflow `int` (undefined behaviour) before the out-of-range error was reported. The arguments come from the supervisor, so no running server was exposed. New scenario in `test_federation_worker_args.cpp`.
 
 ### Changed
 
@@ -24,11 +26,14 @@ The largest multi-type files are split into one file per class, struct or enum (
 - The room position index is a `RoomPositionIndex` class with its own lock; a moved index starts empty and rebuilds on use (ADR-0521).
 - `RuntimeMutex`'s lock functions are `const` and `HomeserverRuntime::mutex` is no longer `mutable`; the runtime mutex is locked through `homeserver::RuntimeLock` (ADR-0522).
 - Identifiers named `module`, a C++20 contextual keyword, are renamed `module_name`.
+- The CodeQL warnings PR #563's check counted are cleared in code. `std::ignore = x;` on a plain variable (`cpp/useless-expression`) is gone: an unused parameter or RAII guard is marked `[[maybe_unused]]` or unnamed, an unused structured binding reads the pair member it needs, a discarded result is written `std::ignore = call(...)`, and a no-op `log_modules` branch in `validate` is deleted. Functions over 100 lines with almost no comments (`cpp/poorly-documented-function`) get comments inside the body, chiefly `apply_config_value`, `build_reload_plan`, `load_persistent_rows` and long test scenarios. No behaviour changes.
+- `main` (0.12.78) is merged in, and this branch's version moves to 0.12.79.
 
 ### Fixed
 
 - SonarCloud's reliability findings on this branch are fixed in code: `net::is_loopback_ip_literal` compares an IPv6 address as a byte array, not with `memcmp` over `in6_addr` (S5000); `RoomPositionIndex` touches its cache only in `find`, under its lock, and move assignment marks the cache stale; `CopyableConditionVariable`'s operations are non-`const` and its member is not `mutable`; `RuntimeMutex` implements its recursion over a plain `std::mutex` with an atomic depth (ADR-0524); and `sync::UnreadEventClassifier`'s questions are non-`const`, so `PushRuleUnreadClassifier`'s lazy caches are no longer `mutable` (ADR-0525). No behaviour changes.
 - A copy of `database::PersistentStore` now carries `state_transitions` and `state_transition_index`. The hand-written copy operations listed every member but these two, added later, so `find_state_transition` on a copy found nothing (no `unsigned.replaces_state`, and narrower history visibility and room read access). Only tests copy a store, so no running server was affected. The copy operations are now defaulted (ADR-0523). New unit test `test_persistent_store_copy.cpp` (`[store_copy]`).
+
 ## 0.12.78
 
 The high-severity CodeQL alerts open on `main` are cleared, so a large pull request no longer fails CodeQL on alerts it did not introduce.

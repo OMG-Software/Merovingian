@@ -1211,11 +1211,14 @@ SCENARIO("PostgreSQL reload_room picks up a room committed by a different store 
             SUCCEED("skipped: MEROVINGIAN_TEST_POSTGRESQL_URI is not set");
             return;
         }
+        // Two handles on one database model the main process and a federation worker: handle B commits, handle A must
+        // learn of it only by reloading.
         auto opened_a = merovingian::database::open_postgresql_persistent_store(uri);
         auto opened_b = merovingian::database::open_postgresql_persistent_store(uri);
         REQUIRE(opened_a.ok);
         REQUIRE(opened_b.ok);
 
+        // A unique suffix keeps ids from colliding with rows left by other tests sharing the database.
         auto const suffix = unique_test_suffix();
         auto const user_id = "@pg-reload-user-" + suffix + ":example.org";
         auto const room_id = "!pg-reload-room-" + suffix + ":example.org";
@@ -1254,6 +1257,7 @@ SCENARIO("PostgreSQL reload_room picks up a room committed by a different store 
                     std::optional<std::string>{group_id});
             REQUIRE(merovingian::database::set_event_state_group(opened_b.store, member_event_id, group_id));
 
+            // The negative check first: without it a pass could just mean handle A already had the room.
             THEN("handle A, which never saw any of this, has no knowledge of the room before reloading")
             {
                 REQUIRE(std::ranges::none_of(opened_a.store.rooms,
@@ -1264,6 +1268,7 @@ SCENARIO("PostgreSQL reload_room picks up a room committed by a different store 
 
             AND_WHEN("reload_room is called on handle A for that room_id")
             {
+                // reload_room reads the room back from PostgreSQL rather than from handle B in-memory state.
                 auto const reloaded = merovingian::database::reload_room(opened_a.store, room_id);
 
                 THEN("it succeeds and handle A now has the room, membership, state, and event with its DAG "
@@ -1305,6 +1310,8 @@ SCENARIO("PostgreSQL reload_room picks up a room committed by a different store 
                     REQUIRE(full_state->size() == 2U);
                 }
 
+                // Reloading twice must be idempotent: the state group and its mapping may not be inserted a second
+                // time.
                 AND_WHEN("reload_room is called on handle A again")
                 {
                     REQUIRE(merovingian::database::reload_room(opened_a.store, room_id));
