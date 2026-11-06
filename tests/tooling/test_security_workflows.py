@@ -222,10 +222,10 @@ class SecurityWorkflowTests(unittest.TestCase):
             "upload category differs": workflow.replace(
                 sarif + "          category: '/language:c-cpp'", sarif + "          category: '/language:other'", 1
             ),
-            "filter after upload": move_step_after(workflow, "Filter Catch2 false positives", "Upload CodeQL results"),
+            "filter after upload": move_step_after(workflow, "Filter excluded results", "Upload CodeQL results"),
             "filter and upload in another job": workflow.replace(
-                "      # Drops only cpp/unused-static-function",
-                "  publish:\n    runs-on: ubuntu-latest\n    steps:\n      # Drops only cpp/unused-static-function",
+                "      # Drops only what the ADRs name",
+                "  publish:\n    runs-on: ubuntu-latest\n    steps:\n      # Drops only what the ADRs name",
                 1,
             ),
         }

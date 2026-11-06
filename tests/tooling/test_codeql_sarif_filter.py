@@ -61,6 +61,38 @@ def sarif(results: list[dict], rules: list[str] | None = None, extensions: list[
     return {"version": "2.1.0", "runs": [{"tool": tool, "results": results}]}
 
 
+COMMAND_LINE_SOURCE = "user input (a command-line argument)"
+REMOTE_SOURCE = "user input (string read by recv)"
+
+
+def tainted_path(
+    uri: str,
+    linked: list[str],
+    labelled: list[str],
+    *,
+    link_ids: list[int] | None = None,
+    rule_id: str = "cpp/path-injection",
+) -> dict:
+    """A result shaped as CodeQL reports cpp/path-injection.
+
+    The message has one line per linked source, "[<label>](<id>)", and each
+    labelled source is a related location with that id; an unlabelled related
+    location, as CodeQL adds for the path's steps, follows them.
+    """
+    entry = result(rule_id, uri)
+    ids = link_ids if link_ids is not None else list(range(1, len(linked) + 1))
+    entry["message"] = {
+        "text": "\n".join(
+            f"This argument to a file access function is derived from [{label}]({identifier}) and then passed to open(__file)."
+            for label, identifier in zip(linked, ids)
+        )
+    }
+    related = [{"id": number, "message": {"text": label}} for number, label in enumerate(labelled, start=1)]
+    related.append({"message": {}})
+    entry["relatedLocations"] = related
+    return entry
+
+
 def kept_locations(document: dict) -> list[tuple[str | None, str | None]]:
     kept = []
     for entry in document["runs"][0]["results"]:
@@ -340,6 +372,80 @@ class FilterCodeqlSarifTests(unittest.TestCase):
 
                 # THEN the filter fails rather than letting an upload proceed with nothing filtered.
                 self.assertNotEqual(completed.returncode, 0)
+
+    def test_every_result_under_a_vendored_directory_is_dropped(self) -> None:
+        # GIVEN results of several rules on Meson's wrap downloads and build directory,
+        # and on paths that only contain those names (ADR-0527).
+        path = self.write(
+            "cpp.sarif",
+            sarif(
+                [
+                    result("cpp/path-injection", "subprojects/Catch2-3.16.1/src/catch2/catch_session.cpp"),
+                    result("cpp/inconsistent-null-check", "subprojects/sqlite-amalgamation-3540100/sqlite3.c"),
+                    result("cpp/short-global-name", "build/meson-private/tmp1/testfile.cpp"),
+                    result("cpp/path-injection", "src/subprojects/loader.cpp"),
+                    result("cpp/short-global-name", "builder/main.cpp"),
+                    result("cpp/short-global-name", "build-wsl/meson-private/tmp1/testfile.cpp"),
+                    result("cpp/path-injection", "subprojects/../src/main.cpp"),
+                    result("cpp/path-injection", "subprojects/sqlite3.c", base=None),
+                ]
+            ),
+        )
+
+        # WHEN the report is filtered.
+        completed = self.run_filter(path)
+
+        # THEN only the results plainly inside the source root's subprojects/ and build/ are dropped.
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertEqual(
+            [uri for _, uri in kept_locations(json.loads(path.read_text(encoding="utf-8")))],
+            [
+                "src/subprojects/loader.cpp",
+                "builder/main.cpp",
+                "build-wsl/meson-private/tmp1/testfile.cpp",
+                "subprojects/../src/main.cpp",
+                "subprojects/sqlite3.c",
+            ],
+        )
+
+    def test_path_injection_is_dropped_only_when_every_source_is_a_command_line_argument(self) -> None:
+        # GIVEN path-injection results whose sources CodeQL names in the message and related
+        # locations (ADR-0528): command-line arguments only, one source of another kind among
+        # them, a link to no related location, a related source the message does not link,
+        # no source at all, and the same command-line source on another rule.
+        cli = COMMAND_LINE_SOURCE
+        path = self.write(
+            "cpp.sarif",
+            sarif(
+                [
+                    tainted_path("src/main.cpp", [cli], [cli]),
+                    tainted_path("src/platform/file_metadata.cpp", [cli, cli], [cli, cli]),
+                    tainted_path("src/mixed.cpp", [cli, REMOTE_SOURCE], [cli, REMOTE_SOURCE]),
+                    tainted_path("src/remote.cpp", [REMOTE_SOURCE], [REMOTE_SOURCE]),
+                    tainted_path("src/dangling.cpp", [cli], [cli], link_ids=[7]),
+                    tainted_path("src/unlinked.cpp", [cli], [cli, REMOTE_SOURCE]),
+                    tainted_path("src/nosource.cpp", [], []),
+                    tainted_path("src/other_rule.cpp", [cli], [cli], rule_id="cpp/command-line-injection"),
+                ]
+            ),
+        )
+
+        # WHEN the report is filtered.
+        completed = self.run_filter(path)
+
+        # THEN only the results whose every source is a command-line argument are dropped.
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertEqual(
+            [uri for _, uri in kept_locations(json.loads(path.read_text(encoding="utf-8")))],
+            [
+                "src/mixed.cpp",
+                "src/remote.cpp",
+                "src/dangling.cpp",
+                "src/unlinked.cpp",
+                "src/nosource.cpp",
+                "src/other_rule.cpp",
+            ],
+        )
 
 
 if __name__ == "__main__":

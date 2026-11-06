@@ -2,7 +2,7 @@
 #include "../support/in_memory_database_config.hpp"
 #include "../support/master_key.hpp"
 #include "../support/registration_token.hpp"
-#include "../support/temp_directory.hpp"
+#include "../support/tls_mock_server.hpp"
 #include "bounded_connect.hpp"
 #include "merovingian/config/ClientRateLimitsConfig.hpp"
 #include "merovingian/config/Config.hpp"
@@ -30,11 +30,7 @@
 #include <dirent.h>
 #include <fcntl.h>
 #include <netinet/in.h>
-#include <openssl/evp.h>
-#include <openssl/pem.h>
-#include <openssl/rsa.h>
 #include <openssl/ssl.h>
-#include <openssl/x509.h>
 #include <poll.h>
 #include <sys/socket.h>
 #include <unistd.h>
@@ -45,15 +41,12 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
-#include <cstdio>
 #include <cstring>
-#include <filesystem>
 #include <memory>
 #include <mutex>
 #include <optional>
 #include <string>
 #include <string_view>
-#include <system_error>
 #include <thread>
 #include <tuple>
 #include <utility>
@@ -368,148 +361,6 @@ struct TlsResponseReader final
         // Drained some response bytes; keep going until the socket is drained
         // so the EOF underneath them is visible.
     }
-}
-
-struct TlsTestCertificate final
-{
-    std::filesystem::path directory{};
-    std::string certificate_file{};
-    std::string private_key_file{};
-
-    TlsTestCertificate() = default;
-
-    ~TlsTestCertificate()
-    {
-        auto ignored = std::error_code{};
-        std::filesystem::remove_all(directory, ignored);
-    }
-
-    TlsTestCertificate(TlsTestCertificate const&) = delete;
-    auto operator=(TlsTestCertificate const&) -> TlsTestCertificate& = delete;
-
-    TlsTestCertificate(TlsTestCertificate&& other) noexcept
-        : directory{std::move(other.directory)}
-        , certificate_file{std::move(other.certificate_file)}
-        , private_key_file{std::move(other.private_key_file)}
-    {
-        other.directory.clear();
-    }
-
-    auto operator=(TlsTestCertificate&& other) noexcept -> TlsTestCertificate&
-    {
-        if (this != &other)
-        {
-            auto ignored = std::error_code{};
-            std::filesystem::remove_all(directory, ignored);
-            directory = std::move(other.directory);
-            certificate_file = std::move(other.certificate_file);
-            private_key_file = std::move(other.private_key_file);
-            other.directory.clear();
-        }
-        return *this;
-    }
-};
-
-struct EvpPkeyDeleter final
-{
-    auto operator()(EVP_PKEY* key) const noexcept -> void
-    {
-        EVP_PKEY_free(key);
-    }
-};
-
-struct X509Deleter final
-{
-    auto operator()(X509* certificate) const noexcept -> void
-    {
-        X509_free(certificate);
-    }
-};
-
-struct X509NameDeleter final
-{
-    auto operator()(X509_NAME* name) const noexcept -> void
-    {
-        X509_NAME_free(name);
-    }
-};
-
-struct FileDeleter final
-{
-    auto operator()(std::FILE* file) const noexcept -> void
-    {
-        if (file != nullptr)
-        {
-            std::ignore = std::fclose(file);
-        }
-    }
-};
-
-// Generates an RSA key portably across OpenSSL 3 and LibreSSL (OpenBSD ships
-// LibreSSL, which lacks the OpenSSL-3-only EVP_RSA_gen wrapper).
-[[nodiscard]] auto generate_rsa_key(int bits) -> EVP_PKEY*
-{
-    auto* const context = EVP_PKEY_CTX_new_id(EVP_PKEY_RSA, nullptr);
-    if (context == nullptr)
-    {
-        return nullptr;
-    }
-    EVP_PKEY* key = nullptr;
-    if (EVP_PKEY_keygen_init(context) > 0 && EVP_PKEY_CTX_set_rsa_keygen_bits(context, bits) > 0)
-    {
-        EVP_PKEY_keygen(context, &key);
-    }
-    EVP_PKEY_CTX_free(context);
-    return key;
-}
-
-[[nodiscard]] auto write_test_tls_certificate() -> TlsTestCertificate
-{
-    static auto counter = std::uint32_t{0U};
-    auto const directory = merovingian::tests::temporary_directory() /
-                           ("merovingian-tls-" + std::to_string(::getpid()) + "-" + std::to_string(++counter));
-    std::filesystem::create_directories(directory);
-
-    auto key = std::unique_ptr<EVP_PKEY, EvpPkeyDeleter>{generate_rsa_key(2048)};
-    REQUIRE(key != nullptr);
-
-    auto certificate = std::unique_ptr<X509, X509Deleter>{X509_new()};
-    REQUIRE(certificate != nullptr);
-    REQUIRE(ASN1_INTEGER_set(X509_get_serialNumber(certificate.get()), 1L) == 1);
-    // Backdated so a small backward clock step (seen under WSL) cannot make the fresh
-    // certificate "not yet valid" between the handshakes of one scenario.
-    REQUIRE(X509_gmtime_adj(X509_getm_notBefore(certificate.get()), -3600L) != nullptr);
-    REQUIRE(X509_gmtime_adj(X509_getm_notAfter(certificate.get()), 3600L) != nullptr);
-    REQUIRE(X509_set_pubkey(certificate.get(), key.get()) == 1);
-
-    // Built apart from the certificate: OpenSSL 4 returns its subject name as const, and OpenSSL 3 takes a
-    // const name here too, so this one form builds on both.
-    auto const subject = std::unique_ptr<X509_NAME, X509NameDeleter>{X509_NAME_new()};
-    REQUIRE(subject != nullptr);
-    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast)
-    auto const* common_name = reinterpret_cast<unsigned char const*>("localhost");
-    REQUIRE(X509_NAME_add_entry_by_txt(subject.get(), "CN", MBSTRING_ASC, common_name, -1, -1, 0) == 1);
-    REQUIRE(X509_set_subject_name(certificate.get(), subject.get()) == 1);
-    REQUIRE(X509_set_issuer_name(certificate.get(), subject.get()) == 1);
-    REQUIRE(X509_sign(certificate.get(), key.get(), EVP_sha256()) > 0);
-
-    auto output = TlsTestCertificate{};
-    output.directory = directory;
-    output.certificate_file = (directory / "server.pem").string();
-    output.private_key_file = (directory / "server.key").string();
-
-    auto cert_file = std::unique_ptr<std::FILE, FileDeleter>{std::fopen(output.certificate_file.c_str(), "wb")};
-    REQUIRE(cert_file != nullptr);
-    REQUIRE(PEM_write_X509(cert_file.get(), certificate.get()) == 1);
-
-    auto key_file = std::unique_ptr<std::FILE, FileDeleter>{std::fopen(output.private_key_file.c_str(), "wb")};
-    REQUIRE(key_file != nullptr);
-    REQUIRE(PEM_write_PrivateKey(key_file.get(), key.get(), nullptr, nullptr, 0, nullptr, nullptr) == 1);
-    key_file.reset();
-    // ISO-7: the server reads its TLS key only from an owner-read-only file.
-    std::filesystem::permissions(output.private_key_file, std::filesystem::perms::owner_read);
-
-    return output;
 }
 
 struct SslContextDeleter final
@@ -842,7 +693,7 @@ SCENARIO("merovingian-server accepts Matrix JSON requests over a configured TLS 
 {
     GIVEN("a TLS server context and a registration-enabled runtime")
     {
-        auto const certificate = write_test_tls_certificate();
+        auto const certificate = merovingian::tests::tls_mock::write_test_tls_certificate();
         auto tls_context = merovingian::homeserver::make_tls_server_context(certificate.certificate_file,
                                                                             certificate.private_key_file);
         REQUIRE(tls_context.ok());
@@ -1738,7 +1589,7 @@ SCENARIO("merovingian-server serves two sequential requests over one persistent 
 {
     GIVEN("a TLS server context and a registration-enabled runtime")
     {
-        auto const certificate = write_test_tls_certificate();
+        auto const certificate = merovingian::tests::tls_mock::write_test_tls_certificate();
         auto tls_context = merovingian::homeserver::make_tls_server_context(certificate.certificate_file,
                                                                             certificate.private_key_file);
         REQUIRE(tls_context.ok());
@@ -2442,7 +2293,7 @@ SCENARIO("a TLS read returns on its deadline when the peer sends an incomplete r
 {
     GIVEN("an established TLS connection with a one-second I/O timeout")
     {
-        auto const certificate = write_test_tls_certificate();
+        auto const certificate = merovingian::tests::tls_mock::write_test_tls_certificate();
         auto tls_context = merovingian::homeserver::make_tls_server_context(certificate.certificate_file,
                                                                             certificate.private_key_file);
         REQUIRE(tls_context.ok());
@@ -2840,7 +2691,7 @@ SCENARIO("merovingian-server caps connections per address on a TLS listener befo
 {
     GIVEN("a TLS listener with a per-IP cap of one")
     {
-        auto const certificate = write_test_tls_certificate();
+        auto const certificate = merovingian::tests::tls_mock::write_test_tls_certificate();
         auto tls_context = merovingian::homeserver::make_tls_server_context(certificate.certificate_file,
                                                                             certificate.private_key_file);
         REQUIRE(tls_context.ok());

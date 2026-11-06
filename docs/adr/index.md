@@ -496,3 +496,5 @@
 * [0524 - The runtime mutex implements its recursion over std::mutex](0524-the-runtime-mutex-implements-its-recursion-over-std-mutex.md)
 * [0525 - A cache that is not thread-safe is not hidden behind const](0525-a-cache-that-is-not-thread-safe-is-not-hidden-behind-const.md)
 * [0526 - The correlation slot holds the context by value](0526-the-correlation-slot-holds-the-context-by-value.md)
+* [0527 - CodeQL drops every result on vendored and build directories](0527-codeql-drops-every-result-on-vendored-and-build-directories.md)
+* [0528 - CodeQL drops path injection sourced only from command-line arguments](0528-codeql-drops-path-injection-sourced-only-from-command-line-arguments.md)

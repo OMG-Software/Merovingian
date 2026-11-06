@@ -56,4 +56,4 @@ the object.
 
 ## Links
 
-* Refines the `CorrelationScope` change in 0.12.77 (`CHANGELOG.md`)
+* Refines the `CorrelationScope` change in 0.12.79 (`CHANGELOG.md`)

@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import re
+import shutil
+import subprocess
 import unittest
 from pathlib import Path
 
@@ -308,6 +310,33 @@ class PackagesWorkflowTests(unittest.TestCase):
         ):
             with self.subTest(path=path):
                 self.assertIn(path, script)
+
+    def test_freebsd_manifest_patch_sets_only_the_package_version(self) -> None:
+        # GIVEN the manifest, whose dependencies each carry a minimum version on a line
+        # of their own, and the sed expression the build script patches it with. An
+        # unanchored expression replaced the first version on every line, so every
+        # dependency's minimum became the package's own version.
+        sed = shutil.which("sed")
+        if sed is None:
+            self.skipTest("sed is not available")
+        script = (REPO_ROOT / "scripts" / "build-freebsd-pkg.sh").read_text(encoding="utf-8")
+        match = re.search(r'^sed "([^"\n]*(?:\\"[^"\n]*)*)" \\\n\s+packaging/freebsd/\+MANIFEST', script, re.MULTILINE)
+        self.assertIsNotNone(match, "the manifest patch is not where the test expects it")
+        expression = match.group(1).replace('\\"', '"').replace("${VERSION}", "9.8.7")
+        manifest = (REPO_ROOT / "packaging" / "freebsd" / "+MANIFEST").read_text(encoding="utf-8")
+
+        # WHEN the script's expression is applied to the manifest.
+        patched = subprocess.run(
+            [sed, expression], input=manifest, capture_output=True, text=True, check=True
+        ).stdout
+
+        # THEN the top-level version is the package's, and every other line, the
+        # dependency minimums included, is unchanged.
+        self.assertRegex(patched, r'(?m)^version: "9\.8\.7"$')
+        original_lines = [line for line in manifest.splitlines() if not line.startswith("version:")]
+        patched_lines = [line for line in patched.splitlines() if not line.startswith("version:")]
+        self.assertEqual(patched_lines, original_lines)
+        self.assertIn('openssl: {origin: security/openssl, version: "3.0.0"}', patched)
 
     def test_freebsd_package_is_installed_and_booted_before_it_is_published(self) -> None:
         # GIVEN the FreeBSD packaging job, whose package nothing has ever installed.

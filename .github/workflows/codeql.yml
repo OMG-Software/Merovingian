@@ -61,10 +61,13 @@ jobs:
           upload: never
           output: codeql-results
 
-      # Drops only cpp/unused-static-function under tests/: Catch2 registers each
-      # SCENARIO through a static object the rule cannot follow. The rule stays on
-      # for production code, and every other rule stays on for tests.
-      - name: Filter Catch2 false positives
+      # Drops only what the ADRs name, and keeps every other result:
+      # cpp/unused-static-function under tests/, which cannot follow Catch2's
+      # SCENARIO registration (ADR-0226); every result under subprojects/ and
+      # build/, code this project does not write (ADR-0527); and
+      # cpp/path-injection whose every source is a command-line argument
+      # (ADR-0528).
+      - name: Filter excluded results
         run: python3 scripts/filter_codeql_sarif.py codeql-results
 
       - name: Upload CodeQL results

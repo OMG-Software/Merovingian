@@ -1,5 +1,5 @@
 Name:           merovingian
-Version:        0.12.77
+Version:        0.12.79
 Release:        1%{?dist}
 Summary:        Secure Matrix Protocol homeserver
 
@@ -97,8 +97,11 @@ fi
 %{_sysconfdir}/merovingian/merovingian.conf.example
 
 %changelog
-* Fri Nov 06 2026 James Chapman <claude@ping.me.uk> - 0.12.77-1
+* Fri Nov 06 2026 James Chapman <claude@ping.me.uk> - 0.12.79-1
 - Split the largest multi-type files into one file per class or struct
+
+* Fri Nov 06 2026 James Chapman <claude@ping.me.uk> - 0.12.78-1
+- Clear the high CodeQL alerts open on main
 
 * Wed Nov 04 2026 James Chapman <claude@ping.me.uk> - 0.12.76-1
 - Fix the medium findings of the November project analysis
