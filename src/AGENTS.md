@@ -26,9 +26,12 @@ Reserve exceptions for truly unexpected conditions (programmer errors caught in 
 
 ## Where module-local helpers go
 
-- Used only within one `.cpp` → anonymous `namespace { }` in that `.cpp`
-- Shared across multiple `.cpp` files in the same module → module-internal header in `include/merovingian/<module>/`
-  (exposed in the header but not intended as public API)
+- Used only within one `.cpp` → anonymous `namespace { }` in that `.cpp`, including helper classes and
+  structs; these do not count against the one-type-per-file rule
+- Shared across multiple `.cpp` files in the same module → move it, never copy it. A shared helper class or
+  struct gets its own `include/merovingian/<module>/<TypeName>.hpp` (and `.cpp` when needed); shared helper
+  functions go in a module-internal header in `include/merovingian/<module>/` (exposed in the header but not
+  intended as public API). See [ADR-0513](../docs/adr/0513-single-file-helper-types-stay-in-the-anonymous-namespace.md)
 
 ## Includes
 
