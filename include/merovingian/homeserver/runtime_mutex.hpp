@@ -43,9 +43,11 @@ public:
     RuntimeMutex(RuntimeMutex&&) = delete;
     auto operator=(RuntimeMutex&&) -> RuntimeMutex& = delete;
 
-    void lock();
-    [[nodiscard]] auto try_lock() -> bool;
-    void unlock();
+    // `const` so a `HomeserverRuntime const&` can still be locked; the state
+    // they change is `mutable` below and is the mutex's own, not the runtime's.
+    void lock() const;
+    [[nodiscard]] auto try_lock() const -> bool;
+    void unlock() const;
 
     // True when the calling thread owns this mutex at any recursion depth.
     //
@@ -57,16 +59,20 @@ public:
     [[nodiscard]] auto held_by_current_thread() const noexcept -> bool;
 
 private:
-    std::recursive_mutex mutex_{};
+    mutable std::recursive_mutex mutex_{};
 
     // The owning thread, or a default-constructed id when the mutex is
     // unheld. Written only by the owner while `mutex_` is held; read by any
     // thread, so it is atomic.
-    std::atomic<std::thread::id> owner_{std::thread::id{}};
+    mutable std::atomic<std::thread::id> owner_{std::thread::id{}};
 
     // Recursion depth of the current owner. Only ever read or written while
     // `mutex_` is held, so it needs no synchronisation of its own.
-    std::size_t depth_{0U};
+    mutable std::size_t depth_{0U};
 };
+
+// Every lock of the runtime mutex uses this type, so the lock is const-correct
+// and `RequestLockScope` / `RuntimeLockRelease` can recognise it.
+using RuntimeLock = std::unique_lock<RuntimeMutex const>;
 
 } // namespace merovingian::homeserver

@@ -136,7 +136,7 @@ auto timestamp_is_closer(std::int64_t candidate, std::optional<std::int64_t> cur
     return candidate <= ts && (!current.has_value() || candidate > *current);
 }
 
-auto acquire_closer_timestamp_event(HomeserverRuntime& runtime, std::unique_lock<RuntimeMutex>& guard,
+auto acquire_closer_timestamp_event(HomeserverRuntime& runtime, RuntimeLock& guard,
                                     std::string_view room_id, std::vector<std::string> const& servers, std::int64_t ts,
                                     database::TimeDirection direction, std::optional<std::int64_t> local_ts,
                                     OutboundDeadline const& deadline,

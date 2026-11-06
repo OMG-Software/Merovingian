@@ -670,7 +670,7 @@ SCENARIO("GET /_matrix/key/v2/server advertises multiple simultaneously-active s
                 secret_key_b64,
             };
             {
-                auto guard = std::unique_lock{runtime.homeserver.mutex};
+                auto guard = merovingian::homeserver::RuntimeLock{runtime.homeserver.mutex};
                 REQUIRE(merovingian::database::store_server_signing_key(runtime.homeserver.database.persistent_store,
                                                                         second_key));
                 merovingian::homeserver::reset_runtime_crypto_provider(runtime.homeserver);

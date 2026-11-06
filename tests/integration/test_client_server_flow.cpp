@@ -2159,7 +2159,7 @@ SCENARIO("GET /timestamp_to_event asks a server of the room only when its own hi
             }};
             auto const join_server = merovingian::tests::tls_mock::ScopedThreadJoin{server_thread};
             auto const acquired = [&] {
-                auto guard = std::unique_lock<merovingian::homeserver::RuntimeMutex>{rt.homeserver.mutex};
+                auto guard = merovingian::homeserver::RuntimeLock{rt.homeserver.mutex};
                 return merovingian::homeserver::acquire_closer_timestamp_event(
                     rt.homeserver, guard, room.room_id, {"remote.example.net", "second.example.net"}, 999999,
                     merovingian::database::TimeDirection::forwards, std::nullopt,

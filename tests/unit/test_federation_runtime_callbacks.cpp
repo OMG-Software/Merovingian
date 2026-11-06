@@ -1657,7 +1657,7 @@ SCENARIO("A typing EDU waits for runtime.mutex before touching typing state",
 
         WHEN("a typing EDU is delivered to the sink while the lock is held, then the lock is released")
         {
-            auto held = std::unique_lock<merovingian::homeserver::RuntimeMutex>{runtime->mutex};
+            auto held = merovingian::homeserver::RuntimeLock{runtime->mutex};
             // RuntimeMutex reports no waiters, so the test cannot see the sink block on it
             // without a production hook. It waits until the thread is running the sink, then
             // gives it time it would need only to finish unlocked work. With the fix the sink
@@ -1680,7 +1680,7 @@ SCENARIO("A typing EDU waits for runtime.mutex before touching typing state",
                 REQUIRE_FALSE(
                     finished_while_locked); // Project policy: typing state is read and written under runtime.mutex.
                 REQUIRE(status == merovingian::federation::EduDispositionStatus::accepted); // Fixture: a valid EDU.
-                auto const guard = std::unique_lock<merovingian::homeserver::RuntimeMutex>{runtime->mutex};
+                auto const guard = merovingian::homeserver::RuntimeLock{runtime->mutex};
                 REQUIRE(merovingian::homeserver::current_typing_users_in_room(*runtime, "!room:matrix.example.org") ==
                         std::vector<std::string>{"@first:matrix.example.org",
                                                  "@second:matrix.example.org"}); // Fixture: both EDUs applied.
@@ -1720,7 +1720,7 @@ SCENARIO("A presence or device-list EDU waits for runtime.mutex before touching 
 
         WHEN("the EDU is delivered to the sink while the lock is held, then the lock is released")
         {
-            auto held = std::unique_lock<merovingian::homeserver::RuntimeMutex>{runtime->mutex};
+            auto held = merovingian::homeserver::RuntimeLock{runtime->mutex};
             // As in the typing scenario: the sink cannot finish while the lock is held, so the
             // timing can only miss a regression under extreme load, never fail a correct build.
             auto entering = std::promise<void>{};

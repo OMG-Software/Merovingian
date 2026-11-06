@@ -742,7 +742,7 @@ SCENARIO("an ignored user's messages are not counted in the ignoring user's push
         {
             auto const badge = [&] {
                 auto const guard =
-                    std::unique_lock<merovingian::homeserver::RuntimeMutex>{started.runtime.homeserver.mutex};
+                    merovingian::homeserver::RuntimeLock{started.runtime.homeserver.mutex};
                 auto const ruleset = merovingian::homeserver::load_push_ruleset(
                     started.runtime.homeserver.database.persistent_store, "@alice:example.org", 200U);
                 return merovingian::homeserver::count_push_badge(started.runtime.homeserver, "@alice:example.org",

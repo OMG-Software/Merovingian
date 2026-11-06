@@ -1028,7 +1028,7 @@ SCENARIO("A validation check against the identity server holds no runtime lock a
             auto const elapsed = std::chrono::steady_clock::now() - start;
             {
                 // The runtime mutex is free: this takes it while the IS call is still pending.
-                auto const lock = std::lock_guard<merovingian::homeserver::RuntimeMutex>{runtime.homeserver.mutex};
+                auto const lock = std::lock_guard<merovingian::homeserver::RuntimeMutex const>{runtime.homeserver.mutex};
                 runtime.registration_validation_sessions.clear();
             }
             identity_server.release_stall();

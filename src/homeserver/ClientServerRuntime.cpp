@@ -2608,7 +2608,7 @@ namespace
     // `guard` is the dispatch-wide runtime lock; it is dropped around the
     // outbound call and reacquired before touching the store again, per
     // src/homeserver/AGENTS.md "The runtime lock and blocking calls".
-    [[nodiscard]] auto unbind_threepid_for_deactivation(ClientServerRuntime& rt, std::unique_lock<RuntimeMutex>& guard,
+    [[nodiscard]] auto unbind_threepid_for_deactivation(ClientServerRuntime& rt, RuntimeLock& guard,
                                                         std::string_view user_id, std::string_view medium,
                                                         std::string_view address,
                                                         std::optional<std::string> const& requested_id_server) -> bool
@@ -11302,7 +11302,7 @@ namespace
 
     // ADR-0306: admit_client_proxy, but waiting for a slot until `deadline` (admit_client_outbound_proxy_waiting).
     [[nodiscard]] auto admit_client_proxy_waiting(ClientServerRuntime& rt, LocalHttpRequest const& req,
-                                                  std::unique_lock<RuntimeMutex>& guard,
+                                                  RuntimeLock& guard,
                                                   OutboundDeadline const& deadline)
         -> std::optional<http::InFlightBudget::Slot>
     {
@@ -11417,7 +11417,7 @@ namespace
     // OutboundDeadline and releases the runtime lock for each exchange. With a local answer in hand a refused slot
     // costs only the remote improvement; without one the client is told 429.
     [[nodiscard]] auto handle_timestamp_to_event(ClientServerRuntime& rt, LocalHttpRequest const& req,
-                                                 std::unique_lock<RuntimeMutex>& guard, std::string_view user_id,
+                                                 RuntimeLock& guard, std::string_view user_id,
                                                  std::string_view room_id) -> DispatchResult
     {
         auto const ts_text = query_param_value(req.target, "ts");
@@ -11670,7 +11670,7 @@ namespace
     // slot, runs under the directory deadline and releases the runtime lock for the call (src/homeserver/
     // AGENTS.md, "Client requests that call another server"). The remote's 404 is this server's 404.
     [[nodiscard]] auto remote_profile_response(ClientServerRuntime& rt, LocalHttpRequest const& req,
-                                               std::unique_lock<RuntimeMutex>& guard, std::string const& target_user,
+                                               RuntimeLock& guard, std::string const& target_user,
                                                std::string_view field) -> DispatchResult
     {
         auto const proxy_slot = admit_client_proxy(rt, req);
@@ -13544,7 +13544,7 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             // device deletion, and this prologue runs before the request lock is taken (AUTH-1),
             // so the read takes the lock itself (F-66).
             auto const device_known = [&]() {
-                auto const devices_lock = std::lock_guard<RuntimeMutex>{rt.homeserver.mutex};
+                auto const devices_lock = std::lock_guard<RuntimeMutex const>{rt.homeserver.mutex};
                 return std::ranges::any_of(
                     rt.homeserver.database.persistent_store.devices,
                     [&effective_user_id, &requested_device_id](database::PersistentDevice const& device) {
@@ -13571,7 +13571,7 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
     {
         // The audit append mutates the shared audit windows and the audit rate gate,
         // and this path runs before the request lock is taken (AUTH-1).
-        auto const audit_lock = std::lock_guard<RuntimeMutex>{rt.homeserver.mutex};
+        auto const audit_lock = std::lock_guard<RuntimeMutex const>{rt.homeserver.mutex};
         log_diagnostic_audit(rt.homeserver.database, "client_server", "request.rejected",
                              {
                                  {"method", req.method,                                       false},
@@ -13604,7 +13604,7 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
     if (req.body.size() > body_limit)
     {
         // Same as the 503 path above: the audit append needs the request lock (AUTH-1).
-        auto const audit_lock = std::lock_guard<RuntimeMutex>{rt.homeserver.mutex};
+        auto const audit_lock = std::lock_guard<RuntimeMutex const>{rt.homeserver.mutex};
         log_diagnostic_audit(rt.homeserver.database, "client_server", "request.rejected",
                              {
                                  {"method",      req.method,                                       false},
@@ -13631,7 +13631,7 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
         return dispatch_resp(req, rt, 200U, {});
     }
 
-    auto guard = std::unique_lock<RuntimeMutex>{rt.homeserver.mutex};
+    auto guard = RuntimeLock{rt.homeserver.mutex};
     // Publish the guard so a blocking network call further down the stack can
     // release it for the duration (see RuntimeLockRelease). Without this every
     // outbound federation call made while serving a client request freezes all
@@ -21101,7 +21101,7 @@ auto media_upload_authentication_refusal(ClientServerRuntime& rt, LocalHttpReque
     // application service's as_token is, and anything else must be a live
     // session. authenticated_session writes no audit row; the request is
     // refused here, so it never reaches the audited path.
-    auto const guard = std::lock_guard<RuntimeMutex>{rt.homeserver.mutex};
+    auto const guard = std::lock_guard<RuntimeMutex const>{rt.homeserver.mutex};
     auto const& token = head.access_token;
     auto const authenticated = !token.empty() && !appservice::is_masquerade_token(token) &&
                                (rt.homeserver.appservices.find_by_as_token(token) != nullptr ||
@@ -21137,7 +21137,7 @@ auto handle_client_server_request(ClientServerRuntime& rt, LocalHttpRequest cons
     {
         // Refuse before any decoder or handler runs, without catching unrelated
         // invalid_argument failures or reflecting the untrusted target (DB-6).
-        auto const guard = std::lock_guard<RuntimeMutex>{rt.homeserver.mutex};
+        auto const guard = std::lock_guard<RuntimeMutex const>{rt.homeserver.mutex};
         auto result = dispatch_err(req, rt, 400U, "M_INVALID_PARAM", "request path must not contain NUL");
         apply_cors_headers(req, result.response, rt.cors);
         return result;
@@ -21156,7 +21156,7 @@ auto handle_client_server_request(ClientServerRuntime& rt, LocalHttpRequest cons
     {
         // ADR-0315: what takes a sync position first fails here with nothing stored. Without this the
         // client's connection is dropped rather than answered.
-        auto const guard = std::lock_guard<RuntimeMutex>{rt.homeserver.mutex};
+        auto const guard = std::lock_guard<RuntimeMutex const>{rt.homeserver.mutex};
         result = dispatch_err(req, rt, 500U, "M_UNKNOWN", "sync stream counter exhausted");
         apply_cors_headers(req, result.response, rt.cors);
         return result;
@@ -21200,7 +21200,7 @@ auto ensure_sync_notifier(ClientServerRuntime& runtime) -> sync::SyncNotifier&
 
 auto push_to_device_message(ClientServerRuntime& runtime, database::PersistentToDeviceMessage message) -> bool
 {
-    auto guard = std::unique_lock<RuntimeMutex>{runtime.homeserver.mutex};
+    auto guard = RuntimeLock{runtime.homeserver.mutex};
     auto const stored =
         database::enqueue_to_device_message(runtime.homeserver.database.persistent_store, std::move(message));
     if (stored)
@@ -21213,7 +21213,7 @@ auto push_to_device_message(ClientServerRuntime& runtime, database::PersistentTo
 auto record_device_list_changes(ClientServerRuntime& runtime, std::vector<database::PersistentDeviceListChange> changes)
     -> bool
 {
-    auto guard = std::unique_lock<RuntimeMutex>{runtime.homeserver.mutex};
+    auto guard = RuntimeLock{runtime.homeserver.mutex};
     auto const stored =
         database::record_device_list_changes(runtime.homeserver.database.persistent_store, std::move(changes));
     if (stored)
@@ -21225,7 +21225,7 @@ auto record_device_list_changes(ClientServerRuntime& runtime, std::vector<databa
 
 auto record_device_list_change(ClientServerRuntime& runtime, database::PersistentDeviceListChange change) -> bool
 {
-    auto guard = std::unique_lock<RuntimeMutex>{runtime.homeserver.mutex};
+    auto guard = RuntimeLock{runtime.homeserver.mutex};
     auto const stored =
         database::record_device_list_change(runtime.homeserver.database.persistent_store, std::move(change));
     if (stored)
@@ -21237,7 +21237,7 @@ auto record_device_list_change(ClientServerRuntime& runtime, database::Persisten
 
 auto set_presence(ClientServerRuntime& runtime, database::PersistentPresence const& state) -> bool
 {
-    auto guard = std::unique_lock<RuntimeMutex>{runtime.homeserver.mutex};
+    auto guard = RuntimeLock{runtime.homeserver.mutex};
     if (!presence_enabled(runtime.homeserver))
     {
         // Nothing is tracked, so there is nothing to fail: the caller's update is accepted and dropped.
@@ -21255,7 +21255,7 @@ auto set_presence(ClientServerRuntime& runtime, database::PersistentPresence con
 
 auto run_presence_idle_sweep(ClientServerRuntime& runtime) -> std::chrono::milliseconds
 {
-    auto guard = std::unique_lock<RuntimeMutex>{runtime.homeserver.mutex};
+    auto guard = RuntimeLock{runtime.homeserver.mutex};
     auto const changed = expire_idle_presence(runtime.homeserver, presence_now_ms());
     for (auto const& state : changed)
     {
@@ -21277,7 +21277,7 @@ auto run_presence_idle_sweep(ClientServerRuntime& runtime) -> std::chrono::milli
 
 auto set_account_data(ClientServerRuntime& runtime, database::PersistentAccountData data) -> bool
 {
-    auto guard = std::unique_lock<RuntimeMutex>{runtime.homeserver.mutex};
+    auto guard = RuntimeLock{runtime.homeserver.mutex};
     // store_account_data advances next_sync_stream_id before persisting,
     // so the ensure_sync_notifier publish below wakes any long-poll
     // /sync waiter that was parked at a since_token below the new row.
@@ -21292,7 +21292,7 @@ auto set_account_data(ClientServerRuntime& runtime, database::PersistentAccountD
 auto set_global_account_data_within_cap(ClientServerRuntime& runtime, database::PersistentAccountData data,
                                         std::size_t max_global_types) -> database::CappedAccountDataStore
 {
-    auto guard = std::unique_lock<RuntimeMutex>{runtime.homeserver.mutex};
+    auto guard = RuntimeLock{runtime.homeserver.mutex};
     auto const outcome = database::store_global_account_data_within_cap(runtime.homeserver.database.persistent_store,
                                                                         std::move(data), max_global_types);
     if (outcome == database::CappedAccountDataStore::stored)
@@ -21307,7 +21307,7 @@ auto expire_typing_notifications(ClientServerRuntime& runtime, std::chrono::stea
 {
     auto constexpr shortest_wait = std::chrono::milliseconds{250};
     auto constexpr longest_wait = std::chrono::milliseconds{5000};
-    auto guard = std::unique_lock<RuntimeMutex>{runtime.homeserver.mutex};
+    auto guard = RuntimeLock{runtime.homeserver.mutex};
     auto const expiry = expire_typing(runtime.homeserver, now);
     if (expiry.changed)
     {
@@ -21343,7 +21343,7 @@ auto expire_typing_notifications(ClientServerRuntime& runtime, std::chrono::stea
 auto set_room_account_data_within_cap(ClientServerRuntime& runtime, database::PersistentAccountData data,
                                       std::size_t max_room_types) -> database::CappedAccountDataStore
 {
-    auto guard = std::unique_lock<RuntimeMutex>{runtime.homeserver.mutex};
+    auto guard = RuntimeLock{runtime.homeserver.mutex};
     auto const outcome = database::store_room_account_data_within_cap(runtime.homeserver.database.persistent_store,
                                                                       std::move(data), max_room_types);
     if (outcome == database::CappedAccountDataStore::stored)

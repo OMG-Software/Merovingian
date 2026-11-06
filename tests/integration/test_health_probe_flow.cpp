@@ -127,7 +127,7 @@ SCENARIO("GET /_merovingian/health answers 200 with a fixed body and no credenti
         {
             auto response = std::string{};
             {
-                auto const held = std::unique_lock<merovingian::homeserver::RuntimeMutex>{runtime.homeserver.mutex};
+                auto const held = merovingian::homeserver::RuntimeLock{runtime.homeserver.mutex};
                 response =
                     exchange(port, "GET /_merovingian/health HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n");
             }

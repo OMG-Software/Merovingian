@@ -370,7 +370,7 @@ struct HomeserverRuntime final
     // `RuntimeLockRelease` (request_lock.hpp) to release it — the mutex is
     // recursive, and releasing a single level by hand is what produced the
     // deadlocks in 0.12.1, 0.12.3 and 0.12.6.
-    mutable RuntimeMutex mutex{};
+    RuntimeMutex mutex{};
     // Established only by the outbound join RAII lease, before releasing mutex.
     // Same-room overlapping joins are refused; startup moves have no leases.
     std::map<std::string, PendingFederatedJoin, std::less<>> pending_federated_joins{};

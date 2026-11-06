@@ -135,7 +135,7 @@ SCENARIO("a login cannot use a password invalidated during Argon2id verification
         auto raced_login = merovingian::homeserver::OperationResult{};
         auto login_thread = merovingian::tests::JoiningThreads{};
         login_thread.emplace_back([&] {
-            auto guard = std::unique_lock<merovingian::homeserver::RuntimeMutex>{runtime.mutex};
+            auto guard = merovingian::homeserver::RuntimeLock{runtime.mutex};
             auto const request_lock = merovingian::homeserver::RequestLockScope{guard};
             login_started.release();
             raced_login = merovingian::homeserver::login_local_user(runtime, alice_user_id, old_password,
@@ -149,7 +149,7 @@ SCENARIO("a login cannot use a password invalidated during Argon2id verification
             // around the real Argon2id verification. Winning it before the
             // login re-acquires proves that the password change overlaps that
             // verification rather than merely following it.
-            auto guard = std::unique_lock<merovingian::homeserver::RuntimeMutex>{runtime.mutex};
+            auto guard = merovingian::homeserver::RuntimeLock{runtime.mutex};
             REQUIRE_FALSE(login_done.load(std::memory_order_acquire));
 
             auto const previous_capacity = runtime.database.users.capacity();

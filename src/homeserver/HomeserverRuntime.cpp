@@ -1444,7 +1444,7 @@ auto evaluate_inbound_federation_policy(HomeserverRuntime& runtime, std::string_
     auto held_for_review = false;
     auto blocked_by_local_policy = false;
     {
-        auto const guard = std::unique_lock<RuntimeMutex>{runtime.mutex};
+        auto const guard = RuntimeLock{runtime.mutex};
         auto const local_rule = find_policy_rule(runtime, "federation", origin);
         held_for_review = local_rule.has_value() && local_rule->action == "quarantine";
         blocked_by_local_policy =
