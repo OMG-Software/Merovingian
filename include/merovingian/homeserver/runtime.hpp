@@ -14,6 +14,25 @@
 #include "merovingian/federation/edu_idempotence.hpp"
 #include "merovingian/federation/inbound_request.hpp"
 #include "merovingian/federation/server_discovery.hpp"
+// PHASE-B: forwarding includes, removed when consumers include the new headers directly.
+#include "merovingian/homeserver/ActiveServerSigningKeySecret.hpp"
+#include "merovingian/homeserver/AppserviceDeliveryBackoff.hpp"
+#include "merovingian/homeserver/AppserviceEphemeralItem.hpp"
+#include "merovingian/homeserver/AppserviceEphemeralQueue.hpp"
+#include "merovingian/homeserver/AppservicePendingEphemeral.hpp"
+#include "merovingian/homeserver/InboundTypingUser.hpp"
+#include "merovingian/homeserver/KeyServerCache.hpp"
+#include "merovingian/homeserver/LocalDatabase.hpp"
+#include "merovingian/homeserver/LocalRoom.hpp"
+#include "merovingian/homeserver/LocalUser.hpp"
+#include "merovingian/homeserver/OperationResult.hpp"
+#include "merovingian/homeserver/PendingFederatedJoin.hpp"
+#include "merovingian/homeserver/PendingStreamOrdering.hpp"
+#include "merovingian/homeserver/PublishedStreamOrdering.hpp"
+#include "merovingian/homeserver/RuntimeStartOptions.hpp"
+#include "merovingian/homeserver/SessionRefreshResult.hpp"
+#include "merovingian/homeserver/TestOnlyForcedOutboundResolution.hpp"
+#include "merovingian/homeserver/TypingExpiry.hpp"
 #include "merovingian/homeserver/client_outbound_proxy.hpp"
 #include "merovingian/homeserver/media_upload_notifier.hpp"
 #include "merovingian/homeserver/remote_media_fetch_coalescer.hpp"
@@ -71,165 +90,6 @@ constexpr std::size_t room_mutex_stripe_count = 256U;
 // Forward declaration — full type in federation_proxy.hpp, included by runtime.cpp.
 class FederationProxy;
 
-// Thread-safe cache for the signed /_matrix/key/v2/server response.
-// Uses its own mutex so the response can be served without holding the
-// global runtime mutex — Synapse's ServerKeyFetcher times out (~20 s)
-// if a concurrent make_join round-trip holds the lock for too long.
-// Wrapped in unique_ptr by callers so containing structs stay moveable.
-struct KeyServerCache final
-{
-    // Returns the cached response, or nullopt if the cache is empty or the
-    // document is due for re-publication. `now_ms` is the current wall clock in
-    // milliseconds. Staleness matters because the cached document carries a
-    // valid_until_ts: a server that keeps serving one document forever ends up
-    // advertising a window that has already elapsed, and peers then reject every
-    // signature it makes. Returning nullopt sends the caller down the slow path,
-    // which re-publishes and re-fills the cache.
-    [[nodiscard]] auto load(std::uint64_t now_ms) const -> std::optional<std::string>
-    {
-        auto const lk = std::lock_guard{mutex_};
-        if (value_.empty() || now_ms > refresh_after_ms_)
-        {
-            return std::nullopt;
-        }
-        return value_;
-    }
-
-    // Atomically replaces the cached response. `refresh_after_ms` is the wall
-    // clock after which the document must be re-published before it is served
-    // again.
-    auto store(std::string value, std::uint64_t refresh_after_ms) -> void
-    {
-        auto const lk = std::lock_guard{mutex_};
-        value_ = std::move(value);
-        refresh_after_ms_ = refresh_after_ms;
-    }
-
-private:
-    mutable std::mutex mutex_{};
-    std::string value_{};
-    std::uint64_t refresh_after_ms_{0U};
-};
-
-struct LocalUser final
-{
-    std::string user_id{};
-    std::string password_hash{};
-    bool locked{false};
-    bool suspended{false};
-    bool admin{false};
-    // Permanent account closure (POST /account/deactivate). Unlike locked and
-    // suspended this is irreversible, and the localpart is never reissued.
-    bool deactivated{false};
-};
-
-// When the appservice drainer may next try an appservice that has just failed, and the delay it
-// will apply if that attempt fails too (doubling from 1 s up to a 5 minute cap).
-struct AppserviceDeliveryBackoff final
-{
-    std::chrono::steady_clock::time_point retry_at{};
-    std::chrono::milliseconds delay{0};
-};
-
-// Ephemeral data (m.typing, m.receipt, m.presence) waiting to ride the next transaction to one
-// appservice that set `receive_ephemeral` (R08, ADR-0190). In memory only and bounded: ephemeral
-// data describes the present, so a restart or an overflow loses nothing worth keeping, and
-// persisting it would put one database write behind every typing indicator.
-//
-// `key` is what makes two items the same fact about the present (one room's typing list, one
-// user's presence, one user's receipt of one type in one thread). A newer item with the same key
-// replaces the older one, so a chatty room cannot fill the queue with states already superseded.
-struct AppserviceEphemeralItem final
-{
-    std::string key{};
-    std::string json{}; // one serialized client-format event, `room_id` included when room-scoped
-};
-
-// Its implicit move can throw under libstdc++ (std::deque member); see ADR-0268 before changing that.
-struct AppserviceEphemeralQueue final
-{
-    std::deque<AppserviceEphemeralItem> items{};
-    // Items discarded because the queue was full, since the process started (a metric).
-    std::uint64_t dropped{0U};
-};
-
-// The ephemeral items attached to the transaction currently in flight for one appservice, kept so
-// that a retry under the same transaction ID carries exactly the same items ("MUST NOT alter ...
-// events they were going to send within that transaction ID on retries"). `events_free` marks a
-// transaction that carries no event (ephemeral data alone); its ID comes from the cursor's
-// next_txn_id and it is never persisted, so a restart forgets it.
-struct AppservicePendingEphemeral final
-{
-    std::uint64_t txn_id{0U};
-    bool events_free{false};
-    std::vector<std::string> items{};
-};
-
-struct LocalRoom final
-{
-    std::string room_id{};
-    std::string creator_user_id{};
-    // The joined members; written only through RoomMembers' methods (ADR-0496).
-    RoomMembers members{};
-    // True when the room has been explicitly published to the public room directory
-    // via PUT /_matrix/client/v3/directory/list/room/{roomId}. Private by default.
-    bool directory_public{false};
-};
-
-// Its implicit move can throw under libstdc++ (std::deque member); see ADR-0268 before changing that.
-struct LocalDatabase final
-{
-    bool opened{false};
-    bool schema_validated{false};
-    std::uint32_t schema_version{0U};
-    std::uint64_t next_session_id{1U};
-    std::uint64_t next_event_id{1U};
-    std::vector<std::string> tables{};
-    std::vector<LocalUser> users{};
-    SessionTable sessions{};
-    std::vector<LocalRoom> rooms{};
-    // Position in `rooms` of each room ID (ADR-0496): the first room holding the ID. Trusted only while
-    // `room_indexed_rows == rooms.size()` and the room a position names carries the ID asked for; a lookup that
-    // fails either test scans and rebuilds, so a caller that edits `rooms` directly (hydration, a test) loses speed,
-    // never correctness. `mutable` because lookups are const: every reader holds `runtime.mutex`.
-    mutable std::unordered_map<std::string, std::size_t> room_position_index{};
-    mutable std::size_t room_indexed_rows{0U};
-    // Bounded window over the most recent `database::max_in_memory_audit_events`
-    // audit events (AUTH-1); the oldest is dropped first. The durable copy of
-    // every event is the audit_log table, reachable through `persistent_store`.
-    std::deque<observability::AuditLogEvent> audit_events{};
-    // Rate-caps the audit events an unauthenticated client can trigger on every
-    // request (AUTH-1, ADR-0080). Guarded by the runtime mutex like the audit rows.
-    observability::AuditRateGate audit_rate_gate{};
-    database::PersistentStore persistent_store{};
-    // True in a federation worker (the `federation_worker` load profile), whose
-    // in-memory `server_signing_keys` is a snapshot taken at start-up: its remote
-    // key resolver then re-reads a server's public key rows from the database
-    // before it fetches (`federation::KeyMirrorRefresh::on_miss`). Main keeps
-    // the authoritative mirror and leaves it false.
-    bool remote_signing_keys_read_through{false};
-    core::SecretBuffer signing_secret_key{};
-    // All currently-active server signing secrets loaded into the runtime, keyed
-    // by key_id. Used to build the multi-key Ed25519 provider so events and
-    // federation responses can be signed with any active key.
-    std::vector<std::pair<std::string, core::SecretBuffer>> signing_secret_keys{};
-    // Keyed secret used to sign opaque pagination tokens issued by endpoints such
-    // as GET /_matrix/client/v1/mutual_rooms. Derived once at runtime start from
-    // the server signing key so tokens are server-scoped and survive restarts.
-    std::optional<core::SecretBuffer> mutual_rooms_token_key{};
-    // Cache of the signed /_matrix/key/v2/server response, protected by its own
-    // internal mutex so the federation key endpoint can be served without acquiring
-    // the global runtime mutex. Wrapped in unique_ptr so LocalDatabase remains
-    // move-constructible (std::mutex is not moveable).
-    std::unique_ptr<KeyServerCache> key_server_cache{std::make_unique<KeyServerCache>()};
-    std::uint64_t next_stream_ordering{1U};
-    // ADR-0247: orderings reserved for events that are committed with
-    // runtime.mutex released and not yet applied to the store. No sync
-    // position passes the oldest of them (visible_stream_position). Guarded by
-    // runtime.mutex; entries are added and removed only by PendingStreamOrdering.
-    std::multiset<std::uint64_t> pending_stream_orderings{};
-};
-
 // The room with `room_id` in `database.rooms` (the first, if two share the ID), or nullptr. One hash lookup on a hit; a
 // miss is settled by a scan, so the answer is the same as scanning `rooms` whatever has edited it (ADR-0496). The
 // caller holds runtime.mutex: the position index is written from a const lookup.
@@ -273,29 +133,6 @@ constexpr auto default_typing_timeout = std::chrono::milliseconds{30'000};
 constexpr auto max_typing_timeout = std::chrono::milliseconds{120'000};
 constexpr auto federation_typing_timeout = std::chrono::milliseconds{60'000};
 
-struct InboundTypingUser final
-{
-    std::string room_id{};
-    std::string user_id{};
-    bool typing{false};
-    std::uint64_t stream_id{0U};
-    // When this typing stops on its own. The default never expires; every path that sets
-    // `typing` to true sets it.
-    std::chrono::steady_clock::time_point expires_at{std::chrono::steady_clock::time_point::max()};
-};
-
-// What expire_typing changed.
-struct TypingExpiry final
-{
-    // Some room's typing users changed, so its typing stream position advanced.
-    bool changed{false};
-    // This server's own users whose typing expired: remote servers in their rooms are told
-    // they stopped.
-    std::vector<InboundTypingUser> expired_local{};
-    // The earliest expiry still pending, if any.
-    std::optional<std::chrono::steady_clock::time_point> next_expiry{};
-};
-
 // RAII scope guard that wires the active `LocalDatabase` into the
 // audit sink on construction and *clears* the install on destruction
 // (if the install still belongs to this scope). The full definition
@@ -305,46 +142,11 @@ struct TypingExpiry final
 // this header. See the class definition for the full contract.
 class LocalDatabaseScope;
 
-// Test-only override for a single outbound federation destination.
-//
-// perform_sync_outbound_call (room_service.cpp) always resolves a destination
-// through federation::discover_server(), which unconditionally rejects
-// loopback and private-range addresses (src/federation/security.cpp
-// ip_address_is_private_or_loopback) unless security.federation.
-// allow_private_ip_ranges names an RFC 1918 or ULA network (ADR-0231), and
-// never loopback — and production outbound calls never populate an in-memory
-// CA bundle, so a
-// self-signed test certificate would fail TLS verification even if discovery
-// succeeded. There is therefore no way to integration-test a live federation
-// round trip against a local test server without this seam.
-//
-// When HomeserverRuntime::test_forced_outbound_resolution has an entry keyed
-// by the transaction's destination server_name, perform_sync_outbound_call
-// uses it directly instead of calling discover_server(), and its
-// trusted_ca_pem is forwarded to the outbound TLS call in place of the
-// system trust store. No production construction path (start_runtime,
-// main.cpp, the federation worker) ever populates this map — it is empty by
-// default, so production SSRF and TLS-trust behaviour is unchanged. Used
-// exclusively by tests/integration/test_join_room_flow.cpp.
-struct TestOnlyForcedOutboundResolution final
-{
-    std::string resolved_host{};
-    std::uint16_t resolved_port{8448U};
-    std::vector<std::string> pinned_addresses{};
-    std::string trusted_ca_pem{};
-};
-
 // FED-11: solicited outbound joins own bounded, transient receipt queues. These
 // are never database state. Guard every access with HomeserverRuntime::mutex.
 constexpr auto max_pending_join_rooms = std::size_t{32U};
 constexpr auto max_pending_join_pdus = std::size_t{32U};
 constexpr auto max_pending_join_json_bytes = std::size_t{512U * 1024U};
-
-struct PendingFederatedJoin final
-{
-    std::vector<federation::InboundPduEnvelope> pdus{};
-    std::size_t json_bytes{0U};
-};
 
 struct HomeserverRuntime final
 {
@@ -695,86 +497,6 @@ auto reap_completed_futures(std::vector<std::future<void>>& futures) -> void;
 // runtime.mutex held, after setting `expires_at` (R13, ADR-0199).
 auto wake_typing_expiry(HomeserverRuntime& rt) -> void;
 
-struct RuntimeStartOptions final
-{
-    config::Config config{};
-    database::SchemaState existing_state{};
-    // True for the federation worker (ADR-0078): the runtime loads no server
-    // signing secret, mints no key, publishes no key document, and installs a
-    // crypto::RefusingEd25519Provider that fails every sign and verify request.
-    // The worker never signs and never asks main to sign for it.
-    bool signing_disabled{false};
-    // ADR-0062 part 2: which tables to hydrate from the store. The federation
-    // worker sets this to TableLoadProfile::federation_worker before calling
-    // start_runtime so it never pulls server_signing_keys and the other
-    // credential-bearing tables into its own process memory, regardless of
-    // which database credentials it connects with. See
-    // database::table_load_profile_includes.
-    database::TableLoadProfile database_load_profile{database::TableLoadProfile::full};
-    // True when the caller has already hardened this process and installed a
-    // seccomp filter that the main-process controls would violate. The
-    // federation worker sets it when federation.worker.apply_hardening is on:
-    // its worker filter denies setrlimit (ISO-2, ADR-0112), so re-applying
-    // the main profile's core-dump limit here kills the worker with SIGSYS.
-    bool process_hardening_applied_by_caller{false};
-    // FED-10, ADR-0153: the number of federation worker shards this runtime is
-    // one of. A worker passes federation.worker.shards so its key-resolution
-    // budgets are its share of the configured ones; main leaves it at 1.
-    std::uint32_t key_resolution_shards{1U};
-    // False for the federation worker (ADR-0296): the runtime reads no
-    // `appservice.registration_files`, holds no as_token or hs_token, and
-    // creates no appservice sender user. Registrations are secrets kept outside
-    // the worker's filesystem grants, and everything that consults the registry
-    // runs in the main process.
-    bool load_appservices{true};
-};
-
-struct RuntimeStartResult final
-{
-    bool started{false};
-    std::string reason{};
-    HomeserverRuntime runtime{};
-};
-
-struct OperationResult final
-{
-    bool ok{false};
-    std::uint16_t status{500U};
-    std::string value{};
-    std::string reason{};
-    // Milliseconds the caller should wait before retrying, for results that are
-    // throttled rather than refused. Carried here so a 429 can be rendered as the
-    // Matrix-standard M_LIMIT_EXCEEDED with retry_after_ms instead of collapsing
-    // into the generic failure mapping, which would drop the delay this server
-    // has already computed. Zero for every other outcome.
-    std::uint32_t retry_after_ms{0U};
-    // The Matrix errcode for a refusal the status alone cannot name, such as
-    // 400 M_TOO_LARGE for an event over the spec's size limits (CSAZ-9). Empty
-    // means the caller maps the status to its usual errcode.
-    std::string errcode{};
-    // R17: for a successful media download, the filename to serve in
-    // Content-Disposition (the upload's, or the remote server's); empty when none.
-    std::string media_filename{};
-};
-
-struct SessionRefreshResult final
-{
-    bool ok{false};
-    std::uint16_t status{500U};
-    std::string access_token{};
-    std::string refresh_token{};
-    std::string user_id{};
-    std::string device_id{};
-    std::string reason{};
-    // Matrix error code the dispatcher must render for a refusal, when the
-    // generic status-to-errcode mapping would be wrong. A locked account is a
-    // spec MUST of M_USER_LOCKED + soft_logout (§Account locking), which is
-    // neither M_UNKNOWN_TOKEN nor M_UNKNOWN. Empty means "use the default
-    // mapping".
-    std::string errcode{};
-    bool soft_logout{false};
-};
-
 [[nodiscard]] auto bootstrap_local_database(config::Config const& config) -> LocalDatabase;
 [[nodiscard]] auto bootstrap_local_database(config::Config const& config, database::SchemaState existing_state,
                                             database::TableLoadProfile profile = database::TableLoadProfile::full)
@@ -792,75 +514,18 @@ struct SessionRefreshResult final
 // first; the caller may leave some unused.
 [[nodiscard]] auto allocate_stream_orderings(LocalDatabase& database, std::size_t count) -> std::uint64_t;
 
-// ADR-0247: marks `ordering` as reserved for an event not yet applied to the
-// store, for as long as it lives. Construct it right after allocating the
-// ordering, and destroy it once the event is applied (or abandoned), both with
-// runtime.mutex held: a path that commits with the mutex released must hold one
-// across the commit, or a sync in that window hands out a position past an
-// event the client then never receives.
-class PendingStreamOrdering final
-{
-public:
-    PendingStreamOrdering(LocalDatabase& database, std::uint64_t ordering);
-    ~PendingStreamOrdering();
-
-    PendingStreamOrdering(PendingStreamOrdering const&) = delete;
-    auto operator=(PendingStreamOrdering const&) -> PendingStreamOrdering& = delete;
-    PendingStreamOrdering(PendingStreamOrdering&&) = delete;
-    auto operator=(PendingStreamOrdering&&) -> PendingStreamOrdering& = delete;
-
-private:
-    LocalDatabase& m_database;
-    std::uint64_t m_ordering;
-};
-
-// ADR-0247, ADR-0437: a PendingStreamOrdering whose end also tells the syncs waiting on the
-// event stream. Ending a reservation can move the visible position past later events already
-// applied, whether its own event was applied or its commit failed. If the visible position is then
-// above this ordering, events were held behind it whose writers' scoped publishes ran too early
-// (they saw a lower position), so it broadcasts. Otherwise it moves the positions with an empty
-// scope and wakes no user: the event's own scoped publish (the `pdu_sink`) wakes its audience, and
-// a failed commit has nothing to announce. No wake-up is lost: an event not visible at its own
-// publish is above some pending ordering, and when the last such ordering ends `visible` reaches
-// that event, above the ordering just released, so that release broadcasts. Use it on every path
-// that commits with runtime.mutex released; the path publishes its own scoped wake after the event
-// is applied. Its destructor takes runtime.mutex itself (it is recursive), so it may end with a
-// room stripe held.
-class PublishedStreamOrdering final
-{
-public:
-    PublishedStreamOrdering(HomeserverRuntime& runtime, std::uint64_t ordering);
-    ~PublishedStreamOrdering() noexcept;
-
-    PublishedStreamOrdering(PublishedStreamOrdering const&) = delete;
-    auto operator=(PublishedStreamOrdering const&) -> PublishedStreamOrdering& = delete;
-    PublishedStreamOrdering(PublishedStreamOrdering&&) = delete;
-    auto operator=(PublishedStreamOrdering&&) -> PublishedStreamOrdering& = delete;
-
-private:
-    HomeserverRuntime& m_runtime;
-    std::uint64_t m_ordering;
-    std::optional<PendingStreamOrdering> m_pending;
-};
-
 // The newest event stream position a sync token, a long-poll check or a
 // sliding-sync pos may name: just below the oldest pending ordering, or the
 // newest allocated one when none is pending. Read with runtime.mutex held.
 [[nodiscard]] auto visible_stream_position(LocalDatabase const& database) noexcept -> std::uint64_t;
 // The accounts on this server, as a set, so a roster of any size is classified in one pass.
 [[nodiscard]] auto local_user_ids(LocalDatabase const& database) -> std::unordered_set<std::string_view>;
+struct RuntimeStartResult;
+
 [[nodiscard]] auto start_runtime(config::Config const& config) -> RuntimeStartResult;
 [[nodiscard]] auto start_runtime(config::Config const& config, database::SchemaState existing_state)
     -> RuntimeStartResult;
 [[nodiscard]] auto start_runtime(RuntimeStartOptions opts) -> RuntimeStartResult;
-// Decrypted material for one currently-active server signing key, returned by
-// active_server_signing_key_secrets and consumed by reset_runtime_crypto_provider.
-struct ActiveServerSigningKeySecret final
-{
-    std::string key_id{};
-    core::SecretBuffer secret{};
-};
-
 // Loads and decrypts every currently-active server signing secret from the
 // persistent store. Secrets are sorted with the preferred key first.
 [[nodiscard]] auto active_server_signing_key_secrets(HomeserverRuntime& runtime)
@@ -893,3 +558,6 @@ auto apply_runtime_membership(LocalDatabase& database, std::string_view room_id,
                               std::string_view membership) -> void;
 
 } // namespace merovingian::homeserver
+
+// PHASE-B: forwarding includes, removed when consumers include the new headers directly.
+#include "merovingian/homeserver/RuntimeStartResult.hpp"
