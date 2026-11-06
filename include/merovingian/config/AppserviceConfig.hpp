@@ -20,6 +20,12 @@ namespace merovingian::config
 struct AppserviceConfig final
 {
     std::vector<std::string> registration_files{};
+    // Hosts, besides loopback IP literals, to which a registration `url` may use plain http (ADR-0515).
+    // Each entry is a bare host name or IP literal, matched exactly and ASCII-case-insensitively. The
+    // homeserver sends the hs_token in every request, so a listed host receives it in cleartext: list
+    // only a host reached over a network you trust (a container host alias, a private bridge network).
+    // Empty by default. Restart required, like registration_files.
+    std::vector<std::string> allow_cleartext_hosts{};
     std::uint32_t connect_timeout_seconds{10U};
     std::uint32_t total_timeout_seconds{30U};
     std::string response_max_size{"16MiB"};

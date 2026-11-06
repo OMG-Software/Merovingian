@@ -731,6 +731,10 @@ auto build_reload_plan(Config const& current, Config const& next) -> ReloadPlan
     {
         add_change(plan, "appservice.registration_files");
     }
+    if (current.appservice().allow_cleartext_hosts != next.appservice().allow_cleartext_hosts)
+    {
+        add_change(plan, "appservice.allow_cleartext_hosts");
+    }
 
     if (!(current.client_rate_limits().default_per_ip == next.client_rate_limits().default_per_ip))
     {
