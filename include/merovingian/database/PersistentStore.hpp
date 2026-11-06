@@ -82,12 +82,14 @@
 #include <cstdint>
 #include <deque>
 #include <functional>
+#include <list>
 #include <memory>
 #include <mutex>
 #include <optional>
 #include <span>
 #include <string>
 #include <string_view>
+#include <type_traits>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -541,10 +543,10 @@ struct PersistentStore final
     std::vector<PersistentPendingMediaUpload> pending_media_uploads{};
     // In-memory window over the most recent `max_in_memory_audit_events` audit
     // rows (AUTH-1). The database table is the durable, complete record; this
-    // deque is a bounded mirror for the admin views, so an unauthenticated flood
+    // list is a bounded mirror for the admin views, so an unauthenticated flood
     // cannot grow process memory. Append through `append_audit_event`, and load
     // through `remember_audit_event`, never by push_back.
-    std::deque<PersistentAuditEvent> audit_log{};
+    std::list<PersistentAuditEvent> audit_log{};
     // Rows that were appended and have since been evicted from `audit_log`.
     // `audit_log.size() + audit_log_evicted` is the number of rows this store has
     // seen since it was created or hydrated.
@@ -686,6 +688,9 @@ struct PersistentStore final
     // prove that a batch of M messages costs one pass over the queue, not one per message (F-13).
     std::uint64_t to_device_rows_examined{0U};
 };
+
+static_assert(std::is_nothrow_move_constructible_v<PersistentStore> &&
+              std::is_nothrow_move_assignable_v<PersistentStore>);
 
 // Serialise a token expiry time_point to its TEXT column form (epoch-ms decimal
 // string, empty for no expiry) and parse it back. Shared by the INSERT paths and

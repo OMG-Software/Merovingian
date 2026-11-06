@@ -54,6 +54,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <iterator>
 #include <string>
 #include <tuple>
 #include <vector>
@@ -2981,7 +2982,7 @@ SCENARIO("A rate-limited request preserves both policy audit events when diagnos
                     return header.first == "Retry-After" && std::stoul(header.second) > 0U;
                 }));
                 auto const& audit = runtime.homeserver.database.persistent_store.audit_log;
-                auto const begin = audit.begin() + static_cast<std::ptrdiff_t>(audit_events_before);
+                auto const begin = std::next(audit.begin(), static_cast<std::ptrdiff_t>(audit_events_before));
                 auto const end = audit.end();
                 REQUIRE(std::ranges::count_if(begin, end, [](auto const& event) {
                             return event.event_type == "rate_limit.exceeded";

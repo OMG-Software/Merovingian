@@ -204,7 +204,7 @@ the room ID and attempt count.
 `federation.rate_limited` (also emitted when a source address exhausts its bad-X-Matrix-signature budget, ADR-0081), `federation.duplicate`,
 `federation.membership_rejected`, `federation.pdu_rejected`,
 `federation.acl_rejected`, and the rest of that family — to
-`FederationRuntimeState::audit_events`, a bounded in-memory deque. It never
+`FederationRuntimeState::audit_events`, a bounded in-memory list. It never
 calls `database::append_audit_event`. This is a different code path from
 `append_local_audit()` (`src/homeserver/local_services.cpp`), which is what
 auth, room, media, and trust-and-safety call sites use, and which does write

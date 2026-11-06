@@ -33,6 +33,7 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <iterator>
 #include <optional>
 #include <stdexcept>
 #include <string>
@@ -1673,9 +1674,9 @@ SCENARIO("PostgreSQL audit rows outlive the in-memory window and hydrate newest-
                 REQUIRE(log.front().event_type == flood_type);
                 REQUIRE(log.front().target == "76");
                 REQUIRE(log.back().target == std::to_string(flood - 1U));
-                for (auto i = std::size_t{1U}; i < log.size(); ++i)
+                for (auto current = std::next(log.begin()); current != log.end(); ++current)
                 {
-                    REQUIRE(std::stoul(log[i].target) == std::stoul(log[i - 1U].target) + 1U);
+                    REQUIRE(std::stoul(current->target) == std::stoul(std::prev(current)->target) + 1U);
                 }
             }
         }
