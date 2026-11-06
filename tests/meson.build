@@ -408,6 +408,7 @@ shell = find_program('sh')
       'unit/test_runtime_signing_key_store.cpp',
       'unit/test_runtime_media.cpp',
       'unit/test_runtime_orphan_futures.cpp',
+      'unit/test_copyable_mutex.cpp',
       'unit/test_secret_buffer.cpp',
       'unit/test_bounded_parallel.cpp',
       'unit/test_shutdown_signal.cpp',
