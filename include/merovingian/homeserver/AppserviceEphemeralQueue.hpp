@@ -5,17 +5,20 @@
 #include "merovingian/homeserver/AppserviceEphemeralItem.hpp"
 
 #include <cstdint>
-#include <deque>
+#include <list>
+#include <type_traits>
 
 namespace merovingian::homeserver
 {
 
-// Its implicit move can throw under libstdc++ (std::deque member); see ADR-0268 before changing that.
 struct AppserviceEphemeralQueue final
 {
-    std::deque<AppserviceEphemeralItem> items{};
+    std::list<AppserviceEphemeralItem> items{};
     // Items discarded because the queue was full, since the process started (a metric).
     std::uint64_t dropped{0U};
 };
+
+static_assert(std::is_nothrow_move_constructible_v<AppserviceEphemeralQueue> &&
+              std::is_nothrow_move_assignable_v<AppserviceEphemeralQueue>);
 
 } // namespace merovingian::homeserver

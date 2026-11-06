@@ -11,11 +11,8 @@
 #include "merovingian/federation/room_read_result.hpp"
 #include "merovingian/media/LocalMediaDownloadResult.hpp"
 
-#include <condition_variable>
 #include <cstdint>
 #include <functional>
-#include <memory>
-#include <mutex>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -131,9 +128,5 @@ using ServerPolicyRefusalProvider = std::function<std::string(std::string_view s
 // and answers a hit as handled without invoking pdu_sink. Unset means every PDU goes on to the sink,
 // which still answers PduIngestionStatus::already_stored for a stored event.
 using PduStoredProbe = std::function<bool(std::string_view room_id, std::string_view event_id)>;
-using FederationRuntimeMutex = std::shared_ptr<std::recursive_mutex>; // SHARED_PTR: reviewed
-// Signalled whenever a key-resolution slot is given back. Shared like the mutex
-// it is used with, so the state stays movable.
-using FederationSlotSignal = std::shared_ptr<std::condition_variable_any>; // SHARED_PTR: reviewed — moves with mutex
 
 } // namespace merovingian::federation

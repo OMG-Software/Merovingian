@@ -110,6 +110,18 @@ namespace
         return static_cast<std::uint64_t>(duration_cast<milliseconds>(system_clock::now().time_since_epoch()).count());
     }
 
+    // Keeps the most recent `statement_capture_capacity` captured statements, dropping the oldest in one erase.
+    // The caller holds `statement_capture_mutex`.
+    auto drop_oldest_captured_statements(PersistentStore& store) -> void
+    {
+        auto& captured = store.captured_statements;
+        if (captured.size() > store.statement_capture_capacity)
+        {
+            auto const excess = static_cast<std::ptrdiff_t>(captured.size() - store.statement_capture_capacity);
+            captured.erase(captured.begin(), captured.begin() + excess);
+        }
+    }
+
 } // namespace
 
 namespace
@@ -554,18 +566,12 @@ auto write_connections_opened(PersistentStore const& store) -> std::uint64_t
         // AUTH-11: retain nothing unless a test opted in, and never more than the
         // configured capacity. Password hashes and token hashes must not outlive
         // the commit in process memory.
-        auto const lk = std::lock_guard{*store.statement_capture_mutex};
+        auto const lk = store.statement_capture_mutex.acquire();
         ++store.committed_transactions;
         if (store.statement_capture_capacity != 0U)
         {
-            for (auto const& statement : statements)
-            {
-                store.captured_statements.push_back(statement);
-                while (store.captured_statements.size() > store.statement_capture_capacity)
-                {
-                    store.captured_statements.pop_front();
-                }
-            }
+            store.captured_statements.insert(store.captured_statements.end(), statements.begin(), statements.end());
+            drop_oldest_captured_statements(store);
         }
     }
     return true;
@@ -1205,7 +1211,7 @@ auto write_connections_opened(PersistentStore const& store) -> std::uint64_t
     // C++ so it does not depend on how the backend stores secret_key.
     if (key.secret_key.empty())
     {
-        auto const lock = std::lock_guard{*store.server_signing_keys_mutex};
+        auto const lock = store.server_signing_keys_mutex.acquire();
         auto const existing =
             std::ranges::find_if(store.server_signing_keys, [&key](PersistentServerSigningKey const& row) {
                 return row.server_name == key.server_name && row.key_id == key.key_id;
@@ -1254,7 +1260,7 @@ auto write_connections_opened(PersistentStore const& store) -> std::uint64_t
     {
         return false;
     }
-    auto const lock = std::lock_guard{*store.server_signing_keys_mutex};
+    auto const lock = store.server_signing_keys_mutex.acquire();
     auto const existing =
         std::ranges::find_if(store.server_signing_keys, [&key](PersistentServerSigningKey const& row) {
             return row.server_name == key.server_name && row.key_id == key.key_id;
@@ -1284,7 +1290,7 @@ auto write_connections_opened(PersistentStore const& store) -> std::uint64_t
 [[nodiscard]] auto find_server_signing_key(PersistentStore const& store, std::string_view server_name,
                                            std::string_view key_id) -> std::optional<PersistentServerSigningKey>
 {
-    auto const lock = std::lock_guard{*store.server_signing_keys_mutex};
+    auto const lock = store.server_signing_keys_mutex.acquire();
     auto const existing =
         std::ranges::find_if(store.server_signing_keys, [server_name, key_id](PersistentServerSigningKey const& key) {
             return key.server_name == server_name && key.key_id == key_id;
@@ -1295,7 +1301,7 @@ auto write_connections_opened(PersistentStore const& store) -> std::uint64_t
 
 [[nodiscard]] auto snapshot_server_signing_keys(PersistentStore const& store) -> std::vector<PersistentServerSigningKey>
 {
-    auto const lock = std::lock_guard{*store.server_signing_keys_mutex};
+    auto const lock = store.server_signing_keys_mutex.acquire();
     return store.server_signing_keys;
 }
 
@@ -1315,7 +1321,7 @@ auto write_connections_opened(PersistentStore const& store) -> std::uint64_t
                        observability::LogEventSeverity::warning);
         return false;
     }
-    auto const lock = std::lock_guard{*store.server_signing_keys_mutex};
+    auto const lock = store.server_signing_keys_mutex.acquire();
     for (auto& row : *rows)
     {
         // Only the public columns were read. A row this process holds with a
@@ -7102,18 +7108,15 @@ auto rebuild_client_txn_index(PersistentStore& store) -> void
 
 [[nodiscard]] auto committed_transaction_count(PersistentStore const& store) -> std::uint64_t
 {
-    auto const lk = std::lock_guard{*store.statement_capture_mutex};
+    auto const lk = store.statement_capture_mutex.acquire();
     return store.committed_transactions;
 }
 
 auto enable_statement_capture(PersistentStore& store, std::size_t capacity) -> void
 {
-    auto const lk = std::lock_guard{*store.statement_capture_mutex};
+    auto const lk = store.statement_capture_mutex.acquire();
     store.statement_capture_capacity = std::min(capacity, max_statement_capture_capacity);
-    while (store.captured_statements.size() > store.statement_capture_capacity)
-    {
-        store.captured_statements.pop_front();
-    }
+    drop_oldest_captured_statements(store);
 }
 
 auto force_next_persist_failures(PersistentStore& store, std::size_t count) -> void
@@ -7128,7 +7131,7 @@ auto force_persist_failure_for_statement(PersistentStore& store, std::string_vie
 
 [[nodiscard]] auto sensitive_values_are_redacted(PersistentStore const& store) noexcept -> bool
 {
-    auto const lk = std::lock_guard{*store.statement_capture_mutex};
+    auto const lk = store.statement_capture_mutex.acquire();
     if (store.statement_capture_capacity == 0U)
     {
         return false;

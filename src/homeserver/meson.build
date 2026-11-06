@@ -43,6 +43,7 @@ homeserver_sources = files(
   'send_join_answer_authorization.cpp',
   'public_rooms.cpp',
   'HomeserverRuntime.cpp',
+  'RoomPositionIndex.cpp',
   'runtime_mutex.cpp',
   'runtime_signing_key_store.cpp',
   'space_hierarchy.cpp',

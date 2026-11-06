@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
+#include "merovingian/core/CopyableMutex.hpp"
 #include "merovingian/database/CappedAccountDataStore.hpp"
 #include "merovingian/database/DeferredPduAwaits.hpp"
 #include "merovingian/database/DeferredPduUpsert.hpp"
@@ -79,14 +80,15 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
-#include <deque>
 #include <functional>
+#include <list>
 #include <memory>
 #include <mutex>
 #include <optional>
 #include <span>
 #include <string>
 #include <string_view>
+#include <type_traits>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -338,11 +340,9 @@ struct PersistentStore final
         , committed_transactions{other.committed_transactions}
         , force_next_persist_failures{other.force_next_persist_failures}
         , force_failure_statement_names{other.force_failure_statement_names}
-        , statement_capture_mutex{std::make_unique<std::mutex>()}
         , write_connection_limit{other.write_connection_limit}
         , sqlite_write_pool{other.sqlite_write_pool}
         , postgresql_write_pool{other.postgresql_write_pool}
-        , server_signing_keys_mutex{std::make_unique<std::mutex>()}
         , next_sync_stream_id{other.next_sync_stream_id}
         , event_stream_watermark{other.event_stream_watermark}
         , max_to_device_messages_per_user_device{other.max_to_device_messages_per_user_device}
@@ -445,8 +445,6 @@ struct PersistentStore final
         committed_transactions = other.committed_transactions;
         force_next_persist_failures = other.force_next_persist_failures;
         force_failure_statement_names = other.force_failure_statement_names;
-        statement_capture_mutex = std::make_unique<std::mutex>();
-        server_signing_keys_mutex = std::make_unique<std::mutex>();
         next_sync_stream_id = other.next_sync_stream_id;
         event_stream_watermark = other.event_stream_watermark;
         max_to_device_messages_per_user_device = other.max_to_device_messages_per_user_device;
@@ -544,10 +542,10 @@ struct PersistentStore final
     std::vector<PersistentPendingMediaUpload> pending_media_uploads{};
     // In-memory window over the most recent `max_in_memory_audit_events` audit
     // rows (AUTH-1). The database table is the durable, complete record; this
-    // deque is a bounded mirror for the admin views, so an unauthenticated flood
+    // list is a bounded mirror for the admin views, so an unauthenticated flood
     // cannot grow process memory. Append through `append_audit_event`, and load
     // through `remember_audit_event`, never by push_back.
-    std::deque<PersistentAuditEvent> audit_log{};
+    std::list<PersistentAuditEvent> audit_log{};
     // Rows that were appended and have since been evicted from `audit_log`.
     // `audit_log.size() + audit_log_evicted` is the number of rows this store has
     // seen since it was created or hydrated.
@@ -622,8 +620,9 @@ struct PersistentStore final
     // (`statement_capture_capacity == 0`) unless `enable_statement_capture` is
     // called, so production retains no statement or bound parameter after it
     // commits. When enabled it holds at most `statement_capture_capacity` of the
-    // most recent statements; the oldest is dropped first.
-    std::deque<PreparedStatement> captured_statements{};
+    // most recent statements; the oldest is dropped first. A vector, not a deque, so that
+    // PersistentStore's noexcept moves cannot throw (ADR-0519); tests index it by position.
+    std::vector<PreparedStatement> captured_statements{};
     std::size_t statement_capture_capacity{0U};
     // Transactions `commit_persistent_transaction` committed over the store's life, guarded by
     // `statement_capture_mutex` (read it through `committed_transaction_count`). A test reads the difference to
@@ -642,9 +641,9 @@ struct PersistentStore final
     // Guards captured_statements and statement_capture_capacity. Written by
     // commit_persistent_transaction from multiple concurrent room-stripe paths
     // and read by sensitive_values_are_redacted. Kept separate from the room
-    // stripe locks because capture access is independent of any room. Wrapped
-    // in unique_ptr so PersistentStore remains moveable.
-    mutable std::unique_ptr<std::mutex> statement_capture_mutex{std::make_unique<std::mutex>()};
+    // stripe locks because capture access is independent of any room. Held by
+    // value (ADR-0517) so PersistentStore stays copyable and moveable; a copy gets its own mutex.
+    core::CopyableMutex statement_capture_mutex{};
     // DB-7, ADR-0154: persisted writes reuse at most this many connections
     // (database.pool_size, applied by set_write_connection_limit), instead of
     // opening one per transaction. The pool of the store's backend is created
@@ -658,9 +657,9 @@ struct PersistentStore final
     // runtime mutex released, so after start-up hydration every access goes
     // through store_server_signing_key, find_server_signing_key or
     // snapshot_server_signing_keys, which take this lock. It is never held
-    // across a database write or a network call. Wrapped in unique_ptr so
-    // PersistentStore remains moveable.
-    mutable std::unique_ptr<std::mutex> server_signing_keys_mutex{std::make_unique<std::mutex>()};
+    // across a database write or a network call. Held by value (ADR-0517) so
+    // PersistentStore stays copyable and moveable; a copy gets its own mutex.
+    core::CopyableMutex server_signing_keys_mutex{};
     // Monotonic stream id used by /sync surfaces (to_device, device_list
     // changes, presence). Incremented before each new row is persisted so
     // the row's stream_id strictly exceeds every previous one and clients
@@ -689,6 +688,9 @@ struct PersistentStore final
     // prove that a batch of M messages costs one pass over the queue, not one per message (F-13).
     std::uint64_t to_device_rows_examined{0U};
 };
+
+static_assert(std::is_nothrow_move_constructible_v<PersistentStore> &&
+              std::is_nothrow_move_assignable_v<PersistentStore>);
 
 // Serialise a token expiry time_point to its TEXT column form (epoch-ms decimal
 // string, empty for no expiry) and parse it back. Shared by the INSERT paths and

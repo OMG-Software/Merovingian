@@ -168,6 +168,10 @@ See the [header guidance](../include/merovingian/AGENTS.md) and
   acquisition. Do not release a task's slot manually: an exception can skip the
   release and block later work. See
   [ADR-0267](adr/0267-bounded-parallel-work-holds-each-slot-in-an-raii-permit.md).
+- A copyable or movable type that guards members holds `core::CopyableMutex` (and
+  `core::CopyableConditionVariable`) by value. Never keep a mutex behind a
+  `std::unique_ptr` or `std::shared_ptr`. Take the lock with `acquire()`. See
+  [ADR-0517](adr/0517-guarded-value-types-hold-their-mutex-by-value.md).
 - Do not assume that releasing a mutex also frees the request thread. Follow
   the outbound concurrency caps and deadlines in
   [HTTP transport](http-transport.md) and the security rules.

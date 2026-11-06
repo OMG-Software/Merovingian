@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
+#include "merovingian/core/CopyableConditionVariable.hpp"
+#include "merovingian/core/CopyableMutex.hpp"
 #include "merovingian/federation/BadSignatureBucket.hpp"
 #include "merovingian/federation/FederationAcceptedTransaction.hpp"
 #include "merovingian/federation/FederationKeyRecord.hpp"
@@ -16,35 +18,32 @@
 #include "merovingian/federation/third_party_invite.hpp"
 #include "merovingian/observability/AuditLogEvent.hpp"
 
-#include <condition_variable>
 #include <cstddef>
 #include <cstdint>
-#include <deque>
 #include <functional>
-#include <memory>
-#include <mutex>
+#include <list>
 #include <optional>
 #include <string_view>
+#include <type_traits>
 #include <vector>
 
 namespace merovingian::federation
 {
 
-// Its implicit move can throw under libstdc++ (std::deque member); see ADR-0268 before changing that.
 struct FederationRuntimeState final
 {
     RuntimeFederationConfig config{};
     // Protects federation-local mutable bookkeeping while homeserver-level
     // federation dispatch runs without HomeserverRuntime::mutex.
-    FederationRuntimeMutex mutex{std::make_shared<std::recursive_mutex>()};
+    core::CopyableMutex mutex{};
     std::vector<FederationRemoteRuntime> remotes{};
     // Replay-dedup ring (see #416): capped at kMaxAcceptedTransactions
     // (inbound_request.cpp) so a sustained stream of distinct transaction ids
     // cannot grow the main process's memory without bound. Entries are always
     // appended in acceptance order under federation_guard(), so the oldest
     // entry is always at the front — a plain FIFO pop_front() eviction (O(1)
-    // on a deque) is enough to keep this bounded.
-    std::deque<FederationAcceptedTransaction> accepted_transactions{};
+    // on a list) is enough to keep this bounded.
+    std::list<FederationAcceptedTransaction> accepted_transactions{};
     // Total bytes of the response_body values kept in accepted_transactions,
     // bounded by config.accepted_transaction_cache_bytes (ADR-0283).
     std::size_t accepted_transaction_bytes{0U};
@@ -54,7 +53,7 @@ struct FederationRuntimeState final
     // accepted_transactions above. unsafe_audit_events counts retained
     // entries whose reason_code carries signature/token material so
     // federation_audit_is_safe stays O(1).
-    std::deque<observability::AuditLogEvent> audit_events{};
+    std::list<observability::AuditLogEvent> audit_events{};
     std::size_t unsafe_audit_events{0U};
     RemoteKeyResolver remote_key_resolver{};
     // Optional, strictly network-free lookup of a PDU verification key. Remote
@@ -69,19 +68,19 @@ struct FederationRuntimeState final
     // FIFO eviction (kMaxKeyResolutionBuckets / kMaxKeyResolutionFailures in
     // inbound_request.cpp). An unbounded pre-auth map is the very DoS this
     // budget exists to prevent.
-    std::deque<KeyResolutionBucket> key_resolution_buckets{};
-    std::deque<KeyResolutionFailure> key_resolution_failures{};
+    std::list<KeyResolutionBucket> key_resolution_buckets{};
+    std::list<KeyResolutionFailure> key_resolution_failures{};
     // Failed-signature budget per source address. Pre-authentication like the
     // containers above, so capped with FIFO eviction (kMaxBadSignatureBuckets
     // in inbound_request.cpp).
-    std::deque<BadSignatureBucket> bad_signature_buckets{};
+    std::list<BadSignatureBucket> bad_signature_buckets{};
     // Resolutions currently in flight process-wide. Guarded by `mutex`; the
     // resolver call itself runs unlocked, so this is incremented before the
     // call and decremented after by a scope guard.
     std::uint32_t key_resolutions_in_flight{0U};
     // Notified after key_resolutions_in_flight is decremented, for the one
     // admission path that waits for a slot (resolve_join_state_key).
-    FederationSlotSignal key_resolution_slot_released{std::make_shared<std::condition_variable_any>()};
+    core::CopyableConditionVariable key_resolution_slot_released{};
     // Optional ingestion hooks. When set, accepted PDUs are appended to the
     // event graph via pdu_sink and accepted EDUs are routed to runtime
     // surfaces (typing tracker, receipt store, etc.) via edu_sink. Both
@@ -141,5 +140,8 @@ struct FederationRuntimeState final
     ServerPolicyRefusalProvider server_policy_refusal_provider{};
     PduStoredProbe pdu_already_stored{};
 };
+
+static_assert(std::is_nothrow_move_constructible_v<FederationRuntimeState> &&
+              std::is_nothrow_move_assignable_v<FederationRuntimeState>);
 
 } // namespace merovingian::federation

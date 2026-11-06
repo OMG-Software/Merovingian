@@ -52,7 +52,7 @@ durability distinction:
   rejections (`rate_limit.exceeded`, appended from `src/homeserver/ClientServerRuntime.cpp`), and media
   quarantine (`media.quarantined`, `media.upload_quarantined`).
 - **In-memory only, not durable** (via `audit_federation`, `src/federation/inbound_request.cpp` —
-  appended to `FederationRuntimeState::audit_events`, a bounded deque, never to the database):
+  appended to `FederationRuntimeState::audit_events`, a bounded list, never to the database):
   federation request authenticated/rejected (`federation.accepted`, `federation.rejected`,
   `federation.acl_rejected`, etc.). These do not survive a restart and are not returned by
   `GET /_merovingian/admin/audit`. Do not assume a `federation.*` audit call gives the same

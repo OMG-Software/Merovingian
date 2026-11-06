@@ -166,3 +166,10 @@ current; hydration calls `rebuild_deferred_pdu_awaits`. Find the rows waiting fo
 status (sliding sync's room `timestamp`). `insert` and `insert_all` raise it, `erase_if` and `modify` recompute the affected
 rooms from their rows, `clear` and `extract` empty it, so a writer that bypasses them does not compile. Do not parse a room's
 events to find it.
+
+## PersistentStore's own mutexes (ADR-0517)
+
+`statement_capture_mutex` and `server_signing_keys_mutex` are `core::CopyableMutex` members held by value. A copy of the
+store gets fresh, unlocked mutexes, so copy a store only while no other thread is using it. The copy constructor and copy
+assignment stay hand-written: they do not copy `state_transitions` or `state_transition_index`, so `= default`
+would change what a copy contains.
