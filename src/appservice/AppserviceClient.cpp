@@ -16,18 +16,21 @@
 #include "merovingian/appservice/ThirdPartyProtocol.hpp"
 #include "merovingian/appservice/ThirdPartyProtocolInstance.hpp"
 #include "merovingian/appservice/ThirdPartyUser.hpp"
+#include "merovingian/appservice/cleartext_policy.hpp"
 #include "merovingian/canonicaljson/parser.hpp"
 #include "merovingian/canonicaljson/serializer.hpp"
 #include "merovingian/canonicaljson/value.hpp"
 #include "merovingian/core/query_params.hpp"
 
 #include <algorithm>
-#include <charconv>
 #include <chrono>
 #include <limits>
 #include <optional>
+#include <string>
+#include <string_view>
 #include <utility>
 #include <variant>
+#include <vector>
 
 namespace merovingian::appservice
 {
@@ -75,90 +78,6 @@ namespace
         return object;
     }
 
-    // Minimal HTTP/HTTPS URL parser. Unlike push_gateway_client's, this
-    // accepts either scheme (see AppserviceClient.hpp's doc comment) and no
-    // fixed path suffix — the caller appends the Application Service API
-    // path itself.
-    struct ParsedAppserviceUrl final
-    {
-        bool is_https{true};
-        std::string host{};
-        std::uint16_t port{0U};
-        std::string path_prefix{}; // registration.url's own path component, if any (may be empty)
-    };
-
-    [[nodiscard]] auto starts_with(std::string_view value, std::string_view prefix) noexcept -> bool
-    {
-        return value.size() >= prefix.size() && value.substr(0U, prefix.size()) == prefix;
-    }
-
-    [[nodiscard]] auto parse_appservice_url(std::string_view url) -> std::optional<ParsedAppserviceUrl>
-    {
-        auto out = ParsedAppserviceUrl{};
-        auto authority_start = std::size_t{0U};
-        if (starts_with(url, "https://"))
-        {
-            out.is_https = true;
-            out.port = 443U;
-            authority_start = std::string_view{"https://"}.size();
-        }
-        else if (starts_with(url, "http://"))
-        {
-            out.is_https = false;
-            out.port = 80U;
-            authority_start = std::string_view{"http://"}.size();
-        }
-        else
-        {
-            return std::nullopt;
-        }
-
-        auto const slash = url.find('/', authority_start);
-        auto const authority = slash == std::string_view::npos ? url.substr(authority_start)
-                                                               : url.substr(authority_start, slash - authority_start);
-        if (authority.empty())
-        {
-            return std::nullopt;
-        }
-        auto const colon = authority.rfind(':');
-        if (colon != std::string_view::npos)
-        {
-            auto const port_str = authority.substr(colon + 1U);
-            auto parsed_port = std::uint16_t{0U};
-            auto const parse_result = std::from_chars(port_str.data(), port_str.data() + port_str.size(), parsed_port);
-            if (parse_result.ec == std::errc{} && parse_result.ptr == port_str.data() + port_str.size() &&
-                parsed_port != 0U)
-            {
-                out.host = std::string{authority.substr(0U, colon)};
-                out.port = parsed_port;
-            }
-            else
-            {
-                out.host = std::string{authority};
-            }
-        }
-        else
-        {
-            out.host = std::string{authority};
-        }
-        if (out.host.empty())
-        {
-            return std::nullopt;
-        }
-        if (slash != std::string_view::npos)
-        {
-            // Strip a single trailing slash so `path_prefix + "/_matrix/..."`
-            // never produces a doubled "//".
-            auto path = url.substr(slash);
-            if (path.size() > 1U && path.back() == '/')
-            {
-                path.remove_suffix(1U);
-            }
-            out.path_prefix = std::string{path};
-        }
-        return out;
-    }
-
     [[nodiscard]] auto hs_token_string(AppserviceRegistration const& registration) -> std::string
     {
         auto const bytes = registration.hs_token.bytes();
@@ -166,6 +85,7 @@ namespace
     }
 
     [[nodiscard]] auto call_appservice(http::OutboundClient& outbound, federation::CachedServerDiscovery& discovery,
+                                       std::vector<std::string> const& allow_cleartext_hosts,
                                        AppserviceRegistration const& registration, std::string_view method,
                                        std::string_view path_suffix, std::string body,
                                        std::uint32_t connect_timeout_seconds, std::uint32_t total_timeout_seconds,
@@ -176,7 +96,11 @@ namespace
         {
             return {false, http::OutboundResult{}};
         }
-        auto const parsed = parse_appservice_url(*registration.url);
+        // ADR-0515: the same rule load_registrations applied, repeated here so a registration that reached
+        // the client any other way still cannot send the hs_token in cleartext to an unlisted host. A
+        // refusal makes no lookup and no connection.
+        auto const problem = appservice_url_problem(*registration.url, allow_cleartext_hosts);
+        auto const parsed = problem.has_value() ? std::nullopt : http::parse_outbound_url(*registration.url, true);
         if (!parsed.has_value())
         {
             auto failed = http::OutboundResult{};
@@ -186,10 +110,17 @@ namespace
             return {true, failed};
         }
 
+        // Rebuilt from the parsed parts: an IPv6 literal is re-bracketed, the port is always explicit, and
+        // one trailing '/' of the registration's own path is dropped so the suffix never yields "//".
+        auto registration_path = std::string_view{parsed->path};
+        if (!registration_path.empty() && registration_path.back() == '/')
+        {
+            registration_path.remove_suffix(1U);
+        }
         auto request = http::OutboundRequest{};
         request.method = std::string{method};
-        request.url = std::string{parsed->is_https ? "https://" : "http://"} + parsed->host + ":" +
-                      std::to_string(parsed->port) + parsed->path_prefix + std::string{path_suffix};
+        request.url = parsed->scheme + "://" + (parsed->ipv6_literal ? "[" + parsed->host + "]" : parsed->host) + ":" +
+                      std::to_string(parsed->port) + std::string{registration_path} + std::string{path_suffix};
         request.body = std::move(body);
         request.headers.push_back(http::OutboundHeader{"Content-Type", "application/json"});
         // Spec (Matrix v1.19, "Authorisation", changed in v1.4): "Homeservers
@@ -200,10 +131,12 @@ namespace
         // configured against understands the modern header form.
         request.headers.push_back(http::OutboundHeader{"Authorization", "Bearer " + hs_token_string(registration)});
         // See AppserviceClient's doc comment: an appservice URL is
-        // operator-configured, not attacker-influenced, so cleartext http is
-        // permitted (the spec's own example uses it) and host resolution
+        // operator-configured, not attacker-influenced, so host resolution
         // below intentionally bypasses the private/loopback-address
         // rejection that applies to attacker-influenced destinations.
+        // Cleartext http is enabled for the transport only because the
+        // check above already limited it to a loopback IP literal or a
+        // host the operator listed (ADR-0515).
         request.allow_cleartext_http = true;
         request.connect_timeout_seconds = connect_timeout_seconds;
         request.total_timeout_seconds = total_timeout_seconds;
@@ -593,6 +526,7 @@ AppserviceClient::AppserviceClient(http::OutboundClient& outbound, federation::C
     , discovery_{discovery}
     , connect_timeout_seconds_{appservice_config.connect_timeout_seconds}
     , total_timeout_seconds_{appservice_config.total_timeout_seconds}
+    , allow_cleartext_hosts_{appservice_config.allow_cleartext_hosts}
     , perform_{std::move(perform)}
 {
     auto const response_limit = config::parse_size_limit(appservice_config.response_max_size);
@@ -607,8 +541,9 @@ auto AppserviceClient::send_transaction(AppserviceRegistration const& registrati
 {
     auto const path = "/_matrix/app/v1/transactions/" + core::percent_encode_path_component(transaction.txn_id);
     auto const [attempted, result] =
-        call_appservice(outbound_, discovery_, registration, "PUT", path, build_transaction_request_body(transaction),
-                        connect_timeout_seconds_, total_timeout_seconds_, response_max_size_bytes_, perform_);
+        call_appservice(outbound_, discovery_, allow_cleartext_hosts_, registration, "PUT", path,
+                        build_transaction_request_body(transaction), connect_timeout_seconds_, total_timeout_seconds_,
+                        response_max_size_bytes_, perform_);
     if (!attempted)
     {
         return {false, true, 0U, http::OutboundError::none, "appservice has no url configured"};
@@ -630,9 +565,10 @@ auto AppserviceClient::ping(AppserviceRegistration const& registration, std::opt
         return ping_result;
     }
     auto const started = std::chrono::steady_clock::now();
-    auto const [attempted, result] = call_appservice(
-        outbound_, discovery_, registration, "POST", "/_matrix/app/v1/ping", build_ping_request_body(transaction_id),
-        connect_timeout_seconds_, total_timeout_seconds_, response_max_size_bytes_, perform_);
+    auto const [attempted, result] =
+        call_appservice(outbound_, discovery_, allow_cleartext_hosts_, registration, "POST", "/_matrix/app/v1/ping",
+                        build_ping_request_body(transaction_id), connect_timeout_seconds_, total_timeout_seconds_,
+                        response_max_size_bytes_, perform_);
     ping_result.duration_ms =
         std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - started).count();
     if (!attempted)
@@ -666,8 +602,8 @@ auto AppserviceClient::perform_query(AppserviceRegistration const& registration,
     -> AppserviceQueryResult
 {
     auto const [attempted, result] =
-        call_appservice(outbound_, discovery_, registration, "GET", path, {}, connect_timeout_seconds_,
-                        total_timeout_seconds_, response_max_size_bytes_, perform_);
+        call_appservice(outbound_, discovery_, allow_cleartext_hosts_, registration, "GET", path, {},
+                        connect_timeout_seconds_, total_timeout_seconds_, response_max_size_bytes_, perform_);
     if (!attempted)
     {
         return {false, true, 0U, false, http::OutboundError::none, "appservice has no url configured"};
@@ -707,8 +643,8 @@ auto AppserviceClient::query_thirdparty_protocol(AppserviceRegistration const& r
 {
     auto const path = "/_matrix/app/v1/thirdparty/protocol/" + core::percent_encode_path_component(protocol);
     auto const [attempted, result] =
-        call_appservice(outbound_, discovery_, registration, "GET", path, {}, connect_timeout_seconds_,
-                        total_timeout_seconds_, response_max_size_bytes_, perform_);
+        call_appservice(outbound_, discovery_, allow_cleartext_hosts_, registration, "GET", path, {},
+                        connect_timeout_seconds_, total_timeout_seconds_, response_max_size_bytes_, perform_);
     if (!attempted)
     {
         return {false, true, 0U, false, {}, http::OutboundError::none, "appservice has no url configured"};
@@ -753,8 +689,8 @@ auto AppserviceClient::query_thirdparty_location_by_alias(AppserviceRegistration
 {
     auto const path = "/_matrix/app/v1/thirdparty/location?alias=" + core::percent_encode_path_component(alias);
     auto const [attempted, result] =
-        call_appservice(outbound_, discovery_, registration, "GET", path, {}, connect_timeout_seconds_,
-                        total_timeout_seconds_, response_max_size_bytes_, perform_);
+        call_appservice(outbound_, discovery_, allow_cleartext_hosts_, registration, "GET", path, {},
+                        connect_timeout_seconds_, total_timeout_seconds_, response_max_size_bytes_, perform_);
     if (!attempted)
     {
         return {false, true, 0U, false, {}, http::OutboundError::none, "appservice has no url configured"};
@@ -792,8 +728,8 @@ auto AppserviceClient::query_thirdparty_location_by_protocol(
     auto const path = "/_matrix/app/v1/thirdparty/location/" + core::percent_encode_path_component(protocol) +
                       build_thirdparty_fields_query(fields);
     auto const [attempted, result] =
-        call_appservice(outbound_, discovery_, registration, "GET", path, {}, connect_timeout_seconds_,
-                        total_timeout_seconds_, response_max_size_bytes_, perform_);
+        call_appservice(outbound_, discovery_, allow_cleartext_hosts_, registration, "GET", path, {},
+                        connect_timeout_seconds_, total_timeout_seconds_, response_max_size_bytes_, perform_);
     if (!attempted)
     {
         return {false, true, 0U, false, {}, http::OutboundError::none, "appservice has no url configured"};
@@ -829,8 +765,8 @@ auto AppserviceClient::query_thirdparty_user_by_userid(AppserviceRegistration co
 {
     auto const path = "/_matrix/app/v1/thirdparty/user?userid=" + core::percent_encode_path_component(user_id);
     auto const [attempted, result] =
-        call_appservice(outbound_, discovery_, registration, "GET", path, {}, connect_timeout_seconds_,
-                        total_timeout_seconds_, response_max_size_bytes_, perform_);
+        call_appservice(outbound_, discovery_, allow_cleartext_hosts_, registration, "GET", path, {},
+                        connect_timeout_seconds_, total_timeout_seconds_, response_max_size_bytes_, perform_);
     if (!attempted)
     {
         return {false, true, 0U, false, {}, http::OutboundError::none, "appservice has no url configured"};
@@ -869,8 +805,8 @@ auto AppserviceClient::query_thirdparty_user_by_protocol(AppserviceRegistration 
     auto const path = "/_matrix/app/v1/thirdparty/user/" + core::percent_encode_path_component(protocol) +
                       build_thirdparty_fields_query(fields);
     auto const [attempted, result] =
-        call_appservice(outbound_, discovery_, registration, "GET", path, {}, connect_timeout_seconds_,
-                        total_timeout_seconds_, response_max_size_bytes_, perform_);
+        call_appservice(outbound_, discovery_, allow_cleartext_hosts_, registration, "GET", path, {},
+                        connect_timeout_seconds_, total_timeout_seconds_, response_max_size_bytes_, perform_);
     if (!attempted)
     {
         return {false, true, 0U, false, {}, http::OutboundError::none, "appservice has no url configured"};
