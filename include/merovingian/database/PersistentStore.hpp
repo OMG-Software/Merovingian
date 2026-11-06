@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
+#include "merovingian/core/CopyableMutex.hpp"
 #include "merovingian/database/CappedAccountDataStore.hpp"
 #include "merovingian/database/DeferredPduAwaits.hpp"
 #include "merovingian/database/DeferredPduUpsert.hpp"
@@ -338,11 +339,9 @@ struct PersistentStore final
         , committed_transactions{other.committed_transactions}
         , force_next_persist_failures{other.force_next_persist_failures}
         , force_failure_statement_names{other.force_failure_statement_names}
-        , statement_capture_mutex{std::make_unique<std::mutex>()}
         , write_connection_limit{other.write_connection_limit}
         , sqlite_write_pool{other.sqlite_write_pool}
         , postgresql_write_pool{other.postgresql_write_pool}
-        , server_signing_keys_mutex{std::make_unique<std::mutex>()}
         , next_sync_stream_id{other.next_sync_stream_id}
         , event_stream_watermark{other.event_stream_watermark}
         , max_to_device_messages_per_user_device{other.max_to_device_messages_per_user_device}
@@ -445,8 +444,6 @@ struct PersistentStore final
         committed_transactions = other.committed_transactions;
         force_next_persist_failures = other.force_next_persist_failures;
         force_failure_statement_names = other.force_failure_statement_names;
-        statement_capture_mutex = std::make_unique<std::mutex>();
-        server_signing_keys_mutex = std::make_unique<std::mutex>();
         next_sync_stream_id = other.next_sync_stream_id;
         event_stream_watermark = other.event_stream_watermark;
         max_to_device_messages_per_user_device = other.max_to_device_messages_per_user_device;
@@ -642,9 +639,9 @@ struct PersistentStore final
     // Guards captured_statements and statement_capture_capacity. Written by
     // commit_persistent_transaction from multiple concurrent room-stripe paths
     // and read by sensitive_values_are_redacted. Kept separate from the room
-    // stripe locks because capture access is independent of any room. Wrapped
-    // in unique_ptr so PersistentStore remains moveable.
-    mutable std::unique_ptr<std::mutex> statement_capture_mutex{std::make_unique<std::mutex>()};
+    // stripe locks because capture access is independent of any room. Held by
+    // value (ADR-0517) so PersistentStore stays copyable and moveable; a copy gets its own mutex.
+    core::CopyableMutex statement_capture_mutex{};
     // DB-7, ADR-0154: persisted writes reuse at most this many connections
     // (database.pool_size, applied by set_write_connection_limit), instead of
     // opening one per transaction. The pool of the store's backend is created
@@ -658,9 +655,9 @@ struct PersistentStore final
     // runtime mutex released, so after start-up hydration every access goes
     // through store_server_signing_key, find_server_signing_key or
     // snapshot_server_signing_keys, which take this lock. It is never held
-    // across a database write or a network call. Wrapped in unique_ptr so
-    // PersistentStore remains moveable.
-    mutable std::unique_ptr<std::mutex> server_signing_keys_mutex{std::make_unique<std::mutex>()};
+    // across a database write or a network call. Held by value (ADR-0517) so
+    // PersistentStore stays copyable and moveable; a copy gets its own mutex.
+    core::CopyableMutex server_signing_keys_mutex{};
     // Monotonic stream id used by /sync surfaces (to_device, device_list
     // changes, presence). Incremented before each new row is persisted so
     // the row's stream_id strictly exceeds every previous one and clients
