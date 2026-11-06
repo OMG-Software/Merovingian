@@ -38,8 +38,8 @@ assignable, so a later member that breaks the guarantee fails the build.
 
 A ring that needs random access (`operator[]`, iterator arithmetic, sorting) does not belong in a `std::list`; use a
 different structure rather than `std::next` in a loop. `PersistentStore::captured_statements`, a test-only capture that
-tests index by position, stays a `std::deque`; `PersistentStore`'s moves are declared `noexcept = default`, which is
-unchanged.
+tests index by position, becomes a `std::vector` instead: its move is `noexcept`, it keeps positional access, and the
+oldest entries are dropped with one range erase per commit, which is cheap for a capped test buffer.
 
 ### Negative Consequences
 

@@ -80,7 +80,6 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
-#include <deque>
 #include <functional>
 #include <list>
 #include <memory>
@@ -621,8 +620,9 @@ struct PersistentStore final
     // (`statement_capture_capacity == 0`) unless `enable_statement_capture` is
     // called, so production retains no statement or bound parameter after it
     // commits. When enabled it holds at most `statement_capture_capacity` of the
-    // most recent statements; the oldest is dropped first.
-    std::deque<PreparedStatement> captured_statements{};
+    // most recent statements; the oldest is dropped first. A vector, not a deque, so that
+    // PersistentStore's noexcept moves cannot throw (ADR-0519); tests index it by position.
+    std::vector<PreparedStatement> captured_statements{};
     std::size_t statement_capture_capacity{0U};
     // Transactions `commit_persistent_transaction` committed over the store's life, guarded by
     // `statement_capture_mutex` (read it through `committed_transaction_count`). A test reads the difference to

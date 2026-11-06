@@ -110,6 +110,18 @@ namespace
         return static_cast<std::uint64_t>(duration_cast<milliseconds>(system_clock::now().time_since_epoch()).count());
     }
 
+    // Keeps the most recent `statement_capture_capacity` captured statements, dropping the oldest in one erase.
+    // The caller holds `statement_capture_mutex`.
+    auto drop_oldest_captured_statements(PersistentStore& store) -> void
+    {
+        auto& captured = store.captured_statements;
+        if (captured.size() > store.statement_capture_capacity)
+        {
+            auto const excess = static_cast<std::ptrdiff_t>(captured.size() - store.statement_capture_capacity);
+            captured.erase(captured.begin(), captured.begin() + excess);
+        }
+    }
+
 } // namespace
 
 namespace
@@ -558,14 +570,8 @@ auto write_connections_opened(PersistentStore const& store) -> std::uint64_t
         ++store.committed_transactions;
         if (store.statement_capture_capacity != 0U)
         {
-            for (auto const& statement : statements)
-            {
-                store.captured_statements.push_back(statement);
-                while (store.captured_statements.size() > store.statement_capture_capacity)
-                {
-                    store.captured_statements.pop_front();
-                }
-            }
+            store.captured_statements.insert(store.captured_statements.end(), statements.begin(), statements.end());
+            drop_oldest_captured_statements(store);
         }
     }
     return true;
@@ -7110,10 +7116,7 @@ auto enable_statement_capture(PersistentStore& store, std::size_t capacity) -> v
 {
     auto const lk = store.statement_capture_mutex.acquire();
     store.statement_capture_capacity = std::min(capacity, max_statement_capture_capacity);
-    while (store.captured_statements.size() > store.statement_capture_capacity)
-    {
-        store.captured_statements.pop_front();
-    }
+    drop_oldest_captured_statements(store);
 }
 
 auto force_next_persist_failures(PersistentStore& store, std::size_t count) -> void
