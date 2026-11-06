@@ -41,6 +41,9 @@ class FakeDiscoveryNetwork final : public merovingian::federation::ServerDiscove
 public:
     merovingian::federation::WellKnownServerResult well_known{};
     std::vector<merovingian::federation::SrvRecord> srv_records{};
+    // When non-empty, the records answered per service name; a name it lacks has none.
+    std::unordered_map<std::string, std::vector<merovingian::federation::SrvRecord>> srv_by_service{};
+    std::vector<std::string> srv_lookups{};
     std::unordered_map<std::string, std::vector<std::string>> addresses{};
     std::string fetched_server{};
     std::uint32_t fetched_timeout{0U};
@@ -57,6 +60,12 @@ public:
         -> std::vector<merovingian::federation::SrvRecord> override
     {
         last_srv_lookup = service_name;
+        srv_lookups.emplace_back(service_name);
+        if (!srv_by_service.empty())
+        {
+            auto const found = srv_by_service.find(std::string{service_name});
+            return found == srv_by_service.end() ? std::vector<merovingian::federation::SrvRecord>{} : found->second;
+        }
         return srv_records;
     }
 
@@ -383,6 +392,117 @@ SCENARIO("Server discovery falls back to DNS SRV records and pins resolved addre
                 // Spec MUST: pinned_addresses MUST contain the resolved IPs of the SRV target.
                 // Do NOT remove/change - unpinned addresses enable DNS rebinding after discovery.
                 REQUIRE(result.pinned_addresses == expected_addresses);
+            }
+        }
+    }
+}
+
+// --- Deprecated _matrix._tcp SRV fallback ------------------------------------
+// Spec: Matrix Server-Server API v1.19, Resolving server names, steps 3.4 and 5 (both "[Deprecated]")
+// URL:  ../../docs/matrix-v1.19-spec/server-server-api.md#resolving-server-names
+//
+// "If the `/.well-known` request resulted in an error response, and a `_matrix-fed._tcp.<hostname>` SRV record was not
+// found, a server is found by resolving an SRV record for `_matrix._tcp.<hostname>`." Requests go to the resolved
+// address and port with a `Host` header of `<hostname>`, and the target must present a certificate valid for
+// `<hostname>` - the same rules as `_matrix-fed._tcp`. Step 3.4 says the same for a delegated hostname without a port.
+SCENARIO("Server discovery falls back to the deprecated _matrix._tcp SRV record after _matrix-fed._tcp",
+         "[federation][discovery][dns][srv][deprecated]")
+{
+    GIVEN("a server with no well-known and only a _matrix._tcp SRV record")
+    {
+        auto network = FakeDiscoveryNetwork{};
+        network.srv_by_service["_matrix._tcp.example.org"] = {
+            {"legacy.example.net", 9450U, 10U, 0U}
+        };
+        network.addresses.emplace("legacy.example.net", std::vector<std::string>{"198.51.100.40"});
+
+        WHEN("the server is discovered")
+        {
+            auto const result = merovingian::federation::discover_server("example.org", network, 5U);
+
+            THEN("_matrix-fed._tcp is asked first and the legacy record then supplies the destination")
+            {
+                // Spec MUST: the deprecated name is consulted only after _matrix-fed._tcp finds nothing.
+                REQUIRE(network.srv_lookups ==
+                        std::vector<std::string>{"_matrix-fed._tcp.example.org", "_matrix._tcp.example.org"});
+                REQUIRE(result.discovery_allowed);
+                REQUIRE(result.resolved_host == "legacy.example.net");
+                REQUIRE(result.resolved_port == 9450U);
+                // Spec MUST: the certificate and Host header name the original hostname, not the SRV target.
+                REQUIRE(result.tls_server_name == "example.org");
+                REQUIRE(result.pinned_addresses == std::vector<std::string>{"198.51.100.40"});
+            }
+        }
+    }
+
+    GIVEN("a server with both SRV records")
+    {
+        auto network = FakeDiscoveryNetwork{};
+        network.srv_by_service["_matrix-fed._tcp.example.org"] = {
+            {"current.example.net", 9451U, 10U, 0U}
+        };
+        network.srv_by_service["_matrix._tcp.example.org"] = {
+            {"legacy.example.net", 9450U, 10U, 0U}
+        };
+        network.addresses.emplace("current.example.net", std::vector<std::string>{"198.51.100.41"});
+        network.addresses.emplace("legacy.example.net", std::vector<std::string>{"198.51.100.40"});
+
+        WHEN("the server is discovered")
+        {
+            auto const result = merovingian::federation::discover_server("example.org", network, 5U);
+
+            THEN("the deprecated name is never asked")
+            {
+                // Spec MUST: _matrix._tcp applies only when no _matrix-fed._tcp record was found.
+                REQUIRE(network.srv_lookups == std::vector<std::string>{"_matrix-fed._tcp.example.org"});
+                REQUIRE(result.resolved_host == "current.example.net");
+            }
+        }
+    }
+
+    GIVEN("a well-known delegation to a hostname without a port and only a legacy SRV record on that hostname")
+    {
+        auto network = FakeDiscoveryNetwork{};
+        network.well_known = {true, true, "{\"m.server\":\"delegated.example.net\"}", {}};
+        network.srv_by_service["_matrix._tcp.delegated.example.net"] = {
+            {"legacy.delegated.example.net", 9452U, 10U, 0U}
+        };
+        network.addresses.emplace("legacy.delegated.example.net", std::vector<std::string>{"198.51.100.42"});
+
+        WHEN("the server is discovered")
+        {
+            auto const result = merovingian::federation::discover_server("example.org", network, 5U);
+
+            THEN("the delegated hostname's legacy record is used after its _matrix-fed._tcp record is found absent")
+            {
+                // Spec MUST: step 3.4 - looked up for <delegated_hostname>, not for the original name.
+                REQUIRE(network.srv_lookups == std::vector<std::string>{"_matrix-fed._tcp.delegated.example.net",
+                                                                        "_matrix._tcp.delegated.example.net"});
+                REQUIRE(result.discovery_allowed);
+                REQUIRE(result.resolved_host == "legacy.delegated.example.net");
+                REQUIRE(result.resolved_port == 9452U);
+            }
+        }
+    }
+
+    GIVEN("a server with neither SRV record")
+    {
+        auto network = FakeDiscoveryNetwork{};
+        network.srv_by_service["_matrix.unrelated"] = {};
+        network.srv_by_service["_matrix._tcp.other.example.org"] = {
+            {"other.example.net", 1U, 0U, 0U}
+        };
+        network.addresses.emplace("example.org", std::vector<std::string>{"198.51.100.43"});
+
+        WHEN("the server is discovered")
+        {
+            auto const result = merovingian::federation::discover_server("example.org", network, 5U);
+
+            THEN("it is resolved directly on port 8448")
+            {
+                REQUIRE(result.discovery_allowed);
+                REQUIRE(result.resolved_host == "example.org");
+                REQUIRE(result.resolved_port == 8448U);
             }
         }
     }

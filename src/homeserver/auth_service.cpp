@@ -586,15 +586,16 @@ namespace
         return std::chrono::system_clock::now() + std::chrono::milliseconds{lifetime_ms};
     }
 
+    // P7: the lookup goes through the session table's index of token-hash digests, so its cost does not grow
+    // with the number of sessions. The index only narrows the candidates; every candidate is still confirmed
+    // with the constant-time hash comparison (src/auth/AGENTS.md rule 3).
     [[nodiscard]] auto find_session(LocalDatabase const& database, std::vector<std::string> const& token_hashes,
                                     std::chrono::system_clock::time_point now) -> LocalSession const*
     {
-        auto const iterator =
-            std::ranges::find_if(database.sessions, [&token_hashes, now](LocalSession const& session) {
-                return matches_any_token_hash(session.access_token_hash, token_hashes) && !session.revoked &&
-                       !is_expired(session.expires_at, now);
-            });
-        return iterator == database.sessions.end() ? nullptr : &(*iterator);
+        return database.sessions.find(token_hashes, [now](LocalSession const& session, std::string const& hash) {
+            return token_hash_matches(session.access_token_hash, hash) && !session.revoked &&
+                   !is_expired(session.expires_at, now);
+        });
     }
 
     // Disambiguates a find_session miss for audit reporting: returns true when a
@@ -605,13 +606,10 @@ namespace
                                                  std::vector<std::string> const& token_hashes,
                                                  std::chrono::system_clock::time_point now) -> bool
     {
-        auto const now_value = now;
-        auto const iterator =
-            std::ranges::find_if(database.sessions, [&token_hashes, now_value](LocalSession const& session) {
-                return matches_any_token_hash(session.access_token_hash, token_hashes) && !session.revoked &&
-                       is_expired(session.expires_at, now_value);
-            });
-        return iterator != database.sessions.end();
+        return database.sessions.find(token_hashes, [now](LocalSession const& session, std::string const& hash) {
+            return token_hash_matches(session.access_token_hash, hash) && !session.revoked &&
+                   is_expired(session.expires_at, now);
+        }) != nullptr;
     }
 
     // One-shot migration of a v3 access token to the master-key-derived v4 hash.
@@ -646,7 +644,7 @@ namespace
         {
             if (!session.revoked && token_hash_matches(session.access_token_hash, matched_v3_hash))
             {
-                session.access_token_hash = *v4_hash;
+                runtime.database.sessions.set_access_token_hash(session, *v4_hash);
                 user_id = session.user_id;
                 device_id = session.device_id;
                 expires_at = session.expires_at;
@@ -766,13 +764,13 @@ namespace
         {
             return make_operation_result(false, {}, "user already exists");
         }
-        if (!database::store_user(runtime.database.persistent_store, {user_id, *password_hash, false, false, admin}))
+        // The account and its empty profile (so GET /profile returns real data from first login) commit together.
+        if (!database::store_user_with_profile(runtime.database.persistent_store,
+                                               {user_id, *password_hash, false, false, admin}, {user_id, {}, {}}))
         {
             return make_operation_result(false, {}, "user persistence failed", 500U);
         }
         runtime.database.users.push_back({user_id, *password_hash, false, false, admin});
-        // Create empty profile so GET /profile returns real data from first login.
-        std::ignore = database::store_profile(runtime.database.persistent_store, {user_id, {}, {}});
         append_local_audit(runtime.database, observability::AuditCategory::auth, "auth.user_registered", user_id,
                            user_id, audit_outcome);
         log_diagnostic("registration.accepted",
@@ -818,7 +816,7 @@ namespace
     // identical, so it lives here once rather than being duplicated.
     // NOLINTBEGIN(bugprone-easily-swappable-parameters)
     [[nodiscard]] auto complete_login(HomeserverRuntime& runtime, LocalUser& user, std::string_view device_id,
-                                      bool with_ttl) -> OperationResult
+                                      bool with_ttl, std::string_view display_name) -> OperationResult
     {
         if (!auth::device_id_is_valid(device_id))
         {
@@ -913,7 +911,7 @@ namespace
         auto device = std::optional<database::PersistentDevice>{};
         if (!device_exists)
         {
-            device = database::PersistentDevice{user.user_id, std::string{device_id}, std::string{device_id}};
+            device = database::PersistentDevice{user.user_id, std::string{device_id}, std::string{display_name}};
         }
         // Only honour the configured TTL when the client opted into refresh tokens.
         // Spec §5.6.2: servers SHOULD NOT expire tokens without co-issuing a refresh token.
@@ -1150,7 +1148,8 @@ auto register_appservice_user(HomeserverRuntime& runtime, std::string_view local
 
 // NOLINTBEGIN(bugprone-easily-swappable-parameters)
 auto login_local_user(HomeserverRuntime& runtime, std::string_view user_id, std::string_view password,
-                      std::string_view device_id, bool with_ttl, std::string_view client_source) -> OperationResult
+                      std::string_view device_id, bool with_ttl, std::string_view client_source,
+                      std::string_view display_name) -> OperationResult
 {
     log_diagnostic("login.started",
                    {
@@ -1246,7 +1245,7 @@ auto login_local_user(HomeserverRuntime& runtime, std::string_view user_id, std:
     // legitimate login attempt cannot accumulate toward a lockout. The
     // per-account ceiling is deliberately left alone.
     clear_failed_logins(runtime, user->user_id, client_source);
-    return login_local_user_by_id(runtime, user->user_id, device_id, with_ttl);
+    return login_local_user_by_id(runtime, user->user_id, device_id, with_ttl, display_name);
 }
 // NOLINTEND(bugprone-easily-swappable-parameters)
 
@@ -1261,7 +1260,7 @@ auto login_local_user(HomeserverRuntime& runtime, std::string_view user_id, std:
 // answers "should this account be allowed a new session, and if so, issue
 // one."
 auto login_local_user_by_id(HomeserverRuntime& runtime, std::string_view user_id, std::string_view device_id,
-                            bool with_ttl) -> OperationResult
+                            bool with_ttl, std::string_view display_name) -> OperationResult
 {
     auto* user = find_user(runtime.database, user_id);
     if (user == nullptr)
@@ -1366,7 +1365,7 @@ auto login_local_user_by_id(HomeserverRuntime& runtime, std::string_view user_id
     auto device = std::optional<database::PersistentDevice>{};
     if (!device_exists)
     {
-        device = database::PersistentDevice{user->user_id, std::string{device_id}, std::string{device_id}};
+        device = database::PersistentDevice{user->user_id, std::string{device_id}, std::string{display_name}};
     }
     // Only honour the configured TTL when the client opted into refresh tokens.
     // Spec §5.6.2: servers SHOULD NOT expire tokens without co-issuing a refresh token.
@@ -1410,8 +1409,8 @@ auto login_local_user_by_id(HomeserverRuntime& runtime, std::string_view user_id
 // calling this — the same division of responsibility as
 // register_appservice_user below. Locked/suspended accounts are still
 // rejected: masquerading does not bypass account-state moderation.
-auto login_appservice_user(HomeserverRuntime& runtime, std::string_view user_id, std::string_view device_id)
-    -> OperationResult
+auto login_appservice_user(HomeserverRuntime& runtime, std::string_view user_id, std::string_view device_id,
+                           std::string_view display_name) -> OperationResult
 {
     log_diagnostic("login.appservice.started",
                    {
@@ -1432,7 +1431,7 @@ auto login_appservice_user(HomeserverRuntime& runtime, std::string_view user_id,
                              "login.rejected", std::string{user_id}, std::string{device_id}, "403:unknown user");
         return make_operation_result(false, {}, "invalid login", 403U);
     }
-    return complete_login(runtime, *user, device_id, false);
+    return complete_login(runtime, *user, device_id, false, display_name);
 }
 
 auto issue_refresh_token_for_session(HomeserverRuntime& runtime, std::string_view user_id, std::string_view device_id)
@@ -1838,7 +1837,9 @@ auto require_admin(HomeserverRuntime& runtime, std::string_view access_token) ->
         return {std::nullopt, AdminAuthResult::Denial::missing_token};
     }
     auto const* user = find_user(runtime.database, *user_id);
-    if (user == nullptr || !user->admin)
+    // The dispatcher sends operator routes here before its general user-token
+    // gate, so a locked or suspended account's standing is judged here or nowhere.
+    if (user == nullptr || !user->admin || user->locked || user->suspended)
     {
         return {std::nullopt, AdminAuthResult::Denial::not_admin};
     }
@@ -1879,7 +1880,10 @@ auto logout_local_user(HomeserverRuntime& runtime, std::string_view access_token
         return make_operation_result(false, {}, "unauthenticated");
     }
 
-    std::ignore = database::revoke_access_token(runtime.database.persistent_store, persisted_hash);
+    // P13 (ADR-0491): the presented token, the device's refresh tokens and the device's access tokens are
+    // revoked in one transaction; the checks below confirm the store agrees before anything is marked.
+    std::ignore =
+        database::revoke_device_credentials(runtime.database.persistent_store, persisted_hash, user_id, device_id);
     if (!access_token_is_revoked(runtime.database.persistent_store, persisted_hash))
     {
         return make_operation_result(false, {}, "token revocation persistence failed", 500U);
@@ -1894,15 +1898,13 @@ auto logout_local_user(HomeserverRuntime& runtime, std::string_view access_token
     //
     // Spec: docs/matrix-v1.19-spec/client-server-api.md#post_matrixclientv3logout
     // — the device's access token and refresh token are both invalidated.
-    std::ignore = database::revoke_refresh_tokens_for_device(runtime.database.persistent_store, user_id, device_id);
     if (!device_refresh_tokens_are_revoked(runtime.database.persistent_store, user_id, device_id))
     {
         return make_operation_result(false, {}, "token revocation persistence failed", 500U);
     }
     // The device is deleted next, and deleting a device "invalidates any access token associated
     // with it" (DELETE /devices/{deviceId}): another login under the same device ID holds a token of
-    // its own, which must not outlive the device.
-    std::ignore = database::revoke_access_tokens_for_device(runtime.database.persistent_store, user_id, device_id);
+    // its own, which must not outlive the device. The transaction above revoked those too.
     if (!device_tokens_are_revoked(runtime.database.persistent_store, user_id, device_id))
     {
         return make_operation_result(false, {}, "token revocation persistence failed", 500U);
@@ -2037,28 +2039,24 @@ namespace
 
 } // namespace
 
-// Permanently deactivates the caller's account (spec: POST
-// /_matrix/client/v3/account/deactivate). Irreversible by design.
-//
-// The caller (client_server.cpp) is responsible for the UIA password
-// re-authentication; by the time this runs, ownership of the account is proven.
+// Permanently deactivates `user_id`: the one deactivation, run for the account's owner after UIA (spec:
+// POST /_matrix/client/v3/account/deactivate, through deactivate_local_user) and for an administrator
+// (POST /_merovingian/admin/accounts/{userId}, ADR-0506). The caller has already proven who may do it.
+// Repeating it on a deactivated account runs every step again, which is how a deactivation that failed
+// part way is completed. Irreversible by design.
 //
 // The localpart is never reissued: the users row is retained with
 // deactivated = true, so make_user's existing duplicate check keeps rejecting
 // a re-registration of the same user_id.
-auto deactivate_local_user(HomeserverRuntime& runtime, std::string_view access_token) -> OperationResult
+auto deactivate_user_account(HomeserverRuntime& runtime, std::string_view user_id, DeactivationAudit const& audit)
+    -> OperationResult
 {
-    auto const session = authenticated_session(runtime, access_token);
-    if (!session.has_value())
-    {
-        return make_operation_result(false, {}, "unauthenticated", 401U);
-    }
-    auto* user = find_user(runtime.database, session->user_id);
+    auto* user = find_user(runtime.database, user_id);
     if (user == nullptr)
     {
         return make_operation_result(false, {}, "unknown user", 404U);
     }
-    if (!database::set_user_deactivated(runtime.database.persistent_store, session->user_id))
+    if (!database::set_user_deactivated(runtime.database.persistent_store, user_id))
     {
         return make_operation_result(false, {}, "deactivation persistence failed", 500U);
     }
@@ -2080,20 +2078,20 @@ auto deactivate_local_user(HomeserverRuntime& runtime, std::string_view access_t
     // What must not pass is a persistence failure, which store_* surfaces by
     // leaving the row unchanged; both calls are re-checked below against the
     // store to make the outcome, not the return count, the thing that decides.
-    std::ignore = database::revoke_access_tokens_for_user(runtime.database.persistent_store, session->user_id);
-    std::ignore = database::revoke_refresh_tokens_for_user(runtime.database.persistent_store, session->user_id);
-    if (!user_tokens_are_revoked(runtime.database.persistent_store, session->user_id))
+    std::ignore = database::revoke_access_tokens_for_user(runtime.database.persistent_store, user_id);
+    std::ignore = database::revoke_refresh_tokens_for_user(runtime.database.persistent_store, user_id);
+    if (!user_tokens_are_revoked(runtime.database.persistent_store, user_id))
     {
         return make_operation_result(false, {}, "token revocation failed during deactivation", 500U);
     }
     // F-77: OpenID tokens are credentials of the account too, kept in a table of their own (ADR-0031).
-    if (!database::revoke_openid_tokens_for_user(runtime.database.persistent_store, session->user_id))
+    if (!database::revoke_openid_tokens_for_user(runtime.database.persistent_store, user_id))
     {
         return make_operation_result(false, {}, "openid token revocation failed during deactivation", 500U);
     }
     for (auto& candidate : runtime.database.sessions)
     {
-        if (candidate.user_id == session->user_id)
+        if (candidate.user_id == user_id)
         {
             candidate.revoked = true;
         }
@@ -2102,29 +2100,78 @@ auto deactivate_local_user(HomeserverRuntime& runtime, std::string_view access_t
     // that an earlier compromised session registered would keep receiving the account's room
     // messages. Delivery also refuses a deactivated recipient, so a pusher that could not be deleted
     // sends nothing.
-    if (!delete_pushers_of_user(runtime, session->user_id, std::nullopt))
+    if (!delete_pushers_of_user(runtime, user_id, std::nullopt))
     {
         log_diagnostic("account.deactivated.pusher_removal_failed",
                        {
-                           {"user_id", session->user_id, false}
+                           {"user_id", std::string{user_id}, false}
         },
                        observability::LogEventSeverity::warning);
     }
     // The password hash is replaced with a value no password can produce, so a
     // credential leak predating deactivation cannot be replayed even if a future
     // change were to soften the login gate.
-    std::ignore = database::update_user_password(runtime.database.persistent_store, session->user_id, "!deactivated");
-    user->password_hash = "!deactivated";
+    // The in-memory hash follows the stored one only when the write took, so the two never disagree;
+    // the deactivated flag, already durable, is what closes the login gate either way.
+    if (database::update_user_password(runtime.database.persistent_store, user_id, "!deactivated"))
+    {
+        user->password_hash = "!deactivated";
+    }
 
-    append_local_audit(runtime.database, observability::AuditCategory::auth, "auth.account_deactivated",
-                       session->user_id, session->device_id, "deactivated");
+    append_local_audit(runtime.database, observability::AuditCategory::auth, "auth.account_deactivated", audit.actor,
+                       audit.target, audit.reason);
     log_diagnostic("account.deactivated",
                    {
-                       {"user_id",   session->user_id,   false},
-                       {"device_id", session->device_id, false}
+                       {"user_id", std::string{user_id}, false},
+                       {"actor",   audit.actor,          false}
     },
                    observability::LogEventSeverity::info);
-    return make_operation_result(true, session->user_id);
+    return make_operation_result(true, std::string{user_id});
+}
+
+auto deactivate_local_user(HomeserverRuntime& runtime, std::string_view access_token) -> OperationResult
+{
+    auto const session = authenticated_session(runtime, access_token);
+    if (!session.has_value())
+    {
+        return make_operation_result(false, {}, "unauthenticated", 401U);
+    }
+    return deactivate_user_account(runtime, session->user_id, {session->user_id, session->device_id, "deactivated"});
+}
+
+auto set_local_user_moderation(HomeserverRuntime& runtime, std::string_view admin_id, std::string_view user_id,
+                               bool suspended, bool locked, std::string_view audit_event, std::string_view reason_code)
+    -> OperationResult
+{
+    // Persist first. set_user_account_state changes its own mirror only after the write took, and the
+    // LocalUser copy is changed only after that, so a failed write leaves both copies as they were.
+    if (!database::set_user_account_state(runtime.database.persistent_store, user_id, suspended, locked))
+    {
+        return make_operation_result(false, {}, "failed to persist account state", 500U);
+    }
+    auto* const user = find_user(runtime.database, user_id);
+    if (user == nullptr)
+    {
+        return make_operation_result(false, {}, "unknown user", 404U);
+    }
+    user->suspended = suspended;
+    user->locked = locked;
+    append_local_audit(runtime.database, observability::AuditCategory::admin, audit_event, admin_id, user_id,
+                       reason_code);
+    return make_operation_result(true, std::string{user_id});
+}
+
+auto local_account_summary(HomeserverRuntime const& runtime, std::string_view user_id) -> std::optional<AccountSummary>
+{
+    auto const* const user = find_user(runtime.database, user_id);
+    if (user == nullptr)
+    {
+        return std::nullopt;
+    }
+    auto const& devices = runtime.database.persistent_store.devices;
+    return AccountSummary{
+        user->deactivated, user->locked, user->suspended, user->admin,
+        static_cast<std::size_t>(std::ranges::count(devices, user_id, &database::PersistentDevice::user_id))};
 }
 
 auto delete_local_device(HomeserverRuntime& runtime, std::string_view user_id, std::string_view device_id)
@@ -2280,6 +2327,83 @@ auto change_local_user_password(HomeserverRuntime& runtime, std::string_view acc
     }
     append_local_audit(runtime.database, observability::AuditCategory::auth, "auth.password_changed", user_id,
                        session->device_id, logout_devices ? "changed; revoked other devices" : "changed");
+    return make_operation_result(true, std::string{user_id});
+}
+
+auto reset_local_user_password(HomeserverRuntime& runtime, std::string_view user_id, std::string_view new_password,
+                               bool logout_devices) -> OperationResult
+{
+    if (!asserted_user_is_active(runtime, user_id))
+    {
+        return make_operation_result(false, {}, "account is not active", 403U);
+    }
+    if (!auth::password_is_acceptable(new_password, configured_password_policy(runtime)))
+    {
+        return weak_password_refusal();
+    }
+    auto const* const initial_user = find_user(runtime.database, user_id);
+    if (initial_user == nullptr)
+    {
+        return make_operation_result(false, {}, "account is not active", 403U);
+    }
+    auto const hash_replaced = initial_user->password_hash;
+    auto const argon_slot = runtime.argon2id_admission->try_acquire();
+    if (!argon_slot)
+    {
+        return argon2id_admission_refusal();
+    }
+    auto const new_hash = std::invoke([&]() {
+        auto const released = merovingian::homeserver::RuntimeLockRelease{};
+        return auth::hash_password(new_password);
+    });
+    if (!new_hash.has_value())
+    {
+        return make_operation_result(false, {}, "password hashing failed", 500U);
+    }
+    // The lock is held again: write nothing unless the account is still active and still holds the hash this
+    // reset set out to replace (a concurrent change or deactivation altered it).
+    auto const* const user_now = find_user(runtime.database, user_id);
+    if (user_now == nullptr || user_now->password_hash != hash_replaced || !asserted_user_is_active(runtime, user_id))
+    {
+        return make_operation_result(false, {}, "password changed concurrently", 403U);
+    }
+    // Pushers go first, as in change_local_user_password: a failure then commits no credential change.
+    if (logout_devices && !delete_pushers_of_user(runtime, user_id, std::nullopt))
+    {
+        return make_operation_result(false, {}, "pusher removal persistence failed", 500U);
+    }
+    if (!database::update_user_password(runtime.database.persistent_store, user_id, *new_hash))
+    {
+        return make_operation_result(false, {}, "password update failed", 500U);
+    }
+    auto const it = std::ranges::find_if(runtime.database.users, [&](LocalUser const& u) {
+        return u.user_id == user_id;
+    });
+    if (it != runtime.database.users.end())
+    {
+        it->password_hash = *new_hash;
+    }
+    if (logout_devices)
+    {
+        // Spec (POST /account/password): with logout_devices the server revokes the access tokens of all the
+        // user's devices; there is no device to keep, so none is spared.
+        std::ignore = database::revoke_access_tokens_for_user(runtime.database.persistent_store, user_id);
+        std::ignore = database::revoke_refresh_tokens_for_user(runtime.database.persistent_store, user_id);
+        if (!user_tokens_are_revoked(runtime.database.persistent_store, user_id) ||
+            !database::revoke_openid_tokens_for_user(runtime.database.persistent_store, user_id))
+        {
+            return make_operation_result(false, {}, "token revocation persistence failed", 500U);
+        }
+        for (auto& candidate : runtime.database.sessions)
+        {
+            if (candidate.user_id == user_id)
+            {
+                candidate.revoked = true;
+            }
+        }
+    }
+    append_local_audit(runtime.database, observability::AuditCategory::auth, "auth.password_reset", user_id, {},
+                       logout_devices ? "reset by email; revoked all devices" : "reset by email");
     return make_operation_result(true, std::string{user_id});
 }
 

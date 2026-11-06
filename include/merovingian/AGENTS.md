@@ -1,7 +1,7 @@
 # include/merovingian/ — Public Headers
 
 Public API lives here. Every header must be self-contained (transitively include all dependencies it exposes).
-The directory mirrors `src/` 1:1: `include/merovingian/auth/` ↔ `src/auth/`.
+The module directories mirror `src/` (headers with no `.cpp` exist): `include/merovingian/auth/` ↔ `src/auth/`.
 
 ## File conventions
 

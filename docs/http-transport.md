@@ -285,6 +285,14 @@ backend choice:
   does not resolve hostnames so the SSRF policy in
   `merovingian::federation::security` remains the single source of truth
 
+Server discovery follows the spec's steps in order. The `.well-known/matrix/server` fetch follows 30x redirects (301,
+302, 303, 307, 308) itself, at most `well_known_max_redirects` (4), every hop an `https` URL that is resolved and checked
+against the same deny-list and private-range rule before it is requested, pinned to the addresses that passed, with one
+deadline shared by all the hops and a loop ending the chain (ADR-0483). A `Location` that is a relative path is refused.
+SRV lookups ask `_matrix-fed._tcp.<hostname>` first and, only when it has no record, the deprecated
+`_matrix._tcp.<hostname>`, for the original hostname and for a delegated hostname without a port; the Host header and the
+certificate name are the hostname for either.
+
 Federation discovery applies `security.federation.deny_ip_ranges` in addition
 to the mandatory built-in SSRF blocks. The discovery network owns this immutable
 policy, so IP-literal, explicit-port, well-known, SRV, fallback, redirect and
@@ -352,7 +360,8 @@ posture:
 
 - `CURLOPT_SSL_VERIFYPEER = 1` — reject untrusted certificate chains
 - `CURLOPT_SSL_VERIFYHOST = 2` — require the certificate to match the URL host
-- `CURLOPT_FOLLOWLOCATION = 0` — redirects are refused
+- `CURLOPT_FOLLOWLOCATION = 0` — redirects are refused by the client. A caller that must follow one does it itself, one
+  pinned request per hop: the URL preview gate (ADR-0213) and the `.well-known/matrix/server` fetch (ADR-0483)
 - `CURLOPT_PROTOCOLS_STR = "https"` — no cleartext fallback, unless the
   request set `allow_cleartext_http = true` (see above), in which case
   `"https,http"`
@@ -830,8 +839,10 @@ directory-alias, device, user-data, room-tag, presence, key-backup and SSO
 identity-provider components into route templates. All unmatched paths share
 one fallback bucket, while known static endpoints keep separate keys. The
 operator surface is recognised too (F-73): each fixed `/_merovingian/admin/`
-route has its own key, the three media moderation routes one key each
-(`/_merovingian/admin/media/{quarantine|release|remove}/{mediaId}`), and any other
+route has its own key, and the key of a route with an identifier is its template
+(`/_merovingian/admin/accounts/{userId}`, `/_merovingian/admin/review/{targetType}/{targetId}`,
+`/_merovingian/admin/media/{quarantine|release|remove}/{mediaId}`). The keys are read from the table
+`observability::admin_routes()` (`match_admin_path`, ADR-0504), not from a second list. Any other
 path under the prefix stays in the fallback, so a client cannot mint counter keys
 by inventing admin paths. The admin tier policy is unchanged: it is chosen from
 the raw path, so these keys are still counted at 30/60s. Policy
@@ -888,9 +899,16 @@ Non-`/send` traffic is counted only against `per_origin_request_rate` and
 `/send` only against the weighted trio, so a transaction and its contents are
 never double-counted.
 
+### The health probe (ADR-0479)
+
+`GET /_merovingian/health` is answered by the connection handler before the request reaches the dispatcher, on every
+listener: `200` with the body `ok` while the dispatcher is running, `503` with `unavailable` after shutdown begins. It
+needs no token, is not rate-limited, reads one atomic flag and takes no lock (not `runtime.mutex`), so a long request
+cannot delay it. It says nothing of the database or the federation worker; `/_merovingian/admin/health` does.
+
 ### Admin routes
 
-`/_merovingian/admin/*` (health, metrics, audit, media moderation) is served on
+`/_merovingian/admin/*` (health, metrics, audit, accounts, review, media moderation) is served on
 the public client listener. The client-server dispatcher routes the
 `/_merovingian/admin/` prefix to the local router **before** the general
 user-token gate, so `require_admin()` owns the auth outcome: 401

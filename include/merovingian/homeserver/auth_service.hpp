@@ -6,6 +6,7 @@
 #include "merovingian/config/config.hpp"
 #include "merovingian/homeserver/runtime.hpp"
 
+#include <cstddef>
 #include <cstdint>
 #include <optional>
 #include <string>
@@ -19,6 +20,8 @@ namespace merovingian::homeserver
     -> OperationResult;
 [[nodiscard]] auto bootstrap_admin_user(HomeserverRuntime& runtime, std::string_view localpart,
                                         std::string_view password) -> OperationResult;
+// `display_name` is the client's `initial_device_display_name`, stored with a device this login creates (ignored for
+// a known device) and empty when the client chose none: a device ID is never stored as a name (ADR-0472).
 // `client_source` is the rate-limit client key of the caller
 // (`rate_limit_client_key`, which honours server.trusted_proxies). Failed
 // password logins are counted per (account, client_source) and per account;
@@ -27,7 +30,8 @@ namespace merovingian::homeserver
 // registration auto-login) gets.
 [[nodiscard]] auto login_local_user(HomeserverRuntime& runtime, std::string_view user_id, std::string_view password,
                                     std::string_view device_id, bool with_ttl = false,
-                                    std::string_view client_source = {}) -> OperationResult;
+                                    std::string_view client_source = {}, std::string_view display_name = {})
+    -> OperationResult;
 // Grants a session for an already-authenticated `user_id` -- the second
 // half of login_local_user (device-id validation, account lock/suspend
 // gate, token issuance/persistence, session bookkeeping) without a password
@@ -35,7 +39,8 @@ namespace merovingian::homeserver
 // exchange (POST /login after redeem_login_token has already established
 // the caller's identity via a redeemed SSO login token).
 [[nodiscard]] auto login_local_user_by_id(HomeserverRuntime& runtime, std::string_view user_id,
-                                          std::string_view device_id, bool with_ttl = false) -> OperationResult;
+                                          std::string_view device_id, bool with_ttl = false,
+                                          std::string_view display_name = {}) -> OperationResult;
 // Application Service API (Matrix v1.19): see the .cpp definitions for the
 // full spec citation. The caller MUST have already verified the presented
 // as_token and that the target user_id/localpart is within the appservice's
@@ -43,7 +48,8 @@ namespace merovingian::homeserver
 // — neither function re-derives that check itself.
 [[nodiscard]] auto register_appservice_user(HomeserverRuntime& runtime, std::string_view localpart) -> OperationResult;
 [[nodiscard]] auto login_appservice_user(HomeserverRuntime& runtime, std::string_view user_id,
-                                         std::string_view device_id) -> OperationResult;
+                                         std::string_view device_id, std::string_view display_name = {})
+    -> OperationResult;
 [[nodiscard]] auto issue_refresh_token_for_session(HomeserverRuntime& runtime, std::string_view user_id,
                                                    std::string_view device_id) -> OperationResult;
 [[nodiscard]] auto refresh_local_session(HomeserverRuntime& runtime, std::string_view refresh_token)
@@ -96,11 +102,51 @@ struct AdminAuthResult
 // there is deliberately no reactivate counterpart. The caller must have
 // completed UIA before calling this.
 [[nodiscard]] auto deactivate_local_user(HomeserverRuntime& runtime, std::string_view access_token) -> OperationResult;
+
+// Who and what the audit row of a deactivation names (`auth.account_deactivated`): the owner's own
+// deactivation records the user and the device, an administrator's records the administrator and the user.
+struct DeactivationAudit final
+{
+    std::string actor{};
+    std::string target{};
+    std::string reason{};
+};
+
+// The one deactivation, for `user_id` (see the definition). Call under runtime.mutex.
+[[nodiscard]] auto deactivate_user_account(HomeserverRuntime& runtime, std::string_view user_id,
+                                           DeactivationAudit const& audit) -> OperationResult;
+
+// Sets both moderation flags of a server-local user: persists, then mirrors into the LocalUser, then audits
+// `audit_event` (category admin) with `admin_id` as the actor. The one write behind the spec's lock and
+// suspend endpoints and the operator accounts route. A failed write changes nothing in memory.
+[[nodiscard]] auto set_local_user_moderation(HomeserverRuntime& runtime, std::string_view admin_id,
+                                             std::string_view user_id, bool suspended, bool locked,
+                                             std::string_view audit_event, std::string_view reason_code)
+    -> OperationResult;
+
+// What the operator accounts route reports about an account. Nothing here is a credential.
+struct AccountSummary final
+{
+    bool deactivated{false};
+    bool locked{false};
+    bool suspended{false};
+    bool admin{false};
+    std::size_t devices{0U};
+};
+[[nodiscard]] auto local_account_summary(HomeserverRuntime const& runtime, std::string_view user_id)
+    -> std::optional<AccountSummary>;
 [[nodiscard]] auto delete_local_device(HomeserverRuntime& runtime, std::string_view user_id, std::string_view device_id)
     -> OperationResult;
 [[nodiscard]] auto change_local_user_password(HomeserverRuntime& runtime, std::string_view access_token,
                                               std::string_view new_password, bool logout_devices = true)
     -> OperationResult;
+// Sets a new password for `user_id` after the account's owner proved they hold an email address bound to it
+// (POST /account/password with m.login.email.identity, ADR-0481). There is no calling device, so with
+// `logout_devices` (the spec default) every access token, refresh token and pusher of the account goes; without it
+// none does. Refuses a weak password (M_WEAK_PASSWORD), an Argon2id budget with no free slot (429) and an account
+// that is no longer active.
+[[nodiscard]] auto reset_local_user_password(HomeserverRuntime& runtime, std::string_view user_id,
+                                             std::string_view new_password, bool logout_devices) -> OperationResult;
 // Result of verifying a password during re-authentication (UIA). `ok` is true
 // only when the password is correct AND the account is not currently locked
 // out. `retry_after_ms` is non-zero when this device's UIA password-failure

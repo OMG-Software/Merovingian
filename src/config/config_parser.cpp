@@ -885,6 +885,10 @@ namespace
         {
             server.turn.password = std::string{value};
         }
+        else if (key == "server.turn.shared_secret_file")
+        {
+            server.turn.shared_secret_file = std::string{value};
+        }
         else if (key == "server.turn.ttl_seconds")
         {
             try
@@ -946,10 +950,6 @@ namespace
         else if (key == "server.identity_server.trusted_servers")
         {
             server.identity_server.trusted_servers = parse_string_list(value);
-        }
-        else if (key == "server.identity_server.default_server")
-        {
-            server.identity_server.default_server = std::string{value};
         }
         else if (key == "server.identity_server.allowed_bind_domains")
         {
@@ -1384,6 +1384,13 @@ namespace
                 add_parse_finding(findings, std::string{key}, "expected integer millisecond value");
             }
         }
+        else if (key == "security.audit_log_retention_days")
+        {
+            if (!parse_u32_value(value, security.audit_log_retention_days))
+            {
+                add_parse_finding(findings, std::string{key}, "expected non-negative integer day count");
+            }
+        }
         else if (key == "security.encryption.default_for_new_rooms")
         {
             if (!parse_bool_value(value, security.encryption.default_for_new_rooms))
@@ -1778,13 +1785,6 @@ namespace
         else if (key == "security.logging.redact_event_content")
         {
             if (!parse_bool_value(value, security.logging.redact_event_content))
-            {
-                add_parse_finding(findings, std::string{key}, "expected boolean value");
-            }
-        }
-        else if (key == "security.logging.structured")
-        {
-            if (!parse_bool_value(value, security.logging.structured))
             {
                 add_parse_finding(findings, std::string{key}, "expected boolean value");
             }

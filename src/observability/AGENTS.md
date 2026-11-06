@@ -6,7 +6,7 @@ Structured logging and audit trail for the server.
 
 | File | Responsibility |
 |---|---|
-| `observability.cpp` | Audit event types and category enum, admin route matching (`admin_routes`/`match_admin_route`), health and Prometheus metrics snapshots, correlation context (`CorrelationScope`), and automatic log-field redaction (`log_field_is_sensitive`, `redact_log_value`, `redact_log_message`), control-character escaping (`escape_log_controls`) and the field-value length cap (`cap_log_field_value`, `render_log_field_value`) |
+| `observability.cpp` | Audit event types and category enum, admin route table and matching (`admin_routes`/`match_admin_route`/`match_admin_path`: the one list of operator routes, ADR-0504; there is no shutdown route, ADR-0505), health and Prometheus metrics snapshots, correlation context (`CorrelationScope`), and automatic log-field redaction (`log_field_is_sensitive`, `redact_log_value`, `redact_log_message`), control-character escaping (`escape_log_controls`) and the field-value length cap (`cap_log_field_value`, `render_log_field_value`) |
 | `logger.hpp` (header-only) | Structured logger with level filtering; sinks to stdout/file; writer threads only after `start_writers()` |
 | `log_file_sink.hpp` (header-only) | The `--log-file` descriptor: opened `O_NOFOLLOW\|O_CLOEXEC`, only as a regular file this process owns, made 0600 (ISO-6, ADR-0146). Never open the log file any other way |
 
@@ -84,9 +84,7 @@ durability distinction:
 - **Never log secret material.** No tokens, passwords, private keys, or full request bodies. Do
   not truncate a secret to a "safe prefix" for logging — a prefix of the real secret is still
   live secret material. Use automatic redaction (fields flagged sensitive, or matched by
-  `log_field_is_sensitive`, render as `<redacted>` via `redact_log_value`/`redact_log_message`)
-  or a purpose-built one-way summary such as `auth::redacted_token_for_log` (`src/auth/token.cpp`),
-  which buckets token length into coarse size classes instead of disclosing length or bytes.
+  `log_field_is_sensitive`, render as `<redacted>` via `redact_log_value`/`redact_log_message`).
 - Log the `user_id` and `device_id` (not the token) for authenticated request traces.
 - **An audit event that an unauthenticated client can trigger on every request must not write one
   durable row per request.** `access_token.rejected`, `rate_limit.exceeded`, `request.rejected`,

@@ -1213,6 +1213,14 @@ namespace
         std::ignore = send_all(stream, response);
     }
 
+    // `GET /_merovingian/health` (ADR-0479). Matched on the path alone, so a probe that adds a query string is
+    // still a probe; any other method is not.
+    [[nodiscard]] auto is_health_probe(LocalHttpRequest const& request) noexcept -> bool
+    {
+        return request.method == "GET" &&
+               std::string_view{request.target}.substr(0U, request.target.find('?')) == "/_merovingian/health";
+    }
+
     // Routes a request without ever blocking. The caller is responsible for
     // handling DispatchResult::Status::needs_wait (long-poll sync) and, when it
     // passes RemoteMediaFetchMode::defer, needs_media_fetch (ADR-0121).
@@ -1268,6 +1276,16 @@ namespace
     }
 
 } // namespace
+
+auto health_probe_response(bool serving) -> LocalHttpResponse
+{
+    return LocalHttpResponse{
+        serving ? std::uint16_t{200U}
+          : std::uint16_t{503U},
+        serving ? "ok" : "unavailable",
+        {{"Content-Type", "text/plain; charset=utf-8"}, {"Cache-Control", "no-store"}}
+    };
+}
 
 auto sync_admission_caps(config::HttpTransportConfig const& settings, std::size_t pool_worker_count) noexcept
     -> SyncAdmissionCaps
@@ -1872,9 +1890,19 @@ namespace
                            {"has_access_token", local_request.access_token.empty() ? "false" : "true",      false}
         });
 
-        auto result = route_request(ctx.runtime, local_request, ctx.dispatch_mode,
-                                    ctx.media_fetch_pool != nullptr ? RemoteMediaFetchMode::defer
-                                                                    : RemoteMediaFetchMode::inline_fetch);
+        // The health probe is answered here, before the dispatcher (ADR-0479): it reads one atomic flag (is the
+        // dispatcher still running) and takes neither runtime.mutex nor any other lock, so a request that holds
+        // the runtime lock for a long time cannot make a probe wait. It is not rate-limited and needs no token.
+        auto result =
+            is_health_probe(local_request)
+                ? DispatchResult{DispatchResult::Status::complete,
+                                 // A connection served without a dispatcher (serve_one_http_connection) has none to
+                                 // ask, and is by definition being served.
+                                 health_probe_response(ctx.dispatcher == nullptr || ctx.dispatcher->running()),
+                                 {}}
+                : route_request(ctx.runtime, local_request, ctx.dispatch_mode,
+                                ctx.media_fetch_pool != nullptr ? RemoteMediaFetchMode::defer
+                                                                : RemoteMediaFetchMode::inline_fetch);
 
         if (result.status == DispatchResult::Status::needs_media_fetch)
         {

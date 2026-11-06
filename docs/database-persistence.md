@@ -32,9 +32,12 @@ value. Test fixtures that do not exercise persistence select it through
   ([ADR-0224](adr/0224-pre-1-0-migrations-collapse-into-one-frozen-v1-schema.md)),
   so v1 creates all 63 tables in their final shape, every column that an
   earlier migration used to `ALTER` on now being part of the table's `CREATE`,
-  plus four indexes: `event_edges_prev_event_id`,
-  `idx_to_device_messages_recipient_age`, `idx_deferred_pdus_room_id` and
-  `idx_media_pending_uploads_owner`. Nothing is seeded or backfilled: the old
+  plus six indexes: `event_edges_prev_event_id`,
+  `idx_to_device_messages_recipient_age`, `idx_deferred_pdus_room_id`,
+  `idx_media_pending_uploads_owner`, `idx_events_room_id` and
+  `idx_state_groups_room_id` (the last two serve the per-room reload,
+  [ADR-0490](adr/0490-events-and-state-groups-are-indexed-by-room-and-stream-ordering-is-not.md);
+  `stream_ordering` is deliberately unindexed) Nothing is seeded or backfilled: the old
   state-transition backfill and state-group seeding only ever mattered for
   upgrading existing databases and no longer exist. The compiled catalog in
   `src/database/migration.cpp` has exactly one upgrade step (version `1`,
@@ -679,8 +682,8 @@ value. Test fixtures that do not exercise persistence select it through
     same for `database::prepare_store_event_with_state(`.
   - `PduStateConflictContext` / `state_conflict_resolver` (the older,
     never-production-reached conflict-resolution plumbing this phase was
-    meant to replace) are still left in place unchanged and unused —
-    phase B2 removes them.
+    meant to replace) were left in place here and removed in phase B2
+    (ADR-0064).
 
   A real bug was found and fixed along the way: `database::store_state`'s
   `state_transitions` insert had no `ON CONFLICT` handling, but its primary
@@ -753,8 +756,15 @@ value. Test fixtures that do not exercise persistence select it through
   `max_in_memory_audit_events` (1 024) rows, oldest dropped first, with
   `audit_log_evicted` counting what left. The table is the complete record.
   Append through `append_audit_event`; hydrate through `remember_audit_event`.
-  Hydration keeps the newest rows in insertion order on both backends (PostgreSQL
-  orders by `ctid`, the only ordering the column-less `audit_log` offers).
+  Hydration keeps the newest rows in insertion order on both backends (SQLite by
+  `rowid`; PostgreSQL by `created_at_ms`, then `ctid` within one millisecond, because
+  retention deletes rows and `ctid` alone no longer orders them, ADR-0489).
+  Rows older than `security.audit_log_retention_days` are deleted by the
+  `retention-sweep` job (`delete_audit_rows_older_than`, at most 500 rows per
+  transaction; `created_at_ms` is the column that ages them, and a row stamped `0`
+  is never deleted). The same job deletes the unusable `access_tokens` and
+  `refresh_tokens` rows (`collect_unusable_credentials`, `delete_credential_rows`,
+  `forget_credentials`, ADR-0488).
   `load_audit_events_by_type_prefix(store, prefix, limit)` reads older rows straight
   from the table (newest first, `limit` clamped to `max_audit_query_rows`, prefix
   bound and matched literally); in-memory stores answer from the window.
@@ -775,7 +785,7 @@ value. Test fixtures that do not exercise persistence select it through
   catalog has only v1, so the scenarios cover the v1 build-and-stop seam, never
   going past this build, an unopenable file being refused, tables without a ledger
   being refused (SQLite), a fresh database having every table's final columns and
-  all four indexes, and a pre-1.0 ledger (rows 2 to 26) being refused on both
+  all six indexes, and a pre-1.0 ledger (rows 2 to 26) being refused on both
   backends. The "any older version opens at current" scenario is vacuous until a
   v2 exists. There is no previous-release fixture: the 0.11.13 fixture was
   removed when the migrations collapsed (0.12.47, ADR-0224). When the 1.1 series
@@ -784,14 +794,15 @@ value. Test fixtures that do not exercise persistence select it through
 - Both stores read the migration ledger in numeric order
   (`ORDER BY CAST(version AS INTEGER)`): `schema_migrations.version` is `TEXT`, and
   ordering by it alone put `'10'` before `'9'`.
+- `profiles.fields_json` holds a user's extended profile fields (`m.tz`, custom keys) as one canonical JSON object, `{}` when none (ADR-0478); `update_profile_fields` rewrites it.
 - The PostgreSQL store hydrates `profiles` like the SQLite store. Before 0.12.42 it
   wrote them but never read them back, so displaynames and avatars disappeared at
   every restart.
 - Live PostgreSQL integration coverage: a dedicated GitHub Actions workflow
   (`.github/workflows/postgres-integration.yml`) starts a PostgreSQL 16
   service, provisions a `merovingian_migration` role with DDL grants and a
-  `merovingian_runtime` role with table-level DML grants, and runs the
-  live integration scenarios at
+  `merovingian_runtime` role with table-level DML grants, and runs every
+  integration scenario tagged `[postgresql]` (ADR-0511), most of them in
   `tests/integration/test_postgresql_persistence_flow.cpp`. Scenarios
   assert: schema is bootstrapped to `current_schema_version`, previously
   persisted rows survive a close/reopen, and a runtime-role session is
@@ -1035,9 +1046,7 @@ persisted and hydrated.
   `postgres-integration` workflow because they require PostgreSQL and the role
   environment variables. See `packaging/postgresql/provision-roles.sql`.
 - The schema's v1 `push_rules` table is unused: push rules are kept as `m.push_rules`
-  account data (ADR-0204, see above). The configuration key
-  `server.identity_server.allowed_bind_domains` is accepted but currently read
-  by no bind or `requestToken` path, so it is not enforced.
+  account data (ADR-0204, see above).
 
 ## Federation worker least-privilege role (ADR-0062 part 2)
 
@@ -1084,8 +1093,8 @@ Two independent mechanisms close this, together:
    `DELETE` — since the worker's own `PersistentStore` is a read-only
    snapshot for room-scoped federation reads and every write it needs is
    relayed to main over IPC (`src/federation_worker/AGENTS.md` rule 3; the
-   one exception found during review is `state_conflict_resolver`, covered
-   below).
+   one exception found during review, `state_conflict_resolver`, covered
+   below, was removed by ADR-0064).
 
 2. **A load profile for PostgreSQL-backed workers.**
    `database::TableLoadProfile` and `database::table_load_profile_includes`
@@ -1172,21 +1181,13 @@ Two independent mechanisms close this, together:
    in-memory least-privilege boundary. This remains an open gap requiring
    profile-aware SQLite hydration and a regression test.
 
-   **One dormant write path found during review:** `state_conflict_resolver`
-   (`local_http_router.cpp:1255`, wired unconditionally by
-   `wire_federation_callbacks`, never overridden by the worker) calls
-   `database::store_state` — a write to `current_state` — when a PDU's
-   ingestion result carries a populated `state_conflict`. In the worker,
-   `pdu_sink` is *always* the IPC-relay override
-   (`federation_worker::deserialize_pdu_ingest_result`), which never
-   populates `PduIngestionResult::state_conflict`, so this resolver is
-   registered but never actually invoked from inside the worker today. It
-   is not relayed and not removed: `current_state` is already in the
-   allowlist for reads, the write path is currently unreachable, and — were
-   a future change to make it reachable — the SELECT-only grant would
-   refuse the `INSERT`/`UPDATE` rather than silently succeed, so the
-   failure mode stays fail-closed even if this invariant is ever broken by
-   accident.
+   **One dormant write path found during review, since removed:**
+   `state_conflict_resolver` called `database::store_state` (a write to
+   `current_state`) when a PDU's ingestion result carried a populated
+   `state_conflict`, and was wired unconditionally. Nothing ever set
+   `state_conflict`, so it was never invoked from the worker or from main.
+   ADR-0064 deleted the resolver, `PduStateConflictContext` and
+   `PduIngestionResult::state_conflict`.
 
    `federation_worker_table_allowlist` (C++) and
    `provision-federation-worker-role.sql`'s per-table `GRANT SELECT` list

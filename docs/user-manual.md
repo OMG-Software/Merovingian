@@ -456,7 +456,7 @@ change them.
 
 | Key | Default | When to change |
 |---|---|---|
-| `server.name` | `example.org` | **Required.** The Matrix server name used in user IDs and federation. Must match the host part served by your reverse proxy. The shipped `config/merovingian.conf.example` sets `example.org`. |
+| `server.name` | `example.org` | **Required.** The Matrix server name used in user IDs and federation. Must match the host part served by your reverse proxy. The shipped `config/merovingian.conf.example` sets `matrix.example.org`. |
 | `server.public_baseurl` | `https://matrix.example.org` | **Required.** The HTTPS URL clients use. Must be HTTPS. |
 | `server.trusted_proxies` | (empty) | **Required behind a reverse proxy.** Comma-separated list of proxy IPs whose `X-Forwarded-For` header is trusted for rate limiting. Without this, every client shares one per-IP bucket. The client is the rightmost `X-Forwarded-For` entry that is not itself a trusted proxy (ADR-0073), so a proxy may append to the header or overwrite it; list every proxy hop you control. The shipped example sets `127.0.0.1`. |
 
@@ -741,13 +741,18 @@ support.
 | `server.turn.server` | (empty) | TURN server URI advertised to clients, e.g. `turn:turn.example.org:3478?transport=udp`. Leave empty to keep the endpoint returning `{}`. |
 | `server.turn.username` | (empty) | Static username issued to authenticated clients. Required when `server.turn.server` is set. |
 | `server.turn.password` | (empty) | Static password issued alongside the username. Required when `server.turn.server` is set. |
-| `server.turn.ttl_seconds` | `86400` | Credential lifetime advertised in the response. |
+| `server.turn.shared_secret_file` | (empty) | Path to an owner-read-only file (mode `0400`, as every secret file) holding the TURN server's `static-auth-secret`, for coturn run with `use-auth-secret`. Each client then gets its own credentials: username `<expiry>:<user_id>`, password the base64 HMAC-SHA1 of that username under the secret (the coturn REST API), valid for `ttl_seconds`. Cannot be combined with `username` and `password`: the configuration is refused if both are set. |
+| `server.turn.ttl_seconds` | `86400` | Credential lifetime advertised in the response, and with `shared_secret_file` the time until the username's expiry. |
 
-> **Security note.** Shared-secret, time-limited TURN usernames are not yet
-> implemented; the current implementation issues the configured static
-> credentials to every authenticated client. Only supply credentials that are
-> acceptable for all users of this homeserver, or run a TURN server that does not
-> require authentication.
+> **Security note.** With `server.turn.username` and `server.turn.password` the
+> configured static credentials go to every authenticated client: only supply
+> credentials that are acceptable for all users of this homeserver, or run a TURN
+> server that does not require authentication. With `shared_secret_file` the
+> secret never leaves the server; clients receive credentials that expire. The
+> file is read on each request, wiped from memory after use and never logged;
+> an unreadable or empty file makes the endpoint answer `500` and log an error.
+> Set the same value as coturn's `static-auth-secret`, and keep
+> `server.turn.ttl_seconds` at or below coturn's own limits.
 
 #### OIDC discovery — `server.oidc.*`
 
@@ -786,8 +791,7 @@ is not possible. 3PIDs are not used for login or password reset.
 | Key | Default | When to change |
 |---|---|---|
 | `server.identity_server.trusted_servers` | (empty) | Comma-separated allow-list of identity server base URLs (must be HTTPS). A 3PID operation naming an `id_server` outside this list is refused. |
-| `server.identity_server.default_server` | (empty) | Identity server used when a client omits `id_server`. Must be HTTPS and must also appear in `trusted_servers`. |
-| `server.identity_server.allowed_bind_domains` | (empty) | Parsed and validated, but not currently enforced — no bind or `requestToken` path reads it (see [ADR-0051](adr/0051-document-inert-configuration-keys-rather-than-removing-them.md)), so setting it restricts nothing today. |
+| `server.identity_server.allowed_bind_domains` | (empty) | Comma-separated email domains this server may tell an identity server about (ADR-0498). Empty restricts nothing. When set, an email address on any other domain (exact match, letter case ignored, subdomains do not match) is refused with `403 M_THREEPID_DENIED` on the identity-server `requestToken`, bind and 3PID invite paths. msisdn numbers have no domain and are not restricted, and `POST /account/3pid/add` (verified locally, nothing bound on an identity server) is outside this key, so it is **not** a limit on every email a user may add. Entries are bare domains: one that is empty or holds `@`, `*` or whitespace is a start-up configuration error. |
 | `server.identity_server.connect_timeout_seconds` | `10` | Outbound connect timeout for identity server HTTP calls. |
 | `server.identity_server.total_timeout_seconds` | `30` | Outbound total timeout for identity server HTTP calls. Must be `>=` `connect_timeout_seconds`. |
 
@@ -826,6 +830,12 @@ of the server that sent it who shares a joined room with a user of this server, 
 100 entries are looked at.
 
 #### Email notifications — `server.email.*`
+
+The same relay sends the **password-reset code** (ADR-0481): with `server.email.smtp_url` set, a user who cannot sign
+in can reset the password from their client (`m.login.email.identity`, an 8-character code emailed to an address on the
+account). The message holds the code and the server name only, and the endpoint answers alike whether or not an account
+holds the address. Without a relay `POST /account/password/email/requestToken` is `400 M_THREEPID_MEDIUM_NOT_SUPPORTED`.
+Phone-number reset is not supported (no SMS).
 
 Email pushers (`kind: "email"` in `POST /pushers/set`) are **refused unless
 `server.email.smtp_url` is set**; the section is independent of
@@ -1070,6 +1080,7 @@ legacy validation formats are not a fallback for new issuance.
 |---|---|---|
 | `security.access_token_lifetime_ms` | `3600000` (1 hour) | Milliseconds, `0..2592000000` inclusive (30-day maximum); `0` disables expiry. |
 | `security.refresh_token_lifetime_ms` | `2592000000` (30 days) | Milliseconds, `0..31536000000` inclusive (365-day maximum); `0` disables expiry. |
+| `security.audit_log_retention_days` | `365` | How long `audit_log` rows are kept. `0` keeps every row for ever; otherwise `30..3650` (anything else is refused at start-up). An hourly job deletes older rows in small batches and writes an `audit.retention.purged` audit row for every purge. Raise it, or use `0`, if you must keep evidence longer. Reloadable. Sessions and tokens that can no longer authenticate (revoked or long-expired access tokens, expired refresh tokens) are deleted by the same job; there is nothing to configure. |
 
 Configuration parsing and typed validation report field-specific findings for
 negative or oversized lifetimes. These are project admission limits, not Matrix
@@ -1578,9 +1589,8 @@ line `Policy server call not made: too many are in flight`).
 
 | Key | Default | When to change |
 |---|---|---|
-| `security.logging.redact_tokens` | `true` | Keep `true` so tokens do not leak into logs. |
-| `security.logging.redact_event_content` | `true` | Keep `true` so message content does not leak into logs. |
-| `security.logging.structured` | `true` | Structured log format. |
+| `security.logging.redact_tokens` | `true` | Only `true` is accepted: `false` is refused at start-up with a configuration error, because tokens are always redacted from logs. |
+| `security.logging.redact_event_content` | `true` | Only `true` is accepted: `false` is refused at start-up, because event content is always redacted from logs. |
 
 #### Client rate limits — `client_rate_limits.*`
 
@@ -1703,7 +1713,7 @@ take effect.
 | `database.pool_size` | Restart required |
 | `server.turn.*` | Reloadable |
 | `security.trust_safety.*` | Reloadable |
-| `security.access_token_lifetime_ms` / `security.refresh_token_lifetime_ms` | Reloadable |
+| `security.access_token_lifetime_ms` / `security.refresh_token_lifetime_ms` / `security.audit_log_retention_days` | Reloadable |
 | `security.login_throttle.*` | Reloadable |
 | Other `listeners.*` keys (except `reverse_proxy`) | Reloadable |
 | `security.registration.*` (except `token_file`) | Reloadable |
@@ -1856,8 +1866,15 @@ and cannot be selected in the config file.
 `merovingian-db-migrate` plans schema migrations without starting the runtime:
 
 ```sh
-merovingian-db-migrate --plan 1 2 --migrations migrations/
+merovingian-db-migrate --plan 0 1 --migrations migrations/
 ```
+
+The schema is at version 1 and `migrations/` holds only `001_initial_schema.sql`,
+so `--plan 0 1` is the plan that matches it. With `--migrations`, the steps come
+from the files, and the plan is rejected (exit 78) unless their versions run
+contiguously from `<current-version> + 1` to `<target-version>`; without
+`--migrations`, the plan is built from the steps this build carries. A plan to a
+version this build does not have, such as `--plan 1 2`, is rejected.
 
 The live server applies pending migrations automatically on startup.
 
@@ -2745,7 +2762,7 @@ curl 'http://127.0.0.1:8008/_merovingian/admin/audit?category=policy'
 The endpoint answers a JSON object (`application/json`) whose `entries` array holds one
 object per matching row, the most recent 1 024 audit rows the running process holds;
 `audit_events` is the retained count and `evicted` appears once older rows have left that
-window, and the `audit_log` table keeps every row. Rejections that any unauthenticated client can
+window, and the `audit_log` table keeps every row younger than `security.audit_log_retention_days`. Rejections that any unauthenticated client can
 trigger (`access_token.rejected`, `rate_limit.exceeded`, `request.rejected`) are
 written at most 10 times per kind per 60 seconds; the first row after a busier
 window carries `suppressed=<n>` in its reason. `actor`, `target` and `reason` are
@@ -2762,19 +2779,44 @@ a non-admin user returns `403`. Implemented routes:
 | Method | Path | Purpose |
 |---|---|---|
 | `GET` | `/_merovingian/admin/health` | Health summary. |
+| `GET` | `/_merovingian/health` | Not an admin route: no token. The probe for a load balancer or orchestrator. `200` with the body `ok` while the server serves requests, `503` with `unavailable` once it has stopped accepting them (shutdown). It reveals nothing else (no version, counts or configuration), is not rate-limited, and takes no lock a slow request can hold: it reads one atomic flag, so a busy server still answers it. It is served on every listener, so a probe may use the client or the federation port. |
 | `GET` | `/_merovingian/admin/metrics` | Prometheus-format server metrics. |
 | `GET` | `/_merovingian/admin/media/metrics` | Media-repository metrics. |
 | `GET` | `/_merovingian/admin/audit` | Audit log query (`?category=`, `?event_type=`); a JSON object with an `entries` array. |
 | `POST` | `/_merovingian/admin/media/quarantine/{mediaId}` | Quarantine a stored media item. |
 | `POST` | `/_merovingian/admin/media/release/{mediaId}` | Release a quarantined media item. |
 | `POST` | `/_merovingian/admin/media/remove/{mediaId}` | Remove a stored media item. |
+| `GET` | `/_merovingian/admin/accounts/{userId}` | Summary of one local account. |
+| `POST` | `/_merovingian/admin/accounts/{userId}` | `deactivate`, `lock`, `unlock`, `suspend` or `unsuspend` an account. |
+| `POST` | `/_merovingian/admin/review/{targetType}/{targetId}` | Hold a target for review. |
 
-`/_merovingian/admin/accounts/{userId}`, `/_merovingian/admin/review/{targetType}/{targetId}`,
-and `/_merovingian/admin/shutdown` appear in `observability::admin_routes()`
-(`include/merovingian/observability/observability.hpp`,
-`src/observability/observability.cpp`) but are not wired into either HTTP
-dispatcher (`src/homeserver/local_http_router.cpp`,
-`src/homeserver/client_server.cpp`) — they are unreachable today.
+#### Managing an account
+
+`GET /_merovingian/admin/accounts/{userId}` reports on one account of this server. `{userId}` is the full Matrix
+user ID, percent-encoded (`@alice:example.org` is `%40alice%3Aexample.org`). The answer is a JSON object saying
+whether the account is `deactivated`, `locked`, `suspended` or an `admin`, and how many `devices` it has. It never
+shows a password, a password hash or a token.
+
+`POST /_merovingian/admin/accounts/{userId}` with a JSON body `{"action": "..."}` changes it:
+
+| Action | Effect |
+|---|---|
+| `lock` / `unlock` | A locked user's next request is refused with `M_USER_LOCKED`; their sessions are kept. |
+| `suspend` / `unsuspend` | A suspended user can read but not act (`M_USER_SUSPENDED`). |
+| `deactivate` | Closes the account for good: every token and pusher is removed, login is refused, and the name is never reissued. It needs `"confirm": true` in the body; without it the request is refused and nothing happens. It does not unbind identity-server addresses. |
+
+The answer to a successful action is the same summary, after the change. Asking again for something already in effect
+is not an error (`200`). Once an account is deactivated, the four other actions are refused with `409`. You cannot act on
+your own account or on another administrator (`403`), and a user who is not on this server is `400`; an unknown local
+user is `404`. Every action is recorded in the audit log under your user ID. Errors come back as a line of plain text.
+
+#### Holding a target for review
+
+`POST /_merovingian/admin/review/{targetType}/{targetId}` (`media`, `room`, `federation` or `federation_server`; the ID
+percent-encoded; an optional `{"reason": "..."}` body) holds the target for review. It is the same operation as
+`POST /_matrix/client/v3/admin/safety/review/{targetType}/{targetId}`: the two cannot differ.
+
+There is no route that stops the server. Stop it with the service manager.
 
 ## Maintenance
 
@@ -2943,6 +2985,12 @@ startup and client checks for your deployment before relying on a backup.
 6. Start the server.
 
 Schema migrations are applied automatically on startup.
+
+A database whose `schema_migrations` ledger records a migration this build does
+not have is refused at open, and the server does not start. That covers a
+database written by a newer build and a pre-1.0 database from before the 0.12.47
+schema collapse (ledger rows 2 to 26). There are no upgrade or downgrade steps
+for it: such a database must be recreated (`migrations/AGENTS.md`).
 
 ### Version and release metadata
 

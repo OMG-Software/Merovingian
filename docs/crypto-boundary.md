@@ -8,6 +8,10 @@ implementing custom cryptographic primitives.
 - Generic hashing (`generic_hash.cpp`) and hex/base64 encoding (`encoding.cpp`)
   wrapping libsodium's `crypto_generichash`/`sodium_bin2hex`/`sodium_bin2base64`.
 - Constant-time comparison boundary (fixed and variable-length inputs).
+- `hmac_sha1` (`hmac_sha1.cpp`), a wrapper over OpenSSL's `HMAC` with `EVP_sha1()`: the one place SHA-1 is used, because
+  the coturn REST API defines a TURN password as the base64 of HMAC-SHA1 over the username (ADR-0480). libsodium has no
+  SHA-1; OpenSSL is already a required dependency, so no new dependency enters the build, but `merovingian-crypto` now
+  links it. No other code may use SHA-1 for a new purpose.
 - Variable-length comparison uses domain-separated hashing so it does not leak
   input length through a premature length check.
 - Runtime signing secret material uses `core::SecretBuffer`, backed by

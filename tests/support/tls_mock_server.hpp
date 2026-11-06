@@ -10,6 +10,7 @@
 // linked into production code.
 #pragma once
 
+#include "merovingian/core/file_descriptor.hpp"
 #include "merovingian/core/socket_handle.hpp"
 #include "merovingian/homeserver/tls.hpp"
 #include "merovingian/identity/identity_client.hpp"
@@ -35,12 +36,14 @@
 #include <utility>
 #include <vector>
 
+#include <fcntl.h>
 #include <openssl/evp.h>
 #include <openssl/pem.h>
 #include <openssl/rsa.h>
 #include <openssl/x509.h>
 #include <poll.h>
 #include <sys/socket.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
 namespace merovingian::tests::tls_mock
@@ -157,6 +160,26 @@ struct FileDeleter final
     }
 };
 
+// Opens `path` for writing as an owner-only (0600) file. `std::fopen` would create it with 0666 less the umask, so
+// the private key would be open to other users until the chmod below (CodeQL cpp/world-writable-file-creation);
+// the fchmod also narrows a file left over from an earlier run.
+[[nodiscard]] inline auto open_owner_only_for_write(std::string const& path) -> std::unique_ptr<std::FILE, FileDeleter>
+{
+    auto descriptor = merovingian::core::FileDescriptor{
+        ::open(path.c_str(), O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC | O_NOFOLLOW, S_IRUSR | S_IWUSR)};
+    if (!descriptor.valid() || ::fchmod(descriptor.get(), S_IRUSR | S_IWUSR) != 0)
+    {
+        return {};
+    }
+    auto file = std::unique_ptr<std::FILE, FileDeleter>{::fdopen(descriptor.get(), "wb")};
+    if (file != nullptr)
+    {
+        // The FILE now owns the descriptor and closes it.
+        std::ignore = descriptor.release();
+    }
+    return file;
+}
+
 [[nodiscard]] inline auto read_file_into_string(std::filesystem::path const& path) -> std::string
 {
     auto stream = std::ifstream{path, std::ios::binary};
@@ -224,11 +247,11 @@ struct FileDeleter final
     output.certificate_file = (directory / "server.pem").string();
     output.private_key_file = (directory / "server.key").string();
 
-    auto cert_file = std::unique_ptr<std::FILE, FileDeleter>{std::fopen(output.certificate_file.c_str(), "wb")};
+    auto cert_file = open_owner_only_for_write(output.certificate_file);
     REQUIRE(cert_file != nullptr);
     REQUIRE(PEM_write_X509(cert_file.get(), certificate.get()) == 1);
 
-    auto key_file = std::unique_ptr<std::FILE, FileDeleter>{std::fopen(output.private_key_file.c_str(), "wb")};
+    auto key_file = open_owner_only_for_write(output.private_key_file);
     REQUIRE(key_file != nullptr);
     REQUIRE(PEM_write_PrivateKey(key_file.get(), key.get(), nullptr, nullptr, 0, nullptr, nullptr) == 1);
 
@@ -581,7 +604,6 @@ public:
     auto install(Runtime& runtime) const -> void
     {
         auto& identity_server = runtime.homeserver.config.server().identity_server;
-        identity_server.default_server = base_url();
         identity_server.trusted_servers = {base_url()};
         runtime.homeserver.test_forced_identity_resolution[host_] =
             merovingian::identity::TestForcedIdentityResolution{{"127.0.0.1"}, certificate_.certificate_pem};

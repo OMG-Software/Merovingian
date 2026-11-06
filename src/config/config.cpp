@@ -740,6 +740,13 @@ auto validate(Config const& config) -> std::vector<ConfigValidationFinding>
         findings.push_back({"security.refresh_token_lifetime_ms", "must not exceed 31536000000 ms (365 days)"});
     }
 
+    if (config.security().audit_log_retention_days != 0U &&
+        (config.security().audit_log_retention_days < min_audit_log_retention_days ||
+         config.security().audit_log_retention_days > max_audit_log_retention_days))
+    {
+        findings.push_back({"security.audit_log_retention_days", "must be 0 (keep every row) or 30..3650 days"});
+    }
+
     if (config.server().server_name.empty())
     {
         findings.push_back({"server.server_name", "server name must not be empty"});
@@ -1023,7 +1030,13 @@ auto validate(Config const& config) -> std::vector<ConfigValidationFinding>
     // A partially populated turn block (e.g. only a username) is rejected
     // because it would advertise a broken relay to clients.
     auto const& turn = config.server().turn;
-    if (!turn.server.empty())
+    if (!turn.shared_secret_file.empty() && (!turn.username.empty() || !turn.password.empty()))
+    {
+        // Two ways to issue credentials would leave it unclear which one clients get (ADR-0480).
+        findings.push_back(
+            {"server.turn.shared_secret_file", "set either shared_secret_file or username and password, not both"});
+    }
+    else if (!turn.server.empty() && turn.shared_secret_file.empty())
     {
         if (turn.username.empty())
         {
@@ -1034,7 +1047,8 @@ auto validate(Config const& config) -> std::vector<ConfigValidationFinding>
             findings.push_back({"server.turn.password", "TURN server configured but password is missing"});
         }
     }
-    else if (!turn.username.empty() || !turn.password.empty())
+    else if (turn.server.empty() &&
+             (!turn.username.empty() || !turn.password.empty() || !turn.shared_secret_file.empty()))
     {
         findings.push_back({"server.turn.server", "TURN credentials supplied but no server URI is configured"});
     }
@@ -1073,11 +1087,8 @@ auto validate(Config const& config) -> std::vector<ConfigValidationFinding>
         validate_oidc_endpoint("server.oidc.account_management_uri", oidc.account_management_uri, false);
     }
 
-    // Identity Service API: every trusted server and the default server must
-    // be an HTTPS URL; the default server, when set, must also appear in the
-    // trusted list (an untrusted default would let 3PID traffic bypass the
-    // allowlist). An empty trusted list is valid — it means 3PID operations
-    // that need an IS fail closed, which is the secure default.
+    // Identity Service API: every trusted server must be an HTTPS URL. An empty trusted list is valid — it means 3PID
+    // operations that need an IS fail closed, which is the secure default.
     auto const& identity = config.server().identity_server;
     for (auto const& server_url : identity.trusted_servers)
     {
@@ -1087,16 +1098,19 @@ auto validate(Config const& config) -> std::vector<ConfigValidationFinding>
                 {"server.identity_server.trusted_servers", "each trusted identity server must use HTTPS"});
         }
     }
-    if (!identity.default_server.empty())
+    // An allowed_bind_domains entry is a bare domain compared to the text after an address's last '@'. One that is
+    // empty, or holds '@', '*' or whitespace, can never equal one, so every email would be refused with no hint why.
+    for (auto const& domain : identity.allowed_bind_domains)
     {
-        if (!is_valid_https_url(identity.default_server))
+        auto const unmatchable = domain.empty() || domain.find_first_of("@*") != std::string::npos ||
+                                 std::ranges::any_of(domain, [](char c) {
+                                     return static_cast<unsigned char>(c) <= 0x20U;
+                                 });
+        if (unmatchable)
         {
-            findings.push_back({"server.identity_server.default_server", "default identity server must use HTTPS"});
-        }
-        else if (std::ranges::find(identity.trusted_servers, identity.default_server) == identity.trusted_servers.end())
-        {
-            findings.push_back(
-                {"server.identity_server.default_server", "default identity server must be listed in trusted_servers"});
+            findings.push_back({"server.identity_server.allowed_bind_domains",
+                                "each allowed bind domain must be a bare domain such as example.org, with no '@', "
+                                "'*' or whitespace"});
         }
     }
     if (identity.total_timeout_seconds < identity.connect_timeout_seconds)

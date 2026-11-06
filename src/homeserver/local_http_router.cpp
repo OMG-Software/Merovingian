@@ -35,6 +35,7 @@
 #include "merovingian/homeserver/deferred_pdu_retry.hpp"
 #include "merovingian/homeserver/federation_request_routing.hpp"
 #include "merovingian/homeserver/media_service.hpp"
+#include "merovingian/homeserver/operator_admin.hpp"
 #include "merovingian/homeserver/presence_service.hpp"
 #include "merovingian/homeserver/public_rooms.hpp"
 #include "merovingian/homeserver/request_lock.hpp"
@@ -2789,6 +2790,15 @@ namespace
                     std::move(answer_plan.servers_in_room)};
         };
 
+        runtime.federation.third_party_invite_exchanger =
+            [rt](federation::ThirdPartyInviteExchange const& exchange,
+                 std::string const& origin) -> federation::ThirdPartyInviteExchangeResult {
+            // The caller is an authenticated server (X-Matrix), so its name is a bounded key for the ADR-0079 budget
+            // the offer to the invited user's server draws on. exchange_third_party_invite takes the runtime mutex.
+            auto const result = exchange_third_party_invite(*rt, exchange, "federation-3pid:" + origin);
+            return {result.ok, result.status, result.reason};
+        };
+
         runtime.federation.invite_handler =
             [rt](federation::InviteRequest const& invite) -> federation::InviteAcceptResult {
             // Locking: same reasoning as runtime.federation.membership_acceptor
@@ -3041,7 +3051,7 @@ namespace
             auto const profile = database::find_profile(rt->database.persistent_store, user_id);
             if (profile.has_value())
             {
-                return {true, profile->displayname, profile->avatar_url};
+                return {true, profile->displayname, profile->avatar_url, profile->fields_json};
             }
             auto const user_exists = std::ranges::any_of(rt->database.persistent_store.users,
                                                          [user_id](database::PersistentUser const& user) {
@@ -5641,23 +5651,18 @@ auto ingest_pdu_event(HomeserverRuntime& runtime, federation::InboundPduEnvelope
 auto apply_runtime_membership(LocalDatabase& database, std::string_view room_id, std::string_view user_id,
                               std::string_view membership) -> void
 {
-    auto room = std::ranges::find_if(database.rooms, [&](LocalRoom const& current) {
-        return current.room_id == room_id;
-    });
-    if (room == database.rooms.end())
+    auto* const room = find_local_room(database, room_id);
+    if (room == nullptr)
     {
         return;
     }
-    auto const member = std::ranges::find_if(room->members, [&](std::string const& member_id) {
-        return member_id == user_id;
-    });
-    if (membership == "join" && member == room->members.end())
+    if (membership == "join")
     {
-        room->members.emplace_back(user_id);
+        std::ignore = room->members.add(std::string{user_id});
     }
-    else if ((membership == "leave" || membership == "ban") && member != room->members.end())
+    else if (membership == "leave" || membership == "ban")
     {
-        room->members.erase(member);
+        std::ignore = room->members.remove(user_id);
     }
 }
 
@@ -5786,7 +5791,13 @@ auto wire_federation_callbacks(HomeserverRuntime& runtime) -> void
     // A route is the path: the query string is part of `request.target` and is read by the handlers that
     // take parameters (ADR-0420).
     auto const request_path = std::string_view{request.target}.substr(0U, request.target.find('?'));
-    if (request.method == "GET" && request_path == "/_merovingian/admin/health")
+    // The operator routes are the table in observability::admin_routes() (ADR-0504): a route is served by
+    // asking the table what the request is, never by comparing a path here.
+    auto const admin_route = observability::match_admin_route(request.method, request_path);
+    auto const is_admin_operation = [&admin_route](observability::AdminOperation operation) {
+        return admin_route.matched && admin_route.route.operation == operation;
+    };
+    if (is_admin_operation(observability::AdminOperation::health))
     {
         if (auto const denied = admin_auth_denied(runtime, request.access_token, correlation); denied.has_value())
         {
@@ -5795,7 +5806,7 @@ auto wire_federation_callbacks(HomeserverRuntime& runtime) -> void
         return response(200U, admin_health_summary(runtime),
                         observability_headers(correlation, "text/plain; charset=utf-8"));
     }
-    if (request.method == "GET" && request_path == "/_merovingian/admin/media/metrics")
+    if (is_admin_operation(observability::AdminOperation::media_metrics))
     {
         if (auto const denied = admin_auth_denied(runtime, request.access_token, correlation); denied.has_value())
         {
@@ -5804,7 +5815,7 @@ auto wire_federation_callbacks(HomeserverRuntime& runtime) -> void
         return response(200U, media_metrics_summary(runtime),
                         observability_headers(correlation, "text/plain; charset=utf-8"));
     }
-    if (request.method == "GET" && request_path == "/_merovingian/admin/metrics")
+    if (is_admin_operation(observability::AdminOperation::metrics))
     {
         if (auto const denied = admin_auth_denied(runtime, request.access_token, correlation); denied.has_value())
         {
@@ -5815,7 +5826,7 @@ auto wire_federation_callbacks(HomeserverRuntime& runtime) -> void
     }
     // The path alone is compared (F-73): `/_merovingian/admin/audit-anything` once matched this prefix too,
     // so a path the rate limiter files under the fallback counter was served as the audit view.
-    if (request.method == "GET" && request.target.substr(0U, request.target.find('?')) == "/_merovingian/admin/audit")
+    if (is_admin_operation(observability::AdminOperation::audit_query))
     {
         if (auto const denied = admin_auth_denied(runtime, request.access_token, correlation); denied.has_value())
         {
@@ -5856,6 +5867,29 @@ auto wire_federation_callbacks(HomeserverRuntime& runtime) -> void
         // F-62 (ADR-0416): the view is a JSON object, not the text line it once was.
         return response(200U, admin_audit_summary(runtime, category_filter, event_type_filter),
                         observability_headers(correlation, "application/json"));
+    }
+    // GET and POST /_merovingian/admin/accounts/{userId} and POST /_merovingian/admin/review/{targetType}/{targetId}
+    // (G5, ADR-0504). Authentication first, so a caller who is not an administrator learns nothing about
+    // whether the account exists; the handlers run here under runtime.mutex and make no network call.
+    if (is_admin_operation(observability::AdminOperation::account_summary) ||
+        is_admin_operation(observability::AdminOperation::account_action) ||
+        is_admin_operation(observability::AdminOperation::review_action))
+    {
+        auto const admin = require_admin(runtime, request.access_token);
+        if (!admin.user_id.has_value())
+        {
+            return *admin_auth_denied(runtime, request.access_token, correlation);
+        }
+        auto constexpr accounts_prefix = std::string_view{"/_merovingian/admin/accounts/"};
+        auto constexpr review_prefix = std::string_view{"/_merovingian/admin/review/"};
+        auto const reply = is_admin_operation(observability::AdminOperation::review_action)
+                               ? operator_review_request(runtime, *admin.user_id,
+                                                         request_path.substr(review_prefix.size()), request.body)
+                               : operator_account_request(runtime, *admin.user_id, request.method,
+                                                          request_path.substr(accounts_prefix.size()), request.body);
+        return response(
+            reply.status, reply.body,
+            observability_headers(correlation, reply.json ? "application/json" : "text/plain; charset=utf-8"));
     }
     if (request.method == "GET" && request.target.substr(0U, request.target.find('?')) == "/_matrix/key/v2/server")
     {
@@ -6044,7 +6078,7 @@ auto wire_federation_callbacks(HomeserverRuntime& runtime) -> void
         return response_from_media_operation(result);
     }
     auto constexpr quarantine_prefix = std::string_view{"/_merovingian/admin/media/quarantine/"};
-    if (request.method == "POST" && starts_with(request.target, quarantine_prefix))
+    if (is_admin_operation(observability::AdminOperation::media_quarantine))
     {
         auto const media_id = admin_media_id_from_suffix(path_suffix(request.target, quarantine_prefix));
         if (!media_id.has_value())
@@ -6055,7 +6089,7 @@ auto wire_federation_callbacks(HomeserverRuntime& runtime) -> void
         return response_from_media_operation(result);
     }
     auto constexpr release_prefix = std::string_view{"/_merovingian/admin/media/release/"};
-    if (request.method == "POST" && starts_with(request.target, release_prefix))
+    if (is_admin_operation(observability::AdminOperation::media_release))
     {
         auto const media_id = admin_media_id_from_suffix(path_suffix(request.target, release_prefix));
         if (!media_id.has_value())
@@ -6066,7 +6100,7 @@ auto wire_federation_callbacks(HomeserverRuntime& runtime) -> void
         return response_from_media_operation(result);
     }
     auto constexpr remove_prefix = std::string_view{"/_merovingian/admin/media/remove/"};
-    if (request.method == "POST" && starts_with(request.target, remove_prefix))
+    if (is_admin_operation(observability::AdminOperation::media_remove))
     {
         auto const media_id = admin_media_id_from_suffix(path_suffix(request.target, remove_prefix));
         if (!media_id.has_value())
@@ -6256,6 +6290,7 @@ auto wire_federation_callbacks(HomeserverRuntime& runtime) -> void
         return federation_method_not_allowed_response(*allow);
     }
     auto signed_request_opt = std::optional<federation::SignedFederationRequest>{};
+    auto onbind_request = false;
 
     {
         auto guard = std::unique_lock<RuntimeMutex>{runtime.mutex};
@@ -6279,12 +6314,20 @@ auto wire_federation_callbacks(HomeserverRuntime& runtime) -> void
                 std::string{"{\"server\":{\"name\":\"Merovingian\",\"version\":\""} + MEROVINGIAN_VERSION + "\"}}";
             return response(200U, body);
         }
-        if (!starts_with(request.target, "/_matrix/federation/"))
+        if (request.method == "PUT" && is_federation_3pid_onbind_endpoint(request.target))
+        {
+            onbind_request = true;
+        }
+        else if (!starts_with(request.target, "/_matrix/federation/"))
         {
             return response(404U, matrix_error("M_UNRECOGNIZED", "route not found"));
         }
 
-        if (request.sig_verified)
+        if (onbind_request)
+        {
+            // Unauthenticated by the spec: handled below, outside this lock and with no signed request.
+        }
+        else if (request.sig_verified)
         {
             // #323: the main process already verified the X-Matrix signature and
             // forwarded only the verified identity over the authenticated IPC
@@ -6335,13 +6378,33 @@ auto wire_federation_callbacks(HomeserverRuntime& runtime) -> void
                 signed_request_opt = std::move(req);
             }
         }
-        if (!signed_request_opt.has_value())
+        if (!onbind_request && !signed_request_opt.has_value())
         {
             // 502 rather than 401: Synapse propagates 401 from federation
             // responses to the client, triggering an automatic logout. Returning
             // 502 signals a server-side failure instead.
             return response(502U, matrix_error("M_UNKNOWN", "malformed federation authorization"));
         }
+    }
+
+    if (onbind_request)
+    {
+        // Spec: PUT /_matrix/federation/v1/3pid/onbind (identity server -> invited user's homeserver; no
+        // authentication). The body is parsed and bounded, then acted on by notify_third_party_bind, which holds the
+        // lock only while it reads or writes runtime state (ADR-0484).
+        auto const parsed = federation::parse_third_party_bind_notification(request.body);
+        if (!parsed.notification.has_value())
+        {
+            return response(400U, matrix_error("M_BAD_JSON", parsed.reason));
+        }
+        auto const result = notify_third_party_bind(runtime, *parsed.notification,
+                                                    rate_limit_client_key(request, runtime.config.server()));
+        if (!result.ok)
+        {
+            return response(result.status,
+                            matrix_error(result.status == 429U ? "M_LIMIT_EXCEEDED" : "M_UNKNOWN", result.reason));
+        }
+        return response(200U, "{}");
     }
 
     // F-21 (ADR-0358): a federation worker is not asked to judge a request: main applied the admin's policy

@@ -1172,13 +1172,13 @@ namespace
 
         if (table_load_profile_includes("audit_log", profile))
         {
-            // audit_log has no ordering column (migration 001); ctid, the physical
-            // position in an append-only table, stands in for insertion order. Fetch
-            // only the newest window, then replay it oldest-first so the in-memory
-            // window matches SQLite's: the newest rows, in insertion order.
+            // audit_log has no key; its rows are ordered by the time they were appended and, within one
+            // millisecond, by ctid (ADR-0489: retention deletes rows, so ctid alone no longer orders them).
+            // Fetch only the newest window, then replay it oldest-first so the in-memory window matches
+            // SQLite's: the newest rows, in insertion order.
             auto audit_log = query_rows(connection, "postgresql_load_audit_log",
-                                        "SELECT category, event_type, actor, target, reason FROM audit_log ORDER "
-                                        "BY ctid DESC LIMIT " +
+                                        "SELECT category, event_type, actor, target, reason, created_at_ms FROM "
+                                        "audit_log ORDER BY CAST(created_at_ms AS BIGINT) DESC, ctid DESC LIMIT " +
                                             std::to_string(max_in_memory_audit_events));
             if (!audit_log.ok)
             {
@@ -1186,10 +1186,10 @@ namespace
             }
             for (auto const& row : std::views::reverse(audit_log.rows))
             {
-                if (row.size() >= 5U)
+                if (row.size() >= 6U)
                 {
                     // AUTH-1: hydrate only the bounded in-memory window; the table stays complete.
-                    remember_audit_event(store, {row[0], row[1], row[2], row[3], row[4]});
+                    remember_audit_event(store, {row[0], row[1], row[2], row[3], row[4], parse_u64(row[5])});
                 }
             }
         }
@@ -1375,16 +1375,16 @@ namespace
         if (table_load_profile_includes("profiles", profile))
         {
             auto profiles = query_rows(connection, "postgresql_load_profiles",
-                                       "SELECT user_id, displayname, avatar_url FROM profiles ORDER BY user_id");
+                                       "SELECT user_id, displayname, avatar_url, fields_json FROM profiles ORDER BY user_id");
             if (!profiles.ok)
             {
                 return false;
             }
             for (auto const& row : profiles.rows)
             {
-                if (row.size() >= 3U)
+                if (row.size() >= 4U)
                 {
-                    store.profiles.push_back({row[0], row[1], row[2]});
+                    store.profiles.push_back({row[0], row[1], row[2], row[3]});
                 }
             }
         }
@@ -2834,14 +2834,14 @@ namespace detail
             return std::nullopt;
         }
         // The prefix is a bound parameter compared with left(), not LIKE, so `%` and
-        // `_` stay literal. audit_log has no ordering column (migration 001), so
-        // ctid, the physical position, stands in for insertion order: the table is
-        // append-only (no UPDATE or DELETE), so new rows land after old ones.
+        // `_` stay literal. audit_log has no key: rows are ordered by the time they were appended and, within
+        // one millisecond, by ctid (ADR-0489).
         // `limit` is a size_t the caller has already clamped.
         auto result = opened.connection.execute(
             {"postgresql_query_audit_log_by_prefix",
              "SELECT category, event_type, actor, target, reason FROM audit_log "
-             "WHERE left(event_type, char_length($1::text)) = $1::text ORDER BY ctid DESC LIMIT " +
+             "WHERE left(event_type, char_length($1::text)) = $1::text ORDER BY CAST(created_at_ms AS BIGINT) "
+             "DESC, ctid DESC LIMIT " +
                  std::to_string(limit),
              {{std::string{prefix}, false}}});
         if (!result.ok)
@@ -2857,6 +2857,34 @@ namespace detail
             }
         }
         return rows;
+    }
+
+    auto audit_rows_older_than_exist_in_postgresql(std::string_view conninfo, std::string_view runtime_role,
+                                                   std::uint64_t cutoff_ms) -> std::optional<bool>
+    {
+        if (conninfo.empty())
+        {
+            return std::nullopt;
+        }
+        auto opened = open_postgresql_connection(conninfo);
+        if (!opened.ok)
+        {
+            return std::nullopt;
+        }
+        if (!runtime_role.empty() && !set_postgresql_role(opened.connection, runtime_role))
+        {
+            return std::nullopt;
+        }
+        auto result = opened.connection.execute(
+            {"postgresql_audit_rows_older_than_exist",
+             "SELECT 1 FROM audit_log WHERE CAST(created_at_ms AS BIGINT) > 0 AND CAST(created_at_ms AS BIGINT) < "
+             "CAST($1 AS BIGINT) LIMIT 1",
+             {{std::to_string(cutoff_ms), false}}});
+        if (!result.ok)
+        {
+            return std::nullopt;
+        }
+        return !result.rows.empty();
     }
 
 } // namespace detail

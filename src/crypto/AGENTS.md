@@ -14,6 +14,7 @@ or `src/core/secret_buffer.cpp`.** `scripts/reject-unsafe.sh` enforces this for 
 | `runtime_multikey_ed25519_provider.cpp` | `RuntimeMultiKeyEd25519Provider` — production provider holding several signing keys |
 | `refusing_ed25519_provider.cpp` | `RefusingEd25519Provider` — the federation worker's provider: refuses every `sign` and `verify` (ADR-0078) |
 | `signing_service.cpp` | Server signing-key selection and delegation to the Ed25519 provider |
+| `hmac_sha1.cpp` | `hmac_sha1`: OpenSSL's `HMAC` with SHA-1, for the coturn REST API's TURN password only (ADR-0480). Not for any new use of SHA-1 |
 | `constant_time.cpp` | Constant-time byte comparison (wraps `sodium_memcmp`) |
 | `random.cpp` | Bounded random byte generation (wraps `randombytes_buf`) |
 | `generic_hash.cpp` | Domain-separated BLAKE2b hashing helpers |

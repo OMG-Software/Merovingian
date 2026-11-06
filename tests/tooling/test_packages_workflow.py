@@ -23,6 +23,15 @@ PACKAGING_SCRIPTS = (
 )
 
 
+def job_text(workflow: str, job: str) -> str:
+    """Return one top-level job's text, from its key to the next top-level job."""
+    pattern = r"^  " + re.escape(job) + r":\n(.*?)(?=^  [A-Za-z0-9_-]+:\n|\Z)"
+    match = re.search(pattern, workflow, re.MULTILINE | re.DOTALL)
+    if match is None:
+        raise AssertionError(f"job {job} is missing from the packages workflow")
+    return match.group(1)
+
+
 def meson_setup_commands(text: str) -> list[str]:
     """Return each `meson setup` invocation with its continuation lines joined."""
     joined = re.sub(r"\\\r?\n", " ", text)
@@ -94,16 +103,35 @@ class PackagesWorkflowTests(unittest.TestCase):
         self.assertIn("sh scripts/build-static-linux.sh", workflow)
         self.assertIn("name: static-linux-fallback-package", workflow)
         self.assertIn(
-            "needs: [deb, static-linux-fallback, rpm, freebsd-pkg, openbsd-pkg, netbsd-pkg, netbsd-pkg-retry, debian-pkg, rhel-rpm, opensuse-rpm]",
+            "needs: [deb, static-linux-fallback, rpm, freebsd-pkg, openbsd-pkg, netbsd-pkg, debian-pkg, rhel-rpm, opensuse-rpm]",
             workflow,
         )
-        # Retry must use .outputs.build_succeeded — not .result — because
-        # continue-on-error masks .result as 'success' even when the job fails.
-        self.assertIn(
-            "if: needs.netbsd-pkg.outputs.build_succeeded != 'true'",
-            workflow,
-        )
+        # No job retries netbsd-pkg: nothing could make a failed first build pass (ADR-0502).
+        self.assertNotIn("netbsd-pkg-retry", workflow)
+        self.assertNotIn("build_succeeded", workflow)
         self.assertIn("merovingian-*-linux-static-x86_64.tar.gz", workflow)
+
+    def test_every_bsd_package_job_is_required_and_cannot_fail_quietly(self) -> None:
+        # GIVEN the package workflow and the jobs that build the BSD packages.
+        workflow = PACKAGES_WORKFLOW.read_text(encoding="utf-8")
+
+        # WHEN each job's own text is read (up to the next top-level job).
+        for job in ("freebsd-pkg", "openbsd-pkg", "netbsd-pkg"):
+            text = job_text(workflow, job)
+
+            # THEN no job-level continue-on-error masks its failure. A step-level
+            # one is indented deeper and is not matched here.
+            self.assertIsNone(
+                re.search(r"^    continue-on-error:", text, re.MULTILINE),
+                f"{job}: continue-on-error would let a failed BSD package pass (ADR-0502)",
+            )
+
+        # AND the staged NetBSD package is required: a missing artifact stops staging
+        # rather than publishing a release without it.
+        stage = job_text(workflow, "stage-package-assets")
+        netbsd_download = stage.split("name: netbsd-package", 1)[0].rsplit("- uses:", 1)[1]
+        self.assertNotIn("continue-on-error", netbsd_download)
+        self.assertNotIn('[ -f "$f" ] && mv', stage)
 
     def test_publish_latest_retargets_the_release_in_repository_scope(self) -> None:
         # GIVEN the rolling package publication workflow.

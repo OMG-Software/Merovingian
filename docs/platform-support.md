@@ -103,6 +103,10 @@ the startup hardening self-check, runtime-hardening integration tests, and the
 server config/version smoke tests — is exercised on the platform itself, not
 just cross-compiled. A regression on a Tier 1 platform blocks merge.
 
+No BSD job (the three `*-build-and-test` jobs and the FreeBSD, OpenBSD and NetBSD package jobs) may
+carry a job-level `continue-on-error`; a failure there fails the run
+([ADR-0502](adr/0502-every-bsd-job-is-required-and-the-netbsd-retry-cannot-rescue-it.md)).
+
 | Platform | CI job | Toolchain | Notes |
 |---|---|---|---|
 | Linux (glibc, Ubuntu) | `ubuntu-build-and-test` | clang | Reference platform |

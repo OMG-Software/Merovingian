@@ -102,12 +102,15 @@ struct TurnServerConfig final
     // When empty the TURN endpoint returns an empty object so VoIP clients
     // gracefully disable relay support.
     std::string server{};
-    // Static credentials issued to authenticated clients. Shared-secret
-    // time-limited usernames are not yet implemented; until then the operator
-    // supplies a service account or uses a TURN server that does not require
-    // authentication.
+    // Static credentials issued to every authenticated client, for a TURN server that takes one shared account
+    // or none. Mutually exclusive with shared_secret_file.
     std::string username{};
     std::string password{};
+    // The coturn `static-auth-secret` of a TURN server run with `use-auth-secret` (ADR-0480): an owner-only file
+    // holding it (0400, first line). With it set each client gets its own time-limited credentials (`<expiry>:<user_id>` and the
+    // base64 HMAC-SHA1 of that), good for ttl_seconds. Read on each request into a SecretBuffer, never logged.
+    // Mutually exclusive with username and password.
+    std::string shared_secret_file{};
     // Lifetime in seconds advertised in the response. Defaults to 24 hours.
     std::uint32_t ttl_seconds{86400U};
 };
@@ -118,17 +121,14 @@ struct TurnServerConfig final
 // flows. `trusted_servers` is the allowlist of IS base URLs the homeserver
 // will contact: a 3PID invite/bind whose `id_server` is not in this list is
 // refused (M_UNRECOGNIZED / 404), so operators pin the IS attack surface.
-// `default_server` is the IS used when a client omits `id_server` from a
-// requestToken/bind call. `allowed_bind_domains` restricts which domains a
-// user may bind an email 3PID for (preventing bind-of-someone-else's-domain
-// abuse). Timeouts bound the outbound IS HTTP calls (see OutboundClient).
+// `allowed_bind_domains`, when non-empty, limits the email domains this server will tell an identity server about
+// (M_THREEPID_DENIED otherwise; ADR-0498). Timeouts bound the outbound IS HTTP calls (see OutboundClient).
 // Empty by default: with no trusted servers, every 3PID operation that
 // requires an IS fails closed with a clear error rather than silently
 // minting tokens locally.
 struct IdentityServerConfig final
 {
     std::vector<std::string> trusted_servers{};
-    std::string default_server{};
     std::vector<std::string> allowed_bind_domains{};
     std::uint32_t connect_timeout_seconds{10U};
     std::uint32_t total_timeout_seconds{30U};
@@ -715,7 +715,6 @@ struct LoggingSecurityConfig final
 {
     bool redact_tokens{true};
     bool redact_event_content{true};
-    bool structured{true};
 };
 
 // At-rest protection for high-value server secrets. The master key file
@@ -912,7 +911,14 @@ struct SecurityConfig final
     // advertised TTL matches the enforced one.
     std::int64_t access_token_lifetime_ms{3600000};
     std::int64_t refresh_token_lifetime_ms{2592000000};
+    // How long `audit_log` rows are kept, in days (ADR-0489). 0 keeps every row for ever. A non-zero value is
+    // 30..3650 (`min_audit_log_retention_days`, `max_audit_log_retention_days`): evidence is never kept for less
+    // than a month. A row is deleted only once it is older than this, and each deletion is itself audited.
+    std::uint32_t audit_log_retention_days{365U};
 };
+
+inline constexpr std::uint32_t min_audit_log_retention_days = 30U;
+inline constexpr std::uint32_t max_audit_log_retention_days = 3650U;
 
 class Config final
 {

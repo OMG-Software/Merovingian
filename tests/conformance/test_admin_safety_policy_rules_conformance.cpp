@@ -126,11 +126,11 @@ SCENARIO("Admin GET /admin/safety/policy_rules lists created rules",
         REQUIRE(started.started);
         auto const admin = admin_token(started.runtime);
 
-        REQUIRE(
-            merovingian::homeserver::handle_client_server_request(
-                started.runtime, {"PUT", "/_matrix/client/v3/admin/safety/policy_rules/user/%40baduser%3Aexample.org",
-                                  admin, R"({"action":"suspend_account","reason":"harassment"})"})
-                .response.status == 200U);
+        REQUIRE(merovingian::homeserver::handle_client_server_request(
+                    started.runtime,
+                    {"PUT", "/_matrix/client/v3/admin/safety/policy_rules/registration/%40baduser%3Aexample.org", admin,
+                     R"({"action":"deny","reason":"harassment"})"})
+                    .response.status == 200U);
 
         WHEN("the admin requests the policy rules list")
         {
@@ -146,9 +146,9 @@ SCENARIO("Admin GET /admin/safety/policy_rules lists created rules",
                 REQUIRE(rules->size() == 1);
                 auto const* rule_obj = std::get_if<merovingian::canonicaljson::Object>(&(*rules)[0].storage());
                 REQUIRE(rule_obj != nullptr);
-                REQUIRE(*string_member(*rule_obj, "scope") == "user");
+                REQUIRE(*string_member(*rule_obj, "scope") == "registration");
                 REQUIRE(*string_member(*rule_obj, "entity") == "@baduser:example.org");
-                REQUIRE(*string_member(*rule_obj, "action") == "suspend_account");
+                REQUIRE(*string_member(*rule_obj, "action") == "deny");
             }
         }
     }
@@ -266,6 +266,51 @@ SCENARIO("Admin /admin/safety/policy_rules rejects non-admin access",
                 REQUIRE(response.response.status == 403U);
                 auto const body = parse_object(response.response.body);
                 REQUIRE(*string_member(body, "errcode") == "M_FORBIDDEN");
+            }
+        }
+    }
+}
+
+// Merovingian admin API (ADR-0500): a rule is only accepted in a scope something consults. A rule in another scope
+// looked enforced and was never read.
+SCENARIO("Admin PUT /admin/safety/policy_rules refuses a scope nothing reads and stores nothing",
+         "[conformance][client-server][trust-safety][admin][policy]")
+{
+    GIVEN("a running client-server with a bootstrapped admin")
+    {
+        auto started = merovingian::homeserver::start_client_server(conformance_config());
+        REQUIRE(started.started);
+        auto const admin = admin_token(started.runtime);
+
+        WHEN("the admin puts rules in the invite and user scopes, and in each scope something reads")
+        {
+            auto const put = [&](std::string const& scope) {
+                return merovingian::homeserver::handle_client_server_request(
+                    started.runtime, {"PUT", "/_matrix/client/v3/admin/safety/policy_rules/" + scope + "/example.org",
+                                      admin, R"({"action":"deny","reason":"test"})"});
+            };
+            auto const invite = put("invite");
+            auto const user = put("user");
+            auto const registration = put("registration");
+            auto const federation = put("federation");
+            auto const media = put("media");
+            auto const room = put("room");
+            auto const listed = merovingian::homeserver::handle_client_server_request(
+                started.runtime, {"GET", "/_matrix/client/v3/admin/safety/policy_rules", admin, {}});
+
+            THEN("the unread scopes are 400 M_INVALID_PARAM and absent from the list; the four read scopes are stored")
+            {
+                REQUIRE(invite.response.status == 400U);
+                REQUIRE(invite.response.body.find("M_INVALID_PARAM") != std::string::npos);
+                REQUIRE(user.response.status == 400U);
+                REQUIRE(registration.response.status == 200U);
+                REQUIRE(federation.response.status == 200U);
+                REQUIRE(media.response.status == 200U);
+                REQUIRE(room.response.status == 200U);
+                auto const body = parse_object(listed.response.body);
+                auto const* rules = object_member_as_array(body, "policy_rules");
+                REQUIRE(rules != nullptr);
+                REQUIRE(rules->size() == 4U);
             }
         }
     }

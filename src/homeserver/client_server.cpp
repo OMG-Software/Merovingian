@@ -47,6 +47,8 @@
 #include "merovingian/homeserver/local_http_router.hpp"
 #include "merovingian/homeserver/local_services.hpp"
 #include "merovingian/homeserver/media_service.hpp"
+#include "merovingian/homeserver/operator_admin.hpp"
+#include "merovingian/homeserver/password_reset.hpp"
 #include "merovingian/homeserver/presence_service.hpp"
 #include "merovingian/homeserver/public_rooms.hpp"
 #include "merovingian/homeserver/push_rule_unread_classifier.hpp"
@@ -61,6 +63,7 @@
 #include "merovingian/homeserver/state_bookkeeping.hpp"
 #include "merovingian/homeserver/stored_push_rules.hpp"
 #include "merovingian/homeserver/stored_room_version.hpp"
+#include "merovingian/homeserver/turn_credentials.hpp"
 #include "merovingian/homeserver/url_preview_service.hpp"
 #include "merovingian/homeserver/user_directory_search.hpp"
 #include "merovingian/http/rate_limit.hpp"
@@ -70,6 +73,7 @@
 #include "merovingian/observability/bounded_text.hpp"
 #include "merovingian/observability/logger.hpp"
 #include "merovingian/observability/observability.hpp"
+#include "merovingian/platform/file_metadata.hpp"
 #include "merovingian/push/user_push_rules.hpp"
 #include "merovingian/rooms/encryption_policy.hpp"
 #include "merovingian/rooms/room_version_policy.hpp"
@@ -453,11 +457,12 @@ namespace
     {
         auto const& server_name = runtime.config.server().server_name;
         auto servers = std::vector<std::string>{};
+        // Each server once, in the order the members name them. A set answers "seen" in one lookup; searching the list
+        // per member made a large room cost members x servers.
+        auto seen = std::unordered_set<std::string>{};
         for (auto const& room : runtime.database.rooms)
         {
-            if (!std::ranges::any_of(room.members, [user_id](auto const& m) {
-                    return m == user_id;
-                }))
+            if (!room.members.contains(user_id))
             {
                 continue;
             }
@@ -468,7 +473,7 @@ namespace
                 {
                     continue;
                 }
-                if (server != server_name && std::ranges::find(servers, server) == servers.end())
+                if (server != server_name && seen.emplace(server).second)
                 {
                     servers.emplace_back(server);
                 }
@@ -969,11 +974,6 @@ namespace
     struct MatrixSafetyReportBody final
     {
         std::string reason{};
-    };
-
-    struct MatrixAdminReviewBody final
-    {
-        std::string reason{"manual_review"};
     };
 
     struct MatrixAdminPolicyRuleBody final
@@ -1589,21 +1589,16 @@ namespace
         // Preserve the other moderation flag when updating one of the two.
         auto const new_suspended = is_lock ? target->suspended : *flag;
         auto const new_locked = is_lock ? *flag : target->locked;
-        if (!database::set_user_account_state(rt.homeserver.database.persistent_store, target_user_id, new_suspended,
-                                              new_locked))
+        auto const audit_event = is_lock ? std::string_view{"account.locked"} : std::string_view{"account.suspended"};
+        auto const reason_code = *flag ? (is_lock ? "locked" : "suspended") : (is_lock ? "unlocked" : "unsuspended");
+        // The one write behind this endpoint and the operator accounts route: persist, then mirror into the
+        // LocalUser the request-path gate reads, then audit. A failed write changes nothing in memory.
+        if (!set_local_user_moderation(rt.homeserver, *admin, target_user_id, new_suspended, new_locked, audit_event,
+                                       reason_code)
+                 .ok)
         {
             return dispatch_err(req, rt, 500U, "M_UNKNOWN", "Failed to persist account state.");
         }
-        // Mirror into the in-memory LocalUser vector so the request-path gate
-        // (account_state_for_user) and subsequent GET reads see the new state
-        // without a restart. set_user_account_state persists + updates the
-        // PersistentUser vector; this updates the authoritative LocalUser vector.
-        target->suspended = new_suspended;
-        target->locked = new_locked;
-        auto const audit_event = is_lock ? std::string_view{"account.locked"} : std::string_view{"account.suspended"};
-        auto const reason_code = *flag ? (is_lock ? "locked" : "suspended") : (is_lock ? "unlocked" : "unsuspended");
-        append_local_audit(rt.homeserver.database, observability::AuditCategory::admin, audit_event, *admin,
-                           target_user_id, reason_code);
         return dispatch_resp(req, rt, 200U, json_serialize(json_obj({json_member(field_name, json_bool(*flag))})));
     }
 
@@ -2029,6 +2024,8 @@ namespace
     }
 
     auto constexpr registration_validation_session_ttl_ms = std::uint64_t{15U * 60U * 1000U};
+    // The purpose of a validation session opened by POST /account/password/email/requestToken (ADR-0481).
+    constexpr auto password_reset_purpose = std::string_view{"password-reset"};
 
     [[nodiscard]] auto wall_clock_milliseconds() -> std::uint64_t
     {
@@ -2045,6 +2042,8 @@ namespace
         core::secure_zero(std::as_writable_bytes(
             std::span{session.identity_access_token.data(), session.identity_access_token.size()}));
         session.identity_access_token.clear();
+        core::secure_zero(std::as_writable_bytes(std::span{session.reset_token.data(), session.reset_token.size()}));
+        session.reset_token.clear();
     }
 
     auto prune_registration_validation_sessions(ClientServerRuntime& rt, std::uint64_t now_ms) -> void
@@ -2469,6 +2468,9 @@ namespace
     // recorded locally; any failure leaves the account untouched. A bind to an
     // identity server this server does not trust is refused rather than recorded:
     // no identity server was asked, so nothing was bound.
+    constexpr auto threepid_domain_denied_message =
+        std::string_view{"this server does not permit that third-party identifier to be sent to an identity server"};
+
     [[nodiscard]] auto bind_validated_threepid(LocalHttpRequest const& req, ClientServerRuntime& rt,
                                                std::string const& user_id, std::string_view sid,
                                                std::string_view client_secret, std::string_view id_server,
@@ -2491,6 +2493,12 @@ namespace
         if (!trusted_base.has_value())
         {
             return dispatch_err(req, rt, 400U, "M_SERVER_NOT_TRUSTED", "identity server is not trusted");
+        }
+        if (!merovingian::identity::threepid_bind_domain_permitted(
+                rt.homeserver.config.server().identity_server.allowed_bind_domains, validated.medium,
+                validated.address))
+        {
+            return dispatch_err(req, rt, 403U, "M_THREEPID_DENIED", threepid_domain_denied_message);
         }
         if (rt.homeserver.outbound_client == nullptr || rt.homeserver.cached_discovery == nullptr)
         {
@@ -3084,25 +3092,6 @@ namespace
         return MatrixSafetyReportBody{*reason};
     }
 
-    [[nodiscard]] auto parse_admin_review_body(std::string_view body) -> std::optional<MatrixAdminReviewBody>
-    {
-        if (body.empty())
-        {
-            return MatrixAdminReviewBody{};
-        }
-        auto const object = parsed_json_object(body);
-        if (!object.has_value())
-        {
-            return std::nullopt;
-        }
-        auto const* reason = string_member(*object, "reason");
-        if (reason == nullptr || reason->empty())
-        {
-            return MatrixAdminReviewBody{};
-        }
-        return MatrixAdminReviewBody{*reason};
-    }
-
     [[nodiscard]] auto parse_admin_policy_rule_body(std::string_view body) -> std::optional<MatrixAdminPolicyRuleBody>
     {
         auto const object = parsed_json_object(body);
@@ -3316,6 +3305,19 @@ namespace
                 return out;
             }
         }
+        auto constexpr users_prefix = std::string_view{"/_matrix/client/v3/users/"};
+        if (starts_with(out, users_prefix))
+        {
+            // /users/{userId}/report (v1.14), one identifier segment.
+            auto const rest = std::string_view{out}.substr(users_prefix.size());
+            auto constexpr report_suffix = std::string_view{"/report"};
+            if (rest.size() > report_suffix.size() && rest.ends_with(report_suffix) &&
+                has_one_segment(rest.substr(0U, rest.size() - report_suffix.size())))
+            {
+                return std::string{users_prefix} + "{userId}/report";
+            }
+            return std::string{unmatched};
+        }
         auto constexpr device_prefix = std::string_view{"/_matrix/client/v3/devices/"};
         if (starts_with(out, device_prefix))
         {
@@ -3337,11 +3339,16 @@ namespace
                 return std::string{unmatched};
             }
             auto const suffix = slash == std::string_view::npos ? std::string_view{} : rest.substr(slash);
-            if (!suffix.empty() && suffix != "/displayname" && suffix != "/avatar_url")
+            if (suffix == "/displayname" || suffix == "/avatar_url" || suffix.empty())
             {
-                return std::string{unmatched};
+                return std::string{profile_prefix} + "{userId}" + std::string{suffix};
             }
-            return std::string{profile_prefix} + "{userId}" + std::string{suffix};
+            // /{keyName}: `m.tz` or a custom key (v1.16), one segment.
+            if (suffix.size() > 1U && suffix.find('/', 1U) == std::string_view::npos)
+            {
+                return std::string{profile_prefix} + "{userId}/{keyName}";
+            }
+            return std::string{unmatched};
         }
         auto constexpr join_prefix = std::string_view{"/_matrix/client/v3/join/"};
         if (starts_with(out, join_prefix))
@@ -3725,35 +3732,13 @@ namespace
         // F-73 (ADR-0092): the operator surface this dispatcher serves has its own counters. Left in the
         // fallback, an admin request shares one count with every unknown client path, and the admin
         // tier's small allowance is compared with a count that cheaper traffic from the same client
-        // key raised. A path that is none of these stays in the fallback, so a client cannot make
-        // counter keys by inventing admin paths: the keys are the fixed routes plus one per moderation
-        // action, whatever media identifier follows.
-        auto constexpr operator_prefix = std::string_view{"/_merovingian/admin/"};
-        if (starts_with(out, operator_prefix))
+        // key raised. The counter key is the template of the route the table declares
+        // (observability::admin_routes(), ADR-0504), whatever identifier follows; a path that is none of
+        // them stays in the fallback, so a client cannot make counter keys by inventing admin paths.
+        if (starts_with(out, "/_merovingian/admin/"))
         {
-            static constexpr auto operator_routes = std::to_array<std::string_view>({
-                "/_merovingian/admin/health",
-                "/_merovingian/admin/metrics",
-                "/_merovingian/admin/media/metrics",
-                "/_merovingian/admin/audit",
-            });
-            if (std::ranges::find(operator_routes, out) != operator_routes.end())
-            {
-                return out;
-            }
-            static constexpr auto media_actions = std::to_array<std::string_view>({
-                "/_merovingian/admin/media/quarantine/",
-                "/_merovingian/admin/media/release/",
-                "/_merovingian/admin/media/remove/",
-            });
-            for (auto const action : media_actions)
-            {
-                if (starts_with(out, action) && has_one_segment(std::string_view{out}.substr(action.size())))
-                {
-                    return std::string{action} + "{mediaId}";
-                }
-            }
-            return std::string{unmatched};
+            auto const operator_route = observability::match_admin_path(out);
+            return operator_route.matched ? operator_route.route.path_template : std::string{unmatched};
         }
 
         auto constexpr review_prefix = std::string_view{"/_matrix/client/v3/admin/safety/review/"};
@@ -3808,6 +3793,9 @@ namespace
             "/_matrix/client/v1/auth_metadata",
             "/_matrix/client/v3/account/3pid/email/requestToken",
             "/_matrix/client/v3/account/3pid/msisdn/requestToken",
+            "/_matrix/client/v3/account/password/email/requestToken",
+            "/_matrix/client/v3/account/password/msisdn/requestToken",
+            "/_matrix/client/unstable/org.merovingian/account/password/email/submitToken",
             "/_matrix/client/v3/account/whoami",
             "/_matrix/client/v3/account/password",
             "/_matrix/client/v3/account/deactivate",
@@ -3877,66 +3865,69 @@ namespace
             std::string_view allow;
         };
         static constexpr auto routes = std::to_array<StaticRouteMethods>({
-            {"/_matrix/client/v3/admin/safety/reports",                         "GET, POST"       },
-            {"/_matrix/client/v3/admin/safety/policy_rules",                    "GET, POST, PUT"  },
-            {"/_matrix/client/v3/pushrules/",                                   "GET"             },
-            {"/_matrix/client/v3/pushrules/global/",                            "GET"             },
-            {"/_matrix/client/v3/sync",                                         "GET"             },
-            {"/_matrix/client/v4/sync",                                         "GET, POST"       },
-            {"/_matrix/client/unstable/org.matrix.msc4186/sync",                "GET, POST"       },
-            {"/_matrix/client/unstable/org.matrix.simplified_msc3575/sync",     "GET, POST"       },
-            {"/_matrix/client/v3/publicRooms",                                  "GET, POST"       },
-            {"/_matrix/client/v3/register/available",                           "GET"             },
-            {"/_matrix/client/v1/register/m.login.registration_token/validity", "GET"             },
-            {"/_matrix/client/v3/register/email/requestToken",                  "POST"            },
-            {"/_matrix/client/v3/register/msisdn/requestToken",                 "POST"            },
-            {"/_matrix/client/v3/register",                                     "POST"            },
-            {"/_matrix/client/v3/login",                                        "GET, POST"       },
-            {"/_matrix/client/v3/login/sso/redirect",                           "GET"             },
-            {"/_matrix/client/v3/refresh",                                      "POST"            },
-            {"/_matrix/client/v3/logout",                                       "POST"            },
-            {"/_matrix/client/v3/logout/all",                                   "POST"            },
-            {"/_matrix/client/v1/auth_metadata",                                "GET"             },
-            {"/_matrix/client/v3/account/3pid/email/requestToken",              "POST"            },
-            {"/_matrix/client/v3/account/3pid/msisdn/requestToken",             "POST"            },
-            {"/_matrix/client/v3/account/whoami",                               "GET"             },
-            {"/_matrix/client/v3/account/password",                             "POST"            },
-            {"/_matrix/client/v3/account/deactivate",                           "POST"            },
-            {"/_matrix/client/v3/account/3pid",                                 "GET, POST"       },
-            {"/_matrix/client/v3/account/3pid/add",                             "POST"            },
-            {"/_matrix/client/v3/account/3pid/bind",                            "POST"            },
-            {"/_matrix/client/v3/account/3pid/unbind",                          "POST"            },
-            {"/_matrix/client/v3/account/3pid/delete",                          "POST"            },
-            {"/_matrix/client/v3/pushers",                                      "GET"             },
-            {"/_matrix/client/v3/pushers/set",                                  "POST"            },
-            {"/_matrix/client/v3/notifications",                                "GET"             },
-            {"/_matrix/client/v3/capabilities",                                 "GET"             },
-            {"/_matrix/client/v3/keys/changes",                                 "GET"             },
-            {"/_matrix/client/v3/keys/claim",                                   "POST"            },
-            {"/_matrix/client/v3/keys/device_signing/upload",                   "POST"            },
-            {"/_matrix/client/v3/keys/query",                                   "POST"            },
-            {"/_matrix/client/v3/keys/signatures/upload",                       "POST"            },
-            {"/_matrix/client/v3/keys/upload",                                  "POST"            },
-            {"/_matrix/client/v3/thirdparty/protocols",                         "GET"             },
-            {"/_matrix/client/v3/thirdparty/location",                          "GET"             },
-            {"/_matrix/client/v3/thirdparty/user",                              "GET"             },
-            {"/_matrix/media/v3/config",                                        "GET"             },
-            {"/_matrix/media/v3/upload",                                        "POST"            },
-            {"/_matrix/media/v1/create",                                        "POST"            },
-            {"/_matrix/media/v3/preview_url",                                   "GET"             },
-            {"/_matrix/client/v1/media/config",                                 "GET"             },
-            {"/_matrix/client/v1/media/upload",                                 "POST"            },
-            {"/_matrix/client/v1/media/preview_url",                            "GET"             },
-            {"/_matrix/client/v3/voip/turnServer",                              "GET"             },
-            {"/_matrix/client/v3/room_keys/version",                            "GET, POST"       },
-            {"/_matrix/client/v3/room_keys/keys",                               "DELETE, GET, PUT"},
-            {"/_matrix/client/v3/devices",                                      "GET"             },
-            {"/_matrix/client/v3/delete_devices",                               "POST"            },
-            {"/_matrix/client/v3/createRoom",                                   "POST"            },
-            {"/_matrix/client/v3/joined_rooms",                                 "GET"             },
-            {"/_matrix/client/v1/mutual_rooms",                                 "GET"             },
-            {"/_matrix/client/v3/user_directory/search",                        "POST"            },
-            {"/_matrix/client/v3/search",                                       "POST"            },
+            {"/_matrix/client/v3/admin/safety/reports",                                     "GET, POST"       },
+            {"/_matrix/client/v3/admin/safety/policy_rules",                                "GET, POST, PUT"  },
+            {"/_matrix/client/v3/pushrules/",                                               "GET"             },
+            {"/_matrix/client/v3/pushrules/global/",                                        "GET"             },
+            {"/_matrix/client/v3/sync",                                                     "GET"             },
+            {"/_matrix/client/v4/sync",                                                     "GET, POST"       },
+            {"/_matrix/client/unstable/org.matrix.msc4186/sync",                            "GET, POST"       },
+            {"/_matrix/client/unstable/org.matrix.simplified_msc3575/sync",                 "GET, POST"       },
+            {"/_matrix/client/v3/publicRooms",                                              "GET, POST"       },
+            {"/_matrix/client/v3/register/available",                                       "GET"             },
+            {"/_matrix/client/v1/register/m.login.registration_token/validity",             "GET"             },
+            {"/_matrix/client/v3/register/email/requestToken",                              "POST"            },
+            {"/_matrix/client/v3/register/msisdn/requestToken",                             "POST"            },
+            {"/_matrix/client/v3/register",                                                 "POST"            },
+            {"/_matrix/client/v3/login",                                                    "GET, POST"       },
+            {"/_matrix/client/v3/login/sso/redirect",                                       "GET"             },
+            {"/_matrix/client/v3/refresh",                                                  "POST"            },
+            {"/_matrix/client/v3/logout",                                                   "POST"            },
+            {"/_matrix/client/v3/logout/all",                                               "POST"            },
+            {"/_matrix/client/v1/auth_metadata",                                            "GET"             },
+            {"/_matrix/client/v3/account/3pid/email/requestToken",                          "POST"            },
+            {"/_matrix/client/v3/account/3pid/msisdn/requestToken",                         "POST"            },
+            {"/_matrix/client/v3/account/password/email/requestToken",                      "POST"            },
+            {"/_matrix/client/v3/account/password/msisdn/requestToken",                     "POST"            },
+            {"/_matrix/client/unstable/org.merovingian/account/password/email/submitToken", "POST"            },
+            {"/_matrix/client/v3/account/whoami",                                           "GET"             },
+            {"/_matrix/client/v3/account/password",                                         "POST"            },
+            {"/_matrix/client/v3/account/deactivate",                                       "POST"            },
+            {"/_matrix/client/v3/account/3pid",                                             "GET, POST"       },
+            {"/_matrix/client/v3/account/3pid/add",                                         "POST"            },
+            {"/_matrix/client/v3/account/3pid/bind",                                        "POST"            },
+            {"/_matrix/client/v3/account/3pid/unbind",                                      "POST"            },
+            {"/_matrix/client/v3/account/3pid/delete",                                      "POST"            },
+            {"/_matrix/client/v3/pushers",                                                  "GET"             },
+            {"/_matrix/client/v3/pushers/set",                                              "POST"            },
+            {"/_matrix/client/v3/notifications",                                            "GET"             },
+            {"/_matrix/client/v3/capabilities",                                             "GET"             },
+            {"/_matrix/client/v3/keys/changes",                                             "GET"             },
+            {"/_matrix/client/v3/keys/claim",                                               "POST"            },
+            {"/_matrix/client/v3/keys/device_signing/upload",                               "POST"            },
+            {"/_matrix/client/v3/keys/query",                                               "POST"            },
+            {"/_matrix/client/v3/keys/signatures/upload",                                   "POST"            },
+            {"/_matrix/client/v3/keys/upload",                                              "POST"            },
+            {"/_matrix/client/v3/thirdparty/protocols",                                     "GET"             },
+            {"/_matrix/client/v3/thirdparty/location",                                      "GET"             },
+            {"/_matrix/client/v3/thirdparty/user",                                          "GET"             },
+            {"/_matrix/media/v3/config",                                                    "GET"             },
+            {"/_matrix/media/v3/upload",                                                    "POST"            },
+            {"/_matrix/media/v1/create",                                                    "POST"            },
+            {"/_matrix/media/v3/preview_url",                                               "GET"             },
+            {"/_matrix/client/v1/media/config",                                             "GET"             },
+            {"/_matrix/client/v1/media/upload",                                             "POST"            },
+            {"/_matrix/client/v1/media/preview_url",                                        "GET"             },
+            {"/_matrix/client/v3/voip/turnServer",                                          "GET"             },
+            {"/_matrix/client/v3/room_keys/version",                                        "GET, POST"       },
+            {"/_matrix/client/v3/room_keys/keys",                                           "DELETE, GET, PUT"},
+            {"/_matrix/client/v3/devices",                                                  "GET"             },
+            {"/_matrix/client/v3/delete_devices",                                           "POST"            },
+            {"/_matrix/client/v3/createRoom",                                               "POST"            },
+            {"/_matrix/client/v3/joined_rooms",                                             "GET"             },
+            {"/_matrix/client/v1/mutual_rooms",                                             "GET"             },
+            {"/_matrix/client/v3/user_directory/search",                                    "POST"            },
+            {"/_matrix/client/v3/search",                                                   "POST"            },
         });
         auto const row = std::ranges::find(routes, path, &StaticRouteMethods::path);
         return row == routes.end() ? std::string_view{} : row->allow;
@@ -4126,6 +4117,19 @@ namespace
         return session.has_value() ? session->device_id : std::string{};
     }
 
+    // A device's `device_id`, and its `display_name` only when the user set one: the spec has the field "absent if no
+    // name has been set" (ADR-0472).
+    [[nodiscard]] auto device_members(ClientDevice const& device) -> canonicaljson::Object
+    {
+        auto members = canonicaljson::Object{};
+        members.push_back(json_member("device_id", json_str(device.device_id)));
+        if (!device.display_name.empty())
+        {
+            members.push_back(json_member("display_name", json_str(device.display_name)));
+        }
+        return members;
+    }
+
     [[nodiscard]] auto devices_json(ClientServerRuntime const& rt, std::string_view user) -> std::string
     {
         auto devices = canonicaljson::Array{};
@@ -4135,20 +4139,14 @@ namespace
             {
                 continue;
             }
-            devices.push_back(json_obj({
-                json_member("device_id", json_str(d.device_id)),
-                json_member("display_name", json_str(d.display_name)),
-            }));
+            devices.push_back(json_obj(device_members(d)));
         }
         return json_serialize(json_obj({json_member("devices", json_arr(std::move(devices)))}));
     }
 
     [[nodiscard]] auto device_json(ClientDevice const& device) -> std::string
     {
-        return json_serialize(json_obj({
-            json_member("device_id", json_str(device.device_id)),
-            json_member("display_name", json_str(device.display_name)),
-        }));
+        return json_serialize(json_obj(device_members(device)));
     }
 
     // User-Interactive Authentication API: "If the homeserver decides that an attempt on a stage
@@ -4275,9 +4273,7 @@ namespace
 
     [[nodiscard]] auto joined(LocalRoom const& room, std::string_view user) -> bool
     {
-        return std::ranges::any_of(room.members, [user](std::string const& member) {
-            return member == user;
-        });
+        return room.members.contains(user);
     }
 
     // Appendices, "Room IDs": `!opaque_id` or `!opaque_id:domain`, at most 255 bytes, with no
@@ -4879,6 +4875,9 @@ namespace
             // The user's current membership, a leave, is already in `state`: no earlier member event of their own
             // may follow it, or a client applying `state` in order would show them joined again.
             bool exclude_own{false};
+            // A user who has left reads the room only as of the event that ended their join: nothing later goes in
+            // `state`, whichever read found it (ADR-0450).
+            std::optional<std::uint64_t> newest_readable{};
         };
 
         LazyRoomSelector(LazySyncRequest& request, std::string_view room_id, Plan plan)
@@ -4897,6 +4896,10 @@ namespace
         [[nodiscard]] auto keep(database::PersistentEvent const& event, std::string_view state_key) -> bool
         {
             if (plan_.exclude_own && state_key == plan_.own_user_id)
+            {
+                return false;
+            }
+            if (plan_.newest_readable.has_value() && event.stream_ordering > *plan_.newest_readable)
             {
                 return false;
             }
@@ -5791,6 +5794,10 @@ namespace
             senders.assign(plan.senders.begin(), plan.senders.end());
             plan.own_user_id = std::string{request.user_id};
             plan.exclude_own = leave_in_state;
+            if (request.access.kind == sync::RoomReadKind::as_of)
+            {
+                plan.newest_readable = request.access.boundary_ordering;
+            }
             if (request.since_ordering.has_value())
             {
                 // An incremental left room's state is a delta: only the members the rules above name.
@@ -5861,8 +5868,10 @@ namespace
             // that ended their join, however late the timeline's first event is: a ban after the leave must not show
             // who joined since.
             auto const as_of = request.access.kind == sync::RoomReadKind::as_of;
-            auto const limited_members = [&]() -> canonicaljson::Array {
-                if (as_of && (*window_begin)->stream_ordering > request.access.boundary_ordering)
+            auto const starts_past_boundary =
+                as_of && (*window_begin)->stream_ordering > request.access.boundary_ordering;
+            auto const members_from_state = [&]() -> canonicaljson::Array {
+                if (starts_past_boundary)
                 {
                     if (auto const ids =
                             sync::room_state_event_ids(store, request.room_id, request.access, std::nullopt);
@@ -5881,8 +5890,9 @@ namespace
                 return build_state_events_at_position(store, filter.room.state, request.room_id, position, lazy_ref);
             };
             auto lazy_members =
-                limited ? limited_members()
-                        : build_lazy_sender_members(store, filter.room.state, **window_begin, senders, *selector);
+                limited || starts_past_boundary
+                    ? std::invoke(members_from_state)
+                    : build_lazy_sender_members(store, filter.room.state, **window_begin, senders, *selector);
             for (auto& member : lazy_members)
             {
                 auto const* member_event = std::get_if<canonicaljson::Object>(&member.storage());
@@ -7119,6 +7129,8 @@ namespace
         auto const empty_lazy_members_set = std::unordered_set<std::string>{};
         auto lazy_members_included_by_room = std::unordered_map<std::string, std::unordered_set<std::string>>{};
         auto room_timeline_limits_built = std::unordered_map<std::string, std::uint64_t>{};
+        // The rooms this connection is sent for the first time: their account data goes down in full (ADR-0493).
+        auto initial_room_ids = std::unordered_set<std::string>{};
         // ADR-0247: the one event position this response's pos names; no room's
         // timeline holds an event above it, or the next request would send it again.
         auto const visible_event_ordering = visible_stream_position(rt.homeserver.database);
@@ -7182,6 +7194,10 @@ namespace
                                        ? sync::TimelineExpansion::expand
                                        : sync::TimelineExpansion::none;
             room_timeline_limits_built[room_id] = sub.timeline_limit;
+            if (is_initial)
+            {
+                initial_room_ids.insert(room_id);
+            }
             // The floor is the later of the request pos and the room's last send; the room's
             // last send alone decides what counts as resent (`expanded_timeline`).
             auto room =
@@ -7256,9 +7272,9 @@ namespace
         auto ext_obj = canonicaljson::Object{};
         if (ssreq.extensions.has_value())
         {
-            extension_responses = sync::build_extensions(rt.homeserver, user, device_id, *ssreq.extensions,
-                                                         since_sync_stream_id, store.next_sync_stream_id, store,
-                                                         room_access, response_room_ids, ignored_senders);
+            extension_responses = sync::build_extensions(
+                rt.homeserver, user, device_id, *ssreq.extensions, since_sync_stream_id, store.next_sync_stream_id,
+                store, room_access, response_room_ids, ignored_senders, initial_room_ids);
             ext_obj = sliding_sync_ext_to_value(*extension_responses);
         }
 
@@ -8157,16 +8173,22 @@ namespace
             return {"M_BAD_JSON", std::move(malformed)};
         }
         auto const* user_id = string_member(object, "user_id");
+        auto const* device_id = string_member(object, "device_id");
+        auto const* keys = object_member_as_object(object, "keys");
+        // device_keys_is_malformed has already refused a missing or mistyped field. Checked again here so that no
+        // dereference below depends on a check made in another function.
+        if (user_id == nullptr || device_id == nullptr || keys == nullptr)
+        {
+            return {"M_BAD_JSON", "device_keys must carry user_id, device_id and keys"};
+        }
         if (*user_id != authenticated_user)
         {
             return {"M_INVALID_PARAM", "device_keys.user_id must match the authenticated user"};
         }
-        auto const* device_id = string_member(object, "device_id");
         if (*device_id != authenticated_device_id)
         {
             return {"M_INVALID_PARAM", "device_keys.device_id must match the authenticated device"};
         }
-        auto const* keys = object_member_as_object(object, "keys");
         auto const curve_key = string_member(*keys, "curve25519:" + std::string{authenticated_device_id});
         if (curve_key == nullptr || curve_key->empty())
         {
@@ -8222,42 +8244,8 @@ namespace
             {
                 return err(400U, refusal.errcode, refusal.reason);
             }
-            auto normalized_device_keys = *device_keys_object;
-            normalize_device_key_object_for_client(rt, normalized_device_keys, user, device_id);
-            auto const serialized =
-                canonicaljson::serialize_canonical(canonicaljson::Value{std::move(normalized_device_keys)});
-            if (serialized.error == canonicaljson::CanonicalJsonError::none &&
-                serialized.output.size() > max_uploaded_key_document_bytes)
-            {
-                return err(400U, "M_TOO_LARGE",
-                           "device_keys may be at most " + std::to_string(max_uploaded_key_document_bytes) + " bytes");
-            }
-            if (serialized.error != canonicaljson::CanonicalJsonError::none ||
-                !database::sync_stream_has_write_reserve(store) ||
-                !database::store_device_key(store, {std::string{user}, std::string{device_id}, serialized.output}))
-            {
-                return err(500U, "M_UNKNOWN", "device key persistence failed");
-            }
         }
-        // Device key uploads change the device identity that other users
-        // track; notify every local user who shares a room with this user.
-        // Also notify the uploading user's own devices. Cross-device
-        // verification (e.g. Element X verifying a new login from an
-        // existing device) relies on each device learning about new or
-        // updated devices via device_lists.changed and then querying
-        // /keys/query.
-        if (device_keys_object != nullptr)
-        {
-            auto const recorded = record_shared_room_device_changes(rt, user, NotifyOwnDevices::yes);
-
-            // Notify remote servers so they can fetch the updated keys and
-            // deliver room keys to this device (spec v1.19 SS4.1).
-            broadcast_device_list_updates(rt, user, remote_servers_for_user(rt.homeserver, user));
-            if (!recorded)
-            {
-                return err(500U, "M_UNKNOWN", device_list_change_unrecorded);
-            }
-        }
+        // C4: the whole body is judged before any of it is stored or announced.
         // Reject any one-time / fallback key that is not signed by the
         // device's own ed25519 identity. The Matrix v1.19 spec requires
         // every SignedKey to be signed by the device's signing key; an
@@ -8282,10 +8270,6 @@ namespace
                 return err(400U, "M_INVALID_SIGNATURE",
                            "one-time key " + reason + " (device signing key " + device_signing_key_id + ")");
             }
-            if (!store_key_object_members(rt, user, device_id, *keys, false))
-            {
-                return err(500U, "M_UNKNOWN", "one-time key persistence failed");
-            }
         }
         if (auto const* keys = object_member_object(*object, "fallback_keys"); keys != nullptr)
         {
@@ -8295,9 +8279,57 @@ namespace
                 return err(400U, "M_INVALID_SIGNATURE",
                            "fallback key " + reason + " (device signing key " + device_signing_key_id + ")");
             }
+        }
+        if (device_keys_object != nullptr)
+        {
+            auto normalized_device_keys = *device_keys_object;
+            normalize_device_key_object_for_client(rt, normalized_device_keys, user, device_id);
+            auto const serialized =
+                canonicaljson::serialize_canonical(canonicaljson::Value{std::move(normalized_device_keys)});
+            if (serialized.error == canonicaljson::CanonicalJsonError::none &&
+                serialized.output.size() > max_uploaded_key_document_bytes)
+            {
+                return err(400U, "M_TOO_LARGE",
+                           "device_keys may be at most " + std::to_string(max_uploaded_key_document_bytes) + " bytes");
+            }
+            if (serialized.error != canonicaljson::CanonicalJsonError::none ||
+                !database::sync_stream_has_write_reserve(store) ||
+                !database::store_device_key(store, {std::string{user}, std::string{device_id}, serialized.output}))
+            {
+                return err(500U, "M_UNKNOWN", "device key persistence failed");
+            }
+        }
+        if (auto const* keys = object_member_object(*object, "one_time_keys"); keys != nullptr)
+        {
+            if (!store_key_object_members(rt, user, device_id, *keys, false))
+            {
+                return err(500U, "M_UNKNOWN", "one-time key persistence failed");
+            }
+        }
+        if (auto const* keys = object_member_object(*object, "fallback_keys"); keys != nullptr)
+        {
             if (!store_key_object_members(rt, user, device_id, *keys, true))
             {
                 return err(500U, "M_UNKNOWN", "fallback key persistence failed");
+            }
+        }
+        // Device key uploads change the device identity that other users
+        // track; notify every local user who shares a room with this user.
+        // Also notify the uploading user's own devices. Cross-device
+        // verification (e.g. Element X verifying a new login from an
+        // existing device) relies on each device learning about new or
+        // updated devices via device_lists.changed and then querying
+        // /keys/query.
+        if (device_keys_object != nullptr)
+        {
+            auto const recorded = record_shared_room_device_changes(rt, user, NotifyOwnDevices::yes);
+
+            // Notify remote servers so they can fetch the updated keys and
+            // deliver room keys to this device (spec v1.19 SS4.1).
+            broadcast_device_list_updates(rt, user, remote_servers_for_user(rt.homeserver, user));
+            if (!recorded)
+            {
+                return err(500U, "M_UNKNOWN", device_list_change_unrecorded);
             }
         }
         auto const counts = one_time_key_counts(rt, user, device_id);
@@ -9926,6 +9958,45 @@ namespace
         return options;
     }
 
+    // The old room's power levels after an upgrade (spec, "Room Upgrades", "Server behaviour"): "the power levels
+    // in the old room should also be modified to prevent sending of events and inviting new users. For example,
+    // setting `events_default` and `invite` to the greater of `50` and `users_default + 1`." Both are only ever
+    // raised: a room that already asks for more keeps it. Nullopt when the room has no power levels event or
+    // holds a value this cannot compute with (a pre-version-10 string level), so nothing is sent (ADR-0476).
+    [[nodiscard]] auto closed_power_levels_content(database::PersistentStore const& store, std::string_view room_id)
+        -> std::optional<std::string>
+    {
+        auto const index = build_state_index(store);
+        auto content = current_state_content(store, index, room_id, "m.room.power_levels");
+        if (!content.has_value())
+        {
+            return std::nullopt;
+        }
+        auto const level_of = [&content](std::string_view key, std::int64_t fallback) -> std::optional<std::int64_t> {
+            if (object_member(*content, key) == nullptr)
+            {
+                return fallback;
+            }
+            auto const* value = integer_member(*content, key);
+            return value == nullptr ? std::nullopt : std::optional<std::int64_t>{*value};
+        };
+        auto const users_default = level_of("users_default", 0);
+        auto const events_default = level_of("events_default", 0);
+        auto const invite = level_of("invite", 0);
+        if (!users_default.has_value() || !events_default.has_value() || !invite.has_value())
+        {
+            return std::nullopt;
+        }
+        auto const closed_level = std::max<std::int64_t>(50, *users_default + 1);
+        std::erase_if(*content, [](canonicaljson::ObjectMember const& member) {
+            return member.key == "events_default" || member.key == "invite";
+        });
+        content->push_back(
+            json_member("events_default", canonicaljson::Value{std::max(closed_level, *events_default)}));
+        content->push_back(json_member("invite", canonicaljson::Value{std::max(closed_level, *invite)}));
+        return json_serialize(json_obj(std::move(*content)));
+    }
+
     // May this user reach an endpoint that returns room events? Spec (Room History Visibility):
     // "In all cases except `world_readable`, a user needs to join a room to view events in that
     // room." A user who was joined keeps the events they were allowed to see (`as_of`), and a
@@ -9976,6 +10047,21 @@ namespace
             }
             return std::nullopt;
         }();
+        // `to` is "the token to stop returning events at" (ADR-0470), in the forms `from` takes. The stream
+        // ordering at which the walk stops: a plain token T stops at the event T; a /sync next_batch names the
+        // position just after its newest event N, so backward stops at N and forward at N + 1.
+        auto const to_boundary = [&]() -> std::optional<std::uint64_t> {
+            auto const to_text = messages_query_value(target, "to");
+            if (auto const plain = parse_u64(to_text); plain.has_value())
+            {
+                return plain;
+            }
+            if (auto const decoded = sync::decode_stream_token(to_text); decoded.has_value())
+            {
+                return backwards ? decoded->event_ordering : decoded->event_ordering + 1U;
+            }
+            return std::nullopt;
+        }();
         // The request's RoomEventFilter selects the returned events (`filter`: "A JSON
         // RoomEventFilter to filter returned events with") and drives lazy-loaded members.
         auto const room_filter =
@@ -10023,6 +10109,9 @@ namespace
         auto start_token = std::string{};
         auto end_token = std::string{};
         auto examined = std::size_t{0U};
+        // True when the walk stopped with an event still to consider (page full, or examination budget
+        // spent); only then is there an `end` token to continue from (ADR-0470).
+        auto more_events = false;
         // Senders appearing in the chunk, for lazy-loaded membership state below.
         auto chunk_senders = std::unordered_set<std::string>{};
         // Returns false once the page is complete (full, or out of examination budget).
@@ -10053,8 +10142,13 @@ namespace
                 {
                     continue;
                 }
+                if (to_boundary.has_value() && (*it)->stream_ordering <= *to_boundary)
+                {
+                    break;
+                }
                 if (!consider(**it))
                 {
+                    more_events = true;
                     break;
                 }
             }
@@ -10067,8 +10161,13 @@ namespace
                 {
                     continue;
                 }
+                if (to_boundary.has_value() && event->stream_ordering >= *to_boundary)
+                {
+                    break;
+                }
                 if (!consider(*event))
                 {
+                    more_events = true;
                     break;
                 }
             }
@@ -10087,12 +10186,17 @@ namespace
                                    store, event_filter.lazy_load_members ? sync::EventTypeFilter{} : event_filter,
                                    room_id, sync::room_read_access_for(store, room_id, user_id)))
                          : canonicaljson::Array{};
-        return json_serialize(json_obj({
-            json_member("chunk", json_arr(std::move(chunk))),
-            json_member("start", json_str(start_token)),
-            json_member("end", json_str(end_token)),
-            json_member("state", json_arr(std::move(state))),
-        }));
+        auto members = canonicaljson::Object{};
+        members.push_back(json_member("chunk", json_arr(std::move(chunk))));
+        members.push_back(json_member("start", json_str(start_token)));
+        // "If no further events are available ... this property is omitted": an empty token would be read back
+        // as no `from` at all.
+        if (more_events && !end_token.empty())
+        {
+            members.push_back(json_member("end", json_str(end_token)));
+        }
+        members.push_back(json_member("state", json_arr(std::move(state))));
+        return json_serialize(json_obj(std::move(members)));
     }
 
     // Builds the GET /rooms/{roomId}/context/{eventId} response body.
@@ -10569,11 +10673,16 @@ namespace
             {
                 if (auto const profile = database::find_profile(store, sender); profile.has_value())
                 {
-                    profile_info.push_back(
-                        json_member(sender, json_obj({
-                                                json_member("avatar_url", json_str(profile->avatar_url)),
-                                                json_member("displayname", json_str(profile->displayname)),
-                                            })));
+                    auto info = canonicaljson::Object{};
+                    if (!profile->avatar_url.empty())
+                    {
+                        info.push_back(json_member("avatar_url", json_str(profile->avatar_url)));
+                    }
+                    if (!profile->displayname.empty())
+                    {
+                        info.push_back(json_member("displayname", json_str(profile->displayname)));
+                    }
+                    profile_info.push_back(json_member(sender, json_obj(std::move(info))));
                 }
             }
             members.push_back(json_member("profile_info", json_obj(std::move(profile_info))));
@@ -11367,6 +11476,141 @@ namespace
         return local.found ? timestamp_to_event_response(req, rt, local.event_id, local.origin_server_ts) : not_found();
     }
 
+    // Spec (setProfileField, Common Namespaced Identifier Grammar): a profile key is 1 to 255 bytes, starts with
+    // [a-z] and holds only [a-z0-9-_.]; "m." is reserved for the specification, whose only extended key is
+    // `m.tz`. `displayname` and `avatar_url` fit the grammar. Over 255 bytes is M_KEY_TOO_LARGE, any other
+    // failure M_INVALID_PARAM (ADR-0478).
+    enum class ProfileKeyCheck
+    {
+        valid,
+        too_large,
+        invalid,
+    };
+
+    [[nodiscard]] auto check_profile_key(std::string_view key) -> ProfileKeyCheck
+    {
+        constexpr std::size_t max_profile_key_bytes = 255U;
+        if (key.size() > max_profile_key_bytes)
+        {
+            return ProfileKeyCheck::too_large;
+        }
+        if (key.empty() || key.front() < 'a' || key.front() > 'z')
+        {
+            return ProfileKeyCheck::invalid;
+        }
+        auto const allowed = [](char const c) {
+            return (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '-' || c == '_' || c == '.';
+        };
+        if (!std::ranges::all_of(key, allowed))
+        {
+            return ProfileKeyCheck::invalid;
+        }
+        if (key.starts_with("m.") && key != "m.tz")
+        {
+            return ProfileKeyCheck::invalid;
+        }
+        return ProfileKeyCheck::valid;
+    }
+
+    // The extended profile fields (`m.tz` and custom keys) a profile row holds, as the object they are stored as.
+    // The text is this server's own canonical output, so a parse failure yields no fields.
+    [[nodiscard]] auto stored_profile_fields(std::optional<database::PersistentProfile> const& profile)
+        -> canonicaljson::Object
+    {
+        if (!profile.has_value())
+        {
+            return {};
+        }
+        return parsed_json_object(profile->fields_json).value_or(canonicaljson::Object{});
+    }
+
+    // Spec: "the total profile MUST be under 64 KiB". The profile measured is the object a client reads back:
+    // `avatar_url`, `displayname` and the extended fields, in canonical form. A stored field the serialiser
+    // refuses (ADR-0182 keeps such a profile usable) cannot be measured as JSON; its raw length plus the
+    // object's fixed overhead is then the size counted.
+    [[nodiscard]] auto profile_size_bytes(std::string_view displayname, std::string_view avatar_url,
+                                          canonicaljson::Object const& fields) -> std::size_t
+    {
+        auto members = canonicaljson::Object{};
+        members.push_back(json_member("avatar_url", json_str(avatar_url)));
+        members.push_back(json_member("displayname", json_str(displayname)));
+        for (auto const& field : fields)
+        {
+            members.push_back(json_member(field.key, *field.value));
+        }
+        auto const serialised = json_serialize_checked(json_obj(std::move(members)));
+        if (serialised.has_value())
+        {
+            return serialised->size();
+        }
+        auto const fields_text = json_serialize_checked(json_obj(fields));
+        return displayname.size() + avatar_url.size() + 34U + (fields_text.has_value() ? fields_text->size() : 0U);
+    }
+
+    // PUT /_matrix/client/v3/profile/{userId}/{keyName} for `m.tz` and custom keys (spec v1.16). The caller has
+    // checked that the key is valid and that the path user is the authenticated user. Runs under runtime.mutex
+    // (the request lock), reads and writes only this user's profile row, and does no network call.
+    [[nodiscard]] auto put_profile_extended_field(ClientServerRuntime& rt, LocalHttpRequest const& req,
+                                                  std::string_view user, std::string_view key) -> DispatchResult
+    {
+        auto const parsed = canonicaljson::parse_lossless(req.body);
+        auto const* const body = parsed.error == canonicaljson::ParseError::none
+                                     ? std::get_if<canonicaljson::Object>(&parsed.value.storage())
+                                     : nullptr;
+        if (body == nullptr)
+        {
+            return dispatch_err(req, rt, 400U, "M_BAD_JSON", "profile update body must be a JSON object");
+        }
+        auto const* const member = object_member(*body, key);
+        if (member == nullptr)
+        {
+            return dispatch_err(req, rt, 400U, "M_MISSING_PARAM",
+                                "the request body must contain the key " + std::string{key});
+        }
+        // Spec: "An object which contains exactly one property."
+        if (body->size() != 1U)
+        {
+            return dispatch_err(req, rt, 400U, "M_BAD_JSON", "the request body must contain exactly one property");
+        }
+        // The spec lets a server reject null and tells clients to DELETE instead; a stored null would also read
+        // as "unset" over federation (ADR-0478).
+        if (std::holds_alternative<std::nullptr_t>(member->storage()))
+        {
+            return dispatch_err(req, rt, 400U, "M_INVALID_PARAM", "use DELETE to remove a profile field");
+        }
+        if (key == "m.tz" && std::get_if<std::string>(&member->storage()) == nullptr)
+        {
+            return dispatch_err(req, rt, 400U, "M_INVALID_PARAM", "m.tz must be a string");
+        }
+        auto& store = rt.homeserver.database.persistent_store;
+        auto const existing = database::find_profile(store, user);
+        auto fields = stored_profile_fields(existing);
+        std::erase_if(fields, [key](canonicaljson::ObjectMember const& field) {
+            return field.key == key;
+        });
+        fields.push_back(json_member(std::string{key}, *member));
+        auto const displayname = existing.has_value() ? existing->displayname : std::string{};
+        auto const avatar_url = existing.has_value() ? existing->avatar_url : std::string{};
+        auto const fields_text = json_serialize_checked(json_obj(fields));
+        if (!fields_text.has_value())
+        {
+            return dispatch_err(req, rt, 400U, "M_BAD_JSON", "the profile value cannot be stored");
+        }
+        if (profile_size_bytes(displayname, avatar_url, fields) >= max_profile_bytes)
+        {
+            return dispatch_err(req, rt, 400U, "M_PROFILE_TOO_LARGE",
+                                "the profile would exceed its maximum allowed size of 64 KiB");
+        }
+        auto const stored = existing.has_value()
+                                ? database::update_profile_fields(store, user, *fields_text)
+                                : database::store_profile(store, {std::string{user}, {}, {}, *fields_text});
+        if (!stored)
+        {
+            return dispatch_err(req, rt, 500U, "M_UNKNOWN", "failed to persist the profile");
+        }
+        return dispatch_resp(req, rt, 200U, "{}");
+    }
+
     // GET /_matrix/client/v3/profile/{userId}[/{keyName}] for a user of another server. Asks that server's
     // GET /_matrix/federation/v1/query/profile and relays only what the client API defines, a string
     // `displayname` and `avatar_url`: a remote answer is untrusted, so nothing else is copied (rule 6 of
@@ -11382,7 +11626,7 @@ namespace
         {
             return client_proxy_refused(req, rt);
         }
-        if (!field.empty() && field != "displayname" && field != "avatar_url")
+        if (!field.empty() && check_profile_key(field) != ProfileKeyCheck::valid)
         {
             return dispatch_err(req, rt, 404U, "M_NOT_FOUND", "profile field not found");
         }
@@ -11436,6 +11680,39 @@ namespace
             {
                 object.push_back(json_member(key, json_str(*value)));
             }
+        }
+        // The extended fields (v1.16): `m.tz` must be a string, a custom key must meet the key grammar and
+        // hold a non-null value (null means "unset" over federation). The total is held under the profile
+        // limit, so a remote server cannot make this one relay an unbounded answer.
+        // `relayed_bytes` is the size of the profile built so far, kept as a running total: each member is
+        // measured once, so the work is linear in the answer. It is done with runtime.mutex held (the
+        // RuntimeLockRelease scope above has ended), on a body a remote server chose, bounded by the outbound
+        // response limit; it stops at the first member that would take the profile to 64 KiB.
+        auto const* const relayed_name = string_member(*parsed, "displayname");
+        auto const* const relayed_avatar = string_member(*parsed, "avatar_url");
+        auto relayed_bytes =
+            profile_size_bytes(relayed_name != nullptr ? std::string_view{*relayed_name} : std::string_view{},
+                               relayed_avatar != nullptr ? std::string_view{*relayed_avatar} : std::string_view{}, {});
+        for (auto const& member : *parsed)
+        {
+            if (member.key == "displayname" || member.key == "avatar_url" ||
+                check_profile_key(member.key) != ProfileKeyCheck::valid || (!field.empty() && field != member.key) ||
+                std::holds_alternative<std::nullptr_t>(member.value->storage()) ||
+                (member.key == "m.tz" && std::get_if<std::string>(&member.value->storage()) == nullptr))
+            {
+                continue;
+            }
+            auto entry = canonicaljson::Object{};
+            entry.push_back(json_member(member.key, *member.value));
+            auto const text = json_serialize_checked(json_obj(std::move(entry)));
+            // "{" + member + "}" is the member's text plus two; a member after the first adds a comma.
+            auto const added = text.has_value() ? text->size() - 2U + 1U : max_profile_bytes;
+            if (relayed_bytes + added >= max_profile_bytes)
+            {
+                break;
+            }
+            relayed_bytes += added;
+            object.push_back(json_member(member.key, *member.value));
         }
         if (!field.empty() && object.empty())
         {
@@ -11518,23 +11795,6 @@ namespace
                                std::string{suffix.substr(separator + separator_text.size())}};
     }
 
-    [[nodiscard]] auto review_target_from_path(std::string_view target) -> std::optional<trust_safety::ReviewTarget>
-    {
-        if (target == "federation" || target == "federation_server")
-        {
-            return trust_safety::ReviewTarget::federation_server;
-        }
-        if (target == "media")
-        {
-            return trust_safety::ReviewTarget::media;
-        }
-        if (target == "room")
-        {
-            return trust_safety::ReviewTarget::room;
-        }
-        return std::nullopt;
-    }
-
     [[nodiscard]] auto admin_review_path_parts(std::string_view target) -> std::optional<AdminReviewPathParts>
     {
         auto constexpr prefix = std::string_view{"/_matrix/client/v3/admin/safety/review/"};
@@ -11547,7 +11807,7 @@ namespace
         {
             return std::nullopt;
         }
-        auto const review_target = review_target_from_path(suffix.substr(0U, separator));
+        auto const review_target = review_target_from_name(suffix.substr(0U, separator));
         if (!review_target.has_value())
         {
             return std::nullopt;
@@ -11568,6 +11828,14 @@ namespace
         }
         return AdminPolicyRulePathParts{std::string{suffix.substr(0U, separator)},
                                         core::percent_decode_path_component(suffix.substr(separator + 1U))};
+    }
+
+    // The scopes something reads: registration (auth_service), federation (inbound requests), media (media_service)
+    // and room (room_service), the last three also written by the admin review route. A rule in any other scope
+    // would be stored and never consulted (ADR-0500).
+    [[nodiscard]] auto is_enforced_policy_rule_scope(std::string_view scope) noexcept -> bool
+    {
+        return scope == "registration" || scope == "federation" || scope == "media" || scope == "room";
     }
 
     [[nodiscard]] auto is_valid_policy_rule_action(std::string_view action) noexcept -> bool
@@ -11936,6 +12204,165 @@ namespace
         return std::nullopt;
     }
 
+    // POST /_matrix/client/v3/keys/device_signing/upload: stores the uploaded cross-signing keys in one transaction.
+    [[nodiscard]] auto store_cross_signing_key_upload(ClientServerRuntime& rt, std::string_view user,
+                                                      LocalHttpRequest const& req) -> bool
+    {
+        auto& store = rt.homeserver.database.persistent_store;
+        auto const parsed = canonicaljson::parse_lossless(req.body);
+        if (parsed.error != canonicaljson::ParseError::none)
+        {
+            return false;
+        }
+        auto const* obj = std::get_if<canonicaljson::Object>(&parsed.value.storage());
+        if (obj == nullptr)
+        {
+            return false;
+        }
+        auto keys = std::vector<database::PersistentCrossSigningKey>{};
+        for (auto const& [key_type, key_name] : {
+                 std::pair<std::string_view, std::string_view>{"master_key",       "master"      },
+                 std::pair<std::string_view, std::string_view>{"self_signing_key", "self_signing"},
+                 std::pair<std::string_view, std::string_view>{"user_signing_key", "user_signing"},
+        })
+        {
+            auto const* value = object_member(*obj, key_type);
+            if (value == nullptr)
+            {
+                continue;
+            }
+            auto const serialized = canonicaljson::serialize_canonical(*value);
+            if (serialized.error != canonicaljson::CanonicalJsonError::none)
+            {
+                return false;
+            }
+            keys.push_back({std::string{user}, std::string{key_name}, serialized.output});
+        }
+        // One transaction: a failed write leaves the previous set of keys intact.
+        return database::store_cross_signing_keys(store, std::move(keys));
+    }
+
+    // POST /_matrix/client/v3/keys/signatures/upload: stores the uploaded key signatures.
+    [[nodiscard]] auto store_key_signature_upload(ClientServerRuntime& rt, std::string_view user,
+                                                  LocalHttpRequest const& req) -> bool
+    {
+        auto& store = rt.homeserver.database.persistent_store;
+        auto const parsed = parsed_json_object(req.body);
+        if (!parsed.has_value())
+        {
+            return false;
+        }
+        auto stored = true;
+        for (auto const& user_member : *parsed)
+        {
+            auto const* signed_keys = std::get_if<canonicaljson::Object>(&user_member.value->storage());
+            if (signed_keys == nullptr)
+            {
+                stored = false;
+                continue;
+            }
+            for (auto const& key_member : *signed_keys)
+            {
+                auto const serialized = canonicaljson::serialize_canonical(*key_member.value);
+                if (serialized.error != canonicaljson::CanonicalJsonError::none)
+                {
+                    stored = false;
+                    continue;
+                }
+                if (!database::store_key_signature(
+                        store, {std::string{user}, user_member.key, key_member.key, serialized.output}))
+                {
+                    stored = false;
+                }
+            }
+        }
+        return stored;
+    }
+
+    // PUT /_matrix/client/v3/room_keys/keys/{roomId}: stores the sessions of one room.
+    [[nodiscard]] auto store_room_key_backup_room(ClientServerRuntime& rt, std::string_view user,
+                                                  LocalHttpRequest const& req, std::string_view version) -> bool
+    {
+        auto& store = rt.homeserver.database.persistent_store;
+        auto const path = room_key_backup_path_parts(req.target);
+        if (!path.has_value() || path->session_id.has_value())
+        {
+            return false;
+        }
+        auto const body = parsed_json_object(req.body);
+        if (!body.has_value())
+        {
+            return false;
+        }
+        auto const* sessions = object_member_as_object(*body, "sessions");
+        if (sessions == nullptr)
+        {
+            return false;
+        }
+        auto stored = true;
+        for (auto const& session : *sessions)
+        {
+            auto const serialized = canonicaljson::serialize_canonical(*session.value);
+            if (serialized.error != canonicaljson::CanonicalJsonError::none)
+            {
+                stored = false;
+                continue;
+            }
+            if (!store_key_backup_session_by_rules(
+                    store, {std::string{user}, std::string{version}, path->room_id, session.key, serialized.output}))
+            {
+                stored = false;
+            }
+        }
+        return stored;
+    }
+
+    // PUT /_matrix/client/v3/room_keys/keys: stores every session of the body in one transaction.
+    [[nodiscard]] auto store_room_key_backup_batch(ClientServerRuntime& rt, std::string_view user,
+                                                   LocalHttpRequest const& req, std::string_view version) -> bool
+    {
+        auto& store = rt.homeserver.database.persistent_store;
+        // The route handler has already refused a malformed body (room_key_batch_refusal).
+        auto const body = parsed_json_object(req.body);
+        if (!body.has_value())
+        {
+            return false;
+        }
+        auto const* rooms = object_member_as_object(*body, "rooms");
+        if (rooms == nullptr)
+        {
+            return false;
+        }
+        auto sessions_to_store = std::vector<database::PersistentKeyBackupSession>{};
+        for (auto const& room : *rooms)
+        {
+            auto const* room_obj =
+                room.value == nullptr ? nullptr : std::get_if<canonicaljson::Object>(&room.value->storage());
+            auto const* sessions = room_obj == nullptr ? nullptr : object_member_as_object(*room_obj, "sessions");
+            if (sessions == nullptr)
+            {
+                return false;
+            }
+            for (auto const& session : *sessions)
+            {
+                auto const session_json = canonicaljson::serialize_canonical(*session.value);
+                if (session_json.error != canonicaljson::CanonicalJsonError::none)
+                {
+                    return false;
+                }
+                auto offered = database::PersistentKeyBackupSession{std::string{user}, std::string{version}, room.key,
+                                                                    session.key, session_json.output};
+                if (key_backup_session_is_kept(store, offered))
+                {
+                    continue;
+                }
+                sessions_to_store.push_back(std::move(offered));
+            }
+        }
+        // One transaction: a failed write stores none of the batch and the request answers 500.
+        return database::store_key_backup_sessions(store, std::move(sessions_to_store));
+    }
+
     [[nodiscard]] auto store_key_api_payload(ClientServerRuntime& rt, auth::KeyApiEndpoint endpoint,
                                              std::string_view user, std::string_view /*device_id*/,
                                              LocalHttpRequest const& req, std::string_view version) -> bool
@@ -11943,71 +12370,10 @@ namespace
         auto& store = rt.homeserver.database.persistent_store;
         switch (endpoint)
         {
-        case auth::KeyApiEndpoint::upload_cross_signing_keys: {
-            auto const parsed = canonicaljson::parse_lossless(req.body);
-            if (parsed.error != canonicaljson::ParseError::none)
-            {
-                return false;
-            }
-            auto const* obj = std::get_if<canonicaljson::Object>(&parsed.value.storage());
-            if (obj == nullptr)
-            {
-                return false;
-            }
-            auto keys = std::vector<database::PersistentCrossSigningKey>{};
-            for (auto const& [key_type, key_name] : {
-                     std::pair<std::string_view, std::string_view>{"master_key",       "master"      },
-                     std::pair<std::string_view, std::string_view>{"self_signing_key", "self_signing"},
-                     std::pair<std::string_view, std::string_view>{"user_signing_key", "user_signing"},
-            })
-            {
-                auto const* value = object_member(*obj, key_type);
-                if (value == nullptr)
-                {
-                    continue;
-                }
-                auto const serialized = canonicaljson::serialize_canonical(*value);
-                if (serialized.error != canonicaljson::CanonicalJsonError::none)
-                {
-                    return false;
-                }
-                keys.push_back({std::string{user}, std::string{key_name}, serialized.output});
-            }
-            // One transaction: a failed write leaves the previous set of keys intact.
-            return database::store_cross_signing_keys(store, std::move(keys));
-        }
-        case auth::KeyApiEndpoint::upload_signatures: {
-            auto const parsed = parsed_json_object(req.body);
-            if (!parsed.has_value())
-            {
-                return false;
-            }
-            auto stored = true;
-            for (auto const& user_member : *parsed)
-            {
-                auto const* signed_keys = std::get_if<canonicaljson::Object>(&user_member.value->storage());
-                if (signed_keys == nullptr)
-                {
-                    stored = false;
-                    continue;
-                }
-                for (auto const& key_member : *signed_keys)
-                {
-                    auto const serialized = canonicaljson::serialize_canonical(*key_member.value);
-                    if (serialized.error != canonicaljson::CanonicalJsonError::none)
-                    {
-                        stored = false;
-                        continue;
-                    }
-                    if (!database::store_key_signature(
-                            store, {std::string{user}, user_member.key, key_member.key, serialized.output}))
-                    {
-                        stored = false;
-                    }
-                }
-            }
-            return stored;
-        }
+        case auth::KeyApiEndpoint::upload_cross_signing_keys:
+            return store_cross_signing_key_upload(rt, user, req);
+        case auth::KeyApiEndpoint::upload_signatures:
+            return store_key_signature_upload(rt, user, req);
         case auth::KeyApiEndpoint::create_key_backup_version:
             // A new version's number is chosen by database::create_key_backup_version, in one transaction with
             // its counter (F-60, ADR-0384); the route handler calls it directly.
@@ -12023,80 +12389,10 @@ namespace
             return store_key_backup_session_by_rules(
                 store, {std::string{user}, std::string{version}, path->room_id, *path->session_id, req.body});
         }
-        case auth::KeyApiEndpoint::put_room_key_backup_room: {
-            auto const path = room_key_backup_path_parts(req.target);
-            if (!path.has_value() || path->session_id.has_value())
-            {
-                return false;
-            }
-            auto const body = parsed_json_object(req.body);
-            if (!body.has_value())
-            {
-                return false;
-            }
-            auto const* sessions = object_member_as_object(*body, "sessions");
-            if (sessions == nullptr)
-            {
-                return false;
-            }
-            auto stored = true;
-            for (auto const& session : *sessions)
-            {
-                auto const serialized = canonicaljson::serialize_canonical(*session.value);
-                if (serialized.error != canonicaljson::CanonicalJsonError::none)
-                {
-                    stored = false;
-                    continue;
-                }
-                if (!store_key_backup_session_by_rules(store, {std::string{user}, std::string{version}, path->room_id,
-                                                               session.key, serialized.output}))
-                {
-                    stored = false;
-                }
-            }
-            return stored;
-        }
-        case auth::KeyApiEndpoint::put_room_key_backup_batch: {
-            // The route handler has already refused a malformed body (room_key_batch_refusal).
-            auto const body = parsed_json_object(req.body);
-            if (!body.has_value())
-            {
-                return false;
-            }
-            auto const* rooms = object_member_as_object(*body, "rooms");
-            if (rooms == nullptr)
-            {
-                return false;
-            }
-            auto sessions_to_store = std::vector<database::PersistentKeyBackupSession>{};
-            for (auto const& room : *rooms)
-            {
-                auto const* room_obj =
-                    room.value == nullptr ? nullptr : std::get_if<canonicaljson::Object>(&room.value->storage());
-                auto const* sessions = room_obj == nullptr ? nullptr : object_member_as_object(*room_obj, "sessions");
-                if (sessions == nullptr)
-                {
-                    return false;
-                }
-                for (auto const& session : *sessions)
-                {
-                    auto const session_json = canonicaljson::serialize_canonical(*session.value);
-                    if (session_json.error != canonicaljson::CanonicalJsonError::none)
-                    {
-                        return false;
-                    }
-                    auto offered = database::PersistentKeyBackupSession{std::string{user}, std::string{version},
-                                                                        room.key, session.key, session_json.output};
-                    if (key_backup_session_is_kept(store, offered))
-                    {
-                        continue;
-                    }
-                    sessions_to_store.push_back(std::move(offered));
-                }
-            }
-            // One transaction: a failed write stores none of the batch and the request answers 500.
-            return database::store_key_backup_sessions(store, std::move(sessions_to_store));
-        }
+        case auth::KeyApiEndpoint::put_room_key_backup_room:
+            return store_room_key_backup_room(rt, user, req, version);
+        case auth::KeyApiEndpoint::put_room_key_backup_batch:
+            return store_room_key_backup_batch(rt, user, req, version);
         case auth::KeyApiEndpoint::delete_key_backup_version: {
             auto constexpr prefix = std::string_view{"/_matrix/client/v3/room_keys/version/"};
             auto const version_str = route_suffix(target_path(req.target), prefix);
@@ -12135,6 +12431,357 @@ namespace
         return true;
     }
 
+    // GET /_matrix/client/v3/room_keys/keys: reads every session of a backup, grouped by room.
+    [[nodiscard]] auto handle_get_room_key_backup_batch(ClientServerRuntime& rt, std::string_view user,
+                                                        LocalHttpRequest const& req) -> LocalHttpResponse
+    {
+        auto const batch_ver_param = extract_key_backup_version_param(req.target);
+        std::string_view batch_ver;
+        if (!batch_ver_param.empty())
+        {
+            if (key_backup_version_for_user(rt.homeserver.database.persistent_store, user, batch_ver_param) == nullptr)
+            {
+                return resp(404U, matrix_error("M_NOT_FOUND", "key backup version not found"));
+            }
+            batch_ver = batch_ver_param;
+        }
+        else if (auto const* current = key_backup_version_for_user(rt.homeserver.database.persistent_store, user);
+                 current != nullptr)
+        {
+            batch_ver = current->version;
+        }
+        else
+        {
+            // No version specified and no current backup: return an empty rooms object.
+            return resp(200U, json_serialize(json_obj({json_member("rooms", json_obj({}))})));
+        }
+
+        auto const& all_sessions = rt.homeserver.database.persistent_store.key_backup_sessions;
+        auto room_map = std::map<std::string, canonicaljson::Object>{};
+        for (auto const& s : all_sessions)
+        {
+            if (s.user_id == user && s.version == batch_ver)
+            {
+                room_map[s.room_id].push_back(json_member(s.session_id, json_embed_raw(s.json)));
+            }
+        }
+        auto rooms = canonicaljson::Object{};
+        for (auto& [room_id, sess_obj] : room_map)
+        {
+            rooms.push_back(json_member(room_id, json_obj({json_member("sessions", json_obj(std::move(sess_obj)))})));
+        }
+        return resp(200U, json_serialize(json_obj({json_member("rooms", json_obj(std::move(rooms)))})));
+    }
+
+    // GET /_matrix/client/v3/room_keys/keys/{roomId}[/{sessionId}]: reads one room or one session of a backup.
+    [[nodiscard]] auto handle_get_room_key_backup(ClientServerRuntime& rt, std::string_view user,
+                                                  LocalHttpRequest const& req) -> LocalHttpResponse
+    {
+        auto const get_ver_param = extract_key_backup_version_param(req.target);
+        std::string_view get_ver;
+        if (!get_ver_param.empty())
+        {
+            if (key_backup_version_for_user(rt.homeserver.database.persistent_store, user, get_ver_param) == nullptr)
+            {
+                return resp(404U, matrix_error("M_NOT_FOUND", "key backup version not found"));
+            }
+            get_ver = get_ver_param;
+        }
+        else if (auto const* current = key_backup_version_for_user(rt.homeserver.database.persistent_store, user);
+                 current != nullptr)
+        {
+            get_ver = current->version;
+        }
+        // If no version was specified and there is no current backup, get_ver
+        // remains empty so all searches below return empty/no-match results.
+
+        if (auto const path = room_key_backup_path_parts(req.target); path.has_value())
+        {
+            if (!path->session_id.has_value())
+            {
+                auto const& all_sessions = rt.homeserver.database.persistent_store.key_backup_sessions;
+                auto sessions_obj = canonicaljson::Object{};
+                for (auto const& s : all_sessions)
+                {
+                    if (s.user_id == user && s.version == get_ver && s.room_id == path->room_id)
+                    {
+                        sessions_obj.push_back(json_member(s.session_id, json_embed_raw(s.json)));
+                    }
+                }
+                return resp(200U,
+                            json_serialize(json_obj({json_member("sessions", json_obj(std::move(sessions_obj)))})));
+            }
+
+            auto const& sessions = rt.homeserver.database.persistent_store.key_backup_sessions;
+            auto const it = std::ranges::find_if(sessions, [&](auto const& s) {
+                return s.user_id == user && s.version == get_ver && s.room_id == path->room_id &&
+                       s.session_id == *path->session_id;
+            });
+            if (it == sessions.end())
+            {
+                return resp(404U, matrix_error("M_NOT_FOUND", "key backup session not found"));
+            }
+            return resp(200U, it->json);
+        }
+        auto constexpr kbprefix = std::string_view{"/_matrix/client/v3/room_keys/keys/"};
+        auto const suffix = route_suffix(req.target, kbprefix);
+        auto const clean = suffix.substr(0U, suffix.find('?'));
+        auto const separator = clean.find('/');
+        // No slash in clean suffix → room-level GET (/{roomId}), not session-level.
+        if (separator == std::string_view::npos || separator + 1U >= clean.size())
+        {
+            // Return all sessions for the room as {"sessions":{sessionId: data, ...}}.
+            auto const room_id = clean;
+            auto const& all_sessions = rt.homeserver.database.persistent_store.key_backup_sessions;
+            auto sessions_obj = canonicaljson::Object{};
+            for (auto const& s : all_sessions)
+            {
+                if (s.user_id == user && s.version == get_ver && s.room_id == room_id)
+                {
+                    sessions_obj.push_back(json_member(s.session_id, json_embed_raw(s.json)));
+                }
+            }
+            return resp(200U, json_serialize(json_obj({json_member("sessions", json_obj(std::move(sessions_obj)))})));
+        }
+        auto const room_id = clean.substr(0U, separator);
+        auto const session_id = clean.substr(separator + 1U);
+        auto const& sessions = rt.homeserver.database.persistent_store.key_backup_sessions;
+        auto const it = std::ranges::find_if(sessions, [&](auto const& s) {
+            return s.user_id == user && s.version == get_ver && s.room_id == room_id && s.session_id == session_id;
+        });
+        if (it == sessions.end())
+        {
+            return resp(404U, matrix_error("M_NOT_FOUND", "key backup session not found"));
+        }
+        return resp(200U, it->json);
+    }
+
+    // POST /_matrix/client/v3/keys/device_signing/upload: password-authenticated upload of the cross-signing keys.
+    [[nodiscard]] auto handle_upload_cross_signing_keys(ClientServerRuntime& rt, auth::KeyApiRoute const& route,
+                                                        std::string_view user, std::string_view device_id,
+                                                        LocalHttpRequest const& req) -> LocalHttpResponse
+    {
+        // Spec §11.12.1: MUST require UIA (m.login.password) to prevent key takeover.
+        auto const cs_uia = json_obj({
+            json_member("flows",
+                        json_arr({json_obj({json_member("stages", json_arr({json_str("m.login.password")}))})})),
+            json_member("params", json_obj({})),
+            json_member("session", json_str("cross_signing_upload")),
+        });
+        auto const cs_body = parsed_json_object(req.body);
+        auto const* cs_auth = cs_body.has_value() ? object_member_object(*cs_body, "auth") : nullptr;
+        if (cs_auth == nullptr)
+        {
+            return resp(401U, json_serialize(cs_uia));
+        }
+        auto const* cs_auth_type = string_member(*cs_auth, "type");
+        if (cs_auth_type == nullptr || *cs_auth_type != "m.login.password")
+        {
+            return resp(401U, json_serialize(cs_uia));
+        }
+        auto const* cs_password = string_member(*cs_auth, "password");
+        if (cs_password == nullptr || cs_password->empty())
+        {
+            return resp(401U, json_serialize(cs_uia));
+        }
+        auto const password_verified = verify_local_user_password(rt.homeserver, req.access_token, *cs_password);
+        if (!password_verified.ok)
+        {
+            if (password_verified.retry_after_ms > 0U)
+            {
+                auto const retry_after = static_cast<std::uint32_t>(std::min<std::uint64_t>(
+                    password_verified.retry_after_ms, std::numeric_limits<std::uint32_t>::max()));
+                auto response =
+                    LocalHttpResponse{429U,
+                                      matrix_error("M_LIMIT_EXCEEDED",
+                                                   "Too many password attempts. Please try again later.", retry_after),
+                                      {{"Retry-After", std::to_string((retry_after + 999U) / 1000U)}}};
+                apply_cors_headers(req, response, rt.cors);
+                return response;
+            }
+            return resp(401U, uia_password_failure_body(json_serialize(cs_uia)));
+        }
+        for (auto const* key_type : {"master_key", "self_signing_key", "user_signing_key"})
+        {
+            if (auto const* key = object_member(*cs_body, key_type); key != nullptr && key_document_too_large(*key))
+            {
+                return err(400U, "M_TOO_LARGE",
+                           std::string{key_type} + " may be at most " +
+                               std::to_string(max_uploaded_key_document_bytes) + " bytes");
+            }
+        }
+        if (auto const refusal = cross_signing_upload_refusal(rt, user, *cs_body); refusal.has_value())
+        {
+            return err(refusal->status, refusal->errcode, refusal->message);
+        }
+        if (cross_signing_upload_names_a_device(rt, user, *cs_body))
+        {
+            return err(403U, "M_FORBIDDEN", "a cross-signing key may not have the ID of one of the user's devices");
+        }
+        if (!database::sync_stream_has_write_reserve(rt.homeserver.database.persistent_store) ||
+            !store_key_api_payload(rt, route.endpoint, user, device_id, req, {}))
+        {
+            return err(500U, "M_UNKNOWN", "key API persistence failed");
+        }
+        // Spec §11.11.1: cross-signing key change MUST appear in device_lists.changed.
+        // Self-notify so the user's own other devices re-query the new keys (required
+        // for verification to complete). Also fan out to room-sharing local users and
+        // remote servers.
+        {
+            auto const recorded = record_shared_room_device_changes(rt, user, NotifyOwnDevices::yes);
+            auto const destinations = remote_servers_for_user(rt.homeserver, user);
+            broadcast_device_list_updates(rt, user, destinations);
+            // Spec v1.19 §m.signing_key_update: remote servers learn of a
+            // new master or self-signing key through this EDU. An upload of
+            // only the private user-signing key changes nothing they can see.
+            if (object_member(*cs_body, "master_key") != nullptr ||
+                object_member(*cs_body, "self_signing_key") != nullptr)
+            {
+                broadcast_signing_key_update(rt, user, destinations);
+            }
+            if (!recorded)
+            {
+                return err(500U, "M_UNKNOWN", device_list_change_unrecorded);
+            }
+        }
+        return resp(200U, key_api_success_body(route.endpoint));
+    }
+
+    // PUT /_matrix/client/v3/room_keys/version/{version}: updates the auth_data of an existing key backup.
+    [[nodiscard]] auto handle_update_key_backup_version(ClientServerRuntime& rt, auth::KeyApiRoute const& route,
+                                                        std::string_view user, std::string_view device_id,
+                                                        LocalHttpRequest const& req) -> LocalHttpResponse
+    {
+        // Version comes from the path: PUT /room_keys/version/{version}
+        auto constexpr upd_prefix = std::string_view{"/_matrix/client/v3/room_keys/version/"};
+        auto const path_ver = route_suffix(req.target, upd_prefix);
+        // Strip any query string
+        auto const clean_ver = path_ver.substr(0U, path_ver.find('?'));
+        if (clean_ver.empty())
+        {
+            return err(400U, "M_UNRECOGNIZED", "missing version in path");
+        }
+        // Spec (PUT /room_keys/version/{version}): 404 when the backup does not exist, so an update never
+        // creates a version; 400 when the algorithm is not the backup's current one or a `version` in the
+        // body is not the path's.
+        auto const* const held = key_backup_version_for_user(rt.homeserver.database.persistent_store, user, clean_ver);
+        if (held == nullptr)
+        {
+            return resp(404U, matrix_error("M_NOT_FOUND", "key backup version not found"));
+        }
+        auto const update = parsed_json_object(req.body);
+        if (!update.has_value())
+        {
+            return err(400U, "M_BAD_JSON", "the request body must be a JSON object");
+        }
+        auto const* const algorithm = string_member(*update, "algorithm");
+        auto const held_object = parsed_json_object(held->json);
+        auto const* const held_algorithm = held_object.has_value() ? string_member(*held_object, "algorithm") : nullptr;
+        if (algorithm == nullptr || (held_algorithm != nullptr && *algorithm != *held_algorithm))
+        {
+            return err(400U, "M_INVALID_PARAM", "algorithm must be the algorithm the backup already uses");
+        }
+        if (object_member_as_object(*update, "auth_data") == nullptr)
+        {
+            return err(400U, "M_INVALID_PARAM", "auth_data must be an object");
+        }
+        if (object_member(*update, "version") != nullptr)
+        {
+            auto const* const body_version = string_member(*update, "version");
+            if (body_version == nullptr || *body_version != clean_ver)
+            {
+                return err(400U, "M_INVALID_PARAM", "version in the body must be the version in the path");
+            }
+        }
+        if (!store_key_api_payload(rt, route.endpoint, user, device_id, req, clean_ver))
+        {
+            return err(500U, "M_UNKNOWN", "key API persistence failed");
+        }
+        return resp(200U, "{}");
+    }
+
+    // PUT and DELETE under /_matrix/client/v3/room_keys/keys: stores or deletes backed-up sessions in the current
+    // version.
+    [[nodiscard]] auto handle_room_key_backup_session_change(ClientServerRuntime& rt, auth::KeyApiRoute const& route,
+                                                             std::string_view user, std::string_view device_id,
+                                                             LocalHttpRequest const& req) -> LocalHttpResponse
+    {
+        // Session operations target an explicit ?version= or fall back to the
+        // user's current backup version. The resolved version must exist and
+        // be the current version (issue #404).
+        auto const session_ver_opt = resolve_key_backup_version(rt, user, req.target);
+        if (!session_ver_opt.has_value())
+        {
+            return resp(404U, matrix_error("M_NOT_FOUND", "no key backup version found"));
+        }
+        auto const session_ver = *session_ver_opt;
+        if (route.endpoint == auth::KeyApiEndpoint::put_room_key_backup_batch)
+        {
+            if (auto const refusal = room_key_batch_refusal(req.body); refusal.has_value())
+            {
+                return err(refusal->status, refusal->errcode, refusal->message);
+            }
+        }
+        if (key_backup_version_for_user(rt.homeserver.database.persistent_store, user, session_ver) == nullptr)
+        {
+            return resp(404U, matrix_error("M_NOT_FOUND", "key backup version not found"));
+        }
+        // Spec: the requested version MUST be the current backup version.
+        auto const* current_version = key_backup_version_for_user(rt.homeserver.database.persistent_store, user);
+        if (current_version == nullptr || current_version->version != session_ver)
+        {
+            return wrong_room_keys_version_response(rt.homeserver.database.persistent_store, user);
+        }
+        if (!store_key_api_payload(rt, route.endpoint, user, device_id, req, session_ver))
+        {
+            return err(500U, "M_UNKNOWN", "key API persistence failed");
+        }
+        return resp(200U, room_keys_update_response(rt.homeserver.database.persistent_store, user, session_ver));
+    }
+
+    // PUT /_matrix/client/v3/devices/{deviceId}: renames a device and announces the change.
+    [[nodiscard]] auto handle_device_list_update(ClientServerRuntime& rt, std::string_view user,
+                                                 LocalHttpRequest const& req) -> LocalHttpResponse
+    {
+        // PUT /_matrix/client/v3/devices/{deviceId} — update a device's
+        // display name and notify all local users who share a room with
+        // this user that their device list has changed.
+        auto constexpr dev_prefix = std::string_view{"/_matrix/client/v3/devices/"};
+        auto const device_id_from_path = target_path(req.target).substr(dev_prefix.size());
+        auto* device = find_device(rt, user, device_id_from_path);
+        if (device == nullptr)
+        {
+            return err(404U, "M_NOT_FOUND", "device not found");
+        }
+        auto const body = parse_device_update_body(req.body);
+        if (!body.has_value())
+        {
+            return err(400U, "M_BAD_JSON", "device update body must be Matrix JSON");
+        }
+        if (!database::sync_stream_has_write_reserve(rt.homeserver.database.persistent_store) ||
+            !database::update_device_display_name(rt.homeserver.database.persistent_store, user, device_id_from_path,
+                                                  body->display_name))
+        {
+            return err(500U, "M_UNKNOWN", "device update persistence failed");
+        }
+        device->display_name = body->display_name;
+        // Record a device list change for every local user who shares a
+        // room with the updated user so their /sync streams surface it.
+        auto const recorded = record_shared_room_device_changes(rt, user, NotifyOwnDevices::no);
+        // Spec (SS API, "Device Management"): m.device_list_update EDUs go to every server that
+        // shares a room with the user "whenever that user's device list changes ... or changes
+        // in device information such as the device's human-readable name".
+        broadcast_device_list_updates(rt, user, remote_servers_for_user(rt.homeserver, user),
+                                      std::string_view{device->device_id});
+        append_local_audit(rt.homeserver.database, observability::AuditCategory::auth, "device.updated", user,
+                           device->device_id, "display_name_updated");
+        if (!recorded)
+        {
+            return err(500U, "M_UNKNOWN", device_list_change_unrecorded);
+        }
+        return resp(200U, "{}");
+    }
+
     [[nodiscard]] auto handle_key_api_route(ClientServerRuntime& rt, auth::KeyApiRoute const& route,
                                             std::string_view user, std::string_view device_id,
                                             LocalHttpRequest const& req) -> LocalHttpResponse
@@ -12171,213 +12818,12 @@ namespace
             }
             return resp(200U, key_backup_metadata_response(rt.homeserver.database.persistent_store, *version));
         }
-        case auth::KeyApiEndpoint::get_room_key_backup_batch: {
-            auto const batch_ver_param = extract_key_backup_version_param(req.target);
-            std::string_view batch_ver;
-            if (!batch_ver_param.empty())
-            {
-                if (key_backup_version_for_user(rt.homeserver.database.persistent_store, user, batch_ver_param) ==
-                    nullptr)
-                {
-                    return resp(404U, matrix_error("M_NOT_FOUND", "key backup version not found"));
-                }
-                batch_ver = batch_ver_param;
-            }
-            else if (auto const* current = key_backup_version_for_user(rt.homeserver.database.persistent_store, user);
-                     current != nullptr)
-            {
-                batch_ver = current->version;
-            }
-            else
-            {
-                // No version specified and no current backup: return an empty rooms object.
-                return resp(200U, json_serialize(json_obj({json_member("rooms", json_obj({}))})));
-            }
-
-            auto const& all_sessions = rt.homeserver.database.persistent_store.key_backup_sessions;
-            auto room_map = std::map<std::string, canonicaljson::Object>{};
-            for (auto const& s : all_sessions)
-            {
-                if (s.user_id == user && s.version == batch_ver)
-                {
-                    room_map[s.room_id].push_back(json_member(s.session_id, json_embed_raw(s.json)));
-                }
-            }
-            auto rooms = canonicaljson::Object{};
-            for (auto& [room_id, sess_obj] : room_map)
-            {
-                rooms.push_back(
-                    json_member(room_id, json_obj({json_member("sessions", json_obj(std::move(sess_obj)))})));
-            }
-            return resp(200U, json_serialize(json_obj({json_member("rooms", json_obj(std::move(rooms)))})));
-        }
-        case auth::KeyApiEndpoint::get_room_key_backup: {
-            auto const get_ver_param = extract_key_backup_version_param(req.target);
-            std::string_view get_ver;
-            if (!get_ver_param.empty())
-            {
-                if (key_backup_version_for_user(rt.homeserver.database.persistent_store, user, get_ver_param) ==
-                    nullptr)
-                {
-                    return resp(404U, matrix_error("M_NOT_FOUND", "key backup version not found"));
-                }
-                get_ver = get_ver_param;
-            }
-            else if (auto const* current = key_backup_version_for_user(rt.homeserver.database.persistent_store, user);
-                     current != nullptr)
-            {
-                get_ver = current->version;
-            }
-            // If no version was specified and there is no current backup, get_ver
-            // remains empty so all searches below return empty/no-match results.
-
-            if (auto const path = room_key_backup_path_parts(req.target); path.has_value())
-            {
-                if (!path->session_id.has_value())
-                {
-                    auto const& all_sessions = rt.homeserver.database.persistent_store.key_backup_sessions;
-                    auto sessions_obj = canonicaljson::Object{};
-                    for (auto const& s : all_sessions)
-                    {
-                        if (s.user_id == user && s.version == get_ver && s.room_id == path->room_id)
-                        {
-                            sessions_obj.push_back(json_member(s.session_id, json_embed_raw(s.json)));
-                        }
-                    }
-                    return resp(200U,
-                                json_serialize(json_obj({json_member("sessions", json_obj(std::move(sessions_obj)))})));
-                }
-
-                auto const& sessions = rt.homeserver.database.persistent_store.key_backup_sessions;
-                auto const it = std::ranges::find_if(sessions, [&](auto const& s) {
-                    return s.user_id == user && s.version == get_ver && s.room_id == path->room_id &&
-                           s.session_id == *path->session_id;
-                });
-                if (it == sessions.end())
-                {
-                    return resp(404U, matrix_error("M_NOT_FOUND", "key backup session not found"));
-                }
-                return resp(200U, it->json);
-            }
-            auto constexpr kbprefix = std::string_view{"/_matrix/client/v3/room_keys/keys/"};
-            auto const suffix = route_suffix(req.target, kbprefix);
-            auto const clean = suffix.substr(0U, suffix.find('?'));
-            auto const separator = clean.find('/');
-            // No slash in clean suffix → room-level GET (/{roomId}), not session-level.
-            if (separator == std::string_view::npos || separator + 1U >= clean.size())
-            {
-                // Return all sessions for the room as {"sessions":{sessionId: data, ...}}.
-                auto const room_id = clean;
-                auto const& all_sessions = rt.homeserver.database.persistent_store.key_backup_sessions;
-                auto sessions_obj = canonicaljson::Object{};
-                for (auto const& s : all_sessions)
-                {
-                    if (s.user_id == user && s.version == get_ver && s.room_id == room_id)
-                    {
-                        sessions_obj.push_back(json_member(s.session_id, json_embed_raw(s.json)));
-                    }
-                }
-                return resp(200U,
-                            json_serialize(json_obj({json_member("sessions", json_obj(std::move(sessions_obj)))})));
-            }
-            auto const room_id = clean.substr(0U, separator);
-            auto const session_id = clean.substr(separator + 1U);
-            auto const& sessions = rt.homeserver.database.persistent_store.key_backup_sessions;
-            auto const it = std::ranges::find_if(sessions, [&](auto const& s) {
-                return s.user_id == user && s.version == get_ver && s.room_id == room_id && s.session_id == session_id;
-            });
-            if (it == sessions.end())
-            {
-                return resp(404U, matrix_error("M_NOT_FOUND", "key backup session not found"));
-            }
-            return resp(200U, it->json);
-        }
-        case auth::KeyApiEndpoint::upload_cross_signing_keys: {
-            // Spec §11.12.1: MUST require UIA (m.login.password) to prevent key takeover.
-            auto const cs_uia = json_obj({
-                json_member("flows",
-                            json_arr({json_obj({json_member("stages", json_arr({json_str("m.login.password")}))})})),
-                json_member("params", json_obj({})),
-                json_member("session", json_str("cross_signing_upload")),
-            });
-            auto const cs_body = parsed_json_object(req.body);
-            auto const* cs_auth = cs_body.has_value() ? object_member_object(*cs_body, "auth") : nullptr;
-            if (cs_auth == nullptr)
-            {
-                return resp(401U, json_serialize(cs_uia));
-            }
-            auto const* cs_auth_type = string_member(*cs_auth, "type");
-            if (cs_auth_type == nullptr || *cs_auth_type != "m.login.password")
-            {
-                return resp(401U, json_serialize(cs_uia));
-            }
-            auto const* cs_password = string_member(*cs_auth, "password");
-            if (cs_password == nullptr || cs_password->empty())
-            {
-                return resp(401U, json_serialize(cs_uia));
-            }
-            auto const password_verified = verify_local_user_password(rt.homeserver, req.access_token, *cs_password);
-            if (!password_verified.ok)
-            {
-                if (password_verified.retry_after_ms > 0U)
-                {
-                    auto const retry_after = static_cast<std::uint32_t>(std::min<std::uint64_t>(
-                        password_verified.retry_after_ms, std::numeric_limits<std::uint32_t>::max()));
-                    auto response = LocalHttpResponse{
-                        429U,
-                        matrix_error("M_LIMIT_EXCEEDED", "Too many password attempts. Please try again later.",
-                                     retry_after),
-                        {{"Retry-After", std::to_string((retry_after + 999U) / 1000U)}}};
-                    apply_cors_headers(req, response, rt.cors);
-                    return response;
-                }
-                return resp(401U, uia_password_failure_body(json_serialize(cs_uia)));
-            }
-            for (auto const* key_type : {"master_key", "self_signing_key", "user_signing_key"})
-            {
-                if (auto const* key = object_member(*cs_body, key_type); key != nullptr && key_document_too_large(*key))
-                {
-                    return err(400U, "M_TOO_LARGE",
-                               std::string{key_type} + " may be at most " +
-                                   std::to_string(max_uploaded_key_document_bytes) + " bytes");
-                }
-            }
-            if (auto const refusal = cross_signing_upload_refusal(rt, user, *cs_body); refusal.has_value())
-            {
-                return err(refusal->status, refusal->errcode, refusal->message);
-            }
-            if (cross_signing_upload_names_a_device(rt, user, *cs_body))
-            {
-                return err(403U, "M_FORBIDDEN", "a cross-signing key may not have the ID of one of the user's devices");
-            }
-            if (!database::sync_stream_has_write_reserve(rt.homeserver.database.persistent_store) ||
-                !store_key_api_payload(rt, route.endpoint, user, device_id, req, {}))
-            {
-                return err(500U, "M_UNKNOWN", "key API persistence failed");
-            }
-            // Spec §11.11.1: cross-signing key change MUST appear in device_lists.changed.
-            // Self-notify so the user's own other devices re-query the new keys (required
-            // for verification to complete). Also fan out to room-sharing local users and
-            // remote servers.
-            {
-                auto const recorded = record_shared_room_device_changes(rt, user, NotifyOwnDevices::yes);
-                auto const destinations = remote_servers_for_user(rt.homeserver, user);
-                broadcast_device_list_updates(rt, user, destinations);
-                // Spec v1.19 §m.signing_key_update: remote servers learn of a
-                // new master or self-signing key through this EDU. An upload of
-                // only the private user-signing key changes nothing they can see.
-                if (object_member(*cs_body, "master_key") != nullptr ||
-                    object_member(*cs_body, "self_signing_key") != nullptr)
-                {
-                    broadcast_signing_key_update(rt, user, destinations);
-                }
-                if (!recorded)
-                {
-                    return err(500U, "M_UNKNOWN", device_list_change_unrecorded);
-                }
-            }
-            return resp(200U, key_api_success_body(route.endpoint));
-        }
+        case auth::KeyApiEndpoint::get_room_key_backup_batch:
+            return handle_get_room_key_backup_batch(rt, user, req);
+        case auth::KeyApiEndpoint::get_room_key_backup:
+            return handle_get_room_key_backup(rt, user, req);
+        case auth::KeyApiEndpoint::upload_cross_signing_keys:
+            return handle_upload_cross_signing_keys(rt, route, user, device_id, req);
         case auth::KeyApiEndpoint::upload_signatures:
             if (signature_upload_has_oversized_key(req.body))
             {
@@ -12416,56 +12862,8 @@ namespace
             }
             return resp(200U, json_serialize(json_obj({json_member("version", json_str(*new_ver))})));
         }
-        case auth::KeyApiEndpoint::update_key_backup_version: {
-            // Version comes from the path: PUT /room_keys/version/{version}
-            auto constexpr upd_prefix = std::string_view{"/_matrix/client/v3/room_keys/version/"};
-            auto const path_ver = route_suffix(req.target, upd_prefix);
-            // Strip any query string
-            auto const clean_ver = path_ver.substr(0U, path_ver.find('?'));
-            if (clean_ver.empty())
-            {
-                return err(400U, "M_UNRECOGNIZED", "missing version in path");
-            }
-            // Spec (PUT /room_keys/version/{version}): 404 when the backup does not exist, so an update never
-            // creates a version; 400 when the algorithm is not the backup's current one or a `version` in the
-            // body is not the path's.
-            auto const* const held =
-                key_backup_version_for_user(rt.homeserver.database.persistent_store, user, clean_ver);
-            if (held == nullptr)
-            {
-                return resp(404U, matrix_error("M_NOT_FOUND", "key backup version not found"));
-            }
-            auto const update = parsed_json_object(req.body);
-            if (!update.has_value())
-            {
-                return err(400U, "M_BAD_JSON", "the request body must be a JSON object");
-            }
-            auto const* const algorithm = string_member(*update, "algorithm");
-            auto const held_object = parsed_json_object(held->json);
-            auto const* const held_algorithm =
-                held_object.has_value() ? string_member(*held_object, "algorithm") : nullptr;
-            if (algorithm == nullptr || (held_algorithm != nullptr && *algorithm != *held_algorithm))
-            {
-                return err(400U, "M_INVALID_PARAM", "algorithm must be the algorithm the backup already uses");
-            }
-            if (object_member_as_object(*update, "auth_data") == nullptr)
-            {
-                return err(400U, "M_INVALID_PARAM", "auth_data must be an object");
-            }
-            if (object_member(*update, "version") != nullptr)
-            {
-                auto const* const body_version = string_member(*update, "version");
-                if (body_version == nullptr || *body_version != clean_ver)
-                {
-                    return err(400U, "M_INVALID_PARAM", "version in the body must be the version in the path");
-                }
-            }
-            if (!store_key_api_payload(rt, route.endpoint, user, device_id, req, clean_ver))
-            {
-                return err(500U, "M_UNKNOWN", "key API persistence failed");
-            }
-            return resp(200U, "{}");
-        }
+        case auth::KeyApiEndpoint::update_key_backup_version:
+            return handle_update_key_backup_version(rt, route, user, device_id, req);
         case auth::KeyApiEndpoint::delete_key_backup_version:
             if (!store_key_api_payload(rt, route.endpoint, user, device_id, req, {}))
             {
@@ -12477,78 +12875,10 @@ namespace
         case auth::KeyApiEndpoint::put_room_key_backup_batch:
         case auth::KeyApiEndpoint::delete_room_key_backup_room:
         case auth::KeyApiEndpoint::delete_room_key_backup:
-        case auth::KeyApiEndpoint::delete_room_key_backup_batch: {
-            // Session operations target an explicit ?version= or fall back to the
-            // user's current backup version. The resolved version must exist and
-            // be the current version (issue #404).
-            auto const session_ver_opt = resolve_key_backup_version(rt, user, req.target);
-            if (!session_ver_opt.has_value())
-            {
-                return resp(404U, matrix_error("M_NOT_FOUND", "no key backup version found"));
-            }
-            auto const session_ver = *session_ver_opt;
-            if (route.endpoint == auth::KeyApiEndpoint::put_room_key_backup_batch)
-            {
-                if (auto const refusal = room_key_batch_refusal(req.body); refusal.has_value())
-                {
-                    return err(refusal->status, refusal->errcode, refusal->message);
-                }
-            }
-            if (key_backup_version_for_user(rt.homeserver.database.persistent_store, user, session_ver) == nullptr)
-            {
-                return resp(404U, matrix_error("M_NOT_FOUND", "key backup version not found"));
-            }
-            // Spec: the requested version MUST be the current backup version.
-            auto const* current_version = key_backup_version_for_user(rt.homeserver.database.persistent_store, user);
-            if (current_version == nullptr || current_version->version != session_ver)
-            {
-                return wrong_room_keys_version_response(rt.homeserver.database.persistent_store, user);
-            }
-            if (!store_key_api_payload(rt, route.endpoint, user, device_id, req, session_ver))
-            {
-                return err(500U, "M_UNKNOWN", "key API persistence failed");
-            }
-            return resp(200U, room_keys_update_response(rt.homeserver.database.persistent_store, user, session_ver));
-        }
-        case auth::KeyApiEndpoint::device_list_update: {
-            // PUT /_matrix/client/v3/devices/{deviceId} — update a device's
-            // display name and notify all local users who share a room with
-            // this user that their device list has changed.
-            auto constexpr dev_prefix = std::string_view{"/_matrix/client/v3/devices/"};
-            auto const device_id_from_path = target_path(req.target).substr(dev_prefix.size());
-            auto* device = find_device(rt, user, device_id_from_path);
-            if (device == nullptr)
-            {
-                return err(404U, "M_NOT_FOUND", "device not found");
-            }
-            auto const body = parse_device_update_body(req.body);
-            if (!body.has_value())
-            {
-                return err(400U, "M_BAD_JSON", "device update body must be Matrix JSON");
-            }
-            if (!database::sync_stream_has_write_reserve(rt.homeserver.database.persistent_store) ||
-                !database::update_device_display_name(rt.homeserver.database.persistent_store, user,
-                                                      device_id_from_path, body->display_name))
-            {
-                return err(500U, "M_UNKNOWN", "device update persistence failed");
-            }
-            device->display_name = body->display_name;
-            // Record a device list change for every local user who shares a
-            // room with the updated user so their /sync streams surface it.
-            auto const recorded = record_shared_room_device_changes(rt, user, NotifyOwnDevices::no);
-            // Spec (SS API, "Device Management"): m.device_list_update EDUs go to every server that
-            // shares a room with the user "whenever that user's device list changes ... or changes
-            // in device information such as the device's human-readable name".
-            broadcast_device_list_updates(rt, user, remote_servers_for_user(rt.homeserver, user),
-                                          std::string_view{device->device_id});
-            append_local_audit(rt.homeserver.database, observability::AuditCategory::auth, "device.updated", user,
-                               device->device_id, "display_name_updated");
-            if (!recorded)
-            {
-                return err(500U, "M_UNKNOWN", device_list_change_unrecorded);
-            }
-            return resp(200U, "{}");
-        }
+        case auth::KeyApiEndpoint::delete_room_key_backup_batch:
+            return handle_room_key_backup_session_change(rt, route, user, device_id, req);
+        case auth::KeyApiEndpoint::device_list_update:
+            return handle_device_list_update(rt, user, req);
         }
         return err(404U, "M_UNRECOGNIZED", "route not found");
     }
@@ -12622,6 +12952,55 @@ namespace
         return resp(200U, "{}");
     }
 
+    // POST /_matrix/client/v3/users/{userId}/report (spec v1.14). "The caller is not required to be joined to any
+    // rooms that the reported user is joined to." A local user ID nobody holds is 404 M_NOT_FOUND (the spec lets a
+    // server answer 200 instead; this one does not, as GET /profile already answers 404 for it, ADR-0482). A user of
+    // another server cannot be checked here and is accepted. Stored as the event report is: one audit row per
+    // reporter and reported user, so a repeat is acknowledged without a second row. Rate-limited like any
+    // authenticated route. Runs under runtime.mutex, reads `store.users` once and does no network call.
+    [[nodiscard]] auto handle_user_report(ClientServerRuntime& rt, std::string_view user, LocalHttpRequest const& req)
+        -> LocalHttpResponse
+    {
+        auto constexpr prefix = std::string_view{"/_matrix/client/v3/users/"};
+        auto constexpr suffix = std::string_view{"/report"};
+        auto const path = target_path(req.target);
+        auto const reported = core::percent_decode_path_component(
+            path.substr(prefix.size(), path.size() - prefix.size() - suffix.size()));
+        auto const body = parse_safety_report_body(req.body);
+        if (!body.has_value())
+        {
+            return err(400U, "M_BAD_JSON", "report body must be a JSON object with an optional string reason");
+        }
+        if (!auth::user_id_is_valid_federated(reported))
+        {
+            return err(400U, "M_INVALID_PARAM", "userId is not a valid user ID");
+        }
+        auto const& store = rt.homeserver.database.persistent_store;
+        if (server_name_from_user_id(reported) == rt.homeserver.config.server().server_name &&
+            std::ranges::none_of(store.users, [&reported](database::PersistentUser const& candidate) {
+                return candidate.user_id == reported;
+            }))
+        {
+            return err(404U, "M_NOT_FOUND", "The user was not found.");
+        }
+        auto const decision = trust_safety::validate_user_report({std::string{user}, reported, body->reason});
+        if (!decision.allowed)
+        {
+            return err(400U, "M_BAD_REQUEST", decision.reason.public_summary);
+        }
+        auto const audit = trust_safety::make_safety_audit_event(user, reported, decision);
+        auto const recent =
+            database::load_audit_events_by_type_prefix(store, audit.event_type, rt.limits.max_safety_report_rows);
+        auto const already_reported = std::ranges::any_of(recent, [&](database::PersistentAuditEvent const& row) {
+            return row.event_type == audit.event_type && row.actor == audit.actor && row.target == audit.entity;
+        });
+        if (!already_reported)
+        {
+            append_policy_audit(rt, audit);
+        }
+        return resp(200U, "{}");
+    }
+
     [[nodiscard]] auto handle_admin_safety_route(ClientServerRuntime& rt, std::string_view admin_user,
                                                  LocalHttpRequest const& req) -> LocalHttpResponse
     {
@@ -12645,6 +13024,11 @@ namespace
             {
                 return err(400U, "M_BAD_JSON",
                            "policy rule action must be allow, deny, quarantine, lock_account, or suspend_account");
+            }
+            if (!is_enforced_policy_rule_scope(path->scope))
+            {
+                return err(400U, "M_INVALID_PARAM",
+                           "policy rule scope must be registration, federation, media, or room");
             }
             auto const rule = database::PersistentPolicyRule{
                 path->scope + ':' + path->entity, path->scope, path->entity, body->action, body->reason,
@@ -12685,36 +13069,18 @@ namespace
             return resp(200U, "{}");
         }
 
-        auto const path = admin_review_path_parts(req.target);
-        auto const body = parse_admin_review_body(req.body);
-        if (!path.has_value() || !body.has_value())
+        // The same implementation as POST /_merovingian/admin/review/{targetType}/{targetId} (ADR-0504).
+        auto const review = admin_review_path_parts(req.target);
+        if (!review.has_value())
         {
             return err(400U, "M_BAD_JSON", "admin review body must be Matrix JSON");
         }
-        auto const reason =
-            trust_safety::enforcement_reason(body->reason, "target held for review", "admin marked target for review");
-        auto const record = trust_safety::ReviewRecord{path->target, path->target_id, true, reason};
-        auto const decision = trust_safety::review_policy(record);
-        auto const audit = trust_safety::make_safety_audit_event(admin_user, path->target_id, decision);
-        append_policy_audit(rt, audit);
-        auto const scope = std::string{trust_safety::policy_surface_name(decision.surface)};
-        if (!database::store_policy_rule(rt.homeserver.database.persistent_store,
-                                         {scope + ':' + path->target_id, scope, path->target_id,
-                                          std::string{trust_safety::policy_action_name(decision.action)},
-                                          body->reason}))
-        {
-            return err(500U, "M_UNKNOWN", "policy rule persistence failed");
-        }
-        if (!database::append_admin_action(rt.homeserver.database.persistent_store,
-                                           {std::string{admin_user}, audit.event_type, path->target_id}))
-        {
-            return err(500U, "M_UNKNOWN", "admin action persistence failed");
-        }
-        if (decision.action == trust_safety::PolicyAction::quarantine || decision.allowed)
+        auto const outcome = apply_admin_review(rt.homeserver, admin_user, review->target, review->target_id, req.body);
+        if (outcome.status == 200U)
         {
             return resp(200U, "{}");
         }
-        return err(400U, "M_BAD_REQUEST", decision.reason.public_summary);
+        return err(outcome.status, outcome.errcode, outcome.message);
     }
 
     // ── Third-party lookups response builders (Matrix v1.19 CS API
@@ -13328,6 +13694,14 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
     // throttled exactly once with no double-count.
     if (starts_with(request_path, "/_merovingian/admin/"))
     {
+        // The table of operator routes decides what is served (ADR-0504); a path or method it does not
+        // declare is not found, whoever asks.
+        if (!observability::match_admin_route(req.method, request_path).matched)
+        {
+            auto missing = LocalHttpResponse{404U, "route not found", {{"Content-Type", "text/plain; charset=utf-8"}}};
+            apply_cors_headers(req, missing, rt.cors);
+            return DispatchResult{DispatchResult::Status::complete, std::move(missing), {}};
+        }
         auto local = call_local(req);
         apply_cors_headers(req, local, rt.cors);
         return DispatchResult{DispatchResult::Status::complete, std::move(local), {}};
@@ -13589,6 +13963,273 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                              json_serialize(json_obj({json_member("valid", canonicaljson::Value{valid})})));
     }
 
+    // ---- Password reset by email (ADR-0481) --------------------------------------------------------------------
+    // Spec: POST /account/password/email/requestToken ("Requires authentication: No") "may" answer
+    // M_THREEPID_NOT_FOUND for an address no account holds. This server never does: it answers every well-formed
+    // request alike, 200 with a fresh `sid`, and emails the code only when an active account holds the address, so
+    // the endpoint tells a caller nothing about who has an account. The SMTP exchange runs in a background task, off
+    // this thread; building the message and starting the task still happen only for an address with an account
+    // (a small local difference, and requestToken is rate limited). One email per address per
+    // password_reset_address_interval_ms across all sessions: a throttled request answers the same 200 with its
+    // `sid`, keeps an existing session's code and tries, and gives a new session no code. Runs under runtime.mutex;
+    // the scan is over registration_validation_sessions, which is capped; the send holds no lock.
+    if (req.method == "POST" && request_path == "/_matrix/client/v3/account/password/email/requestToken")
+    {
+        auto const body = parse_register_email_request_body(req.body);
+        if (!body.has_value())
+        {
+            return dispatch_err(req, rt, 400U, "M_BAD_JSON",
+                                "email validation body must contain client_secret, email, and send_attempt");
+        }
+        if (!client_secret_is_valid(body->client_secret))
+        {
+            return dispatch_err(req, rt, 400U, "M_BAD_JSON", "client_secret must match the Matrix grammar");
+        }
+        if (!email_address_is_valid(body->email))
+        {
+            return dispatch_err(req, rt, 400U, "M_BAD_JSON", "email must be a plausible address");
+        }
+        if (!email_push_configured(rt.homeserver.config))
+        {
+            return dispatch_err(req, rt, 400U, "M_THREEPID_MEDIUM_NOT_SUPPORTED",
+                                "this server cannot send email, so it cannot reset a password by email");
+        }
+        auto const address = normalize_threepid_address("email", body->email);
+        auto const& store = rt.homeserver.database.persistent_store;
+        auto const holder = std::ranges::find_if(store.account_threepids, [&address](auto const& binding) {
+            return binding.medium == "email" && binding.address == address;
+        });
+        auto const owner =
+            holder != store.account_threepids.end() && asserted_user_is_active(rt.homeserver, holder->user_id)
+                ? std::optional<std::string>{holder->user_id}
+                : std::nullopt;
+        auto const now_ms = wall_clock_milliseconds();
+        prune_registration_validation_sessions(rt, now_ms);
+        auto* session = static_cast<RegistrationValidationSession*>(nullptr);
+        auto throttled = false;
+        for (auto& candidate : rt.registration_validation_sessions)
+        {
+            if (candidate.purpose != password_reset_purpose || candidate.address != address)
+            {
+                continue;
+            }
+            throttled = throttled || (candidate.reset_sent_at_ms != 0U &&
+                                      now_ms - candidate.reset_sent_at_ms < password_reset_address_interval_ms);
+            if (session == nullptr &&
+                crypto::constant_time_equal_variable_length(candidate.client_secret, body->client_secret))
+            {
+                session = &candidate;
+            }
+        }
+        // Spec (send_attempt): the server "will only send an email if the send_attempt is a number greater than the
+        // most recent one"; otherwise it "should respond with success but not resend".
+        auto send_code = false;
+        if (session == nullptr)
+        {
+            auto sid = crypto::secure_random_hex(16U);
+            if (!sid.has_value())
+            {
+                return dispatch_err(req, rt, 500U, "M_UNKNOWN", "no randomness for a session ID");
+            }
+            session = record_identity_validation_session(rt, std::string{password_reset_purpose}, "email", address,
+                                                         body->client_secret, req.remote_addr, body->send_attempt, *sid,
+                                                         {}, {});
+            if (session == nullptr)
+            {
+                return dispatch_err(req, rt, 429U, "M_LIMIT_EXCEEDED", "too many outstanding validation sessions",
+                                    60000U);
+            }
+            // A new session is born throttled or not; either way it records the owner, and a throttled one has
+            // no code, so it fails like a wrong code.
+            session->user_id = owner;
+            send_code = true;
+        }
+        else if (body->send_attempt > session->send_attempt)
+        {
+            session->send_attempt = body->send_attempt;
+            send_code = session->validated_at_ms == 0U;
+        }
+        if (send_code && !throttled)
+        {
+            session->user_id = owner;
+            session->reset_token.clear();
+            session->token_attempts = 0U;
+            if (owner.has_value())
+            {
+                auto token = make_password_reset_token();
+                if (token.has_value() && send_password_reset_email(rt.homeserver, address, *token))
+                {
+                    session->reset_token = std::move(*token);
+                    session->reset_sent_at_ms = now_ms;
+                }
+            }
+        }
+
+        auto base = rt.homeserver.config.server().public_baseurl;
+        while (!base.empty() && base.back() == '/')
+        {
+            base.pop_back();
+        }
+        return dispatch_resp(
+            req, rt, 200U,
+            json_serialize(json_obj({
+                json_member("sid", json_str(session->sid)),
+                json_member(
+                    "submit_url",
+                    json_str(base + "/_matrix/client/unstable/org.merovingian/account/password/email/submitToken")),
+            })));
+    }
+
+    // Spec: POST /account/password/msisdn/requestToken. This server has no way to send an SMS, so the medium is not
+    // supported; M_THREEPID_MEDIUM_NOT_SUPPORTED is the errcode the CS API defines for that.
+    if (req.method == "POST" && request_path == "/_matrix/client/v3/account/password/msisdn/requestToken")
+    {
+        auto const body = parse_register_msisdn_request_body(req.body);
+        if (!body.has_value())
+        {
+            return dispatch_err(
+                req, rt, 400U, "M_BAD_JSON",
+                "msisdn validation body must contain client_secret, country, phone_number, and send_attempt");
+        }
+        if (!client_secret_is_valid(body->client_secret))
+        {
+            return dispatch_err(req, rt, 400U, "M_BAD_JSON", "client_secret must match the Matrix grammar");
+        }
+        return dispatch_err(req, rt, 400U, "M_THREEPID_MEDIUM_NOT_SUPPORTED",
+                            "this server cannot send SMS, so it cannot reset a password by phone number");
+    }
+
+    // The `submit_url` requestToken returns: the identity-server shape (POST /validate/email/submitToken, ADR-0481).
+    // A code is judged against the session by constant-time comparison; a session takes
+    // password_reset_max_token_attempts wrong codes and is then dropped. A session opened for an address no account
+    // holds has no code and fails exactly as a wrong code does, so this endpoint leaks nothing either.
+    if (req.method == "POST" &&
+        request_path == "/_matrix/client/unstable/org.merovingian/account/password/email/submitToken")
+    {
+        auto const object = parsed_json_object(req.body);
+        auto const* const sid = object.has_value() ? string_member(*object, "sid") : nullptr;
+        auto const* const client_secret = object.has_value() ? string_member(*object, "client_secret") : nullptr;
+        auto const* const token = object.has_value() ? string_member(*object, "token") : nullptr;
+        if (sid == nullptr || client_secret == nullptr || token == nullptr)
+        {
+            return dispatch_err(req, rt, 400U, "M_INVALID_PARAM", "sid, client_secret and token are required strings");
+        }
+        prune_registration_validation_sessions(rt, wall_clock_milliseconds());
+        auto* const session =
+            find_registration_validation_session_by_sid(rt, password_reset_purpose, *sid, *client_secret);
+        if (session == nullptr)
+        {
+            return dispatch_err(req, rt, 400U, "M_SESSION_EXPIRED", "the validation session does not exist or expired");
+        }
+        if (session->validated_at_ms != 0U)
+        {
+            return dispatch_resp(req, rt, 200U, R"({"success":true})");
+        }
+        if (session->token_attempts >= password_reset_max_token_attempts)
+        {
+            // Over its tries the session is dead, but it stays until it ages out: it carries the time its code was
+            // sent, which the per-address throttle reads. Its code goes now.
+            core::secure_zero(
+                std::as_writable_bytes(std::span{session->reset_token.data(), session->reset_token.size()}));
+            session->reset_token.clear();
+            return dispatch_err(req, rt, 400U, "M_SESSION_EXPIRED", "too many wrong codes; request a new one");
+        }
+        ++session->token_attempts;
+        // An empty stored code (no account) is compared like any other, so the work does not depend on it.
+        auto const typed = normalize_password_reset_token(*token);
+        auto const stored =
+            session->reset_token.empty() ? std::string(password_reset_token_length, '-') : session->reset_token;
+        auto const matches =
+            crypto::constant_time_equal_variable_length(typed, stored) && !session->reset_token.empty();
+        if (!matches)
+        {
+            return dispatch_err(req, rt, 400U, "M_TOKEN_INCORRECT", "the code is not correct");
+        }
+        session->validated_at_ms = wall_clock_milliseconds();
+        core::secure_zero(std::as_writable_bytes(std::span{session->reset_token.data(), session->reset_token.size()}));
+        session->reset_token.clear();
+        return dispatch_resp(req, rt, 200U, R"({"success":true})");
+    }
+
+    // Spec: POST /account/password with User-Interactive Authentication by `m.login.email.identity`: the way a
+    // user who cannot sign in resets the password. Served only for a request with no access token, and only when the
+    // server can send the code (an authenticated change keeps its m.login.password stage below). The auth dict
+    // names a session whose code the owner of the address submitted; that proves the address, and the address
+    // names the account. The session is consumed by a successful change only, so a weak password can be retried.
+    if (req.method == "POST" && request_path == "/_matrix/client/v3/account/password" && req.access_token.empty() &&
+        email_push_configured(rt.homeserver.config))
+    {
+        auto const object = parsed_json_object(req.body);
+        if (!object.has_value())
+        {
+            return dispatch_err(req, rt, 400U, "M_BAD_JSON", "password change body must be JSON");
+        }
+        auto const* new_password = string_member(*object, "new_password");
+        if (new_password == nullptr || new_password->empty())
+        {
+            return dispatch_err(req, rt, 400U, "M_BAD_JSON", "new_password is required");
+        }
+        auto const challenge = json_serialize(json_obj({
+            json_member("flows",
+                        json_arr({json_obj({json_member("stages", json_arr({json_str("m.login.email.identity")}))})})),
+            json_member("params", json_obj({})),
+            json_member("session", json_str("password_reset")),
+        }));
+        auto const* const auth = object_member_object(*object, "auth");
+        auto const* const auth_type = auth != nullptr ? string_member(*auth, "type") : nullptr;
+        auto const* const creds = auth != nullptr ? object_member_object(*auth, "threepid_creds") : nullptr;
+        auto const* const sid = creds != nullptr ? string_member(*creds, "sid") : nullptr;
+        auto const* const secret = creds != nullptr ? string_member(*creds, "client_secret") : nullptr;
+        if (auth_type == nullptr || *auth_type != "m.login.email.identity" || sid == nullptr || secret == nullptr)
+        {
+            return dispatch_resp(req, rt, 401U, challenge);
+        }
+        prune_registration_validation_sessions(rt, wall_clock_milliseconds());
+        auto const* const session =
+            find_registration_validation_session_by_sid(rt, password_reset_purpose, *sid, *secret);
+        if (session == nullptr || session->validated_at_ms == 0U || !session->user_id.has_value())
+        {
+            return dispatch_resp(
+                req, rt, 401U,
+                uia_failure_body(challenge, "M_SESSION_NOT_VALIDATED", "the email address is not validated"));
+        }
+        auto const user_id = *session->user_id;
+        // The session names the account that held the address when the code was sent, up to 15 minutes ago. If the
+        // address has left that account since, whoever held it before must not reset it: the session is spent and
+        // the answer is the one an unvalidated session gets.
+        auto const& bindings = rt.homeserver.database.persistent_store.account_threepids;
+        auto const still_bound = std::ranges::any_of(bindings, [&](database::PersistentThreePidBinding const& binding) {
+            return binding.user_id == user_id && binding.medium == "email" && binding.address == session->address;
+        });
+        if (!still_bound)
+        {
+            consume_registration_validation_session(rt, password_reset_purpose, *sid, *secret);
+            return dispatch_resp(
+                req, rt, 401U,
+                uia_failure_body(challenge, "M_SESSION_NOT_VALIDATED", "the email address is not validated"));
+        }
+        auto const* const logout_devices_member = boolean_member(*object, "logout_devices");
+        auto const result = reset_local_user_password(rt.homeserver, user_id, *new_password,
+                                                      logout_devices_member == nullptr || *logout_devices_member);
+        if (!result.ok)
+        {
+            if (result.status == 429U)
+            {
+                return dispatch_err(req, rt, 429U, "M_LIMIT_EXCEEDED", result.reason, result.retry_after_ms);
+            }
+            if (!result.errcode.empty())
+            {
+                return dispatch_err(req, rt, result.status, result.errcode, result.reason);
+            }
+            return dispatch_err(req, rt, result.status, "M_FORBIDDEN", result.reason);
+        }
+        consume_registration_validation_session(rt, password_reset_purpose, *sid, *secret);
+        log_diagnostic("password_reset.completed", {
+                                                       {"user_id", user_id, false}
+        });
+        return dispatch_resp(req, rt, 200U, "{}");
+    }
+
     if (req.method == "POST" && request_path == "/_matrix/client/v3/register/email/requestToken")
     {
         auto const body = parse_register_email_request_body(req.body);
@@ -13626,6 +14267,11 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             if (!trusted_base.has_value())
             {
                 return dispatch_err(req, rt, 403U, "M_UNRECOGNIZED", "identity server is not trusted");
+            }
+            if (!merovingian::identity::threepid_bind_domain_permitted(
+                    rt.homeserver.config.server().identity_server.allowed_bind_domains, "email", body->email))
+            {
+                return dispatch_err(req, rt, 403U, "M_THREEPID_DENIED", threepid_domain_denied_message);
             }
             auto const normalized_address = normalize_threepid_address("email", body->email);
             auto const email = std::string{body->email};
@@ -13884,7 +14530,10 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             auto const* device_id_value = string_member(*registration_object, "device_id");
             auto const reg_device_id =
                 (device_id_value == nullptr || device_id_value->empty()) ? generate_device_id() : *device_id_value;
-            auto const session = login_appservice_user(rt.homeserver, full_user_id, reg_device_id);
+            auto const* display_name_value = string_member(*registration_object, "initial_device_display_name");
+            auto const registration_display_name = display_name_value == nullptr ? std::string{} : *display_name_value;
+            auto const session =
+                login_appservice_user(rt.homeserver, full_user_id, reg_device_id, registration_display_name);
             if (!session.ok)
             {
                 return dispatch_resp(req, rt, 200U,
@@ -13892,7 +14541,7 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             }
             if (find_device(rt, full_user_id, reg_device_id) == nullptr)
             {
-                rt.devices.push_back({full_user_id, reg_device_id, reg_device_id});
+                rt.devices.push_back({full_user_id, reg_device_id, registration_display_name});
             }
             return dispatch_resp(req, rt, 200U,
                                  json_serialize(json_obj({
@@ -14029,17 +14678,17 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
         }
         // Use the client-supplied device_id when provided; generate one otherwise.
         auto const reg_device_id = body->device_id.empty() ? generate_device_id() : body->device_id;
-        auto const session = login_local_user(rt.homeserver, full_user_id, body->password, reg_device_id, false,
-                                              rate_limit_client_key(req, rt.homeserver.config.server()));
+        auto const session =
+            login_local_user(rt.homeserver, full_user_id, body->password, reg_device_id, false,
+                             rate_limit_client_key(req, rt.homeserver.config.server()), body->display_name);
         if (!session.ok)
         {
             return dispatch_resp(req, rt, 200U,
                                  json_serialize(json_obj({json_member("user_id", json_str(full_user_id))})));
         }
-        auto const reg_display_name = body->display_name.empty() ? reg_device_id : body->display_name;
         if (find_device(rt, full_user_id, reg_device_id) == nullptr)
         {
-            rt.devices.push_back({full_user_id, reg_device_id, reg_display_name});
+            rt.devices.push_back({full_user_id, reg_device_id, body->display_name});
         }
         return dispatch_resp(req, rt, 200U,
                              json_serialize(json_obj({
@@ -14208,15 +14857,15 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                 return dispatch_err(req, rt, 403U, "M_EXCLUSIVE",
                                     "user is reserved by another application service's exclusive namespace");
             }
-            auto const as_result = login_appservice_user(rt.homeserver, body->user_id, body->device_id);
+            auto const as_result =
+                login_appservice_user(rt.homeserver, body->user_id, body->device_id, body->display_name);
             if (!as_result.ok)
             {
                 return dispatch_err(req, rt, as_result.status, "M_FORBIDDEN", as_result.reason);
             }
             if (find_device(rt, body->user_id, body->device_id) == nullptr)
             {
-                auto const dn = body->display_name.empty() ? body->device_id : body->display_name;
-                rt.devices.push_back({body->user_id, body->device_id, dn});
+                rt.devices.push_back({body->user_id, body->device_id, body->display_name});
                 auto const self_change = database::PersistentDeviceListChange{0U, std::string{body->user_id},
                                                                               std::string{body->user_id}, "changed"};
                 std::ignore = record_device_list_change(rt, self_change);
@@ -14230,10 +14879,11 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
         }
         auto const result =
             body->type == "m.login.token"
-                ? login_local_user_by_id(rt.homeserver, body->user_id, body->device_id, body->supports_refresh_tokens)
+                ? login_local_user_by_id(rt.homeserver, body->user_id, body->device_id, body->supports_refresh_tokens,
+                                         body->display_name)
                 : login_local_user(rt.homeserver, body->user_id, body->password, body->device_id,
                                    body->supports_refresh_tokens,
-                                   rate_limit_client_key(req, rt.homeserver.config.server()));
+                                   rate_limit_client_key(req, rt.homeserver.config.server()), body->display_name);
         if (!result.ok)
         {
             // A throttled login is a rate-limit outcome, not a credential
@@ -14248,8 +14898,7 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
         }
         if (find_device(rt, body->user_id, body->device_id) == nullptr)
         {
-            auto const dn = body->display_name.empty() ? body->device_id : body->display_name;
-            rt.devices.push_back({body->user_id, body->device_id, dn});
+            rt.devices.push_back({body->user_id, body->device_id, body->display_name});
             // A new login creates a new device identity. Record a self
             // device-list-change so the user's other devices see the user in
             // device_lists.changed and re-query /keys/query, AND so this new
@@ -14489,13 +15138,24 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
         auto const profile = database::find_profile(store, target_user);
         auto const displayname = profile.has_value() ? profile->displayname : std::string{};
         auto const avatar_url = profile.has_value() ? profile->avatar_url : std::string{};
+        auto profile_fields = stored_profile_fields(profile);
         if (field.empty())
         {
-            return dispatch_resp(req, rt, 200U,
-                                 json_serialize(json_obj({
-                                     json_member("displayname", json_str(displayname)),
-                                     json_member("avatar_url", json_str(avatar_url)),
-                                 })));
+            // "otherwise not present": a field the user has not set is left out, never sent as "".
+            auto members = canonicaljson::Object{};
+            if (!displayname.empty())
+            {
+                members.push_back(json_member("displayname", json_str(displayname)));
+            }
+            if (!avatar_url.empty())
+            {
+                members.push_back(json_member("avatar_url", json_str(avatar_url)));
+            }
+            for (auto& extended : profile_fields)
+            {
+                members.push_back(std::move(extended));
+            }
+            return dispatch_resp(req, rt, 200U, json_serialize(json_obj(std::move(members))));
         }
         // getProfileField returns only the requested key; an unset or unknown
         // field is reported as 404 M_NOT_FOUND per the Matrix spec.
@@ -14508,6 +15168,14 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
         {
             return dispatch_resp(req, rt, 200U,
                                  json_serialize(json_obj({json_member("avatar_url", json_str(avatar_url))})));
+        }
+        // An extended field (`m.tz` or a custom key): an unset one, or a key outside the grammar, is a 404.
+        if (auto const* const stored = object_member(profile_fields, core::percent_decode_path_component(field));
+            stored != nullptr)
+        {
+            auto single = canonicaljson::Object{};
+            single.push_back(json_member(core::percent_decode_path_component(field), *stored));
+            return dispatch_resp(req, rt, 200U, json_serialize(json_obj(std::move(single))));
         }
         return dispatch_err(req, rt, 404U, "M_NOT_FOUND", "profile field not found");
     }
@@ -14552,6 +15220,11 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             if (!trusted_base.has_value())
             {
                 return dispatch_err(req, rt, 403U, "M_UNRECOGNIZED", "identity server is not trusted");
+            }
+            if (!merovingian::identity::threepid_bind_domain_permitted(
+                    rt.homeserver.config.server().identity_server.allowed_bind_domains, "email", body->email))
+            {
+                return dispatch_err(req, rt, 403U, "M_THREEPID_DENIED", threepid_domain_denied_message);
             }
             auto const email = std::string{body->email};
             auto const client_secret = std::string{body->client_secret};
@@ -16163,6 +16836,9 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                              json_obj({
                                  json_member("m.change_password", json_obj({json_member("enabled", json_bool(true))})),
                                  json_member("m.3pid_changes", json_obj({json_member("enabled", json_bool(true))})),
+                                 // Spec (m.profile_fields, v1.16): every field is the user's to set; this server has
+                                 // no allowed or disallowed list.
+                                 json_member("m.profile_fields", json_obj({json_member("enabled", json_bool(true))})),
                                  json_member("m.room_versions",
                                              json_obj({
                                                  json_member("default", json_str("12")),
@@ -16701,22 +17377,14 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                 return dispatch_err(req, rt, 400U, "M_INVALID_PARAM", "avatar_url must be an MXC URI");
             }
             // Spec: "the total profile MUST be under 64 KiB"; a value that would make it larger is
-            // 400 M_PROFILE_TOO_LARGE. The profile this server stores is these two fields (it has no
-            // `m.tz` or custom fields), so the size is that of the profile object with the new value.
+            // 400 M_PROFILE_TOO_LARGE. The profile measured holds the stored extended fields too.
             auto const existing = database::find_profile(store, *user);
             auto const displayname_after =
                 is_displayname ? std::string{value} : (existing.has_value() ? existing->displayname : std::string{});
             auto const avatar_url_after =
                 is_avatar_url ? std::string{value} : (existing.has_value() ? existing->avatar_url : std::string{});
-            auto const profile_json = json_serialize_checked(json_obj({
-                json_member("avatar_url", json_str(avatar_url_after)),
-                json_member("displayname", json_str(displayname_after)),
-            }));
-            // A stored field the serialiser refuses (ADR-0182 keeps such a profile usable) cannot be measured
-            // as JSON; its raw length plus the object's fixed overhead is then the size counted.
-            auto const profile_bytes = profile_json.has_value()
-                                           ? profile_json->size()
-                                           : displayname_after.size() + avatar_url_after.size() + 34U;
+            auto const profile_bytes =
+                profile_size_bytes(displayname_after, avatar_url_after, stored_profile_fields(existing));
             if (profile_bytes >= max_profile_bytes)
             {
                 return dispatch_err(req, rt, 400U, "M_PROFILE_TOO_LARGE",
@@ -16740,6 +17408,85 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             if (!propagated.ok)
             {
                 return dispatch_err(req, rt, propagated.status, "M_UNKNOWN", propagated.reason);
+            }
+            return dispatch_resp(req, rt, 200U, "{}");
+        }
+        // PUT /profile/{userId}/{keyName} for `m.tz` and custom keys (spec v1.16).
+        if (auto const slash = path_remainder.find('/'); slash != std::string_view::npos && slash > 0U &&
+                                                         path_remainder.find('/', slash + 1U) == std::string_view::npos)
+        {
+            if (core::percent_decode_path_component(path_remainder.substr(0U, slash)) != *user)
+            {
+                return dispatch_err(req, rt, 403U, "M_FORBIDDEN", "cannot update another user's profile");
+            }
+            auto const key = core::percent_decode_path_component(path_remainder.substr(slash + 1U));
+            switch (check_profile_key(key))
+            {
+            case ProfileKeyCheck::too_large:
+                return dispatch_err(req, rt, 400U, "M_KEY_TOO_LARGE", "the profile key exceeds 255 bytes");
+            case ProfileKeyCheck::invalid:
+                return dispatch_err(req, rt, 400U, "M_INVALID_PARAM", "Invalid profile key.");
+            case ProfileKeyCheck::valid:
+                break;
+            }
+            return put_profile_extended_field(rt, req, *user, key);
+        }
+    }
+
+    // DELETE /_matrix/client/v3/profile/{userId}/{keyName}: removes the field and its key (spec v1.16). Deleting
+    // `displayname` or `avatar_url` clears the value, which is how this server stores "unset", and is sent to
+    // the user's rooms as a change is.
+    if (req.method == "DELETE" && starts_with(req.target, profile_put_prefix))
+    {
+        auto const path_remainder = request_path.substr(profile_put_prefix.size());
+        auto const slash = path_remainder.find('/');
+        if (slash != std::string_view::npos && slash > 0U &&
+            path_remainder.find('/', slash + 1U) == std::string_view::npos)
+        {
+            if (core::percent_decode_path_component(path_remainder.substr(0U, slash)) != *user)
+            {
+                return dispatch_err(req, rt, 403U, "M_FORBIDDEN", "cannot delete another user's profile field");
+            }
+            auto const key = core::percent_decode_path_component(path_remainder.substr(slash + 1U));
+            if (check_profile_key(key) != ProfileKeyCheck::valid)
+            {
+                return dispatch_err(req, rt, 400U, "M_INVALID_PARAM", "Invalid profile key.");
+            }
+            auto& store = rt.homeserver.database.persistent_store;
+            auto const existing = database::find_profile(store, *user);
+            auto changed = true;
+            if (key == "displayname" || key == "avatar_url")
+            {
+                changed = existing.has_value() &&
+                          (key == "displayname" ? !existing->displayname.empty() : !existing->avatar_url.empty());
+                if (changed && !(key == "displayname" ? database::update_profile_displayname(store, *user, {})
+                                                      : database::update_profile_avatar_url(store, *user, {})))
+                {
+                    return dispatch_err(req, rt, 500U, "M_UNKNOWN", "failed to persist the profile");
+                }
+                if (changed)
+                {
+                    auto const propagated = propagate_profile_change(rt.homeserver, req.access_token);
+                    if (!propagated.ok)
+                    {
+                        return dispatch_err(req, rt, propagated.status, "M_UNKNOWN", propagated.reason);
+                    }
+                }
+            }
+            else
+            {
+                auto fields = stored_profile_fields(existing);
+                auto const before = fields.size();
+                std::erase_if(fields, [&key](canonicaljson::ObjectMember const& field) {
+                    return field.key == key;
+                });
+                changed = fields.size() != before;
+                auto const fields_text = json_serialize_checked(json_obj(fields));
+                if (changed &&
+                    (!fields_text.has_value() || !database::update_profile_fields(store, *user, *fields_text)))
+                {
+                    return dispatch_err(req, rt, 500U, "M_UNKNOWN", "failed to persist the profile");
+                }
             }
             return dispatch_resp(req, rt, 200U, "{}");
         }
@@ -16896,11 +17643,38 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
         {
             return dispatch_resp(req, rt, 200U, "{}");
         }
+        auto username = turn.username;
+        auto password = turn.password;
+        if (!turn.shared_secret_file.empty())
+        {
+            // ADR-0480: per-user, time-limited credentials from the coturn shared secret. The file is read for
+            // this request into a SecretBuffer that is wiped when it goes out of scope; the secret is never
+            // copied into a string, logged or compared (the TURN server, not this one, checks the MAC).
+            constexpr auto max_turn_secret_bytes = std::size_t{4096U};
+            auto const secret = platform::read_secure_secret_line(turn.shared_secret_file, max_turn_secret_bytes);
+            auto const bytes =
+                secret.has_value() ? std::span<std::uint8_t const>{secret->bytes()} : std::span<std::uint8_t const>{};
+            auto const now_seconds = static_cast<std::uint64_t>(
+                std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch())
+                    .count());
+            auto credentials = make_turn_credentials(bytes, *user, now_seconds, turn.ttl_seconds);
+            if (!credentials.has_value())
+            {
+                log_diagnostic("turn.credentials_unavailable",
+                               {
+                                   {"reason", "shared secret file unreadable or empty", false}
+                },
+                               observability::LogEventSeverity::error);
+                return dispatch_err(req, rt, 500U, "M_UNKNOWN", "TURN credentials are unavailable");
+            }
+            username = std::move(credentials->username);
+            password = std::move(credentials->password);
+        }
         auto uris = canonicaljson::Array{};
         uris.push_back(json_str(turn.server));
         auto const body = json_serialize(json_obj({
-            json_member("username", json_str(turn.username)),
-            json_member("password", json_str(turn.password)),
+            json_member("username", json_str(username)),
+            json_member("password", json_str(password)),
             json_member("ttl", json_int(static_cast<std::int64_t>(turn.ttl_seconds))),
             json_member("uris", json_arr(std::move(uris))),
         }));
@@ -17074,6 +17848,10 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
         {
             return dispatch_err(req, rt, 403U, "M_FORBIDDEN", "admin authentication required");
         }
+        if (safety_route.route.path_template == "/_matrix/client/v3/users/{userId}/report")
+        {
+            return complete(handle_user_report(rt, *user, req));
+        }
         return complete(safety_route.route.requires_admin ? handle_admin_safety_route(rt, *user, req)
                                                           : handle_safety_report(rt, *user, req));
     }
@@ -17135,7 +17913,9 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             auto const* array = value == nullptr ? nullptr : std::get_if<canonicaljson::Array>(&value->storage());
             return array == nullptr ? 0U : array->size();
         };
-        if (entries_in("invite") > rt.limits.max_create_room_invites ||
+        // `invite_3pid` entries are invites too (ADR-0474): each costs an identity-server round trip and a
+        // stored event, so they share the cap with `invite`.
+        if (entries_in("invite") + entries_in("invite_3pid") > rt.limits.max_create_room_invites ||
             entries_in("initial_state") > rt.limits.max_create_room_initial_state)
         {
             return dispatch_err(req, rt, 400U, "M_TOO_LARGE", "too many invite or initial_state entries");
@@ -17164,6 +17944,49 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
         if (rooms::find_room_version_policy(room_version) == nullptr)
         {
             return dispatch_err(req, rt, 400U, "M_UNSUPPORTED_ROOM_VERSION", "unsupported room version");
+        }
+        // Spec (createRoom, `invite_3pid`): a list of {id_server, medium, address, id_access_token}. All of it that
+        // can be judged without the identity server is judged before the room exists (ADR-0474).
+        struct ThreepidInvite final
+        {
+            std::string id_server{};
+            std::string medium{};
+            std::string address{};
+            std::string id_access_token{};
+        };
+        auto threepid_invites = std::vector<ThreepidInvite>{};
+        if (auto const* raw = object_member(body, "invite_3pid"); raw != nullptr)
+        {
+            auto const* entries = std::get_if<canonicaljson::Array>(&raw->storage());
+            if (entries == nullptr)
+            {
+                return dispatch_err(req, rt, 400U, "M_BAD_JSON", "invite_3pid must be a list");
+            }
+            for (auto const& value : *entries)
+            {
+                auto const* object = std::get_if<canonicaljson::Object>(&value.storage());
+                auto const* id_server = object == nullptr ? nullptr : string_member(*object, "id_server");
+                auto const* medium = object == nullptr ? nullptr : string_member(*object, "medium");
+                auto const* address = object == nullptr ? nullptr : string_member(*object, "address");
+                if (id_server == nullptr || id_server->empty() || medium == nullptr || medium->empty() ||
+                    address == nullptr || address->empty())
+                {
+                    return dispatch_err(req, rt, 400U, "M_BAD_JSON",
+                                        "each invite_3pid entry needs id_server, medium and address");
+                }
+                auto const* token = string_member(*object, "id_access_token");
+                if (object_member(*object, "id_access_token") != nullptr &&
+                    (token == nullptr || !merovingian::identity::id_access_token_is_valid(*token)))
+                {
+                    return dispatch_err(req, rt, 400U, "M_INVALID_PARAM", invalid_id_access_token_message);
+                }
+                if (!resolve_trusted_identity_base_url(rt.homeserver.config.server().identity_server, *id_server)
+                         .has_value())
+                {
+                    return dispatch_err(req, rt, 400U, "M_SERVER_NOT_TRUSTED", "identity server is not trusted");
+                }
+                threepid_invites.push_back({*id_server, *medium, *address, token == nullptr ? std::string{} : *token});
+            }
         }
         auto const* room_alias_name = string_member(body, "room_alias_name");
         if (room_alias_name != nullptr && !room_alias_name->empty())
@@ -17253,8 +18076,9 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             auto const server = server_name_from_user_id(invitee);
             return !server.empty() && server != rt.homeserver.config.server().server_name;
         });
-        auto const invite_slot = any_remote_invitee ? admit_client_proxy_waiting(rt, req, guard, invite_deadline)
-                                                    : std::optional<http::InFlightBudget::Slot>{};
+        auto const invite_slot = any_remote_invitee || !threepid_invites.empty()
+                                     ? admit_client_proxy_waiting(rt, req, guard, invite_deadline)
+                                     : std::optional<http::InFlightBudget::Slot>{};
         for (auto const& invitee : invitees)
         {
             auto const invitee_server = server_name_from_user_id(invitee);
@@ -17329,6 +18153,31 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                                                                  {"invitee", invitee,         false},
                                                                  {"reason",  delivery.reason, false}
                 });
+            }
+        }
+        // Each identity-server store-invite is a blocking call on this thread: they share the slot and the
+        // deadline above, and each is given at most what is left of it. An entry the slot or the time does not
+        // cover, or the identity server fails, is logged and skipped; the room stays (ADR-0474).
+        for (auto const& threepid : threepid_invites)
+        {
+            auto const seconds_left = invite_deadline.remaining_seconds();
+            auto const stored =
+                invite_slot.has_value() && seconds_left != 0U
+                    ? merovingian::homeserver::invite_user_by_threepid(
+                          rt.homeserver, req.access_token, room_id, threepid.id_server, threepid.medium,
+                          threepid.address, threepid.id_access_token, seconds_left)
+                    : merovingian::homeserver::make_operation_result(false, {}, "no slot or time left", 504U);
+            if (!stored.ok)
+            {
+                log_diagnostic("room.create.invite_3pid_failed",
+                               {
+                                   {"actor",   *user,                         false},
+                                   {"room_id", room_id,                       false},
+                                   {"medium",  threepid.medium,               false},
+                                   {"status",  std::to_string(stored.status), false},
+                                   {"reason",  stored.reason,                 false}
+                },
+                               observability::LogEventSeverity::warning);
             }
         }
         log_diagnostic("room.create.accepted", {
@@ -17493,6 +18342,27 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             violation.has_value())
         {
             return dispatch_err(req, rt, 400U, "M_INVALID_PARAM", std::string{*violation});
+        }
+        // MSC4186 request body `set_presence`; the URL's is read when the body has none (ADR-0495). Judged like /sync's
+        // before anything is done: an unknown value is 400 M_INVALID_PARAM.
+        auto const set_presence_text = sliding_req->set_presence.has_value()
+                                           ? std::optional<std::string>{*sliding_req->set_presence}
+                                           : query_param_value(req.target, "set_presence");
+        auto const sliding_presence_mode = parse_sync_presence_mode(
+            set_presence_text.has_value() ? std::optional<std::string_view>{*set_presence_text} : std::nullopt);
+        if (!sliding_presence_mode.has_value())
+        {
+            return dispatch_err(req, rt, 400U, "M_INVALID_PARAM",
+                                "set_presence must be online, offline or unavailable");
+        }
+        if (auto const changed = apply_sync_presence(rt.homeserver, *user, *sliding_presence_mode); changed.has_value())
+        {
+            log_diagnostic("presence.sync.set", {
+                                                    {"actor",    *user,             false},
+                                                    {"presence", changed->presence, false}
+            });
+            broadcast_presence_edu(rt.homeserver, *changed);
+            std::ignore = ensure_sync_notifier(rt);
         }
         // Prefer query-string pos/timeout; fall back to the newer body-level fields.
         auto pos = sync::parse_sliding_sync_pos(req.target);
@@ -19151,6 +20021,55 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                 });
                 return dispatch_err(req, rt, tombstone.status, error_code_for(tombstone), tombstone.body);
             }
+            // Spec: "Moves any local aliases to the new room." The tombstone is already sent, so a failed
+            // write is reported as a server fault rather than a success that leaves an alias on the old room.
+            auto const aliases_to_move = std::invoke([&] {
+                auto moved = std::vector<std::string>{};
+                for (auto const& alias : rt.homeserver.database.persistent_store.room_aliases)
+                {
+                    if (alias.room_id == room_id)
+                    {
+                        moved.push_back(alias.room_alias);
+                    }
+                }
+                return moved;
+            });
+            for (auto const& alias : aliases_to_move)
+            {
+                if (!database::reassign_room_alias(rt.homeserver.database.persistent_store, alias, new_room_id))
+                {
+                    log_diagnostic("room.upgrade.alias_not_moved", {
+                                                                       {"actor",       *user,       false},
+                                                                       {"old_room_id", room_id,     false},
+                                                                       {"new_room_id", new_room_id, false},
+                                                                       {"alias",       alias,       false}
+                    });
+                    return dispatch_err(req, rt, 500U, "M_UNKNOWN", "failed to move a room alias to the new room");
+                }
+                append_local_audit(rt.homeserver.database, observability::AuditCategory::admin, "room_alias.moved",
+                                   *user, alias, new_room_id);
+            }
+            // Spec: "If possible, the power levels in the old room should also be modified". Sent as the
+            // upgrader; a refusal (they may not change power levels there) leaves the old room as it was and
+            // does not fail the upgrade.
+            if (auto const closed = closed_power_levels_content(rt.homeserver.database.persistent_store, room_id);
+                closed.has_value())
+            {
+                auto closing_req = req;
+                closing_req.method = "POST";
+                closing_req.target = "/_matrix/client/v3/rooms/" + room_id + "/send";
+                closing_req.body =
+                    event_body_from_content("m.room.power_levels", *closed, std::string{""}).value_or("");
+                if (auto const closing = call_local(closing_req); closing.status != 200U)
+                {
+                    log_diagnostic("room.upgrade.old_room_power_levels_unchanged",
+                                   {
+                                       {"actor",       *user,                          false},
+                                       {"old_room_id", room_id,                        false},
+                                       {"status",      std::to_string(closing.status), false}
+                    });
+                }
+            }
             log_diagnostic("room.upgrade.accepted", {
                                                         {"actor",       *user,            false},
                                                         {"old_room_id", room_id,          false},
@@ -19216,8 +20135,15 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                 }
                 auto user_obj = canonicaljson::Object{};
                 user_obj.push_back(json_member("user_id", json_str(profile.user_id)));
-                user_obj.push_back(json_member("display_name", json_str(profile.displayname)));
-                user_obj.push_back(json_member("avatar_url", json_str(profile.avatar_url)));
+                // "if one exists": an unset display name or avatar is left out.
+                if (!profile.displayname.empty())
+                {
+                    user_obj.push_back(json_member("display_name", json_str(profile.displayname)));
+                }
+                if (!profile.avatar_url.empty())
+                {
+                    user_obj.push_back(json_member("avatar_url", json_str(profile.avatar_url)));
+                }
                 results.push_back(canonicaljson::Value{std::move(user_obj)});
             }
         }
@@ -20257,7 +21183,7 @@ auto record_device_list_change(ClientServerRuntime& runtime, database::Persisten
     return stored;
 }
 
-auto set_presence(ClientServerRuntime& runtime, database::PersistentPresence state) -> bool
+auto set_presence(ClientServerRuntime& runtime, database::PersistentPresence const& state) -> bool
 {
     auto guard = std::unique_lock<RuntimeMutex>{runtime.homeserver.mutex};
     if (!presence_enabled(runtime.homeserver))
@@ -20273,6 +21199,28 @@ auto set_presence(ClientServerRuntime& runtime, database::PersistentPresence sta
         broadcast_presence_edu(runtime.homeserver, state);
     }
     return stored;
+}
+
+auto run_presence_idle_sweep(ClientServerRuntime& runtime) -> std::chrono::milliseconds
+{
+    auto guard = std::unique_lock<RuntimeMutex>{runtime.homeserver.mutex};
+    auto const changed = expire_idle_presence(runtime.homeserver, presence_now_ms());
+    for (auto const& state : changed)
+    {
+        log_diagnostic("presence.idle", {
+                                            {"actor", state.user_id, false}
+        });
+        broadcast_presence_edu(runtime.homeserver, state);
+    }
+    if (!changed.empty())
+    {
+        // Wakes long-polling syncs of the users who share a room with the ones now idle.
+        std::ignore = ensure_sync_notifier(runtime);
+    }
+    // A pass that hit its bound leaves users for the next one, which should follow soon, with the lock free in between.
+    return changed.size() >= presence_idle_max_per_pass
+               ? std::chrono::duration_cast<std::chrono::milliseconds>(presence_idle_catch_up_interval)
+               : std::chrono::duration_cast<std::chrono::milliseconds>(presence_idle_sweep_interval);
 }
 
 auto set_account_data(ClientServerRuntime& runtime, database::PersistentAccountData data) -> bool

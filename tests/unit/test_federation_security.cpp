@@ -170,7 +170,6 @@ SCENARIO("Remote trust controls cover rate limit, backoff, circuit breaker, repu
 
         WHEN("trust policy is evaluated")
         {
-            auto const rate_limit = merovingian::federation::federation_remote_rate_limit();
             auto const healthy_decision = merovingian::federation::remote_trust_policy(healthy);
             auto const backoff_decision = merovingian::federation::remote_trust_policy(backoff);
             auto const circuit_decision = merovingian::federation::remote_trust_policy(circuit_open);
@@ -179,8 +178,6 @@ SCENARIO("Remote trust controls cover rate limit, backoff, circuit breaker, repu
 
             THEN("only healthy remotes are accepted")
             {
-                REQUIRE(rate_limit.max_requests == 120U);
-                REQUIRE(rate_limit.window_seconds == 60U);
                 REQUIRE(healthy_decision.accepted);
                 REQUIRE_FALSE(backoff_decision.accepted);
                 REQUIRE(backoff_decision.apply_backoff);

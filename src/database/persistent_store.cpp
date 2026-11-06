@@ -620,6 +620,103 @@ auto write_connections_opened(PersistentStore const& store) -> std::uint64_t
     return true;
 }
 
+[[nodiscard]] auto store_user_with_profile(PersistentStore& store, PersistentUser user, PersistentProfile profile)
+    -> bool
+{
+    if (profile.user_id.empty() || profile.user_id != user.user_id ||
+        std::ranges::any_of(store.users, [&user](PersistentUser const& existing) {
+            return existing.user_id == user.user_id;
+        }))
+    {
+        return false;
+    }
+    auto statements = std::vector<PreparedStatement>{};
+    statements.push_back(record_statement(
+        "insert_user",
+        "INSERT INTO users (user_id, password_hash, locked, suspended, admin, deactivated) VALUES ($1, $2, $3, $4, "
+        "$5, $6)",
+        {
+            {user.user_id,                        false},
+            {user.password_hash,                  true },
+            {user.locked ? "true" : "false",      false},
+            {user.suspended ? "true" : "false",   false},
+            {user.admin ? "true" : "false",       false},
+            {user.deactivated ? "true" : "false", false}
+    }));
+    statements.push_back(record_statement(
+        "upsert_profile",
+        "INSERT INTO profiles (user_id, displayname, avatar_url) VALUES ($1, $2, $3) "
+        "ON CONFLICT (user_id) DO UPDATE SET displayname = $2, avatar_url = $3",
+        {public_value(profile.user_id), public_value(profile.displayname), public_value(profile.avatar_url)}));
+    if (!commit_persistent_transaction(store, statements))
+    {
+        return false;
+    }
+    store.users.push_back(std::move(user));
+    auto const existing = std::ranges::find_if(store.profiles, [&profile](PersistentProfile const& p) {
+        return p.user_id == profile.user_id;
+    });
+    if (existing != store.profiles.end())
+    {
+        *existing = std::move(profile);
+    }
+    else
+    {
+        store.profiles.push_back(std::move(profile));
+    }
+    return true;
+}
+
+[[nodiscard]] auto revoke_device_credentials(PersistentStore& store, std::string_view access_token_hash,
+                                             std::string_view user_id, std::string_view device_id) -> bool
+{
+    auto statements = std::vector<PreparedStatement>{};
+    statements.push_back(record_statement("revoke_access_token",
+                                          "UPDATE access_tokens SET revoked = $1 WHERE token_hash = $2",
+                                          {
+                                              {"true",                         false},
+                                              {std::string{access_token_hash}, true }
+    }));
+    statements.push_back(
+        record_statement("revoke_device_refresh_tokens",
+                         "UPDATE refresh_tokens SET revoked = $1 WHERE user_id = $2 AND "
+                         "device_id = $3",
+                         {
+                             {"true",                 false},
+                             {std::string{user_id},   false},
+                             {std::string{device_id}, false}
+    }));
+    statements.push_back(
+        record_statement("revoke_device_access_tokens",
+                         "UPDATE access_tokens SET revoked = $1 WHERE user_id = $2 AND "
+                         "device_id = $3",
+                         {
+                             {"true",                 false},
+                             {std::string{user_id},   false},
+                             {std::string{device_id}, false}
+    }));
+    if (!commit_persistent_transaction(store, statements))
+    {
+        return false;
+    }
+    for (auto& token : store.access_tokens)
+    {
+        if (crypto::constant_time_equal(token.token_hash, access_token_hash) ||
+            (token.user_id == user_id && token.device_id == device_id))
+        {
+            token.revoked = true;
+        }
+    }
+    for (auto& token : store.refresh_tokens)
+    {
+        if (token.user_id == user_id && token.device_id == device_id)
+        {
+            token.revoked = true;
+        }
+    }
+    return true;
+}
+
 [[nodiscard]] auto update_user_password(PersistentStore& store, std::string_view user_id, std::string_view new_hash)
     -> bool
 {
@@ -1069,6 +1166,9 @@ auto write_connections_opened(PersistentStore const& store) -> std::uint64_t
     // A deleted device's identity, one-time and fallback keys go with it, in the same transaction:
     // /keys/query returns "the current devices and identity keys", and a key left behind has
     // clients encrypting to a device that no longer exists (to-device messages for it are dropped).
+    // The to-device messages addressed to this device go too, or a later login that reuses the device ID
+    // receives room keys sent to the old one (ADR-0471). Broadcast rows (empty or `*` target device) belong to
+    // all of the user's devices and stay.
     auto const parameters = std::vector<BoundValue>{public_value(user_id), public_value(device_id)};
     auto const statements = std::vector<PreparedStatement>{
         record_statement("delete_device", "DELETE FROM devices WHERE user_id = $1 AND device_id = $2", parameters),
@@ -1078,6 +1178,9 @@ auto write_connections_opened(PersistentStore const& store) -> std::uint64_t
                          "DELETE FROM one_time_keys WHERE user_id = $1 AND device_id = $2", parameters),
         record_statement("delete_fallback_keys_of_device",
                          "DELETE FROM fallback_keys WHERE user_id = $1 AND device_id = $2", parameters),
+        record_statement("delete_to_device_messages_of_device",
+                         "DELETE FROM to_device_messages WHERE target_user_id = $1 AND target_device_id = $2",
+                         parameters),
     };
     if (!commit_persistent_transaction(store, statements))
     {
@@ -1090,6 +1193,9 @@ auto write_connections_opened(PersistentStore const& store) -> std::uint64_t
     std::erase_if(store.device_keys, of_device);
     std::erase_if(store.one_time_keys, of_device);
     std::erase_if(store.fallback_keys, of_device);
+    std::erase_if(store.to_device_messages, [user_id, device_id](PersistentToDeviceMessage const& message) {
+        return message.target_user_id == user_id && message.target_device_id == device_id;
+    });
     return true;
 }
 
@@ -4211,10 +4317,12 @@ auto read_media_blob(MediaBlobRead const& read) -> std::optional<std::string>
     statements.push_back(record_statement(
         "moderate_media_admin_action", "INSERT INTO admin_actions VALUES ($1, $2, $3)",
         {public_value(action.admin_user_id), public_value(action.action), public_value(action.target)}));
-    statements.push_back(
-        record_statement("moderate_media_audit", "INSERT INTO audit_log VALUES ($1, $2, $3, $4, $5)",
-                         {public_value(audit.category), public_value(audit.event_type), public_value(audit.actor),
-                          public_value(audit.target), public_value(audit.reason)}));
+    statements.push_back(record_statement(
+        "moderate_media_audit",
+        "INSERT INTO audit_log (category, event_type, actor, target, reason, created_at_ms) VALUES "
+        "($1, $2, $3, $4, $5, $6)",
+        {public_value(audit.category), public_value(audit.event_type), public_value(audit.actor),
+         public_value(audit.target), public_value(audit.reason), public_value(std::to_string(current_epoch_ms()))}));
     if (!commit_persistent_transaction(store, statements))
     {
         return false;
@@ -4366,13 +4474,21 @@ auto read_media_blob(MediaBlobRead const& read) -> std::optional<std::string>
     event.actor = observability::bounded_utf8(event.actor, observability::max_audit_field_bytes);
     event.target = observability::bounded_utf8(event.target, observability::max_audit_field_bytes);
     event.reason = observability::bounded_utf8(event.reason, observability::max_audit_field_bytes);
-    if (!record_and_persist(store, record_statement("append_audit", "INSERT INTO audit_log VALUES ($1, $2, $3, $4, $5)",
-                                                    {
-                                                        {event.category,   false},
-                                                        {event.event_type, false},
-                                                        {event.actor,      false},
-                                                        {event.target,     false},
-                                                        {event.reason,     false}
+    if (event.created_at_ms == 0U)
+    {
+        event.created_at_ms = current_epoch_ms();
+    }
+    if (!record_and_persist(store,
+                            record_statement("append_audit",
+                                             "INSERT INTO audit_log (category, event_type, actor, target, reason, "
+                                             "created_at_ms) VALUES ($1, $2, $3, $4, $5, $6)",
+                                             {
+                                                 {event.category,                      false},
+                                                 {event.event_type,                    false},
+                                                 {event.actor,                         false},
+                                                 {event.target,                        false},
+                                                 {event.reason,                        false},
+                                                 {std::to_string(event.created_at_ms), false}
     })))
     {
         return false;
@@ -4389,6 +4505,121 @@ auto remember_audit_event(PersistentStore& store, PersistentAuditEvent event) ->
         store.audit_log.pop_front();
         ++store.audit_log_evicted;
     }
+}
+
+[[nodiscard]] auto audit_rows_older_than_exist(PersistentStore const& store, std::uint64_t cutoff_ms)
+    -> std::optional<bool>
+{
+    if (store.backend == PersistentStoreBackend::postgresql)
+    {
+        return detail::audit_rows_older_than_exist_in_postgresql(store.postgresql_conninfo,
+                                                                 store.postgresql_runtime_role, cutoff_ms);
+    }
+    if (store.backend == PersistentStoreBackend::sqlite)
+    {
+        return detail::audit_rows_older_than_exist_in_sqlite(store.sqlite_path, cutoff_ms);
+    }
+    // No database: the window is all there is.
+    return std::ranges::any_of(store.audit_log, [cutoff_ms](PersistentAuditEvent const& event) {
+        return event.created_at_ms != 0U && event.created_at_ms < cutoff_ms;
+    });
+}
+
+[[nodiscard]] auto delete_audit_rows_older_than(PersistentStore& store, std::uint64_t cutoff_ms, std::size_t limit)
+    -> bool
+{
+    if (limit == 0U)
+    {
+        return true;
+    }
+    // The batch is chosen inside the statement, so a delete never holds more than `limit` rows. `limit` is a
+    // size_t, so writing its digits into the text carries nothing a client chose. SQLite names rows by rowid and
+    // PostgreSQL by ctid: audit_log has no key of its own (ADR-0489).
+    auto const postgresql = store.backend == PersistentStoreBackend::postgresql;
+    auto const row_name = std::string{postgresql ? "ctid" : "rowid"};
+    auto const integer = std::string{postgresql ? "BIGINT" : "INTEGER"};
+    auto const stamp = "CAST(created_at_ms AS " + integer + ")";
+    return record_and_persist(store, record_statement("delete_expired_audit_rows",
+                                                      "DELETE FROM audit_log WHERE " + row_name + " IN (SELECT " +
+                                                          row_name + " FROM audit_log WHERE " + stamp + " > 0 AND " +
+                                                          stamp + " < CAST($1 AS " + integer + ") LIMIT " +
+                                                          std::to_string(limit) + ")",
+                                                      {public_value(std::to_string(cutoff_ms))}));
+}
+
+auto forget_audit_events_older_than(PersistentStore& store, std::uint64_t cutoff_ms) -> std::size_t
+{
+    // The window is oldest first, so what is old is a prefix.
+    auto removed = std::size_t{0U};
+    while (!store.audit_log.empty() && store.audit_log.front().created_at_ms != 0U &&
+           store.audit_log.front().created_at_ms < cutoff_ms)
+    {
+        store.audit_log.pop_front();
+        ++removed;
+    }
+    return removed;
+}
+
+[[nodiscard]] auto collect_unusable_credentials(PersistentStore const& store, std::chrono::system_clock::time_point now,
+                                                std::chrono::system_clock::duration expired_access_grace)
+    -> UnusableCredentials
+{
+    auto unusable = UnusableCredentials{};
+    for (auto const& token : store.access_tokens)
+    {
+        if (token.revoked || (token.expires_at.has_value() && *token.expires_at + expired_access_grace <= now))
+        {
+            unusable.access_token_hashes.push_back(token.token_hash);
+        }
+    }
+    for (auto const& token : store.refresh_tokens)
+    {
+        if (token.expires_at.has_value() && *token.expires_at <= now)
+        {
+            unusable.refresh_token_hashes.push_back(token.token_hash);
+        }
+    }
+    return unusable;
+}
+
+[[nodiscard]] auto delete_credential_rows(PersistentStore& store, std::span<std::string const> access_token_hashes,
+                                          std::span<std::string const> refresh_token_hashes) -> bool
+{
+    auto statements = std::vector<PreparedStatement>{};
+    statements.reserve(access_token_hashes.size() + refresh_token_hashes.size());
+    for (auto const& hash : access_token_hashes)
+    {
+        statements.push_back(record_statement("delete_unusable_access_token",
+                                              "DELETE FROM access_tokens WHERE token_hash = $1",
+                                              {
+                                                  {hash, true}
+        }));
+    }
+    for (auto const& hash : refresh_token_hashes)
+    {
+        statements.push_back(record_statement("delete_unusable_refresh_token",
+                                              "DELETE FROM refresh_tokens WHERE token_hash = $1",
+                                              {
+                                                  {hash, true}
+        }));
+    }
+    return commit_persistent_transaction(store, statements);
+}
+
+auto forget_credentials(PersistentStore& store, UnusableCredentials const& deleted) -> void
+{
+    // Housekeeping between two stored hashes of credentials that can no longer authenticate, not a check of a
+    // presented token, so a hash set is fine here.
+    auto const access =
+        std::unordered_set<std::string>{deleted.access_token_hashes.begin(), deleted.access_token_hashes.end()};
+    auto const refresh =
+        std::unordered_set<std::string>{deleted.refresh_token_hashes.begin(), deleted.refresh_token_hashes.end()};
+    std::erase_if(store.access_tokens, [&access](PersistentAccessToken const& token) {
+        return access.contains(token.token_hash);
+    });
+    std::erase_if(store.refresh_tokens, [&refresh](PersistentRefreshToken const& token) {
+        return refresh.contains(token.token_hash);
+    });
 }
 
 [[nodiscard]] auto load_audit_events_by_type_prefix(PersistentStore const& store, std::string_view prefix,
@@ -5450,6 +5681,26 @@ namespace
     return true;
 }
 
+[[nodiscard]] auto reassign_room_alias(PersistentStore& store, std::string_view room_alias,
+                                       std::string_view new_room_id) -> bool
+{
+    auto const it = std::ranges::find_if(store.room_aliases, [room_alias](PersistentRoomAlias const& alias) {
+        return alias.room_alias == room_alias;
+    });
+    if (it == store.room_aliases.end() || !room_exists(store, std::string{new_room_id}))
+    {
+        return false;
+    }
+    if (!record_and_persist(
+            store, record_statement("reassign_room_alias", "UPDATE room_aliases SET room_id = $2 WHERE room_alias = $1",
+                                    {public_value(std::string{room_alias}), public_value(std::string{new_room_id})})))
+    {
+        return false;
+    }
+    it->room_id = std::string{new_room_id};
+    return true;
+}
+
 [[nodiscard]] auto persist_sync_stream_watermark(PersistentStore& store, std::uint64_t watermark) -> bool
 {
     return record_and_persist(
@@ -5571,11 +5822,12 @@ auto restore_sync_stream_id(PersistentStore& store) -> void
     {
         return false;
     }
-    auto const statement = record_statement(
-        "upsert_profile",
-        "INSERT INTO profiles (user_id, displayname, avatar_url) VALUES ($1, $2, $3) "
-        "ON CONFLICT (user_id) DO UPDATE SET displayname = $2, avatar_url = $3",
-        {public_value(profile.user_id), public_value(profile.displayname), public_value(profile.avatar_url)});
+    auto const statement =
+        record_statement("upsert_profile",
+                         "INSERT INTO profiles (user_id, displayname, avatar_url, fields_json) VALUES ($1, $2, $3, $4) "
+                         "ON CONFLICT (user_id) DO UPDATE SET displayname = $2, avatar_url = $3, fields_json = $4",
+                         {public_value(profile.user_id), public_value(profile.displayname),
+                          public_value(profile.avatar_url), public_value(profile.fields_json)});
     if (!record_and_persist(store, statement))
     {
         return false;
@@ -6707,6 +6959,27 @@ auto rebuild_deferred_pdu_awaits(PersistentStore& store) -> void
         return false;
     }
     it->displayname = std::string{displayname};
+    return true;
+}
+
+[[nodiscard]] auto update_profile_fields(PersistentStore& store, std::string_view user_id, std::string_view fields_json)
+    -> bool
+{
+    auto const it = std::ranges::find_if(store.profiles, [user_id](PersistentProfile const& p) {
+        return p.user_id == user_id;
+    });
+    if (it == store.profiles.end())
+    {
+        return false;
+    }
+    auto const statement =
+        record_statement("update_profile_fields", "UPDATE profiles SET fields_json = $2 WHERE user_id = $1",
+                         {public_value(std::string{user_id}), public_value(std::string{fields_json})});
+    if (!record_and_persist(store, statement))
+    {
+        return false;
+    }
+    it->fields_json = std::string{fields_json};
     return true;
 }
 

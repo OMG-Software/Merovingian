@@ -3983,3 +3983,60 @@ SCENARIO("A PDU outside its room version's event format is recognised by one sha
         }
     }
 }
+
+// Spec: Matrix Server-Server API v1.19, GET /_matrix/federation/v1/query/profile
+// Endpoint / Section: query/profile `field` and 200 response
+// URL: ../../docs/matrix-v1.19-spec/server-server-api.md#get_matrixfederationv1queryprofile
+//
+// "Defined values are displayname, avatar_url and m.tz. In addition to these servers MAY allow users to set
+// additional key/value pairs." With no `field` "the server MUST return the full, public, profile"; with one
+// "the server MUST only return the given field".
+SCENARIO("GET /query/profile returns the m.tz and custom fields a user set", "[federation][conformance][query_profile]")
+{
+    GIVEN("a local user with a display name, m.tz and a custom field")
+    {
+        auto runtime = merovingian::federation::make_federation_runtime_state(runtime_config());
+        merovingian::federation::upsert_remote(runtime, remote_for(origin, key_id, key_seed));
+        runtime.profile_query_provider = [](std::string_view) -> merovingian::federation::FederationProfile {
+            return {true, "Alice", "", R"({"m.tz":"Europe/London","org.example.x":{"a":1}})"};
+        };
+
+        WHEN("the whole profile is requested")
+        {
+            auto const response = merovingian::federation::handle_inbound_federation_request(
+                runtime, signed_get_request(origin, key_id, key_seed,
+                                            "/_matrix/federation/v1/query/profile?user_id=@alice:local.example.org"));
+
+            THEN("it holds the display name and both extended fields")
+            {
+                REQUIRE(response.status == 200U);
+                auto const parsed = merovingian::canonicaljson::parse_lossless(response.body);
+                auto const* root = std::get_if<merovingian::canonicaljson::Object>(&parsed.value.storage());
+                REQUIRE(root != nullptr);
+                // Spec MUST: the full public profile when no field is given.
+                REQUIRE(json_get(*root, std::string{"displayname"}) != nullptr);
+                REQUIRE(json_get(*root, std::string{"m.tz"}) != nullptr);
+                REQUIRE(json_get(*root, std::string{"org.example.x"}) != nullptr);
+            }
+        }
+
+        WHEN("field=m.tz is requested")
+        {
+            auto const response = merovingian::federation::handle_inbound_federation_request(
+                runtime,
+                signed_get_request(origin, key_id, key_seed,
+                                   "/_matrix/federation/v1/query/profile?user_id=@alice:local.example.org&field=m.tz"));
+
+            THEN("only m.tz is returned")
+            {
+                REQUIRE(response.status == 200U);
+                auto const parsed = merovingian::canonicaljson::parse_lossless(response.body);
+                auto const* root = std::get_if<merovingian::canonicaljson::Object>(&parsed.value.storage());
+                REQUIRE(root != nullptr);
+                // Spec MUST: only the given field.
+                REQUIRE(root->size() == 1U);
+                REQUIRE(json_get(*root, std::string{"m.tz"}) != nullptr);
+            }
+        }
+    }
+}

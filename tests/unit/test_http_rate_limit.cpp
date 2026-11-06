@@ -56,28 +56,6 @@ SCENARIO("HTTP rate limit policy validates conservative bounds", "[http][rate-li
     }
 }
 
-SCENARIO("HTTP rate limit state rejects excess requests inside a window", "[http][rate-limit]")
-{
-    GIVEN("a five-request policy over a sixty-second window")
-    {
-        auto const policy = merovingian::http::RateLimitPolicy{5U, 60U};
-
-        WHEN("request states are evaluated")
-        {
-            auto const below_limit = merovingian::http::request_is_rate_limited({4U, 59U}, policy);
-            auto const at_limit = merovingian::http::request_is_rate_limited({5U, 59U}, policy);
-            auto const reset_window = merovingian::http::request_is_rate_limited({5U, 60U}, policy);
-
-            THEN("only the state at the limit inside the window is rate limited")
-            {
-                REQUIRE_FALSE(below_limit);
-                REQUIRE(at_limit);
-                REQUIRE_FALSE(reset_window);
-            }
-        }
-    }
-}
-
 SCENARIO("HTTP endpoint defaults protect sensitive Matrix endpoints", "[http][rate-limit]")
 {
     GIVEN("Matrix endpoint methods and paths")

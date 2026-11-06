@@ -152,11 +152,12 @@ Ignore these dirs:
 - build-*/
 
 ## Project Layout
-Source headers (`include/merovingian/`) and implementations (`src/`) mirror each other by module.
-The one exception is `bootstrap/`, which is header-only.
+Source headers (`include/merovingian/`) and implementations (`src/`) mirror each other by module and file name.
+Some headers have no `.cpp` (header-only types, such as all of `bootstrap/`), and two sources have no header of the
+same name: `src/database/sqlite_store.cpp` and `src/federation_worker/main.cpp`.
 
 ```
-├── include/merovingian/   # Public headers (1:1 with src/, except bootstrap/)
+├── include/merovingian/   # Public headers (same module dirs as src/)
 │   ├── appservice/        #   Application Service registration, namespaces, outbound client
 │   ├── auth/              #   Password hashing, session tokens, identity, key API, OIDC discovery
 │   ├── bootstrap/         #   Process exit codes (header-only)
@@ -188,6 +189,7 @@ The one exception is `bootstrap/`, which is header-only.
 │   ├── integration/       #   Flow/integration tests (test_*_flow.cpp)
 │   ├── fuzz/              #   Fuzz targets
 │   ├── smoke/             #   Smoke tests
+│   ├── password_cost/     #   Proves the production Argon2id cost, in a binary without the tests' cheap hash
 │   ├── complement/        #   Docker image that runs the release package under Complement
 │   ├── fixtures/          #   Test fixtures (complement)
 │   ├── support/           #   Test helpers (json_test_support, master_key, registration_token, temp_directory, tls_mock_server)

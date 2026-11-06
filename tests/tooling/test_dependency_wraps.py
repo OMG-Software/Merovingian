@@ -496,6 +496,21 @@ class DependencyWrapTests(unittest.TestCase):
         # healthy Debian runner, still passing, with about five cases left.
         self.assertIn("test('conformance-tests', conformance_tests, timeout: 900)", tests_meson)
 
+    def test_integration_test_limit_is_thirty_minutes_on_every_platform(self) -> None:
+        # GIVEN the integration binary's Meson test and the BSD build driver.
+        tests_meson = (REPO_ROOT / "tests" / "meson.build").read_text(encoding="utf-8")
+        bsd_driver = (REPO_ROOT / "scripts" / "build-bsd.sh").read_text(encoding="utf-8")
+
+        # WHEN the limit is read for each platform.
+        # THEN it is 1800 s by default, and half that on the BSDs, whose driver doubles
+        # every limit by default, so each platform ends at 30 minutes (ADR-0509).
+        self.assertIn('timeout_multiplier="${MESON_TEST_TIMEOUT_MULTIPLIER:-2}"', bsd_driver)
+        self.assertIn(
+            "integration_tests_timeout = host_machine.system() in ['freebsd', 'netbsd', 'openbsd'] ? 900 : 1800",
+            tests_meson,
+        )
+        self.assertIn("test('integration-tests', integration_tests, timeout: integration_tests_timeout,", tests_meson)
+
     def test_phase1_config_validation_uses_wrapped_runtime_libraries(self) -> None:
         # GIVEN the Phase 1 config validation script runs built executables directly.
         self.assertTrue(VALIDATE_PHASE1_SCRIPT.is_file(), "Phase 1 validation script is missing")

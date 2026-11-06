@@ -83,7 +83,7 @@ using merovingian::homeserver::ClientServerRuntime;
     auto const& rooms = runtime.homeserver.database.rooms;
     auto const room = std::ranges::find(rooms, room_id, &merovingian::homeserver::LocalRoom::room_id);
     REQUIRE(room != rooms.end());
-    auto members = room->members;
+    auto members = room->members.values();
     std::ranges::sort(members);
     return members;
 }

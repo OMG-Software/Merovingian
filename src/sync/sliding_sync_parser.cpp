@@ -541,6 +541,12 @@ auto parse_sliding_sync_request(std::string_view body, SlidingSyncLimits limits)
         }
     }
 
+    if (auto const* v = find_member(*root, "set_presence"); v != nullptr)
+    {
+        auto const* s = as_string(*v);
+        req.set_presence = s != nullptr ? *s : std::string{};
+    }
+
     return req;
 }
 

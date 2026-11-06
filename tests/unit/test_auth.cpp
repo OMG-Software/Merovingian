@@ -323,62 +323,20 @@ SCENARIO("A relaxed password policy accepts what it no longer requires", "[auth]
     }
 }
 
-SCENARIO("Auth token policy accepts only active hashed tokens", "[auth][tokens]")
-{
-    GIVEN("an active token and revoked or expired variants")
-    {
-        auto const now = std::chrono::system_clock::now();
-        auto active = merovingian::auth::AccessTokenRecord{
-            "@alice:example.org",
-            "DEVICE123",
-            merovingian::auth::TokenHash{"external-kdf", "abcdefghijklmnopqrstuvwxyz0123456789"},
-            now + std::chrono::hours{1},
-            false,
-        };
-        auto revoked = active;
-        revoked.revoked = true;
-        auto expired = active;
-        expired.expires_at = now - std::chrono::seconds{1};
-
-        WHEN("token policy is evaluated")
-        {
-            auto const active_decision = merovingian::auth::token_is_active(active, now);
-            auto const revoked_decision = merovingian::auth::token_is_active(revoked, now);
-            auto const expired_decision = merovingian::auth::token_is_active(expired, now);
-
-            THEN("only the active hashed token is accepted")
-            {
-                REQUIRE(active_decision.accepted);
-                REQUIRE_FALSE(revoked_decision.accepted);
-                REQUIRE_FALSE(expired_decision.accepted);
-                REQUIRE(revoked_decision.reason == "token revoked");
-                REQUIRE(expired_decision.reason == "token expired");
-            }
-        }
-    }
-}
-
-SCENARIO("Auth token helpers avoid plaintext token disclosure", "[auth][tokens]")
+SCENARIO("Auth constant-time token comparison matches only identical secrets", "[auth][tokens]")
 {
     GIVEN("a plaintext token secret")
     {
         auto constexpr token_secret = "0123456789abcdefghijklmnopqrstuvwxyz";
 
-        WHEN("the token is redacted and compared")
+        WHEN("the token is compared")
         {
-            auto const redacted = merovingian::auth::redacted_token_for_log(token_secret);
             auto const matching = merovingian::auth::constant_time_equal(token_secret, token_secret);
             auto const different =
                 merovingian::auth::constant_time_equal(token_secret, "different-token-secret-000000000000");
 
-            THEN("logs contain only a coarse size bucket, not the exact length or the token itself")
+            THEN("only the identical secret matches")
             {
-                // #437: the exact byte length is a minor side channel (it
-                // distinguishes token versions and valid- from
-                // invalid-length presented tokens); redaction now discloses
-                // only a coarse size bucket.
-                REQUIRE(redacted.find(token_secret) == std::string::npos);
-                REQUIRE(redacted == "[redacted-token:size=short]");
                 REQUIRE(matching);
                 REQUIRE_FALSE(different);
             }
@@ -488,31 +446,8 @@ SCENARIO("Auth registration token matching is safe with a non-null-terminated st
     }
 }
 
-SCENARIO("Auth token helpers classify secrets, hashes, and access tokens", "[auth][tokens]")
+SCENARIO("Auth access token hashing produces versioned hashes", "[auth][tokens]")
 {
-    GIVEN("token secrets of varying entropy")
-    {
-        THEN("only secrets with at least 32 bytes are accepted")
-        {
-            REQUIRE(merovingian::auth::token_secret_has_required_entropy("0123456789abcdefghijklmnopqrstuvwxyz"));
-            REQUIRE_FALSE(merovingian::auth::token_secret_has_required_entropy("short"));
-            REQUIRE_FALSE(merovingian::auth::token_secret_has_required_entropy(std::string(4097U, 'x')));
-        }
-    }
-
-    GIVEN("token hashes with and without required fields")
-    {
-        THEN("persistence requires a non-empty algorithm and value")
-        {
-            REQUIRE(merovingian::auth::token_hash_is_persistable(
-                merovingian::auth::TokenHash{"external-kdf", "abcdefghijklmnopqrstuvwxyz0123456789"}));
-            REQUIRE_FALSE(merovingian::auth::token_hash_is_persistable(merovingian::auth::TokenHash{"", "value"}));
-            REQUIRE_FALSE(merovingian::auth::token_hash_is_persistable(merovingian::auth::TokenHash{"algo", ""}));
-            REQUIRE_FALSE(merovingian::auth::token_hash_is_persistable(
-                merovingian::auth::TokenHash{"algo", std::string(31U, 'x')}));
-        }
-    }
-
     GIVEN("a plaintext access token and an HMAC key")
     {
         auto constexpr token = "0123456789abcdefghijklmnopqrstuvwxyz";

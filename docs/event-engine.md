@@ -106,15 +106,15 @@ Implemented now:
   and kick again. Every consumer (send, kick, ban, invite, redaction targets,
   power-level target rules 9.8/9.9, the state-resolution power ordering and the
   push sender level) goes through this lookup.
-- **one deliberate deviation, stricter than the spec.** Rule 9.4 says a
-  `m.room.power_levels` event is allowed outright when the room has no previous
-  one. This server instead still requires the default `state_default` (50) in
-  that case. Its `AuthEventMap` is built from local resolved state rather than
-  from the event's declared `auth_events`, so "no previous power_levels" can
-  also mean "this server does not have that state yet", under which a blanket
-  allow would be a fail-open. The room-creation bootstrap is unaffected (the
-  creator resolves to 100, or to infinite under v12). This can only reject
-  where the spec would allow, never the reverse.
+- **The first `m.room.power_levels` event is the creator's to send, and that is the spec.** Rule 9.4 ("allow when
+  there is no previous `m.room.power_levels` event") is reached only after rule 7 (rule 8 in v3-v5 and v12), "If the
+  event type's required power level is greater than the sender's power level, reject". With no power-levels event the
+  required level is the default `state_default` of 50 and the sender's level is the creator's 100 (infinite in v12) or
+  the default 0 (client-server API, `m.room.power_levels`), so a joined member who is not the creator is refused by the
+  spec itself. Rule 9.4 then lifts only the bounds on what the first event may set (rules 9.5 to 9.9 compare against an
+  event that does not exist). The code does exactly this; an earlier note here called it a deliberate deviation, which
+  it was not. Tests: `tests/conformance/test_event_auth_rules.cpp`, "let the creator send the first
+  m.room.power_levels event".
 - **`content.events` never resolves a scalar power key.** That map keys event
   *types* to levels, so `ban`, `kick`, `redact`, `invite`, `users_default`,
   `events_default` and `state_default` are not names it can carry. Until
@@ -280,7 +280,9 @@ Implemented now:
   bytes, `prev_events` at 20, and `auth_events` at 10, all checked by
   `pdu_format_violation` before any content hashing or signature work, on every
   path that takes events from another server: `parse_inbound_pdu_envelope`,
-  `returned_pdu_is_well_formed` and `filter_verified_send_join_events` (ADR-0399).
+  `returned_pdu_is_well_formed` and `filter_verified_send_join_events` (ADR-0399). The same check refuses a PDU whose
+  `depth` is missing, negative, not an integer or above 2^53 - 1 (`pdu_depth_violation`): the spec makes `depth`
+  required, so it is never read as 0; an invite's event goes through `pdu_depth_violation` too.
   `sender`, `room_id`, `state_key`, and `type` are capped at 255 bytes by
   `matrix_id_is_valid` and `parse_event_envelope`. See
   `include/merovingian/events/limits.hpp` and
@@ -297,12 +299,8 @@ Not implemented yet:
 - sending an accepted `send_join` event on to the room's other servers is done
   (0.12.60); an ordinary (non-resident) federated join still stores its own
   signed copy of a restricted join, not the resident's co-signed `event`
-- the `PUT /_matrix/federation/v1/exchange_third_party_invite/{roomId}`
-  endpoint (signing an intermediate invite on behalf of a remote inviter).
-  `POST /invite` with a 3PID address (a real identity-server round trip,
-  `homeserver::invite_user_by_threepid`, 0.12.6) and `third_party_signed`
-  validation on `/join` (`verify_third_party_signed`) are implemented and
-  covered by `tests/conformance/test_3pid_invite_conformance.cpp`
+- (done, see "Third-party invites over federation" below) the `exchange_third_party_invite` endpoint and
+  `3pid/onbind`
 - room versions 1 and 2: deliberately unsupported (ADR-0076). The registry in
   `room_version_policy.cpp` holds room versions 3 to 12 only, and
   `find_room_version_policy()` returns no policy for 1 and 2, so every path
@@ -1197,3 +1195,24 @@ policy flags refine this further:
 Later work must expand this with full Matrix room-version fixtures.
 
 The 0.12.18 operational recovery/query settings are documented in [operator budgets](user-manual.md#operational-budgets). Calls consume budgets even on failure; exhausting a call budget blocks another fetch but does not discard its successful final response. Deadline checks between steps do not preempt synchronous discovery, signature verification or database work already in progress. Increasing these bounds cannot restore an ordinary unresolved PDU that was never retained.
+
+## Third-party invites over federation (ADR-0484, ADR-0485)
+
+`PUT /_matrix/federation/v1/exchange_third_party_invite/{roomId}` and `PUT /_matrix/federation/v1/3pid/onbind` turn an
+identity server's third-party invite into a real `m.room.member` invite.
+
+- **Exchange** (X-Matrix authenticated; the caller must be the server of the invited user). The proxy answers it in main,
+  never a worker. `parse_third_party_invite_exchange` checks the body (`type` `m.room.member`, `membership` `invite`,
+  `room_id` equal to the path, valid user IDs, a bounded `signed` with `mxid`, `token` and `signatures`).
+  `homeserver::exchange_third_party_invite` then requires the sender to be a joined user of this server, takes the
+  `display_name` from the room's own `m.room.third_party_invite`, refuses a user already joined or banned, composes the
+  event and lets the authorisation rules (rule 4.3.1) check the token, the sender, `signed.mxid` and that a signature in
+  `signed` verifies against a key of the room's third-party invite. An invitee of another server is offered the invite as
+  `invite_user` does. `key_validity_url` is never fetched.
+- **onbind** (no authentication, as the spec says). Main answers it by exact path. At most 32 invites are read; an entry
+  not about the bound user is dropped; the request draws one ADR-0079 outbound slot and one deadline; an unknown user is
+  answered like a known one. Each invite is exchanged here when the sender is a user of this server, and otherwise
+  requested from the sender's server with a signed `exchange_third_party_invite`.
+- Tests: `tests/conformance/test_third_party_invite_exchange_conformance.cpp` (a good signature invites; a signature by
+  another key, a changed object, another `mxid`, an unknown token and another sender are each refused),
+  `tests/integration/test_third_party_invite_flow.cpp`, `tests/unit/test_third_party_invite_parsing.cpp`.

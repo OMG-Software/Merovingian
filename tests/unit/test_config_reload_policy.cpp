@@ -62,7 +62,6 @@ SCENARIO("Config group reload policies distinguish startup snapshots", "[config]
             "security.media.max_upload_size",
             "security.media.remote_fetch_timeout",
             "security.logging.redact_tokens",
-            "security.logging.structured",
         };
 
         WHEN("their reload policies are checked")

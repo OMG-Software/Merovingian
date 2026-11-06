@@ -38,6 +38,55 @@ ProtectKernelLogs=true
 ProtectControlGroups=true
 ProtectClock=true
 ProtectHostname=true
+# Hide other processes' /proc entries; /proc/self, which the server's start-up
+# and self-checks read, stays visible. Needs systemd 247; older versions ignore it.
+ProtectProc=invisible
+
+# Resource ceilings (ADR-0499). LimitNOFILE covers client and federation
+# connections, parked keep-alive connections and database sockets. TasksMax
+# counts every thread and process in the unit, the federation worker and
+# thumbnail worker included: the defaults need a few hundred, so 4096 is headroom,
+# and it must be raised with server.http.*_threads or federation.worker.threads.
+LimitNOFILE=65536
+TasksMax=4096
+
+# The server holds in-flight requests and outbound calls to finish on SIGTERM
+# (up to 30 s each by default), and the supervisor waits request_timeout_seconds
+# (120 s) twice for a worker before it sends SIGKILL, so a clean stop can take
+# 240 s. systemd must not kill sooner than that.
+TimeoutStopSec=300s
+
+# System call allow-list (ADR-0499). @system-service covers what glibc, the
+# runtime and the database drivers use during start-up. The explicit names are
+# every system call the server's own seccomp filter, the federation worker's and
+# the thumbnail worker's allow (src/platform/seccomp_hardening.cpp), plus the ones
+# the hardening installs itself with (seccomp, landlock_*, prctl, setrlimit), so
+# the unit filter is never narrower than what the processes install on themselves
+# and cannot make that installation fail. A system call outside both sets fails
+# with EPERM (SystemCallErrorNumber). Keep this list a superset of seccomp_hardening.cpp
+# (tests/tooling/test_systemd_unit.py checks it). A name the running systemd
+# does not know is ignored with a warning.
+SystemCallFilter=@system-service
+SystemCallFilter=accept accept4 access arch_prctl bind brk capget capset chdir clock_getres
+SystemCallFilter=clock_gettime clock_nanosleep clone clone3 close close_range connect dup dup2
+SystemCallFilter=dup3 epoll_create epoll_create1 epoll_ctl epoll_pwait epoll_pwait2 epoll_wait
+SystemCallFilter=eventfd eventfd2 execve execveat exit exit_group faccessat faccessat2 fallocate
+SystemCallFilter=fchmod fcntl fdatasync flock fstat fstatfs fsync ftruncate futex futex_waitv
+SystemCallFilter=get_robust_list getcpu getcwd getdents64 getegid geteuid getgid getgroups
+SystemCallFilter=getpeername getpid getppid getrandom getrlimit getrusage getsockname getsockopt
+SystemCallFilter=gettid gettimeofday getuid inotify_add_watch inotify_init1 ioctl kill
+SystemCallFilter=landlock_add_rule landlock_create_ruleset landlock_restrict_self listen lseek
+SystemCallFilter=lstat madvise membarrier memfd_create mincore mkdirat mlock mlockall mmap
+SystemCallFilter=mprotect mremap munlock munlockall munmap nanosleep newfstatat open openat
+SystemCallFilter=openat2 personality pidfd_open pipe pipe2 poll ppoll prctl pread64 preadv
+SystemCallFilter=prlimit64 pselect6 pwrite64 pwritev read readlink readlinkat readv recvfrom
+SystemCallFilter=recvmmsg recvmsg rename renameat renameat2 restart_syscall rseq rt_sigaction
+SystemCallFilter=rt_sigprocmask rt_sigreturn rt_sigsuspend sched_getaffinity sched_yield seccomp
+SystemCallFilter=select sendfile sendmmsg sendmsg sendto set_robust_list set_tid_address
+SystemCallFilter=setrlimit setsockopt shutdown sigaltstack signalfd signalfd4 socket socketpair
+SystemCallFilter=stat statfs statx sysinfo tgkill time timerfd_create timerfd_gettime
+SystemCallFilter=timerfd_settime tkill umask uname unlink unlinkat wait4 waitid write writev
+SystemCallErrorNumber=EPERM
 
 [Install]
 WantedBy=multi-user.target

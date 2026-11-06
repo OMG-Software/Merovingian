@@ -37,6 +37,18 @@ shell = find_program('sh')
   )
 
   test(
+    'ci-run-scope-tooling',
+    python,
+    args: [meson.project_source_root() / 'tests' / 'tooling' / 'test_ci_run_scope.py'],
+  )
+
+  test(
+    'password-hash-override-tooling',
+    python,
+    args: [meson.project_source_root() / 'tests' / 'tooling' / 'test_password_hash_override.py'],
+  )
+
+  test(
     'catch2-bdd-tests',
     shell,
     args: [meson.project_source_root() / 'scripts' / 'check-catch2-bdd-tests.sh', meson.project_source_root()],
@@ -76,6 +88,12 @@ shell = find_program('sh')
     'workflow-pip-locking-tooling',
     python,
     args: [meson.project_source_root() / 'tests' / 'tooling' / 'test_workflow_pip_locking.py'],
+  )
+
+  test(
+    'systemd-unit-tooling',
+    python,
+    args: [meson.project_source_root() / 'tests' / 'tooling' / 'test_systemd_unit.py'],
   )
 
   test(
@@ -173,6 +191,12 @@ shell = find_program('sh')
   )
 
   test(
+    'include-order-tooling',
+    python,
+    args: [meson.project_source_root() / 'tests' / 'tooling' / 'test_include_order.py'],
+  )
+
+  test(
     'hook-tooling',
     python,
     args: [meson.project_source_root() / 'tests' / 'tooling' / 'test_hooks.py'],
@@ -190,10 +214,17 @@ shell = find_program('sh')
     args: [meson.project_source_root() / 'tests' / 'tooling' / 'test_live_integration_registration.py'],
   )
 
+  # Nearly every scenario registers and logs in users, and Argon2id at the production cost was most of these
+  # binaries' CPU time. This sends their calls to tests/support/password_hash_cost.cpp, which refuses any other
+  # cost and then hashes at the minimum. Nothing outside these three executables gets it (ADR-0510).
+  password_hash_cost_link_args = ['-Wl,--wrap=crypto_pwhash_str']
+
   unit_tests = executable(
     'merovingian-unit-tests',
     sources: files(
       'unit/test_main.cpp',
+      'support/password_hash_cost.cpp',
+      'unit/test_password_hash_cost.cpp',
       'unit/test_redaction_validity.cpp',
       'unit/test_room_power.cpp',
       'unit/test_stored_room_version.cpp',
@@ -203,7 +234,6 @@ shell = find_program('sh')
       'unit/test_appservice_masquerade_token.cpp',
       'unit/test_appservice_registration.cpp',
       'unit/test_auth.cpp',
-      'unit/test_auth_client_server_api.cpp',
       'unit/test_auth_oidc_discovery.cpp',
       'unit/test_auth_session.cpp',
       'unit/test_audit_filter.cpp',
@@ -237,6 +267,7 @@ shell = find_program('sh')
       'unit/test_config_oidc_validation.cpp',
       'unit/test_config_sso.cpp',
       'unit/test_config_identity_server.cpp',
+      'unit/test_identity_bind_domains.cpp',
       'unit/test_config_parser.cpp',
       'unit/test_config_reload_plan.cpp',
       'unit/test_config_reload_policy.cpp',
@@ -253,6 +284,8 @@ shell = find_program('sh')
       'unit/test_bundled_aggregations.cpp',
       'unit/test_sliding_sync_aggregations.cpp',
       'unit/test_event_table.cpp',
+      'unit/test_event_table_latest_timestamp.cpp',
+      'unit/test_local_room_index.cpp',
       'unit/test_state_index.cpp',
       'unit/test_state_groups.cpp',
       'unit/test_state_group_tables.cpp',
@@ -288,6 +321,8 @@ shell = find_program('sh')
       'unit/test_federation_denied_ranges.cpp',
       'unit/test_federation_private_range_allowlist.cpp',
       'unit/test_cached_server_discovery_bounds.cpp',
+      'unit/test_server_discovery_redirects.cpp',
+      'unit/test_third_party_invite_parsing.cpp',
       'unit/test_server_discovery_system_resolver.cpp',
       'unit/test_outbound_discovery_cache.cpp',
       'unit/test_remote_key_read_through.cpp',
@@ -306,6 +341,7 @@ shell = find_program('sh')
       'unit/test_file_descriptor.cpp',
       'unit/test_file_metadata.cpp',
       'unit/test_secure_secret_loading.cpp',
+      'unit/test_turn_shared_secret.cpp',
       'unit/test_elf_probe.cpp',
       'unit/test_email.cpp',
       'unit/test_seccomp_hardening.cpp',
@@ -316,6 +352,9 @@ shell = find_program('sh')
       'unit/test_log_file_sink.cpp',
       'unit/test_hardening_self_check.cpp',
       'unit/test_homeserver_vertical_slice.cpp',
+      'unit/test_session_table.cpp',
+      'unit/test_audit_retention_config.cpp',
+      'unit/test_database_room_indexes.cpp',
       'unit/test_http_connection_guard.cpp',
       'unit/test_http_connection_limiter.cpp',
       'unit/test_http_in_flight_budget.cpp',
@@ -357,6 +396,8 @@ shell = find_program('sh')
       'unit/test_create_room_encryption_policy.cpp',
       'unit/test_create_room_power_level_override.cpp',
       'unit/test_create_room_entry_caps.cpp',
+      'unit/test_create_room_invite_3pid.cpp',
+      'unit/test_relations_recursion.cpp',
       'unit/test_review_regressions.cpp',
       'unit/test_room_encryption_policy.cpp',
       'unit/test_runtime_config.cpp',
@@ -458,16 +499,32 @@ shell = find_program('sh')
     # C++ allowlist, the same -DMEROVINGIAN_TEST_* pattern used below for
     # locating sibling test binaries. Never defined for a production target.
     cpp_args: ['-DMEROVINGIAN_TEST_SOURCE_ROOT="' + meson.project_source_root() + '"'],
+    link_args: password_hash_cost_link_args,
     dependencies: [catch2_dep, thread_dep, libsodium_dep, openssl_dep, libpq_dep, sqlite_dep, libcurl_dep, resolv_dep],
     link_with: [appservice_lib, auth_lib, canonicaljson_lib, core_lib, config_lib, crypto_lib, database_lib, email_lib, events_lib, federation_lib, federation_worker_lib, homeserver_lib, http_lib, identity_lib, ipc_lib, media_lib, net_lib, observability_lib, platform_lib, push_lib, rooms_lib, sync_lib, trust_safety_lib],
   )
 
   test('unit-tests', unit_tests, timeout: 600)
 
+  # Linked without the override above, to see the cost the shipped server hashes at.
+  password_cost_tests = executable(
+    'merovingian-password-cost-tests',
+    sources: files(
+      'integration/test_main.cpp',
+      'password_cost/test_production_password_cost.cpp',
+    ),
+    include_directories: inc,
+    dependencies: [catch2_dep, thread_dep, libsodium_dep],
+    link_with: [auth_lib, canonicaljson_lib, core_lib, crypto_lib],
+  )
+
+  test('password-cost-tests', password_cost_tests)
+
   conformance_tests = executable(
     'merovingian-conformance-tests',
     sources: files(
       'conformance/test_main.cpp',
+      'support/password_hash_cost.cpp',
       'conformance/test_account_data_conformance.cpp',
       'conformance/test_appservice_conformance.cpp',
       'conformance/test_appservice_assertion_conformance.cpp',
@@ -485,6 +542,7 @@ shell = find_program('sh')
       'conformance/test_token_expiry_conformance.cpp',
       'conformance/test_typing_conformance.cpp',
       'conformance/test_3pid_invite_conformance.cpp',
+      'conformance/test_third_party_invite_exchange_conformance.cpp',
       'conformance/test_event_auth_rules.cpp',
       'conformance/test_event_depth_conformance.cpp',
       'conformance/test_event_auth_legacy_boundaries.cpp',
@@ -511,6 +569,7 @@ shell = find_program('sh')
       'conformance/test_room_pagination_conformance.cpp',
       'conformance/test_room_summary_conformance.cpp',
       'conformance/test_room_v12_creation_conformance.cpp',
+      'conformance/test_room_upgrade_conformance.cpp',
       'conformance/test_sync_archive_conformance.cpp',
       'conformance/test_sync_state_conformance.cpp',
       'conformance/test_lazy_load_members_conformance.cpp',
@@ -519,6 +578,7 @@ shell = find_program('sh')
       'conformance/test_client_txn_scope_conformance.cpp',
       'conformance/test_key_backup_conformance.cpp',
       'conformance/test_key_upload_validation_conformance.cpp',
+      'conformance/test_profile_unset_fields_conformance.cpp',
       'conformance/test_route_query_conformance.cpp',
       'conformance/test_key_publication_conformance.cpp',
       'conformance/test_membership_projection_conformance.cpp',
@@ -541,6 +601,9 @@ shell = find_program('sh')
       'conformance/test_encryption_put_conformance.cpp',
       'conformance/test_room_version_table_conformance.cpp',
       'conformance/test_read_markers_conformance.cpp',
+      'conformance/test_profile_fields_conformance.cpp',
+      'conformance/test_user_report_conformance.cpp',
+      'conformance/test_password_reset_conformance.cpp',
       'conformance/test_profile_propagation_conformance.cpp',
       'conformance/test_receipt_conformance.cpp',
       'conformance/test_safety_report_conformance.cpp',
@@ -554,6 +617,7 @@ shell = find_program('sh')
       'conformance/test_x_matrix_auth_parsing.cpp',
     ),
     include_directories: inc,
+    link_args: password_hash_cost_link_args,
     dependencies: [catch2_dep, thread_dep, libsodium_dep, openssl_dep, libpq_dep, sqlite_dep, libcurl_dep, resolv_dep],
     link_with: [appservice_lib, auth_lib, canonicaljson_lib, core_lib, config_lib, crypto_lib, database_lib, email_lib, events_lib, federation_lib, homeserver_lib, http_lib, identity_lib, ipc_lib, media_lib, net_lib, observability_lib, platform_lib, push_lib, rooms_lib, sync_lib, trust_safety_lib],
   )
@@ -600,6 +664,7 @@ shell = find_program('sh')
     'merovingian-integration-tests',
     sources: files(
       'integration/test_main.cpp',
+      'support/password_hash_cost.cpp',
       'integration/test_appservice_delivery_flow.cpp',
       'integration/test_appservice_wave3_flow.cpp',
       'integration/test_appservice_thirdparty_flow.cpp',
@@ -607,6 +672,7 @@ shell = find_program('sh')
       'integration/test_client_outbound_proxy_flow.cpp',
       'integration/test_client_server_flow.cpp',
       'integration/test_email_push_flow.cpp',
+      'integration/test_health_probe_flow.cpp',
       'integration/test_federation_cross_signing_flow.cpp',
       'integration/test_space_hierarchy_federation_flow.cpp',
       'integration/test_remote_device_list_flow.cpp',
@@ -619,9 +685,13 @@ shell = find_program('sh')
       'integration/test_outbound_pdu_transaction_flow.cpp',
       'integration/test_receipt_federation_flow.cpp',
       'integration/test_homeserver_vertical_slice_flow.cpp',
+      'integration/test_retention_sweep_flow.cpp',
+      'integration/test_commit_grouping_flow.cpp',
+      'integration/test_postgresql_retention_flow.cpp',
       'integration/test_http_server_listener_flow.cpp',
       'integration/test_http_worker_fairness_flow.cpp',
       'integration/test_join_room_flow.cpp',
+      'integration/test_third_party_invite_flow.cpp',
       'integration/test_restricted_join_fallback_flow.cpp',
       'integration/test_invite_federation_flow.cpp',
       'integration/test_identity_service_flow.cpp',
@@ -635,8 +705,10 @@ shell = find_program('sh')
       'integration/test_media_thumbnail_revalidation_flow.cpp',
       'integration/test_security_audit_remote_media.cpp',
       'integration/test_observability_flow.cpp',
+      'integration/test_operator_admin_flow.cpp',
       'integration/test_pdu_ingestion_backfill_flow.cpp',
       'integration/test_persistent_homeserver_flow.cpp',
+      'integration/test_device_lifecycle_flow.cpp',
       'integration/test_database_upgrade_flow.cpp',
       'integration/test_receipt_persistence_flow.cpp',
       'integration/test_database_nul_http_flow.cpp',
@@ -657,6 +729,7 @@ shell = find_program('sh')
       'integration/test_security_audit_federated_to_device_flow.cpp',
       'integration/test_security_audit_worker_snapshot_flow.cpp',
       'integration/test_postgresql_persistence_flow.cpp',
+      'integration/test_postgresql_store_behaviour_flow.cpp',
       'integration/test_postgresql_diagnostic_flow.cpp',
       'integration/test_security_audit_postgresql_reload_flow.cpp',
       'integration/test_security_audit_postgresql_media_flow.cpp',
@@ -671,11 +744,13 @@ shell = find_program('sh')
       'integration/test_worker_policy_authority_flow.cpp',
       'integration/test_policy_server_hook_flow.cpp',
       'integration/test_state_groups_flow.cpp',
+      'integration/test_lazy_load_left_room_flow.cpp',
       'integration/test_sliding_sync_flow.cpp',
       'integration/test_sync_complement_fixture.cpp',
       'integration/test_trust_safety_policy_flow.cpp',
     ),
     include_directories: inc,
+    link_args: password_hash_cost_link_args,
     dependencies: [catch2_dep, thread_dep, libsodium_dep, openssl_dep, libpq_dep, sqlite_dep, libcurl_dep, resolv_dep],
     link_with: [appservice_lib, auth_lib, canonicaljson_lib, core_lib, config_lib, crypto_lib, database_lib, email_lib, events_lib, federation_lib, federation_worker_lib, homeserver_lib, http_lib, identity_lib, ipc_lib, media_lib, net_lib, observability_lib, platform_lib, push_lib, rooms_lib, sync_lib, trust_safety_lib],
     cpp_args: [thumbnail_test_args, thumbnail_gate_test_args, federation_worker_test_args, server_test_args,
@@ -683,9 +758,11 @@ shell = find_program('sh')
   )
 
 # Integration tests spawn real dependencies (PostgreSQL, SQLite, thumbnail
-# worker) and can be slow under sanitizers and on emulated BSD runners;
-# give them the same headroom as the load-test suite.
-  test('integration-tests', integration_tests, timeout: 900, depends: thumbnail_test_depends)
+# worker) and can be slow under sanitizers and on emulated BSD runners.
+# The limit is 30 minutes on every platform (ADR-0509). scripts/build-bsd.sh
+# doubles every limit by default, so the BSDs set half of it here.
+  integration_tests_timeout = host_machine.system() in ['freebsd', 'netbsd', 'openbsd'] ? 900 : 1800
+  test('integration-tests', integration_tests, timeout: integration_tests_timeout, depends: thumbnail_test_depends)
 
   if get_option('build_live_tests')
     live_integration_tests = executable(

@@ -219,6 +219,11 @@ namespace
 
 } // namespace
 
+auto email_smtp_settings(HomeserverRuntime const& runtime) -> std::optional<email::SmtpSettings>
+{
+    return smtp_settings(runtime);
+}
+
 auto email_push_configured(config::Config const& config) -> bool
 {
     return !config.server().email.smtp_url.empty();

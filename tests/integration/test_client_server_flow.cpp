@@ -1024,7 +1024,7 @@ SCENARIO("GET /profile/{userId} for a user of another server asks that server ov
                 "localhost", acceptor.bound_port(), {"127.0.0.1"}, certificate.certificate_pem};
 
         auto const ok_profile = merovingian::tests::tls_mock::json_http_response(
-            "200 OK", R"({"displayname":"Bob","avatar_url":"mxc://remote.example.net/a","evil":"ignored"})");
+            "200 OK", R"({"displayname":"Bob","avatar_url":"mxc://remote.example.net/a","Evil Key":"ignored"})");
         auto const not_found = merovingian::tests::tls_mock::json_http_response(
             "404 Not Found", R"({"errcode":"M_NOT_FOUND","error":"no such user"})");
         auto const responses = std::vector<std::pair<std::string, std::string>>{
@@ -1048,8 +1048,9 @@ SCENARIO("GET /profile/{userId} for a user of another server asks that server ov
                 REQUIRE(response.response.status == 200U);
                 REQUIRE(response.response.body.find("\"displayname\":\"Bob\"") != std::string::npos);
                 REQUIRE(response.response.body.find("mxc://remote.example.net/a") != std::string::npos);
-                // Rule 6: a remote answer is relayed only in its spec fields.
-                REQUIRE(response.response.body.find("evil") == std::string::npos);
+                // Rule 6: a remote answer is relayed only in its spec fields. Since v1.16 those include
+                // additional keys that meet the key grammar (ADR-0478, covered below); "Evil Key" does not.
+                REQUIRE(response.response.body.find("Evil") == std::string::npos);
                 REQUIRE(captured.size() == 1U);
                 REQUIRE(captured[0].find("GET /_matrix/federation/v1/query/profile?user_id=") == 0U);
             }
@@ -1079,6 +1080,102 @@ SCENARIO("GET /profile/{userId} for a user of another server asks that server ov
             {
                 REQUIRE(response.response.status == 404U);
                 REQUIRE(response.response.body.find("M_NOT_FOUND") != std::string::npos);
+            }
+        }
+    }
+}
+
+// Spec: Matrix Client-Server API v1.19, GET /profile/{userId}; Server-Server API v1.19, query/profile
+// ("Additional profile fields"). A remote answer is untrusted: only m.tz as a string and custom keys that meet
+// the key grammar are relayed, never null, and nothing else.
+SCENARIO("GET /profile/{userId} for a user of another server relays m.tz and valid custom fields",
+         "[homeserver][client-server][profile][profile-fields][fed-endpoints]")
+{
+    GIVEN("a remote server whose profile for @bob holds m.tz, a custom field and values this server must not relay")
+    {
+        auto const config = registration_enabled_config();
+        auto started = merovingian::homeserver::start_client_server(config);
+        REQUIRE(started.started);
+        auto& rt = started.runtime;
+
+        auto certificate = merovingian::tests::tls_mock::write_test_tls_certificate("localhost");
+        auto tls = merovingian::homeserver::make_tls_server_context(certificate.certificate_file,
+                                                                    certificate.private_key_file);
+        REQUIRE(tls.ok());
+        auto tls_context = std::move(*tls.context);
+        auto acceptor = merovingian::net::TcpAcceptor{};
+        REQUIRE(acceptor.bind("127.0.0.1", 0U).ok);
+        rt.homeserver.test_forced_outbound_resolution["remote.example.net"] =
+            merovingian::homeserver::TestOnlyForcedOutboundResolution{
+                "localhost", acceptor.bound_port(), {"127.0.0.1"}, certificate.certificate_pem};
+
+        auto const ok_profile = merovingian::tests::tls_mock::json_http_response(
+            "200 OK",
+            R"({"displayname":"Bob","m.tz":"Europe/London","org.example.x":{"a":1},"Bad Key":"no","m.unknown":"no","org.example.n":null})");
+        auto const tz_only = merovingian::tests::tls_mock::json_http_response("200 OK", R"({"m.tz":"Asia/Tokyo"})");
+        // A remote answer of about 120 KiB of valid custom fields: more than a profile may hold.
+        auto big_object = std::string{"{"};
+        for (auto index = 0; index < 2000; ++index)
+        {
+            auto number = std::to_string(index);
+            number.insert(0U, 4U - number.size(), '0');
+            big_object += (index == 0 ? "" : ",") + std::string{R"("org.example.k)"} + number + R"(":")" +
+                          std::string(40U, 'v') + R"(")";
+        }
+        big_object += "}";
+        auto const big_profile = merovingian::tests::tls_mock::json_http_response("200 OK", big_object);
+        auto const responses = std::vector<std::pair<std::string, std::string>>{
+            {"user_id=%40bob%3Aremote.example.net&field=m.tz", tz_only    },
+            {"user_id=%40bob%3Aremote.example.net",            ok_profile },
+            {"user_id=%40big%3Aremote.example.net",            big_profile},
+        };
+        auto captured = std::vector<std::string>{};
+        auto server_thread = std::thread{[&]() {
+            merovingian::tests::tls_mock::run_path_dispatch_tls_server(acceptor, tls_context, responses, &captured);
+        }};
+        auto const join_server = merovingian::tests::tls_mock::ScopedThreadJoin{server_thread};
+
+        WHEN("a client reads the whole profile of @bob:remote.example.net")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                rt, {"GET", "/_matrix/client/v3/profile/%40bob%3Aremote.example.net", {}, {}});
+
+            THEN("m.tz and the valid custom field are relayed and the rest is not")
+            {
+                REQUIRE(response.response.status == 200U);
+                REQUIRE(response.response.body.find("\"m.tz\":\"Europe/London\"") != std::string::npos);
+                REQUIRE(response.response.body.find("org.example.x") != std::string::npos);
+                REQUIRE(response.response.body.find("Bad Key") == std::string::npos);
+                REQUIRE(response.response.body.find("m.unknown") == std::string::npos);
+                REQUIRE(response.response.body.find("org.example.n") == std::string::npos);
+            }
+        }
+
+        WHEN("a client reads the profile of a user whose answer is larger than a profile may be")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                rt, {"GET", "/_matrix/client/v3/profile/%40big%3Aremote.example.net", {}, {}});
+
+            THEN("the relayed profile is kept under 64 KiB, with as many fields as fit")
+            {
+                REQUIRE(response.response.status == 200U);
+                REQUIRE(response.response.body.size() < 65536U);
+                REQUIRE(response.response.body.size() > 60000U);
+                REQUIRE(response.response.body.find("org.example.k0000") != std::string::npos);
+            }
+        }
+
+        WHEN("a client reads only m.tz")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                rt, {"GET", "/_matrix/client/v3/profile/%40bob%3Aremote.example.net/m.tz", {}, {}});
+
+            THEN("the federation request named the field and the answer holds just it")
+            {
+                REQUIRE(response.response.status == 200U);
+                REQUIRE(response.response.body == R"({"m.tz":"Asia/Tokyo"})");
+                REQUIRE(captured.size() == 1U);
+                REQUIRE(captured[0].find("&field=m.tz") != std::string::npos);
             }
         }
     }

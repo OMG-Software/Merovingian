@@ -709,6 +709,179 @@ SCENARIO("Inbound federation handles non-transaction endpoints with PDU validati
     }
 }
 
+SCENARIO("Inbound federation refuses an invite whose event has no depth", "[federation][inbound][invite][depth]")
+{
+    GIVEN("a signed v2 invite whose event omits the required depth")
+    {
+        auto runtime = merovingian::federation::make_federation_runtime_state(runtime_config());
+        auto const origin = std::string{"matrix.example.org"};
+        auto const key_id = std::string{"ed25519:auto"};
+        auto const token = std::string{"verify-token"};
+        merovingian::federation::upsert_remote(runtime, remote_for(origin, key_id, token));
+        auto const unsigned_invite_json = std::string{
+            "{\"type\":\"m.room.member\",\"state_key\":\"@alice:matrix.example.org\",\"sender\":\"@alice:matrix."
+            "example.org\",\"room_id\":\"!room1:example.org\",\"content\":{\"membership\":\"invite\"},\"origin_"
+            "server_ts\":1000,\"prev_events\":[],\"auth_events\":[]}"};
+        auto const invite_event_json =
+            merovingian::federation::test::make_signed_event_json(unsigned_invite_json, origin, key_id, token, "12");
+        REQUIRE_FALSE(invite_event_json.empty());
+
+        auto invite_seen = std::make_shared<bool>(false);
+        runtime.invite_handler = [invite_seen](merovingian::federation::InviteRequest const& request) {
+            *invite_seen = true;
+            auto result = merovingian::federation::InviteAcceptResult{};
+            result.accepted = true;
+            result.status = 200U;
+            result.signed_event_json = request.invite_event_json;
+            return result;
+        };
+        runtime.room_version_resolver = [](std::string_view) {
+            return std::string{"10"};
+        };
+        auto request = signed_request(origin, key_id, token, invite_event_json);
+        request.target = "/_matrix/federation/v1/invite/!room1:example.org/" +
+                         merovingian::federation::test::reference_hash_event_id(invite_event_json, "12");
+        request.signature = merovingian::federation::make_federation_signature(
+            origin, request.destination, request.method, request.target, request.body,
+            merovingian::federation::test::keypair_from_seed(token).secret_key);
+
+        WHEN("the request is handled")
+        {
+            auto const response = merovingian::federation::handle_inbound_federation_request(runtime, request);
+
+            THEN("it is refused as malformed and the invite handler never runs")
+            {
+                REQUIRE(response.status == 400U);
+                REQUIRE_FALSE(*invite_seen);
+            }
+        }
+    }
+}
+
+// Spec: Server-Server API v1.19, PUT /exchange_third_party_invite/{roomId}. The body checks are the spec's ("`room_id`
+// Must match the ID given in the path", `type` "Must be `m.room.member`", `membership` "Must be `invite`"); that the
+// caller is the invited user's own server is this server's rule (ADR-0485).
+SCENARIO("Inbound federation hands a valid exchange_third_party_invite to the exchanger and refuses a bad one",
+         "[federation][inbound][3pid][exchange]")
+{
+    GIVEN("a runtime with an exchanger and a verified peer matrix.example.org")
+    {
+        // Build a runtime that trusts `origin` so signature/origin checks pass and this test can focus on
+        // exchange_third_party_invite request-shape and caller-authorization rules.
+        auto runtime = merovingian::federation::make_federation_runtime_state(runtime_config());
+        auto const origin = std::string{"matrix.example.org"};
+        auto const key_id = std::string{"ed25519:auto"};
+        auto const token = std::string{"verify-token"};
+        merovingian::federation::upsert_remote(runtime, remote_for(origin, key_id, token));
+        // Capture every exchanger invocation so assertions can verify whether malformed requests were blocked
+        // before business logic and whether valid requests were forwarded with expected payload/origin.
+        auto calls = std::vector<merovingian::federation::ThirdPartyInviteExchange>{};
+        auto origins = std::vector<std::string>{};
+        runtime.third_party_invite_exchanger =
+            [&calls, &origins](merovingian::federation::ThirdPartyInviteExchange const& exchange,
+                               std::string const& caller) {
+                calls.push_back(exchange);
+                origins.push_back(caller);
+                return merovingian::federation::ThirdPartyInviteExchangeResult{true, 200U, {}};
+            };
+        // Helper that produces a minimally complete third-party-invite member event while letting each test
+        // vary one field (type/membership/room_id/state_key) to trigger the corresponding validator path.
+        auto const body_for = [](std::string const& type, std::string const& membership, std::string const& room_id,
+                                 std::string const& state_key) {
+            return std::string{R"({"content":{"membership":")"} + membership +
+                   R"(","third_party_invite":{"display_name":"b","signed":{"mxid":")" + state_key +
+                   R"(","signatures":{"is.example":{"ed25519:0":"c2ln"}},"token":"t"}}},"room_id":")" + room_id +
+                   R"(","sender":"@alice:example.org","state_key":")" + state_key + R"(","type":")" + type + R"("})";
+        };
+        auto const send = [&](std::string const& body) {
+            auto request = signed_request(origin, key_id, token, body);
+            request.target = "/_matrix/federation/v1/exchange_third_party_invite/!room1:example.org";
+            request.signature = merovingian::federation::make_federation_signature(
+                origin, request.destination, request.method, request.target, request.body,
+                merovingian::federation::test::keypair_from_seed(token).secret_key);
+            return merovingian::federation::handle_inbound_federation_request(runtime, request);
+        };
+
+        WHEN("the invited user's own server sends a well-formed exchange")
+        {
+            auto const response =
+                send(body_for("m.room.member", "invite", "!room1:example.org", "@bob:matrix.example.org"));
+
+            THEN("the exchanger is given the checked fields and the answer is an empty object")
+            {
+                REQUIRE(response.status == 200U);
+                REQUIRE(response.body == "{}");
+                REQUIRE(calls.size() == 1U);
+                REQUIRE(calls.front().room_id == "!room1:example.org");
+                REQUIRE(calls.front().sender == "@alice:example.org");
+                REQUIRE(calls.front().target_user_id == "@bob:matrix.example.org");
+                REQUIRE(calls.front().signed_invite.token == "t");
+                REQUIRE(origins.front() == origin);
+            }
+        }
+
+        WHEN("a server sends an exchange for a user of another server")
+        {
+            auto const response =
+                send(body_for("m.room.member", "invite", "!room1:example.org", "@bob:other.example.net"));
+
+            THEN("it is forbidden and the exchanger never runs")
+            {
+                REQUIRE(response.status == 403U);
+                REQUIRE(calls.empty());
+            }
+        }
+
+        WHEN("the body's room_id differs from the path, the type is not m.room.member or the membership is not invite")
+        {
+            auto const wrong_room =
+                send(body_for("m.room.member", "invite", "!other:example.org", "@bob:matrix.example.org"));
+            auto const wrong_type =
+                send(body_for("m.room.message", "invite", "!room1:example.org", "@bob:matrix.example.org"));
+            auto const wrong_membership =
+                send(body_for("m.room.member", "join", "!room1:example.org", "@bob:matrix.example.org"));
+            auto const not_json = send("[]");
+
+            THEN("each is a 400 and the exchanger never runs")
+            {
+                REQUIRE(wrong_room.status == 400U);
+                REQUIRE(wrong_type.status == 400U);
+                REQUIRE(wrong_membership.status == 400U);
+                REQUIRE(not_json.status == 400U);
+                REQUIRE(calls.empty());
+            }
+        }
+
+        WHEN("the exchanger refuses")
+        {
+            runtime.third_party_invite_exchanger = [](merovingian::federation::ThirdPartyInviteExchange const&,
+                                                      std::string const&) {
+                return merovingian::federation::ThirdPartyInviteExchangeResult{false, 403U, "not authorised"};
+            };
+            auto const response =
+                send(body_for("m.room.member", "invite", "!room1:example.org", "@bob:matrix.example.org"));
+
+            THEN("its status and an errcode are relayed")
+            {
+                REQUIRE(response.status == 403U);
+                REQUIRE(response.body.find("\"errcode\":\"M_FORBIDDEN\"") != std::string::npos);
+            }
+        }
+
+        WHEN("there is no exchanger, as in a federation worker")
+        {
+            runtime.third_party_invite_exchanger = {};
+            auto const response =
+                send(body_for("m.room.member", "invite", "!room1:example.org", "@bob:matrix.example.org"));
+
+            THEN("the endpoint is not implemented")
+            {
+                REQUIRE(response.status == 501U);
+            }
+        }
+    }
+}
+
 SCENARIO("Inbound federation rejects malformed send targets and unsigned PDUs", "[federation][inbound][security]")
 {
     GIVEN("a runtime with malformed transaction requests")

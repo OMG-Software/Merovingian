@@ -7,9 +7,8 @@ Spec authority: ../../docs/matrix-v1.19-spec/client-server-api.md
 
 | File | Responsibility |
 |---|---|
-| `client_server_api.cpp` | Registration, login and logout routing and policy |
-| `session.cpp` | Client-auth endpoint policy: which endpoints need an access token or mutate a session, registration policy, session-active decisions, audit-event construction |
-| `token.cpp` | Token entropy checks, token hashing (`hash_access_token_v2/v3/v4`), constant-time comparison, log redaction |
+| `session.cpp` | Registration policy (enabled, token required). Whether a session is live is decided by `find_session` and the `revoked` flag in `src/homeserver/auth_service.cpp`, not here |
+| `token.cpp` | Token hashing (`hash_access_token_v2/v3/v4`), constant-time comparison |
 | `identity.cpp` | Validation of user IDs, localparts, device IDs and server names; login policy |
 | `password.cpp` | Argon2id hashing and verification of passwords and registration tokens |
 | `oidc_discovery.cpp` | OIDC / RFC 8414 authorisation-server metadata built from `config::OidcConfig` |
@@ -28,6 +27,8 @@ UIAA and `/whoami` are implemented in `src/homeserver/client_server.cpp`, not in
    `crypto/constant_time.hpp`, never `==` or `memcmp`.
 4. **Argon2id for password hashing.** Use `crypto_pwhash` with `OPSLIMIT_INTERACTIVE` and
    `MEMLIMIT_INTERACTIVE`. Never use SHA or bcrypt for passwords.
+   The test binaries replace the cost at link time and refuse any other parameters, so changing these fails every
+   test that registers or logs in; `tests/password_cost/` pins them (ADR-0510).
 5. **Validate all user IDs** against the identifier grammar before accepting registration.
 6. **Revocation is one-way.** Never restore a revoked token; revoke more narrowly instead
    (e.g. `revoke_tokens_for_user_except_device`). See ADR-0052.
@@ -67,6 +68,14 @@ account must not be consulted by user-interactive-auth password checks, which ha
 failures must not feed the login tables either. A successful login clears only the (account,
 source) key, never the per-account ceiling. Keep the cap and the amortised-O(1) expiry: no code
 path may scan a table. See `docs/auth-identity.md` "Failed-login throttle".
+
+## Session lookup and retention
+
+`LocalDatabase::sessions` is a `homeserver::SessionTable`: `find` narrows by an index of token-hash digests and then calls
+the caller's predicate, which must compare the full hashes with `constant_time_equal` (rule 3). Never answer a lookup from
+the index alone, never add a fall-back scan for a miss (an unknown token is the common attack), and change a session's
+hash only through `set_access_token_hash`. The `retention-sweep` job erases sessions that can never authenticate again and
+deletes their rows; it keeps a revoked refresh token until it expires so reuse is still detected (ADR-0488).
 
 ## Token lifecycle
 

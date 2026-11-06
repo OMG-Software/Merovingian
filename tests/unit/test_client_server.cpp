@@ -3092,9 +3092,9 @@ SCENARIO("Invite and knock recipients receive only stripped room summaries",
             return std::pair{login_token(response.response.body),
                              *string_member(parse_object(response.response.body), "user_id")};
         };
-        auto const [alice_token, alice] = register_user("alice");
-        auto const [bob_token, bob] = register_user("bob");
-        auto const [carol_token, carol] = register_user("carol");
+        auto const alice_token = register_user("alice").first;
+        auto const bob_token = register_user("bob").first;
+        auto const carol_token = register_user("carol").first;
         auto const [mallory_token, mallory] = register_user("mallory");
         auto const create = merovingian::homeserver::handle_client_server_request(
             runtime,
@@ -5802,11 +5802,12 @@ SCENARIO("Profile endpoint returns a user profile stub for authenticated clients
             auto const response = merovingian::homeserver::handle_client_server_request(
                 runtime, {"GET", "/_matrix/client/v3/profile/%40alice%3Aexample.org", token, {}});
 
-            THEN("the response is 200 and contains displayname and avatar_url fields")
+            THEN("the response is 200 and leaves out the fields the user has not set")
             {
                 REQUIRE(response.response.status == 200U);
-                REQUIRE(response.response.body.find("displayname") != std::string::npos);
-                REQUIRE(response.response.body.find("avatar_url") != std::string::npos);
+                // Spec: "otherwise not present" (analysis CS2); this asserted both as empty strings.
+                REQUIRE(response.response.body.find("displayname") == std::string::npos);
+                REQUIRE(response.response.body.find("avatar_url") == std::string::npos);
             }
         }
 
@@ -5818,7 +5819,7 @@ SCENARIO("Profile endpoint returns a user profile stub for authenticated clients
             THEN("the response is 200 - profile lookup is unauthenticated per the Matrix spec")
             {
                 REQUIRE(response.response.status == 200U);
-                REQUIRE(response.response.body.find("displayname") != std::string::npos);
+                REQUIRE(response.response.body.find("displayname") == std::string::npos);
             }
         }
     }
@@ -10268,9 +10269,6 @@ SCENARIO("PUT /presence/{userId}/status persists Matrix presence and rejects inv
                 auto const response_body = parse_object(response.response.body);
                 REQUIRE(response_body.empty());
 
-                auto const stored = merovingian::database::find_profile(runtime.homeserver.database.persistent_store,
-                                                                        "@alice:example.org");
-                std::ignore = stored;
                 auto const presence = std::ranges::find_if(runtime.homeserver.database.persistent_store.presence_states,
                                                            [](auto const& state) {
                                                                return state.user_id == "@alice:example.org";
