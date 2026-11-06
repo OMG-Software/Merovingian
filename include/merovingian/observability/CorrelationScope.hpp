@@ -7,10 +7,13 @@
 namespace merovingian::observability
 {
 
+// Publishes a correlation context on the calling thread for the scope's lifetime, then restores the previous one.
+// The scope owns its copy of the context and publishes a pointer to that copy, so what readers see cannot change or
+// dangle while the scope is open, whatever happens to the caller's object (CodeQL cpp/stack-address-escape).
 class CorrelationScope final
 {
 public:
-    explicit CorrelationScope(CorrelationContext const& context) noexcept;
+    explicit CorrelationScope(CorrelationContext context) noexcept;
     CorrelationScope(CorrelationScope const& other) = delete;
     auto operator=(CorrelationScope const& other) -> CorrelationScope& = delete;
     CorrelationScope(CorrelationScope&& other) = delete;
@@ -18,6 +21,7 @@ public:
     ~CorrelationScope();
 
 private:
+    CorrelationContext context_;
     CorrelationContext const* previous_{nullptr};
 };
 

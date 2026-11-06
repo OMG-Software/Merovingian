@@ -1,6 +1,12 @@
 ## 0.12.77
 
-The largest multi-type files are split into one file per class or struct (ADR-0466, ADR-0467). No behaviour changes.
+The largest multi-type files are split into one file per class, struct or enum (ADR-0466, ADR-0467). The code quality and security findings SonarQube Cloud raised on the split files are fixed, which changes one behaviour: an appservice may use plain http only to a loopback address or a host the operator lists.
+
+### Security
+
+- An appservice registration `url` may use `http` only when its host is a loopback IP literal (127.0.0.0/8 or `::1`) or is listed in the new `appservice.allow_cleartext_hosts` key; every other host must use `https`, because the homeserver sends the `hs_token` with each request. A registration that breaks the rule, or whose `url` has userinfo or a query, is skipped at start-up with a warning, and the client refuses such a call before any lookup (ADR-0515). The Complement configuration lists `host.docker.internal`.
+- The appservice client parses its URL with the shared libcurl-backed parser, so an IPv6 literal host and a `url` path of `/` are handled correctly. SMTP and appservices share one loopback-literal check (`net::is_loopback_ip_literal`).
+- `observability::CorrelationScope` holds its own copy of the request's correlation context and publishes a pointer to that copy, not to the caller's object, so the thread's published context cannot change or dangle while the scope is open (CodeQL `cpp/stack-address-escape`). New unit test `test_correlation_scope.cpp` (`[correlation]`).
 
 ### Changed
 
@@ -9,6 +15,15 @@ The largest multi-type files are split into one file per class or struct (ADR-04
 - Files that used the old headers now include the headers for the types they use.
 - Coding rules: a helper class or struct used by one `.cpp` file stays in its anonymous namespace; a helper needed by a second file moves to its own file instead of being copied; nested types stay with their enclosing type (ADR-0513).
 - Coding rules: enums count as types for the one-type-per-file and filename rules (ADR-0514). The enums the split left beside a class or grouped in shared headers now each have their own `<EnumName>.hpp`, and `outbound_error.hpp` and `persistent_store_backend.hpp` are renamed `OutboundError.hpp` and `PersistentStoreBackend.hpp`.
+- The default federation deny list and the private/loopback range checks derive from one numeric table of special-use blocks instead of repeated address strings; `is_private_or_loopback_range` compares parsed values, so equal spellings such as `FC00::/7` are recognised (ADR-0516).
+- The outbound client matches the URL scheme by name; its cleartext opt-in is unchanged.
+- `PersistentStore` and `FederationRuntimeState` hold their mutexes by value through `core::CopyableMutex` and `core::CopyableConditionVariable`, instead of behind `unique_ptr`/`shared_ptr`; a copy or move gets a fresh, unlocked mutex (ADR-0517).
+- The federation state mutex is a plain `std::mutex`. The one path that locked it twice (recording a completed transaction) now uses a helper that expects the lock to be held (ADR-0518).
+- The runtime state rings are `std::list` instead of `std::deque` (and the test-only captured statements a `std::vector`), so `FederationRuntimeState`, `LocalDatabase`, `AppserviceEphemeralQueue` and `PersistentStore` move without throwing; a `static_assert` keeps it so (ADR-0519, superseding ADR-0268).
+- `HttpServeStats` and `ExaminedRows` use the default memory order (ADR-0520).
+- The room position index is a `RoomPositionIndex` class with its own lock; a moved index starts empty and rebuilds on use (ADR-0521).
+- `RuntimeMutex`'s lock functions are `const` and `HomeserverRuntime::mutex` is no longer `mutable`; the runtime mutex is locked through `homeserver::RuntimeLock` (ADR-0522).
+- Identifiers named `module`, a C++20 contextual keyword, are renamed `module_name`.
 
 ## 0.12.76
 

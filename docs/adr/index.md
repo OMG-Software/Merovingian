@@ -251,7 +251,7 @@
 * [0265 - Membership changes reach the room roster through one function](0265-membership-changes-reach-the-room-roster-through-one-function.md)
 * [0266 - Pin third-party GitHub Actions to a full commit SHA](0266-pin-third-party-github-actions-to-a-full-commit-sha.md)
 * [0267 - Bounded parallel work holds each slot in an RAII permit](0267-bounded-parallel-work-holds-each-slot-in-an-raii-permit.md)
-* [0268 - Runtime state structs keep their implicit, possibly throwing, moves](0268-runtime-state-structs-keep-their-implicit-throwing-moves.md)
+* [0268 - Runtime state structs keep their implicit, possibly throwing, moves](0268-runtime-state-structs-keep-their-implicit-throwing-moves.md) — Superseded by ADR-0519
 * [0269 - The room version resolver does not guess for unknown rooms](0269-the-room-version-resolver-does-not-guess-for-unknown-rooms.md)
 * [0270 - Spelling variants of the sniffed MIME type match](0270-spelling-variants-of-the-sniffed-mime-type-match.md)
 * [0271 - Room summaries answer unauthenticated callers uniformly, for local rooms only](0271-room-summaries-answer-unauthenticated-callers-uniformly.md)
@@ -484,3 +484,11 @@
 * [0512 - Group external headers before the standard library](0512-group-external-headers-before-the-standard-library.md)
 * [0513 - Single-file helper types stay in the anonymous namespace](0513-single-file-helper-types-stay-in-the-anonymous-namespace.md)
 * [0514 - Enums count as types for the one-type-per-file rule](0514-enums-count-as-types-for-the-one-type-per-file-rule.md)
+* [0515 - Appservice cleartext http only to loopback literals or listed hosts](0515-appservice-cleartext-http-only-to-loopback-literals-or-listed-hosts.md)
+* [0516 - Special-use IP ranges are defined once, as numbers](0516-special-use-ip-ranges-are-defined-once-as-numbers.md)
+* [0517 - Guarded value types hold their mutex by value](0517-guarded-value-types-hold-their-mutex-by-value.md)
+* [0518 - The federation state mutex is not recursive](0518-the-federation-state-mutex-is-not-recursive.md)
+* [0519 - Runtime state rings use std::list so moves cannot throw](0519-runtime-state-rings-use-std-list-so-moves-cannot-throw.md) — Supersedes ADR-0268
+* [0520 - Statistics counters use the default memory order](0520-statistics-counters-use-the-default-memory-order.md)
+* [0521 - The room position index guards itself](0521-the-room-position-index-guards-itself.md)
+* [0522 - The runtime mutex locks through const](0522-the-runtime-mutex-locks-through-const.md)
