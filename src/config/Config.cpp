@@ -36,6 +36,7 @@
 #include <cstdint>
 #include <limits>
 #include <optional>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <system_error>
@@ -644,9 +645,11 @@ auto default_federation_deny_ip_ranges() -> std::vector<std::string>
     {
         auto text = std::array<char, INET6_ADDRSTRLEN>{};
         auto const family = block.ipv6 ? AF_INET6 : AF_INET;
+        // Every block in the table is a valid address and the buffer holds the longest one, so this cannot
+        // fail. Never skip a block silently: that would drop a range from the default deny list.
         if (::inet_ntop(family, block.network.data(), text.data(), static_cast<socklen_t>(text.size())) == nullptr)
         {
-            continue;
+            throw std::logic_error{"special-use IP block cannot be formatted"};
         }
         ranges.push_back(std::string{text.data()} + "/" + std::to_string(block.prefix));
     }
