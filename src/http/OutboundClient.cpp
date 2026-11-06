@@ -49,9 +49,6 @@ namespace
         observability::log_diagnostic("outbound_client", event, fields, severity);
     }
 
-    constexpr auto https_scheme = "https://"sv;
-    constexpr auto http_scheme = "http://"sv;
-
     // libcurl global init/cleanup guard. Constructed once on first use via a
     // function-local static (thread-safe per C++11+ magic statics) and torn
     // down at program exit. curl_global_init is documented as not thread-safe
@@ -145,29 +142,29 @@ namespace
         });
     }
 
-    [[nodiscard]] auto starts_with_https(std::string_view url) noexcept -> bool
-    {
-        return url.size() > https_scheme.size() && url.substr(0U, https_scheme.size()) == https_scheme;
-    }
-
-    [[nodiscard]] auto starts_with_http(std::string_view url) noexcept -> bool
-    {
-        return url.size() > http_scheme.size() && url.substr(0U, http_scheme.size()) == http_scheme;
-    }
-
-    // Length of the scheme prefix this request is permitted to use: always
-    // "https://", and â€” only when the request has explicitly opted in via
-    // OutboundRequest::allow_cleartext_http â€” also "http://". Returns 0 for
-    // anything else, which every caller below treats as "reject".
+    // Length of the scheme plus its "://" separator that this request is
+    // permitted to use: always "https", and — only when the request has
+    // explicitly opted in via OutboundRequest::allow_cleartext_http — also
+    // "http". The scheme token is compared case-sensitively and at least one
+    // character must follow the separator. Returns 0 for anything else, which
+    // every caller below treats as "reject".
     [[nodiscard]] auto permitted_scheme_length(std::string_view url, bool allow_cleartext_http) noexcept -> std::size_t
     {
-        if (starts_with_https(url))
+        constexpr auto separator = "://"sv;
+        auto const separator_at = url.find(separator);
+        if (separator_at == std::string_view::npos)
         {
-            return https_scheme.size();
+            return 0U;
         }
-        if (allow_cleartext_http && starts_with_http(url))
+        auto const prefix_length = separator_at + separator.size();
+        if (url.size() <= prefix_length)
         {
-            return http_scheme.size();
+            return 0U;
+        }
+        auto const scheme = url.substr(0U, separator_at);
+        if (scheme == "https"sv || (allow_cleartext_http && scheme == "http"sv))
+        {
+            return prefix_length;
         }
         return 0U;
     }
