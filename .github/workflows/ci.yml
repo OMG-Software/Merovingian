@@ -577,6 +577,9 @@ jobs:
             cp config/merovingian.conf.example artifacts/config/
             cp README.md docs/user-manual.md docs/security-review-checklist.md artifacts/docs/
             tar -C artifacts -czf merovingian-freebsd-artifacts.tar.gz .
+            # The VM action copies the workspace back over one connection. Without the
+            # build tree that is megabytes, not gigabytes.
+            rm -rf build
 
       - name: Upload FreeBSD CI artifacts
         uses: actions/upload-artifact@v4
@@ -592,7 +595,6 @@ jobs:
   # unit/integration/smoke tests) on OpenBSD itself.
   openbsd-build-and-test:
     runs-on: ubuntu-latest
-    continue-on-error: true
 
     steps:
       - uses: actions/checkout@v4
@@ -629,6 +631,9 @@ jobs:
             cp config/merovingian.conf.example artifacts/config/
             cp README.md docs/user-manual.md docs/security-review-checklist.md artifacts/docs/
             tar -C artifacts -czf merovingian-openbsd-artifacts.tar.gz .
+            # The VM action copies the workspace back over one connection. Without the
+            # build tree that is megabytes, not gigabytes.
+            rm -rf build
 
       - name: Upload OpenBSD CI artifacts
         uses: actions/upload-artifact@v4
@@ -642,7 +647,6 @@ jobs:
   # Tier 1 platform. Same full build+test path as the other BSDs.
   netbsd-build-and-test:
     runs-on: ubuntu-latest
-    continue-on-error: true
 
     steps:
       - uses: actions/checkout@v4
@@ -728,6 +732,9 @@ jobs:
             cp config/merovingian.conf.example artifacts/config/
             cp README.md docs/user-manual.md docs/security-review-checklist.md artifacts/docs/
             tar -C artifacts -czf merovingian-netbsd-artifacts.tar.gz .
+            # The VM action copies the workspace back over one connection. Without the
+            # build tree that is megabytes, not gigabytes.
+            rm -rf build
 
       - name: Upload NetBSD CI artifacts
         uses: actions/upload-artifact@v4

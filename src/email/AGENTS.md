@@ -1,7 +1,7 @@
 # src/email/ — Outbound Email
 
-The SMTP client and the email messages this server sends. Its only user today is kind `"email"`
-pushers (ADR-0219, ADR-0220): the policy (who is mailed, when, and what) is in
+The SMTP client and the email messages this server sends. Its users are kind `"email"`
+pushers (ADR-0219, ADR-0220) and password reset by email (ADR-0481): the policy (who is mailed, when, and what) is in
 `push/email_digest_queue.cpp` and `homeserver/email_push.cpp`. This module only checks addresses,
 parses the relay URL, builds a message, and sends it.
 
@@ -15,7 +15,7 @@ address). The spec says nothing about transport or content; ADR-0219 and ADR-022
 |---|---|
 | `mailbox_address.cpp` | `is_safe_mailbox_address`: whether an address may be written into an SMTP command or a header as it stands |
 | `smtp_endpoint.cpp` | `parse_smtp_url`: `smtps://host[:port]` or `smtp://host[:port]`, and whether the host is a loopback IP literal |
-| `notification_email.cpp` | `build_unread_notification_email`: the RFC 5322 message carrying an unread count, and nothing else |
+| `notification_email.cpp` | `build_unread_notification_email`: the RFC 5322 message carrying an unread count, and nothing else; `build_password_reset_email`: the message carrying a password-reset code (ADR-0481) |
 | `smtp_client.cpp` | `send_smtp_message` (one libcurl SMTP session) and `smtp_protocol_available` |
 
 `mailbox_address.cpp` and `smtp_endpoint.cpp` are pure and are called by `config::validate`, which
@@ -40,8 +40,10 @@ is why `email` is built before `config` in `src/meson.build`.
    (`CURLOPT_PROTOCOLS_STR`). One handle per send, destroyed when the send ends.
 6. **Never call `send_smtp_message` with a lock held.** It blocks for up to the configured
    timeouts. The email job calls it with `runtime.mutex` released.
-7. **The message carries only what ADR-0219 allows**: the unread count and the server name. Adding
-   a room name, a sender or message text is a change to ADR-0219, not to this module.
+7. **The unread-count message carries only what ADR-0219 allows**: the unread count and the server name. Adding
+   a room name, a sender or message text is a change to ADR-0219, not to this module. The password-reset message
+   (`build_password_reset_email`, ADR-0481) carries the server name and the 8-character code only; its code must be
+   `[A-Z2-9]`, so it can never carry a line break.
 8. **Only the main process sends email.** The federation worker clears `server.email` in its
    config copy (`worker_event_loop.cpp`); do not add a send path reachable from the worker.
 

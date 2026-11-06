@@ -23,6 +23,7 @@
 - Device and key APIs
 - E2EE /keys/upload signature validation (verifies one-time and fallback key signatures against the device's own identity key, rejecting unverifiable keys with 400 M_INVALID_SIGNATURE)
 - Token handling
+- The operator surface (`/_merovingian/admin/*`): one route table (`observability::admin_routes()`) that the dispatcher, the router and the rate limiter all read (ADR-0504); administrators can lock, suspend and permanently deactivate accounts (`confirm` required, ADR-0506); there is no route that stops the process (ADR-0505)
 - Server signing-key persistence
 - Media handling
 - Image decoding (thumbnail generation; isolated in a sandboxed worker)
@@ -1573,8 +1574,9 @@ threat it closes; the controls above are the standing defences these reinforce.
   `PersistentStore::audit_log` keep only the newest 1 024 rows; actor, target and
   reason are cut to 255 bytes on a UTF-8 boundary with invalid bytes and control
   characters replaced. `login.rejected` and `login.throttled` are gated the
-  same way. **Residual:** the `audit_log` table itself has no retention, so a
-  distributed flood of ungated kinds still grows it. Rejected requests beyond a
+  same way. **Residual:** the `audit_log` table is trimmed only past
+  `security.audit_log_retention_days` (default 365, ADR-0489), so a distributed
+  flood of ungated kinds still grows it for that long. Rejected requests beyond a
   window's allowance keep their diagnostic log line but no audit row.
 
 - **Committed statements and their parameters retained in memory (2026-09-29
@@ -2888,3 +2890,26 @@ nothing, all from trusting the worker's view or the hook's transport.
   a peer could lose a batch and be charged against its budget. Authentication now reads the numbers as received; only a
   signature that was checked and failed is charged. **Residual risk:** events in room versions 3 to 5 holding such a number
   stay unsupported, a recorded deviation from the spec.
+
+### Third-party invites over federation, and discovery redirects (ADR-0483, ADR-0484, ADR-0485)
+
+- **An unauthenticated request can make this server send signed requests to destinations the caller chose
+  (`PUT /_matrix/federation/v1/3pid/onbind`).** The spec says the endpoint needs no authentication (an identity server
+  calls it). A request that names a real local user (`mxid`) and lists invites whose `sender` is a user of another server
+  makes this server send a signed `PUT exchange_third_party_invite` to the sender's server, so the destination is chosen by
+  the caller. Bounds: at most `max_third_party_bind_invites` (32) invites are read per request (the rest are counted and
+  logged), one ADR-0079 outbound slot per request keyed by the caller's address (429 when spent), one 30 second deadline
+  shared by all of them, discovery through the usual deny-list and private-range rules, and the operator's server policy
+  applied to the outbound call. An unknown, deactivated or foreign `mxid` is answered like a known one and does nothing, so
+  the endpoint is no account oracle. **Residual risk:** a caller can still cause up to 32 signed requests per allowed
+  request to servers of its choosing, within the per-address share of the outbound budget; there is no operator allowlist
+  of identity servers, and no per-address request rate limit beyond the generic HTTP layer.
+- **A replayed identity-server `signed` object (ADR-0485).** The object never expires. `exchange_third_party_invite` runs
+  only for the invited user's own server (X-Matrix origin equals the server of `state_key`), refuses a user already joined
+  or banned, and takes the display name from the room's own event. The signature is checked by the authorisation rules
+  against the keys of the room's `m.room.third_party_invite`; `key_validity_url` is never fetched, so a room member cannot
+  point this server at a URL through it. **Residual risk:** a user who left can be invited again by a still-valid object.
+- **Well-known redirects (ADR-0483).** A delegation document may now be reached through up to four redirects. Each hop is
+  https only, re-resolved and checked against the deny-list and private-range rule, pinned to the checked addresses, and
+  bounded by one shared deadline; a loop ends the chain. **Residual risk:** a remote operator can still make this server
+  fetch from up to five hosts of its choosing per discovery, all public by the same address rules.

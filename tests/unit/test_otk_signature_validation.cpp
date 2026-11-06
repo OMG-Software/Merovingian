@@ -490,3 +490,70 @@ SCENARIO("E2EE /keys/upload rejects signed_curve25519 OTKs when no device identi
         }
     }
 }
+
+// --- A refused upload stores and announces nothing (analysis C4) -------------
+//
+// This server judges the whole /keys/upload body before it stores any of it: a request answered with an error leaves
+// the device's key set as it was and no device-list change is announced for it.
+SCENARIO("E2EE /keys/upload judges the whole body before it stores or announces anything",
+         "[homeserver][client-server][e2ee][upload-atomic]")
+{
+    GIVEN("a logged-in device that has published no keys")
+    {
+        auto started = merovingian::homeserver::start_client_server(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        REQUIRE(merovingian::homeserver::handle_client_server_request(
+                    runtime, {"POST", "/_matrix/client/v3/register", {}, register_body("inviter", "CorrectHorse7!")})
+                    .response.status == 200U);
+        auto const login = merovingian::homeserver::handle_client_server_request(
+            runtime, {"POST",
+                      "/_matrix/client/v3/login",
+                      {},
+                      login_body("@inviter:example.org", "CorrectHorse7!", "INVITER_DEV")});
+        REQUIRE(login.response.status == 200U);
+        auto const token = login_token(login.response.body);
+        auto const& store = runtime.homeserver.database.persistent_store;
+        auto const changes_before = store.device_list_changes.size();
+        auto const keypair = merovingian::federation::test::keypair_from_seed("inviter-dev-seed");
+        auto const pubkey_b64 = merovingian::events::matrix_base64_from_bytes(keypair.public_key);
+
+        WHEN("the body carries valid device keys and a one-time key signed by another key")
+        {
+            auto const upload = merovingian::homeserver::handle_client_server_request(
+                runtime,
+                {"POST", "/_matrix/client/v3/keys/upload", token,
+                 std::string{
+                     R"({"device_keys":{"user_id":"@inviter:example.org","device_id":"INVITER_DEV","algorithms":["m.olm.v1.curve25519-aes-sha2"],"keys":{"curve25519:INVITER_DEV":"AAAA_CURVE","ed25519:INVITER_DEV":")"} +
+                     pubkey_b64 +
+                     R"("}},"one_time_keys":{"signed_curve25519:AAAA":{"key":"OTK_KEY_1","signatures":{"@inviter:example.org":{"ed25519:INVITER_DEV":"AAAA"}}}}})"});
+
+            THEN("it is refused and the device keys are neither stored nor announced")
+            {
+                REQUIRE(upload.response.status == 400U);
+                REQUIRE(store.device_keys.empty());
+                REQUIRE(store.one_time_keys.empty());
+                REQUIRE(store.device_list_changes.size() == changes_before);
+            }
+        }
+
+        WHEN("the body carries valid device keys and a fallback key signed by another key")
+        {
+            auto const upload = merovingian::homeserver::handle_client_server_request(
+                runtime,
+                {"POST", "/_matrix/client/v3/keys/upload", token,
+                 std::string{
+                     R"({"device_keys":{"user_id":"@inviter:example.org","device_id":"INVITER_DEV","algorithms":["m.olm.v1.curve25519-aes-sha2"],"keys":{"curve25519:INVITER_DEV":"AAAA_CURVE","ed25519:INVITER_DEV":")"} +
+                     pubkey_b64 +
+                     R"("}},"fallback_keys":{"signed_curve25519:FFFF":{"fallback":true,"key":"FB_KEY_1","signatures":{"@inviter:example.org":{"ed25519:INVITER_DEV":"AAAA"}}}}})"});
+
+            THEN("it is refused and nothing is stored or announced")
+            {
+                REQUIRE(upload.response.status == 400U);
+                REQUIRE(store.device_keys.empty());
+                REQUIRE(store.fallback_keys.empty());
+                REQUIRE(store.device_list_changes.size() == changes_before);
+            }
+        }
+    }
+}

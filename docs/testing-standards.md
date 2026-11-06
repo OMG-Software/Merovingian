@@ -44,6 +44,23 @@ production stalls turned on.
 - Prove a new scenario fails against the unfixed code before trusting it. A
   regression test that passes either way documents nothing.
 
+## Password hashing cost in the test binaries
+
+The unit, conformance and integration binaries hash passwords and registration tokens at libsodium's minimum Argon2id cost
+([ADR-0510](adr/0510-the-test-binaries-hash-passwords-at-minimum-cost.md)). `-Wl,--wrap=crypto_pwhash_str` sends the
+production code's call to `tests/support/password_hash_cost.cpp`, so no production code changes.
+
+- The override refuses any cost but the one production asks for, so a downgrade in `src/auth/password.cpp` makes every
+  registration and login fail rather than go unnoticed.
+- `merovingian-password-cost-tests` is linked without the override and proves what the shipped code does.
+- A scenario that needs the hash to take real time holds `merovingian::tests::RealPasswordHashCost` from its first line. That
+  means any scenario racing another request against the window in which the runtime lock is released around Argon2id: at
+  minimum cost that window is too short for the other thread to land in, and the scenario fails intermittently, or
+  passes without exercising the race. Verifying costs whatever the stored hash was made with, so a guard taken after the
+  user registered is too late.
+- Do not add a new test binary that registers users without the same link argument and support file, unless it exists to
+  see the real cost.
+
 ## Socket calls in integration tests
 
 Every socket call in an integration test has a deadline, so a server that never
@@ -53,7 +70,14 @@ timeout kills it. Connect with `merovingian::tests::connect_within`
 OpenBSD 7.9 a blocking connect to the test's own in-process listener never
 returned. Bound reads and writes with `poll` or `SO_RCVTIMEO`/`SO_SNDTIMEO`.
 
-## Live PostgreSQL scenarios that need a quiet store
+## Live PostgreSQL scenarios
+
+A scenario that reaches PostgreSQL carries the `[postgresql]` tag, because that tag is the whole of what the
+`postgres-integration` job runs ([ADR-0511](adr/0511-a-commit-runs-each-workflow-once.md)). `tests/tooling/test_ci_run_scope.py`
+checks for it, but it reads the scenario's own text, so it cannot see a helper that opens a connection for the scenario. Without
+`MEROVINGIAN_TEST_POSTGRESQL_URI` these scenarios skip, so an untagged one passes in CI having tested nothing.
+
+### Scenarios that need a quiet store
 
 The live PostgreSQL scenarios share one database (`MEROVINGIAN_TEST_POSTGRESQL_URI`),
 and a runtime started on it replays the durable queues earlier scenarios left there
@@ -278,8 +302,8 @@ map, so real-server SSRF and TLS-trust behaviour is unchanged.
   catches data races. ThreadSanitizer is the only sanitizer that detects data
   races; ASan and UBSan are blind to them.
 - Any type shared across threads at runtime must have a test that exercises
-  `perform`/`run`/dispatch concurrently from multiple threads so TSan can prove
-  the access pattern is race-free. A thread-safety claim in a header comment is
+  `perform`/`run`/dispatch concurrently from multiple threads so TSan can check
+  the exercised accesses for data races. A thread-safety claim in a header comment is
   not a substitute for a test that drives the contended path. See the
   concurrency scenario in `tests/unit/test_outbound_client.cpp` for the shape:
   many threads, a release barrier so calls overlap, and an assertion that every
@@ -305,15 +329,23 @@ beside them.
 ## Catch2 example
 
 ```cpp
-TEST_CASE("SecretBuffer exposes bounded writable storage", "[core][secret]") {
-    // Given
-    auto buffer = merovingian::core::SecretBuffer{8U};
+SCENARIO("SecretBuffer exposes bounded writable storage", "[core][secret]")
+{
+    GIVEN("a buffer with eight bytes of storage")
+    {
+        auto buffer = merovingian::core::SecretBuffer{8U};
 
-    // When
-    buffer.bytes()[0] = 0xAAU;
+        WHEN("the first byte is changed")
+        {
+            buffer.bytes()[0] = 0xAAU;
 
-    // Then
-    REQUIRE(buffer.bytes()[0] == 0xAAU);
+            THEN("the change is visible and the storage size is unchanged")
+            {
+                REQUIRE(buffer.bytes()[0] == 0xAAU);
+                REQUIRE(buffer.bytes().size() == 8U);
+            }
+        }
+    }
 }
 ```
 

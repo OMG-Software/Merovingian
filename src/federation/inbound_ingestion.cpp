@@ -80,6 +80,26 @@ namespace
 
 } // namespace
 
+auto pdu_depth_violation(canonicaljson::Value const& event) -> std::string
+{
+    auto const* root = std::get_if<canonicaljson::Object>(&event.storage());
+    if (root == nullptr)
+    {
+        return "PDU root is not an object";
+    }
+    auto const* depth_value = find_member(*root, "depth");
+    if (depth_value == nullptr)
+    {
+        return "depth is missing";
+    }
+    auto const depth = extract_integer(*depth_value);
+    if (!depth.has_value() || *depth < 0 || *depth > max_event_depth)
+    {
+        return "depth is not an integer between 0 and 2^53 - 1";
+    }
+    return {};
+}
+
 auto pdu_format_violation(canonicaljson::Value const& event, rooms::RoomVersionPolicy const& policy) -> std::string
 {
     auto const* root = std::get_if<canonicaljson::Object>(&event.storage());
@@ -92,6 +112,11 @@ auto pdu_format_violation(canonicaljson::Value const& event, rooms::RoomVersionP
         serialized.output.size() > events::max_event_size_bytes)
     {
         return "PDU exceeds 65536 byte size limit";
+    }
+    // Spec, "Event format" of every room version: `depth` is required, an integer below 2^53 - 1.
+    if (auto violation = pdu_depth_violation(event); !violation.empty())
+    {
+        return violation;
     }
     auto const reference_hash_ids = policy.event_id_format == rooms::EventIdFormat::reference_hash;
     // rooms/v3.md: "the `event_id` field is no longer included"; the receiver computes it.
@@ -262,12 +287,10 @@ auto parse_inbound_pdu_envelope(std::string_view pdu_json, std::string_view room
             }
         }
     }
-    if (auto const* depth_value = find_member(*root, "depth"); depth_value != nullptr)
+    // pdu_format_violation above refused a missing, negative or non-integer depth.
+    if (auto const depth = extract_integer(*find_member(*root, "depth")); depth.has_value())
     {
-        if (auto const depth = extract_integer(*depth_value); depth.has_value() && *depth >= 0)
-        {
-            out.depth = static_cast<std::uint64_t>(*depth);
-        }
+        out.depth = static_cast<std::uint64_t>(*depth);
     }
     log_diagnostic("pdu.parse.accepted", {
                                              {"event_id",   out.event_id,   false},

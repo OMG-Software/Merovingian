@@ -321,7 +321,9 @@ SCENARIO("Admin media routes reject query strings and path-confusion characters 
 
             THEN("the request is rejected outright")
             {
-                REQUIRE(result.status == 400U);
+                // G5 (ADR-0504): a path with an extra segment is no operator route, so it is 404 (it was 400
+                // "invalid media id" while the router matched the prefix). Nothing is touched either way.
+                REQUIRE(result.status == 404U);
                 REQUIRE(runtime.media_repository.records.front().state ==
                         merovingian::media::LocalMediaState::available);
             }
@@ -334,7 +336,8 @@ SCENARIO("Admin media routes reject query strings and path-confusion characters 
 
             THEN("the request is rejected outright")
             {
-                REQUIRE(result.status == 400U);
+                // G5 (ADR-0504): an empty identifier is no operator route either: 404, as for an extra segment.
+                REQUIRE(result.status == 404U);
             }
         }
     }

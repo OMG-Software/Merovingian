@@ -895,6 +895,62 @@ SCENARIO("Auth rules allow m.room.power_levels events from users with sufficient
     }
 }
 
+// Spec: Room Version 11, Authorization rules 7 and 9.4
+// Endpoint / Section: rooms/v11.md "Authorization rules" (rule 7: required power level; rule 9.4: no previous
+//                    m.room.power_levels); client-server-api.md m.room.power_levels (`users_default`, `state_default`)
+// URL: ../../docs/matrix-v1.19-spec/rooms/v11.md#authorization-rules
+//
+// Rule 9.4 ("If there is no previous m.room.power_levels event in the room, allow") is reached only after rule 7
+// ("If the event type's required power level is greater than the sender's power level, reject"). With no
+// m.room.power_levels event the required level is the default `state_default` of 50, the room creator's level is 100
+// and every other user's is 0. So the first power-levels event is the creator's to send, and rule 9.4 lifts the
+// bounds on what it may set (rules 9.5 to 9.9 compare against a previous event that does not exist).
+SCENARIO("Auth rules let the creator send the first m.room.power_levels event and refuse an ordinary member",
+         "[events][auth][power-levels][conformance]")
+{
+    auto const* policy = merovingian::rooms::find_room_version_policy("11");
+    REQUIRE(policy != nullptr);
+    auto const first_pl = [](std::string_view sender) {
+        return merovingian::canonicaljson::parse_lossless(
+                   make_power_levels_event(sender, 50, 0, 50, 50, 100, 50, 0, "@bob:example.org", 100))
+            .value;
+    };
+    auto const room_without_power_levels = [](std::string_view member) {
+        auto auth_events = merovingian::events::AuthEventMap{};
+        auth_events.create = merovingian::canonicaljson::parse_lossless(make_v1_create_event("@alice:example.org")).value;
+        auth_events.sender_member =
+            merovingian::canonicaljson::parse_lossless(make_member_event(member, member, "join")).value;
+        return auth_events;
+    };
+
+    GIVEN("a v11 room with no m.room.power_levels event")
+    {
+        WHEN("the creator sends a first power-levels event that grants a user level 100")
+        {
+            auto const decision = merovingian::events::authorize_event_against_auth_events(
+                first_pl("@alice:example.org"), *policy, room_without_power_levels("@alice:example.org"));
+
+            THEN("it is allowed: rule 9.4 lets the first event set any level")
+            {
+                // Spec MUST: allow (rule 9.4) once the creator's level 100 meets the required default 50.
+                REQUIRE(decision.allowed);
+            }
+        }
+
+        WHEN("a joined member who is not the creator sends the first power-levels event")
+        {
+            auto const decision = merovingian::events::authorize_event_against_auth_events(
+                first_pl("@bob:example.org"), *policy, room_without_power_levels("@bob:example.org"));
+
+            THEN("it is refused: rule 7, level 0 is below the default state_default of 50")
+            {
+                // Spec MUST: reject (rule 7); rule 9.4 is never reached.
+                REQUIRE_FALSE(decision.allowed);
+            }
+        }
+    }
+}
+
 // Spec: Matrix Room Version 12 (MSC4289)
 // URL: ../../docs/matrix-v1.19-spec/rooms/v12.md
 //

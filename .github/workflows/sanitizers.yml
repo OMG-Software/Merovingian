@@ -1,7 +1,13 @@
 name: sanitizers
 
 on:
+  # Not a bare `push:`: that also fires for a pull request's branch, and the same commit ran this twice (ADR-0511).
   push:
+    branches:
+      - main
+      - master
+      - 'claude/**'
+      - 'codex/**'
   pull_request:
 
 jobs:

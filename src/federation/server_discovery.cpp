@@ -12,7 +12,9 @@
 
 #include <algorithm>
 #include <array>
+#include <cctype>
 #include <charconv>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -349,6 +351,75 @@ namespace
 #endif
     }
 
+    // Spec, "Resolving server names" steps 3.3/3.4 and 4/5: `_matrix-fed._tcp.<hostname>` first and, only when it has
+    // no record, the deprecated `_matrix._tcp.<hostname>`. Both name the original (or delegated) hostname, never an SRV
+    // target, and the certificate and Host header rules are the same for either, so callers treat the result alike.
+    [[nodiscard]] auto lookup_srv_with_legacy_fallback(ServerDiscoveryNetwork& network, std::string const& hostname)
+        -> std::vector<SrvRecord>
+    {
+        auto records = sort_srv_records(network.lookup_srv("_matrix-fed._tcp." + hostname));
+        if (records.empty())
+        {
+            records = sort_srv_records(network.lookup_srv("_matrix._tcp." + hostname));
+        }
+        return records;
+    }
+
+    [[nodiscard]] auto is_well_known_redirect_status(std::uint16_t status) noexcept -> bool
+    {
+        return status == 301U || status == 302U || status == 303U || status == 307U || status == 308U;
+    }
+
+    constexpr auto max_redirect_location_bytes = std::size_t{2048U};
+
+    // `Location` against the URL it came with: an absolute https URL, `//host/path` or `/path`. A relative path is left
+    // as it is and fails the caller's URL parse; an empty or over-long value is refused (ADR-0483).
+    [[nodiscard]] auto resolve_redirect_location(http::ParsedOutboundUrl const& base, std::string_view location)
+        -> std::string
+    {
+        while (!location.empty() && (location.front() == ' ' || location.front() == '\t'))
+        {
+            location.remove_prefix(1U);
+        }
+        while (!location.empty() && (location.back() == ' ' || location.back() == '\t'))
+        {
+            location.remove_suffix(1U);
+        }
+        if (location.empty() || location.size() > max_redirect_location_bytes)
+        {
+            return {};
+        }
+        if (location.starts_with("//"))
+        {
+            return "https:" + std::string{location};
+        }
+        if (location.starts_with('/'))
+        {
+            auto origin = std::string{"https://"} + (base.ipv6_literal ? "[" + base.host + "]" : base.host);
+            if (base.port != default_https_port)
+            {
+                origin += ":" + std::to_string(base.port);
+            }
+            return origin + std::string{location};
+        }
+        return std::string{location};
+    }
+
+    [[nodiscard]] auto find_response_header(std::vector<http::OutboundHeader> const& headers, std::string_view name)
+        -> std::string
+    {
+        for (auto const& header : headers)
+        {
+            if (std::ranges::equal(header.name, name, [](char a, char b) {
+                    return std::tolower(static_cast<unsigned char>(a)) == std::tolower(static_cast<unsigned char>(b));
+                }))
+            {
+                return header.value;
+            }
+        }
+        return {};
+    }
+
     class SystemServerDiscoveryNetwork final : public ServerDiscoveryNetwork
     {
     public:
@@ -356,38 +427,35 @@ namespace
         [[nodiscard]] auto fetch_well_known(std::string_view server_name, std::uint32_t timeout_seconds)
             -> WellKnownServerResult override
         {
-            auto const host_port = parse_host_port(server_name, default_https_port);
-            if (!host_port.has_value())
+            if (!parse_host_port(server_name, default_https_port).has_value())
             {
                 return {false, false, {}, "server name is not a valid well-known host"};
             }
+            return fetch_well_known_following_redirects(
+                server_name, timeout_seconds, *this,
+                [](std::string const& url, std::vector<std::string> const& pinned_addresses,
+                   std::uint32_t seconds) -> WellKnownHopResponse {
+                    auto request = http::OutboundRequest{};
+                    request.method = "GET";
+                    request.url = url;
+                    request.pinned_addresses = pinned_addresses;
+                    request.connect_timeout_seconds = seconds;
+                    request.total_timeout_seconds = seconds;
+                    request.max_response_body_bytes = 64U * 1024U;
 
-            auto addresses = lookup_addresses(host_port->host, host_port->port);
-            if (!addresses.ok ||
-                !address_set_allowed(addresses.addresses, denied_ip_ranges(), allowed_private_ip_ranges()))
-            {
-                return {false, false, {}, "well-known host address is disallowed or unresolved"};
-            }
-
-            auto request = http::OutboundRequest{};
-            request.method = "GET";
-            request.url = "https://" + std::string{server_name} + "/.well-known/matrix/server";
-            request.pinned_addresses = std::move(addresses.addresses);
-            request.connect_timeout_seconds = timeout_seconds;
-            request.total_timeout_seconds = timeout_seconds;
-            request.max_response_body_bytes = 64U * 1024U;
-
-            auto client = http::OutboundClient{};
-            auto response = client.perform(request);
-            if (!response.ok)
-            {
-                return {false, false, {}, response.error_detail};
-            }
-            if (response.response.status != 200U)
-            {
-                return {false, true, {}, "well-known not present"};
-            }
-            return {true, true, std::move(response.response.body), {}};
+                    auto client = http::OutboundClient{};
+                    auto response = client.perform(request);
+                    // The client refuses redirects but keeps the 3xx status and headers for the caller (ADR-0483).
+                    if (!response.ok && response.error != http::OutboundError::redirect_rejected)
+                    {
+                        return {false, 0U, {}, {}, response.error_detail};
+                    }
+                    return {true,
+                            response.response.status,
+                            find_response_header(response.response.headers, "location"),
+                            std::move(response.response.body),
+                            {}};
+                });
         }
 
         [[nodiscard]] auto lookup_srv(std::string_view service_name) -> std::vector<SrvRecord> override
@@ -577,6 +645,73 @@ auto discover_server(LiteralDiscoveryOptIn, std::string_view server_name, std::s
     return result;
 }
 
+auto fetch_well_known_following_redirects(std::string_view server_name, std::uint32_t timeout_seconds,
+                                           ServerDiscoveryNetwork& network, WellKnownHopFetcher const& fetch_hop)
+    -> WellKnownServerResult
+{
+    auto const deadline = std::chrono::steady_clock::now() + std::chrono::seconds{timeout_seconds};
+    auto const refused = [](std::string reason) {
+        return WellKnownServerResult{false, false, {}, std::move(reason)};
+    };
+    auto url = "https://" + std::string{server_name} + "/.well-known/matrix/server";
+    auto visited = std::vector<std::string>{};
+    for (auto hop = std::uint32_t{0U}; hop <= well_known_max_redirects; ++hop)
+    {
+        auto const parsed = http::parse_outbound_url(url, false);
+        if (!parsed.has_value() || parsed->scheme != "https")
+        {
+            return refused("well-known redirect target is not an https URL");
+        }
+        if (std::ranges::find(visited, parsed->url) != visited.end())
+        {
+            return refused("well-known redirects loop");
+        }
+        visited.push_back(parsed->url);
+
+        auto const now = std::chrono::steady_clock::now();
+        if (now >= deadline)
+        {
+            return refused("well-known fetch deadline exceeded");
+        }
+        auto const left_ms = std::chrono::duration_cast<std::chrono::milliseconds>(deadline - now).count();
+        auto const budget = static_cast<std::uint32_t>((left_ms + 999) / 1000);
+
+        // Every hop is judged as the first request is: a redirect is the remote operator's choice of destination.
+        auto addresses = network.lookup_addresses(parsed->host, parsed->port);
+        if (!addresses.ok ||
+            !address_set_allowed(addresses.addresses, network.denied_ip_ranges(), network.allowed_private_ip_ranges()))
+        {
+            return refused("well-known host address is disallowed or unresolved");
+        }
+
+        auto const response = fetch_hop(parsed->url, addresses.addresses, budget);
+        if (!response.transport_ok)
+        {
+            return refused(response.error);
+        }
+        if (is_well_known_redirect_status(response.status))
+        {
+            auto next = resolve_redirect_location(*parsed, response.location);
+            if (next.empty())
+            {
+                return refused("well-known redirect has no usable Location");
+            }
+            log_diagnostic("discovery.well_known_redirect", {
+                                                                {"server_name", std::string{server_name}, false},
+                                                                {"hop",         std::to_string(hop + 1U), false}
+            });
+            url = std::move(next);
+            continue;
+        }
+        if (response.status != 200U)
+        {
+            return {false, true, {}, "well-known not present"};
+        }
+        return {true, true, response.body, {}};
+    }
+    return refused("too many well-known redirects");
+}
+
 auto discover_server(std::string_view server_name, ServerDiscoveryNetwork& network, std::uint32_t timeout_seconds,
                      std::vector<std::string> const& denied_ranges) -> ServerDiscoveryResult
 {
@@ -643,8 +778,7 @@ auto discover_server(std::string_view server_name, ServerDiscoveryNetwork& netwo
             }
             // Step 3c: delegated host without a port tries SRV on the delegated host first,
             // then falls back to the delegated host on the default federation port.
-            auto srv_records =
-                sort_srv_records(network.lookup_srv(std::string{"_matrix-fed._tcp."} + delegated_host_port->host));
+            auto srv_records = lookup_srv_with_legacy_fallback(network, delegated_host_port->host);
             if (!srv_records.empty())
             {
                 auto const& first = srv_records.front();
@@ -674,7 +808,7 @@ auto discover_server(std::string_view server_name, ServerDiscoveryNetwork& netwo
     }
 
     // Matrix spec step 4: SRV lookup on the original server name.
-    auto srv_records = sort_srv_records(network.lookup_srv(std::string{"_matrix-fed._tcp."} + direct_host_port->host));
+    auto srv_records = lookup_srv_with_legacy_fallback(network, direct_host_port->host);
     if (!srv_records.empty())
     {
         auto const& first = srv_records.front();

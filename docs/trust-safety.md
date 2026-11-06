@@ -5,7 +5,10 @@ This capability note describes runtime-wired trust-and-safety behavior.
 ## Included now
 
 - Registration policy checks in the runtime registration path.
-- Account lock/suspension policy checks in the runtime login path.
+- Account lock/suspension enforcement: the request-path gate in `client_server.cpp` (`M_USER_LOCKED` on all but
+  logout, `M_USER_SUSPENDED` outside the spec's allowlist) and the lock check in `/refresh` (`auth_service.cpp`). The
+  engine's `evaluate_account_policy` and `evaluate_invite_policy` had no caller and were removed; there is no
+  invite-scope policy.
 - Room policy checks in the runtime room creation path.
 - Media policy checks in the runtime client and federation download paths and
   persisted moderation rules in the admin workflow. Federation's production
@@ -35,16 +38,29 @@ This capability note describes runtime-wired trust-and-safety behavior.
   found or you are not joined to the room where the event resides"). A repeat report
   of the same event by the same reporter is acknowledged without a second audit row
   (CSAZ-12, ADR-0127).
+- User reporting through `POST /_matrix/client/v3/users/{userId}/report` (v1.14,
+  ADR-0482): an unknown local user is 404, a user of another server is accepted,
+  and one audit row (`trust_safety.account.accept_report`) is kept per reporter
+  and reported user. The reason text is validated, not stored.
 - Admin report listing through
   `GET /_matrix/client/v3/admin/safety/reports`.
 - Admin review actions through
-  `POST /_matrix/client/v3/admin/safety/review/{targetType}/{targetId}`.
+  `POST /_matrix/client/v3/admin/safety/review/{targetType}/{targetId}` and, for an operator,
+  `POST /_merovingian/admin/review/{targetType}/{targetId}`. Both call `apply_admin_review`
+  (`homeserver/operator_admin.cpp`), so the stored policy rule, the audit row and the admin action row are the same;
+  only the rendering of a refusal differs (a Matrix error object on the client route, a plain-text line on the
+  operator route, ADR-0504). Target types are `media`, `room`, `federation` and `federation_server`; the identifier is
+  percent-decoded once (#454).
+- Operator account actions through `POST /_merovingian/admin/accounts/{userId}` (`lock`, `unlock`, `suspend`,
+  `unsuspend`, and `deactivate` with `"confirm": true`, ADR-0506), with the summary at `GET` on the same path. Lock and
+  suspend use `set_local_user_moderation`, the write the spec's `/admin/lock` and `/admin/suspend` endpoints use.
 - Admin policy-rule management through
   `GET /_matrix/client/v3/admin/safety/policy_rules`,
   `PUT /_matrix/client/v3/admin/safety/policy_rules/{scope}/{entity}`, and
   `DELETE /_matrix/client/v3/admin/safety/policy_rules/{scope}/{entity}`.
   A rule's action is one of `allow`, `deny`, `quarantine`, `lock_account` or
-  `suspend_account`; any other value is rejected. The engine's `PolicyAction`
+  `suspend_account`; any other value is rejected. The scope must be one something reads: `registration`, `federation`,
+  `media` or `room`; any other scope is `400 M_INVALID_PARAM` and nothing is stored (ADR-0500). The engine's `PolicyAction`
   also has `accept_report`, used only for event-report decisions.
 - Remote policy-server transport through
   `security.trust_safety.policy_server_url` and the fail-closed
@@ -92,8 +108,6 @@ event content.
 - Moderator queues beyond the current audit/admin action summaries.
 - Multipart or streaming moderation inputs beyond the current request-local
   transport contract.
-- User reporting, `POST /_matrix/client/v3/users/{userId}/report` (Matrix
-  v1.19 CS API). Only event reporting is routed.
 
 ### What ignoring a user does NOT protect against
 

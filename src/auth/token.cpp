@@ -7,8 +7,6 @@
 #include "merovingian/crypto/encoding.hpp"
 #include "merovingian/crypto/generic_hash.hpp"
 #include "merovingian/crypto/token_key.hpp"
-#include "merovingian/observability/logger.hpp"
-#include "merovingian/observability/observability.hpp"
 
 #include <array>
 #include <string>
@@ -20,12 +18,6 @@ namespace merovingian::auth
 {
 namespace
 {
-
-    auto log_diagnostic(std::string_view event, std::vector<observability::StructuredLogField> fields,
-                        observability::LogEventSeverity severity = observability::LogEventSeverity::debug) -> void
-    {
-        observability::log_diagnostic("token", event, fields, severity);
-    }
 
     [[nodiscard]] auto sodium_is_ready() noexcept -> bool
     {
@@ -56,40 +48,6 @@ namespace
 
 } // namespace
 
-auto token_secret_has_required_entropy(std::string_view token_secret) noexcept -> bool
-{
-    return token_secret.size() >= 32U && token_secret.size() <= 4096U;
-}
-
-auto token_hash_is_persistable(TokenHash const& token_hash) noexcept -> bool
-{
-    return !token_hash.algorithm.empty() && !token_hash.value.empty() && token_hash.value.size() >= 32U &&
-           token_hash.value.size() <= 4096U;
-}
-
-auto token_is_active(AccessTokenRecord const& token, std::chrono::system_clock::time_point now) -> TokenPolicyDecision
-{
-    auto result = [&]() -> TokenPolicyDecision {
-        if (token.revoked)
-        {
-            return {false, "token revoked"};
-        }
-        if (token.expires_at <= now)
-        {
-            return {false, "token expired"};
-        }
-        if (!token_hash_is_persistable(token.token_hash))
-        {
-            return {false, "token hash is not persistable"};
-        }
-        return {true, {}};
-    }();
-    log_diagnostic(result.accepted ? "token.active" : "token.rejected", {
-                                                                            {"reason", result.reason, false}
-    });
-    return result;
-}
-
 auto constant_time_equal(std::string_view left, std::string_view right) noexcept -> bool
 {
     // Delegates to the crypto module's libsodium-backed comparison so every
@@ -104,23 +62,6 @@ auto constant_time_equal_variable_length(std::string_view left, std::string_view
     // must not be compared with a length check first because that leaks whether the
     // presented length matches the expected length. Hash first, compare fixed-size.
     return crypto::constant_time_equal_variable_length(left, right);
-}
-
-auto redacted_token_for_log(std::string_view token_secret) -> std::string
-{
-    if (token_secret.empty())
-    {
-        return "[redacted-token:empty]";
-    }
-
-    // #437: the exact byte length is a minor side channel — it lets an
-    // attacker observing logs distinguish token versions (each has a fixed
-    // length) and tell a valid-length presented token from an invalid-length
-    // one, pruning the search space. Bucket into coarse size classes instead
-    // of disclosing the precise count.
-    auto const size = token_secret.size();
-    auto const bucket = size <= 16U ? "tiny" : size <= 64U ? "short" : size <= 256U ? "medium" : "long";
-    return std::string{"[redacted-token:size="} + bucket + ']';
 }
 
 auto hash_access_token_v2(std::string_view token) -> std::optional<std::string>

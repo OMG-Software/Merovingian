@@ -70,6 +70,7 @@ signed material.
 | `room.leave.remote.make_leave_failed` | template; a 403/404 ends an invite locally | no | direct |
 | `room.leave.remote.send_leave_failed` | success commits the local leave | no | direct |
 | `room.invite.remote_failed` | co-signed event; a 4xx is a final refusal | success only | direct |
+| `room.third_party_invite.forward_failed` | a success means the sender's server took the invite; its status is relayed | no | direct |
 | `room.knock.remote.make_knock_failed` | keeps the template | no | direct |
 | `room.knock.remote.send_knock_failed` | success records the knock | no | direct |
 | `federation.backfill.get_missing_events_failed` | each PDU verified (signature, hash, auth) before it is stored | yes | worker |

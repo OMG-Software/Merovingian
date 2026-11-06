@@ -55,6 +55,7 @@ EXPECTED_EVENTS = VERIFIED_EVENTS | {
     "room.leave.remote.make_leave_failed",
     "room.leave.remote.send_leave_failed",
     "room.invite.remote_failed",
+    "room.third_party_invite.forward_failed",
     "room.knock.remote.make_knock_failed",
     "room.knock.remote.send_knock_failed",
 }

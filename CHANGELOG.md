@@ -1,3 +1,124 @@
+## 0.12.76
+
+The medium severity findings of the November project analysis.
+
+### Security
+
+- **A left room's lazy-loaded `state` never reads past the event that ended the user's join (ADR-0450).** A user banned after leaving could be sent the member event of the person who banned them, from after they left. The same limit now holds whichever read finds the event, including the current-event fallback used when a state group cannot be read.
+- `server.identity_server.allowed_bind_domains` is enforced: an email address on another domain is refused with `M_THREEPID_DENIED` on identity-server `requestToken`, bind and 3PID invites (ADR-0498).
+- `PUT /admin/safety/policy_rules/{scope}/{entity}` refuses a scope nothing reads with `400 M_INVALID_PARAM`; accepted scopes are `registration`, `federation`, `media` and `room` (ADR-0500).
+- The systemd unit gains `SystemCallFilter` (no narrower than the server's own seccomp allow-list), `LimitNOFILE`, `TasksMax`, `ProtectProc=invisible` and `TimeoutStopSec=300s`; OpenRC gets matching `rc_ulimit` and `retry` (ADR-0499).
+- `POST /_merovingian/admin/shutdown` is no longer declared; nothing can stop the server over HTTP (ADR-0505).
+- A locked or suspended administrator is refused by every operator route and admin check.
+- A deactivation whose password-hash write fails no longer leaves the in-memory hash differing from the stored one.
+
+### Added
+
+- `PUT /_matrix/federation/v1/exchange_third_party_invite/{roomId}` and `PUT /_matrix/federation/v1/3pid/onbind` are served (ADR-0484, ADR-0485). Third-party invites now become real invites: the signature in `signed` is checked against the room's `m.room.third_party_invite`, the caller must be the invited user's own server, and a joined or banned user is never moved. `onbind` is bounded: the first 32 invites are acted on, with one outbound slot and one deadline.
+- Server discovery falls back to the deprecated `_matrix._tcp` SRV record after `_matrix-fed._tcp`, for the original and the delegated hostname.
+- Server discovery follows up to 4 `.well-known/matrix/server` redirects, each re-checked against the deny-list and private-range rules, under one deadline (ADR-0483).
+- Extended profile fields: `GET/PUT/DELETE /profile/{userId}/{keyName}` for `m.tz` and custom keys, `m.profile_fields` in `/capabilities`, the fields in `GET /profile`, federation `query/profile` and relayed remote profiles (ADR-0478).
+- `POST /users/{userId}/report` (ADR-0482).
+- Password reset by email: `requestToken`, an emailed 8-character code, a submit step, and `POST /account/password` with `m.login.email.identity`. At most one email per address per 60 seconds; five wrong codes end a session; completion re-checks that the address still belongs to the account (ADR-0481).
+- msisdn `requestToken` answers `M_THREEPID_MEDIUM_NOT_SUPPORTED`.
+- `server.turn.shared_secret_file`: coturn REST credentials through `crypto::hmac_sha1` (ADR-0480).
+- `GET /_merovingian/health`, an unauthenticated probe answered without taking the runtime lock (ADR-0479).
+- `security.audit_log_retention_days` (default 365, 0 keeps every row, otherwise 30 to 3650, reloadable) and an hourly `retention-sweep` job that deletes revoked and long-expired access tokens, expired refresh tokens and old audit rows in batches of at most 500, writing an `audit.retention.purged` row (ADR-0488, ADR-0489).
+- `audit_log` gains `created_at_ms`.
+- Fuzz targets for multipart media, URL preview HTML, X-Matrix headers, inbound PDU JSON, IPC frame bodies, appservice registration YAML and push rule globs, with seed corpora for them and for `fuzz-http-request` and `fuzz-canonicaljson`.
+- Sixteen PostgreSQL store behaviour scenarios (`[pg-behaviour]`) covering the hand-written statements, transactions, upserts and deletes; one writes a row to every hydrated table and checks it after a reopen.
+- Tooling tests that require the BSD jobs and keep the fuzz runner complete.
+- Operator account route: `GET /_merovingian/admin/accounts/{userId}` returns a summary (deactivated, locked, suspended, admin, device count; no credential), and `POST` with `{"action": ...}` deactivates (`"confirm": true` required), locks, unlocks, suspends or unsuspends a local account. Administrators cannot act on themselves or on another administrator (ADR-0504, ADR-0506).
+- Operator review route: `POST /_merovingian/admin/review/{targetType}/{targetId}` shares one implementation with `POST /_matrix/client/v3/admin/safety/review/...` (ADR-0504).
+- A local user who is `online` and inactive for over 5 minutes is set `unavailable` by a `presence-idle` job, every 30 seconds and at most 100 users a pass; servers sharing a room are told and syncs woken. A sent message counts as activity, and the clock of a row loaded after a restart starts at the first pass (ADR-0492).
+- Sliding sync reads `set_presence` from the request body or the URL, the body first. An unknown value is `400 M_INVALID_PARAM`, and a poll marks the user online as `/sync` does (ADR-0495).
+
+### Changed
+
+- **The unit, conformance and integration binaries hash passwords at minimum cost (ADR-0510).** Argon2id was 113 s of the
+  unit binary's 244 s, 252 s of the conformance binary's 300 s and 121 s of the integration binary's 720 s, because nearly
+  every scenario registers and logs in users. `-Wl,--wrap=crypto_pwhash_str` replaces the call in those three binaries only;
+  it changes nothing the server, the worker or a package can reach. The override refuses any cost but production's, and a
+  separate `merovingian-password-cost-tests` binary, linked without it, proves the production cost. The scenarios that race
+  a request against the Argon2id window hold `RealPasswordHashCost`, so they still exercise that window.
+- **A pull request's commit runs `sanitizers`, `static-analysis` and `packages` once (ADR-0511).** `sanitizers` and
+  `static-analysis` had a bare `on: push`, so every push to a pull request's branch ran them for both events, about 38 and 19
+  minutes for one commit on this pull request. `packages` did the same for `feature/**` branches. Their `push` trigger is now
+  the list `ci.yml` uses, and they still run for every pull request and every push to `main`. A push to a branch with no pull
+  request no longer runs them. The documentation site keeps both events, because it builds on every branch by design and
+  takes under a minute.
+- **`postgres-integration` runs only what uses PostgreSQL (ADR-0511).** It compiled and ran the whole suite, about 33 minutes,
+  before a filtered run of 22 seconds. It now builds only the integration binary and runs `[postgresql]`. The old filter,
+  `[database][postgresql][integration]`, missed scenarios without all three tags, which ran only because the whole suite ran
+  first. `tests/tooling/test_ci_run_scope.py` fails on a scenario that uses PostgreSQL without the tag.
+- `AGENTS.md`: use `std::invoke` instead of trailing parenthesis.
+- `profiles` gains `fields_json`; the 64 KiB profile limit counts extended fields.
+- A config naming both TURN static credentials and a shared secret is refused.
+- `merovingian-crypto` links OpenSSL.
+- The HMAC-SHA1 call the coturn REST API requires is marked `NOSONAR(cpp:S4790)`, with the reason, at that one call (ADR-0480).
+- Every BSD CI job is required. `continue-on-error` is gone from the OpenBSD and NetBSD suites and the NetBSD package job. The NetBSD retry job is deleted because it could no longer change a run's result, and a missing NetBSD artifact now stops staging (ADR-0502).
+- `integration-tests` has a 30 minute limit on every platform, up from 15 minutes on Linux; the BSDs already had 30 through their default multiplier (ADR-0509).
+- The BSD jobs delete their build tree once the artifact tarball exists, so a dropped connection while the VM copies about 2 GB back no longer fails a job whose tests passed.
+- The fuzz runner builds the libraries with AddressSanitizer, UBSan and coverage counters, and runs 14 targets (ADR-0503).
+- `server.identity_server.default_server` and `security.logging.structured` are removed (nothing read them) and are now refused as unknown keys; `redact_tokens` and `redact_event_content` accept only `true`, as before.
+- An `allowed_bind_domains` entry that is empty or holds `@`, `*` or whitespace is a start-up configuration finding.
+- Functions with no caller are removed, with the `auth/client_server_api` module, the session and token scaffolds only they used, `account_enforcement_statements`, `AccountEnforcementRecord` and `PolicySurface::invite`.
+- `observability::admin_routes()` is now the only list of operator routes: the dispatcher, the local router and the rate limiter's counter key all read it. A media moderation path with an extra segment or an empty id is now 404, not 400 (ADR-0504).
+
+### Fixed
+
+- Documentation: the database backend key (`database.backend`), the `server.name` example value, the `merovingian-db-migrate --plan` example, and the upgrade section's refusal of an unknown schema ledger (no recovery procedure exists) now match the code.
+- Documentation: the removed `state_conflict_resolver` / `PduStateConflictContext`, the missing `email` and `push` module rows, and the `build_left_room` reference are corrected.
+- Documentation: the audit event name `federation.pdu_rejected`, the "headers mirror sources 1:1" claims, and the `join_room`/`leave_room` lock-release status (confirmed closed) are corrected.
+- A PDU whose `depth` is missing, negative, not an integer or above 2^53-1 is refused as malformed on every receipt path (`/send`, worker relay, backfill, send_join state, invites) instead of being stored with depth 0.
+- `docs/event-engine.md` no longer calls the first `m.room.power_levels` rule a deviation from the spec: the code already matched it (rule 7/8, then 9.4), and a conformance scenario now pins it.
+- `POST /rooms/{roomId}/upgrade` now moves the old room's local aliases to the replacement room and raises the old room's `events_default` and `invite` to the greater of 50 and `users_default + 1` when the upgrader may change its power levels (ADR-0476).
+- `GET /rooms/{roomId}/relations/...` and `/threads` no longer require current membership: a user who left reads what they could see, and a world-readable room can be peeked, both through `HistoryVisibility`.
+- `GET .../relations?recurse=true` now recurses, 3 levels with at most 2048 events examined beyond the first, and reports the real `recursion_depth` (ADR-0475).
+- `POST /createRoom` now sends `invite_3pid` invites through the trusted identity server. They count towards `max_create_room_invites`. An untrusted or malformed entry is a 400 before the room exists, and an identity server failure leaves the room (ADR-0474).
+- `POST /keys/upload` judges its whole body before it stores or announces anything: a refused one-time or fallback key no longer leaves the device keys stored and announced.
+- `GET /rooms/{roomId}/messages` omits `end` when no further events exist (it was sent as `""`, which a client read back as no `from`), and honours `to` (ADR-0470).
+- A device's `initial_device_display_name` is stored and kept across restarts. A device given no name has none: `GET /devices` and `/keys/query` no longer show the device ID as its name (ADR-0472).
+- Deleting a device deletes the to-device messages addressed to it, in the same transaction, so a login reusing the device ID no longer receives stale room keys (ADR-0471).
+- `GET /profile/{userId}`, the user directory and `/search` `profile_info` leave out a `displayname` or `avatar_url` the user has not set.
+- Registration no longer leaves an account without a profile row when the profile write fails.
+- Revoked and expired sessions and tokens are now deleted rather than kept for ever.
+- The PostgreSQL retention scenarios quote the role name they read from the environment as an SQL identifier, and the operator admin fixture takes its config by reference.
+- Reading a sliding sync hero's name and avatar is a function of its own instead of a loop that always ended on its first pass; a scenario now pins what heroes carry.
+- Sliding sync `account_data`: a room first entering the response on a connection gets all of its room account data (ADR-0493).
+- The TLS test helper creates its certificate and private key owner-only (0600) through `open`, instead of `fopen`, which left the key open to other users until it was narrowed to 0400 (CodeQL `cpp/world-writable-file-creation`). `validate_device_keys_object` checks `user_id`, `device_id` and `keys` for null where it reads them, rather than relying on an earlier check in another function (CodeQL `cpp/inconsistent-null-check`).
+- CodeQL code-quality alerts on this branch: `set_presence` takes its presence row by `const&`, not by value, so a call copies the 128-byte row once instead of twice (`cpp/large-parameter`). The ten key-API switch cases over 30 lines (cross-signing and signature uploads, key backup reads, writes, version updates and batch deletes, device-list updates) are functions of their own, moved unchanged (`cpp/long-switch`). A unit scenario no longer makes a profile lookup it threw away (`cpp/useless-expression`), and another no longer binds three user IDs it never read (`cpp/unused-local-variable`). 25 alerts on the same code were false positives and are dismissed in code scanning with the reason for each.
+
+### Performance
+
+- Sessions are found through an index of token-hash digests, each match confirmed in constant time (ADR-0488).
+- Indexes on `events(room_id)` and `state_groups(room_id)` (ADR-0490).
+- Registration commits account and profile in one transaction; logout revokes device credentials in one, 5 commits down to 3 (ADR-0491).
+- Sliding sync builds a room's timeline newest first and stops at the window plus one event or at the floor; counts, heroes, required state and the room list read the room's own rows, and an event is parsed for the ignore filter only when its sender is ignored (ADR-0494).
+- `LocalRoom::members` is hashed and rooms are found through a verified position index (ADR-0496).
+- The event table keeps each room's newest `origin_server_ts` (ADR-0497).
+- `remote_servers_for_user` uses a seen set instead of searching its result per member.
+
+### Documentation
+
+- Reorganise the coding rules by topic. Add interface, error, borrowed-lifetime,
+  and verification guidance. Distinguish review requirements from automated checks.
+- Use `std::invoke` for generic callable dispatch and immediately invoked lambdas;
+  retain ordinary named calls (ADR-0462).
+- Align the root and security ownership rules: ban raw owning pointers and confine
+  unavoidable C API pointers to RAII wrappers (ADR-0463). Keep the direct-allocation ban.
+- State shared pointer risks and require a same-line verifying comment with the
+  ownership need and lifetime/cycle checks. Explain what the existing gate can check.
+- Correct the testing guide's BDD example and the source guide's `noexcept` claim.
+- Documentation-only changes do not require a version bump (ADR-0464).
+- Remove duplicated coding rules from the root `AGENTS.md` and make
+  `docs/coding-rules.md` mandatory for contributors and delegated agents. Preserve
+  the file-naming conventions in that guide (ADR-0465).
+- Require one class or struct per file, with a matching filename and separate
+  implementations. Forward declarations do not count as definitions (ADR-0466).
+- Require class and struct filenames to match the type name exactly, including
+  case, instead of converting it to `snake_case` (ADR-0467).
+
 ## 0.12.75
 
 ### Added

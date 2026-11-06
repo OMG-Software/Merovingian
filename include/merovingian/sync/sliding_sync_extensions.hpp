@@ -30,6 +30,10 @@ namespace merovingian::sync
 //                            (see trust_safety::resolve_ignored_users), resolved once by the
 //                            caller and reused here. Typing and receipt entries authored by an
 //                            ignored user are withheld from the receipts/typing extensions.
+// `initial_room_ids`      — the rooms of `response_room_ids` this connection has not been sent before.
+//                            The account_data extension sends all of such a room's account data,
+//                            whatever its age against `since_sync_stream_id`. No text
+//                            states this rule (not v1.19, not MSC4186); it is this server's reading (ADR-0493).
 //
 // `store` is mutable because the to_device extension drains delivered messages via
 // drain_to_device_messages, which removes them from the in-memory queue.
@@ -37,7 +41,8 @@ namespace merovingian::sync
                                     std::string_view device_id, SlidingSyncExtensionRequests const& ext_req,
                                     std::uint64_t since_sync_stream_id, std::uint64_t current_sync_stream_id,
                                     database::PersistentStore& store, std::vector<std::string> const& response_room_ids,
-                                    std::unordered_set<std::string> const& ignored_senders = {})
+                                    std::unordered_set<std::string> const& ignored_senders = {},
+                                    std::unordered_set<std::string> const& initial_room_ids = {})
     -> SlidingSyncExtensionResponses;
 
 // As above, with the caller's `room_access_index(store, user)` for the same request, so a handler
@@ -49,7 +54,8 @@ namespace merovingian::sync
                                     database::PersistentStore& store,
                                     std::map<std::string, RoomAccess, std::less<>> const& room_access,
                                     std::vector<std::string> const& response_room_ids,
-                                    std::unordered_set<std::string> const& ignored_senders = {})
+                                    std::unordered_set<std::string> const& ignored_senders = {},
+                                    std::unordered_set<std::string> const& initial_room_ids = {})
     -> SlidingSyncExtensionResponses;
 
 } // namespace merovingian::sync

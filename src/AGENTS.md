@@ -1,6 +1,6 @@
 # src/ — Implementations
 
-Every `.cpp` file here mirrors a header in `include/merovingian/` at the same relative path.
+A `.cpp` file here normally mirrors the header of the same name at the same relative path in `include/merovingian/`. Two do not: `database/sqlite_store.cpp` and `federation_worker/main.cpp` have no header. Some headers have no `.cpp`.
 Module directory names match: `src/auth/` ↔ `include/merovingian/auth/`.
 
 ## File conventions
@@ -16,7 +16,7 @@ Module directory names match: `src/auth/` ↔ `include/merovingian/auth/`.
 ## Key code patterns
 
 - Mark all functions `[[nodiscard]]` unless the return value is intentionally discardable
-- Mark functions `noexcept` when they cannot throw — the compiler enforces this
+- Mark functions `noexcept` only when no exception can escape. Check callees and cleanup paths: the annotation does not prove the body cannot throw; an escaping exception terminates the process.
 - Destructors must not throw; annotate `noexcept` explicitly
 - Avoid `static` local variables in functions that may be called from multiple threads
 
@@ -38,8 +38,8 @@ Use quotes for project headers, angle brackets for standard library and third-pa
 
 ```cpp
 #include "merovingian/module/name.hpp"   // project header — quotes
-#include <algorithm>                      // standard library — angle brackets
-#include <sodium.h>                       // third-party — angle brackets
+#include <sodium.h>                      // third-party — angle brackets
+#include <algorithm>                     // standard library — angle brackets
 ```
 
 Never use bare relative includes (`#include "name.hpp"` without the `merovingian/` path prefix).

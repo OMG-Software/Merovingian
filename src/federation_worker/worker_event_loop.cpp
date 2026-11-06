@@ -540,6 +540,7 @@ namespace
         result.found = field_bool(*obj, "found");
         result.displayname = field_string(*obj, "displayname");
         result.avatar_url = field_string(*obj, "avatar_url");
+        result.fields_json = field_string(*obj, "fields_json");
         return result;
     }
 

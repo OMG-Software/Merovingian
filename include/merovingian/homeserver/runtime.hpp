@@ -17,7 +17,9 @@
 #include "merovingian/homeserver/client_outbound_proxy.hpp"
 #include "merovingian/homeserver/media_upload_notifier.hpp"
 #include "merovingian/homeserver/remote_media_fetch_coalescer.hpp"
+#include "merovingian/homeserver/room_members.hpp"
 #include "merovingian/homeserver/runtime_mutex.hpp"
+#include "merovingian/homeserver/session_table.hpp"
 #include "merovingian/http/in_flight_budget.hpp"
 #include "merovingian/http/outbound_client.hpp"
 #include "merovingian/identity/identity_client.hpp"
@@ -121,21 +123,6 @@ struct LocalUser final
     bool deactivated{false};
 };
 
-struct LocalSession final
-{
-    std::string user_id{};
-    std::string device_id{};
-    std::string access_token_hash{};
-    bool revoked{false};
-    // Server-side access-token expiry mirrored from PersistentAccessToken. nullopt
-    // = no expiry. find_session rejects an expired session even when not revoked.
-    std::optional<std::chrono::system_clock::time_point> expires_at{};
-    // Mirrored from PersistentAccessToken: the refresh token this access token
-    // replaced. Its first successful use revokes that refresh token and clears
-    // this field (ADR-0074).
-    std::string predecessor_refresh_hash{};
-};
-
 // When the appservice drainer may next try an appservice that has just failed, and the delay it
 // will apply if that attempt fails too (doubling from 1 s up to a 5 minute cap).
 struct AppserviceDeliveryBackoff final
@@ -182,7 +169,8 @@ struct LocalRoom final
 {
     std::string room_id{};
     std::string creator_user_id{};
-    std::vector<std::string> members{};
+    // The joined members; written only through RoomMembers' methods (ADR-0496).
+    RoomMembers members{};
     // True when the room has been explicitly published to the public room directory
     // via PUT /_matrix/client/v3/directory/list/room/{roomId}. Private by default.
     bool directory_public{false};
@@ -198,8 +186,14 @@ struct LocalDatabase final
     std::uint64_t next_event_id{1U};
     std::vector<std::string> tables{};
     std::vector<LocalUser> users{};
-    std::vector<LocalSession> sessions{};
+    SessionTable sessions{};
     std::vector<LocalRoom> rooms{};
+    // Position in `rooms` of each room ID (ADR-0496): the first room holding the ID. Trusted only while
+    // `room_indexed_rows == rooms.size()` and the room a position names carries the ID asked for; a lookup that
+    // fails either test scans and rebuilds, so a caller that edits `rooms` directly (hydration, a test) loses speed,
+    // never correctness. `mutable` because lookups are const: every reader holds `runtime.mutex`.
+    mutable std::unordered_map<std::string, std::size_t> room_position_index{};
+    mutable std::size_t room_indexed_rows{0U};
     // Bounded window over the most recent `database::max_in_memory_audit_events`
     // audit events (AUTH-1); the oldest is dropped first. The durable copy of
     // every event is the audit_log table, reachable through `persistent_store`.
@@ -235,6 +229,12 @@ struct LocalDatabase final
     // runtime.mutex; entries are added and removed only by PendingStreamOrdering.
     std::multiset<std::uint64_t> pending_stream_orderings{};
 };
+
+// The room with `room_id` in `database.rooms` (the first, if two share the ID), or nullptr. One hash lookup on a hit; a
+// miss is settled by a scan, so the answer is the same as scanning `rooms` whatever has edited it (ADR-0496). The
+// caller holds runtime.mutex: the position index is written from a const lookup.
+[[nodiscard]] auto find_local_room(LocalDatabase& database, std::string_view room_id) -> LocalRoom*;
+[[nodiscard]] auto find_local_room(LocalDatabase const& database, std::string_view room_id) -> LocalRoom const*;
 
 // Caps on the in-memory ephemeral state a federating peer can create
 // (0.12.5 audit, findings 12 and 13).
@@ -627,6 +627,11 @@ struct HomeserverRuntime final
     // at_background_task_capacity() and k_max_in_flight_push_deliveries in
     // room_service.cpp.
     std::atomic<std::size_t> push_delivery_in_flight_{0U};
+    // Password-reset emails being sent (send_password_reset_email, ADR-0481), counted apart from
+    // orphan_futures_ so unrelated background tasks (make_join race losers, push deliveries) cannot use up the
+    // reset sends. Incremented under runtime.mutex before a task starts; the task's permit decrements it on every
+    // exit path.
+    std::atomic<std::size_t> password_reset_sends_in_flight_{0U};
     // Dispatcher-side lookup/admission/reaping is guarded by
     // orphan_futures_mutex_. Tasks retain a shared atomic counter and release
     // it without any completion-time lock. Zero entries are swept on dispatch;

@@ -1439,6 +1439,11 @@ namespace
             {
                 return {400U, homeserver::matrix_error("M_BAD_JSON", event_envelope.error)};
             }
+            // The invite's event is a PDU: `depth` is required (a missing or malformed one is not a depth of 0).
+            if (auto const depth_violation = pdu_depth_violation(parsed_event.value); !depth_violation.empty())
+            {
+                return {400U, homeserver::matrix_error("M_BAD_JSON", depth_violation)};
+            }
             // Spec: Matrix Server-Server API v1.19 —
             //   PUT /_matrix/federation/v1/invite/{roomId}/{eventId}
             // URL: ../../docs/matrix-v1.19-spec/server-server-api.md#put_matrixfederationv1inviteroomideventid
@@ -1729,10 +1734,9 @@ namespace
         }
         // Spec v1.19 (query/profile, `field`): "Defined values are `displayname`,
         // `avatar_url` and `m.tz`. In addition to these servers MAY allow users to
-        // set additional key/value pairs." Any key is therefore a valid request;
-        // this server stores only displayname and avatar_url, so every other key
-        // (m.tz included, audit R18) is a field the user does not have, which the
-        // spec answers with 404: "the queried field does not exist".
+        // set additional key/value pairs." Any key is therefore a valid request; a key the user has not set
+        // (`m.tz` included, audit R18) is a field the user does not have, which the spec answers with 404:
+        // "the queried field does not exist".
         auto const field = query_param_value(request.target, "field");
         auto const profile = runtime.profile_query_provider(user_id);
         if (!profile.found)
@@ -1750,6 +1754,24 @@ namespace
         if ((field.empty() || field == "avatar_url") && !profile.avatar_url.empty())
         {
             response.push_back(canonicaljson::make_member("avatar_url", canonicaljson::Value{profile.avatar_url}));
+        }
+        // Spec: `field` may name `m.tz` or any additional key a user set, and then "the server MUST only return
+        // the given field"; without it the full public profile, which includes them.
+        if (auto const fields = canonicaljson::parse_lossless(profile.fields_json);
+            fields.error == canonicaljson::ParseError::none)
+        {
+            if (auto const* const object = std::get_if<canonicaljson::Object>(&fields.value.storage());
+                object != nullptr)
+            {
+                for (auto const& member : *object)
+                {
+                    if (member.key != "displayname" && member.key != "avatar_url" &&
+                        (field.empty() || field == member.key))
+                    {
+                        response.push_back(canonicaljson::make_member(member.key, *member.value));
+                    }
+                }
+            }
         }
         if (!field.empty() && response.empty())
         {
@@ -2197,6 +2219,44 @@ namespace
         return response;
     }
 
+    // Spec: PUT /_matrix/federation/v1/exchange_third_party_invite/{roomId}
+    // ../../docs/matrix-v1.19-spec/server-server-api.md#put_matrixfederationv1exchange_third_party_inviteroomid
+    //
+    // The invited user's server asks the inviting server to turn a third-party invite into a real invite. The caller is
+    // authenticated (X-Matrix) and must be the invited user's own server: it is the server the identity server told
+    // about the binding (ADR-0485). Everything in the body is the caller's; the signature on `signed` is checked
+    // against the room's `m.room.third_party_invite` by the exchanger, in the process that holds the room.
+    [[nodiscard]] auto handle_exchange_third_party_invite(FederationRuntimeState& runtime,
+                                                          SignedFederationRequest const& request) -> FederationResponse
+    {
+        if (!runtime.third_party_invite_exchanger)
+        {
+            return {501U, "exchange_third_party_invite not implemented"};
+        }
+        auto const room_id =
+            extract_path_segment(request.target, "/_matrix/federation/v1/exchange_third_party_invite/");
+        if (!events::matrix_id_is_valid(room_id, '!'))
+        {
+            return {400U, homeserver::matrix_error("M_INVALID_PARAM", "roomId is not a room ID")};
+        }
+        auto parsed = parse_third_party_invite_exchange(request.body, room_id);
+        if (!parsed.exchange.has_value())
+        {
+            return {400U, homeserver::matrix_error("M_BAD_JSON", parsed.reason)};
+        }
+        if (std::string{auth::user_id_server_name(parsed.exchange->target_user_id)} != request.origin)
+        {
+            return {403U, homeserver::matrix_error("M_FORBIDDEN", "the invited user is not on the requesting server")};
+        }
+        auto const result = runtime.third_party_invite_exchanger(*parsed.exchange, request.origin);
+        if (!result.ok)
+        {
+            return {result.status,
+                    homeserver::matrix_error(result.status == 403U ? "M_FORBIDDEN" : "M_UNKNOWN", result.reason)};
+        }
+        return {200U, "{}"};
+    }
+
     [[nodiscard]] auto dispatch_non_transaction_endpoint(FederationRuntimeState& runtime,
                                                          SignedFederationRequest const& request,
                                                          FederationRoute const& route, FederationRemoteRuntime& remote)
@@ -2247,6 +2307,8 @@ namespace
             return handle_media_download(runtime, request);
         case FederationEndpoint::media_thumbnail:
             return handle_media_thumbnail(runtime, request);
+        case FederationEndpoint::exchange_third_party_invite:
+            return handle_exchange_third_party_invite(runtime, request);
         case FederationEndpoint::edu:
             // Plain send_edu requests have always been a 200 stub; ingestion
             // happens through the transaction path which carries EDUs.
@@ -2599,12 +2661,6 @@ auto operator_policy_refusal(FederationRuntimeState const& runtime, std::string_
         return std::move(policy.reason);
     }
     return runtime.server_policy_refusal_provider ? runtime.server_policy_refusal_provider(server_name) : std::string{};
-}
-
-auto federation_remote_is_known(FederationRuntimeState const& runtime, std::string_view server_name) -> bool
-{
-    auto guard = federation_guard(runtime);
-    return find_remote(runtime, server_name) != nullptr;
 }
 
 auto authorize_federation_pdu(FederationPdu const& pdu, std::string_view expected_origin) -> FederationDecision
@@ -3483,6 +3539,8 @@ namespace
             return extract_path_segment(target, "/_matrix/federation/v1/hierarchy/");
         case FederationEndpoint::timestamp_to_event:
             return extract_path_segment(target, "/_matrix/federation/v1/timestamp_to_event/");
+        case FederationEndpoint::exchange_third_party_invite:
+            return extract_path_segment(target, "/_matrix/federation/v1/exchange_third_party_invite/");
         default:
             return std::nullopt;
         }

@@ -1,0 +1,7 @@
+PUT /_matrix/federation/v2/send_join/!r:x/$e HTTP/1.1
+Host: example.org
+Authorization: X-Matrix origin="a.org",destination="b.org",key="ed25519:1",sig="abc"
+Transfer-Encoding: chunked
+
+0
+

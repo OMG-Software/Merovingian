@@ -80,7 +80,7 @@ CREATE TABLE "federation_transactions" (transaction_id TEXT PRIMARY KEY, server_
 -- statement create_rate_limits
 CREATE TABLE "rate_limits" (scope TEXT NOT NULL, key TEXT NOT NULL, count TEXT NOT NULL, reset_ts TEXT NOT NULL, PRIMARY KEY (scope, key))
 -- statement create_audit_log
-CREATE TABLE "audit_log" (category TEXT NOT NULL, event_type TEXT NOT NULL, actor TEXT NOT NULL, target TEXT NOT NULL, reason TEXT NOT NULL)
+CREATE TABLE "audit_log" (category TEXT NOT NULL, event_type TEXT NOT NULL, actor TEXT NOT NULL, target TEXT NOT NULL, reason TEXT NOT NULL, created_at_ms TEXT NOT NULL DEFAULT '0')
 -- statement create_policy_rules
 CREATE TABLE "policy_rules" (rule_id TEXT PRIMARY KEY, scope TEXT NOT NULL, entity TEXT NOT NULL, action TEXT NOT NULL, reason TEXT NOT NULL)
 -- statement create_admin_actions
@@ -96,7 +96,7 @@ CREATE TABLE "sync_stream_watermark" (singleton INTEGER PRIMARY KEY CHECK (singl
 -- statement create_event_stream_watermark
 CREATE TABLE "event_stream_watermark" (singleton INTEGER PRIMARY KEY CHECK (singleton = 1), watermark TEXT NOT NULL DEFAULT '0')
 -- statement create_profiles
-CREATE TABLE "profiles" (user_id TEXT PRIMARY KEY, displayname TEXT NOT NULL DEFAULT '', avatar_url TEXT NOT NULL DEFAULT '')
+CREATE TABLE "profiles" (user_id TEXT PRIMARY KEY, displayname TEXT NOT NULL DEFAULT '', avatar_url TEXT NOT NULL DEFAULT '', fields_json TEXT NOT NULL DEFAULT '{}')
 -- statement create_client_txn_ids
 CREATE TABLE "client_txn_ids" (user_id TEXT NOT NULL, room_id TEXT NOT NULL, event_type TEXT NOT NULL, txn_id TEXT NOT NULL, event_id TEXT NOT NULL, device_id TEXT NOT NULL DEFAULT '', created_at_ms TEXT NOT NULL DEFAULT '0', PRIMARY KEY (user_id, device_id, room_id, event_type, txn_id))
 -- statement create_pushers
@@ -133,3 +133,7 @@ CREATE INDEX idx_to_device_messages_recipient_age ON to_device_messages (target_
 CREATE INDEX idx_deferred_pdus_room_id ON deferred_pdus (room_id)
 -- statement create_idx_media_pending_uploads_owner
 CREATE INDEX idx_media_pending_uploads_owner ON media_pending_uploads (owner_user_id)
+-- statement create_idx_events_room_id
+CREATE INDEX idx_events_room_id ON events (room_id)
+-- statement create_idx_state_groups_room_id
+CREATE INDEX idx_state_groups_room_id ON state_groups (room_id)

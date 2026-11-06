@@ -36,12 +36,14 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <cctype>
 #include <chrono>
 #include <condition_variable>
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
+#include <future>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -1103,6 +1105,466 @@ SCENARIO("A cleartext relay at a loopback literal is used when TLS is explicitly
                 auto const delivered = relay.delivered();
                 REQUIRE(delivered.size() == 1U);
                 REQUIRE_FALSE(delivered.front().tls);
+            }
+        }
+    }
+}
+
+namespace
+{
+
+// The reset code in the message a relay took: the indented line after "is:".
+[[nodiscard]] auto reset_code_in(SmtpSession const& session) -> std::string
+{
+    auto const marker = std::string_view{"\r\n    "};
+    auto const at = session.data.find(marker);
+    if (at == std::string::npos)
+    {
+        return {};
+    }
+    auto const begin = at + marker.size();
+    return session.data.substr(begin, session.data.find("\r\n", begin) - begin);
+}
+
+[[nodiscard]] auto post_json(ClientServerRuntime& runtime, std::string const& target, std::string const& body,
+                             std::string const& token = {}) -> merovingian::homeserver::DispatchResult
+{
+    return merovingian::homeserver::handle_client_server_request(runtime, {"POST", target, token, body});
+}
+
+[[nodiscard]] auto login_status(ClientServerRuntime& runtime, std::string const& password, std::string const& device)
+    -> std::uint16_t
+{
+    return post_json(
+               runtime, "/_matrix/client/v3/login",
+               R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@alice:example.org"},"password":")" +
+                   password + R"(","device_id":")" + device + R"("})")
+        .response.status;
+}
+
+[[nodiscard]] auto reset_with(ClientServerRuntime& runtime, std::string const& sid, std::string const& secret,
+                              std::string const& password, std::string const& extra = {})
+    -> merovingian::homeserver::DispatchResult
+{
+    return post_json(runtime, "/_matrix/client/v3/account/password",
+                     R"({"new_password":")" + password + R"(",)" + extra +
+                         R"("auth":{"type":"m.login.email.identity","threepid_creds":{"sid":")" + sid +
+                         R"(","client_secret":")" + secret + R"("}}})");
+}
+
+constexpr auto reset_submit_path =
+    std::string_view{"/_matrix/client/unstable/org.merovingian/account/password/email/submitToken"};
+
+} // namespace
+
+// Spec: Client-Server API v1.19, POST /account/password/email/requestToken, User-Interactive Authentication
+// (m.login.email.identity) and POST /account/password. The code travels by email to the address on the account;
+// ADR-0481 defines the submit step the requestToken answer's `submit_url` names.
+SCENARIO("A user who cannot sign in resets the password with a code emailed to their address",
+         "[integration][email][password-reset]")
+{
+    // This end-to-end scenario validates the complete email-based password reset flow.
+    // If SMTP is unavailable in the current environment, skip to avoid a flaky false failure.
+    if (!smtp_supported(RelayMode::cleartext))
+    {
+        SKIP(smtp_unsupported);
+    }
+
+    // Arrange baseline state: existing user session, email identity, and a relay that captures outbound mail.
+    GIVEN("an account with a signed-in device, an email address on it, and a relay")
+    {
+        auto const relay = MockSmtpRelay{RelayMode::cleartext};
+        auto started = merovingian::homeserver::start_client_server(email_test_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        relay.install(runtime);
+        auto const device_token = register_and_login(runtime, "alice");
+        auto binding = merovingian::database::PersistentThreePidBinding{};
+        binding.user_id = "@alice:example.org";
+        binding.medium = "email";
+        binding.address = std::string{alice_address};
+        binding.added_at_ms = 1700000000000U;
+        binding.validated_at_ms = 1700000000000U;
+        REQUIRE(merovingian::database::store_account_threepid(runtime.homeserver.database.persistent_store, binding));
+        auto const submit = std::string{reset_submit_path};
+
+        WHEN("the user requests a code, submits it, and sets a new password")
+        {
+            auto const requested =
+                post_json(runtime, "/_matrix/client/v3/account/password/email/requestToken",
+                          R"({"client_secret":"reset_secret_1","email":"alice@example.net","send_attempt":1})");
+            REQUIRE(requested.response.status == 200U);
+            auto const requested_body = parse_object(requested.response.body);
+            auto const* sid = string_member(requested_body, "sid");
+            REQUIRE(sid != nullptr);
+            auto const sessions = relay.delivered();
+            REQUIRE(sessions.size() == 1U);
+            auto const code = reset_code_in(sessions.front());
+            REQUIRE(code.size() == 8U);
+            // The message names the server and carries the code, and nothing of the account.
+            REQUIRE(sessions.front().data.find("@alice") == std::string::npos);
+
+            auto const wrong = post_json(
+                runtime, submit, R"({"sid":")" + *sid + R"(","client_secret":"reset_secret_1","token":"ZZZZZZZZ"})");
+            auto const right =
+                post_json(runtime, submit,
+                          R"({"sid":")" + *sid + R"(","client_secret":"reset_secret_1","token":")" + code + R"("})");
+            auto const changed = reset_with(runtime, *sid, "reset_secret_1", "BrandNewPass9!");
+
+            THEN("the password changes, the old one stops working and every old access token is revoked")
+            {
+                REQUIRE(wrong.response.status == 400U);
+                REQUIRE(right.response.status == 200U);
+                REQUIRE(changed.response.status == 200U);
+                REQUIRE(login_status(runtime, "CorrectHorse7!", "OLD") != 200U);
+                REQUIRE(login_status(runtime, "BrandNewPass9!", "NEW") == 200U);
+                auto const whoami = merovingian::homeserver::handle_client_server_request(
+                    runtime, {"GET", "/_matrix/client/v3/account/whoami", device_token, {}});
+                REQUIRE(whoami.response.status == 401U);
+            }
+
+            THEN("the session is spent: the same credentials cannot reset the password again")
+            {
+                auto const again = reset_with(runtime, *sid, "reset_secret_1", "AnotherPass8!");
+                REQUIRE(again.response.status == 401U);
+                REQUIRE(login_status(runtime, "BrandNewPass9!", "NEW2") == 200U);
+            }
+        }
+
+        WHEN("the code is submitted in lower case and a weak password is tried first")
+        {
+            auto const requested =
+                post_json(runtime, "/_matrix/client/v3/account/password/email/requestToken",
+                          R"({"client_secret":"reset_secret_2","email":"Alice@Example.NET","send_attempt":1})");
+            REQUIRE(requested.response.status == 200U);
+            auto const requested_body = parse_object(requested.response.body);
+            auto const* sid = string_member(requested_body, "sid");
+            REQUIRE(sid != nullptr);
+            auto const sessions = relay.delivered();
+            REQUIRE(sessions.size() == 1U);
+            auto code = reset_code_in(sessions.front());
+            for (auto& c : code)
+            {
+                c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+            }
+            auto const submitted =
+                post_json(runtime, submit,
+                          R"({"sid":")" + *sid + R"(","client_secret":"reset_secret_2","token":")" + code + R"("})");
+            auto const weak = reset_with(runtime, *sid, "reset_secret_2", "a");
+            auto const strong =
+                reset_with(runtime, *sid, "reset_secret_2", "BrandNewPass9!", R"("logout_devices":false,)");
+
+            THEN("the code matches case-insensitively, the weak password is refused and keeps the session, and "
+                 "logout_devices=false spares the old token")
+            {
+                REQUIRE(submitted.response.status == 200U);
+                REQUIRE(weak.response.status == 400U);
+                REQUIRE(strong.response.status == 200U);
+                auto const whoami = merovingian::homeserver::handle_client_server_request(
+                    runtime, {"GET", "/_matrix/client/v3/account/whoami", device_token, {}});
+                REQUIRE(whoami.response.status == 200U);
+            }
+        }
+
+        WHEN("a code is requested for an address no account holds")
+        {
+            auto const requested =
+                post_json(runtime, "/_matrix/client/v3/account/password/email/requestToken",
+                          R"({"client_secret":"reset_secret_3","email":"nobody@example.net","send_attempt":1})");
+
+            THEN("the answer is 200 and the relay is never contacted")
+            {
+                REQUIRE(requested.response.status == 200U);
+                // Sends run in the background: give any send time to reach the relay before asserting none did.
+                std::this_thread::sleep_for(std::chrono::milliseconds{500});
+                REQUIRE(relay.connections() == 0U);
+            }
+        }
+    }
+}
+
+namespace
+{
+
+struct ResetFixture final
+{
+    std::string device_token{};
+};
+
+[[nodiscard]] auto reset_fixture(ClientServerRuntime& runtime) -> ResetFixture
+{
+    auto fixture = ResetFixture{register_and_login(runtime, "alice")};
+    auto binding = merovingian::database::PersistentThreePidBinding{};
+    binding.user_id = "@alice:example.org";
+    binding.medium = "email";
+    binding.address = std::string{alice_address};
+    binding.added_at_ms = 1700000000000U;
+    binding.validated_at_ms = 1700000000000U;
+    REQUIRE(merovingian::database::store_account_threepid(runtime.homeserver.database.persistent_store, binding));
+    return fixture;
+}
+
+[[nodiscard]] auto request_code(ClientServerRuntime& runtime, std::string const& address, std::string const& secret,
+                                int attempt) -> merovingian::homeserver::DispatchResult
+{
+    return post_json(runtime, "/_matrix/client/v3/account/password/email/requestToken",
+                     R"({"client_secret":")" + secret + R"(","email":")" + address + R"(","send_attempt":)" +
+                         std::to_string(attempt) + "}");
+}
+
+[[nodiscard]] auto sid_from(merovingian::homeserver::DispatchResult const& result) -> std::string
+{
+    auto const body = parse_object(result.response.body);
+    auto const* sid = string_member(body, "sid");
+    return sid == nullptr ? std::string{} : *sid;
+}
+
+[[nodiscard]] auto submit_code(ClientServerRuntime& runtime, std::string const& sid, std::string const& secret,
+                               std::string const& code) -> merovingian::homeserver::DispatchResult
+{
+    return post_json(runtime, std::string{reset_submit_path},
+                     R"({"sid":")" + sid + R"(","client_secret":")" + secret + R"(","token":")" + code + R"("})");
+}
+
+[[nodiscard]] auto errcode_from(merovingian::homeserver::DispatchResult const& result) -> std::string
+{
+    auto const body = parse_object(result.response.body);
+    auto const* errcode = string_member(body, "errcode");
+    return errcode == nullptr ? std::string{} : *errcode;
+}
+
+} // namespace
+
+// ADR-0481: five wrong codes end a session, a session opened for an address no account holds can never validate,
+// and a session that reset a password is spent.
+SCENARIO("A password-reset session is bounded, cannot validate without an account, and is single use",
+         "[integration][email][password-reset]")
+{
+    if (!smtp_supported(RelayMode::cleartext))
+    {
+        SKIP(smtp_unsupported);
+    }
+
+    GIVEN("an account with an email address, and a relay")
+    {
+        auto const relay = MockSmtpRelay{RelayMode::cleartext};
+        auto started = merovingian::homeserver::start_client_server(email_test_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        relay.install(runtime);
+        std::ignore = reset_fixture(runtime);
+
+        WHEN("five wrong codes are submitted and then the right one")
+        {
+            auto const sid = sid_from(request_code(runtime, std::string{alice_address}, "cap_secret", 1));
+            auto const code = reset_code_in(relay.delivered().front());
+            REQUIRE(code.size() == 8U);
+            for (auto attempt = 0; attempt < 5; ++attempt)
+            {
+                REQUIRE(errcode_from(submit_code(runtime, sid, "cap_secret", "ZZZZZZZZ")) == "M_TOKEN_INCORRECT");
+            }
+            auto const right_after = submit_code(runtime, sid, "cap_secret", code);
+
+            THEN("the session is over: even the right code is M_SESSION_EXPIRED and nothing resets")
+            {
+                REQUIRE(right_after.response.status == 400U);
+                REQUIRE(errcode_from(right_after) == "M_SESSION_EXPIRED");
+                REQUIRE(reset_with(runtime, sid, "cap_secret", "BrandNewPass9!").response.status == 401U);
+                REQUIRE(login_status(runtime, "CorrectHorse7!", "STILL") == 200U);
+            }
+        }
+
+        WHEN("a session is opened for an address no account holds and every kind of code is tried")
+        {
+            auto const sid = sid_from(request_code(runtime, "nobody@example.net", "ghost_secret", 1));
+            // The placeholder an empty code is compared against must never be accepted as a code.
+            auto const dummy = submit_code(runtime, sid, "ghost_secret", "--------");
+            auto const wrong = submit_code(runtime, sid, "ghost_secret", "AAAAAAAA");
+            auto const empty = submit_code(runtime, sid, "ghost_secret", "");
+
+            THEN("none validates, and resetting with the session fails")
+            {
+                for (auto const* result : {&dummy, &wrong, &empty})
+                {
+                    REQUIRE(result->response.status == 400U);
+                    REQUIRE(errcode_from(*result) == "M_TOKEN_INCORRECT");
+                }
+                REQUIRE(reset_with(runtime, sid, "ghost_secret", "BrandNewPass9!").response.status == 401U);
+            }
+        }
+
+        WHEN("a session has reset the password once")
+        {
+            auto const sid = sid_from(request_code(runtime, std::string{alice_address}, "once_secret", 1));
+            auto const code = reset_code_in(relay.delivered().front());
+            REQUIRE(submit_code(runtime, sid, "once_secret", code).response.status == 200U);
+            REQUIRE(reset_with(runtime, sid, "once_secret", "BrandNewPass9!").response.status == 200U);
+            auto const again = reset_with(runtime, sid, "once_secret", "AnotherPass8!");
+            auto const submit_again = submit_code(runtime, sid, "once_secret", code);
+
+            THEN("it is spent: a second reset is 401, the session is gone, and the first password stands")
+            {
+                REQUIRE(again.response.status == 401U);
+                REQUIRE(submit_again.response.status == 400U);
+                REQUIRE(errcode_from(submit_again) == "M_SESSION_EXPIRED");
+                REQUIRE(login_status(runtime, "BrandNewPass9!", "ONCE") == 200U);
+                REQUIRE(login_status(runtime, "AnotherPass8!", "ONCE2") != 200U);
+            }
+        }
+    }
+}
+
+// ADR-0481: one reset email per address per minute, whatever the sessions; a throttled request still answers alike.
+SCENARIO("Reset emails to one address are throttled across sessions and answer alike",
+         "[integration][email][password-reset]")
+{
+    if (!smtp_supported(RelayMode::cleartext))
+    {
+        SKIP(smtp_unsupported);
+    }
+
+    GIVEN("an account with an email address, and a relay")
+    {
+        auto const relay = MockSmtpRelay{RelayMode::cleartext};
+        auto started = merovingian::homeserver::start_client_server(email_test_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        relay.install(runtime);
+        std::ignore = reset_fixture(runtime);
+
+        WHEN("two requests with different client secrets, and a resend on the first session, come at once")
+        {
+            auto const first = request_code(runtime, std::string{alice_address}, "throttle_one", 1);
+            auto const second = request_code(runtime, std::string{alice_address}, "throttle_two", 1);
+            auto const resend = request_code(runtime, std::string{alice_address}, "throttle_one", 2);
+            auto const code = reset_code_in(relay.delivered().front());
+            std::this_thread::sleep_for(std::chrono::milliseconds{500});
+
+            THEN("one email is sent, every request answers the same shape, the first session keeps its code and the "
+                 "throttled new session has none")
+            {
+                REQUIRE(relay.connections() == 1U);
+                for (auto const* result : {&first, &second, &resend})
+                {
+                    REQUIRE(result->response.status == 200U);
+                    auto const body = parse_object(result->response.body);
+                    REQUIRE(body.size() == 2U);
+                    REQUIRE(string_member(body, "sid") != nullptr);
+                    REQUIRE(string_member(body, "submit_url") != nullptr);
+                }
+                REQUIRE(first.response.body.size() == second.response.body.size());
+                REQUIRE(sid_from(resend) == sid_from(first));
+                REQUIRE(errcode_from(submit_code(runtime, sid_from(second), "throttle_two", code)) ==
+                        "M_TOKEN_INCORRECT");
+                // The throttled resend did not clear the first session's code or its attempts.
+                REQUIRE(submit_code(runtime, sid_from(first), "throttle_one", code).response.status == 200U);
+            }
+        }
+    }
+}
+
+// ADR-0481: the sends in flight are counted on their own, not against unrelated background tasks.
+SCENARIO("Reset emails are not dropped while other background tasks fill the parked-futures list",
+         "[integration][email][password-reset]")
+{
+    if (!smtp_supported(RelayMode::cleartext))
+    {
+        SKIP(smtp_unsupported);
+    }
+
+    GIVEN("a relay and twelve unrelated tasks parked in the runtime's background list")
+    {
+        auto const relay = MockSmtpRelay{RelayMode::cleartext};
+        auto started = merovingian::homeserver::start_client_server(email_test_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        relay.install(runtime);
+        std::ignore = reset_fixture(runtime);
+        auto gate = std::promise<void>{};
+        auto const open = gate.get_future().share();
+        // Opened on every exit, so a failed REQUIRE cannot leave the runtime waiting on the parked tasks.
+        struct GateRelease final
+        {
+            std::promise<void>& promise;
+            ~GateRelease()
+            {
+                try
+                {
+                    promise.set_value();
+                }
+                catch (std::future_error const&)
+                {
+                }
+            }
+        };
+        auto const release = GateRelease{gate};
+        {
+            auto const lock = std::lock_guard{runtime.homeserver.orphan_futures_mutex_};
+            for (auto index = 0; index < 12; ++index)
+            {
+                runtime.homeserver.orphan_futures_.push_back(std::async(std::launch::async, [open] {
+                    open.wait();
+                }));
+            }
+        }
+
+        WHEN("a reset code is requested")
+        {
+            auto const sid = sid_from(request_code(runtime, std::string{alice_address}, "busy_secret", 1));
+            auto const sessions = relay.delivered();
+
+            THEN("the email is still sent")
+            {
+                REQUIRE_FALSE(sid.empty());
+                REQUIRE(sessions.size() == 1U);
+            }
+        }
+    }
+}
+
+// ADR-0481: a session names the account that held the address when the code was sent; it is checked again when
+// the password is set.
+SCENARIO("A password-reset session fails once the address has left the account", "[integration][email][password-reset]")
+{
+    if (!smtp_supported(RelayMode::cleartext))
+    {
+        SKIP(smtp_unsupported);
+    }
+
+    GIVEN("a validated reset session for an address on alice's account")
+    {
+        auto const relay = MockSmtpRelay{RelayMode::cleartext};
+        auto started = merovingian::homeserver::start_client_server(email_test_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        relay.install(runtime);
+        auto const fixture = reset_fixture(runtime);
+        auto const sid = sid_from(request_code(runtime, std::string{alice_address}, "stale_secret", 1));
+        auto const code = reset_code_in(relay.delivered().front());
+        REQUIRE(submit_code(runtime, sid, "stale_secret", code).response.status == 200U);
+
+        WHEN("alice removes the address, and then it is bound again before the password is set")
+        {
+            REQUIRE(merovingian::database::delete_account_threepid(runtime.homeserver.database.persistent_store,
+                                                                   "@alice:example.org", "email",
+                                                                   std::string{alice_address}));
+            auto const removed = reset_with(runtime, sid, "stale_secret", "BrandNewPass9!");
+            auto binding = merovingian::database::PersistentThreePidBinding{};
+            binding.user_id = "@alice:example.org";
+            binding.medium = "email";
+            binding.address = std::string{alice_address};
+            binding.added_at_ms = 1700000000000U;
+            binding.validated_at_ms = 1700000000000U;
+            REQUIRE(
+                merovingian::database::store_account_threepid(runtime.homeserver.database.persistent_store, binding));
+            auto const rebound = reset_with(runtime, sid, "stale_secret", "BrandNewPass9!");
+
+            THEN("the reset fails as an unvalidated session does, the session is consumed, and the password stands")
+            {
+                REQUIRE(removed.response.status == 401U);
+                REQUIRE(removed.response.body.find("M_SESSION_NOT_VALIDATED") != std::string::npos);
+                REQUIRE(rebound.response.status == 401U);
+                REQUIRE(login_status(runtime, "CorrectHorse7!", "STALE") == 200U);
             }
         }
     }

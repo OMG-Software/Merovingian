@@ -21,6 +21,8 @@ This is the largest and most complex module — read this file carefully before 
 | `room_service.cpp` | Room operations, event persistence, signing-key lifecycle, appservice and push delivery |
 | `appservice_delivery.cpp` | Application Service API outbound queue (ADR-0163): `enqueue_appservice_delivery` (request path, no network) and `drain_appservice_queues` (the one drainer thread, run by a `PeriodicJob` from `main.cpp`) |
 | `client_txn_prune.cpp` | `prune_client_transactions`: the sweep the `client-txn-prune` `PeriodicJob` runs every hour, deleting to-device `client_txn_ids` records older than 7 days (F-54, ADR-0381) |
+| `retention_sweep.cpp` | `run_retention_sweep`: the sweep the `retention-sweep` `PeriodicJob` runs every hour. Deletes sessions and tokens that can no longer authenticate and `audit_log` rows past `security.audit_log_retention_days`, in transactions of at most 500 rows (`retention_batch_rows`), at most 20 batches per kind per sweep. `runtime.mutex` is taken for one batch at a time, never across the whole sweep (ADR-0488, ADR-0489) |
+| `session_table.cpp` | `SessionTable`: `LocalDatabase::sessions` with an index of token-hash digests, so `find_session` does not scan (ADR-0488) |
 | `deferred_pdu_retry.cpp` | Retains federation PDUs that could not yet be placed (`deferred_pdus`) and retries them: `retry_deferred_pdus`, `DeferredPduRetryJob` (R03, ADR-0165). A retry holds no lock across `ingest_pdu_event`; `ingest_pdu_event` writes rows only after signature verification |
 | `redaction_service.cpp` | Applies redactions (judge, overwrite the target's stored JSON, withhold unapplied redactions from clients) and checks a local client's redaction |
 | `room_power.cpp` | `may_send_state_event()`: whether a user may send a state event of a type in a room's current state, judged as the auth rules judge it (CSAZ-12) |
@@ -37,8 +39,10 @@ This is the largest and most complex module — read this file carefully before 
 | `push_room_facts.cpp` | `push_room_facts`, `room_member_display_name`, `push_evaluation_context`: the evaluation context push delivery and unread counting share |
 | `push_badge_count.cpp` | `count_push_badge`: the Push Gateway `counts.unread` from one walk of the events, newest first in stream order, that stops once every room is settled, at most 10000 rows (ADR-0207) |
 | `push_rule_unread_classifier.cpp` | `PushRuleUnreadClassifier`: counts unread events by the user's push rules, from the start of their current join (R15, ADR-0205) |
-| `presence_service.cpp` | Presence (CS API "Presence", SS API `m.presence`): `read_presence` (GET), `apply_sync_presence` (the `/sync` `set_presence` parameter), `build_sync_presence_events` (`presence.events`), `accept_inbound_presence` (the EDU sink's presence case) and `record_presence`, the one place a presence row is stored. `presence.enabled=false` turns every entry point into a no-op. Sending the EDU stays in `client_server.cpp` (`broadcast_presence_edu`), beside the other outbound EDUs |
+| `presence_service.cpp` | Presence (CS API "Presence", SS API `m.presence`): `read_presence` (GET), `apply_sync_presence` (the `/sync` `set_presence` parameter), `build_sync_presence_events` (`presence.events`), `accept_inbound_presence` (the EDU sink's presence case) and `record_presence`, the one place a presence row is stored. `expire_idle_presence` (the idle sweep, ADR-0492). `presence.enabled=false` turns every entry point into a no-op. Sending the EDU stays in `client_server.cpp` (`broadcast_presence_edu`), beside the other outbound EDUs |
 | `push_retry.cpp` | `attempt_push_delivery` (every push attempt: circuit breaker, rejected pushkeys, scheduling retries) and `PushRetryJob`, the one thread that sends retries (R14, ADR-0206); a run is bounded by a time budget, takes retries one recipient at a time in turn and sends with a shorter timeout (ADR-0410), and a slow answer counts against the gateway's circuit (ADR-0409) |
+| `password_reset.cpp` | Password reset by email (ADR-0481): `make_password_reset_token` (8 characters, 40 bits), `normalize_password_reset_token`, `send_password_reset_email` (a background task parked in `orphan_futures_`, at most 8 in flight, no lock held while it sends). The endpoints are in `client_server.cpp` before the auth gate; `reset_local_user_password` is in `auth_service.cpp` |
+| `turn_credentials.cpp` | `make_turn_credentials`: the coturn REST API username and password for `GET /voip/turnServer` (ADR-0480) |
 | `email_push.cpp` | Kind `"email"` pushers (ADR-0219, ADR-0220): `owned_email_pusher_address` (the pushkey must be the account's own email 3PID), `remove_email_pushers_for_address`, and `EmailPushJob`, the one thread that sends due digests through `send_due_email_notifications`. It re-reads the pusher, the 3PID, the account and the badge count under `runtime.mutex`, then sends with the mutex released |
 | `runtime_signing_key_store.cpp` | Production `SigningKeyStore` over the persisted server signing-key rows |
 | `federation_proxy.cpp` | Forwards inbound federation requests to the out-of-process federation worker over encrypted IPC; `GET /_matrix/key/v2/server` stays local |
@@ -76,13 +80,64 @@ is `declared_mime|sniffed_mime|scanner_clean|bytes` — the pipe-delimited wrapp
    a variable component (an ID, type or key) needs a template and a row in the HTTP-3
    scenario "gives every implemented dynamic client route its own coalesced bucket"
    in `tests/unit/test_security_audit_http_3.cpp` (ADR-0092); a fixed path needs an
-   entry in `static_routes` (an operator route under `/_merovingian/admin/` goes in
-   `operator_routes` or `media_actions` inside `normalized_target`, F-73, or its requests share
-   one counter with every unknown path) and a row in `client_static_route_allow` listing EVERY
+   entry in `static_routes` (an operator route under `/_merovingian/admin/` goes in the table
+   `observability::admin_routes()` instead, see "Adding an operator route" below) and a row in `client_static_route_allow` listing EVERY
    method it serves (a method missing there is answered `405 M_UNRECOGNIZED`
    before authentication). A path the matcher cannot place is answered
    `404 M_UNRECOGNIZED` before authentication (`client_route_is_known`, ADR-0230), so
    a route missing there is unreachable for every caller
+
+## Password reset by email (ADR-0481)
+
+`POST /account/password/email/requestToken`, the submit step and `POST /account/password` with `m.login.email.identity`
+and no access token are answered before the authentication gate. Rules for changing them:
+
+- **Answer every well-formed requestToken alike.** Never `M_THREEPID_NOT_FOUND`, never a different status or body
+  shape for an address with an account. The SMTP exchange is a background task for that reason; do not make it inline.
+  Drawing a code, building the message and starting the task do run only for an address with an account (a small local
+  difference, bounded by the rate limit); do not add more work there.
+- **One reset email per address per 60 seconds (`password_reset_address_interval_ms`), across sessions**, read from
+  `reset_sent_at_ms` on the sessions of the address (the list is capped). A throttled request answers as usual, keeps an
+  existing session's code and tries, and gives a new session no code. A session out of tries stays until it ages out
+  so the throttle record survives it.
+- **Reset sends are counted by `password_reset_sends_in_flight_`, never by `orphan_futures_.size()`**, which holds
+  unrelated background tasks. The permit releases the slot on every exit path.
+- **Completion re-checks that `account_threepids` still binds the address to the session's user**; otherwise it spends
+  the session and answers `M_SESSION_NOT_VALIDATED`.
+- **A session exists for an unknown address too**, with an empty `reset_token`. The submit step compares against a
+  fixed dummy then, so it does the same work and gives the same `M_TOKEN_INCORRECT`.
+- **Constant-time comparison** (`crypto::constant_time_equal_variable_length`) is used for the code and for the
+  `client_secret`. The `sid` is looked up with a plain comparison: it is sent to the client and useless without the
+  secret. A code is wrong five times at most (`password_reset_max_token_attempts`), then the session is dropped.
+- A session is consumed only by a successful reset, never by a refusal such as a weak password.
+- The code is never logged and never put in a response; `scrub_session_credentials` wipes it with the session.
+- The unauthenticated form of `POST /account/password` is served only with no access token and only when
+  `server.email.smtp_url` is set; otherwise the request reaches the authenticated handler and its `M_MISSING_TOKEN`.
+
+## The health probe (ADR-0479)
+
+`GET /_merovingian/health` is answered in `http_server.cpp` before `route_request`, from `ctx.dispatcher->running()`. It
+must never take `runtime.mutex` or any other lock, never read the database and never put anything in the body.
+## Adding an operator route (`/_merovingian/admin/...`, ADR-0504)
+
+The table `observability::admin_routes()` is the only list of operator routes. A route is:
+
+1. a row in `admin_routes()` (method, template with `{name}` for one segment) and a value of `AdminOperation`;
+2. a branch in `handle_local_http_request` that asks `is_admin_operation(AdminOperation::...)`, never compares a path.
+   Call `admin_auth_denied` (401 missing or invalid token, 403 not an administrator) first, before any lookup of what
+   the request names, so a non-administrator learns nothing about it. `require_admin` also answers 403 to an
+   administrator whose account is locked or suspended: these routes are dispatched ahead of the general user-token
+   gate, so nothing else judges that standing;
+3. no change to `normalized_target`: it files the request under the row's template (`match_admin_path`), and an
+   unmatched path under `/_matrix/client/{unmatched}`. `handle_client_server_request` answers 404 `route not found` to a
+   path or method the table does not declare. The `[g5]` walk in `tests/integration/test_operator_admin_flow.cpp` calls
+   every declared route as an administrator and fails if one is answered as a route that does not exist.
+
+The operator surface answers errors with a plain-text line and results with JSON (`OperatorReply`, no Matrix `errcode`).
+Put the logic in `operator_admin.cpp`, taking `HomeserverRuntime&`: it runs under `runtime.mutex` and must not make a
+blocking network call. The account actions share their writes with the client API (`set_local_user_moderation`,
+`deactivate_user_account`), and the review route shares `apply_admin_review` with the client route. There is no route that
+stops the server (ADR-0505); do not add one.
 
 ## Routes match the path, not the target (ADR-0420)
 
@@ -163,7 +218,7 @@ logged at warning level. A pre-v12 `create_room` holds a `RoomIdReservation` fro
 
 ## Client requests that call another server
 
-`publicRooms?server=` (GET and POST), a remote room-alias lookup (`GET /directory/room/{alias}` and `POST /join/{#alias}`), a remote user's profile (`remote_profile_response`: relays only `displayname`/`avatar_url`), remote media download or
+`publicRooms?server=` (GET and POST), a remote room-alias lookup (`GET /directory/room/{alias}` and `POST /join/{#alias}`), a remote user's profile (`remote_profile_response`: relays `displayname`/`avatar_url` strings, `m.tz` as a string and grammar-valid non-null custom keys within 64 KiB), remote media download or
 thumbnail, the `/thirdparty/*` lookups that call an appservice (ADR-0181), and the appservice
 `query_user` / `query_room_alias` hooks of `GET /profile/{userId}` and `GET /directory/room/{alias}`
 (F-68, ADR-0417: one slot for the whole loop, taken only when a registration's namespace matches the
@@ -528,6 +583,7 @@ client, sender or remote server controls, and per-user rows that requests scan m
 - `POST /room_keys/version` takes its number from `database::create_key_backup_version` (never from a scan of the
   versions held), and `DELETE /room_keys/version/{version}` deletes the version's sessions in the same transaction
   (ADR-0384).
+- `POST /keys/upload` judges its whole body (device keys, then every one-time and fallback key's signature) before it stores or announces anything: a refused request leaves no key and no device-list change. A new check goes in the judging part, never after a write.
 - `POST /keys/upload` checks the shape and size of every one-time and fallback key before storing anything
   (`uploaded_key_shape_refusal`, 400 `M_BAD_JSON`), and `device_keys`, each cross-signing key and each signed key of
   a signature upload are at most `max_uploaded_key_document_bytes` (400 `M_TOO_LARGE`, ADR-0338). A new key upload
@@ -536,6 +592,14 @@ client, sender or remote server controls, and per-user rows that requests scan m
   (`federation::accept_remote_key_claim_response`), never overwrites a user the response already holds, and answers
   500 if the response cannot be serialised: use `json_serialize_checked` on any response that holds members a remote
   server chose (ADR-0337).
+- `POST /createRoom` `invite_3pid` entries are counted with `invite` against `max_create_room_invites`, are validated
+  (shape, `id_access_token`, trusted `id_server`) before `create_room`, and are sent afterwards with
+  `invite_user_by_threepid(..., max_total_seconds)` under the one ADR-0079 slot and `invite_deadline` of the remote
+  invites; each call's timeouts are clamped to what is left of the deadline (ADR-0474). A failure leaves the room.
+- `GET /relations?recurse=true` walks at most 3 levels and offers at most 2048 events beyond the first level; it
+  continues only through events that pass the filters and `HistoryVisibility` (ADR-0475). Keep both bounds.
+- `POST /upgrade` sends the tombstone, then moves the old room's aliases (`reassign_room_alias`) and tries to raise its
+  `events_default` and `invite`, as the upgrader; the last step is best effort (ADR-0476).
 - `POST /createRoom` refuses past `max_create_room_invites` or `max_create_room_initial_state` with
   `400 M_TOO_LARGE` before `create_room` is called (ADR-0316): `create_room` stores one event per entry under
   the lock.
@@ -573,7 +637,7 @@ client, sender or remote server controls, and per-user rows that requests scan m
   `state_groups`, `state_group_state`, `event_state_groups` or `events` to find a key. A retained PDU is woken through
   `take_deferred_pdus_awaiting` (ADR-0326), never by searching the retained JSON, and the retry job reads
   `deferred_pdus` in place rather than copying it.
-- `PUT /profile/{userId}/displayname|avatar_url` measures the serialised `{avatar_url, displayname}` object with the new value and refuses 64 KiB or more with `400 M_PROFILE_TOO_LARGE`; a non-empty non-MXC `avatar_url` (`media::mxc_uri_is_valid`) is `400 M_INVALID_PARAM`; an empty one clears it; a body without the key is `400 M_MISSING_PARAM` and a non-string value `400 M_INVALID_PARAM`, storing nothing (ADR-0406). A new stored profile field must be added to the measured object.
+- `PUT /profile/{userId}/displayname|avatar_url` measures the serialised `{avatar_url, displayname}` object with the new value and refuses 64 KiB or more with `400 M_PROFILE_TOO_LARGE`; a non-empty non-MXC `avatar_url` (`media::mxc_uri_is_valid`) is `400 M_INVALID_PARAM`; an empty one clears it; a body without the key is `400 M_MISSING_PARAM` and a non-string value `400 M_INVALID_PARAM`, storing nothing (ADR-0406). The measured object is `profile_size_bytes`: `avatar_url`, `displayname` and the extended fields (`profiles.fields_json`, `m.tz` and custom keys, ADR-0478). A new stored profile field must be added to it.
 - `/search` judges a room the user has left with `room_read_access_for` only when one of its
   events would be returned, so those scans stay bounded by the page (R16).
 - `POST /search`, `POST /publicRooms` and `POST /user_directory/search` match their term with one
@@ -755,6 +819,10 @@ without that check ignores `presence.enabled=false`. Rules:
 - `accept_inbound_presence` binds `user_id` to the sending origin, bounds the entries it looks at, and keeps
   only users who share a joined room with a local user (one pass over the memberships per EDU). A new field
   accepted from the EDU needs a bound.
+- A local user who is `online` and has been inactive over `presence_idle_timeout_ms` (5 minutes) is set `unavailable`
+  by `expire_idle_presence`, run every `presence_idle_sweep_interval` (30 s) by the `presence-idle` `PeriodicJob`
+  (`run_presence_idle_sweep` in `client_server.cpp`: it takes `runtime.mutex` for one pass, queues the EDUs, makes no
+  network call). It touches only local `online` rows, at most `presence_idle_max_per_pass` per pass, and starts the clock of a row with no `observed_at_ms`; nothing sets a user `offline`. A stored non-state message from a local user calls `note_local_message_activity` (in memory, no EDU). Sliding sync reads `set_presence` from the body or the URL (ADR-0495).
 - Presence in `/sync` is built by `build_sync_presence_events`, which also sends a user's presence once to
   someone who started sharing a room with them since the token, whatever its stream position: the row's own
   position is older than the token.
@@ -796,3 +864,7 @@ the job.
   is not an appservice's. The ping holds an ADR-0079 slot and releases `runtime.mutex` for the call. The directory
   entry needs a protocol the registration declares and a room the appservice is interested in; it is persisted
   (`appservice_directory`, ADR-0192).
+
+## Room rosters and the room list (ADR-0496)
+
+`LocalRoom::members` is a `RoomMembers`: write it only with `add` / `remove` / `clear` (the `push_back` and `emplace_back` forms call `add`), and ask `contains`, never a scan. `find_local_room` (and `find_room` in `room_service.cpp`, which calls it) answers from a position index over `LocalDatabase::rooms` that it verifies, and settles a miss by a scan, so code and tests may still edit `rooms` directly. The index is `mutable`: every reader of `LocalDatabase` holds `runtime.mutex`, which is exclusive.

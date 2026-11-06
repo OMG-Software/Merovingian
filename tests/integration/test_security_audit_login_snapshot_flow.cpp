@@ -3,6 +3,7 @@
 
 #include "../support/joining_threads.hpp"
 #include "../support/master_key.hpp"
+#include "../support/password_hash_cost.hpp"
 #include "../support/registration_token.hpp"
 #include "../support/temp_directory.hpp"
 #include "merovingian/auth/password.hpp"
@@ -97,6 +98,8 @@ private:
 SCENARIO("a login cannot use a password invalidated during Argon2id verification",
          "[integration][sqlite][security_audit_login_snapshot]")
 {
+    // Another request has to land inside the window the lock is released for, so the hash takes its real time.
+    auto const real_hash_cost = merovingian::tests::RealPasswordHashCost{};
     GIVEN("Alice's old password and a precomputed replacement hash")
     {
         REQUIRE(sodium_init() >= 0);

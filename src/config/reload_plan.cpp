@@ -500,10 +500,6 @@ auto build_reload_plan(Config const& current, Config const& next) -> ReloadPlan
     {
         add_change(plan, "security.logging.redact_event_content");
     }
-    if (current.security().logging.structured != next.security().logging.structured)
-    {
-        add_change(plan, "security.logging.structured");
-    }
 
     // #421: the blocks below previously produced no diff at all, so an edit
     // to any of these keys was reported as "no changes" and silently dropped.
@@ -541,6 +537,10 @@ auto build_reload_plan(Config const& current, Config const& next) -> ReloadPlan
     {
         add_change(plan, "server.turn.password");
     }
+    if (current.server().turn.shared_secret_file != next.server().turn.shared_secret_file)
+    {
+        add_change(plan, "server.turn.shared_secret_file");
+    }
     if (current.server().turn.ttl_seconds != next.server().turn.ttl_seconds)
     {
         add_change(plan, "server.turn.ttl_seconds");
@@ -554,10 +554,6 @@ auto build_reload_plan(Config const& current, Config const& next) -> ReloadPlan
     if (current.server().identity_server.trusted_servers != next.server().identity_server.trusted_servers)
     {
         add_change(plan, "server.identity_server.trusted_servers");
-    }
-    if (current.server().identity_server.default_server != next.server().identity_server.default_server)
-    {
-        add_change(plan, "server.identity_server.default_server");
     }
     if (current.server().identity_server.allowed_bind_domains != next.server().identity_server.allowed_bind_domains)
     {
@@ -672,6 +668,11 @@ auto build_reload_plan(Config const& current, Config const& next) -> ReloadPlan
     if (current.security().refresh_token_lifetime_ms != next.security().refresh_token_lifetime_ms)
     {
         add_change(plan, "security.refresh_token_lifetime_ms");
+    }
+
+    if (current.security().audit_log_retention_days != next.security().audit_log_retention_days)
+    {
+        add_change(plan, "security.audit_log_retention_days");
     }
 
     if (current.federation_worker().request_timeout_seconds != next.federation_worker().request_timeout_seconds)

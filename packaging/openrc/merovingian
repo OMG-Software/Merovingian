@@ -10,6 +10,9 @@ directory="/var/lib/merovingian"
 supervisor="supervise-daemon"
 output_log="/var/log/merovingian/stdout.log"
 error_log="/var/log/merovingian/stderr.log"
+# Same ceilings as the systemd unit (LimitNOFILE, TimeoutStopSec): see ADR-0499.
+rc_ulimit="-n 65536"
+retry="SIGTERM/300/SIGKILL/5"
 
 depend() {
     need net

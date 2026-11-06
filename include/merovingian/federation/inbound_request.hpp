@@ -11,6 +11,7 @@
 #include "merovingian/federation/room_read_result.hpp"
 #include "merovingian/federation/runtime_federation.hpp"
 #include "merovingian/federation/security.hpp"
+#include "merovingian/federation/third_party_invite.hpp"
 #include "merovingian/federation/transactions.hpp"
 #include "merovingian/media/repository.hpp"
 #include "merovingian/media/thumbnailer.hpp"
@@ -199,6 +200,8 @@ struct FederationProfile final
     bool found{false};
     std::string displayname{};
     std::string avatar_url{};
+    // The extended fields (`m.tz` and custom keys) as one canonical JSON object; empty or `{}` for none.
+    std::string fields_json{};
 };
 
 // Resolves a local user's published profile for an inbound federation
@@ -391,6 +394,8 @@ struct FederationRuntimeState final
     MembershipTemplateProvider membership_template_provider{};
     MembershipAcceptor membership_acceptor{};
     InviteHandler invite_handler{};
+    // Issues the invite for an `exchange_third_party_invite` (ADR-0484). Unset (a worker): the endpoint answers 501.
+    ThirdPartyInviteExchanger third_party_invite_exchanger{};
     BackfillProvider backfill_provider{};
     // Optional resolver for inbound `query/directory`. When unset the handler
     // responds 501 Not Implemented.
@@ -493,8 +498,6 @@ struct FederationResponse final
                                                     FederationKeyRecord const& key) -> FederationDecision;
 [[nodiscard]] auto make_federation_runtime_state(RuntimeFederationConfig config) -> FederationRuntimeState;
 auto upsert_remote(FederationRuntimeState& runtime, FederationRemoteRuntime remote) -> void;
-[[nodiscard]] auto federation_remote_is_known(FederationRuntimeState const& runtime, std::string_view server_name)
-    -> bool;
 // Why the operator's policy refuses what `server_name` wrote, empty when it does not (ADR-0390): denied_servers,
 // the default_policy=deny allow list and the admin's rules, whichever server carried the event here. This server
 // is never refused its own events, and an empty name is left to the check that rejects a malformed sender. May take

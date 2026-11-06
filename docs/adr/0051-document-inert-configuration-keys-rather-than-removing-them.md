@@ -1,6 +1,6 @@
 # Document inert configuration keys rather than removing them
 
-* Status: accepted
+* Status: accepted for `database.migration_role`; superseded by [ADR-0498](0498-a-documented-configuration-key-is-enforced-or-removed-and-redaction-keys-only-accept-true.md) for `allowed_bind_domains`
 * Date: 2026-09-06
 
 ## Context and Problem Statement

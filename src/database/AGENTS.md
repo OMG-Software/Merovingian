@@ -33,7 +33,9 @@ Manages schema migrations and provides a dual-backend (SQLite / PostgreSQL) pers
    hashes, so keeping them would leave those hashes in process memory for its whole life.
 6. **In-memory mirrors of append-only tables are bounded windows.** `PersistentStore::audit_log`
    holds the newest `max_in_memory_audit_events` rows; append through `append_audit_event` and
-   hydrate through `remember_audit_event`, never `push_back`. `append_audit_event` bounds
+   hydrate through `remember_audit_event`, never `push_back`. The table is NOT append-only: retention deletes rows older
+   than `security.audit_log_retention_days` (ADR-0489), so never order `audit_log` by `ctid` alone (PostgreSQL orders by
+   `created_at_ms`, then `ctid`) and name the columns of every insert. `append_audit_event` bounds
    `actor`, `target` and `reason` to 255 bytes on a UTF-8 boundary (`observability::bounded_utf8`).
 
 7. **Persisted writes lease a pooled connection; nothing else opens one per write.** `commit_persistent_transaction`
@@ -118,7 +120,7 @@ table to find the children of an event.
 
 ## Backend selection
 
-The backend is chosen at startup from config (`database.engine = sqlite | postgresql`).
+The backend is chosen at startup from config (`database.backend = sqlite | postgresql`).
 All higher-level modules receive a `PersistentStore&` — they must not downcast to a backend type.
 
 ## Migration rules
@@ -157,3 +159,10 @@ rows, show them read-only, and keep a hash index over them. Look up with `event_
 (`find_missing_event_references`, also what ingestion backfills by). `upsert_deferred_pdu` and `remove_deferred_pdu` keep it
 current; hydration calls `rebuild_deferred_pdu_awaits`. Find the rows waiting for an event with
 `take_deferred_pdus_awaiting`; never search `pdu_json` for an ID.
+
+## A room's newest `origin_server_ts` (ADR-0497)
+
+`EventTable::room_latest_origin_server_ts(room_id)` is the greatest positive `origin_server_ts` among the room's rows of every
+status (sliding sync's room `timestamp`). `insert` and `insert_all` raise it, `erase_if` and `modify` recompute the affected
+rooms from their rows, `clear` and `extract` empty it, so a writer that bypasses them does not compile. Do not parse a room's
+events to find it.

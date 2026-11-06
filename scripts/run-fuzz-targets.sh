@@ -88,10 +88,20 @@ case "$cxx" in
     *) fail "fuzz harness requires clang; got $cxx" ;;
 esac
 
+# The libraries under test are built with AddressSanitizer, UBSan and libFuzzer's coverage counters, not
+# only the target files: without them a memory error inside a parser is not seen, and the fuzzer is
+# guided by the target's few lines instead of the parser's branches (ADR-0503).
+instrumentation="-Db_sanitize=address,undefined -Db_lundef=false"
+coverage_flags="-fsanitize-coverage=inline-8bit-counters,pc-table,trace-cmp"
+
 if [ -f "$builddir/build.ninja" ]; then
-    env CC="$cc" CXX="$cxx" meson setup "$builddir" --reconfigure -Dbuild_tests=false -Dbuild_fuzz=true
+    # shellcheck disable=SC2086
+    env CC="$cc" CXX="$cxx" meson setup "$builddir" --reconfigure -Dbuild_tests=false -Dbuild_fuzz=true \
+        $instrumentation "-Dc_args=$coverage_flags" "-Dcpp_args=$coverage_flags"
 else
-    env CC="$cc" CXX="$cxx" meson setup "$builddir" -Dbuild_tests=false -Dbuild_fuzz=true
+    # shellcheck disable=SC2086
+    env CC="$cc" CXX="$cxx" meson setup "$builddir" -Dbuild_tests=false -Dbuild_fuzz=true \
+        $instrumentation "-Dc_args=$coverage_flags" "-Dcpp_args=$coverage_flags"
 fi
 
 meson compile -C "$builddir"
@@ -139,5 +149,12 @@ run_target fuzz-config-parser    "$builddir/tests/fuzz/fuzz-config-parser"
 run_target fuzz-stream-token     "$builddir/tests/fuzz/fuzz-stream-token"
 run_target fuzz-query-params     "$builddir/tests/fuzz/fuzz-query-params"
 run_target fuzz-srv-record       "$builddir/tests/fuzz/fuzz-srv-record"
+run_target fuzz-multipart-upload   "$builddir/tests/fuzz/fuzz-multipart-upload"
+run_target fuzz-url-preview-html   "$builddir/tests/fuzz/fuzz-url-preview-html"
+run_target fuzz-x-matrix-header    "$builddir/tests/fuzz/fuzz-x-matrix-header"
+run_target fuzz-inbound-pdu        "$builddir/tests/fuzz/fuzz-inbound-pdu"
+run_target fuzz-ipc-frame          "$builddir/tests/fuzz/fuzz-ipc-frame"
+run_target fuzz-appservice-yaml    "$builddir/tests/fuzz/fuzz-appservice-yaml"
+run_target fuzz-push-glob          "$builddir/tests/fuzz/fuzz-push-glob"
 
 printf 'All fuzz targets completed cleanly.\n'

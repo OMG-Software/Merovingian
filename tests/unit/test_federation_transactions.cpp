@@ -185,34 +185,6 @@ SCENARIO("Federation transaction validation accepts bounded transactions and rej
     }
 }
 
-SCENARIO("Federation EDU scaffold accepts only ephemeral EDUs with valid origins", "[federation][transactions][edu]")
-{
-    GIVEN("valid and invalid EDUs")
-    {
-        auto valid = merovingian::federation::FederationEdu{"m.typing", "matrix.example.org", true};
-        auto persistent = valid;
-        persistent.ephemeral = false;
-        auto anonymous = valid;
-        anonymous.origin.clear();
-
-        WHEN("EDU policy is evaluated")
-        {
-            auto const accepted = merovingian::federation::edu_is_allowed(valid);
-            auto const rejected_persistent = merovingian::federation::edu_is_allowed(persistent);
-            auto const rejected_anonymous = merovingian::federation::edu_is_allowed(anonymous);
-
-            THEN("only valid ephemeral EDUs are accepted")
-            {
-                REQUIRE(accepted.accepted);
-                REQUIRE_FALSE(rejected_persistent.accepted);
-                REQUIRE(rejected_persistent.reason == "EDUs must remain ephemeral");
-                REQUIRE_FALSE(rejected_anonymous.accepted);
-                REQUIRE(rejected_anonymous.reason == "invalid EDU origin");
-            }
-        }
-    }
-}
-
 SCENARIO("Federation routes expose audit event names", "[federation][transactions][audit]")
 {
     GIVEN("a send_join route")

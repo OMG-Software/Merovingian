@@ -609,6 +609,8 @@ namespace
         body += json_str(profile.displayname);
         body += R"(,"avatar_url":)";
         body += json_str(profile.avatar_url);
+        body += R"(,"fields_json":)";
+        body += json_str(profile.fields_json);
         body += '}';
         return body;
     }

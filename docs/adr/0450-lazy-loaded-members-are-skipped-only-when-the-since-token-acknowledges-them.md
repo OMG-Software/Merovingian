@@ -48,6 +48,13 @@ is the room's state as of the same limit, never an empty list and never the send
 which would lose the gap's changes. The joined-room fallback's `sync_position` must not be copied here: it would read
 past the leave.
 
+The same limit holds for an unlimited timeline that starts past the boundary, which only the later ban or a
+world-readable room can produce: the senders' members come from the state at the boundary. A sender who joined after
+the user left therefore has no member event in `state`, and a client shows their Matrix ID. That omission was chosen
+over sending the member event the lazy-loading rule would ask for: it discloses less, and the event's `sender` still
+says who acted. `LazyRoomSelector::Plan::newest_readable` enforces the limit for every read, because
+`member_event_at_timeline_start` falls back to the current member event when a state group cannot be read.
+
 The first version accepted a `since` "at or past" the stored token. That fails when a client aborts a long-poll and
 retries the same `since` while the first request still runs. Request B begins at S0. Request A (also S0) records Bob at
 R1 and answers a dead connection. B answers at R2 >= R1 with Bob pushed out of its timeline into the gap by `limit`, so B

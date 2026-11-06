@@ -8,11 +8,13 @@
 #include "merovingian/homeserver/runtime.hpp"
 #include "merovingian/sync/sync_filter.hpp"
 
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <optional>
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace merovingian::homeserver
 {
@@ -27,6 +29,23 @@ inline constexpr auto max_presence_status_msg_bytes = std::size_t{1024U};
 // transaction carries at most 100 EDUs, and an entry costs a lookup and a row write under
 // runtime.mutex, so the list is cut off here rather than trusted to be short.
 inline constexpr auto max_inbound_presence_entries = std::size_t{100U};
+
+// CS API "Presence", "Idle timeout": "The server will automatically set a user's presence to `unavailable` if
+// their last active time was over a threshold value (e.g. 5 minutes)." The spec names no value; this is the
+// spec's example (ADR-0492).
+inline constexpr auto presence_idle_timeout_ms = std::int64_t{5 * 60 * 1000};
+
+// How long the "presence-idle" job sleeps between passes. A user is set unavailable at most this much after
+// crossing the threshold (ADR-0492).
+inline constexpr auto presence_idle_sweep_interval = std::chrono::seconds{30};
+
+// The most users one pass of the idle sweep sets unavailable. Each costs a commit, an appservice queue entry and a scan
+// of the rooms for the servers to tell, all under runtime.mutex, so a mass disconnect or a long downtime is taken in
+// passes (ADR-0492).
+inline constexpr auto presence_idle_max_per_pass = std::size_t{100U};
+
+// How long the job sleeps after a pass that hit the bound: the lock is free in between, and the rest follow.
+inline constexpr auto presence_idle_catch_up_interval = std::chrono::seconds{1};
 
 // Spec: "One of: [online, offline, unavailable]".
 [[nodiscard]] auto presence_state_is_valid(std::string_view state) noexcept -> bool;
@@ -57,6 +76,23 @@ inline constexpr auto max_inbound_presence_entries = std::size_t{100U};
 // Stores one user's presence and tells appservices. The caller holds runtime.mutex and wakes the
 // sync notifier. `row.observed_at_ms` is set here.
 [[nodiscard]] auto record_presence(HomeserverRuntime& runtime, database::PersistentPresence row) -> bool;
+
+// CS API "Presence", "Idle timeout" (ADR-0492): sets to `unavailable`, with `currently_active` false, every LOCAL user
+// whose presence is `online` and whose last active time (`presence_last_active_ago`) at `now_ms` is over
+// `presence_idle_timeout_ms`. A remote user's presence is their own server's to say, and `unavailable` and
+// `offline` are not idle. Returns the rows as stored, for the caller to tell other servers about and to wake
+// syncs for. At most `max_changes` rows are set; the caller sleeps `presence_idle_catch_up_interval` when it got that
+// many. A row with no observation time (loaded from the database) gets one, so its clock runs from the first pass.
+// The caller holds runtime.mutex. Does nothing with presence off.
+[[nodiscard]] auto expire_idle_presence(HomeserverRuntime& runtime, std::int64_t now_ms,
+                                        std::size_t max_changes = presence_idle_max_per_pass)
+    -> std::vector<database::PersistentPresence>;
+
+// CS API "Presence", "Last active ago": "A pro-active event may be sending a message to a room". A local user's
+// message just stored makes an `online` row current: last active 0, observed now, currently active. In memory, like the
+// still-online case of `apply_sync_presence`: no stream position, no EDU. Makes no row for a user who has none and does
+// not change a state the user chose. The caller holds runtime.mutex.
+auto note_local_message_activity(HomeserverRuntime& runtime, std::string_view user_id) -> void;
 
 // How a GET /presence/{userId}/status is answered.
 enum class PresenceReadStatus : std::uint8_t

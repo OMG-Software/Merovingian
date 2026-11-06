@@ -57,6 +57,14 @@ struct RegistrationValidationSession final
     // erased as soon as the 3PID is added or bound); never persisted or logged.
     std::string identity_server_base_url{};
     std::string identity_access_token{};
+    // Password reset by email only (ADR-0481): the code this server emailed, empty when none was sent (the address
+    // belongs to no account) or once the session is validated, and the wrong codes tried so far. In memory only,
+    // wiped with the session, never logged.
+    std::string reset_token{};
+    std::uint8_t token_attempts{0U};
+    // When this session's code was last emailed (wall-clock ms), zero if never: the per-address throttle reads it
+    // from every session of the address, so it survives the session that used up its tries.
+    std::uint64_t reset_sent_at_ms{0U};
 };
 
 // Security audit run-2 F-12 (ADR-0339). The spec bounds a tag's name (255 bytes) and nothing else about
@@ -227,7 +235,12 @@ auto install_test_per_user_rate_limit_engine(ClientServerRuntime& runtime) -> vo
                                               std::vector<database::PersistentDeviceListChange> changes) -> bool;
 [[nodiscard]] auto record_device_list_change(ClientServerRuntime& runtime, database::PersistentDeviceListChange change)
     -> bool;
-[[nodiscard]] auto set_presence(ClientServerRuntime& runtime, database::PersistentPresence state) -> bool;
+[[nodiscard]] auto set_presence(ClientServerRuntime& runtime, database::PersistentPresence const& state) -> bool;
+// One pass of the "presence-idle" job (CS API "Presence", "Idle timeout"; ADR-0492): every local user whose
+// presence is `online` and whose last active time is over `presence_idle_timeout_ms` is set to `unavailable`,
+// told to the servers that share a room with them, and long-polling syncs are woken. Takes runtime.mutex for
+// the pass and makes no network call (the EDUs are queued). Returns how long the job sleeps before the next.
+auto run_presence_idle_sweep(ClientServerRuntime& runtime) -> std::chrono::milliseconds;
 [[nodiscard]] auto set_account_data(ClientServerRuntime& runtime, database::PersistentAccountData data) -> bool;
 // set_account_data for a global row, refused past `max_global_types` distinct types (ADR-0173).
 [[nodiscard]] auto set_global_account_data_within_cap(ClientServerRuntime& runtime,

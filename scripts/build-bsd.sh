@@ -265,6 +265,8 @@ export MEROVINGIAN_TEST_DISABLE_HARDENING=1
 # test binary's duration varies by 20-40% between runs, which pushed the
 # unit, conformance and integration binaries past their meson limits
 # (600 s / 900 s) on runs where nothing hung. An explicit value still wins.
+# tests/meson.build sets the integration binary's value on the BSDs to half of
+# its 30 minutes because of this default (ADR-0509): change them together.
 timeout_multiplier="${MESON_TEST_TIMEOUT_MULTIPLIER:-2}"
 meson_test_timeout_args="--timeout-multiplier ${timeout_multiplier}"
 

@@ -15,7 +15,6 @@ namespace merovingian::trust_safety
 
 enum class PolicySurface
 {
-    invite,
     federation,
     media,
     registration,
@@ -70,23 +69,6 @@ struct PolicyServerHook final
     std::uint32_t timeout_milliseconds{250U};
 };
 
-struct AccountEnforcementRecord final
-{
-    std::string user_id{};
-    bool suspended{false};
-    bool locked{false};
-    EnforcementReason reason{};
-};
-
-struct InvitePolicyRequest final
-{
-    std::string sender_user_id{};
-    std::string target_user_id{};
-    std::string room_id{};
-    bool blocked_by_local_policy{false};
-    PolicyServerHook policy_server{};
-};
-
 struct RegistrationPolicyRequest final
 {
     std::string requested_user_id{};
@@ -94,12 +76,6 @@ struct RegistrationPolicyRequest final
     bool registrations_enabled{false};
     bool blocked_by_local_policy{false};
     PolicyServerHook policy_server{};
-};
-
-struct AccountPolicyRequest final
-{
-    std::string user_id{};
-    AccountEnforcementRecord enforcement{};
 };
 
 struct FederationPolicyRequest final
@@ -159,6 +135,14 @@ struct SafetyReportRequest final
     std::int32_t score{0};
 };
 
+// A report about a user (CS API `POST /users/{userId}/report`, v1.14).
+struct UserReportRequest final
+{
+    std::string reporter_user_id{};
+    std::string reported_user_id{};
+    std::string reason{};
+};
+
 struct SafetyAuditEvent final
 {
     std::string event_type{};
@@ -175,19 +159,16 @@ struct SafetyAuditEvent final
 [[nodiscard]] auto enforcement_reason(std::string_view code, std::string_view public_summary,
                                       std::string_view admin_detail) -> EnforcementReason;
 [[nodiscard]] auto policy_server_hook_allows(PolicyServerHook const& hook) -> PolicyDecision;
-[[nodiscard]] auto evaluate_invite_policy(InvitePolicyRequest const& request) -> PolicyDecision;
 [[nodiscard]] auto evaluate_registration_policy(RegistrationPolicyRequest const& request) -> PolicyDecision;
-[[nodiscard]] auto evaluate_account_policy(AccountPolicyRequest const& request) -> PolicyDecision;
 [[nodiscard]] auto evaluate_federation_policy(FederationPolicyRequest const& request) -> PolicyDecision;
 [[nodiscard]] auto evaluate_media_policy(MediaPolicyRequest const& request) -> PolicyDecision;
 [[nodiscard]] auto evaluate_room_policy(RoomPolicyRequest const& request) -> PolicyDecision;
-[[nodiscard]] auto account_enforcement_statements(AccountEnforcementRecord const& record)
-    -> std::vector<database::PreparedStatement>;
 [[nodiscard]] auto review_policy(ReviewRecord const& record) -> PolicyDecision;
 [[nodiscard]] auto reporting_api_routes() -> std::vector<ReportingApiRoute>;
 [[nodiscard]] auto match_reporting_api_route(std::string_view method, std::string_view target)
     -> ReportingApiRouteMatch;
 [[nodiscard]] auto validate_safety_report(SafetyReportRequest const& request) -> PolicyDecision;
+[[nodiscard]] auto validate_user_report(UserReportRequest const& request) -> PolicyDecision;
 [[nodiscard]] auto make_safety_audit_event(std::string_view actor, std::string_view entity,
                                            PolicyDecision const& decision) -> SafetyAuditEvent;
 [[nodiscard]] auto safety_audit_summary(SafetyAuditEvent const& event) -> std::string;

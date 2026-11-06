@@ -141,10 +141,11 @@ production-gated.
   mode and owner; an insecure or missing file cannot reuse a cache entry.
   Every returned copy has its own locked allocation. Allocation failure
   returns no keys rather than throwing through credential issuance.
-- `redacted_token_for_log()` (issue #437) discloses only a coarse size bucket
-  (`tiny`/`short`/`medium`/`long`), never the exact byte length — the precise
-  length was a minor side channel that let an observer of logs distinguish
-  token versions and valid- from invalid-length presented tokens.
+- Tokens are never logged, not even in part: the logger renders a field flagged
+  sensitive (or matched by `log_field_is_sensitive`) as `<redacted>`, so no
+  length, prefix or size class of a token reaches a log. The former
+  `redacted_token_for_log()` helper, which disclosed a coarse size bucket
+  (issue #437), had no caller and was removed.
 - Client-server auth/device/key actions append durable audit rows without
   logging plaintext credentials, bearer tokens, or key payloads.
 - `GET /_matrix/client/v1/auth_metadata` (MSC2965 OIDC discovery) returns RFC 8414 / Matrix v1.19 authorisation server metadata when `server.oidc.*` is configured; returns `404 M_UNRECOGNIZED` when OIDC is not configured. No OAuth 2.0 authorization-code / token / revocation flow is implemented yet.
@@ -219,6 +220,12 @@ production-gated.
   application service's namespace, then checked like a chosen name (0.12.38, conformance audit R12,
   ADR-0198). An empty `username` is still `400 M_INVALID_USERNAME`, and
   `m.login.application_service` registration still requires one.
+- The in-memory session table (`LocalDatabase::sessions`, `homeserver::SessionTable`) is looked up through an
+  index of token-hash digests, so an authenticated request does not scan every session; each candidate is still
+  confirmed with the constant-time hash comparison. Revoked sessions, and access tokens expired for seven days,
+  are erased by the hourly `retention-sweep` job along with their `access_tokens` rows; expired refresh tokens
+  are deleted too, but a revoked refresh token that has not expired is kept so reuse is still detected
+  (ADR-0488).
 - Server-side access and refresh token expiry is enforced. `PersistentAccessToken`,
   `PersistentRefreshToken`, and `LocalSession` carry an `expires_at` field set at issuance from
   configurable `security.access_token_lifetime_ms` (default 1h) and
@@ -274,7 +281,7 @@ production-gated.
   /devices/{deviceId}` sends an `m.device_list_update` for the renamed device to every server
   that shares a room with the user, and the EDU and every published copy of the device's keys
   carry its current display name (`unsigned.device_display_name`), not the name it had when the
-  keys were uploaded. A deleted or logged-out device is announced the same way
+  keys were uploaded; a device given no name has none (the field is omitted, ADR-0472), and `initial_device_display_name` is persisted with the device. Deleting a device deletes the to-device rows addressed to it in the same transaction (ADR-0471). A deleted or logged-out device is announced the same way
   (`announce_deleted_devices()`): `DELETE /devices/{deviceId}`, `POST /delete_devices`,
   `POST /logout` and `POST /logout/all` each send one `m.device_list_update` per removed device and
   server, with `deleted: true`, no keys, a `stream_id` of its own from the sync counter, and the
@@ -383,11 +390,21 @@ non-conformant. The HS fails closed with `403 M_FORBIDDEN` when the supplied
 returns `502` on transport error or a malformed IS response.
 
 The `server.identity_server.*` config block (`trusted_servers`,
-`default_server`, `allowed_bind_domains`, `connect_timeout_seconds`,
+`allowed_bind_domains`, `connect_timeout_seconds`,
 `total_timeout_seconds`) is read at start-up; every key in it, including the
 trust set, is classified restart-required. 3PID bindings are persisted in the `account_threepids` table
 (part of the v1 schema); IS-bound bindings additionally store the `client_secret`
 and `sid` needed for a remote unbind.
+
+`allowed_bind_domains` (ADR-0498) limits which email addresses this server will tell an identity server about. When
+non-empty, an email address whose domain (the text after its last `@`, compared ignoring letter case, no subdomain
+matching) is not listed is refused with `403 M_THREEPID_DENIED` before any identity server is contacted. It is applied to
+the email `requestToken` calls that are delegated to an identity server (`/register/email/requestToken`,
+`/account/3pid/email/requestToken`), to `/account/3pid/bind` and `/account/3pid` (after the session is confirmed and
+before the bind call), and to a 3PID room invite (`POST /rooms/{roomId}/invite` with `id_server`). msisdn has no domain, so
+the list does not restrict it; an empty list restricts nothing. There is no `default_server` key: an omitted
+`id_server` means this server handles the verification itself, and an identity server cannot be asked without the
+client's own `id_access_token`.
 
 ### bind / unbind / requestToken IS delegation (v0.11.10)
 
