@@ -2,8 +2,71 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
+// PHASE-B: forwarding includes, removed when consumers include the new headers directly.
+#include "merovingian/database/DeferredPduAwaits.hpp"
+#include "merovingian/database/ExaminedRows.hpp"
+#include "merovingian/database/MediaBlobRead.hpp"
+#include "merovingian/database/MembershipProjection.hpp"
+#include "merovingian/database/MissingEventReferences.hpp"
+#include "merovingian/database/PersistentAccessToken.hpp"
+#include "merovingian/database/PersistentAccountData.hpp"
+#include "merovingian/database/PersistentAdminAction.hpp"
+#include "merovingian/database/PersistentAppserviceDirectoryEntry.hpp"
+#include "merovingian/database/PersistentAppserviceOutboxEntry.hpp"
+#include "merovingian/database/PersistentAppserviceTxnCursor.hpp"
+#include "merovingian/database/PersistentAuditEvent.hpp"
+#include "merovingian/database/PersistentBlobReferenceCount.hpp"
+#include "merovingian/database/PersistentClientTxnRecord.hpp"
+#include "merovingian/database/PersistentCrossSigningKey.hpp"
+#include "merovingian/database/PersistentDeferredPdu.hpp"
+#include "merovingian/database/PersistentDevice.hpp"
+#include "merovingian/database/PersistentDeviceKey.hpp"
+#include "merovingian/database/PersistentDeviceListChange.hpp"
+#include "merovingian/database/PersistentEventAuth.hpp"
+#include "merovingian/database/PersistentEventEdge.hpp"
+#include "merovingian/database/PersistentEventSignature.hpp"
+#include "merovingian/database/PersistentFallbackKey.hpp"
+#include "merovingian/database/PersistentFederationDestination.hpp"
+#include "merovingian/database/PersistentFederationTransaction.hpp"
+#include "merovingian/database/PersistentFilter.hpp"
+#include "merovingian/database/PersistentForwardExtremity.hpp"
+#include "merovingian/database/PersistentInvite.hpp"
+#include "merovingian/database/PersistentKeyBackupSession.hpp"
+#include "merovingian/database/PersistentKeyBackupVersion.hpp"
+#include "merovingian/database/PersistentKeySignature.hpp"
+#include "merovingian/database/PersistentLocalMedia.hpp"
+#include "merovingian/database/PersistentLoginToken.hpp"
+#include "merovingian/database/PersistentMediaBlob.hpp"
+#include "merovingian/database/PersistentMembership.hpp"
+#include "merovingian/database/PersistentNotification.hpp"
+#include "merovingian/database/PersistentOneTimeKey.hpp"
+#include "merovingian/database/PersistentOpenidToken.hpp"
+#include "merovingian/database/PersistentPendingMediaUpload.hpp"
+#include "merovingian/database/PersistentPolicyRule.hpp"
+#include "merovingian/database/PersistentPresence.hpp"
+#include "merovingian/database/PersistentProfile.hpp"
+#include "merovingian/database/PersistentPusher.hpp"
+#include "merovingian/database/PersistentReceipt.hpp"
+#include "merovingian/database/PersistentRefreshToken.hpp"
+#include "merovingian/database/PersistentRemoteMedia.hpp"
+#include "merovingian/database/PersistentRemoteMediaRelease.hpp"
+#include "merovingian/database/PersistentRoom.hpp"
+#include "merovingian/database/PersistentRoomAlias.hpp"
+#include "merovingian/database/PersistentServerSigningKey.hpp"
+#include "merovingian/database/PersistentStateEvent.hpp"
+#include "merovingian/database/PersistentStateTransition.hpp"
+#include "merovingian/database/PersistentThreePidBinding.hpp"
+#include "merovingian/database/PersistentToDeviceMessage.hpp"
+#include "merovingian/database/PersistentUser.hpp"
+#include "merovingian/database/PreparedCurrentState.hpp"
+#include "merovingian/database/PreparedStateGroup.hpp"
+#include "merovingian/database/PreparedStateUpdate.hpp"
+#include "merovingian/database/RedactionState.hpp"
+#include "merovingian/database/RoomReloadSnapshot.hpp"
+#include "merovingian/database/UnusableCredentials.hpp"
 #include "merovingian/database/event_table.hpp"
 #include "merovingian/database/migration.hpp"
+#include "merovingian/database/persistent_store_backend.hpp"
 #include "merovingian/database/state_group_tables.hpp"
 #include "merovingian/database/statement.hpp"
 #include "merovingian/events/event.hpp"
@@ -27,13 +90,6 @@
 
 namespace merovingian::database
 {
-
-enum class PersistentStoreBackend
-{
-    memory,
-    postgresql,
-    sqlite,
-};
 
 // ADR-0062 part 2 (0.12.13 audit, finding N1): which tables a store open
 // hydrates into memory. `full` is every process except the federation
@@ -166,337 +222,6 @@ inline constexpr std::array<std::string_view, 13> federation_worker_table_allowl
     return false;
 }
 
-struct PersistentUser final
-{
-    std::string user_id{};
-    std::string password_hash{};
-    bool locked{false};
-    bool suspended{false};
-    bool admin{false};
-    // Permanent, irreversible account closure (spec: POST /account/deactivate).
-    // Distinct from `locked`/`suspended`, which are reversible admin actions: a
-    // deactivated account can never log in again and its localpart is never
-    // reissued.
-    bool deactivated{false};
-};
-
-struct PersistentDevice final
-{
-    std::string user_id{};
-    std::string device_id{};
-    std::string display_name{};
-};
-
-struct PersistentAccessToken final
-{
-    std::string user_id{};
-    std::string device_id{};
-    std::string token_hash{};
-    bool revoked{false};
-    // Server-side expiry. nullopt = no expiry (legacy rows / unset). Enforced by
-    // find_session and the refresh-token lookup so an expired token is rejected
-    // even when not revoked, forcing the refresh/re-login flow.
-    std::optional<std::chrono::system_clock::time_point> expires_at{};
-    // For an access token minted by POST /refresh: the hash of the refresh
-    // token that was presented. Its first use revokes that refresh token
-    // (ADR-0074). Empty for tokens minted any other way.
-    std::string predecessor_refresh_hash{};
-};
-
-struct PersistentRefreshToken final
-{
-    std::string user_id{};
-    std::string device_id{};
-    std::string token_hash{};
-    bool revoked{false};
-    std::optional<std::chrono::system_clock::time_point> expires_at{};
-    // For a refresh token minted by POST /refresh: the hash of the refresh
-    // token it replaces, which stays valid until this pair is first used
-    // (ADR-0074). Empty for tokens minted at login.
-    std::string predecessor_hash{};
-};
-
-// A stored server signing-key row.
-//
-// `secret_key` holds the at-rest form of this server's own Ed25519 signing
-// secret: since 0.12.5 always `secretbox:v1:<base64>` ciphertext, and for a row
-// written by an older release possibly legacy plaintext base64.
-//
-// 0.12.5 audit, finding 17: it is a std::string, so the in-memory persistent
-// store held that material in unpinned heap memory that was freed without being
-// wiped -- and a std::string reallocating (or a row being copied out of the
-// store's vector) left further unwiped copies behind. The field cannot become a
-// core::SecretBuffer without making the whole row move-only, which the store's
-// row vectors and every query path depend on not being; so instead the row
-// zeroises the field itself. Copies each wipe their own buffer, and a move
-// wipes what it leaves behind, so no path drops a secret without erasing it.
-//
-// This is a mitigation, not the guarantee SecretBuffer gives: the bytes are
-// still swappable while live. What actually keeps them safe at rest is that
-// they are ciphertext -- see finding 1 and crypto::signing_secret_box_key.
-struct PersistentServerSigningKey final
-{
-    std::string server_name{};
-    std::string key_id{};
-    std::string public_key{};
-    std::uint64_t valid_until_ts{0U};
-    std::string secret_key{}; // at-rest ciphertext (legacy rows: plaintext base64)
-    // Non-zero for a key a remote server published under old_verify_keys: the time it stopped using it.
-    // Retirement is one way and the earliest expiry wins (store_server_signing_key); `valid_until_ts` of
-    // such a row equals this. Never set on a row that holds a secret: this server's own keys.
-    std::uint64_t expired_ts{0U};
-
-    PersistentServerSigningKey() = default;
-    PersistentServerSigningKey(std::string server_name_value, std::string key_id_value, std::string public_key_value,
-                               std::uint64_t valid_until_ts_value, std::string secret_key_value = {});
-    PersistentServerSigningKey(PersistentServerSigningKey const& other);
-    auto operator=(PersistentServerSigningKey const& other) -> PersistentServerSigningKey&;
-    PersistentServerSigningKey(PersistentServerSigningKey&& other) noexcept;
-    auto operator=(PersistentServerSigningKey&& other) noexcept -> PersistentServerSigningKey&;
-    ~PersistentServerSigningKey();
-};
-
-struct PersistentFederationDestination final
-{
-    std::string server_name{};
-    std::string state{"idle"};
-    std::uint64_t retry_after_ts{0U};
-    std::uint64_t last_success_ts{0U};
-    std::uint32_t consecutive_failures{0U};
-};
-
-struct PersistentFederationTransaction final
-{
-    std::string transaction_id{};
-    std::string server_name{};
-    std::string method{"PUT"};
-    std::string target{};
-    std::string origin{};
-    std::string origin_server_ts{};
-    std::string body{};
-    std::uint32_t retry_count{0U};
-    std::uint64_t next_retry_ts{0U};
-};
-
-struct PersistentRoom final
-{
-    std::string room_id{};
-    std::string creator_user_id{};
-    bool directory_public{false};
-};
-
-struct PersistentMembership final
-{
-    std::string room_id{};
-    std::string user_id{};
-    std::string membership{"join"};
-    std::uint64_t stream_ordering{0U};
-};
-
-struct PersistentInvite final
-{
-    std::string room_id{};
-    std::string user_id{};
-    std::string sender_user_id{};
-    std::string event_id{};
-    std::string signed_event_json{};
-    std::vector<std::string> invite_state_events_json{};
-    std::uint64_t stream_ordering{0U};
-    // A knock's record: the resident server that accepted the knock, where its
-    // withdrawal goes (ADR-0251). Empty for an invite and for a knock on a room
-    // this server is in.
-    std::string resident_server{};
-};
-
-// DB-4: the `membership` row, and the change to the user's invite metadata, that
-// an m.room.member event implies. Passed with the event to store_event_with_state
-// (or prepare_store_event_with_state) so the event, its current_state row, the
-// membership row and the invite change commit in ONE transaction: a ban can never
-// be durable while the row still says join. The invite change follows the
-// membership: "invite" writes `invite` (when given), and so does "knock", whose
-// `invite` is the knock on a room on another server and the knock_room_state it
-// was answered with (ADR-0243); "join", "leave" and "ban" delete the user's invite
-// metadata; anything else leaves it alone. Readers of the record must check the
-// user's membership before treating it as an invite.
-struct MembershipProjection final
-{
-    std::string user_id{};
-    std::string membership{};
-    std::uint64_t stream_ordering{0U};
-    std::optional<PersistentInvite> invite{};
-};
-
-struct PersistentStateEvent final
-{
-    std::string room_id{};
-    std::string event_type{};
-    std::string state_key{};
-    std::string event_id{};
-};
-
-// Tracks the state event that was replaced when a new state event was stored.
-// Used to populate unsigned.replaces_state in the client event format.
-struct PersistentStateTransition final
-{
-    std::string room_id{};
-    std::string event_type{};
-    std::string state_key{};
-    std::string event_id{};
-    std::string previous_event_id{};
-};
-
-struct PersistentEventEdge final
-{
-    std::string event_id{};
-    std::string prev_event_id{};
-};
-
-struct PersistentEventAuth final
-{
-    std::string event_id{};
-    std::string auth_event_id{};
-};
-
-struct PersistentEventSignature final
-{
-    std::string event_id{};
-    std::string server_name{};
-    std::string key_id{};
-    std::string signature{};
-};
-
-struct PersistentDeviceKey final
-{
-    std::string user_id{};
-    std::string device_id{};
-    std::string json{};
-};
-
-struct PersistentOneTimeKey final
-{
-    std::string user_id{};
-    std::string device_id{};
-    std::string key_id{};
-    std::string json{};
-};
-
-struct PersistentFallbackKey final
-{
-    std::string user_id{};
-    std::string device_id{};
-    std::string key_id{};
-    std::string json{};
-};
-
-struct PersistentCrossSigningKey final
-{
-    std::string user_id{};
-    std::string key_type{};
-    std::string json{};
-};
-
-struct PersistentKeySignature final
-{
-    std::string signer_user_id{};
-    std::string target_user_id{};
-    std::string target_device_id{};
-    std::string json{};
-};
-
-struct PersistentKeyBackupVersion final
-{
-    std::string user_id{};
-    std::string version{};
-    std::string json{};
-};
-
-struct PersistentKeyBackupSession final
-{
-    std::string user_id{};
-    std::string version{};
-    std::string room_id{};
-    std::string session_id{};
-    std::string json{};
-};
-
-struct PersistentLocalMedia final
-{
-    std::string media_id{};
-    std::string owner_user_id{};
-    std::string content_type{};
-    std::uint64_t size_bytes{0U};
-    std::string hash_algorithm{};
-    std::string digest{};
-    bool quarantined{false};
-    bool removed{false};
-    // See media::LocalMediaRecord::legacy_endpoint_visible.
-    bool legacy_endpoint_visible{true};
-    // Migration 026 (ADR-0211): the `filename` the upload was made with (or the remote
-    // server's Content-Disposition filename), empty when none was given.
-    std::string upload_name{};
-};
-
-// Migration 026 (ADR-0212): an mxc:// URI reserved by POST /_matrix/media/v1/create
-// whose content has not been uploaded yet. Times are milliseconds since the
-// Unix epoch. The row is deleted in the transaction that stores the content.
-struct PersistentPendingMediaUpload final
-{
-    std::string media_id{};
-    std::string owner_user_id{};
-    std::uint64_t created_at_ms{0U};
-    std::uint64_t expires_at_ms{0U};
-};
-
-// A remote (server_name, media_id) and the local record holding its stored
-// copy: the durable form of the remote media cache (ADR-0119, migration 020).
-struct PersistentRemoteMedia final
-{
-    std::string server_name{};
-    std::string media_id{};
-    std::string content_type{};
-    std::uint64_t size_bytes{0U};
-    bool quarantined{false};
-    std::string local_media_id{};
-    // Milliseconds since the Unix epoch.
-    std::uint64_t fetched_at_ms{0U};
-};
-
-// A stored remote copy the remote media cache no longer holds: its local
-// media row and cache row are deleted (ADR-0119).
-struct PersistentRemoteMediaRelease final
-{
-    std::string local_media_id{};
-    std::string server_name{};
-    std::string media_id{};
-};
-
-// A blob's reference count after a change, and whether its bytes are cleared
-// because nothing references it any more.
-struct PersistentBlobReferenceCount final
-{
-    std::string storage_id{};
-    std::uint64_t ref_count{0U};
-};
-
-struct PersistentMediaBlob final
-{
-    std::string storage_id{};
-    std::string hash_algorithm{};
-    std::string digest{};
-    std::uint64_t size_bytes{0U};
-    std::string bytes{};
-    std::uint64_t ref_count{0U};
-};
-
-struct PersistentPolicyRule final
-{
-    std::string rule_id{};
-    std::string scope{};
-    std::string entity{};
-    std::string action{};
-    std::string reason{};
-};
-
 // AUTH-1: how many of the most recent audit rows the process keeps in memory,
 // in `PersistentStore::audit_log` and in `LocalDatabase::audit_events`. The
 // database holds every row; memory holds a window.
@@ -505,362 +230,6 @@ inline constexpr auto max_in_memory_audit_events = std::size_t{1024U};
 // AUTH-11: the most committed statements `enable_statement_capture` will hold,
 // however large a capacity is requested.
 inline constexpr auto max_statement_capture_capacity = std::size_t{65536U};
-
-struct PersistentAuditEvent final
-{
-    std::string category{};
-    std::string event_type{};
-    std::string actor{};
-    std::string target{};
-    std::string reason{};
-    // Unix milliseconds the row was appended. 0 means "not stamped yet": `append_audit_event` stamps it, and a
-    // row the table holds with 0 is never deleted by retention (ADR-0489).
-    std::uint64_t created_at_ms{0U};
-};
-
-struct PersistentAdminAction final
-{
-    std::string admin_user_id{};
-    std::string action{};
-    std::string target{};
-};
-
-// Matrix account-data row. Per-room account data is identified by a
-// non-empty `room_id`; an empty `room_id` denotes global account data.
-// The runtime keeps both classes in the same in-memory collection;
-// they are persisted to separate backend tables (`account_data` /
-// `room_account_data`) because the v1 schema's primary key on
-// `account_data` did not include `room_id`.
-struct PersistentAccountData final
-{
-    std::string user_id{};
-    std::string room_id{};
-    std::string event_type{};
-    std::string content_json{};
-    std::uint64_t stream_id{0U};
-};
-
-// A read receipt (Client-Server API, "Receipts"): the event `user_id` has read
-// up to in `room_id`. One row per (room_id, receipt_type, user_id, thread_id):
-// spec, "Each user_id, receipt_type, and categorisation (unthreaded, or
-// thread_id) tuple must be associated with only a single event_id".
-// `thread_id` is empty for an unthreaded receipt, `main` for the main
-// timeline, or a thread root's event ID. `stream_id` is the sync stream
-// position at which the receipt was last set. Persisted in `receipts`, because
-// unread counts are computed from these rows and losing them on a restart
-// marks every room unread again.
-struct PersistentReceipt final
-{
-    std::string room_id{};
-    std::string receipt_type{"m.read"};
-    std::string user_id{};
-    std::string event_id{};
-    std::uint64_t ts{0U};
-    std::uint64_t stream_id{0U};
-    std::string thread_id{};
-};
-
-// Pending to-device message. Sender pushes the row at send time; the
-// recipient's /sync drain advances `stream_id` past the row and the row
-// is then removed. `stream_id` is monotonic across the server and reused
-// as the sync next_batch token field for to-device.
-struct PersistentToDeviceMessage final
-{
-    std::uint64_t stream_id{0U};
-    std::string sender_user_id{};
-    std::string target_user_id{};
-    std::string target_device_id{};
-    std::string message_type{};
-    std::string content_json{};
-    // CSAZ-10: epoch milliseconds when the row was enqueued. Used to enforce the
-    // per-recipient TTL independently of sync acknowledgement.
-    std::uint64_t created_at_ms{0U};
-};
-
-// Device-list change observed by a syncing user. `change_type` is
-// "changed" or "left" per the Matrix spec. `observer_user_id` is the
-// local user whose /sync will surface this change; `subject_user_id`
-// is the user whose device list changed.
-struct PersistentDeviceListChange final
-{
-    std::uint64_t stream_id{0U};
-    std::string observer_user_id{};
-    std::string subject_user_id{};
-    std::string change_type{"changed"};
-};
-
-// Presence state for a Matrix user. Stored as the latest authoritative
-// snapshot; the sync stream surfaces rows whose `stream_id` exceeds the
-// caller's since-token.
-struct PersistentPresence final
-{
-    std::uint64_t stream_id{0U};
-    std::string user_id{};
-    std::string presence{"offline"};
-    std::string status_msg{};
-    // Milliseconds since `observed_at_ms`, as of that moment.
-    std::int64_t last_active_ago{0};
-    bool currently_active{false};
-    // Wall-clock milliseconds since the Unix epoch at which `last_active_ago` was true. It is what
-    // lets a read report "how long ago" up to date rather than as of the write. Never persisted: a
-    // row loaded from the database has 0 and reports `last_active_ago` as stored.
-    std::int64_t observed_at_ms{0};
-};
-
-// A client-uploaded sync filter. The server stores the raw JSON verbatim and
-// returns an opaque `filter_id`; clients pass the id as a query parameter on
-// subsequent /sync requests so the server can apply the filter criteria.
-struct PersistentFilter final
-{
-    std::string user_id{};
-    std::string filter_id{};
-    std::string json{};
-};
-
-struct PersistentProfile final
-{
-    std::string user_id{};
-    std::string displayname{};
-    std::string avatar_url{};
-    // The extended profile fields (`m.tz` and custom keys, spec v1.16) as one canonical JSON object, the
-    // text `{}` when there are none. displayname and avatar_url stay in their own columns.
-    std::string fields_json{"{}"};
-};
-
-// A third-party identifier (3PID) bound to a user account. `medium` is "email"
-// or "msisdn"; `address` is the normalized identifier. `country` and
-// `id_server` are nullopt when the binding was added without an identity-server
-// round-trip (e.g. a registration-time validated email); `id_server` is set
-// once the 3PID is bound at an identity server and `bound` records that the
-// server-side IS binding exists. `added_at_ms`/`validated_at_ms` are epoch-ms.
-// Primary key is (user_id, medium, address); a 3PID is globally unique to one
-// account (enforced by threepid_in_use before insert).
-struct PersistentThreePidBinding final
-{
-    std::string user_id{};
-    std::string medium{};
-    std::string address{};
-    std::optional<std::string> country{};
-    std::optional<std::string> id_server{};
-    std::uint64_t added_at_ms{0U};
-    std::uint64_t validated_at_ms{0U};
-    bool bound{false};
-    // IS validation pair (populated only for 3PIDs bound via a remote identity
-    // server). Stored so a later unbind can drive IS auth mode 2 (sid +
-    // client_secret) without a homeserver-signed request. See migration 007 and
-    // docs/threat-model.md for the storage trade-off.
-    std::optional<std::string> client_secret{};
-    std::optional<std::string> sid{};
-};
-
-struct PersistentRoomAlias final
-{
-    std::string room_alias{};
-    std::string room_id{};
-    // The local user who created the alias, who may always delete it (CSAZ-12).
-    // Empty for an alias created before schema version 21, or by createRoom's
-    // `room_alias_name` before then.
-    std::string creator_user_id{};
-};
-
-// Idempotency record for a client-issued room send or send-to-device PUT.
-// Keyed by (user_id, room_id, event_type, txn_id) (device_id is not part of the key: a retry from
-// another device of the user is still the same request here); room_id is empty for
-// send-to-device entries. event_id holds the stored event ID for room sends
-// and is empty for send-to-device (whose response is always {}).
-struct PersistentClientTxnRecord final
-{
-    std::string user_id{};
-    std::string room_id{};
-    std::string event_type{};
-    std::string txn_id{};
-    std::string event_id{};
-    // The device that made the request, empty for a request with none. Spec (client-server-api.md,
-    // ClientEvent `unsigned.transaction_id`): the sending client is given the transaction ID, and a
-    // transaction ID is scoped to a device. The idempotency key is (user_id, device_id, room_id,
-    // event_type, txn_id): the same txnId from another device is another request (F-52, ADR-0380).
-    std::string device_id{};
-    // When the record was made, in milliseconds since the epoch; the store stamps it when it is 0.
-    // Only a to-device record (room_id empty) is ever aged out (F-54, ADR-0381).
-    std::uint64_t created_at_ms{0U};
-};
-
-// A push notification pusher registered via `POST
-// /_matrix/client/v3/pushers/set` (Matrix v1.19 CS API §push-notifications).
-// Keyed by (user_id, app_id, pushkey) — the spec's uniqueness rule: setting a
-// pusher with the same app_id and pushkey for the same user replaces it
-// in-place rather than creating a second row. `kind` is "http" or "email".
-// `data_url` and `data_format` mirror the pusher's `data` dictionary (the
-// `url` and `format` keys); `data_url` is required for kind "http" and
-// empty for "email". `profile_tag` is optional per spec and empty when unset.
-// `data_extra_json` is a canonical-JSON-serialized object holding every
-// OTHER member of the pusher's `data` dictionary at registration time (i.e.
-// excluding `url`/`format`, which already have dedicated columns above) —
-// Matrix v1.19 Push Gateway API requires the homeserver to forward the
-// whole `data` dictionary minus `url` to the gateway, not just `format`.
-// Empty string means "no extra members" (equivalent to serialized `{}`).
-struct PersistentPusher final
-{
-    std::string user_id{};
-    std::string app_id{};
-    std::string pushkey{};
-    std::string kind{};
-    std::string app_display_name{};
-    std::string device_display_name{};
-    std::string profile_tag{};
-    std::string lang{};
-    std::string data_url{};
-    std::string data_format{};
-    std::string data_extra_json{};
-    // The device whose access token registered the pusher (`POST /pushers/set`), or empty when
-    // none did (a pusher stored before the column existed, or by an appservice). A password
-    // change that revokes a device's tokens deletes the pushers that device registered.
-    std::string device_id{};
-};
-
-// A recorded notification for `GET /_matrix/client/v3/notifications` (Matrix
-// v1.19 CS API §push-notifications). Recorded once per (user_id, event_id)
-// whenever push rule evaluation resolves `notify: true` for that recipient --
-// independent of whether the recipient has a registered pusher or whether
-// `server.push.enabled` is set (a user with push notifications turned off
-// must still see their notification history when they open the client; see
-// room_service.cpp's build_pending_push_deliveries). `actions` is the
-// canonical-JSON-serialized actions array the matched rule produced;
-// `highlight` mirrors its `set_tweak: highlight` action so `GET
-// /notifications?only=highlight` can filter without re-parsing `actions`.
-// `stream_ordering` is the triggering event's global stream position --
-// unique per (user_id, event_id) row, since a recipient gets at most one
-// notification per event -- and doubles as this table's pagination key,
-// exactly like `events.stream_ordering` already does for GET /messages.
-struct PersistentNotification final
-{
-    std::string user_id{};
-    std::string room_id{};
-    std::string event_id{};
-    std::uint64_t stream_ordering{0U};
-    std::uint64_t ts{0U};
-    std::string actions{};
-    std::string profile_tag{};
-    bool highlight{false};
-};
-
-// A short-lived OpenID token minted by `POST
-// /_matrix/client/v3/user/{userId}/openid/request_token` (Matrix v1.19 CS
-// API §OpenID) and redeemed by `GET /_matrix/federation/v1/openid/userinfo`
-// (SS API §OpenID). Deliberately a table of its own, disjoint from
-// PersistentAccessToken/access_tokens: this token authenticates nothing on
-// the client-server surface -- its only valid use is the federation
-// userinfo lookup -- so keeping it out of the access-token store and its
-// lookup path is what prevents it from being replayed as a client-server
-// bearer credential (see docs/threat-model.md). Unlike access tokens, every
-// row has a finite expiry (the spec's `expires_in` is required), so
-// expires_at is a plain time_point rather than optional.
-struct PersistentOpenidToken final
-{
-    std::string user_id{};
-    std::string token_hash{};
-    std::chrono::system_clock::time_point expires_at{};
-};
-
-// A short-lived, single-use SSO login token minted when the SSO redirect
-// flow completes and redeemed by `POST /login` with `type: m.login.token`
-// (Matrix v1.19 CS API §"Client login via SSO"). Deliberately a table of its
-// own, disjoint from PersistentAccessToken/access_tokens, for the same
-// reason PersistentOpenidToken is: this token authenticates nothing on the
-// ordinary client-server surface beyond the single /login exchange, so
-// keeping it out of the access-token store and its lookup path is what
-// prevents it from being replayed as a bearer credential. `used` enforces
-// single-use redemption (spec: "opaque token, suitable for use with
-// m.login.token"). The `device_id` the eventual session binds to comes from
-// the `POST /login` request body itself, exactly as it already does for
-// `m.login.password` -- this row only needs to answer "which user".
-struct PersistentLoginToken final
-{
-    std::string user_id{};
-    std::string token_hash{};
-    std::chrono::system_clock::time_point expires_at{};
-    bool used{false};
-};
-
-// The Application Service API's (Matrix v1.19) outbound
-// `PUT /_matrix/app/v1/transactions/{txnId}` delivery cursor for one
-// registered appservice. One row per appservice, keyed on `appservice_id`
-// (the registration file's `id`, not a secret). Delivery replays forward
-// through the `events` table's `stream_ordering`, so this row -- not a
-// separate durable outbox -- is the entire persisted delivery state; see
-// `room_service.cpp`'s appservice dispatch for how it is used:
-//   - `next_txn_id`: the next FRESH transaction id to allocate. Monotonic,
-//     never reused, so a retried transaction always carries the exact id
-//     the appservice may have already partially processed.
-//   - `delivered_stream_ordering`: high-water mark. Every event with
-//     stream_ordering <= this value has been acknowledged (HTTP 200) by the
-//     appservice.
-//   - `pending_txn_id` / `pending_stream_ordering`: the currently in-flight
-//     (sent, not yet acknowledged) batch, if any. `pending_txn_id == 0`
-//     means no batch is in flight. A retry of that SAME batch reuses this
-//     id and re-derives the identical event range
-//     (delivered_stream_ordering, pending_stream_ordering] rather than
-//     growing it -- the spec's "Homeservers MUST NOT alter (e.g. add more)
-//     events they were going to send within that transaction ID on
-//     retries."
-struct PersistentAppserviceTxnCursor final
-{
-    std::string appservice_id{};
-    std::uint64_t next_txn_id{1U};
-    std::uint64_t delivered_stream_ordering{0U};
-    std::uint64_t pending_txn_id{0U};
-    std::uint64_t pending_stream_ordering{0U};
-};
-
-// One event queued for delivery to one appservice (audit R01). The
-// transaction queue the Application Service API requires: a row is written
-// when the event is dispatched (under the runtime lock, interest decided at
-// that moment) and deleted in the same backend transaction that records its
-// delivery on the cursor above.
-//
-// The primary key is (appservice_id, stream_ordering) and is the ONLY dedupe.
-// There is deliberately no "already delivered" threshold: stream orderings are
-// allocated before an event commits and events in different rooms commit out
-// of order, so a lower ordering can legitimately arrive after a higher one was
-// delivered. The in-memory vector is kept sorted by (appservice_id,
-// stream_ordering) numerically; the column is TEXT like every other numeric
-// column, so the backend's own ordering is not relied on.
-struct PersistentAppserviceOutboxEntry final
-{
-    std::string appservice_id{};
-    std::uint64_t stream_ordering{0U};
-    std::string event_id{};
-};
-
-// A room an appservice has published to the directory of one of its networks (protocols) with PUT
-// /_matrix/client/v3/directory/list/appservice/{networkId}/{roomId} (ADR-0192). Independent of
-// `LocalRoom::directory_public`, the homeserver's own published room directory. Primary key
-// (appservice_id, network_id, room_id).
-struct PersistentAppserviceDirectoryEntry final
-{
-    std::string appservice_id{};
-    std::string network_id{};
-    std::string room_id{};
-};
-
-// A federation PDU this server could not yet place in the room's event graph
-// (a prev_event, auth_event or the state before it is unknown) and has kept,
-// as received, to try again (R03, ADR-0165). `pdu_json` is the exact envelope
-// ingestion would have stored, which may be the redacted form after a
-// content-hash mismatch. Signatures were verified before the row was written;
-// a retry re-enters ingestion after that step. `received_at_ms` is wall-clock
-// milliseconds and is kept across attempts; `attempts` counts the retries that
-// have not placed the PDU. Written and read by the main process only: the
-// federation worker relays every PDU to main and never holds this table.
-struct PersistentDeferredPdu final
-{
-    std::string event_id{};
-    std::string room_id{};
-    std::string origin{};
-    std::string pdu_json{};
-    std::int64_t received_at_ms{0};
-    std::uint32_t attempts{0U};
-};
 
 // Bounds on the retained set (R03, ADR-0165). A remote server chooses what
 // reaches this table, so each limit is fixed rather than configurable and a
@@ -873,76 +242,8 @@ inline constexpr std::size_t max_deferred_pdu_json_bytes = std::size_t{16U} * 10
 inline constexpr std::chrono::hours max_deferred_pdu_age{24};
 inline constexpr std::uint32_t max_deferred_pdu_attempts = 10U;
 
-// A room's current forward extremity (ADR-0064): an accepted, non-soft-
-// failed event with no accepted child yet. See
-// database::update_forward_extremities.
-struct PersistentForwardExtremity final
-{
-    std::string room_id{};
-    std::string event_id{};
-};
-
-// CSAZ-11. In-memory bookkeeping about m.room.redaction events, derived from `events`: rebuilt by
-// rebuild_redaction_state after hydration and kept current as events are stored. Never persisted
-// in a table of its own; what is durable is the redacted JSON of the target event itself.
-struct RedactionState final
-{
-    // Target event ID -> IDs of the redaction events that name it (in `redacts` at the top level
-    // or in `content`, whichever the event has; the room version decides which one counts).
-    std::unordered_map<std::string, std::vector<std::string>> by_target{};
-    // Redaction events that have not been applied: unjudged, waiting for their target, or not
-    // allowed to apply. Clients are not sent these (rooms/v3.md "Handling redactions").
-    std::unordered_set<std::string> withheld{};
-    // Target event ID -> the redaction event that was applied to it.
-    std::unordered_map<std::string, std::string> applied_by_target{};
-};
-
-// Which retained PDUs wait for which events (F-18, ADR-0326). In memory only, derived from
-// `PersistentStore::deferred_pdus` and never persisted: upsert_deferred_pdu and remove_deferred_pdu keep
-// it current, rebuild_deferred_pdu_awaits re-derives it after hydration. A PDU is indexed under the
-// event IDs it is missing (see find_missing_event_references), so waking the PDUs that wait for an event
-// is a lookup, not a search of every retained row's JSON.
-struct DeferredPduAwaits final
-{
-    // Awaited event ID -> (retained event ID -> its room ID).
-    std::unordered_map<std::string, std::unordered_map<std::string, std::string>> rows_by_awaited{};
-    // Retained event ID -> the event IDs it is indexed under.
-    std::unordered_map<std::string, std::vector<std::string>> awaited_by_row{};
-    // `deferred_pdus.size()` when the index was last made to match the rows. A caller that pushed rows
-    // directly leaves it behind, and take_deferred_pdus_awaiting rebuilds first.
-    std::size_t indexed_rows{0U};
-};
-
 struct PersistentStore;
-
-// A count of rows a read examined. Readers hold the store only by const reference, so it is mutable in the
-// store, and relaxed atomic so that two readers sharing the store cannot race on it. A test reads the
-// difference across an operation to prove how many rows it looked at, never how long it took.
-class ExaminedRows final
-{
-public:
-    ExaminedRows() noexcept = default;
-    ExaminedRows(ExaminedRows const& other) noexcept
-        : count_{other.count_.load(std::memory_order_relaxed)}
-    {
-    }
-    auto operator=(ExaminedRows const& other) noexcept -> ExaminedRows&
-    {
-        count_.store(other.count_.load(std::memory_order_relaxed), std::memory_order_relaxed);
-        return *this;
-    }
-    auto add(std::uint64_t rows) const noexcept -> void
-    {
-        count_.fetch_add(rows, std::memory_order_relaxed);
-    }
-    [[nodiscard]] auto value() const noexcept -> std::uint64_t
-    {
-        return count_.load(std::memory_order_relaxed);
-    }
-
-private:
-    mutable std::atomic<std::uint64_t> count_{0U};
-};
+struct PersistentStoreOpenResult;
 
 namespace detail
 {
@@ -1402,40 +703,6 @@ struct PersistentStore final
     std::uint64_t to_device_rows_examined{0U};
 };
 
-struct PersistentStoreOpenResult final
-{
-    bool ok{false};
-    std::string reason{};
-    PersistentStore store{};
-};
-
-// Freshly-read rows for a single room, scoped by room_id, used by reload_room
-// to refresh one room's slice of a PersistentStore without re-reading the
-// entire database. `room` is nullopt when the room no longer exists in the
-// backing database (e.g. it was never local to this server after all); the
-// other fields are empty in that case. `events` carries prev_event_ids,
-// auth_event_ids, and signatures already reconstructed from the flat
-// relation tables — see reconstruct_event_relations.
-struct RoomReloadSnapshot final
-{
-    // The room the rows belong to; load_room_snapshot sets it.
-    std::string room_id{};
-    std::optional<PersistentRoom> room{};
-    std::vector<PersistentMembership> memberships{};
-    std::vector<PersistentInvite> invites{};
-    std::vector<PersistentEvent> events{};
-    std::vector<PersistentStateEvent> state{};
-    // The room's state groups (ADR-0064), their own entries, and the event -> group mapping of the
-    // room's events, read in the same transaction as the rest. Federation reads judge an event on
-    // its recorded group and fail closed without one, so a reload that left these behind made every
-    // event created after the worker started look invisible.
-    std::vector<PersistentStateGroup> state_groups{};
-    std::vector<PersistentStateGroupStateEntry> state_group_state{};
-    std::vector<PersistentEventStateGroup> event_state_groups{};
-    // A memory-backed store has no database to read: nothing to apply (apply_room_snapshot returns at once).
-    bool nothing_to_apply{false};
-};
-
 // Serialise a token expiry time_point to its TEXT column form (epoch-ms decimal
 // string, empty for no expiry) and parse it back. Shared by the INSERT paths and
 // the SQLite/PostgreSQL store hydration so the encoding stays consistent.
@@ -1609,17 +876,6 @@ auto apply_room_snapshot(PersistentStore& store, RoomReloadSnapshot snapshot) ->
 [[nodiscard]] auto store_event(PersistentStore& store, PersistentEvent event) -> bool;
 [[nodiscard]] auto store_state(PersistentStore& store, PersistentStateEvent state) -> bool;
 
-// A current_state change prepared but not committed, so it can commit in the
-// transaction of the event that caused it (ADR-0228). store_state is
-// prepare_current_state, a commit and apply_current_state.
-struct PreparedCurrentState final
-{
-    PersistentStateEvent state{};
-    // The event the key named before; empty when the key had no row.
-    std::string previous_event_id{};
-    std::vector<PreparedStatement> statements{};
-};
-
 // The statements that make `state` current, replacing `previous_event_id`
 // (empty for a key with no current_state row yet), and record the transition.
 // Does not check that `state` names a stored event: see
@@ -1684,20 +940,6 @@ auto apply_current_state(PersistentStore& store, PreparedCurrentState const& pre
                                                std::optional<std::string> const& parent_state_group_id,
                                                std::vector<PersistentStateGroupStateEntry> const& full_state)
     -> std::optional<std::string>;
-
-// A create_or_reuse_state_group prepared but not committed, so it can commit
-// in the transaction of the event whose state it holds (ADR-0228).
-struct PreparedStateGroup final
-{
-    // The group that holds the state: the reused parent, or the new group.
-    std::string state_group_id{};
-    // The new group's row, or nullopt when the parent is reused and nothing
-    // is written.
-    std::optional<PersistentStateGroup> group{};
-    // The new group's own entries (its delta, or the full snapshot).
-    std::vector<PersistentStateGroupStateEntry> rows{};
-    std::vector<PreparedStatement> statements{};
-};
 
 // create_or_reuse_state_group without the commit. A parent, when given, must
 // already be in the store. Returns nullopt when it is not a valid group.
@@ -1850,22 +1092,6 @@ auto mark_redaction_applied(PersistentStore& store, std::string_view redaction_e
                                          std::string_view event_type, std::string_view state_key,
                                          std::string_view event_id) -> PersistentStateTransition const*;
 
-// Split version of store_event_with_state for callers that need to release locks
-// around the backend commit. `prepare` validates in-memory pre-conditions and
-// builds the prepared statements. `commit` writes them to the backend. `apply`
-// mirrors the committed rows into the in-memory vectors. The three phases must be
-// called in order on the same PreparedStateUpdate; prepare/apply are typically run
-// under a per-room lock while commit runs without it so independent rooms can overlap.
-struct PreparedStateUpdate final
-{
-    PersistentEvent event{};
-    std::optional<PersistentStateEvent> state{};
-    std::optional<MembershipProjection> membership{};
-    std::vector<PreparedStatement> statements{};
-    bool state_already_existed{false};
-    std::string previous_event_id{};
-};
-
 [[nodiscard]] auto prepare_store_event_with_state(PersistentStore& store, PersistentEvent event,
                                                   std::optional<PersistentStateEvent> state,
                                                   std::optional<MembershipProjection> membership = std::nullopt)
@@ -1953,20 +1179,6 @@ auto rebuild_key_signature_index(PersistentStore& store) -> void;
 [[nodiscard]] auto commit_pending_media_upload(PersistentStore& store, PersistentPendingMediaUpload row,
                                                std::vector<std::string> const& expired_media_ids) -> bool;
 
-// ADR-0119: media bytes live only in the database and are read per request.
-// prepare_media_blob_read runs under the runtime mutex and captures where to
-// read from; read_media_blob then runs with the mutex released. The SQLite
-// path and PostgreSQL connection details are fixed once the store is open.
-// The memory backend has no other copy of the bytes, so they are copied here.
-struct MediaBlobRead final
-{
-    PersistentStoreBackend backend{PersistentStoreBackend::memory};
-    std::string storage_id{};
-    std::string sqlite_path{};
-    std::string_view postgresql_conninfo{};
-    std::string_view postgresql_runtime_role{};
-    std::optional<std::string> memory_bytes{};
-};
 [[nodiscard]] auto prepare_media_blob_read(PersistentStore const& store, std::string_view storage_id) -> MediaBlobRead;
 // The blob's bytes, or nullopt when it is not referenced or cannot be read.
 [[nodiscard]] auto read_media_blob(MediaBlobRead const& read) -> std::optional<std::string>;
@@ -2134,8 +1346,8 @@ enum class CappedAccountDataStore
 [[nodiscard]] auto update_profile_displayname(PersistentStore& store, std::string_view user_id,
                                               std::string_view displayname) -> bool;
 // Replace only the extended fields (a canonical JSON object) of an existing profile row.
-[[nodiscard]] auto update_profile_fields(PersistentStore& store, std::string_view user_id,
-                                         std::string_view fields_json) -> bool;
+[[nodiscard]] auto update_profile_fields(PersistentStore& store, std::string_view user_id, std::string_view fields_json)
+    -> bool;
 // Update only avatar_url for an existing profile row.
 [[nodiscard]] auto update_profile_avatar_url(PersistentStore& store, std::string_view user_id,
                                              std::string_view avatar_url) -> bool;
@@ -2188,16 +1400,6 @@ auto rebuild_notification_index(PersistentStore& store) -> void;
 // pagination and filtering.
 [[nodiscard]] auto list_notifications_for_user(PersistentStore const& store, std::string_view user_id)
     -> std::vector<PersistentNotification>;
-// ADR-0488: credential rows that can no longer authenticate anyone. An access token row is unusable once it is
-// revoked (revocation is one-way, ADR-0052) or has been expired for `expired_access_grace`, which keeps the "token
-// expired" audit reason for a while. A refresh token row is unusable once it has expired: an expired refresh token
-// is refused before the reuse check, so deleting it changes no answer. A REVOKED refresh token that has not
-// expired is kept, because presenting it is how a stolen, rotated token is detected (ADR-0074).
-struct UnusableCredentials final
-{
-    std::vector<std::string> access_token_hashes{};
-    std::vector<std::string> refresh_token_hashes{};
-};
 [[nodiscard]] auto collect_unusable_credentials(PersistentStore const& store, std::chrono::system_clock::time_point now,
                                                 std::chrono::system_clock::duration expired_access_grace)
     -> UnusableCredentials;
@@ -2321,14 +1523,6 @@ enum class DeferredPduUpsert : std::uint8_t
 // Removes the row for `event_id`. False if there was none or the delete could
 // not be committed.
 [[nodiscard]] auto remove_deferred_pdu(PersistentStore& store, std::string_view event_id) -> bool;
-// The event IDs a PDU names that this store cannot yet use: every `auth_events` ID with no stored event,
-// and every `prev_events` ID that is not stored or has no recorded state group (so no state can be
-// computed before the PDU). The one definition ingestion backfills by and retained PDUs are indexed by.
-struct MissingEventReferences final
-{
-    std::vector<std::string> auth{};
-    std::vector<std::string> prev{};
-};
 [[nodiscard]] auto find_missing_event_references(PersistentStore const& store,
                                                  std::vector<std::string> const& auth_event_ids,
                                                  std::vector<std::string> const& prev_event_ids)
@@ -2476,3 +1670,7 @@ namespace detail
 } // namespace detail
 
 } // namespace merovingian::database
+
+// PHASE-B: forwarding include, removed when consumers include the new header directly. It comes last because
+// PersistentStoreOpenResult holds a PersistentStore by value, so it needs this header complete.
+#include "merovingian/database/PersistentStoreOpenResult.hpp"
