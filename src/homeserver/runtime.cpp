@@ -884,58 +884,6 @@ auto database_has_table(LocalDatabase const& database, std::string_view table_na
     });
 }
 
-PendingStreamOrdering::PendingStreamOrdering(LocalDatabase& database, std::uint64_t ordering)
-    : m_database{database}
-    , m_ordering{ordering}
-{
-    m_database.pending_stream_orderings.insert(m_ordering);
-}
-
-PendingStreamOrdering::~PendingStreamOrdering()
-{
-    if (auto const entry = m_database.pending_stream_orderings.find(m_ordering);
-        entry != m_database.pending_stream_orderings.end())
-    {
-        m_database.pending_stream_orderings.erase(entry);
-    }
-}
-
-PublishedStreamOrdering::PublishedStreamOrdering(HomeserverRuntime& runtime, std::uint64_t ordering)
-    : m_runtime{runtime}
-    , m_ordering{ordering}
-    , m_pending{std::in_place, runtime.database, ordering}
-{
-}
-
-PublishedStreamOrdering::~PublishedStreamOrdering() noexcept
-{
-    try
-    {
-        auto const lock = std::lock_guard{m_runtime.mutex};
-        m_pending.reset();
-        if (m_runtime.sync_notifier != nullptr)
-        {
-            // The event stream only: a sync stream ID is the caller's to publish once its event is
-            // applied. Events held behind this ordering have just become visible, and their writers'
-            // scoped publishes ran before they were: a broadcast. Otherwise only the positions move.
-            auto const visible = visible_stream_position(m_runtime.database);
-            if (visible > m_ordering)
-            {
-                m_runtime.sync_notifier->publish(visible, 0U);
-            }
-            else
-            {
-                m_runtime.sync_notifier->publish(visible, 0U, sync::AffectedUsers{});
-            }
-        }
-    }
-    catch (...)
-    {
-        // The reservation still ended with m_pending; only this wake-up is lost,
-        // and the next publish delivers it.
-    }
-}
-
 auto visible_stream_position(LocalDatabase const& database) noexcept -> std::uint64_t
 {
     auto const newest = database.next_stream_ordering - 1U;

@@ -55,6 +55,8 @@ homeserver_sources = files(
   'worker_ipc_limits.cpp',
   'worker_pool.cpp',
   'worker_supervisor.cpp',
+  'PendingStreamOrdering.cpp',
+  'PublishedStreamOrdering.cpp',
 )
 
 homeserver_lib = static_library(
