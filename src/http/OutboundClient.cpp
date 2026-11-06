@@ -143,8 +143,8 @@ namespace
     }
 
     // Length of the scheme plus its "://" separator that this request is
-    // permitted to use: always "https", and — only when the request has
-    // explicitly opted in via OutboundRequest::allow_cleartext_http — also
+    // permitted to use: always "https", and â€” only when the request has
+    // explicitly opted in via OutboundRequest::allow_cleartext_http â€” also
     // "http". The scheme token is compared case-sensitively and at least one
     // character must follow the separator. Returns 0 for anything else, which
     // every caller below treats as "reject".
