@@ -394,3 +394,10 @@ the only thread.
 there. On NetBSD `res_query`, `res_search` and `res_send` all share one state with no lock, and a thread can end up blocked
 reading a socket another is closing, past any budget or request to stop (ADR-0355). Do not put a lock around them instead:
 one slow name server, which a remote operator chooses, would hold every other lookup.
+
+## The federation state mutex is not recursive (ADR-0518)
+
+`FederationRuntimeState::mutex` is a `core::CopyableMutex`, taken through `federation_guard`. Never call a function that
+takes `federation_guard` while holding it: the second lock deadlocks, and a `key_resolution_slot_released` wait would
+otherwise sleep with the lock held. When two operations need the same state, write a lock-held helper that expects the
+caller to hold the guard (`completed_answer_with_guard_held` is the model) and call that from both.
