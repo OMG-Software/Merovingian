@@ -16,26 +16,24 @@ struct HttpServeStats final
 
     HttpServeStats() = default;
     HttpServeStats(HttpServeStats&& other) noexcept
-        : accepted_connections{other.accepted_connections.load(std::memory_order_relaxed)}
-        , completed_requests{other.completed_requests.load(std::memory_order_relaxed)}
-        , rejected_requests{other.rejected_requests.load(std::memory_order_relaxed)}
+        : accepted_connections{other.accepted_connections.load()}
+        , completed_requests{other.completed_requests.load()}
+        , rejected_requests{other.rejected_requests.load()}
     {
-        other.accepted_connections.store(0U, std::memory_order_relaxed);
-        other.completed_requests.store(0U, std::memory_order_relaxed);
-        other.rejected_requests.store(0U, std::memory_order_relaxed);
+        other.accepted_connections.store(0U);
+        other.completed_requests.store(0U);
+        other.rejected_requests.store(0U);
     }
     auto operator=(HttpServeStats&& other) noexcept -> HttpServeStats&
     {
         if (this != &other)
         {
-            accepted_connections.store(other.accepted_connections.load(std::memory_order_relaxed),
-                                       std::memory_order_relaxed);
-            completed_requests.store(other.completed_requests.load(std::memory_order_relaxed),
-                                     std::memory_order_relaxed);
-            rejected_requests.store(other.rejected_requests.load(std::memory_order_relaxed), std::memory_order_relaxed);
-            other.accepted_connections.store(0U, std::memory_order_relaxed);
-            other.completed_requests.store(0U, std::memory_order_relaxed);
-            other.rejected_requests.store(0U, std::memory_order_relaxed);
+            accepted_connections.store(other.accepted_connections.load());
+            completed_requests.store(other.completed_requests.load());
+            rejected_requests.store(other.rejected_requests.load());
+            other.accepted_connections.store(0U);
+            other.completed_requests.store(0U);
+            other.rejected_requests.store(0U);
         }
         return *this;
     }
