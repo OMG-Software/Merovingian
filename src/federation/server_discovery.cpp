@@ -7,8 +7,16 @@
 #include "merovingian/canonicaljson/value.hpp"
 #include "merovingian/federation/security.hpp"
 #include "merovingian/http/outbound_client.hpp"
+#include "merovingian/observability/StructuredLogField.hpp"
 #include "merovingian/observability/logger.hpp"
-#include "merovingian/observability/observability.hpp"
+
+#include <arpa/inet.h>
+#include <arpa/nameser.h>
+#include <netdb.h>
+#include <netinet/in.h>
+#include <resolv.h>
+#include <sys/socket.h>
+#include <sys/types.h>
 
 #include <algorithm>
 #include <array>
@@ -26,14 +34,6 @@
 #include <utility>
 #include <variant>
 #include <vector>
-
-#include <arpa/inet.h>
-#include <arpa/nameser.h>
-#include <netdb.h>
-#include <netinet/in.h>
-#include <resolv.h>
-#include <sys/socket.h>
-#include <sys/types.h>
 
 namespace merovingian::federation
 {

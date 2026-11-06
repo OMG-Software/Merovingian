@@ -3,11 +3,12 @@
 
 #include "merovingian/homeserver/deferred_pdu_retry.hpp"
 
+#include "merovingian/homeserver/HomeserverRuntime.hpp"
+#include "merovingian/homeserver/KeyServerCache.hpp"
 #include "merovingian/homeserver/local_http_router.hpp"
 #include "merovingian/homeserver/local_services.hpp"
-#include "merovingian/homeserver/runtime.hpp"
 #include "merovingian/observability/logger.hpp"
-#include "merovingian/observability/observability.hpp"
+#include "merovingian/observability/observability_enums.hpp"
 
 #include <algorithm>
 #include <chrono>

@@ -7,9 +7,13 @@
 #pragma GCC diagnostic ignored "-Wmaybe-uninitialized"
 #endif
 
-#include "merovingian/homeserver/client_server.hpp"
+#include "merovingian/homeserver/ClientServerRuntime.hpp"
 
-#include "merovingian/appservice/appservice_client.hpp"
+#include "merovingian/appservice/AppserviceClient.hpp"
+#include "merovingian/appservice/AppservicePingResult.hpp"
+#include "merovingian/appservice/ThirdPartyLocation.hpp"
+#include "merovingian/appservice/ThirdPartyProtocol.hpp"
+#include "merovingian/appservice/ThirdPartyUser.hpp"
 #include "merovingian/appservice/masquerade_token.hpp"
 #include "merovingian/appservice/registration.hpp"
 #include "merovingian/auth/identity.hpp"
@@ -28,7 +32,26 @@
 #include "merovingian/crypto/encoding.hpp"
 #include "merovingian/crypto/generic_hash.hpp"
 #include "merovingian/crypto/random.hpp"
-#include "merovingian/database/persistent_store.hpp"
+#include "merovingian/database/ExaminedRows.hpp"
+#include "merovingian/database/PersistentAccountData.hpp"
+#include "merovingian/database/PersistentAuditEvent.hpp"
+#include "merovingian/database/PersistentCrossSigningKey.hpp"
+#include "merovingian/database/PersistentDevice.hpp"
+#include "merovingian/database/PersistentDeviceListChange.hpp"
+#include "merovingian/database/PersistentKeyBackupSession.hpp"
+#include "merovingian/database/PersistentKeyBackupVersion.hpp"
+#include "merovingian/database/PersistentMembership.hpp"
+#include "merovingian/database/PersistentNotification.hpp"
+#include "merovingian/database/PersistentPolicyRule.hpp"
+#include "merovingian/database/PersistentPresence.hpp"
+#include "merovingian/database/PersistentProfile.hpp"
+#include "merovingian/database/PersistentPusher.hpp"
+#include "merovingian/database/PersistentReceipt.hpp"
+#include "merovingian/database/PersistentStateEvent.hpp"
+#include "merovingian/database/PersistentStore.hpp"
+#include "merovingian/database/PersistentThreePidBinding.hpp"
+#include "merovingian/database/PersistentToDeviceMessage.hpp"
+#include "merovingian/database/PersistentUser.hpp"
 #include "merovingian/events/event_id.hpp"
 #include "merovingian/events/event_signer.hpp"
 #include "merovingian/federation/edu_idempotence.hpp"
@@ -39,6 +62,25 @@
 #include "merovingian/federation/outbound_transaction.hpp"
 #include "merovingian/federation/public_rooms.hpp"
 #include "merovingian/federation/security.hpp"
+#include "merovingian/homeserver/ClientApiLimits.hpp"
+#include "merovingian/homeserver/ClientDevice.hpp"
+#include "merovingian/homeserver/ClientServerClock.hpp"
+#include "merovingian/homeserver/ClientServerStartOptions.hpp"
+#include "merovingian/homeserver/ClientServerStartResult.hpp"
+#include "merovingian/homeserver/CreateRoomOptions.hpp"
+#include "merovingian/homeserver/FetchRelationsRequest.hpp"
+#include "merovingian/homeserver/FetchThreadsRequest.hpp"
+#include "merovingian/homeserver/HomeserverRuntime.hpp"
+#include "merovingian/homeserver/KeyServerCache.hpp"
+#include "merovingian/homeserver/LocalHttpRequest.hpp"
+#include "merovingian/homeserver/LocalHttpResponse.hpp"
+#include "merovingian/homeserver/LocalRoom.hpp"
+#include "merovingian/homeserver/LocalUser.hpp"
+#include "merovingian/homeserver/OperationResult.hpp"
+#include "merovingian/homeserver/RegistrationValidationSession.hpp"
+#include "merovingian/homeserver/RemoteInviteResult.hpp"
+#include "merovingian/homeserver/RuntimeStartResult.hpp"
+#include "merovingian/homeserver/UiaSession.hpp"
 #include "merovingian/homeserver/appservice_delivery.hpp"
 #include "merovingian/homeserver/appservice_ephemeral.hpp"
 #include "merovingian/homeserver/auth_service.hpp"
@@ -57,7 +99,6 @@
 #include "merovingian/homeserver/request_lock.hpp"
 #include "merovingian/homeserver/room_power.hpp"
 #include "merovingian/homeserver/room_service.hpp"
-#include "merovingian/homeserver/runtime.hpp"
 #include "merovingian/homeserver/search_room_index.hpp"
 #include "merovingian/homeserver/space_hierarchy.hpp"
 #include "merovingian/homeserver/state_bookkeeping.hpp"
@@ -70,13 +111,22 @@
 #include "merovingian/http/request.hpp"
 #include "merovingian/identity/identity_client.hpp"
 #include "merovingian/media/security.hpp"
+#include "merovingian/observability/StructuredLogField.hpp"
 #include "merovingian/observability/bounded_text.hpp"
 #include "merovingian/observability/logger.hpp"
 #include "merovingian/observability/observability.hpp"
+#include "merovingian/observability/observability_enums.hpp"
 #include "merovingian/platform/file_metadata.hpp"
 #include "merovingian/push/user_push_rules.hpp"
 #include "merovingian/rooms/encryption_policy.hpp"
 #include "merovingian/rooms/room_version_policy.hpp"
+#include "merovingian/sync/SlidingSyncConnectionState.hpp"
+#include "merovingian/sync/SlidingSyncExtensionResponses.hpp"
+#include "merovingian/sync/SlidingSyncOp.hpp"
+#include "merovingian/sync/SlidingSyncPendingResponse.hpp"
+#include "merovingian/sync/SlidingSyncRequest.hpp"
+#include "merovingian/sync/SlidingSyncRoomResponse.hpp"
+#include "merovingian/sync/SlidingSyncRoomSubscription.hpp"
 #include "merovingian/sync/device_list_delta.hpp"
 #include "merovingian/sync/history_visibility.hpp"
 #include "merovingian/sync/lazy_member_tracker.hpp"
@@ -94,8 +144,10 @@
 #include "merovingian/sync/sync_filter.hpp"
 #include "merovingian/sync/sync_notifier.hpp"
 #include "merovingian/sync/viewer_event_unsigned.hpp"
+#include "merovingian/trust_safety/SafetyAuditEvent.hpp"
 #include "merovingian/trust_safety/ignore_list.hpp"
 #include "merovingian/trust_safety/policy_engine.hpp"
+#include "merovingian/trust_safety/policy_enums.hpp"
 
 #include <algorithm>
 #include <array>
@@ -13087,7 +13139,7 @@ namespace
     // "Third-party Lookups") ────────────────────────────────────────────
     //
     // Every field pulled from `appservice::ThirdParty*` here already passed
-    // through appservice_client.cpp's bounded, type-checked parsing of the
+    // through AppserviceClient.cpp's bounded, type-checked parsing of the
     // untrusted appservice reply — these builders just shape it into the
     // client-server wire format.
 
@@ -16584,7 +16636,7 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             // pusher ... is deleted") and matches this endpoint's established
             // idempotent-retry behaviour — only a genuine backend failure on
             // an EXISTING pusher is reported. Reviewer finding (PR #479,
-            // client_server.cpp:9071): the previous std::ignore here meant a
+            // ClientServerRuntime.cpp:9071): the previous std::ignore here meant a
             // client was told "done" even when the delete failed and the
             // pusher stayed live, still receiving pushes despite the user
             // believing they had disabled notifications.
@@ -16629,7 +16681,7 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             }
             return dispatch_resp(req, rt, 200U, "{}");
         }
-        // Reviewer finding (PR #479, client_server.cpp:9089): persist the
+        // Reviewer finding (PR #479, ClientServerRuntime.cpp:9089): persist the
         // replacement pusher BEFORE removing any other users' pushers that
         // share this app_id+pushkey. append:false's removal reaches pushers
         // belonging to OTHER users, so doing it first meant a store_pusher
@@ -16853,7 +16905,7 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
     // above) and "Requires authentication: Yes" (satisfied by the shared
     // `auth(...)` gate that already ran above this point in the dispatcher).
     // Backed by the outbound `GET /_matrix/app/v1/thirdparty/*` calls in
-    // appservice_client.cpp. Returning `{}` (not 404) for `/protocols` when
+    // AppserviceClient.cpp. Returning `{}` (not 404) for `/protocols` when
     // no appservice is registered matches the placeholder this replaces —
     // Element retries in a loop on 404.
     if (req.method == "GET" && starts_with(request_path, "/_matrix/client/v3/thirdparty/"))

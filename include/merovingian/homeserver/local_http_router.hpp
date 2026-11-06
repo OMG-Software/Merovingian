@@ -3,11 +3,10 @@
 #pragma once
 
 #include "merovingian/federation/inbound_ingestion.hpp"
-// PHASE-B: forwarding includes, removed when consumers include the new headers directly.
+#include "merovingian/homeserver/HomeserverRuntime.hpp"
 #include "merovingian/homeserver/LocalHttpRequest.hpp"
 #include "merovingian/homeserver/LocalHttpResponse.hpp"
 #include "merovingian/homeserver/client_outbound_proxy.hpp"
-#include "merovingian/homeserver/runtime.hpp"
 #include "merovingian/http/request.hpp"
 
 #include <cstdint>

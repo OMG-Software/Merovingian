@@ -2,14 +2,13 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
-#include "merovingian/config/config.hpp"
-// PHASE-B: forwarding includes, removed when consumers include the new headers directly.
+#include "merovingian/config/HttpTransportConfig.hpp"
+#include "merovingian/homeserver/ClientServerRuntime.hpp"
 #include "merovingian/homeserver/HttpConnectionDispatcher.hpp"
 #include "merovingian/homeserver/HttpServeStats.hpp"
 #include "merovingian/homeserver/HttpServeTuning.hpp"
 #include "merovingian/homeserver/MediaFetchAdmissionCaps.hpp"
 #include "merovingian/homeserver/SyncAdmissionCaps.hpp"
-#include "merovingian/homeserver/client_server.hpp"
 #include "merovingian/homeserver/dispatch_result.hpp"
 #include "merovingian/homeserver/tls.hpp"
 #include "merovingian/http/request_limits.hpp"

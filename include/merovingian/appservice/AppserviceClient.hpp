@@ -2,7 +2,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
-// PHASE-B: forwarding includes, removed when consumers include the new headers directly.
 #include "merovingian/appservice/AppserviceCallResult.hpp"
 #include "merovingian/appservice/AppservicePingResult.hpp"
 #include "merovingian/appservice/AppserviceQueryResult.hpp"
@@ -10,15 +9,13 @@
 #include "merovingian/appservice/AppserviceThirdPartyProtocolResult.hpp"
 #include "merovingian/appservice/AppserviceThirdPartyUsersResult.hpp"
 #include "merovingian/appservice/AppserviceTransaction.hpp"
-#include "merovingian/appservice/AppserviceTransactionEvent.hpp"
-#include "merovingian/appservice/ThirdPartyFieldType.hpp"
 #include "merovingian/appservice/ThirdPartyLocation.hpp"
 #include "merovingian/appservice/ThirdPartyProtocol.hpp"
-#include "merovingian/appservice/ThirdPartyProtocolInstance.hpp"
 #include "merovingian/appservice/ThirdPartyUser.hpp"
 #include "merovingian/appservice/registration.hpp"
 #include "merovingian/canonicaljson/value.hpp"
-#include "merovingian/config/config.hpp"
+#include "merovingian/config/AppserviceConfig.hpp"
+#include "merovingian/config/Config.hpp"
 #include "merovingian/federation/cached_server_discovery.hpp"
 #include "merovingian/http/outbound_client.hpp"
 

@@ -2,8 +2,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
-#include "merovingian/homeserver/runtime.hpp"
-#include "merovingian/trust_safety/policy_engine.hpp"
+#include "merovingian/homeserver/HomeserverRuntime.hpp"
+#include "merovingian/trust_safety/policy_enums.hpp"
 
 #include <cstddef>
 #include <cstdint>

@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include "../support/joining_threads.hpp"
-#include "merovingian/config/config.hpp"
+#include "merovingian/config/HttpTransportConfig.hpp"
 #include "merovingian/homeserver/http_server.hpp"
 #include "merovingian/homeserver/remote_media_fetch_coalescer.hpp"
 #include "merovingian/homeserver/remote_media_fetch_scope.hpp"

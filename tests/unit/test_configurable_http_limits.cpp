@@ -3,18 +3,18 @@
 
 #include "../support/joining_threads.hpp"
 #include "merovingian/core/file_descriptor.hpp"
+#include "merovingian/homeserver/HttpServeStats.hpp"
 #include "merovingian/homeserver/http_server.hpp"
 #include "merovingian/http/request.hpp"
 
 #include <catch2/catch_test_macros.hpp>
+#include <sys/socket.h>
+#include <unistd.h>
 
 #include <array>
 #include <string>
 #include <thread>
 #include <tuple>
-
-#include <sys/socket.h>
-#include <unistd.h>
 
 using merovingian::homeserver::ClientServerRuntime;
 using merovingian::homeserver::HttpDispatchMode;

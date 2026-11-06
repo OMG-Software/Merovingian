@@ -24,7 +24,7 @@ implementation and no users. The listening server lives in `homeserver/http_serv
 - **Rate limiting is applied before any auth check** — don't move it after auth, that would
   allow unauthenticated callers to exhaust server resources.
 - **Header lookup is case-insensitive.** The client-server dispatcher's `request_header(req, name)`
-  (in `homeserver/client_server.cpp`, over `LocalHttpRequest`) is the lookup to use; never compare
+  (in `homeserver/ClientServerRuntime.cpp`, over `LocalHttpRequest`) is the lookup to use; never compare
   header names with a case-sensitive match.
 - **`outbound_client` does not resolve hosts.** `perform()` requires `pinned_addresses` and binds
   them with `CURLOPT_RESOLVE`, so the SSRF policy in `federation::security` stays the single

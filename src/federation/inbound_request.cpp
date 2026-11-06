@@ -16,10 +16,14 @@
 #include "merovingian/federation/invite_room_state.hpp"
 #include "merovingian/federation/membership_endpoints.hpp"
 #include "merovingian/federation/server_acl.hpp"
-#include "merovingian/homeserver/client_server.hpp"
-#include "merovingian/media/repository.hpp"
+#include "merovingian/homeserver/ClientServerClock.hpp"
+#include "merovingian/homeserver/ClientServerRuntime.hpp"
+#include "merovingian/media/LocalMediaDownloadResult.hpp"
+#include "merovingian/media/LocalMediaRepository.hpp"
+#include "merovingian/observability/StructuredLogField.hpp"
 #include "merovingian/observability/logger.hpp"
 #include "merovingian/observability/observability.hpp"
+#include "merovingian/observability/observability_enums.hpp"
 #include "merovingian/rooms/room_version_policy.hpp"
 
 #include <algorithm>

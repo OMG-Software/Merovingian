@@ -9,7 +9,10 @@
 #include "merovingian/auth/password.hpp"
 #include "merovingian/auth/session.hpp"
 #include "merovingian/auth/token.hpp"
-#include "merovingian/config/config.hpp"
+#include "merovingian/config/Config.hpp"
+#include "merovingian/config/RegistrationSecurityConfig.hpp"
+#include "merovingian/config/SsoConfig.hpp"
+#include "merovingian/config/SsoIdentityProvider.hpp"
 #include "merovingian/core/file_descriptor.hpp"
 #include "merovingian/core/query_params.hpp"
 #include "merovingian/core/secret_buffer.hpp"
@@ -20,10 +23,16 @@
 #include "merovingian/federation/key_signatures.hpp"
 #include "merovingian/homeserver/local_services.hpp"
 #include "merovingian/homeserver/request_lock.hpp"
+#include "merovingian/observability/StructuredLogField.hpp"
 #include "merovingian/observability/logger.hpp"
-#include "merovingian/observability/observability.hpp"
+#include "merovingian/observability/observability_enums.hpp"
 #include "merovingian/platform/file_metadata.hpp"
 #include "merovingian/trust_safety/policy_engine.hpp"
+#include "merovingian/trust_safety/policy_enums.hpp"
+
+#include <fcntl.h>
+#include <sys/stat.h>
+#include <unistd.h>
 
 #include <algorithm>
 #include <array>
@@ -41,10 +50,6 @@
 #include <tuple>
 #include <unordered_map>
 #include <vector>
-
-#include <fcntl.h>
-#include <sys/stat.h>
-#include <unistd.h>
 
 namespace merovingian::homeserver
 {
@@ -1120,7 +1125,7 @@ auto bootstrap_admin_user(HomeserverRuntime& runtime, std::string_view localpart
 // `POST /register` with `type: m.login.application_service` bypasses the
 // ordinary registration flow entirely (no registration-token UIA, no
 // trust-safety registration policy hook, no captcha) — "This involves
-// bypassing the registration flows entirely." The caller (client_server.cpp)
+// bypassing the registration flows entirely." The caller (ClientServerRuntime.cpp)
 // has already verified the presented as_token and that `localpart` falls
 // within the appservice's namespace (or is its own sender_localpart) before
 // calling this.
@@ -1403,7 +1408,7 @@ auto login_local_user_by_id(HomeserverRuntime& runtime, std::string_view user_id
 // Application Service API (Matrix v1.19) §"Server admin style permissions":
 // logs in as `user_id` WITHOUT a password check, for a `POST /login` call
 // authenticated with an appservice's `as_token` and
-// `type: m.login.application_service`. The caller (client_server.cpp) is
+// `type: m.login.application_service`. The caller (ClientServerRuntime.cpp) is
 // responsible for verifying the as_token and that `user_id` falls within
 // the appservice's namespace (or is its own sender_localpart) before
 // calling this — the same division of responsibility as
@@ -1666,7 +1671,7 @@ namespace
 auto authenticated_user(HomeserverRuntime& runtime, std::string_view access_token) -> std::optional<std::string>
 {
     // Application Service API (Matrix v1.19) identity-assertion masquerade.
-    // client_server.cpp's dispatch entry point synthesizes this internal
+    // ClientServerRuntime.cpp's dispatch entry point synthesizes this internal
     // token shape exactly once per request, only after verifying the
     // presented as_token via constant-time comparison against the registry
     // and validating the asserted user_id against the appservice's

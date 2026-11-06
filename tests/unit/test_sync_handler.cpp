@@ -29,11 +29,22 @@
 #include "merovingian/canonicaljson/parser.hpp"
 #include "merovingian/canonicaljson/serializer.hpp"
 #include "merovingian/canonicaljson/value.hpp"
-#include "merovingian/config/config.hpp"
-#include "merovingian/database/persistent_store.hpp"
+#include "merovingian/config/ClientRateLimitsConfig.hpp"
+#include "merovingian/config/Config.hpp"
+#include "merovingian/config/ListenersConfig.hpp"
+#include "merovingian/config/LogModulesConfig.hpp"
+#include "merovingian/config/SecurityConfig.hpp"
+#include "merovingian/config/ServerConfig.hpp"
+#include "merovingian/database/ExaminedRows.hpp"
+#include "merovingian/database/PersistentStateEvent.hpp"
+#include "merovingian/database/PersistentStore.hpp"
+#include "merovingian/database/PersistentToDeviceMessage.hpp"
 #include "merovingian/events/event_id.hpp"
 #include "merovingian/federation/inbound_ingestion.hpp"
-#include "merovingian/homeserver/client_server.hpp"
+#include "merovingian/homeserver/ClientDevice.hpp"
+#include "merovingian/homeserver/ClientServerClock.hpp"
+#include "merovingian/homeserver/ClientServerRuntime.hpp"
+#include "merovingian/homeserver/ClientServerStartResult.hpp"
 #include "merovingian/homeserver/dispatch_result.hpp"
 #include "merovingian/homeserver/local_http_router.hpp"
 #include "merovingian/homeserver/room_service.hpp"
@@ -696,7 +707,7 @@ SCENARIO("Sync long-poll wakes when push_to_device_message publishes through the
 // publishing through the same SyncNotifier — for example if a future change
 // wired main's own edu_sink differently for the worker-enabled case, or the
 // runtime handed to the worker's request handler were not the exact instance
-// whose sync_notifier field client_server.cpp wires at startup — a client
+// whose sync_notifier field ClientServerRuntime.cpp wires at startup — a client
 // already parked in a long-poll would silently miss the room key until some
 // unrelated event happened to wake it, which looks exactly like "some
 // messages never decrypt" rather than an outright failure.

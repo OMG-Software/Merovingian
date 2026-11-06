@@ -3,13 +3,13 @@
 #pragma once
 
 #include "merovingian/core/secret_buffer.hpp"
-#include "merovingian/database/persistent_store.hpp"
+#include "merovingian/database/PersistentStore.hpp"
 #include "merovingian/homeserver/KeyServerCache.hpp"
 #include "merovingian/homeserver/LocalRoom.hpp"
 #include "merovingian/homeserver/LocalUser.hpp"
 #include "merovingian/homeserver/session_table.hpp"
+#include "merovingian/observability/AuditLogEvent.hpp"
 #include "merovingian/observability/audit_rate_gate.hpp"
-#include "merovingian/observability/observability.hpp"
 
 #include <cstddef>
 #include <cstdint>

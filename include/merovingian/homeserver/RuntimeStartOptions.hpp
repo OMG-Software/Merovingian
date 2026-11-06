@@ -2,9 +2,9 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
-#include "merovingian/config/config.hpp"
+#include "merovingian/config/Config.hpp"
+#include "merovingian/database/PersistentStore.hpp"
 #include "merovingian/database/migration.hpp"
-#include "merovingian/database/persistent_store.hpp"
 
 #include <cstdint>
 

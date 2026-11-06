@@ -6,7 +6,9 @@
 // it, and a vector edited behind the store's back is answered by a scan, never wrongly.
 
 #include "../support/temp_directory.hpp"
-#include "merovingian/database/persistent_store.hpp"
+#include "merovingian/database/PersistentStateEvent.hpp"
+#include "merovingian/database/PersistentStore.hpp"
+#include "merovingian/database/PersistentStoreOpenResult.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 

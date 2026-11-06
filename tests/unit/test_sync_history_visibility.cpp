@@ -17,7 +17,8 @@
 // These tests build the store directly (events, ADR-0064 state groups, state transitions) so
 // each rule, the two special cases and every fail-closed path are exercised in isolation.
 
-#include "merovingian/database/persistent_store.hpp"
+#include "merovingian/database/ExaminedRows.hpp"
+#include "merovingian/database/PersistentStore.hpp"
 #include "merovingian/sync/history_visibility.hpp"
 #include "merovingian/sync/room_read_access.hpp"
 

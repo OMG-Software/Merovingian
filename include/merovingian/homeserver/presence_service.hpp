@@ -3,9 +3,12 @@
 #pragma once
 
 #include "merovingian/canonicaljson/value.hpp"
-#include "merovingian/database/persistent_store.hpp"
+#include "merovingian/database/ExaminedRows.hpp"
+#include "merovingian/database/PersistentPresence.hpp"
+#include "merovingian/database/PersistentStore.hpp"
 #include "merovingian/federation/inbound_ingestion.hpp"
-#include "merovingian/homeserver/runtime.hpp"
+#include "merovingian/homeserver/HomeserverRuntime.hpp"
+#include "merovingian/homeserver/KeyServerCache.hpp"
 #include "merovingian/sync/sync_filter.hpp"
 
 #include <chrono>

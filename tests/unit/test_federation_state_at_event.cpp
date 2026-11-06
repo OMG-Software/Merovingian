@@ -8,7 +8,7 @@
 // what a real room would hold.
 
 #include "../support/ingested_state_fixture.hpp"
-#include "merovingian/database/persistent_store.hpp"
+#include "merovingian/database/PersistentStore.hpp"
 #include "merovingian/federation/event_query.hpp"
 #include "merovingian/homeserver/state_bookkeeping.hpp"
 #include "merovingian/rooms/room_version_policy.hpp"

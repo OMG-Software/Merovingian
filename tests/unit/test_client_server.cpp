@@ -27,16 +27,28 @@
 #include "../support/master_key.hpp"
 #include "../support/registration_token.hpp"
 #include "../support/tls_mock_server.hpp"
-#include "merovingian/config/config.hpp"
-#include "merovingian/database/persistent_store.hpp"
+#include "merovingian/config/ClientRateLimitsConfig.hpp"
+#include "merovingian/config/Config.hpp"
+#include "merovingian/config/ListenersConfig.hpp"
+#include "merovingian/config/LogModulesConfig.hpp"
+#include "merovingian/config/SecurityConfig.hpp"
+#include "merovingian/config/ServerConfig.hpp"
+#include "merovingian/database/ExaminedRows.hpp"
+#include "merovingian/database/PersistentMembership.hpp"
+#include "merovingian/database/PersistentStateEvent.hpp"
+#include "merovingian/database/PersistentStore.hpp"
+#include "merovingian/database/persistent_store_backend.hpp"
 #include "merovingian/events/event_signer.hpp"
+#include "merovingian/homeserver/ClientServerRuntime.hpp"
+#include "merovingian/homeserver/ClientServerStartResult.hpp"
 #include "merovingian/homeserver/auth_service.hpp"
-#include "merovingian/homeserver/client_server.hpp"
 #include "merovingian/http/request.hpp"
 #include "merovingian/observability/logger.hpp"
+#include "merovingian/trust_safety/policy_engine.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/generators/catch_generators.hpp>
+#include <sodium.h>
 
 #include <algorithm>
 #include <array>
@@ -45,8 +57,6 @@
 #include <string>
 #include <tuple>
 #include <vector>
-
-#include <sodium.h>
 
 namespace
 {
@@ -5036,7 +5046,7 @@ SCENARIO("POST /pushers/set persists custom data members and GET /pushers return
     }
 }
 
-// PR #479 review finding P2 (client_server.cpp:9071): the kind:null delete
+// PR #479 review finding P2 (ClientServerRuntime.cpp:9071): the kind:null delete
 // branch discarded delete_pusher's return value with std::ignore, so a
 // backend failure on an EXISTING pusher was still reported to the client as
 // 200 {} — the client believes notifications are off while the pusher stays
@@ -5109,7 +5119,7 @@ SCENARIO("POST /pushers/set with kind:null reports a backend delete failure inst
     }
 }
 
-// PR #479 review finding P2 (client_server.cpp:9089): append:false deleted
+// PR #479 review finding P2 (ClientServerRuntime.cpp:9089): append:false deleted
 // OTHER users' pushers sharing this app_id+pushkey BEFORE the replacement
 // pusher was persisted, so a store_pusher failure after those deletions left
 // unrelated users' notifications silently disabled with no replacement ever
@@ -8360,7 +8370,7 @@ SCENARIO("Stopping and resuming room sharing emits device_lists.left then change
 // |                                                                          |
 // |  When the client omits `device_id` from the login body, the server must |
 // |  generate a unique opaque device_id. Merovingian's parser at            |
-// |  client_server.cpp defaults to the literal string "MEROVINGIAN" instead, |
+// |  ClientServerRuntime.cpp defaults to the literal string "MEROVINGIAN" instead, |
 // |  which causes all device_id-less logins to collide on the same device   |
 // |  row. This is observable on pong.ping.me.uk where @james (the bootstrap  |
 // |  admin, no device_id sent) and any other user with the same default     |

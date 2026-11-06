@@ -13,7 +13,10 @@
 #include "merovingian/canonicaljson/parser.hpp"
 #include "merovingian/canonicaljson/serializer.hpp"
 #include "merovingian/canonicaljson/value.hpp"
-#include "merovingian/database/persistent_store.hpp"
+#include "merovingian/database/ExaminedRows.hpp"
+#include "merovingian/database/PersistentServerSigningKey.hpp"
+#include "merovingian/database/PersistentStore.hpp"
+#include "merovingian/database/PersistentStoreOpenResult.hpp"
 #include "merovingian/events/event_signer.hpp"
 #include "merovingian/federation/inbound_request.hpp"
 #include "merovingian/federation/remote_key_cache.hpp"
@@ -22,20 +25,19 @@
 #include "merovingian/rooms/room_version_policy.hpp"
 
 #include <catch2/catch_test_macros.hpp>
+#include <sodium.h>
 
 #include <array>
 #include <cstdint>
 #include <filesystem>
 #include <optional>
 #include <stdexcept>
+#include <stdlib.h>
 #include <string>
 #include <string_view>
 #include <system_error>
 #include <utility>
 #include <vector>
-
-#include <sodium.h>
-#include <stdlib.h>
 
 namespace
 {

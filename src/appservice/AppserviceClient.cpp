@@ -1,8 +1,21 @@
 // SPDX-FileCopyrightText: 2026 James Chapman
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-#include "merovingian/appservice/appservice_client.hpp"
+#include "merovingian/appservice/AppserviceClient.hpp"
 
+#include "merovingian/appservice/AppserviceCallResult.hpp"
+#include "merovingian/appservice/AppservicePingResult.hpp"
+#include "merovingian/appservice/AppserviceQueryResult.hpp"
+#include "merovingian/appservice/AppserviceThirdPartyLocationsResult.hpp"
+#include "merovingian/appservice/AppserviceThirdPartyProtocolResult.hpp"
+#include "merovingian/appservice/AppserviceThirdPartyUsersResult.hpp"
+#include "merovingian/appservice/AppserviceTransaction.hpp"
+#include "merovingian/appservice/AppserviceTransactionEvent.hpp"
+#include "merovingian/appservice/ThirdPartyFieldType.hpp"
+#include "merovingian/appservice/ThirdPartyLocation.hpp"
+#include "merovingian/appservice/ThirdPartyProtocol.hpp"
+#include "merovingian/appservice/ThirdPartyProtocolInstance.hpp"
+#include "merovingian/appservice/ThirdPartyUser.hpp"
 #include "merovingian/canonicaljson/parser.hpp"
 #include "merovingian/canonicaljson/serializer.hpp"
 #include "merovingian/canonicaljson/value.hpp"
@@ -63,7 +76,7 @@ namespace
     }
 
     // Minimal HTTP/HTTPS URL parser. Unlike push_gateway_client's, this
-    // accepts either scheme (see appservice_client.hpp's doc comment) and no
+    // accepts either scheme (see AppserviceClient.hpp's doc comment) and no
     // fixed path suffix — the caller appends the Application Service API
     // path itself.
     struct ParsedAppserviceUrl final

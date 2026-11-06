@@ -49,7 +49,7 @@ durability distinction:
 - **Durable** (via `append_local_audit`, `src/homeserver/local_services.cpp` — written to the
   `audit_log` table): login success/failure (`auth.login`, `login.rejected`), token
   invalidation/rejection (`auth.logout`, `access_token.rejected`), client-server rate-limit
-  rejections (`rate_limit.exceeded`, appended from `src/homeserver/client_server.cpp`), and media
+  rejections (`rate_limit.exceeded`, appended from `src/homeserver/ClientServerRuntime.cpp`), and media
   quarantine (`media.quarantined`, `media.upload_quarantined`).
 - **In-memory only, not durable** (via `audit_federation`, `src/federation/inbound_request.cpp` —
   appended to `FederationRuntimeState::audit_events`, a bounded deque, never to the database):

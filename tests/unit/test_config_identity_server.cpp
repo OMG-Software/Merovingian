@@ -7,7 +7,8 @@
 // |  URL:  ../../docs/matrix-v1.19-spec/identity-service-api.md             |
 // +-------------------------------------------------------------------------+
 
-#include "merovingian/config/config.hpp"
+#include "merovingian/config/Config.hpp"
+#include "merovingian/config/ConfigValidationFinding.hpp"
 #include "merovingian/config/config_parser.hpp"
 #include "merovingian/config/reload_policy.hpp"
 

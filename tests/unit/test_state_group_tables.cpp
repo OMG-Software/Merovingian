@@ -11,7 +11,8 @@
 
 #include "../support/state_group_scan.hpp"
 #include "../support/temp_directory.hpp"
-#include "merovingian/database/persistent_store.hpp"
+#include "merovingian/database/PersistentStore.hpp"
+#include "merovingian/database/PersistentStoreOpenResult.hpp"
 #include "merovingian/database/state_group_tables.hpp"
 #include "merovingian/events/limits.hpp"
 

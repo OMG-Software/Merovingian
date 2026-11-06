@@ -3,7 +3,7 @@
 
 #include "merovingian/homeserver/PendingStreamOrdering.hpp"
 
-#include "merovingian/homeserver/runtime.hpp"
+#include "merovingian/homeserver/LocalDatabase.hpp"
 
 #include <cstdint>
 

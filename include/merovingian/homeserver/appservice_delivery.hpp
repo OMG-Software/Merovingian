@@ -2,7 +2,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
-#include "merovingian/homeserver/runtime.hpp"
+#include "merovingian/homeserver/HomeserverRuntime.hpp"
+#include "merovingian/homeserver/LocalRoom.hpp"
 #include "merovingian/homeserver/stop_flag.hpp"
 
 #include <chrono>

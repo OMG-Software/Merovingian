@@ -11,7 +11,19 @@
 #include "merovingian/core/secret_buffer.hpp"
 #include "merovingian/crypto/ed25519.hpp"
 #include "merovingian/crypto/signing_service.hpp"
-#include "merovingian/database/persistent_store.hpp"
+#include "merovingian/database/ExaminedRows.hpp"
+#include "merovingian/database/MembershipProjection.hpp"
+#include "merovingian/database/PersistentDeviceKey.hpp"
+#include "merovingian/database/PersistentDeviceListChange.hpp"
+#include "merovingian/database/PersistentInvite.hpp"
+#include "merovingian/database/PersistentMembership.hpp"
+#include "merovingian/database/PersistentReceipt.hpp"
+#include "merovingian/database/PersistentRoom.hpp"
+#include "merovingian/database/PersistentServerSigningKey.hpp"
+#include "merovingian/database/PersistentStateEvent.hpp"
+#include "merovingian/database/PersistentStore.hpp"
+#include "merovingian/database/PersistentToDeviceMessage.hpp"
+#include "merovingian/database/PersistentUser.hpp"
 #include "merovingian/events/authorization.hpp"
 #include "merovingian/events/event.hpp"
 #include "merovingian/events/event_id.hpp"
@@ -28,10 +40,20 @@
 #include "merovingian/federation/remote_key_cache.hpp"
 #include "merovingian/federation/security.hpp"
 #include "merovingian/federation/server_acl.hpp"
+#include "merovingian/homeserver/ClientServerClock.hpp"
+#include "merovingian/homeserver/ClientServerRuntime.hpp"
+#include "merovingian/homeserver/HomeserverRuntime.hpp"
+#include "merovingian/homeserver/KeyServerCache.hpp"
+#include "merovingian/homeserver/LocalDatabase.hpp"
+#include "merovingian/homeserver/LocalHttpRequest.hpp"
+#include "merovingian/homeserver/LocalHttpResponse.hpp"
+#include "merovingian/homeserver/LocalRoom.hpp"
+#include "merovingian/homeserver/LocalUser.hpp"
+#include "merovingian/homeserver/OperationResult.hpp"
+#include "merovingian/homeserver/PublishedStreamOrdering.hpp"
 #include "merovingian/homeserver/appservice_delivery.hpp"
 #include "merovingian/homeserver/appservice_ephemeral.hpp"
 #include "merovingian/homeserver/auth_service.hpp"
-#include "merovingian/homeserver/client_server.hpp"
 #include "merovingian/homeserver/deferred_pdu_retry.hpp"
 #include "merovingian/homeserver/federation_request_routing.hpp"
 #include "merovingian/homeserver/media_service.hpp"
@@ -42,18 +64,23 @@
 #include "merovingian/homeserver/restricted_join.hpp"
 #include "merovingian/homeserver/room_residency.hpp"
 #include "merovingian/homeserver/room_service.hpp"
-#include "merovingian/homeserver/runtime.hpp"
 #include "merovingian/homeserver/runtime_signing_key_store.hpp"
 #include "merovingian/homeserver/send_join_answer.hpp"
 #include "merovingian/homeserver/space_hierarchy.hpp"
 #include "merovingian/homeserver/state_bookkeeping.hpp"
 #include "merovingian/homeserver/stored_room_version.hpp"
 #include "merovingian/http/client_address.hpp"
-#include "merovingian/media/repository.hpp"
+#include "merovingian/media/LocalMediaDownloadResult.hpp"
+#include "merovingian/media/LocalMediaRepository.hpp"
+#include "merovingian/observability/CorrelationContext.hpp"
+#include "merovingian/observability/CorrelationScope.hpp"
+#include "merovingian/observability/StructuredLogField.hpp"
 #include "merovingian/observability/logger.hpp"
 #include "merovingian/observability/observability.hpp"
+#include "merovingian/observability/observability_enums.hpp"
 #include "merovingian/rooms/room_version_policy.hpp"
 #include "merovingian/trust_safety/policy_engine.hpp"
+#include "merovingian/trust_safety/policy_enums.hpp"
 
 #include <algorithm>
 #include <array>
@@ -622,7 +649,7 @@ namespace
             {
                 continue;
             }
-            // Shared with client_server.cpp's broadcast so both carry the
+            // Shared with ClientServerRuntime.cpp's broadcast so both carry the
             // device keys with the owner's cross-signing signatures.
             auto const content = federation::build_device_list_update_content(store, user_id, device.device_id,
                                                                               static_cast<std::int64_t>(stream_id));
@@ -940,7 +967,7 @@ namespace
     // Parses the path suffix after /_matrix/client/v3/rooms/ for a
     // PUT .../state/{eventType}[/{stateKey}] request.  The room_id,
     // event type and optional state key are percent-decoded exactly as
-    // the full client-server path parser does in client_server.cpp.
+    // the full client-server path parser does in ClientServerRuntime.cpp.
     [[nodiscard]] auto room_state_put_path_parts(std::string_view suffix) -> std::optional<StatePutPathParts>
     {
         auto constexpr marker = std::string_view{"/state/"};
@@ -1516,7 +1543,7 @@ namespace
         auto const server_name = path.substr(0U, separator);
         auto const media_id = path.substr(separator + 1U);
         // #444: reject the same traversal/whitespace shapes the repository
-        // boundary (media_id_is_safe() in repository.cpp) rejects, so a
+        // boundary (media_id_is_safe() in LocalMediaRepository.cpp) rejects, so a
         // crafted URL never parses into a media_id any downstream code could
         // mistake for a safe value before the repository layer catches it.
         if (media_id.empty() || media_id.find('/') != std::string_view::npos ||
@@ -1572,7 +1599,7 @@ namespace
     // routes above. Strips any query string, then rejects anything that
     // isn't a safe single path segment: non-empty, no '/', no "..", no
     // embedded space (the same constraints media::upload_local_media applies
-    // via media_id_is_safe() in repository.cpp when it mints a media ID).
+    // via media_id_is_safe() in LocalMediaRepository.cpp when it mints a media ID).
     // Without this, a request like
     // ".../admin/media/remove/m1_digest?reason=x" would treat the query
     // string as part of the media ID and silently act on the wrong object
@@ -6114,7 +6141,7 @@ auto wire_federation_callbacks(HomeserverRuntime& runtime) -> void
     {
         // create_room self-locks (see room_service.cpp); release this
         // handler's own guard first so it is not double-locked, matching the
-        // join_room delegation just above and the equivalent client_server.cpp
+        // join_room delegation just above and the equivalent ClientServerRuntime.cpp
         // call sites.
         auto const result = [&] {
             auto const released = RuntimeLockRelease{guard};

@@ -7,8 +7,14 @@
 #include "merovingian/canonicaljson/serializer.hpp"
 #include "merovingian/database/connection_pool.hpp"
 #include "merovingian/database/schema.hpp"
+#include "merovingian/observability/StructuredLogField.hpp"
 #include "merovingian/observability/logger.hpp"
-#include "merovingian/observability/observability.hpp"
+
+#include <arpa/inet.h>
+#include <libpq-fe.h>
+#include <netinet/in.h>
+#include <poll.h>
+#include <sys/socket.h>
 
 #include <algorithm>
 #include <cstddef>
@@ -22,12 +28,6 @@
 #include <tuple>
 #include <utility>
 #include <vector>
-
-#include <arpa/inet.h>
-#include <libpq-fe.h>
-#include <netinet/in.h>
-#include <poll.h>
-#include <sys/socket.h>
 
 namespace merovingian::database
 {

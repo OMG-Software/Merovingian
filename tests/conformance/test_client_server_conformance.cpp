@@ -32,13 +32,19 @@
 #include "../support/registration_token.hpp"
 #include "../support/tls_mock_server.hpp"
 #include "merovingian/canonicaljson/serializer.hpp"
-#include "merovingian/config/config.hpp"
+#include "merovingian/config/ClientRateLimitsConfig.hpp"
+#include "merovingian/config/Config.hpp"
+#include "merovingian/config/ListenersConfig.hpp"
+#include "merovingian/config/LogModulesConfig.hpp"
+#include "merovingian/config/SecurityConfig.hpp"
+#include "merovingian/config/ServerConfig.hpp"
 #include "merovingian/crypto/ed25519.hpp"
 #include "merovingian/federation/inbound_request.hpp"
 #include "merovingian/federation/outbound_transaction.hpp"
 #include "merovingian/federation/runtime_federation.hpp"
+#include "merovingian/homeserver/ClientServerRuntime.hpp"
+#include "merovingian/homeserver/ClientServerStartResult.hpp"
 #include "merovingian/homeserver/auth_service.hpp"
-#include "merovingian/homeserver/client_server.hpp"
 #include "merovingian/homeserver/local_http_router.hpp"
 
 #include <catch2/catch_test_macros.hpp>
@@ -14876,8 +14882,8 @@ SCENARIO("GET /v1/rooms/{roomId}/hierarchy conformance")
 // 21     Third-party lookup
 // ============================================================================
 // Spec: Matrix v1.19 §third party networks. All six lookups are implemented
-//       (src/appservice/appservice_client.cpp's query_thirdparty_* methods,
-//       routed in client_server.cpp) — see tests/conformance/
+//       (src/appservice/AppserviceClient.cpp's query_thirdparty_* methods,
+//       routed in ClientServerRuntime.cpp) — see tests/conformance/
 //       test_appservice_thirdparty_conformance.cpp for the full surface. The
 //       two scenarios below cover the specific "protocol name nobody
 //       registered declares" case: 404 M_NOT_FOUND, per spec ("The protocol

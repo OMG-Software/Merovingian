@@ -18,7 +18,7 @@
 -- read-only snapshot; every write it needs is relayed to main over IPC, see
 -- src/federation_worker/AGENTS.md rule 3), granted table by table, on
 -- EXACTLY the tables database::federation_worker_table_allowlist
--- (include/merovingian/database/persistent_store.hpp) names -- no more.
+-- (include/merovingian/database/PersistentStore.hpp) names -- no more.
 --
 -- This is a fail-closed ALLOWLIST, not a "grant everything, then revoke the
 -- secrets" denylist: it uses no `ALTER DEFAULT PRIVILEGES` and no
@@ -79,7 +79,7 @@ GRANT USAGE ON SCHEMA public TO :fed_worker_role;
 -- read directly: make_join/make_leave/make_knock template generation,
 -- backfill, query/directory, state, state_ids, get_missing_events, and
 -- space hierarchy. See federation_worker_table_allowlist's own comment in
--- persistent_store.hpp for the file:line trace behind each one.
+-- PersistentStore.hpp for the file:line trace behind each one.
 GRANT SELECT ON rooms TO :fed_worker_role;
 GRANT SELECT ON membership TO :fed_worker_role;
 GRANT SELECT ON current_state TO :fed_worker_role;

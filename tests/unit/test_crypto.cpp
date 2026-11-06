@@ -17,6 +17,10 @@
 #include "merovingian/crypto/token_key.hpp"
 
 #include <catch2/catch_test_macros.hpp>
+#include <sodium.h>
+#include <sys/resource.h>
+#include <sys/wait.h>
+#include <unistd.h>
 
 #include <algorithm>
 #include <array>
@@ -32,11 +36,6 @@
 #include <tuple>
 #include <utility>
 #include <vector>
-
-#include <sodium.h>
-#include <sys/resource.h>
-#include <sys/wait.h>
-#include <unistd.h>
 
 namespace
 {
@@ -1038,7 +1037,7 @@ SCENARIO("Validation session secret checks use the constant-time boundary", "[cr
 #else
         auto const root = std::filesystem::current_path();
 #endif
-        auto source = std::ifstream{root / "src/homeserver/client_server.cpp"};
+        auto source = std::ifstream{root / "src/homeserver/ClientServerRuntime.cpp"};
         REQUIRE(source.is_open());
         auto text = std::string{std::istreambuf_iterator<char>{source}, std::istreambuf_iterator<char>{}};
         WHEN("the lookup and erase validation sinks are inspected")

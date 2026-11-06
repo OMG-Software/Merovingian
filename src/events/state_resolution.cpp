@@ -6,8 +6,8 @@
 #include "merovingian/canonicaljson/value.hpp"
 #include "merovingian/events/authorization.hpp"
 #include "merovingian/events/limits.hpp"
+#include "merovingian/observability/StructuredLogField.hpp"
 #include "merovingian/observability/logger.hpp"
-#include "merovingian/observability/observability.hpp"
 #include "merovingian/rooms/room_version_policy.hpp"
 
 #include <algorithm>

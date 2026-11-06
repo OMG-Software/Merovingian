@@ -26,15 +26,26 @@
 #include "../support/registration_token.hpp"
 #include "../support/tls_mock_server.hpp"
 #include "merovingian/canonicaljson/serializer.hpp"
-#include "merovingian/config/config.hpp"
+#include "merovingian/config/ClientRateLimitsConfig.hpp"
+#include "merovingian/config/Config.hpp"
+#include "merovingian/config/ListenersConfig.hpp"
+#include "merovingian/config/LogModulesConfig.hpp"
+#include "merovingian/config/SecurityConfig.hpp"
+#include "merovingian/config/ServerConfig.hpp"
 #include "merovingian/core/socket_handle.hpp"
-#include "merovingian/database/persistent_store.hpp"
+#include "merovingian/database/PersistentPusher.hpp"
+#include "merovingian/database/PersistentStateEvent.hpp"
+#include "merovingian/database/PersistentStore.hpp"
 #include "merovingian/events/event_id.hpp"
 #include "merovingian/federation/inbound_ingestion.hpp"
-#include "merovingian/homeserver/client_server.hpp"
+#include "merovingian/homeserver/ClientServerClock.hpp"
+#include "merovingian/homeserver/ClientServerRuntime.hpp"
+#include "merovingian/homeserver/ClientServerStartResult.hpp"
+#include "merovingian/homeserver/HomeserverRuntime.hpp"
+#include "merovingian/homeserver/KeyServerCache.hpp"
+#include "merovingian/homeserver/LocalRoom.hpp"
 #include "merovingian/homeserver/local_http_router.hpp"
 #include "merovingian/homeserver/push_retry.hpp"
-#include "merovingian/homeserver/runtime.hpp"
 #include "merovingian/homeserver/state_bookkeeping.hpp"
 #include "merovingian/net/tcp_acceptor.hpp"
 #include "merovingian/push/push_gateway_client.hpp"
@@ -666,7 +677,7 @@ SCENARIO("an enabled gateway receives a notify request for a message that matche
 // "the data dictionary passed in at pusher creation minus the url key".
 // URL: ../../docs/matrix-v1.19-spec/push-gateway-api.md#post_matrixpushv1notify
 //
-// PR #479 review finding P1: parse_pusher_set_body in client_server.cpp
+// PR #479 review finding P1: parse_pusher_set_body in ClientServerRuntime.cpp
 // discarded every member of the registration's `data` object beyond
 // url/format, even though PersistentPusher::data_extra_json (migration
 // 011_pushers_data_extra.sql) and PushGatewayDevice::data_extra already
@@ -920,7 +931,7 @@ SCENARIO("message sending succeeds even when the recipient's push gateway is unr
 // This is the resource-exhaustion fix behind dispatch_push_deliveries (0.11.11
 // gap audit): without reaping, HomeserverRuntime::orphan_futures_ grows by one
 // entry per notify-worthy event for the life of the runtime. See
-// reap_completed_futures (runtime.hpp/.cpp), shared with join_room's
+// reap_completed_futures (HomeserverRuntime.hpp/.cpp), shared with join_room's
 // make_join race reaping so the reap-before-park policy is defined once.
 SCENARIO("a completed push-delivery task is reaped before the next one is parked", "[integration][push]")
 {

@@ -2,15 +2,31 @@
 
 #include "../support/joining_threads.hpp"
 #include "../support/temp_directory.hpp"
+#include "merovingian/database/ExaminedRows.hpp"
+#include "merovingian/database/PersistentAccountData.hpp"
+#include "merovingian/database/PersistentClientTxnRecord.hpp"
+#include "merovingian/database/PersistentDeferredPdu.hpp"
+#include "merovingian/database/PersistentDeviceListChange.hpp"
+#include "merovingian/database/PersistentFederationDestination.hpp"
+#include "merovingian/database/PersistentFederationTransaction.hpp"
+#include "merovingian/database/PersistentFilter.hpp"
+#include "merovingian/database/PersistentInvite.hpp"
+#include "merovingian/database/PersistentMembership.hpp"
+#include "merovingian/database/PersistentPusher.hpp"
+#include "merovingian/database/PersistentRoom.hpp"
+#include "merovingian/database/PersistentServerSigningKey.hpp"
+#include "merovingian/database/PersistentStateEvent.hpp"
+#include "merovingian/database/PersistentStore.hpp"
 #include "merovingian/database/connection.hpp"
 #include "merovingian/database/migration.hpp"
 #include "merovingian/database/migration_files.hpp"
-#include "merovingian/database/persistent_store.hpp"
+#include "merovingian/database/persistent_store_backend.hpp"
 #include "merovingian/database/postgresql_store.hpp"
 #include "merovingian/database/schema.hpp"
 #include "merovingian/database/statement.hpp"
 
 #include <catch2/catch_test_macros.hpp>
+#include <sqlite3.h>
 
 #include <algorithm>
 #include <array>
@@ -27,8 +43,6 @@
 #include <type_traits>
 #include <utility>
 #include <vector>
-
-#include <sqlite3.h>
 
 namespace
 {

@@ -1,18 +1,17 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-#include "merovingian/config/config.hpp"
+#include "merovingian/config/Config.hpp"
 #include "merovingian/federation_worker/ipc_key_fd.hpp"
 
 #include <catch2/catch_test_macros.hpp>
+#include <fcntl.h>
+#include <unistd.h>
 
 #include <array>
 #include <cstddef>
 #include <cstdint>
 #include <utility>
 #include <vector>
-
-#include <fcntl.h>
-#include <unistd.h>
 
 namespace
 {

@@ -61,7 +61,7 @@ namespace
     // event formats do not carry event_id on the wire (it is derived from a
     // reference hash), but every client-facing event — timeline and
     // required_state alike — must include it per the Matrix spec's Room
-    // Event Format. Mirrors client_server.cpp's client_event_value().
+    // Event Format. Mirrors ClientServerRuntime.cpp's client_event_value().
     //
     // `unsigned` is never taken from the stored copy: it is outside the event's signatures, so a remote
     // sender can put anything there. It is built from `redacted_because` (attach_redacted_because) and the

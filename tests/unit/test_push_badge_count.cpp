@@ -7,10 +7,11 @@
 // never count more than they would.
 
 #include "../support/room_history_fixture.hpp"
-#include "merovingian/database/persistent_store.hpp"
+#include "merovingian/database/PersistentStore.hpp"
+#include "merovingian/homeserver/HomeserverRuntime.hpp"
+#include "merovingian/homeserver/KeyServerCache.hpp"
 #include "merovingian/homeserver/push_badge_count.hpp"
 #include "merovingian/homeserver/push_rule_unread_classifier.hpp"
-#include "merovingian/homeserver/runtime.hpp"
 #include "merovingian/homeserver/stored_push_rules.hpp"
 #include "merovingian/sync/sliding_sync_room_builder.hpp"
 

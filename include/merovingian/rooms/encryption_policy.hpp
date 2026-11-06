@@ -3,7 +3,7 @@
 #pragma once
 
 #include "merovingian/canonicaljson/value.hpp"
-#include "merovingian/config/config.hpp"
+#include "merovingian/config/EncryptionSecurityConfig.hpp"
 
 #include <span>
 #include <string>

@@ -6,7 +6,8 @@
 #include "merovingian/crypto/ed25519.hpp"
 #include "merovingian/crypto/runtime_multikey_ed25519_provider.hpp"
 #include "merovingian/crypto/signing_service.hpp"
-#include "merovingian/database/persistent_store.hpp"
+#include "merovingian/database/ExaminedRows.hpp"
+#include "merovingian/database/PersistentServerSigningKey.hpp"
 #include "merovingian/events/event_signer.hpp"
 #include "merovingian/homeserver/runtime_signing_key_store.hpp"
 

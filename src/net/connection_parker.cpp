@@ -4,8 +4,12 @@
 #include "merovingian/net/connection_parker.hpp"
 
 #include "merovingian/core/file_descriptor.hpp"
+#include "merovingian/observability/StructuredLogField.hpp"
 #include "merovingian/observability/logger.hpp"
-#include "merovingian/observability/observability.hpp"
+
+#include <fcntl.h>
+#include <poll.h>
+#include <unistd.h>
 
 #include <algorithm>
 #include <array>
@@ -21,10 +25,6 @@
 #include <unordered_map>
 #include <utility>
 #include <vector>
-
-#include <fcntl.h>
-#include <poll.h>
-#include <unistd.h>
 
 namespace merovingian::net
 {

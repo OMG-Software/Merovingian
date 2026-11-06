@@ -8,7 +8,8 @@
 // tests/conformance/test_ignoring_users_conformance.cpp; this file isolates
 // the module in memory with no I/O, per tests/unit/AGENTS.md.
 
-#include "merovingian/database/persistent_store.hpp"
+#include "merovingian/database/PersistentAccountData.hpp"
+#include "merovingian/database/PersistentStore.hpp"
 #include "merovingian/trust_safety/ignore_list.hpp"
 
 #include <catch2/catch_test_macros.hpp>

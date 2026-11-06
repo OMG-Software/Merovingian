@@ -877,7 +877,7 @@ threat it closes; the controls above are the standing defences these reinforce.
   such events still have to pass the auth rules against the state before
   them and against current state.
 - **Media content-sniffing was a no-op, defeating the declared/actual MIME
-  mismatch quarantine (2026-07 audit):** `client_server.cpp` built the
+  mismatch quarantine (2026-07 audit):** `ClientServerRuntime.cpp` built the
   internal upload pipe body by copying the client-declared `Content-Type`
   into both the "declared" and "sniffed" MIME fields, so
   `evaluate_media_upload`'s mismatch check always compared a value to
@@ -885,8 +885,8 @@ threat it closes; the controls above are the standing defences these reinforce.
   embedded `<script>`) while declaring an allow-listed type such as
   `image/png`. Fixed by adding `media::sniff_mime_type()` (magic-byte
   detection plus a printable-ASCII heuristic for `text/plain`) and sniffing
-  the real bytes for both local uploads (`client_server.cpp`) and federated
-  media fetches (`repository.cpp`'s `fetch_remote_media`).
+  the real bytes for both local uploads (`ClientServerRuntime.cpp`) and federated
+  media fetches (`LocalMediaRepository.cpp`'s `fetch_remote_media`).
 - **Unsanitized `Content-Type` header allowed field injection into the
   internal media pipe protocol (2026-07 audit):** the internal
   `declared_mime|sniffed_mime|scanner_clean|bytes` format relies on `|` as a
@@ -1091,7 +1091,7 @@ threat it closes; the controls above are the standing defences these reinforce.
   the connection to the pinned address via `CURLOPT_RESOLVE`. (2) **URL shape
   gate** — the gateway URL is independently re-validated as `https://` with a
   path of exactly `/_matrix/push/v1/notify` before any resolution is
-  attempted (mirroring the registration-time check in `client_server.cpp`'s
+  attempted (mirroring the registration-time check in `ClientServerRuntime.cpp`'s
   `matrix_pusher_url_is_valid`), so this module does not rely solely on
   upstream validation holding. (3) **Config gate, disabled by default,
   enforced at both call sites** — `notify()` checks `config::PushConfig::enabled`
@@ -1590,7 +1590,7 @@ threat it closes; the controls above are the standing defences these reinforce.
 - **Outbound Application Service API transaction delivery is deliberately
   NOT SSRF-filtered the way federation/push/identity outbound calls are
   (v0.12.1, routed).** `appservice::AppserviceClient` (`src/appservice/
-  appservice_client.cpp`) sends `PUT /_matrix/app/v1/transactions/{txnId}`
+  AppserviceClient.cpp`) sends `PUT /_matrix/app/v1/transactions/{txnId}`
   to an appservice's `url`, resolved via `.upstream().lookup_addresses()`
   directly — bypassing `CachedServerDiscovery`'s `deny_ip_ranges`
   private/loopback rejection — and with `OutboundRequest::allow_cleartext_http

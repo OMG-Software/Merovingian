@@ -12,26 +12,26 @@
 
 #ifdef __linux__
 
-#include "merovingian/database/persistent_store.hpp"
+#include "merovingian/database/PersistentStore.hpp"
+#include "merovingian/database/PersistentStoreOpenResult.hpp"
 #include "merovingian/platform/seccomp_hardening.hpp"
 
 #include <catch2/catch_test_macros.hpp>
-
-#include <cerrno>
-#include <cstdlib>
-#include <cstring>
-#include <filesystem>
-#include <string>
-#include <system_error>
-#include <tuple>
-
 #include <linux/seccomp.h>
-#include <signal.h>
 #include <sys/prctl.h>
 #include <sys/syscall.h>
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <unistd.h>
+
+#include <cerrno>
+#include <cstdlib>
+#include <cstring>
+#include <filesystem>
+#include <signal.h>
+#include <string>
+#include <system_error>
+#include <tuple>
 
 namespace
 {

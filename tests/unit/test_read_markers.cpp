@@ -2,7 +2,9 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include "merovingian/canonicaljson/parser.hpp"
-#include "merovingian/database/persistent_store.hpp"
+#include "merovingian/database/ExaminedRows.hpp"
+#include "merovingian/database/PersistentReceipt.hpp"
+#include "merovingian/database/PersistentStore.hpp"
 #include "merovingian/sync/read_markers.hpp"
 #include "merovingian/sync/sliding_sync_room_builder.hpp"
 #include "merovingian/sync/unread_event_classifier.hpp"

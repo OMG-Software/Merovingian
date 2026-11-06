@@ -6,7 +6,6 @@
 #include "merovingian/canonicaljson/serializer.hpp"
 #include "merovingian/canonicaljson/value.hpp"
 #include "merovingian/homeserver/appservice_delivery.hpp"
-#include "merovingian/observability/observability.hpp"
 #include "merovingian/sync/receipt_content_builder.hpp"
 
 #include <algorithm>

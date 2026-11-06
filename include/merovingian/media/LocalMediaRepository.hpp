@@ -2,11 +2,9 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
-// PHASE-B: forwarding includes, removed when consumers include the new headers directly.
 #include "merovingian/media/FederationMediaDownloadBody.hpp"
 #include "merovingian/media/LocalMediaAdminResult.hpp"
 #include "merovingian/media/LocalMediaBlob.hpp"
-#include "merovingian/media/LocalMediaDownloadResult.hpp"
 #include "merovingian/media/LocalMediaDownloadTarget.hpp"
 #include "merovingian/media/LocalMediaRecord.hpp"
 #include "merovingian/media/LocalMediaState.hpp"
@@ -21,7 +19,7 @@
 #include "merovingian/media/RemoteMediaDownloadResult.hpp"
 #include "merovingian/media/runtime_media.hpp"
 #include "merovingian/media/thumbnail_cache.hpp"
-#include "merovingian/observability/observability.hpp"
+#include "merovingian/observability/MetricSample.hpp"
 
 #include <cstddef>
 #include <cstdint>

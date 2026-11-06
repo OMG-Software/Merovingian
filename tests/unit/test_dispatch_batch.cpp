@@ -6,7 +6,9 @@
 // queue depth and each destination's share of it (ADR-0177).
 
 #include "federation_signing_test_support.hpp"
-#include "merovingian/database/persistent_store.hpp"
+#include "merovingian/database/PersistentFederationTransaction.hpp"
+#include "merovingian/database/PersistentStore.hpp"
+#include "merovingian/database/PersistentStoreOpenResult.hpp"
 #include "merovingian/federation/dispatch_worker.hpp"
 #include "merovingian/federation/outbound_transaction.hpp"
 #include "merovingian/http/outbound_client.hpp"

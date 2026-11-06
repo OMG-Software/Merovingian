@@ -21,10 +21,17 @@
 #include "../support/master_key.hpp"
 #include "../support/registration_token.hpp"
 #include "../support/tls_mock_server.hpp"
-#include "merovingian/config/config.hpp"
-#include "merovingian/database/persistent_store.hpp"
-#include "merovingian/homeserver/client_server.hpp"
-#include "merovingian/homeserver/local_http_router.hpp"
+#include "merovingian/config/ClientRateLimitsConfig.hpp"
+#include "merovingian/config/Config.hpp"
+#include "merovingian/config/ListenersConfig.hpp"
+#include "merovingian/config/LogModulesConfig.hpp"
+#include "merovingian/config/SecurityConfig.hpp"
+#include "merovingian/config/ServerConfig.hpp"
+#include "merovingian/database/ExaminedRows.hpp"
+#include "merovingian/database/PersistentStore.hpp"
+#include "merovingian/homeserver/ClientServerClock.hpp"
+#include "merovingian/homeserver/ClientServerRuntime.hpp"
+#include "merovingian/homeserver/ClientServerStartResult.hpp"
 #include "merovingian/homeserver/runtime_mutex.hpp"
 #include "merovingian/identity/identity_client.hpp"
 #include "merovingian/net/tcp_acceptor.hpp"
@@ -318,7 +325,7 @@ SCENARIO("IS-delegated 3PID bind/unbind round-trip unbinds via stored client_sec
         auto const is_base_url = std::string{"https://"} + is_host_port;
 
         // Configure trust BEFORE dispatching. resolve_trusted_identity_base_url
-        // (client_server.cpp) parses each trusted_servers entry as an https URL
+        // (ClientServerRuntime.cpp) parses each trusted_servers entry as an https URL
         // and matches host+port against the client's id_server (host:port).
         started.runtime.homeserver.config.server().identity_server.trusted_servers = {is_base_url};
 

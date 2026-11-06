@@ -6,8 +6,8 @@
 #include "merovingian/crypto/random.hpp"
 #include "merovingian/email/notification_email.hpp"
 #include "merovingian/email/smtp_client.hpp"
+#include "merovingian/homeserver/HomeserverRuntime.hpp"
 #include "merovingian/homeserver/email_push.hpp"
-#include "merovingian/homeserver/runtime.hpp"
 #include "merovingian/observability/logger.hpp"
 
 #include <algorithm>

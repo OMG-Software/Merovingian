@@ -3,8 +3,8 @@
 
 #include "merovingian/net/thread_pool.hpp"
 
+#include "merovingian/observability/StructuredLogField.hpp"
 #include "merovingian/observability/logger.hpp"
-#include "merovingian/observability/observability.hpp"
 
 #include <cassert>
 #include <exception>

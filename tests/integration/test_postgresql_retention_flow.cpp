@@ -1,11 +1,13 @@
 // SPDX-FileCopyrightText: 2026 James Chapman
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-#include "merovingian/database/persistent_store.hpp"
+#include "merovingian/database/ExaminedRows.hpp"
+#include "merovingian/database/PersistentStore.hpp"
 #include "merovingian/database/postgresql_store.hpp"
 #include "scratch_postgresql_database.hpp"
 
 #include <catch2/catch_test_macros.hpp>
+#include <libpq-fe.h>
 
 #include <chrono>
 #include <cstdint>
@@ -15,8 +17,6 @@
 #include <string>
 #include <tuple>
 #include <vector>
-
-#include <libpq-fe.h>
 
 namespace
 {

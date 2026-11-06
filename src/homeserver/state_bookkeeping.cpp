@@ -4,7 +4,8 @@
 
 #include "merovingian/canonicaljson/parser.hpp"
 #include "merovingian/canonicaljson/value.hpp"
-#include "merovingian/config/config.hpp"
+#include "merovingian/config/Config.hpp"
+#include "merovingian/config/FederationStateResolutionConfig.hpp"
 #include "merovingian/events/limits.hpp"
 #include "merovingian/observability/logger.hpp"
 

@@ -12,6 +12,11 @@
 #include "merovingian/rooms/room_version_policy.hpp"
 
 #include <catch2/catch_test_macros.hpp>
+#include <merovingian/database/PersistentStore.hpp>
+#include <merovingian/database/migration.hpp>
+#include <merovingian/database/postgresql_store.hpp>
+#include <merovingian/database/schema.hpp>
+#include <sqlite3.h>
 
 #include <algorithm>
 #include <chrono>
@@ -23,12 +28,6 @@
 #include <string>
 #include <string_view>
 #include <vector>
-
-#include <merovingian/database/migration.hpp>
-#include <merovingian/database/persistent_store.hpp>
-#include <merovingian/database/postgresql_store.hpp>
-#include <merovingian/database/schema.hpp>
-#include <sqlite3.h>
 
 namespace
 {

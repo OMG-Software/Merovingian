@@ -8,7 +8,7 @@
 // bookkeeping directly without a real database connection). See
 // docs/adr/0064-spec-conformant-pdu-ingestion-with-delta-state-groups.md.
 
-#include "merovingian/database/persistent_store.hpp"
+#include "merovingian/database/PersistentStore.hpp"
 #include "merovingian/events/limits.hpp"
 
 #include <catch2/catch_test_macros.hpp>

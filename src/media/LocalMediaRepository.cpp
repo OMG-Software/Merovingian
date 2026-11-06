@@ -1,14 +1,29 @@
 // SPDX-FileCopyrightText: 2026 James Chapman
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-#include "merovingian/media/repository.hpp"
+#include "merovingian/media/LocalMediaRepository.hpp"
 
 #include "merovingian/crypto/encoding.hpp"
 #include "merovingian/crypto/generic_hash.hpp"
 #include "merovingian/crypto/random.hpp"
+#include "merovingian/media/FederationMediaDownloadBody.hpp"
+#include "merovingian/media/LocalMediaAdminResult.hpp"
+#include "merovingian/media/LocalMediaBlob.hpp"
+#include "merovingian/media/LocalMediaDownloadTarget.hpp"
+#include "merovingian/media/LocalMediaRecord.hpp"
+#include "merovingian/media/LocalMediaState.hpp"
+#include "merovingian/media/LocalMediaThumbnail.hpp"
+#include "merovingian/media/LocalMediaUploadRequest.hpp"
+#include "merovingian/media/LocalMediaUploadResult.hpp"
+#include "merovingian/media/PendingMediaUpload.hpp"
+#include "merovingian/media/PendingMediaUploadPlan.hpp"
+#include "merovingian/media/RemoteMediaCacheEntry.hpp"
+#include "merovingian/media/RemoteMediaDownloadRequest.hpp"
+#include "merovingian/media/RemoteMediaDownloadResult.hpp"
 #include "merovingian/media/security.hpp"
+#include "merovingian/observability/MetricSample.hpp"
+#include "merovingian/observability/StructuredLogField.hpp"
 #include "merovingian/observability/logger.hpp"
-#include "merovingian/observability/observability.hpp"
 
 #include <algorithm>
 #include <array>
@@ -1510,7 +1525,7 @@ auto fetch_remote_media(LocalMediaRepository& repository, RemoteMediaDownloadReq
     auto upload = LocalMediaUploadRequest{};
     upload.owner_user_id = "@remote-media:" + request.origin_server;
     upload.declared_mime_type = request.content_type;
-    // Unlike the local-upload path (sniffed in homeserver/client_server.cpp before
+    // Unlike the local-upload path (sniffed in homeserver/ClientServerRuntime.cpp before
     // this request is built), a remote federation response has no such upstream
     // sniffing step, so the remote server's declared Content-Type is not trustworthy
     // evidence of its own accord — sniff the fetched bytes directly.

@@ -29,7 +29,7 @@ Implemented now:
   rejects signed/unsigned integer values outside the canonical range before
   signed conversion (`integer_out_of_range`, HTTP-7); `UINT64_MAX` cannot
   become a negative room-tag/account-data value
-- production-named client-server API boundary in `client_server.hpp`
+- production-named client-server API boundary in `ClientServerRuntime.hpp`
 - slowloris progress policy scaffolding
 - per-endpoint rate-limit policy scaffolding
 - HTTP request-head fuzz target
@@ -325,7 +325,7 @@ Setting it to `true` additionally permits `http://` for that one request.
 There are exactly two sanctioned callers, matching the comment on the field
 in `include/merovingian/http/outbound_client.hpp`:
 
-1. `appservice::AppserviceClient` (`src/appservice/appservice_client.cpp`):
+1. `appservice::AppserviceClient` (`src/appservice/AppserviceClient.cpp`):
    an appservice registration file's `url` is operator-configured — a local
    filesystem artifact the operator wrote, not something a network peer can
    influence — and the Application Service API's own canonical registration
@@ -445,7 +445,7 @@ base URL already names the port, and `OutboundClient` builds the `CURLOPT_RESOLV
 entry `host:port:address` from the URL's host:port and the seam's address, so the
 mock IS port must match the URL/id_server the homeserver is configured to call.
 This keeps the `homeserver → identity` dependency direction correct (the seam
-struct lives in the identity header, not `runtime.hpp`) and lets the
+struct lives in the identity header, not `HomeserverRuntime.hpp`) and lets the
 conformance/integration suites exercise `store-invite`, `bind`, `unbind`, and
 `requestToken` hermetically.
 
@@ -727,7 +727,7 @@ Two independent wall-clock token-bucket tiers are maintained:
   requests that present a valid access token.
 
 Client-server endpoints the spec documents as "Rate-limited: No" bypass both tiers in
-`allow()` (`client_server.cpp`): the `GET /thirdparty/*` lookups, an appservice's own ping
+`allow()` (`ClientServerRuntime.cpp`): the `GET /thirdparty/*` lookups, an appservice's own ping
 and network-directory calls, and every push-rule endpoint except
 `PUT /pushrules/global/{kind}/{ruleId}`, which is "Rate-limited: Yes" and keeps its bucket.
 
@@ -868,7 +868,7 @@ answered `404` for everyone. The 404 check is on the path only.
 A served path asked for with a method it does not serve is `405 M_UNRECOGNIZED`
 (the spec: "a 405 HTTP status code if the endpoint is implemented, but the
 incorrect HTTP method is used"). A fixed path in the `client_static_route_allow`
-table (`client_server.cpp`, the methods it serves, sent back as `Allow`) is
+table (`ClientServerRuntime.cpp`, the methods it serves, sent back as `Allow`) is
 answered before the access-token check, like the 404, so an unauthenticated
 probe learns it too. A path with an identifier in it is judged after
 authentication: when no handler took the request and `normalized_target()`
@@ -1226,7 +1226,7 @@ to the pool), `remote_fetch.coalesced` (waiting on another request's fetch);
 
 ### `resolve_policy_server_hook` (0.12.1)
 
-`resolve_policy_server_hook` (`src/homeserver/runtime.cpp`) performs a
+`resolve_policy_server_hook` (`src/homeserver/HomeserverRuntime.cpp`) performs a
 synchronous outbound call to `trust_safety.policy_server_url` when
 `trust_safety.enabled` is set. `handle_federation_http_request` was already
 fixed (#415) to call it only after releasing the lock, but three other call
@@ -1262,7 +1262,7 @@ in main (ADR-0358), so the worker never makes the call.
 `HomeserverRuntime::mutex` is a recursive mutex specifically so that a service
 function such as `create_room` can take its own lock and remain independently
 callable outside a request handler (`local_smoke_flow.cpp` does exactly this).
-But `create_room` is *also* called from `client_server.cpp`, which already
+But `create_room` is *also* called from `ClientServerRuntime.cpp`, which already
 holds its own outer guard for the whole request. A recursive mutex permits that
 nested acquisition silently — the same thread increments a recursion count — so
 nothing failed loudly.
@@ -1329,7 +1329,7 @@ Consequences worth knowing:
 
 - Releasing the caller's guard before calling a self-locking function is no
   longer necessary. The existing call sites that do (`create_room` and
-  `join_room` in `local_http_router.cpp`, `create_room` in `client_server.cpp`)
+  `join_room` in `local_http_router.cpp`, `create_room` in `ClientServerRuntime.cpp`)
   are kept because they are correct and explicit, not because they are load
   bearing.
 - A blocking call should open its release scope where the call is, not where

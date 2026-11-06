@@ -8,7 +8,7 @@
 // `changed` and `left` list the users whose devices changed, or with whom no
 // encrypted room is shared any more, since the previous sync response.
 
-#include "merovingian/database/persistent_store.hpp"
+#include "merovingian/database/PersistentStore.hpp"
 #include "merovingian/sync/device_list_delta.hpp"
 
 #include <catch2/catch_test_macros.hpp>

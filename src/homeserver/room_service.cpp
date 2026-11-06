@@ -16,7 +16,21 @@
 #include "merovingian/crypto/random.hpp"
 #include "merovingian/crypto/secret_box.hpp"
 #include "merovingian/crypto/signing_service.hpp"
-#include "merovingian/database/persistent_store.hpp"
+#include "merovingian/database/ExaminedRows.hpp"
+#include "merovingian/database/MembershipProjection.hpp"
+#include "merovingian/database/PersistentAccountData.hpp"
+#include "merovingian/database/PersistentDeviceListChange.hpp"
+#include "merovingian/database/PersistentInvite.hpp"
+#include "merovingian/database/PersistentMembership.hpp"
+#include "merovingian/database/PersistentNotification.hpp"
+#include "merovingian/database/PersistentPresence.hpp"
+#include "merovingian/database/PersistentProfile.hpp"
+#include "merovingian/database/PersistentPusher.hpp"
+#include "merovingian/database/PersistentRoom.hpp"
+#include "merovingian/database/PersistentServerSigningKey.hpp"
+#include "merovingian/database/PersistentStateEvent.hpp"
+#include "merovingian/database/PersistentStore.hpp"
+#include "merovingian/database/PreparedStateUpdate.hpp"
 #include "merovingian/database/redaction_view.hpp"
 #include "merovingian/events/authorization.hpp"
 #include "merovingian/events/event.hpp"
@@ -33,6 +47,22 @@
 #include "merovingian/federation/remote_key_cache.hpp"
 #include "merovingian/federation/server_discovery.hpp"
 #include "merovingian/federation/third_party_invite.hpp"
+#include "merovingian/homeserver/ActiveServerSigningKeySecret.hpp"
+#include "merovingian/homeserver/BoundedOutboundLimits.hpp"
+#include "merovingian/homeserver/CreateRoomOptions.hpp"
+#include "merovingian/homeserver/FetchRelationsRequest.hpp"
+#include "merovingian/homeserver/FetchThreadsRequest.hpp"
+#include "merovingian/homeserver/HomeserverRuntime.hpp"
+#include "merovingian/homeserver/KeyServerCache.hpp"
+#include "merovingian/homeserver/LocalDatabase.hpp"
+#include "merovingian/homeserver/LocalRoom.hpp"
+#include "merovingian/homeserver/LocalUser.hpp"
+#include "merovingian/homeserver/OperationResult.hpp"
+#include "merovingian/homeserver/OutboundCallResult.hpp"
+#include "merovingian/homeserver/RemoteInviteResult.hpp"
+#include "merovingian/homeserver/SendJoinStateIngestResult.hpp"
+#include "merovingian/homeserver/ValidatedMakeJoinResponse.hpp"
+#include "merovingian/homeserver/ValidatedMakeLeaveResponse.hpp"
 #include "merovingian/homeserver/appservice_delivery.hpp"
 #include "merovingian/homeserver/appservice_ephemeral.hpp"
 #include "merovingian/homeserver/auth_service.hpp"
@@ -49,7 +79,6 @@
 #include "merovingian/homeserver/redaction_service.hpp"
 #include "merovingian/homeserver/request_lock.hpp"
 #include "merovingian/homeserver/restricted_join.hpp"
-#include "merovingian/homeserver/runtime.hpp"
 #include "merovingian/homeserver/runtime_signing_key_store.hpp"
 #include "merovingian/homeserver/send_join_answer_authorization.hpp"
 #include "merovingian/homeserver/state_bookkeeping.hpp"
@@ -57,8 +86,9 @@
 #include "merovingian/homeserver/stored_room_version.hpp"
 #include "merovingian/http/outbound_client.hpp"
 #include "merovingian/identity/identity_client.hpp"
+#include "merovingian/observability/StructuredLogField.hpp"
 #include "merovingian/observability/logger.hpp"
-#include "merovingian/observability/observability.hpp"
+#include "merovingian/observability/observability_enums.hpp"
 #include "merovingian/push/push_gateway_client.hpp"
 #include "merovingian/push/push_rules.hpp"
 #include "merovingian/rooms/encryption_policy.hpp"
@@ -69,6 +99,7 @@
 #include "merovingian/sync/stream_token.hpp"
 #include "merovingian/trust_safety/ignore_list.hpp"
 #include "merovingian/trust_safety/policy_engine.hpp"
+#include "merovingian/trust_safety/policy_enums.hpp"
 
 #include <algorithm>
 #include <array>
@@ -2654,7 +2685,7 @@ auto apply_membership_to_roster(HomeserverRuntime& runtime, std::string_view roo
     }
     // Test-only: bypass discover_server() entirely when the destination has a
     // forced resolution wired (see TestOnlyForcedOutboundResolution in
-    // runtime.hpp). Always empty in production, so this branch never executes
+    // HomeserverRuntime.hpp). Always empty in production, so this branch never executes
     // outside tests/integration/test_join_room_flow.cpp.
     auto const forced_it = runtime.test_forced_outbound_resolution.find(std::string{transaction.destination});
     auto const forced = forced_it != runtime.test_forced_outbound_resolution.end();
@@ -3469,7 +3500,7 @@ auto ensure_crypto_provider_holds_key(HomeserverRuntime& runtime, std::string_vi
     auto guard = std::unique_lock<RuntimeMutex>{runtime.mutex};
     // create_room is called both standalone (this lock is the only one taken:
     // local_smoke_flow.cpp) and from within a request handler that already
-    // holds runtime.mutex (client_server.cpp, local_http_router.cpp) — those
+    // holds runtime.mutex (ClientServerRuntime.cpp, local_http_router.cpp) — those
     // two callers release their own outer guard first (see the unlock/call/
     // relock at each call site) so this is never a *nested* acquisition of
     // the same recursive_mutex. Publishing it here, exactly like the other
@@ -8289,7 +8320,7 @@ namespace
     };
 
     // Bounds how many of one recipient's registered pushers are processed for
-    // a single notify-worthy event. POST /pushers/set (client_server.cpp) has
+    // a single notify-worthy event. POST /pushers/set (ClientServerRuntime.cpp) has
     // no per-user limit on distinct (app_id, pushkey) pairs, and every later
     // matching event copies the recipient's whole pusher list and processes
     // it SEQUENTIALLY inside one dispatch_push_deliveries background task —
@@ -8637,7 +8668,7 @@ namespace
                 // passed in at pusher creation minus the url key"). Silently
                 // skip a malformed value rather than failing the whole
                 // delivery — this only ever contains what parse_pusher_set_
-                // body itself serialized in client_server.cpp.
+                // body itself serialized in ClientServerRuntime.cpp.
                 if (!pusher.data_extra_json.empty())
                 {
                     auto const parsed_extra = canonicaljson::parse_lossless(pusher.data_extra_json);
@@ -9492,7 +9523,7 @@ auto deliver_federation_push_notifications(HomeserverRuntime& runtime, federatio
 // Converts a stored persistent event into a client-facing event value,
 // injecting server-generated fields: event_id and, for state events,
 // unsigned.replaces_state (Matrix v1.19). Shared by /messages, GET
-// /rooms/{roomId}/state, and the client_server.cpp event serializer.
+// /rooms/{roomId}/state, and the ClientServerRuntime.cpp event serializer.
 [[nodiscard]] auto client_event_with_id(database::PersistentStore const& store, database::PersistentEvent const& event)
     -> canonicaljson::Value
 {

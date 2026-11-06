@@ -4,7 +4,8 @@
 
 #include "merovingian/federation/membership_endpoints.hpp"
 #include "merovingian/federation/public_rooms.hpp"
-#include "merovingian/homeserver/local_http_router.hpp"
+#include "merovingian/homeserver/LocalHttpRequest.hpp"
+#include "merovingian/homeserver/LocalHttpResponse.hpp"
 #include "merovingian/http/outbound_client.hpp"
 
 #include <cstdint>

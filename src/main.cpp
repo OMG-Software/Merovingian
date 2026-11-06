@@ -2,7 +2,9 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include "merovingian/bootstrap/exit_code.hpp"
-#include "merovingian/config/config.hpp"
+#include "merovingian/config/Config.hpp"
+#include "merovingian/config/FederationWorkerConfig.hpp"
+#include "merovingian/config/ListenerConfig.hpp"
 #include "merovingian/config/config_parser.hpp"
 #include "merovingian/config/reload_plan.hpp"
 #include "merovingian/config/reload_policy.hpp"
@@ -11,10 +13,15 @@
 #include "merovingian/email/smtp_client.hpp"
 #include "merovingian/email/smtp_endpoint.hpp"
 #include "merovingian/federation/runtime_federation.hpp"
+#include "merovingian/homeserver/ClientServerClock.hpp"
+#include "merovingian/homeserver/ClientServerRuntime.hpp"
+#include "merovingian/homeserver/ClientServerStartResult.hpp"
+#include "merovingian/homeserver/HttpConnectionDispatcher.hpp"
+#include "merovingian/homeserver/HttpServeStats.hpp"
+#include "merovingian/homeserver/HttpServeTuning.hpp"
 #include "merovingian/homeserver/appservice_delivery.hpp"
 #include "merovingian/homeserver/auth_service.hpp"
 #include "merovingian/homeserver/client_outbound_proxy.hpp"
-#include "merovingian/homeserver/client_server.hpp"
 #include "merovingian/homeserver/client_txn_prune.hpp"
 #include "merovingian/homeserver/deferred_pdu_retry.hpp"
 #include "merovingian/homeserver/email_push.hpp"
@@ -40,6 +47,9 @@
 #include "merovingian/platform/seccomp_hardening.hpp"
 #include "merovingian/platform/signal_hardening.hpp"
 
+#include <poll.h>
+#include <sys/stat.h>
+
 #include <cerrno>
 #include <cstdint>
 #include <cstdlib>
@@ -55,9 +65,6 @@
 #include <tuple>
 #include <utility>
 #include <vector>
-
-#include <poll.h>
-#include <sys/stat.h>
 
 #ifdef __FreeBSD__
 #include <fcntl.h>

@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
-#include "merovingian/config/config.hpp"
+#include "merovingian/config/IdentityServerConfig.hpp"
 #include "merovingian/federation/cached_server_discovery.hpp"
 #include "merovingian/http/outbound_client.hpp"
 
@@ -162,7 +162,7 @@ inline constexpr auto max_id_access_token_bytes = std::size_t{4096U};
 // IS base URL already carries the port (no `resolved_port` override is needed,
 // unlike the federation seam which resolves a different port via SRV/.well-
 // known), so only the pinned addresses and CA bundle are required. The struct
-// lives here — not in `runtime.hpp` — so the `identity` module does not depend
+// lives here — not in `HomeserverRuntime.hpp` — so the `identity` module does not depend
 // on `homeserver` (the dependency runs `homeserver → identity`). Always empty
 // in production; no production construction path populates it.
 struct TestForcedIdentityResolution final

@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 James Chapman
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-#include "merovingian/homeserver/runtime.hpp"
+#include "merovingian/homeserver/HomeserverRuntime.hpp"
 
 #include "merovingian/appservice/registration.hpp"
 #include "merovingian/auth/password.hpp"
@@ -15,6 +15,14 @@
 #include "merovingian/database/postgresql_store.hpp"
 #include "merovingian/database/schema.hpp"
 #include "merovingian/federation/runtime_federation.hpp"
+#include "merovingian/homeserver/InboundTypingUser.hpp"
+#include "merovingian/homeserver/KeyServerCache.hpp"
+#include "merovingian/homeserver/LocalDatabase.hpp"
+#include "merovingian/homeserver/LocalRoom.hpp"
+#include "merovingian/homeserver/LocalUser.hpp"
+#include "merovingian/homeserver/RuntimeStartOptions.hpp"
+#include "merovingian/homeserver/RuntimeStartResult.hpp"
+#include "merovingian/homeserver/TypingExpiry.hpp"
 #include "merovingian/homeserver/appservice_ephemeral.hpp"
 #include "merovingian/homeserver/auth_service.hpp"
 #include "merovingian/homeserver/client_outbound_proxy.hpp"
@@ -23,13 +31,25 @@
 #include "merovingian/homeserver/redaction_service.hpp"
 #include "merovingian/homeserver/request_lock.hpp"
 #include "merovingian/homeserver/room_service.hpp"
-#include "merovingian/media/repository.hpp"
+#include "merovingian/media/LocalMediaBlob.hpp"
+#include "merovingian/media/LocalMediaRecord.hpp"
+#include "merovingian/media/LocalMediaRepository.hpp"
+#include "merovingian/media/LocalMediaState.hpp"
+#include "merovingian/media/PendingMediaUpload.hpp"
+#include "merovingian/media/RemoteMediaCacheEntry.hpp"
 #include "merovingian/media/runtime_media.hpp"
+#include "merovingian/observability/HealthCheckSnapshot.hpp"
+#include "merovingian/observability/MetricLabel.hpp"
+#include "merovingian/observability/MetricSample.hpp"
+#include "merovingian/observability/StructuredLogField.hpp"
 #include "merovingian/observability/logger.hpp"
 #include "merovingian/observability/observability.hpp"
+#include "merovingian/observability/observability_enums.hpp"
+#include "merovingian/platform/HardeningPlanDecision.hpp"
 #include "merovingian/platform/file_metadata.hpp"
 #include "merovingian/platform/hardening_self_check.hpp"
 #include "merovingian/platform/runtime_hardening.hpp"
+#include "merovingian/trust_safety/policy_engine.hpp"
 
 #include <algorithm>
 #include <array>

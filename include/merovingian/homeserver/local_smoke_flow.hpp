@@ -2,7 +2,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
-#include "merovingian/homeserver/runtime.hpp"
+#include "merovingian/config/Config.hpp"
+#include "merovingian/homeserver/OperationResult.hpp"
 
 namespace merovingian::homeserver
 {

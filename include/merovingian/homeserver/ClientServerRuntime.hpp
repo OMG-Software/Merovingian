@@ -2,21 +2,25 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
-#include "merovingian/database/persistent_store.hpp"
-// PHASE-B: forwarding includes, removed when consumers include the new headers directly.
+#include "merovingian/database/PersistentAccountData.hpp"
+#include "merovingian/database/PersistentDeviceListChange.hpp"
+#include "merovingian/database/PersistentPresence.hpp"
+#include "merovingian/database/PersistentStore.hpp"
+#include "merovingian/database/PersistentToDeviceMessage.hpp"
 #include "merovingian/homeserver/ClientApiLimits.hpp"
 #include "merovingian/homeserver/ClientDevice.hpp"
 #include "merovingian/homeserver/ClientServerClock.hpp"
 #include "merovingian/homeserver/ClientServerStartOptions.hpp"
+#include "merovingian/homeserver/HomeserverRuntime.hpp"
+#include "merovingian/homeserver/LocalHttpRequest.hpp"
+#include "merovingian/homeserver/LocalHttpResponse.hpp"
+#include "merovingian/homeserver/OperationResult.hpp"
 #include "merovingian/homeserver/RegistrationValidationSession.hpp"
 #include "merovingian/homeserver/UiaSession.hpp"
 #include "merovingian/homeserver/dispatch_result.hpp"
-#include "merovingian/homeserver/local_http_router.hpp"
-#include "merovingian/homeserver/runtime.hpp"
 #include "merovingian/http/connection_limiter.hpp"
 #include "merovingian/http/rate_limit.hpp"
 #include "merovingian/sync/lazy_member_tracker.hpp"
-#include "merovingian/sync/sliding_sync.hpp"
 #include "merovingian/sync/sync_notifier.hpp"
 
 #include <chrono>
@@ -108,7 +112,7 @@ struct ClientServerRuntime final
 // per-route caps. In production the engine is built in
 // `start_client_server()` from `config.client_rate_limits()`. Not in the
 // public API: declared here so test files can find it via the runtime
-// header, defined in src/homeserver/client_server.cpp.
+// header, defined in src/homeserver/ClientServerRuntime.cpp.
 auto install_test_rate_limit_engine(ClientServerRuntime& runtime) -> void;
 auto install_test_per_user_rate_limit_engine(ClientServerRuntime& runtime) -> void;
 
@@ -175,7 +179,3 @@ auto run_presence_idle_sweep(ClientServerRuntime& runtime) -> std::chrono::milli
 [[nodiscard]] auto run_client_server_flow(config::Config const& config) -> OperationResult;
 
 } // namespace merovingian::homeserver
-
-// PHASE-B: forwarding includes, removed when consumers include the new headers directly.
-// Last, not with the includes above: ClientServerStartResult.hpp includes this header for ClientServerRuntime.
-#include "merovingian/homeserver/ClientServerStartResult.hpp"

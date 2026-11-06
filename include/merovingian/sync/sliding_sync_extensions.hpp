@@ -2,10 +2,12 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
-#include "merovingian/database/persistent_store.hpp"
-#include "merovingian/homeserver/runtime.hpp"
+#include "merovingian/database/PersistentStore.hpp"
+#include "merovingian/homeserver/HomeserverRuntime.hpp"
+#include "merovingian/homeserver/KeyServerCache.hpp"
+#include "merovingian/sync/SlidingSyncExtensionRequests.hpp"
+#include "merovingian/sync/SlidingSyncExtensionResponses.hpp"
 #include "merovingian/sync/room_access.hpp"
-#include "merovingian/sync/sliding_sync.hpp"
 
 #include <cstdint>
 #include <functional>

@@ -7,11 +7,11 @@ This is the largest and most complex module — read this file carefully before 
 
 | File | Responsibility |
 |---|---|
-| `client_server.cpp` | `handle_client_server_request()` — main dispatch for all `/_matrix/client/...` and `/_matrix/media/...` endpoints |
+| `ClientServerRuntime.cpp` | `handle_client_server_request()` — main dispatch for all `/_matrix/client/...` and `/_matrix/media/...` endpoints |
 | `http_server.cpp` | Binds sockets, accepts connections, dispatches to federation or client-server handlers |
 | `local_http_router.cpp` | In-process HTTP router for inter-module calls (media, auth, sync); uses pipe-delimited internal format |
 | `local_services.cpp` | Wires local service instances (auth, media, sync, rooms) into the runtime |
-| `runtime.cpp` | `HomeserverRuntime` — holds all live service references and runtime state; passed by reference to every handler |
+| `HomeserverRuntime.cpp` | `HomeserverRuntime` — holds all live service references and runtime state; passed by reference to every handler |
 | `runtime_mutex.cpp` | The recursive mutex guarding `HomeserverRuntime` (ADR-0002) |
 | `request_lock.cpp` | `RequestLockScope` / `RuntimeLockRelease` — releases the runtime lock around blocking calls (see below) |
 | `auth_service.cpp` | Login, session grant, token issuance and revocation, admin bootstrap (delegates primitives to `src/auth/`) |
@@ -33,15 +33,15 @@ This is the largest and most complex module — read this file carefully before 
 | `send_join_answer_authorization.cpp` | `authorize_send_join_answer`: the auth rules over a resident's `send_join` answer, in dependency order, from the answer's own events, with `runtime.mutex` released (F-45, ADR-0369) |
 | `restricted_join.cpp` | `decide_restricted_join()`: as the resident, whether a user meets a restricted room's allow conditions and which local user authorises the join (R04, ADR-0185) |
 | `remote_timestamp_event.cpp` | Asking other servers for `GET /rooms/{roomId}/timestamp_to_event` (ADR-0299): `timestamp_to_event_candidate_servers`, `parse_timestamp_to_event_answer`, `timestamp_is_closer`, `acquire_closer_timestamp_event` (the loop over at most 3 servers; releases `runtime.mutex` for each exchange and for the verified fetch, `fetch_remote_event_into_store` in `local_http_router.cpp`) |
-| `space_hierarchy.cpp` | `GET /_matrix/client/v1/rooms/{roomId}/hierarchy` (a child room this server holds no state for is asked for over federation, see "Client requests that call another server") and the answer to `GET /_matrix/federation/v1/hierarchy/{roomId}`, judged for the authenticated requesting server; also `handle_client_room_summary` (`GET /_matrix/client/v1/room_summary/{roomIdOrAlias}`, local rooms only; a request with no token is answered before the auth gate in `client_server.cpp` and may see only a public, knock or world-readable room) |
+| `space_hierarchy.cpp` | `GET /_matrix/client/v1/rooms/{roomId}/hierarchy` (a child room this server holds no state for is asked for over federation, see "Client requests that call another server") and the answer to `GET /_matrix/federation/v1/hierarchy/{roomId}`, judged for the authenticated requesting server; also `handle_client_room_summary` (`GET /_matrix/client/v1/room_summary/{roomIdOrAlias}`, local rooms only; a request with no token is answered before the auth gate in `ClientServerRuntime.cpp` and may see only a public, knock or world-readable room) |
 | `default_push_ruleset.cpp` | The server-default push ruleset (`homeserver::default_push_ruleset`) |
 | `stored_push_rules.cpp` | `load_user_push_rules` / `load_push_ruleset`: a user's push rules from their `m.push_rules` account data over the defaults (ADR-0204) |
 | `push_room_facts.cpp` | `push_room_facts`, `room_member_display_name`, `push_evaluation_context`: the evaluation context push delivery and unread counting share |
 | `push_badge_count.cpp` | `count_push_badge`: the Push Gateway `counts.unread` from one walk of the events, newest first in stream order, that stops once every room is settled, at most 10000 rows (ADR-0207) |
 | `push_rule_unread_classifier.cpp` | `PushRuleUnreadClassifier`: counts unread events by the user's push rules, from the start of their current join (R15, ADR-0205) |
-| `presence_service.cpp` | Presence (CS API "Presence", SS API `m.presence`): `read_presence` (GET), `apply_sync_presence` (the `/sync` `set_presence` parameter), `build_sync_presence_events` (`presence.events`), `accept_inbound_presence` (the EDU sink's presence case) and `record_presence`, the one place a presence row is stored. `expire_idle_presence` (the idle sweep, ADR-0492). `presence.enabled=false` turns every entry point into a no-op. Sending the EDU stays in `client_server.cpp` (`broadcast_presence_edu`), beside the other outbound EDUs |
+| `presence_service.cpp` | Presence (CS API "Presence", SS API `m.presence`): `read_presence` (GET), `apply_sync_presence` (the `/sync` `set_presence` parameter), `build_sync_presence_events` (`presence.events`), `accept_inbound_presence` (the EDU sink's presence case) and `record_presence`, the one place a presence row is stored. `expire_idle_presence` (the idle sweep, ADR-0492). `presence.enabled=false` turns every entry point into a no-op. Sending the EDU stays in `ClientServerRuntime.cpp` (`broadcast_presence_edu`), beside the other outbound EDUs |
 | `push_retry.cpp` | `attempt_push_delivery` (every push attempt: circuit breaker, rejected pushkeys, scheduling retries) and `PushRetryJob`, the one thread that sends retries (R14, ADR-0206); a run is bounded by a time budget, takes retries one recipient at a time in turn and sends with a shorter timeout (ADR-0410), and a slow answer counts against the gateway's circuit (ADR-0409) |
-| `password_reset.cpp` | Password reset by email (ADR-0481): `make_password_reset_token` (8 characters, 40 bits), `normalize_password_reset_token`, `send_password_reset_email` (a background task parked in `orphan_futures_`, at most 8 in flight, no lock held while it sends). The endpoints are in `client_server.cpp` before the auth gate; `reset_local_user_password` is in `auth_service.cpp` |
+| `password_reset.cpp` | Password reset by email (ADR-0481): `make_password_reset_token` (8 characters, 40 bits), `normalize_password_reset_token`, `send_password_reset_email` (a background task parked in `orphan_futures_`, at most 8 in flight, no lock held while it sends). The endpoints are in `ClientServerRuntime.cpp` before the auth gate; `reset_local_user_password` is in `auth_service.cpp` |
 | `turn_credentials.cpp` | `make_turn_credentials`: the coturn REST API username and password for `GET /voip/turnServer` (ADR-0480) |
 | `email_push.cpp` | Kind `"email"` pushers (ADR-0219, ADR-0220): `owned_email_pusher_address` (the pushkey must be the account's own email 3PID), `remove_email_pushers_for_address`, and `EmailPushJob`, the one thread that sends due digests through `send_due_email_notifications`. It re-reads the pusher, the 3PID, the account and the badge count under `runtime.mutex`, then sends with the mutex released |
 | `runtime_signing_key_store.cpp` | Production `SigningKeyStore` over the persisted server signing-key rows |
@@ -58,7 +58,7 @@ This is the largest and most complex module — read this file carefully before 
 ```
 Real HTTP client
     ↓ (raw bytes + headers)
-handle_client_server_request()   ← client_server.cpp
+handle_client_server_request()   ← ClientServerRuntime.cpp
     ↓ (internal pipe format: declared_mime|sniffed_mime|scanner_clean|bytes for media)
 handle_local_http_request()      ← local_http_router.cpp
     ↓
@@ -67,16 +67,16 @@ Media / Auth / Sync / Room services
 
 **Never** call `handle_local_http_request()` with a real client body. The internal format
 is `declared_mime|sniffed_mime|scanner_clean|bytes` — the pipe-delimited wrapper is built by
-`client_server.cpp` before the call.
+`ClientServerRuntime.cpp` before the call.
 
 ## Adding a new client-server endpoint
 
-1. Add the route match in `client_server.cpp` (find the block matching the path prefix)
+1. Add the route match in `ClientServerRuntime.cpp` (find the block matching the path prefix)
 2. Build the response using `dispatch_resp()` or `dispatch_err()`
 3. Add a conformance test in `tests/conformance/test_client_server_conformance.cpp`
 4. Add a unit test in `tests/unit/test_client_server.cpp`
 5. Update `docs/matrix-v1.19-client-server-api.md` with the new endpoint
-6. Make `normalized_target()` in `client_server.cpp` recognise the path. A path with
+6. Make `normalized_target()` in `ClientServerRuntime.cpp` recognise the path. A path with
    a variable component (an ID, type or key) needs a template and a row in the HTTP-3
    scenario "gives every implemented dynamic client route its own coalesced bucket"
    in `tests/unit/test_security_audit_http_3.cpp` (ADR-0092); a fixed path needs an
@@ -705,7 +705,7 @@ with `runtime.mutex` released (`pending_pdu_under_room_version`); never replay a
 
 ## Media upload boundary
 
-`client_server.cpp` is responsible for:
+`ClientServerRuntime.cpp` is responsible for:
 1. Matching `/_matrix/media/v3/upload` and `/_matrix/client/v1/media/upload` (with and without `?filename=...`)
 2. Extracting `Content-Type` header → `declared_mime`
 3. Building `declared_mime|sniffed_mime|scanner_verdict|<body>` before calling `call_local()` —
@@ -774,7 +774,7 @@ event type, before anything is created. Membership alone is not enough. Alias `P
 ## A room's events are in the event table only (ADR-0342, ADR-0442)
 
 `LocalRoom` has no list of events. Read a room's events, and take an event ID, from `PersistentStore::events` or the
-room's forward extremities (`last_known_event_id` in `client_server.cpp` is the model). A redacted event is served
+room's forward extremities (`last_known_event_id` in `ClientServerRuntime.cpp` is the model). A redacted event is served
 from the table's redacted JSON; do not add a second copy.
 
 ## Typing expiry (R13, ADR-0199)
@@ -821,7 +821,7 @@ without that check ignores `presence.enabled=false`. Rules:
   accepted from the EDU needs a bound.
 - A local user who is `online` and has been inactive over `presence_idle_timeout_ms` (5 minutes) is set `unavailable`
   by `expire_idle_presence`, run every `presence_idle_sweep_interval` (30 s) by the `presence-idle` `PeriodicJob`
-  (`run_presence_idle_sweep` in `client_server.cpp`: it takes `runtime.mutex` for one pass, queues the EDUs, makes no
+  (`run_presence_idle_sweep` in `ClientServerRuntime.cpp`: it takes `runtime.mutex` for one pass, queues the EDUs, makes no
   network call). It touches only local `online` rows, at most `presence_idle_max_per_pass` per pass, and starts the clock of a row with no `observed_at_ms`; nothing sets a user `offline`. A stored non-state message from a local user calls `note_local_message_activity` (in memory, no EDU). Sliding sync reads `set_presence` from the body or the URL (ADR-0495).
 - Presence in `/sync` is built by `build_sync_presence_events`, which also sends a user's presence once to
   someone who started sharing a room with them since the token, whatever its stream position: the row's own
@@ -858,7 +858,7 @@ the job.
   `appservice_pending_ephemeral` so a retry under the same ID carries the same items. Only a freshly built transaction
   takes queued items: a retry whose first attempt carried none carries none. With no event queued it sends an
   events-free transaction whose ID comes from `next_txn_id`. Never persist it and never queue it for `url: null`.
-- **Ping and the network directory** (`client_server.cpp`) act on the appservice named by the masquerade token
+- **Ping and the network directory** (`ClientServerRuntime.cpp`) act on the appservice named by the masquerade token
   (`decode_masquerade_token`), never on a path parameter alone: `POST /_matrix/client/v1/appservice/{appserviceId}/ping`
   and `PUT /_matrix/client/v3/directory/list/appservice/{networkId}/{roomId}` answer `403 M_FORBIDDEN` to a token that
   is not an appservice's. The ping holds an ADR-0079 slot and releases `runtime.mutex` for the call. The directory

@@ -3,8 +3,8 @@
 
 #include "merovingian/crypto/signing_service.hpp"
 
+#include "merovingian/observability/StructuredLogField.hpp"
 #include "merovingian/observability/logger.hpp"
-#include "merovingian/observability/observability.hpp"
 
 #include <string>
 #include <vector>

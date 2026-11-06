@@ -1,6 +1,12 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-#include "merovingian/media/repository.hpp"
+#include "merovingian/media/LocalMediaRecord.hpp"
+#include "merovingian/media/LocalMediaRepository.hpp"
+#include "merovingian/media/LocalMediaState.hpp"
+#include "merovingian/media/LocalMediaUploadRequest.hpp"
+#include "merovingian/media/LocalMediaUploadResult.hpp"
+#include "merovingian/media/RemoteMediaDownloadRequest.hpp"
+#include "merovingian/media/RemoteMediaDownloadResult.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 

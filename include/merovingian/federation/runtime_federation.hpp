@@ -2,7 +2,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
-#include "merovingian/config/config.hpp"
+#include "merovingian/config/Config.hpp"
+#include "merovingian/config/FederationBackfillConfig.hpp"
 #include "merovingian/federation/membership_endpoints.hpp"
 #include "merovingian/http/rate_limit.hpp"
 
@@ -47,10 +48,10 @@ struct RuntimeFederationConfig final
     // Hard cap on the number of via-derived candidates actually raced (default 20).
     std::uint32_t join_max_candidates{0U};
     // Cap on concurrent remote signing-key resolutions when verifying send_join
-    // state/auth_chain event signatures (default 100). See config.hpp.
+    // state/auth_chain event signatures (default 100). See Config.hpp.
     std::uint32_t join_state_key_parallelism{0U};
     // Response body cap for make_join/send_join, distinct from the general
-    // 16 MiB http::OutboundRequest default (default 64 MiB). See config.hpp.
+    // 16 MiB http::OutboundRequest default (default 64 MiB). See Config.hpp.
     std::uint64_t join_response_max_bytes{0U};
     // Local server name (e.g. "matrix.example.org"). Surfaced into outbound
     // federation traffic and into response bodies that include the issuing

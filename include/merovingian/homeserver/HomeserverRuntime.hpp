@@ -4,33 +4,26 @@
 
 #include "merovingian/appservice/registration.hpp"
 #include "merovingian/auth/failure_window_table.hpp"
-#include "merovingian/config/config.hpp"
+#include "merovingian/config/Config.hpp"
 #include "merovingian/core/secret_buffer.hpp"
 #include "merovingian/crypto/ed25519.hpp"
-#include "merovingian/database/persistent_store.hpp"
+#include "merovingian/database/PersistentPolicyRule.hpp"
+#include "merovingian/database/PersistentStore.hpp"
 #include "merovingian/email/smtp_client.hpp"
 #include "merovingian/federation/cached_server_discovery.hpp"
 #include "merovingian/federation/dispatch_worker.hpp"
 #include "merovingian/federation/edu_idempotence.hpp"
 #include "merovingian/federation/inbound_request.hpp"
 #include "merovingian/federation/server_discovery.hpp"
-// PHASE-B: forwarding includes, removed when consumers include the new headers directly.
 #include "merovingian/homeserver/ActiveServerSigningKeySecret.hpp"
 #include "merovingian/homeserver/AppserviceDeliveryBackoff.hpp"
-#include "merovingian/homeserver/AppserviceEphemeralItem.hpp"
 #include "merovingian/homeserver/AppserviceEphemeralQueue.hpp"
 #include "merovingian/homeserver/AppservicePendingEphemeral.hpp"
 #include "merovingian/homeserver/InboundTypingUser.hpp"
-#include "merovingian/homeserver/KeyServerCache.hpp"
 #include "merovingian/homeserver/LocalDatabase.hpp"
 #include "merovingian/homeserver/LocalRoom.hpp"
-#include "merovingian/homeserver/LocalUser.hpp"
-#include "merovingian/homeserver/OperationResult.hpp"
 #include "merovingian/homeserver/PendingFederatedJoin.hpp"
-#include "merovingian/homeserver/PendingStreamOrdering.hpp"
-#include "merovingian/homeserver/PublishedStreamOrdering.hpp"
 #include "merovingian/homeserver/RuntimeStartOptions.hpp"
-#include "merovingian/homeserver/SessionRefreshResult.hpp"
 #include "merovingian/homeserver/TestOnlyForcedOutboundResolution.hpp"
 #include "merovingian/homeserver/TypingExpiry.hpp"
 #include "merovingian/homeserver/client_outbound_proxy.hpp"
@@ -42,20 +35,23 @@
 #include "merovingian/http/in_flight_budget.hpp"
 #include "merovingian/http/outbound_client.hpp"
 #include "merovingian/identity/identity_client.hpp"
-#include "merovingian/media/repository.hpp"
+#include "merovingian/media/LocalMediaRepository.hpp"
 #include "merovingian/media/url_preview.hpp"
 #include "merovingian/net/listener.hpp"
+#include "merovingian/observability/HealthCheckSnapshot.hpp"
 #include "merovingian/observability/audit_rate_gate.hpp"
-#include "merovingian/observability/observability.hpp"
+#include "merovingian/observability/observability_enums.hpp"
 #include "merovingian/platform/hardening_self_check.hpp"
 #include "merovingian/push/email_digest_queue.hpp"
 #include "merovingian/push/gateway_circuit_breaker.hpp"
 #include "merovingian/push/gateway_in_flight_limiter.hpp"
 #include "merovingian/push/push_gateway_client.hpp"
 #include "merovingian/push/push_retry_queue.hpp"
-#include "merovingian/sync/sliding_sync.hpp"
+#include "merovingian/sync/SlidingSyncConnectionState.hpp"
 #include "merovingian/sync/sync_notifier.hpp"
-#include "merovingian/trust_safety/policy_engine.hpp"
+#include "merovingian/trust_safety/PolicyDecision.hpp"
+#include "merovingian/trust_safety/PolicyServerHook.hpp"
+#include "merovingian/trust_safety/policy_enums.hpp"
 
 #include <array>
 #include <atomic>
@@ -87,7 +83,7 @@ namespace merovingian::homeserver
 
 constexpr std::size_t room_mutex_stripe_count = 256U;
 
-// Forward declaration — full type in federation_proxy.hpp, included by runtime.cpp.
+// Forward declaration — full type in federation_proxy.hpp, included by HomeserverRuntime.cpp.
 class FederationProxy;
 
 // The room with `room_id` in `database.rooms` (the first, if two share the ID), or nullptr. One hash lookup on a hit; a
@@ -559,5 +555,3 @@ auto apply_runtime_membership(LocalDatabase& database, std::string_view room_id,
 
 } // namespace merovingian::homeserver
 
-// PHASE-B: forwarding includes, removed when consumers include the new headers directly.
-#include "merovingian/homeserver/RuntimeStartResult.hpp"

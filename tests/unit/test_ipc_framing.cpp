@@ -11,13 +11,17 @@
 #include "merovingian/core/file_descriptor.hpp"
 #include "merovingian/crypto/ipc_auth_key.hpp"
 #include "merovingian/federation/inbound_ingestion.hpp"
-#include "merovingian/homeserver/local_http_router.hpp"
+#include "merovingian/homeserver/LocalHttpRequest.hpp"
 #include "merovingian/homeserver/worker_pool.hpp"
 #include "merovingian/ipc/channel.hpp"
 #include "merovingian/ipc/federation_ipc_frames.hpp"
 #include "merovingian/net/thread_pool.hpp"
 
 #include <catch2/catch_test_macros.hpp>
+#include <fcntl.h>
+#include <sodium.h>
+#include <sys/socket.h>
+#include <unistd.h>
 
 #include <array>
 #include <atomic>
@@ -33,11 +37,6 @@
 #include <thread>
 #include <tuple>
 #include <vector>
-
-#include <fcntl.h>
-#include <sodium.h>
-#include <sys/socket.h>
-#include <unistd.h>
 
 namespace
 {

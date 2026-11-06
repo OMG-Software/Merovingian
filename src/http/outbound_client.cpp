@@ -5,10 +5,13 @@
 
 #include "merovingian/core/not_null.hpp"
 #include "merovingian/core/socket_handle.hpp"
+#include "merovingian/observability/StructuredLogField.hpp"
 #include "merovingian/observability/logger.hpp"
-#include "merovingian/observability/observability.hpp"
 
+#include <arpa/inet.h>
 #include <curl/curl.h>
+#include <netinet/in.h>
+#include <sys/socket.h>
 
 #include <algorithm>
 #include <array>
@@ -24,10 +27,6 @@
 #include <system_error>
 #include <utility>
 #include <vector>
-
-#include <arpa/inet.h>
-#include <netinet/in.h>
-#include <sys/socket.h>
 
 namespace merovingian::http
 {

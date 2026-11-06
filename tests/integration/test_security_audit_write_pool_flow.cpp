@@ -6,11 +6,13 @@
 // database.pool_size connections (ADR-0154).
 
 #include "../support/temp_directory.hpp"
-#include "merovingian/database/persistent_store.hpp"
+#include "merovingian/database/ExaminedRows.hpp"
+#include "merovingian/database/PersistentStore.hpp"
 #include "merovingian/database/postgresql_store.hpp"
 #include "merovingian/database/statement.hpp"
 
 #include <catch2/catch_test_macros.hpp>
+#include <libpq-fe.h>
 
 #include <algorithm>
 #include <atomic>
@@ -26,8 +28,6 @@
 #include <thread>
 #include <tuple>
 #include <vector>
-
-#include <libpq-fe.h>
 
 namespace
 {

@@ -2,7 +2,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
-// PHASE-B: forwarding includes, removed when consumers include the new headers directly.
 #include "merovingian/database/DeferredPduAwaits.hpp"
 #include "merovingian/database/ExaminedRows.hpp"
 #include "merovingian/database/MediaBlobRead.hpp"
@@ -143,7 +142,7 @@ enum class TableLoadProfile
 //                       PersistentEvent::prev_event_ids from this table;
 //                       without it every event's prev_events reads back
 //                       empty for the make_join/backfill/missing_events
-//                       routes above — database/persistent_store.cpp
+//                       routes above — database/PersistentStore.cpp
 //                       reconstruct_event_relations
 //   event_auth          same reconstruct_event_relations dependency, for
 //                       PersistentEvent::auth_event_ids (auth-chain walks in
@@ -505,7 +504,7 @@ struct PersistentStore final
     std::vector<PersistentMembership> memberships{};
     std::vector<PersistentInvite> invites{};
     // Positions in `memberships` of each room's rows (ADR-0437), so a reader of one room's members does not scan
-    // every room's. Maintained by every writer in persistent_store.cpp and rebuilt after hydration and
+    // every room's. Maintained by every writer in PersistentStore.cpp and rebuilt after hydration and
     // `reload_room`; only trusted while `membership_indexed_rows == memberships.size()` and each position it
     // names holds a row of the room, otherwise a reader scans `memberships`. A caller that edits the vector
     // directly (a test) thereby loses speed, never correctness. A row's room never changes in place.
@@ -517,7 +516,7 @@ struct PersistentStore final
     RedactionObserver redaction_observer{};
     std::vector<PersistentStateEvent> state{};
     // Positions in `state` by (room_id, event_type, state_key), and the positions of each room's
-    // rows (ADR-0344). Maintained by every writer in persistent_store.cpp and rebuilt after
+    // rows (ADR-0344). Maintained by every writer in PersistentStore.cpp and rebuilt after
     // hydration and `reload_room`; only trusted while `state_indexed_rows == state.size()` and
     // each position it names still holds the row asked for, otherwise a lookup scans `state`.
     // A caller that edits `state` directly (a test) thereby loses speed, never correctness.
@@ -1670,7 +1669,3 @@ namespace detail
 } // namespace detail
 
 } // namespace merovingian::database
-
-// PHASE-B: forwarding include, removed when consumers include the new header directly. It comes last because
-// PersistentStoreOpenResult holds a PersistentStore by value, so it needs this header complete.
-#include "merovingian/database/PersistentStoreOpenResult.hpp"

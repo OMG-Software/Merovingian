@@ -3,7 +3,7 @@
 
 #include "merovingian/config/reload_policy.hpp"
 
-#include "merovingian/config/config.hpp"
+#include "merovingian/config/Config.hpp"
 
 #include <string_view>
 

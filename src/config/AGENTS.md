@@ -6,7 +6,7 @@ Parses and validates the server configuration and plans (but does not yet apply)
 
 | File | Responsibility |
 |---|---|
-| `config.cpp` | `Config` class and its section structs (`ServerConfig`, `ListenersConfig`, `DatabaseConfig`, `SecurityConfig`, …) — typed representation of every config option; `validate_config()`, `parse_size_limit()` |
+| `Config.cpp` | `Config` class (its section structs, such as `ServerConfig`, `ListenersConfig`, `DatabaseConfig` and `SecurityConfig`, each have their own `<TypeName>.hpp`) — typed representation of every config option; `validate_config()`, `parse_size_limit()` |
 | `config_parser.cpp` | Parses the key-value `.conf` file into `Config`; validates ranges and required fields |
 | `runtime_config.cpp` | `RuntimeConfigSnapshot`: holds a `Config` and can swap it for a reload-only candidate. Only the unit tests construct it today; the server does not |
 | `reload_plan.cpp` | Diffs old vs new config and classifies each change; used by `--plan-config-reload`. No live reload path (SIGHUP/admin socket) exists yet |

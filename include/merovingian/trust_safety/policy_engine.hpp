@@ -2,7 +2,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
-// PHASE-B: forwarding includes, removed when consumers include the new headers directly.
 #include "merovingian/database/statement.hpp"
 #include "merovingian/trust_safety/EnforcementReason.hpp"
 #include "merovingian/trust_safety/FederationPolicyRequest.hpp"

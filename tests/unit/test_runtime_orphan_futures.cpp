@@ -11,7 +11,7 @@
 // for the end-to-end proof that dispatch_push_deliveries actually calls
 // these at the real call site.
 
-#include "merovingian/homeserver/runtime.hpp"
+#include "merovingian/homeserver/HomeserverRuntime.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 

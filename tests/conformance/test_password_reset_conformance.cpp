@@ -16,8 +16,10 @@
 #include "../support/json_test_support.hpp"
 #include "../support/master_key.hpp"
 #include "../support/registration_token.hpp"
-#include "merovingian/database/persistent_store.hpp"
-#include "merovingian/homeserver/client_server.hpp"
+#include "merovingian/database/PersistentStore.hpp"
+#include "merovingian/database/PersistentThreePidBinding.hpp"
+#include "merovingian/homeserver/ClientServerRuntime.hpp"
+#include "merovingian/homeserver/ClientServerStartResult.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 

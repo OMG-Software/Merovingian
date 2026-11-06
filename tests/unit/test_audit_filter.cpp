@@ -11,6 +11,7 @@
 // +-------------------------------------------------------------------------+
 
 #include "merovingian/observability/observability.hpp"
+#include "merovingian/observability/observability_enums.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 

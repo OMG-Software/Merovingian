@@ -29,7 +29,7 @@ endpoints, only calls them.
   production construction path. Unlike the federation seam there is no
   `resolved_port`: the URL carries the port and `OutboundClient` builds
   `CURLOPT_RESOLVE` `host:port:address`, so the mock IS port must match the URL.
-  The struct lives in the identity header (not `runtime.hpp`) to keep the
+  The struct lives in the identity header (not `HomeserverRuntime.hpp`) to keep the
   `homeserver → identity` dependency direction correct.
 - **TLS on, always.** IS base URLs must be `https://` (enforced by config
   validation and `parse_identity_server_url`). `http::OutboundClient` verifies
@@ -71,7 +71,7 @@ endpoints, only calls them.
   (missing or mistyped field, empty value, non-positive `validated_at`): a
   response that does not positively say "validated" must never be read as
   validated. The call site (`confirm_validation_session` in
-  `src/homeserver/client_server.cpp`) releases `runtime.mutex` for the call and
+  `src/homeserver/ClientServerRuntime.cpp`) releases `runtime.mutex` for the call and
   re-checks the session after re-taking it. `build_get_validated_3pid_path`
   percent-encodes both query values: the sid is chosen by the identity server.
 - **Trusted-server allowlist.** Call sites must confirm `base_url` is in

@@ -7,8 +7,8 @@
 #include "merovingian/canonicaljson/parser.hpp"
 #include "merovingian/canonicaljson/value.hpp"
 #include "merovingian/federation/third_party_invite.hpp"
+#include "merovingian/homeserver/LocalHttpRequest.hpp"
 #include "merovingian/homeserver/federation_request_routing.hpp"
-#include "merovingian/homeserver/local_http_router.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 

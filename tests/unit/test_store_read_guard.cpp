@@ -15,7 +15,9 @@
 
 #include "../support/joining_threads.hpp"
 #include "../support/temp_directory.hpp"
-#include "merovingian/database/persistent_store.hpp"
+#include "merovingian/database/PersistentStateEvent.hpp"
+#include "merovingian/database/PersistentStore.hpp"
+#include "merovingian/database/PersistentStoreOpenResult.hpp"
 #include "merovingian/federation/inbound_request.hpp"
 #include "merovingian/federation/server_acl.hpp"
 #include "merovingian/federation_worker/store_read_guard.hpp"

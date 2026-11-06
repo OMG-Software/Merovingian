@@ -17,7 +17,7 @@
 #include "merovingian/federation/inbound_request.hpp"
 #include "merovingian/federation/runtime_federation.hpp"
 #include "merovingian/homeserver/media_service.hpp"
-#include "merovingian/media/repository.hpp"
+#include "merovingian/media/LocalMediaDownloadResult.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 

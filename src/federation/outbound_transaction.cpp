@@ -8,8 +8,8 @@
 #include "merovingian/canonicaljson/value.hpp"
 #include "merovingian/crypto/random.hpp"
 #include "merovingian/federation/inbound_request.hpp"
+#include "merovingian/observability/StructuredLogField.hpp"
 #include "merovingian/observability/logger.hpp"
-#include "merovingian/observability/observability.hpp"
 
 #include <array>
 #include <chrono>

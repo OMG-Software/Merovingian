@@ -6,9 +6,12 @@
 // these looks to the client like a conversation of one message (0.12.45).
 
 #include "../support/room_history_fixture.hpp"
-#include "merovingian/database/persistent_store.hpp"
-#include "merovingian/homeserver/runtime.hpp"
-#include "merovingian/sync/sliding_sync.hpp"
+#include "merovingian/database/PersistentStore.hpp"
+#include "merovingian/homeserver/HomeserverRuntime.hpp"
+#include "merovingian/homeserver/KeyServerCache.hpp"
+#include "merovingian/sync/SlidingSyncConnectionState.hpp"
+#include "merovingian/sync/SlidingSyncRoomResponse.hpp"
+#include "merovingian/sync/SlidingSyncRoomSubscription.hpp"
 #include "merovingian/sync/sliding_sync_room_builder.hpp"
 
 #include <catch2/catch_test_macros.hpp>

@@ -269,7 +269,7 @@ or environment override, and production outbound calls never populate an
 in-memory CA bundle — so a local test TLS server can never be reached through the
 real discovery path, and a self-signed test certificate always fails TLS
 verification. `HomeserverRuntime::test_forced_outbound_resolution` (see
-`include/merovingian/homeserver/runtime.hpp`) closes that gap: a map from
+`include/merovingian/homeserver/HomeserverRuntime.hpp`) closes that gap: a map from
 destination `server_name` to a forced `{resolved_host, resolved_port,
 pinned_addresses, trusted_ca_pem}`, consulted first in `perform_sync_outbound_call`
 before it would otherwise call `discover_server()`. No production construction

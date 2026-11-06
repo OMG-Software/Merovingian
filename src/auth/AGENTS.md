@@ -15,7 +15,7 @@ Spec authority: ../../docs/matrix-v1.19-spec/client-server-api.md
 | `failure_window_table.cpp` | `FailureWindowTable`: the bounded, time-ordered failure counters behind the failed-login throttle (100 000 entries, fixed-size BLAKE2b-256 keys via `make_failure_key`, O(1) expiry from the front, oldest evicted when full). Not thread-safe: the runtime mutex serialises it. Used for (account, source), per-account and (account, device) UIA counters |
 | `key_api.cpp` | `/_matrix/client/v3/keys/upload`, `/query`, `/claim` — E2EE key management |
 
-UIAA and `/whoami` are implemented in `src/homeserver/client_server.cpp`, not in this module.
+UIAA and `/whoami` are implemented in `src/homeserver/ClientServerRuntime.cpp`, not in this module.
 
 ## Security rules — non-negotiable
 
@@ -90,7 +90,7 @@ Token bytes come from `crypto/random.hpp`. Tokens are never stored or logged in 
 ## UIAA (User-Interactive Authentication)
 
 UIAA session state is held **in memory** in the client-server runtime (`uia_sessions` in
-`src/homeserver/client_server.cpp`), not in a database table. Sessions expire after 10 minutes
+`src/homeserver/ClientServerRuntime.cpp`), not in a database table. Sessions expire after 10 minutes
 and are capped at 512 entries. Each flow has exactly one stage, so there is no stage list to
 consult; adding a second stage would need persisted stage tracking. See ADR-0057.
 

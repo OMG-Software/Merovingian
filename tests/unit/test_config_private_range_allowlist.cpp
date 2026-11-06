@@ -6,7 +6,8 @@
 // RFC 1918 and ULA networks may be named; loopback, link-local, CGNAT,
 // multicast, reserved and public space can never be opened by it.
 
-#include "merovingian/config/config.hpp"
+#include "merovingian/config/Config.hpp"
+#include "merovingian/config/ConfigValidationFinding.hpp"
 #include "merovingian/config/config_parser.hpp"
 #include "merovingian/config/reload_plan.hpp"
 #include "merovingian/config/reload_policy.hpp"

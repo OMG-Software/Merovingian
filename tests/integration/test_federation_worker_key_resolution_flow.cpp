@@ -15,7 +15,8 @@
 #include "../federation_signing_test_support.hpp"
 #include "merovingian/canonicaljson/serializer.hpp"
 #include "merovingian/canonicaljson/value.hpp"
-#include "merovingian/database/persistent_store.hpp"
+#include "merovingian/database/PersistentStore.hpp"
+#include "merovingian/database/PersistentStoreOpenResult.hpp"
 #include "merovingian/federation/inbound_request.hpp"
 #include "merovingian/federation/remote_key_cache.hpp"
 #include "merovingian/federation/server_discovery.hpp"
@@ -26,11 +27,10 @@
 #include <cstdint>
 #include <filesystem>
 #include <stdexcept>
+#include <stdlib.h>
 #include <string>
 #include <string_view>
 #include <system_error>
-
-#include <stdlib.h>
 
 namespace
 {

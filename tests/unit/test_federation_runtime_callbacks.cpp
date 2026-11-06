@@ -3,7 +3,7 @@
 #include "federation_signing_test_support.hpp"
 #include "merovingian/canonicaljson/parser.hpp"
 #include "merovingian/canonicaljson/value.hpp"
-#include "merovingian/config/config.hpp"
+#include "merovingian/config/Config.hpp"
 #include "merovingian/crypto/ed25519.hpp"
 #include "merovingian/crypto/signing_service.hpp"
 #include "merovingian/events/event_id.hpp"
@@ -12,13 +12,17 @@
 #include "merovingian/federation/inbound_request.hpp"
 #include "merovingian/federation/membership_endpoints.hpp"
 #include "merovingian/federation/runtime_federation.hpp"
+#include "merovingian/homeserver/LocalHttpRequest.hpp"
+#include "merovingian/homeserver/LocalHttpResponse.hpp"
 #include "merovingian/homeserver/local_http_router.hpp"
 #include "merovingian/rooms/room_version_policy.hpp"
 #include "merovingian/sync/sync_notifier.hpp"
-#include "merovingian/trust_safety/policy_engine.hpp"
+#include "merovingian/trust_safety/PolicyServerHook.hpp"
+#include "merovingian/trust_safety/policy_enums.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/generators/catch_generators.hpp>
+#include <sodium.h>
 
 #include <algorithm>
 #include <array>
@@ -32,8 +36,6 @@
 #include <string_view>
 #include <thread>
 #include <vector>
-
-#include <sodium.h>
 
 namespace
 {

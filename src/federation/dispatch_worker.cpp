@@ -3,8 +3,8 @@
 
 #include "merovingian/federation/dispatch_worker.hpp"
 
+#include "merovingian/observability/StructuredLogField.hpp"
 #include "merovingian/observability/logger.hpp"
-#include "merovingian/observability/observability.hpp"
 
 #include <algorithm>
 #include <chrono>

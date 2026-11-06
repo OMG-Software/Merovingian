@@ -1,13 +1,33 @@
 // SPDX-FileCopyrightText: 2026 James Chapman
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-#include "merovingian/config/config.hpp"
+#include "merovingian/config/Config.hpp"
 
 #include "merovingian/auth/identity.hpp"
+#include "merovingian/config/AppserviceConfig.hpp"
+#include "merovingian/config/ClientRateLimitsConfig.hpp"
+#include "merovingian/config/ConfigValidationFinding.hpp"
+#include "merovingian/config/DatabaseBackend.hpp"
+#include "merovingian/config/DatabaseConfig.hpp"
+#include "merovingian/config/DatabaseRole.hpp"
+#include "merovingian/config/DurationParseResult.hpp"
+#include "merovingian/config/FederationWorkerConfig.hpp"
+#include "merovingian/config/ListenerConfig.hpp"
+#include "merovingian/config/ListenersConfig.hpp"
+#include "merovingian/config/LogModulesConfig.hpp"
+#include "merovingian/config/PasswordHashingConfig.hpp"
+#include "merovingian/config/PresenceConfig.hpp"
+#include "merovingian/config/SecurityConfig.hpp"
+#include "merovingian/config/ServerConfig.hpp"
+#include "merovingian/config/SizeLimitParseResult.hpp"
 #include "merovingian/config/config_parser.hpp"
 #include "merovingian/email/mailbox_address.hpp"
 #include "merovingian/email/smtp_endpoint.hpp"
 #include "merovingian/http/keep_alive.hpp"
+
+#include <arpa/inet.h>
+#include <netinet/in.h>
+#include <sys/socket.h>
 
 #include <algorithm>
 #include <array>
@@ -19,10 +39,6 @@
 #include <system_error>
 #include <tuple>
 #include <utility>
-
-#include <arpa/inet.h>
-#include <netinet/in.h>
-#include <sys/socket.h>
 
 namespace merovingian::config
 {
@@ -1727,7 +1743,7 @@ auto validate(Config const& config) -> std::vector<ConfigValidationFinding>
     // typo (a stray blank line) does not silently insert a catch-all
     // entry that shadows the configured `default_per_ip`.
     // The upper bound mirrors http::rate_limit_policy_is_valid() (rate_limit.hpp):
-    // a policy config.cpp accepts but the engine later rejects as invalid resolves
+    // a policy Config.cpp accepts but the engine later rejects as invalid resolves
     // to nullopt at runtime, and an unresolvable policy must never be silently
     // treated as "no limit" (see RateLimitEngine::check() fail-closed behaviour).
     constexpr auto max_window_seconds = 3600U;

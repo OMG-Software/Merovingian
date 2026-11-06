@@ -5,7 +5,8 @@
 
 #include "merovingian/appservice/registration.hpp"
 #include "merovingian/federation/public_rooms.hpp"
-#include "merovingian/homeserver/runtime.hpp"
+#include "merovingian/homeserver/HomeserverRuntime.hpp"
+#include "merovingian/homeserver/LocalDatabase.hpp"
 
 #include <cstddef>
 #include <optional>

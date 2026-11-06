@@ -4,11 +4,35 @@
 #include "merovingian/canonicaljson/parser.hpp"
 #include "merovingian/canonicaljson/serializer.hpp"
 #include "merovingian/core/file_descriptor.hpp"
+#include "merovingian/database/ExaminedRows.hpp"
+#include "merovingian/database/PersistentAccountData.hpp"
+#include "merovingian/database/PersistentAppserviceDirectoryEntry.hpp"
+#include "merovingian/database/PersistentAppserviceTxnCursor.hpp"
+#include "merovingian/database/PersistentAuditEvent.hpp"
+#include "merovingian/database/PersistentDeferredPdu.hpp"
+#include "merovingian/database/PersistentDeviceListChange.hpp"
+#include "merovingian/database/PersistentLoginToken.hpp"
+#include "merovingian/database/PersistentNotification.hpp"
+#include "merovingian/database/PersistentOpenidToken.hpp"
+#include "merovingian/database/PersistentPresence.hpp"
+#include "merovingian/database/PersistentPusher.hpp"
+#include "merovingian/database/PersistentReceipt.hpp"
+#include "merovingian/database/PersistentServerSigningKey.hpp"
+#include "merovingian/database/PersistentStore.hpp"
+#include "merovingian/database/PersistentStoreOpenResult.hpp"
+#include "merovingian/database/PersistentThreePidBinding.hpp"
+#include "merovingian/database/PersistentToDeviceMessage.hpp"
+#include "merovingian/database/RoomReloadSnapshot.hpp"
 #include "merovingian/database/connection_pool.hpp"
-#include "merovingian/database/persistent_store.hpp"
+#include "merovingian/database/persistent_store_backend.hpp"
 #include "merovingian/database/schema.hpp"
+#include "merovingian/observability/StructuredLogField.hpp"
 #include "merovingian/observability/logger.hpp"
-#include "merovingian/observability/observability.hpp"
+
+#include <fcntl.h>
+#include <sqlite3.h>
+#include <sys/stat.h>
+#include <unistd.h>
 
 #include <array>
 #include <cerrno>
@@ -26,11 +50,6 @@
 #include <tuple>
 #include <utility>
 #include <vector>
-
-#include <fcntl.h>
-#include <sqlite3.h>
-#include <sys/stat.h>
-#include <unistd.h>
 
 namespace merovingian::database
 {

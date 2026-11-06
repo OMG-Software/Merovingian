@@ -3,7 +3,7 @@
 #pragma once
 
 #include "merovingian/crypto/signing_service.hpp"
-#include "merovingian/database/persistent_store.hpp"
+#include "merovingian/database/PersistentServerSigningKey.hpp"
 
 #include <string>
 #include <string_view>

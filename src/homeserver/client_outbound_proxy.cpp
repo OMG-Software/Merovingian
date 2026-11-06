@@ -2,8 +2,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "merovingian/homeserver/client_outbound_proxy.hpp"
 
+#include "merovingian/homeserver/HomeserverRuntime.hpp"
 #include "merovingian/homeserver/request_lock.hpp"
-#include "merovingian/homeserver/runtime.hpp"
 
 #include <algorithm>
 #include <thread>

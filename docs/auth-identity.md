@@ -196,7 +196,7 @@ production-gated.
   (`appservice::is_account_management_endpoint`, checked in
   `handle_client_server_request_impl` under the request lock). Outbound
   delivery to appservices is wired: `appservice::AppserviceClient`
-  (`src/appservice/appservice_client.cpp`) implements `send_transaction`
+  (`src/appservice/AppserviceClient.cpp`) implements `send_transaction`
   (`PUT /_matrix/app/v1/transactions/{txnId}`), `query_user`, `query_room_alias`,
   and the `/thirdparty/*` queries. Delivery is a durable queue (ADR-0163):
   `enqueue_appservice_delivery` (`src/homeserver/appservice_delivery.cpp`)
@@ -208,7 +208,7 @@ production-gated.
   the same `txn_id` with the same event, with exponential back-off (1 s
   doubling to 5 min), before anything newer is sent, even when no further room
   traffic arrives. `query_user`/`query_room_alias` are invoked from
-  `src/homeserver/client_server.cpp` when a lookup misses local state.
+  `src/homeserver/ClientServerRuntime.cpp` when a lookup misses local state.
 - Unit coverage for identity validation, account lock/suspension behavior, password policy, token activity, and log redaction.
 - Registration token verification using Argon2id (`crypto_pwhash_str` / `crypto_pwhash_str_verify`);
   only the password hash is retained, and the plaintext token is zeroised after hashing. The
@@ -444,7 +444,7 @@ trusted `id_server` is supplied, not just persist locally:
   bind, but needs the same confirmation.
 
 - **3PID ownership is proven by the identity server (AUTH-5).**
-  `confirm_validation_session` (`client_server.cpp`) is the single gate for
+  `confirm_validation_session` (`ClientServerRuntime.cpp`) is the single gate for
   `/account/3pid/add`, `/account/3pid/bind` and `/account/3pid`. It calls
   `IdentityServerClient::get_validated_3pid`
   (`GET /_matrix/identity/v2/3pid/getValidated3pid?sid=&client_secret=`, bearer
@@ -665,7 +665,7 @@ are reversible where deactivation is not.
   states — deactivation outranks them because it is permanent where they
   are not.
 - **3PIDs are unbound from their identity servers.**
-  `unbind_threepid_for_deactivation` (`src/homeserver/client_server.cpp`)
+  `unbind_threepid_for_deactivation` (`src/homeserver/ClientServerRuntime.cpp`)
   walks every bound 3PID the account holds and drives IS unbind auth mode 2
   with the stored `id_server` + `client_secret` + `sid` (stored in the v1 schema),
   through the same `resolve_trusted_identity_base_url` SSRF gate as
@@ -889,7 +889,7 @@ The boundary establishes these guarantees:
   `POST /delete_devices` and `POST /keys/device_signing/upload`) answers `401`
   with the challenge (`flows`, `params`, `session`) plus `errcode: M_FORBIDDEN`
   and `error`. A request that makes no attempt (no `auth`, or no password in it)
-  gets the bare challenge. `uia_failure_body` in `client_server.cpp` adds the two
+  gets the bare challenge. `uia_failure_body` in `ClientServerRuntime.cpp` adds the two
   fields; a new UIA endpoint uses it for a failed attempt.
 - `POST /register` checks `username` before it starts UIA: `M_INVALID_USERNAME`,
   `M_USER_IN_USE` (taken, reserved, or an appservice sender) and `M_EXCLUSIVE`

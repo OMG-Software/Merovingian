@@ -3,8 +3,8 @@
 
 #include "merovingian/homeserver/push_retry.hpp"
 
+#include "merovingian/homeserver/HomeserverRuntime.hpp"
 #include "merovingian/homeserver/auth_service.hpp"
-#include "merovingian/homeserver/runtime.hpp"
 #include "merovingian/observability/logger.hpp"
 
 #include <algorithm>

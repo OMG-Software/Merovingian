@@ -6,7 +6,11 @@
 #include "merovingian/core/query_params.hpp"
 #include "merovingian/core/secret_buffer.hpp"
 #include "merovingian/crypto/ed25519.hpp"
-#include "merovingian/database/persistent_store.hpp"
+#include "merovingian/database/ExaminedRows.hpp"
+#include "merovingian/database/PersistentAuditEvent.hpp"
+#include "merovingian/database/PersistentBlobReferenceCount.hpp"
+#include "merovingian/database/PersistentRemoteMediaRelease.hpp"
+#include "merovingian/database/PersistentStore.hpp"
 #include "merovingian/federation/outbound_transaction.hpp"
 #include "merovingian/federation/server_discovery.hpp"
 #include "merovingian/homeserver/auth_service.hpp"
@@ -18,11 +22,21 @@
 #include "merovingian/homeserver/request_lock.hpp"
 #include "merovingian/homeserver/room_service.hpp"
 #include "merovingian/http/outbound_client.hpp"
-#include "merovingian/media/repository.hpp"
+#include "merovingian/media/LocalMediaAdminResult.hpp"
+#include "merovingian/media/LocalMediaDownloadResult.hpp"
+#include "merovingian/media/LocalMediaRepository.hpp"
+#include "merovingian/media/LocalMediaState.hpp"
+#include "merovingian/media/LocalMediaUploadRequest.hpp"
+#include "merovingian/media/LocalMediaUploadResult.hpp"
+#include "merovingian/media/RemoteMediaDownloadRequest.hpp"
+#include "merovingian/media/RemoteMediaDownloadResult.hpp"
 #include "merovingian/media/security.hpp"
+#include "merovingian/observability/StructuredLogField.hpp"
 #include "merovingian/observability/logger.hpp"
-#include "merovingian/observability/observability.hpp"
+#include "merovingian/observability/observability_enums.hpp"
+#include "merovingian/trust_safety/PolicyDecision.hpp"
 #include "merovingian/trust_safety/policy_engine.hpp"
+#include "merovingian/trust_safety/policy_enums.hpp"
 
 #include <algorithm>
 #include <cctype>
@@ -1060,7 +1074,7 @@ namespace
 
         // Test-only: bypass discover_server() entirely when the destination has a
         // forced resolution wired (see TestOnlyForcedOutboundResolution in
-        // runtime.hpp). Always empty in production, so this branch never executes
+        // HomeserverRuntime.hpp). Always empty in production, so this branch never executes
         // outside integration tests — mirrors perform_sync_outbound_call in
         // room_service.cpp, which relies on the same seam for make_join et al.
         auto const forced_it = runtime.test_forced_outbound_resolution.find(std::string{origin_server});

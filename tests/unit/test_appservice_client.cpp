@@ -12,9 +12,12 @@
 // |  conformance/integration, matching the push-gateway-client precedent.  |
 // +-------------------------------------------------------------------------+
 
-#include "merovingian/appservice/appservice_client.hpp"
+#include "merovingian/appservice/AppserviceClient.hpp"
+#include "merovingian/appservice/AppservicePingResult.hpp"
+#include "merovingian/appservice/AppserviceTransaction.hpp"
 #include "merovingian/canonicaljson/parser.hpp"
-#include "merovingian/config/config.hpp"
+#include "merovingian/config/AppserviceConfig.hpp"
+#include "merovingian/config/Config.hpp"
 #include "merovingian/federation/cached_server_discovery.hpp"
 
 #include <catch2/catch_test_macros.hpp>

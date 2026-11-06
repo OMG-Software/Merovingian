@@ -4,8 +4,9 @@
 #include "merovingian/homeserver/push_badge_count.hpp"
 
 #include "merovingian/canonicaljson/parser.hpp"
+#include "merovingian/homeserver/HomeserverRuntime.hpp"
+#include "merovingian/homeserver/KeyServerCache.hpp"
 #include "merovingian/homeserver/push_rule_unread_classifier.hpp"
-#include "merovingian/homeserver/runtime.hpp"
 #include "merovingian/sync/read_markers.hpp"
 
 #include <algorithm>

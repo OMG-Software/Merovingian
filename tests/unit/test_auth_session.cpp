@@ -3,7 +3,6 @@
 #include "merovingian/auth/session.hpp"
 #include "merovingian/homeserver/local_services.hpp"
 #include "merovingian/observability/logger.hpp"
-#include "merovingian/observability/observability.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 

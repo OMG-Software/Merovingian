@@ -3,9 +3,17 @@
 
 #include "merovingian/homeserver/tls.hpp"
 
+#include "merovingian/observability/StructuredLogField.hpp"
 #include "merovingian/observability/logger.hpp"
-#include "merovingian/observability/observability.hpp"
 #include "merovingian/platform/file_metadata.hpp"
+
+#include <fcntl.h>
+#include <openssl/bio.h>
+#include <openssl/err.h>
+#include <openssl/evp.h>
+#include <openssl/pem.h>
+#include <openssl/ssl.h>
+#include <poll.h>
 
 #include <cerrno>
 #include <chrono>
@@ -17,14 +25,6 @@
 #include <tuple>
 #include <utility>
 #include <vector>
-
-#include <fcntl.h>
-#include <openssl/bio.h>
-#include <openssl/err.h>
-#include <openssl/evp.h>
-#include <openssl/pem.h>
-#include <openssl/ssl.h>
-#include <poll.h>
 
 namespace merovingian::homeserver
 {

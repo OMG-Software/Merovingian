@@ -6,14 +6,17 @@
 // pulls secret-bearing tables into its own memory. See
 // docs/adr/0062-federation-worker-holds-no-secret-files-secrets-arrive-over-inherited-fds.md.
 
-#include "merovingian/config/config.hpp"
+#include "merovingian/config/Config.hpp"
+#include "merovingian/config/DatabaseBackend.hpp"
 #include "merovingian/config/config_parser.hpp"
-#include "merovingian/database/persistent_store.hpp"
+#include "merovingian/database/PersistentStore.hpp"
 #include "merovingian/federation_worker/args.hpp"
 #include "merovingian/federation_worker/db_uri_fd.hpp"
 #include "merovingian/homeserver/worker_supervisor.hpp"
 
 #include <catch2/catch_test_macros.hpp>
+#include <fcntl.h>
+#include <unistd.h>
 
 #include <algorithm>
 #include <array>
@@ -28,9 +31,6 @@
 #include <string_view>
 #include <utility>
 #include <vector>
-
-#include <fcntl.h>
-#include <unistd.h>
 
 namespace
 {
@@ -218,7 +218,7 @@ auto parse(std::vector<char const*> const& args) -> merovingian::federation_work
 // Every table PersistentStore can hold that is NOT in the worker allowlist,
 // confirmed by tracing every worker-reachable code path during the N1 part 2
 // review (see docs/database-persistence.md, "Federation worker
-// least-privilege role", and persistent_store.hpp's
+// least-privilege role", and PersistentStore.hpp's
 // federation_worker_table_allowlist doc comment for the file:line citations
 // behind each classification) rather than merely "probably relayed". A table
 // created by a migration but absent from BOTH this list and the C++

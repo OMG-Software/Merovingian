@@ -6,7 +6,7 @@
 // persist one key per algorithm". A device that kept every fallback key it ever
 // uploaded grew without bound.
 
-#include "merovingian/database/persistent_store.hpp"
+#include "merovingian/database/PersistentStore.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 

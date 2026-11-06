@@ -299,7 +299,7 @@ SCENARIO("Filter combines type and sender restrictions with AND logic", "[sync][
 // The Matrix spec would require the /sync endpoint to return 400 M_BAD_JSON for an
 // invalid literal filter. The helper itself is intentionally lenient (pass-all on error)
 // so the runtime can log and continue. API-level 400 enforcement sits in the route handler.
-// See: src/homeserver/client_server.cpp — the sync route validates filter JSON before
+// See: src/homeserver/ClientServerRuntime.cpp — the sync route validates filter JSON before
 //      calling sync_json() and returns dispatch_err(400, "M_BAD_JSON") on parse failure.
 SCENARIO("parse_filter_argument handles invalid JSON gracefully", "[sync][filter][helper]")
 {
@@ -334,7 +334,7 @@ SCENARIO("parse_filter_argument handles invalid JSON gracefully", "[sync][filter
 // the server MUST treat it as literal JSON and MUST return 400 M_BAD_JSON if
 // the JSON is not well-formed.
 //
-// Implementation note: the /sync route handler in client_server.cpp performs
+// Implementation note: the /sync route handler in ClientServerRuntime.cpp performs
 // this validation via canonicaljson::parse_lossless() before calling sync_json().
 // The parse_filter_argument() helper is intentionally lenient so that it can
 // be reused in non-HTTP contexts; the API-level error lives in the route.
@@ -592,7 +592,7 @@ SCENARIO("Filter timeline limit field is parsed from the JSON filter", "[sync][f
 // the server represents the absent-limit state internally.
 //
 // The /sync route enforces the server-side default/maximum independently:
-//   src/homeserver/client_server.cpp — sync_json() applies k_default_timeline_cap
+//   src/homeserver/ClientServerRuntime.cpp — sync_json() applies k_default_timeline_cap
 //   whenever filter.room.timeline.limit == 0.
 // That route-level behaviour is tested via the conformance scenarios in
 //   test_client_server_conformance.cpp — "GET /sync incremental timeline …".

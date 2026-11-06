@@ -1,6 +1,11 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-#include "merovingian/database/persistent_store.hpp"
+#include "merovingian/database/ExaminedRows.hpp"
+#include "merovingian/database/PersistentEventAuth.hpp"
+#include "merovingian/database/PersistentEventEdge.hpp"
+#include "merovingian/database/PersistentEventSignature.hpp"
+#include "merovingian/database/PersistentStateEvent.hpp"
+#include "merovingian/database/PersistentStore.hpp"
 #include "merovingian/database/postgresql_store.hpp"
 #include "merovingian/federation/server_acl.hpp"
 

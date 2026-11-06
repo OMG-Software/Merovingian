@@ -3,7 +3,8 @@
 
 #include "merovingian/platform/landlock_hardening.hpp"
 
-#include "merovingian/config/config.hpp"
+#include "merovingian/config/Config.hpp"
+#include "merovingian/config/DatabaseBackend.hpp"
 #include "merovingian/core/file_descriptor.hpp"
 
 #include <algorithm>
@@ -13,11 +14,11 @@
 #include <utility>
 
 #ifdef __linux__
-#include <cerrno>
-#include <cstddef>
-
 #include <fcntl.h>
 #include <sys/stat.h>
+
+#include <cerrno>
+#include <cstddef>
 #if defined(__linux__)
 #include <sys/prctl.h>
 #endif

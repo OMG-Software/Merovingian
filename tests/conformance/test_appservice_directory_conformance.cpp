@@ -13,7 +13,8 @@
 #include "../support/appservice_test_config.hpp"
 #include "../support/json_test_support.hpp"
 #include "../support/mock_appservice.hpp"
-#include "merovingian/homeserver/client_server.hpp"
+#include "merovingian/homeserver/ClientServerRuntime.hpp"
+#include "merovingian/homeserver/ClientServerStartResult.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 

@@ -3,9 +3,17 @@
 
 #include "merovingian/homeserver/http_server.hpp"
 
-#include "merovingian/config/config.hpp"
+#include "merovingian/config/Config.hpp"
+#include "merovingian/config/HttpTransportConfig.hpp"
 #include "merovingian/core/query_params.hpp"
 #include "merovingian/core/socket_handle.hpp"
+#include "merovingian/homeserver/HttpConnectionDispatcher.hpp"
+#include "merovingian/homeserver/HttpServeStats.hpp"
+#include "merovingian/homeserver/HttpServeTuning.hpp"
+#include "merovingian/homeserver/LocalHttpRequest.hpp"
+#include "merovingian/homeserver/LocalHttpResponse.hpp"
+#include "merovingian/homeserver/MediaFetchAdmissionCaps.hpp"
+#include "merovingian/homeserver/SyncAdmissionCaps.hpp"
 #include "merovingian/homeserver/federation_proxy.hpp"
 #include "merovingian/homeserver/local_http_router.hpp"
 #include "merovingian/homeserver/remote_media_fetch_scope.hpp"
@@ -17,6 +25,7 @@
 #include "merovingian/http/request.hpp"
 #include "merovingian/http/request_limits.hpp"
 #include "merovingian/net/connection_parker.hpp"
+#include "merovingian/observability/StructuredLogField.hpp"
 #include "merovingian/observability/logger.hpp"
 #include "merovingian/observability/observability.hpp"
 
@@ -1181,7 +1190,7 @@ namespace
     //
     // Access-Control-Allow-Credentials is deliberately never emitted here:
     // these responses are not preflights, and pairing it with a wildcard origin
-    // is a CORS-spec violation (see resolve_allow_origin in client_server.cpp).
+    // is a CORS-spec violation (see resolve_allow_origin in ClientServerRuntime.cpp).
     [[nodiscard]] auto transport_cors_headers(ConnectionContext const& ctx, std::string_view origin)
         -> std::vector<std::pair<std::string, std::string>>
     {

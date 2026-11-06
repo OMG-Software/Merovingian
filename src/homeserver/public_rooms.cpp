@@ -7,7 +7,8 @@
 #include "merovingian/canonicaljson/serializer.hpp"
 #include "merovingian/core/folded_substring.hpp"
 #include "merovingian/core/query_params.hpp"
-#include "merovingian/database/persistent_store.hpp"
+#include "merovingian/database/ExaminedRows.hpp"
+#include "merovingian/database/PersistentStore.hpp"
 
 #include <algorithm>
 #include <cstdint>

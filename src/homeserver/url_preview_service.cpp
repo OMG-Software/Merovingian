@@ -12,7 +12,6 @@
 #include "merovingian/homeserver/remote_media_fetch_scope.hpp"
 #include "merovingian/homeserver/request_lock.hpp"
 #include "merovingian/http/outbound_client.hpp"
-#include "merovingian/media/repository.hpp"
 #include "merovingian/media/url_preview.hpp"
 #include "merovingian/observability/logger.hpp"
 

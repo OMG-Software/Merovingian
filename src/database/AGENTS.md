@@ -6,7 +6,7 @@ Manages schema migrations and provides a dual-backend (SQLite / PostgreSQL) pers
 
 | File | Responsibility |
 |---|---|
-| `persistent_store.cpp` | Abstract store interface — all other modules use this, never the backend directly |
+| `PersistentStore.cpp` | Abstract store interface — all other modules use this, never the backend directly |
 | `sqlite_store.cpp` | SQLite backend — used for development and single-node deployments |
 | `postgresql_store.cpp` | PostgreSQL backend — used for production |
 | `migration.cpp` | Runs numbered SQL migrations in order; idempotent on re-run |
@@ -87,7 +87,7 @@ change to what a reload rewrites goes in both the snapshot and the swap, and the
 `PersistentStore::state` has two position indexes (`state_position_index`, `state_room_index`) behind
 `find_current_state_event_id` and `for_each_room_state_row`. They are trusted only while `state_indexed_rows ==
 state.size()` and the row a position names still matches. Every code path that appends to or erases from `state`
-calls `note_state_row_appended` or `rebuild_state_index` (the two writers in `persistent_store.cpp`, `reload_room`,
+calls `note_state_row_appended` or `rebuild_state_index` (the two writers in `PersistentStore.cpp`, `reload_room`,
 and both hydration paths); a new one must too. Do not scan `state` for one key or one room in a handler.
 
 ## Per-user and per-ID indexes (ADR-0440, ADR-0441)

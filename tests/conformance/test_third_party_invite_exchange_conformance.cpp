@@ -17,7 +17,8 @@
 // +-------------------------------------------------------------------------+
 
 #include "../support/third_party_invite_fixture.hpp"
-#include "merovingian/homeserver/client_server.hpp"
+#include "merovingian/homeserver/ClientServerRuntime.hpp"
+#include "merovingian/homeserver/ClientServerStartResult.hpp"
 #include "merovingian/homeserver/room_service.hpp"
 
 #include <catch2/catch_test_macros.hpp>

@@ -14,8 +14,15 @@
 #include "../support/master_key.hpp"
 #include "../support/registration_token.hpp"
 #include "merovingian/appservice/registration.hpp"
-#include "merovingian/config/config.hpp"
-#include "merovingian/homeserver/runtime.hpp"
+#include "merovingian/config/ClientRateLimitsConfig.hpp"
+#include "merovingian/config/Config.hpp"
+#include "merovingian/config/ListenersConfig.hpp"
+#include "merovingian/config/LogModulesConfig.hpp"
+#include "merovingian/config/SecurityConfig.hpp"
+#include "merovingian/config/ServerConfig.hpp"
+#include "merovingian/homeserver/HomeserverRuntime.hpp"
+#include "merovingian/homeserver/LocalUser.hpp"
+#include "merovingian/homeserver/RuntimeStartResult.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 

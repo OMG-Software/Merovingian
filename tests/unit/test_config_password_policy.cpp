@@ -4,7 +4,8 @@
 // security.password_policy (ADR-0236): the password rule is configurable, and
 // strict unless the operator says otherwise.
 
-#include "merovingian/config/config.hpp"
+#include "merovingian/config/Config.hpp"
+#include "merovingian/config/ConfigValidationFinding.hpp"
 #include "merovingian/config/config_parser.hpp"
 #include "merovingian/config/reload_plan.hpp"
 #include "merovingian/config/reload_policy.hpp"

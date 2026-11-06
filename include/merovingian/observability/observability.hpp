@@ -2,17 +2,13 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
-// PHASE-B: forwarding includes, removed when consumers include the new headers directly.
 #include "merovingian/database/statement.hpp"
 #include "merovingian/observability/AdminControlSurface.hpp"
 #include "merovingian/observability/AdminRoute.hpp"
 #include "merovingian/observability/AdminRouteMatch.hpp"
 #include "merovingian/observability/AuditLogEvent.hpp"
 #include "merovingian/observability/CorrelationContext.hpp"
-#include "merovingian/observability/CorrelationScope.hpp"
-#include "merovingian/observability/HealthCheckComponent.hpp"
 #include "merovingian/observability/HealthCheckSnapshot.hpp"
-#include "merovingian/observability/MetricLabel.hpp"
 #include "merovingian/observability/MetricSample.hpp"
 #include "merovingian/observability/ObservabilitySnapshot.hpp"
 #include "merovingian/observability/StructuredLogEvent.hpp"

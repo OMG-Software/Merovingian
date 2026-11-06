@@ -5,7 +5,9 @@
 // list, and `find_local_room` answers "which room" from a position index that is verified, never trusted. Both must
 // give the answer a scan would, whatever edited the data before the lookup.
 
-#include "merovingian/homeserver/runtime.hpp"
+#include "merovingian/homeserver/HomeserverRuntime.hpp"
+#include "merovingian/homeserver/LocalDatabase.hpp"
+#include "merovingian/homeserver/LocalRoom.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 

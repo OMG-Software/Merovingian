@@ -4,8 +4,8 @@
 // M_TOO_LARGE and never evict; the caps are operator-configurable.
 
 #include "../support/e2ee_caps_support.hpp"
-#include "merovingian/database/persistent_store.hpp"
-#include "merovingian/homeserver/client_server.hpp"
+#include "merovingian/homeserver/ClientServerRuntime.hpp"
+#include "merovingian/homeserver/ClientServerStartResult.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 

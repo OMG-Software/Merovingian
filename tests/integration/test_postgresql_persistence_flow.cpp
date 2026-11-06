@@ -3,9 +3,28 @@
 #include "../support/master_key.hpp"
 #include "../support/remote_room_fixture.hpp"
 #include "../support/temp_directory.hpp"
+#include "merovingian/homeserver/RuntimeStartResult.hpp"
 #include "scratch_postgresql_database.hpp"
 
 #include <catch2/catch_test_macros.hpp>
+#include <fcntl.h>
+#include <merovingian/canonicaljson/parser.hpp>
+#include <merovingian/canonicaljson/serializer.hpp>
+#include <merovingian/config/Config.hpp>
+#include <merovingian/core/file_descriptor.hpp>
+#include <merovingian/database/PersistentStore.hpp>
+#include <merovingian/database/migration.hpp>
+#include <merovingian/database/postgresql_store.hpp>
+#include <merovingian/database/schema.hpp>
+#include <merovingian/events/event_id.hpp>
+#include <merovingian/events/event_signer.hpp>
+#include <merovingian/federation/remote_key_cache.hpp>
+#include <merovingian/homeserver/HomeserverRuntime.hpp>
+#include <merovingian/homeserver/local_http_router.hpp>
+#include <merovingian/homeserver/room_service.hpp>
+#include <merovingian/homeserver/worker_pool.hpp>
+#include <sys/stat.h>
+#include <unistd.h>
 
 #include <algorithm>
 #include <cerrno>
@@ -20,25 +39,6 @@
 #include <string_view>
 #include <utility>
 #include <vector>
-
-#include <fcntl.h>
-#include <merovingian/canonicaljson/parser.hpp>
-#include <merovingian/canonicaljson/serializer.hpp>
-#include <merovingian/config/config.hpp>
-#include <merovingian/core/file_descriptor.hpp>
-#include <merovingian/database/migration.hpp>
-#include <merovingian/database/persistent_store.hpp>
-#include <merovingian/database/postgresql_store.hpp>
-#include <merovingian/database/schema.hpp>
-#include <merovingian/events/event_id.hpp>
-#include <merovingian/events/event_signer.hpp>
-#include <merovingian/federation/remote_key_cache.hpp>
-#include <merovingian/homeserver/local_http_router.hpp>
-#include <merovingian/homeserver/room_service.hpp>
-#include <merovingian/homeserver/runtime.hpp>
-#include <merovingian/homeserver/worker_pool.hpp>
-#include <sys/stat.h>
-#include <unistd.h>
 
 namespace
 {

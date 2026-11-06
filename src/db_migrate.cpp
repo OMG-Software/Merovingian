@@ -2,9 +2,13 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include "merovingian/bootstrap/exit_code.hpp"
-#include "merovingian/config/config.hpp"
+#include "merovingian/config/Config.hpp"
+#include "merovingian/config/DatabaseConfig.hpp"
+#include "merovingian/config/DatabaseRole.hpp"
 #include "merovingian/database/migration_files.hpp"
 #include "merovingian/platform/signal_hardening.hpp"
+
+#include <sys/stat.h>
 
 #include <cstdint>
 #include <iostream>
@@ -15,8 +19,6 @@
 #include <tuple>
 #include <utility>
 #include <vector>
-
-#include <sys/stat.h>
 
 namespace
 {

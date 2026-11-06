@@ -12,7 +12,7 @@
 // server keeps serving while that call is still in flight.
 //
 // The remaining scenarios cover a second instance of the same bug class:
-// resolve_policy_server_hook() (runtime.cpp) performs a blocking round trip
+// resolve_policy_server_hook() (HomeserverRuntime.cpp) performs a blocking round trip
 // to `trust_safety.policy_server_url`. handle_federation_http_request was
 // fixed to call it after releasing runtime.mutex (#415), but
 // register_local_user, create_room, and the media download/thumbnail policy
@@ -29,16 +29,26 @@
 #include "../support/master_key.hpp"
 #include "../support/registration_token.hpp"
 #include "../support/tls_mock_server.hpp"
-#include "merovingian/config/config.hpp"
-#include "merovingian/homeserver/client_server.hpp"
-#include "merovingian/homeserver/runtime.hpp"
+#include "merovingian/config/ClientRateLimitsConfig.hpp"
+#include "merovingian/config/Config.hpp"
+#include "merovingian/config/ListenersConfig.hpp"
+#include "merovingian/config/LogModulesConfig.hpp"
+#include "merovingian/config/SecurityConfig.hpp"
+#include "merovingian/config/ServerConfig.hpp"
+#include "merovingian/homeserver/ClientServerClock.hpp"
+#include "merovingian/homeserver/ClientServerRuntime.hpp"
+#include "merovingian/homeserver/ClientServerStartResult.hpp"
+#include "merovingian/homeserver/KeyServerCache.hpp"
+#include "merovingian/homeserver/TestOnlyForcedOutboundResolution.hpp"
 #include "merovingian/homeserver/tls.hpp"
 #include "merovingian/http/request.hpp"
 #include "merovingian/identity/identity_client.hpp"
 #include "merovingian/net/tcp_acceptor.hpp"
-#include "merovingian/trust_safety/policy_engine.hpp"
+#include "merovingian/trust_safety/PolicyServerHook.hpp"
+#include "merovingian/trust_safety/policy_enums.hpp"
 
 #include <catch2/catch_test_macros.hpp>
+#include <sodium.h>
 
 #include <atomic>
 #include <chrono>
@@ -47,8 +57,6 @@
 #include <string>
 #include <string_view>
 #include <thread>
-
-#include <sodium.h>
 
 using namespace merovingian::tests;
 using namespace std::chrono_literals;
@@ -285,7 +293,7 @@ SCENARIO("A stalled trust-safety policy-server hook during registration leaves t
                 // the very thing blocked in flight), so the concurrent probe
                 // must be an endpoint that does not require an access token.
                 // GET /_matrix/client/versions is the unauthenticated
-                // discovery endpoint (client_server.cpp answers it before
+                // discovery endpoint (ClientServerRuntime.cpp answers it before
                 // any auth check).
                 auto const start = std::chrono::steady_clock::now();
                 auto const versions = merovingian::homeserver::handle_client_server_request(

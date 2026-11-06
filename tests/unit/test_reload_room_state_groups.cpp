@@ -12,7 +12,8 @@
 // found") and GET /backfill/{roomId}; docs/matrix-v1.19-spec/server-server-api.md.
 
 #include "../support/temp_directory.hpp"
-#include "merovingian/database/persistent_store.hpp"
+#include "merovingian/database/PersistentStore.hpp"
+#include "merovingian/database/PersistentStoreOpenResult.hpp"
 #include "merovingian/federation/event_query.hpp"
 
 #include <catch2/catch_test_macros.hpp>

@@ -214,7 +214,7 @@ The practical consequences:
 
 - Federation audit events are lost on process restart.
 - `GET /_merovingian/admin/audit` reads only `runtime.database.persistent_store.audit_log`
-  (see `admin_audit_summary` in `src/homeserver/runtime.cpp`), so it never
+  (see `admin_audit_summary` in `src/homeserver/HomeserverRuntime.cpp`), so it never
   returns `federation.*` events regardless of `?category=` or `?event_type=`.
 - The "audit category" column for `federation.*` rows still follows the same
   `observability::AuditCategory` enum (always `policy` — `audit_federation`
@@ -261,9 +261,9 @@ Grepping for `append_local_audit` call sites finds these event-name families:
   `auth.account_deactivated`, `auth.password_changed`,
   `auth.openid.request_token`, `auth.sso.login_token.issued`,
   `auth.sso.login_token.redeemed`.
-- `device.*` (`src/homeserver/auth_service.cpp`, `src/homeserver/client_server.cpp`):
+- `device.*` (`src/homeserver/auth_service.cpp`, `src/homeserver/ClientServerRuntime.cpp`):
   `device.deleted`, `device.updated`.
-- `account.locked` / `account.suspended` (`src/homeserver/client_server.cpp`,
+- `account.locked` / `account.suspended` (`src/homeserver/ClientServerRuntime.cpp`,
   admin category) — see "Account-moderation audit rows" above.
 - `room.*` (`src/homeserver/room_service.cpp`, admin category): `room.created`,
   `room.joined`, `room.joined_remote`, `room.left`, `room.left_remote`,
@@ -275,11 +275,11 @@ Grepping for `append_local_audit` call sites finds these event-name families:
   `media.remote_fetch_accepted`, `media.remote_fetch_rejected`, `media.create_reserved`
   (`POST /_matrix/media/v1/create`, ADR-0212), `media.preview_image_stored` and
   `media.preview_image_quarantined` (a URL preview's `og:image`, ADR-0213).
-- `trust_safety.policy_rule.*` (`src/homeserver/client_server.cpp`, policy
+- `trust_safety.policy_rule.*` (`src/homeserver/ClientServerRuntime.cpp`, policy
   category): `trust_safety.policy_rule.upsert`, `trust_safety.policy_rule.delete`,
   plus the dynamic event types trust-and-safety policy matches emit via
   `append_policy_audit`.
-- `runtime.started` (`src/homeserver/runtime.cpp`, admin category).
+- `runtime.started` (`src/homeserver/HomeserverRuntime.cpp`, admin category).
 - `appservice.outbox.full` (`src/homeserver/appservice_delivery.cpp`, policy category, written through
   `log_diagnostic_audit` at warning level): an event was not queued for an appservice because its queue
   is at `appservice.max_queued_events`. Actor and target are the appservice `id`; the reason carries the

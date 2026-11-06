@@ -2,8 +2,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
+#include "merovingian/database/PersistentStore.hpp"
 #include "merovingian/database/event_table.hpp"
-#include "merovingian/database/persistent_store.hpp"
 #include "merovingian/homeserver/client_outbound_proxy.hpp"
 #include "merovingian/homeserver/runtime_mutex.hpp"
 

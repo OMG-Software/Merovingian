@@ -13,9 +13,9 @@
 #include "merovingian/federation/security.hpp"
 #include "merovingian/federation/third_party_invite.hpp"
 #include "merovingian/federation/transactions.hpp"
-#include "merovingian/media/repository.hpp"
+#include "merovingian/media/LocalMediaDownloadResult.hpp"
 #include "merovingian/media/thumbnailer.hpp"
-#include "merovingian/observability/observability.hpp"
+#include "merovingian/observability/AuditLogEvent.hpp"
 #include "merovingian/rooms/room_version_policy.hpp"
 
 #include <chrono>

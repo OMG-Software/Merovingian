@@ -2,17 +2,23 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "merovingian/homeserver/appservice_delivery.hpp"
 
-#include "merovingian/appservice/appservice_client.hpp"
+#include "merovingian/appservice/AppserviceCallResult.hpp"
+#include "merovingian/appservice/AppserviceClient.hpp"
+#include "merovingian/appservice/AppservicePingResult.hpp"
+#include "merovingian/appservice/AppserviceTransaction.hpp"
+#include "merovingian/appservice/AppserviceTransactionEvent.hpp"
 #include "merovingian/appservice/registration.hpp"
 #include "merovingian/canonicaljson/parser.hpp"
 #include "merovingian/canonicaljson/serializer.hpp"
 #include "merovingian/canonicaljson/value.hpp"
-#include "merovingian/database/persistent_store.hpp"
+#include "merovingian/database/ExaminedRows.hpp"
+#include "merovingian/database/PersistentStore.hpp"
 #include "merovingian/homeserver/appservice_ephemeral.hpp"
 #include "merovingian/homeserver/local_services.hpp"
 #include "merovingian/homeserver/request_lock.hpp"
 #include "merovingian/http/outbound_client.hpp"
-#include "merovingian/observability/observability.hpp"
+#include "merovingian/observability/StructuredLogField.hpp"
+#include "merovingian/observability/observability_enums.hpp"
 
 #include <algorithm>
 #include <chrono>

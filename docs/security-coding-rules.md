@@ -904,7 +904,7 @@ quickly finding everything a given `AGENTS.md` file contributed.
 
 - **One documented exception: Application Service transaction delivery is not
   SSRF-filtered.** `appservice::AppserviceClient` (`src/appservice/
-  appservice_client.cpp`) resolves an appservice's `url` directly and sets
+  AppserviceClient.cpp`) resolves an appservice's `url` directly and sets
   `OutboundRequest::allow_cleartext_http = true`, bypassing
   `CachedServerDiscovery`'s private/loopback rejection and permitting plain
   `http://`. Do not generalize this pattern to any other outbound client.
@@ -975,7 +975,7 @@ quickly finding everything a given `AGENTS.md` file contributed.
 
 - **Never call `handle_local_http_request()` with a real, unwrapped client body.** The
   internal pipe-delimited format (`declared_mime|sniffed_mime|scanner_clean|bytes` for
-  media) must be built by `client_server.cpp` — never constructed anywhere else — and the
+  media) must be built by `ClientServerRuntime.cpp` — never constructed anywhere else — and the
   4th field's `|`-boundary logic depends on the first three fields never containing an
   unescaped `|`.
   Why: this internal format carries fields (`sniffed_mime`, `scanner_clean`) that downstream

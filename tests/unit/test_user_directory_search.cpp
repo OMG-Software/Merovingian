@@ -8,7 +8,9 @@
 // URL:  ../../docs/matrix-v1.19-spec/client-server-api.md#user-directory
 
 #include "merovingian/core/folded_substring.hpp"
-#include "merovingian/database/persistent_store.hpp"
+#include "merovingian/database/PersistentProfile.hpp"
+#include "merovingian/database/PersistentStore.hpp"
+#include "merovingian/database/PersistentUser.hpp"
 #include "merovingian/homeserver/user_directory_search.hpp"
 
 #include <catch2/catch_test_macros.hpp>

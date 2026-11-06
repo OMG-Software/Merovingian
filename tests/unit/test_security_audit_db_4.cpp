@@ -5,7 +5,12 @@
 // current state at startup. Matrix v1.19 CS API "m.room.member": the room's
 // current m.room.member event is the user's membership.
 
-#include "merovingian/database/persistent_store.hpp"
+#include "merovingian/database/MembershipProjection.hpp"
+#include "merovingian/database/PersistentInvite.hpp"
+#include "merovingian/database/PersistentMembership.hpp"
+#include "merovingian/database/PersistentStateEvent.hpp"
+#include "merovingian/database/PersistentStore.hpp"
+#include "merovingian/database/PersistentStoreOpenResult.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 

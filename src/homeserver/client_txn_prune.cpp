@@ -3,8 +3,8 @@
 
 #include "merovingian/homeserver/client_txn_prune.hpp"
 
-#include "merovingian/database/persistent_store.hpp"
-#include "merovingian/homeserver/runtime.hpp"
+#include "merovingian/database/PersistentStore.hpp"
+#include "merovingian/homeserver/HomeserverRuntime.hpp"
 #include "merovingian/observability/logger.hpp"
 
 #include <chrono>

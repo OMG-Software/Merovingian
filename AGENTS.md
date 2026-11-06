@@ -213,8 +213,8 @@ same name: `src/database/sqlite_store.cpp` and `src/federation_worker/main.cpp`.
 - `src/db_migrate.cpp` — `merovingian-db-migrate` entry point: offline schema migration
 - `src/federation_worker/main.cpp` — `merovingian-fed-worker` entry point: the sandboxed federation worker process
 - `src/media/thumbnail_worker_main.cpp` — `merovingian-thumbnail-worker` entry point: the sandboxed image decoder (built only when libpng and libturbojpeg are found)
-- `include/merovingian/homeserver/runtime.hpp` — `HomeserverRuntime`, the runtime state manager
-- `include/merovingian/homeserver/client_server.hpp` — Client-Server API dispatch
+- `include/merovingian/homeserver/HomeserverRuntime.hpp` — `HomeserverRuntime`, the runtime state manager
+- `include/merovingian/homeserver/ClientServerRuntime.hpp` — Client-Server API dispatch
 
 ### Key docs
 `architecture.md` · `adr/index.md` · `coding-rules.md` · `security-coding-rules.md` · `testing-standards.md` · `versioning.md` · `threat-model.md` · `security-review-checklist.md` · `crypto-boundary.md` · `database-persistence.md` · `user-manual.md` · `auth-identity.md` · `event-engine.md` · `http-transport.md` · `media-repository.md` · `dev-environment.md` · `platform-support.md` · `build-warning-policy.md` · `hardening.md` · `release-process.md` · `canonical-json.md` · `trust-safety.md` · `observability-audit.md` · `debug-logging.md` · `log-filtering.md` · `dependencies/index.md` · `matrix-v1.19-client-server-api.md` · `todos/production-milestone.md` · `todos/capability-gaps.md`
