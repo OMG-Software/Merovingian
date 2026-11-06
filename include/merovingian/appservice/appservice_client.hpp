@@ -2,6 +2,20 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
+// PHASE-B: forwarding includes, removed when consumers include the new headers directly.
+#include "merovingian/appservice/AppserviceCallResult.hpp"
+#include "merovingian/appservice/AppservicePingResult.hpp"
+#include "merovingian/appservice/AppserviceQueryResult.hpp"
+#include "merovingian/appservice/AppserviceThirdPartyLocationsResult.hpp"
+#include "merovingian/appservice/AppserviceThirdPartyProtocolResult.hpp"
+#include "merovingian/appservice/AppserviceThirdPartyUsersResult.hpp"
+#include "merovingian/appservice/AppserviceTransaction.hpp"
+#include "merovingian/appservice/AppserviceTransactionEvent.hpp"
+#include "merovingian/appservice/ThirdPartyFieldType.hpp"
+#include "merovingian/appservice/ThirdPartyLocation.hpp"
+#include "merovingian/appservice/ThirdPartyProtocol.hpp"
+#include "merovingian/appservice/ThirdPartyProtocolInstance.hpp"
+#include "merovingian/appservice/ThirdPartyUser.hpp"
 #include "merovingian/appservice/registration.hpp"
 #include "merovingian/canonicaljson/value.hpp"
 #include "merovingian/config/config.hpp"
@@ -20,78 +34,8 @@
 namespace merovingian::appservice
 {
 
-// One event in a `PUT /_matrix/app/v1/transactions/{txnId}` request body
-// (Matrix v1.19 Application Service API §"Pushing events"). Mirrors the
-// spec's `ClientEvent` shape. `content_json` is the pre-serialized `content`
-// object (never re-parsed by the builder — the caller already has it from
-// the persisted event).
-struct AppserviceTransactionEvent final
-{
-    std::string content_json{}; // pre-serialized JSON object; empty means "{}"
-    std::string event_id{};
-    std::uint64_t origin_server_ts{0U};
-    std::string room_id{};
-    std::string sender{};
-    std::optional<std::string> state_key{}; // present only for state events
-    std::string type{};
-};
-
-// One `PUT /_matrix/app/v1/transactions/{txnId}` call's worth of events.
-// `ephemeral_json` is the request body's `ephemeral` array (m.presence,
-// m.typing and m.receipt, spec v1.13): each element is one already-serialized
-// event object, built by homeserver/appservice_ephemeral.hpp, and is parsed
-// back only to be embedded. The property is omitted when the list is empty.
-struct AppserviceTransaction final
-{
-    std::string txn_id{};
-    std::vector<AppserviceTransactionEvent> events{};
-    std::vector<std::string> ephemeral_json{};
-};
-
 // Pure builder: no network, no I/O. Unit-testable in isolation.
 [[nodiscard]] auto build_transaction_request_body(AppserviceTransaction const& transaction) -> std::string;
-
-// Outcome of one outbound call. `disabled` is set when the appservice's
-// registration has `url: null` ("no traffic is required" per spec) — the
-// caller made no network attempt at all.
-struct AppserviceCallResult final
-{
-    bool ok{false};
-    bool disabled{false};
-    std::uint16_t status{0U};
-    http::OutboundError error{http::OutboundError::none};
-    std::string error_detail{};
-};
-
-// Why a ping did not succeed, as the client-server ping endpoint reports it
-// (Application Service API, "Pinging"): 400 M_URL_NOT_SET, 502 M_CONNECTION_FAILED,
-// 502 M_BAD_STATUS and 504 M_CONNECTION_TIMEOUT.
-enum class AppservicePingFailure : std::uint8_t
-{
-    none,
-    url_not_set,
-    connection_failed,
-    connection_timeout,
-    bad_status,
-};
-
-// Outcome of `POST /_matrix/app/v1/ping`. `duration_ms` is how long the request took from this
-// homeserver's point of view. For `bad_status`, `status` is the appservice's HTTP status and
-// `body` its response body text, cut to max_ping_body_bytes; both are untrusted text.
-struct AppservicePingResult final
-{
-    AppservicePingFailure failure{AppservicePingFailure::none};
-    std::uint16_t status{0U};
-    std::string body{};
-    std::int64_t duration_ms{0};
-    http::OutboundError error{http::OutboundError::none};
-    std::string error_detail{};
-
-    [[nodiscard]] auto ok() const noexcept -> bool
-    {
-        return failure == AppservicePingFailure::none;
-    }
-};
 
 // The most bytes of an appservice's ping response body kept for the `body` of an M_BAD_STATUS error.
 inline constexpr auto max_ping_body_bytes = std::size_t{1024U};
@@ -99,120 +43,6 @@ inline constexpr auto max_ping_body_bytes = std::size_t{1024U};
 // Pure: the request body of `POST /_matrix/app/v1/ping`: `{"transaction_id":"..."}`, the ID "copied
 // directly" from the client call (an empty string included), or `{}` when the appservice sent none.
 [[nodiscard]] auto build_ping_request_body(std::optional<std::string_view> transaction_id) -> std::string;
-
-// Outcome of a `GET /_matrix/app/v1/users/{userId}` or
-// `GET /_matrix/app/v1/rooms/{roomAlias}` query. `exists` reflects the
-// spec's contract exactly: true only on HTTP 200 ("this user/alias exists");
-// false on 404 ("does not exist"); `ok` is false only for a transport
-// failure or an unexpected status (401/403/5xx), which the caller must NOT
-// treat as a negative existence answer.
-struct AppserviceQueryResult final
-{
-    bool ok{false};
-    bool disabled{false};
-    std::uint16_t status{0U};
-    bool exists{false};
-    http::OutboundError error{http::OutboundError::none};
-    std::string error_detail{};
-};
-
-// A `field_types` entry of a `GET /_matrix/app/v1/thirdparty/protocol/{protocol}`
-// response (Matrix v1.19 Application/Client-Server API "Third-party
-// networks"/"Third-party Lookups"). Both members are opaque, untrusted
-// strings supplied by the appservice — never interpreted, only bounded and
-// echoed back to the client.
-struct ThirdPartyFieldType final
-{
-    std::string placeholder{};
-    std::string regexp{};
-};
-
-// One entry of a Protocol response's `instances` array. `icon` and
-// `network_id` are the spec's optional/required fields respectively;
-// `instance_id` is NOT stored here — the spec requires the HOMESERVER to
-// mint it ("This field is added to the response ... by the homeserver"), so
-// it is assigned when the client-server response is built, not when this
-// type is parsed from the appservice's reply.
-struct ThirdPartyProtocolInstance final
-{
-    std::string desc{};
-    canonicaljson::Object fields{}; // preset search-field values; string members only (see .cpp)
-    std::string icon{};             // empty means absent
-    std::string network_id{};
-};
-
-// A `GET /_matrix/app/v1/thirdparty/protocol/{protocol}` response, bounded
-// and type-checked field-by-field before being trusted. See appservice_
-// client.cpp's parse_protocol_object for the exact bounds applied — an
-// appservice/bridge is not a trusted peer (src/appservice/AGENTS.md).
-struct ThirdPartyProtocol final
-{
-    std::vector<std::pair<std::string, ThirdPartyFieldType>> field_types{};
-    std::string icon{};
-    std::vector<ThirdPartyProtocolInstance> instances{};
-    std::vector<std::string> location_fields{};
-    std::vector<std::string> user_fields{};
-};
-
-// One entry of a `GET /_matrix/app/v1/thirdparty/location[/{protocol}]`
-// response array (spec `Location` object).
-struct ThirdPartyLocation final
-{
-    std::string alias{};
-    canonicaljson::Object fields{};
-    std::string protocol{};
-};
-
-// One entry of a `GET /_matrix/app/v1/thirdparty/user[/{protocol}]`
-// response array (spec `User` object).
-struct ThirdPartyUser final
-{
-    std::string userid{};
-    canonicaljson::Object fields{};
-    std::string protocol{};
-};
-
-// Outcome of `GET /_matrix/app/v1/thirdparty/protocol/{protocol}`. `found`
-// mirrors the query-result convention above: true only on a 200 whose body
-// parsed into a well-formed Protocol object; false on 404 ("no protocol was
-// found") — `ok` is false only for a transport failure, an unexpected
-// status, or a 200 whose body could not be parsed as a Protocol object
-// (a malformed/hostile appservice reply), none of which the caller may
-// treat as "not found".
-struct AppserviceThirdPartyProtocolResult final
-{
-    bool ok{false};
-    bool disabled{false};
-    std::uint16_t status{0U};
-    bool found{false};
-    ThirdPartyProtocol protocol{};
-    http::OutboundError error{http::OutboundError::none};
-    std::string error_detail{};
-};
-
-// Outcome of a `GET /_matrix/app/v1/thirdparty/location[/{protocol}]` call.
-struct AppserviceThirdPartyLocationsResult final
-{
-    bool ok{false};
-    bool disabled{false};
-    std::uint16_t status{0U};
-    bool found{false};
-    std::vector<ThirdPartyLocation> locations{};
-    http::OutboundError error{http::OutboundError::none};
-    std::string error_detail{};
-};
-
-// Outcome of a `GET /_matrix/app/v1/thirdparty/user[/{protocol}]` call.
-struct AppserviceThirdPartyUsersResult final
-{
-    bool ok{false};
-    bool disabled{false};
-    std::uint16_t status{0U};
-    bool found{false};
-    std::vector<ThirdPartyUser> users{};
-    http::OutboundError error{http::OutboundError::none};
-    std::string error_detail{};
-};
 
 // Pure, network-free parsers for the untrusted `GET /_matrix/app/v1/
 // thirdparty/*` JSON body the query_thirdparty_* methods below receive over
