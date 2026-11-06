@@ -1,5 +1,5 @@
 Name:           merovingian
-Version:        0.12.76
+Version:        0.12.78
 Release:        1%{?dist}
 Summary:        Secure Matrix Protocol homeserver
 
@@ -97,6 +97,9 @@ fi
 %{_sysconfdir}/merovingian/merovingian.conf.example
 
 %changelog
+* Fri Nov 06 2026 James Chapman <claude@ping.me.uk> - 0.12.78-1
+- Clear the high CodeQL alerts open on main
+
 * Wed Nov 04 2026 James Chapman <claude@ping.me.uk> - 0.12.76-1
 - Fix the medium findings of the November project analysis
 

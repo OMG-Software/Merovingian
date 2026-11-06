@@ -1,9 +1,9 @@
 #!/bin/sh
 # SPDX-License-Identifier: GPL-3.0-or-later
-# Build for merovingian 0.12.76.
+# Build for merovingian 0.12.78.
 set -e
 
-VERSION="0.12.76"
+VERSION="0.12.78"
 STAGING="staging-fbsd"
 
 # Clean any state (staged files, build dir) from cached FreeBSD VM runs.
@@ -45,10 +45,11 @@ echo "[debug] staged files under ${STAGING}/usr/local:"
 ls -lR "${STAGING}/usr/local" || true
 
 # 6. Patch manifest version into a metadata directory alongside (not inside) the
-#    staging root.
+#    staging root. Anchored to the top-level key: each dependency carries a
+#    version of its own on its line, which must stay its minimum.
 METADATA="${PWD}/${STAGING}.metadata"
 mkdir -p "${METADATA}"
-sed "s/version: \"[^\"]*\"/version: \"${VERSION}\"/" \
+sed "s/^version: \"[^\"]*\"/version: \"${VERSION}\"/" \
     packaging/freebsd/+MANIFEST > "${METADATA}/+MANIFEST"
 
 # 7. Generate the packing list from the staged tree. pkg-create(8) packages only

@@ -1,3 +1,19 @@
+## 0.12.78
+
+The high-severity CodeQL alerts open on `main` are cleared, so a large pull request no longer fails CodeQL on alerts it did not introduce.
+
+### Security
+
+- The TLS test certificates of three integration tests (`test_federation_outbound_flow`, `test_http_server_listener_flow`, `test_join_room_flow`) are written owner-only (0600, `O_NOFOLLOW`) instead of with `std::fopen`'s 0666 less the umask (CodeQL `cpp/world-writable-file-creation`). Each file kept its own copy of the certificate writer; all three now use the shared `tls_mock::write_test_tls_certificate`.
+
+### Fixed
+
+- The FreeBSD package's manifest keeps each dependency's minimum version. `build-freebsd-pkg.sh` set the package version with an unanchored `sed`, which also replaced the version on every dependency line (`openssl` 3.0.0, `libsodium` 1.0.18 and the rest all became the package's own version); it now changes only the top-level `version:` key.
+
+### Changed
+
+- `scripts/filter_codeql_sarif.py` drops every CodeQL result on the vendored `subprojects/` and the `build/` directory, code this project does not write (ADR-0527), and `cpp/path-injection` whose every source is a command-line argument, a path the operator chooses (ADR-0528). A path-injection result with any other source is kept. The `codeql.yml` step is renamed "Filter excluded results".
+
 ## 0.12.76
 
 The medium severity findings of the November project analysis.

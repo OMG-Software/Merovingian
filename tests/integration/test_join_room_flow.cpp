@@ -30,7 +30,7 @@
 #include "../support/json_test_support.hpp"
 #include "../support/master_key.hpp"
 #include "../support/registration_token.hpp"
-#include "../support/temp_directory.hpp"
+#include "../support/tls_mock_server.hpp"
 #include "merovingian/canonicaljson/parser.hpp"
 #include "merovingian/canonicaljson/serializer.hpp"
 #include "merovingian/canonicaljson/value.hpp"
@@ -54,198 +54,27 @@
 
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/generators/catch_generators.hpp>
-
-#include <algorithm>
-#include <array>
-#include <charconv>
-#include <cstdio>
-#include <filesystem>
-#include <fstream>
-#include <functional>
-#include <memory>
-#include <mutex>
-#include <optional>
-#include <span>
-#include <sstream>
-#include <stdexcept>
-#include <string>
-#include <system_error>
-#include <thread>
-#include <tuple>
-#include <utility>
-#include <vector>
-
-#include <openssl/evp.h>
-#include <openssl/pem.h>
-#include <openssl/rsa.h>
-#include <openssl/x509.h>
 #include <poll.h>
 #include <sodium.h>
 #include <sys/socket.h>
 #include <unistd.h>
 
+#include <algorithm>
+#include <array>
+#include <charconv>
+#include <functional>
+#include <mutex>
+#include <optional>
+#include <span>
+#include <stdexcept>
+#include <string>
+#include <thread>
+#include <tuple>
+#include <utility>
+#include <vector>
+
 namespace
 {
-
-// --- TLS test certificate + resident server (adapted from
-// tests/integration/test_federation_outbound_flow.cpp) --------------------
-
-struct TlsTestCertificate final
-{
-    std::filesystem::path directory{};
-    std::string certificate_file{};
-    std::string private_key_file{};
-    std::string certificate_pem{};
-
-    TlsTestCertificate() = default;
-
-    ~TlsTestCertificate()
-    {
-        auto ignored = std::error_code{};
-        std::filesystem::remove_all(directory, ignored);
-    }
-
-    TlsTestCertificate(TlsTestCertificate const&) = delete;
-    auto operator=(TlsTestCertificate const&) -> TlsTestCertificate& = delete;
-
-    TlsTestCertificate(TlsTestCertificate&& other) noexcept
-        : directory{std::move(other.directory)}
-        , certificate_file{std::move(other.certificate_file)}
-        , private_key_file{std::move(other.private_key_file)}
-        , certificate_pem{std::move(other.certificate_pem)}
-    {
-        other.directory.clear();
-    }
-
-    auto operator=(TlsTestCertificate&& other) noexcept -> TlsTestCertificate&
-    {
-        if (this != &other)
-        {
-            auto ignored = std::error_code{};
-            std::filesystem::remove_all(directory, ignored);
-            directory = std::move(other.directory);
-            certificate_file = std::move(other.certificate_file);
-            private_key_file = std::move(other.private_key_file);
-            certificate_pem = std::move(other.certificate_pem);
-            other.directory.clear();
-        }
-        return *this;
-    }
-};
-
-struct EvpPkeyDeleter final
-{
-    auto operator()(EVP_PKEY* key) const noexcept -> void
-    {
-        EVP_PKEY_free(key);
-    }
-};
-
-struct X509Deleter final
-{
-    auto operator()(X509* certificate) const noexcept -> void
-    {
-        X509_free(certificate);
-    }
-};
-
-struct X509NameDeleter final
-{
-    auto operator()(X509_NAME* name) const noexcept -> void
-    {
-        X509_NAME_free(name);
-    }
-};
-
-struct FileDeleter final
-{
-    auto operator()(std::FILE* file) const noexcept -> void
-    {
-        if (file != nullptr)
-        {
-            std::ignore = std::fclose(file);
-        }
-    }
-};
-
-[[nodiscard]] auto read_file_into_string(std::filesystem::path const& path) -> std::string
-{
-    auto stream = std::ifstream{path, std::ios::binary};
-    auto buffer = std::ostringstream{};
-    buffer << stream.rdbuf();
-    return buffer.str();
-}
-
-// Portable across OpenSSL 3 and LibreSSL (OpenBSD) — mirrors
-// test_federation_outbound_flow.cpp's generate_rsa_key exactly.
-[[nodiscard]] auto generate_rsa_key(int bits) -> EVP_PKEY*
-{
-    auto* const context = EVP_PKEY_CTX_new_id(EVP_PKEY_RSA, nullptr);
-    if (context == nullptr)
-    {
-        return nullptr;
-    }
-    EVP_PKEY* key = nullptr;
-    if (EVP_PKEY_keygen_init(context) > 0 && EVP_PKEY_CTX_set_rsa_keygen_bits(context, bits) > 0)
-    {
-        EVP_PKEY_keygen(context, &key);
-    }
-    EVP_PKEY_CTX_free(context);
-    return key;
-}
-
-[[nodiscard]] auto write_test_tls_certificate() -> TlsTestCertificate
-{
-    static auto counter = std::uint32_t{0U};
-    auto const directory =
-        merovingian::tests::temporary_directory() /
-        ("merovingian-join-room-tls-" + std::to_string(::getpid()) + "-" + std::to_string(++counter));
-    std::filesystem::create_directories(directory);
-
-    auto key = std::unique_ptr<EVP_PKEY, EvpPkeyDeleter>{generate_rsa_key(2048)};
-    REQUIRE(key != nullptr);
-
-    auto certificate = std::unique_ptr<X509, X509Deleter>{X509_new()};
-    REQUIRE(certificate != nullptr);
-    REQUIRE(ASN1_INTEGER_set(X509_get_serialNumber(certificate.get()), 1L) == 1);
-    // Backdated so a small backward clock step (seen under WSL) cannot make the fresh
-    // certificate "not yet valid" between the handshakes of one scenario.
-    REQUIRE(X509_gmtime_adj(X509_getm_notBefore(certificate.get()), -3600L) != nullptr);
-    REQUIRE(X509_gmtime_adj(X509_getm_notAfter(certificate.get()), 3600L) != nullptr);
-    REQUIRE(X509_set_pubkey(certificate.get(), key.get()) == 1);
-
-    // Built apart from the certificate: OpenSSL 4 returns its subject name as const, and OpenSSL 3 takes a
-    // const name here too, so this one form builds on both.
-    auto const subject = std::unique_ptr<X509_NAME, X509NameDeleter>{X509_NAME_new()};
-    REQUIRE(subject != nullptr);
-    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast)
-    auto const* common_name = reinterpret_cast<unsigned char const*>("localhost");
-    REQUIRE(X509_NAME_add_entry_by_txt(subject.get(), "CN", MBSTRING_ASC, common_name, -1, -1, 0) == 1);
-    REQUIRE(X509_set_subject_name(certificate.get(), subject.get()) == 1);
-    REQUIRE(X509_set_issuer_name(certificate.get(), subject.get()) == 1);
-    REQUIRE(X509_sign(certificate.get(), key.get(), EVP_sha256()) > 0);
-
-    auto output = TlsTestCertificate{};
-    output.directory = directory;
-    output.certificate_file = (directory / "server.pem").string();
-    output.private_key_file = (directory / "server.key").string();
-
-    auto cert_file = std::unique_ptr<std::FILE, FileDeleter>{std::fopen(output.certificate_file.c_str(), "wb")};
-    REQUIRE(cert_file != nullptr);
-    REQUIRE(PEM_write_X509(cert_file.get(), certificate.get()) == 1);
-
-    auto key_file = std::unique_ptr<std::FILE, FileDeleter>{std::fopen(output.private_key_file.c_str(), "wb")};
-    REQUIRE(key_file != nullptr);
-    REQUIRE(PEM_write_PrivateKey(key_file.get(), key.get(), nullptr, nullptr, 0, nullptr, nullptr) == 1);
-
-    cert_file.reset();
-    key_file.reset();
-    // ISO-7: the server reads its TLS key only from an owner-read-only file.
-    std::filesystem::permissions(output.private_key_file, std::filesystem::perms::owner_read);
-
-    output.certificate_pem = read_file_into_string(output.certificate_file);
-    return output;
-}
 
 [[nodiscard]] auto accept_loopback(merovingian::net::TcpAcceptor& acceptor, int timeout_ms) -> int
 {
@@ -663,7 +492,7 @@ SCENARIO("join_room completes a live federated join with every member of the ret
             REQUIRE(merovingian::database::store_profile(runtime.database.persistent_store, std::move(profile)));
         }
 
-        auto const certificate = write_test_tls_certificate();
+        auto const certificate = merovingian::tests::tls_mock::write_test_tls_certificate();
         auto tls_context = merovingian::homeserver::make_tls_server_context(certificate.certificate_file,
                                                                             certificate.private_key_file);
         REQUIRE(tls_context.ok());
@@ -987,7 +816,7 @@ SCENARIO("join_room answers 403 when the resident server refuses the join",
         REQUIRE(login.ok);
         auto const alice = reg.value;
 
-        auto const certificate = write_test_tls_certificate();
+        auto const certificate = merovingian::tests::tls_mock::write_test_tls_certificate();
         auto tls_context = merovingian::homeserver::make_tls_server_context(certificate.certificate_file,
                                                                             certificate.private_key_file);
         REQUIRE(tls_context.ok());
@@ -1061,7 +890,7 @@ SCENARIO("A knock on a room on another server goes through make_knock and send_k
         REQUIRE(login.ok);
         auto const alice = reg.value;
 
-        auto const certificate = write_test_tls_certificate();
+        auto const certificate = merovingian::tests::tls_mock::write_test_tls_certificate();
         auto tls_context = merovingian::homeserver::make_tls_server_context(certificate.certificate_file,
                                                                             certificate.private_key_file);
         REQUIRE(tls_context.ok());
@@ -1331,7 +1160,7 @@ SCENARIO("An initial sync whose timeline starts at a federated join shows the in
         REQUIRE(login.ok);
         auto const alice = reg.value;
 
-        auto const certificate = write_test_tls_certificate();
+        auto const certificate = merovingian::tests::tls_mock::write_test_tls_certificate();
         auto tls_context = merovingian::homeserver::make_tls_server_context(certificate.certificate_file,
                                                                             certificate.private_key_file);
         REQUIRE(tls_context.ok());
@@ -1491,7 +1320,7 @@ SCENARIO("A federated join seeds the join event's after-state group and forward 
         REQUIRE(login.ok);
         auto const alice = reg.value;
 
-        auto const certificate = write_test_tls_certificate();
+        auto const certificate = merovingian::tests::tls_mock::write_test_tls_certificate();
         auto tls_context = merovingian::homeserver::make_tls_server_context(certificate.certificate_file,
                                                                             certificate.private_key_file);
         REQUIRE(tls_context.ok());
@@ -1853,7 +1682,7 @@ SCENARIO("Outbound joins defer concurrent PDUs until committed and discard them 
         REQUIRE(login.ok);
         auto const alice = reg.value;
 
-        auto const certificate = write_test_tls_certificate();
+        auto const certificate = merovingian::tests::tls_mock::write_test_tls_certificate();
         auto tls_context = merovingian::homeserver::make_tls_server_context(certificate.certificate_file,
                                                                             certificate.private_key_file);
         REQUIRE(tls_context.ok());
@@ -2226,7 +2055,7 @@ SCENARIO("A send_join response cannot inject state into a local room",
             return std::get<0>(row) == "m.room.power_levels";
         }));
 
-        auto const certificate = write_test_tls_certificate();
+        auto const certificate = merovingian::tests::tls_mock::write_test_tls_certificate();
         auto tls_context = merovingian::homeserver::make_tls_server_context(certificate.certificate_file,
                                                                             certificate.private_key_file);
         REQUIRE(tls_context.ok());
@@ -2371,7 +2200,7 @@ SCENARIO("A send_join response's own-domain events are accepted when signed with
         auto const alice = reg.value;
         auto const carol = std::string{"@carol:"} + local_server;
 
-        auto const certificate = write_test_tls_certificate();
+        auto const certificate = merovingian::tests::tls_mock::write_test_tls_certificate();
         auto tls_context = merovingian::homeserver::make_tls_server_context(certificate.certificate_file,
                                                                             certificate.private_key_file);
         REQUIRE(tls_context.ok());
@@ -2510,7 +2339,7 @@ SCENARIO("A joining server applies the receipt checks to a resident's send_join 
         REQUIRE(login.ok);
         auto const alice = reg.value;
 
-        auto const certificate = write_test_tls_certificate();
+        auto const certificate = merovingian::tests::tls_mock::write_test_tls_certificate();
         auto tls_context = merovingian::homeserver::make_tls_server_context(certificate.certificate_file,
                                                                             certificate.private_key_file);
         REQUIRE(tls_context.ok());
@@ -2705,7 +2534,7 @@ SCENARIO("A PDU parked during a federated join is judged under the room version 
         REQUIRE(login.ok);
         auto const alice = reg.value;
 
-        auto const certificate = write_test_tls_certificate();
+        auto const certificate = merovingian::tests::tls_mock::write_test_tls_certificate();
         auto tls_context = merovingian::homeserver::make_tls_server_context(certificate.certificate_file,
                                                                             certificate.private_key_file);
         REQUIRE(tls_context.ok());
@@ -2910,7 +2739,7 @@ SCENARIO("leave_room signs remote membership templates with and without existing
             runtime.database.persistent_store.memberships.push_back({room_id, alice, "join", 1U});
         }
 
-        auto const certificate = write_test_tls_certificate();
+        auto const certificate = merovingian::tests::tls_mock::write_test_tls_certificate();
         auto tls_context = merovingian::homeserver::make_tls_server_context(certificate.certificate_file,
                                                                             certificate.private_key_file);
         REQUIRE(tls_context.ok());
@@ -3002,7 +2831,7 @@ SCENARIO("join_room signs the join with its own origin and timestamp, whatever t
         REQUIRE(login.ok);
         auto const alice = reg.value;
 
-        auto const certificate = write_test_tls_certificate();
+        auto const certificate = merovingian::tests::tls_mock::write_test_tls_certificate();
         auto tls_context = merovingian::homeserver::make_tls_server_context(certificate.certificate_file,
                                                                             certificate.private_key_file);
         REQUIRE(tls_context.ok());
@@ -3106,7 +2935,7 @@ SCENARIO("A federated join is refused when the room's create event does not decl
         REQUIRE(bob_login.ok);
         auto const bob = bob_reg.value;
 
-        auto const certificate = write_test_tls_certificate();
+        auto const certificate = merovingian::tests::tls_mock::write_test_tls_certificate();
         auto tls_context = merovingian::homeserver::make_tls_server_context(certificate.certificate_file,
                                                                             certificate.private_key_file);
         REQUIRE(tls_context.ok());

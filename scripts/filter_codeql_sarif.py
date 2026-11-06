@@ -1,15 +1,22 @@
 #!/usr/bin/env python3
 # SPDX-FileCopyrightText: 2026 James Chapman
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""Drop CodeQL results that are known false positives on Catch2 test sources (ADR-0226).
+"""Drop CodeQL results this project has decided not to act on, before upload.
 
-Catch2's SCENARIO macro expands to a static function that a static registrar
-object hands to the test registry. CodeQL's cpp/unused-static-function does not
-follow that registration, so it reports every scenario, and every file-local
-helper only scenarios call, as unreachable. This removes exactly those results
-for files under the repository's tests/ directory and keeps everything else:
-the rule on production code, every other rule on test code, and any result it
-cannot place.
+Three kinds of result are removed, each by its own ADR, and everything else is kept:
+
+* cpp/unused-static-function on files under tests/ (ADR-0226). Catch2's SCENARIO
+  macro expands to a static function that a static registrar object hands to the
+  test registry; the rule does not follow that registration, so it reports every
+  scenario, and every file-local helper only scenarios call, as unreachable.
+* Every result on a file under subprojects/ or build/ (ADR-0527): third-party
+  sources Meson's wraps download, and the build directory's compiler probes. No
+  code this project writes is compiled from either.
+* cpp/path-injection when every source it names is a command-line argument
+  (ADR-0528): a path the operator passes when starting the process. A result
+  that also names any other source is kept.
+
+Any result the filter cannot place, or whose sources it cannot read, is kept.
 
 usage: filter_codeql_sarif.py <report.sarif | directory of *.sarif>
 
@@ -21,11 +28,26 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sys
 from urllib.parse import unquote
 
-# (rule, top-level directory) pairs whose results are dropped.
+# (rule, top-level directory) pairs whose results are dropped (ADR-0226).
 EXCLUSIONS = (("cpp/unused-static-function", "tests"),)
+
+# Top-level directories holding no code this project writes, whose results are
+# all dropped (ADR-0527): Meson's wrap downloads of third-party sources, and the
+# CI build directory (codeql.yml builds into build/), where Meson's compiler
+# probes live. Never add a directory that holds project code.
+VENDORED_DIRECTORIES = ("subprojects", "build")
+
+# The rule dropped when every source CodeQL names is a command-line argument
+# (ADR-0528), and the label its message and related locations give that source.
+OPERATOR_ARGUMENT_RULE = "cpp/path-injection"
+COMMAND_LINE_SOURCE = "user input (a command-line argument)"
+
+# A source reference in a result message: "[label](related location id)".
+SOURCE_LINK = re.compile(r"\[([^\[\]]*)\]\((\d+)\)")
 
 # The uriBaseId CodeQL gives locations relative to the checkout it analysed.
 SOURCE_ROOT_BASE = "%SRCROOT%"
@@ -103,6 +125,50 @@ def top_directory_of(result: dict) -> str | None:
     return parts[0] if len(parts) > 1 else None
 
 
+def sources_are_command_line_arguments(result: dict) -> bool:
+    """Whether every source the result names is a command-line argument.
+
+    CodeQL's cpp/path-injection message names each source as a link,
+    "[user input (<kind>)](<id>)", to the related location with that id, one line
+    per path; every source that reaches one sink is in the one result. True only
+    when the message names at least one source, every link is labelled as a
+    command-line argument and resolves to a related location labelled the same,
+    and no related location is labelled as anything else. Related locations with
+    no label (the path's steps) are ignored. Anything malformed is False, so the
+    result is kept.
+    """
+    message = result.get("message")
+    text = message.get("text") if isinstance(message, dict) else None
+    related = result.get("relatedLocations")
+    if not isinstance(text, str) or not isinstance(related, list):
+        return False
+    labelled = set()
+    for entry in related:
+        if not isinstance(entry, dict):
+            return False
+        entry_message = entry.get("message")
+        label = entry_message.get("text") if isinstance(entry_message, dict) else None
+        if label is None or label == "":
+            continue
+        if label != COMMAND_LINE_SOURCE or not isinstance(entry.get("id"), int):
+            return False
+        labelled.add(entry["id"])
+    links = SOURCE_LINK.findall(text)
+    if not links:
+        return False
+    return all(label == COMMAND_LINE_SOURCE and int(identifier) in labelled for label, identifier in links)
+
+
+def is_excluded(result: object, tool: dict) -> bool:
+    if not isinstance(result, dict):
+        return False
+    rule = rule_of(result, tool)
+    directory = top_directory_of(result)
+    if (rule, directory) in EXCLUSIONS or directory in VENDORED_DIRECTORIES:
+        return True
+    return rule == OPERATOR_ARGUMENT_RULE and sources_are_command_line_arguments(result)
+
+
 def filter_report(document: object) -> int:
     # Validated before anything changes. An empty runs array is refused too:
     # uploading it would close every open alert as fixed.
@@ -120,8 +186,7 @@ def filter_report(document: object) -> int:
     for run in runs:
         kept = []
         for result in run.get("results", []):
-            excluded = isinstance(result, dict) and (rule_of(result, run["tool"]), top_directory_of(result)) in EXCLUSIONS
-            if excluded:
+            if is_excluded(result, run["tool"]):
                 dropped += 1
             else:
                 kept.append(result)
@@ -193,8 +258,7 @@ def main(arguments: list[str]) -> int:
     for report, document, dropped in filtered:
         with open(report, "w", encoding="utf-8") as output:
             json.dump(document, output)
-        rules = ", ".join(f"{rule} under {directory}/" for rule, directory in EXCLUSIONS)
-        print(f"{report}: dropped {dropped} result(s) of {rules}")
+        print(f"{report}: dropped {dropped} result(s) excluded by ADR-0226, ADR-0527 and ADR-0528")
     return 0
 
 
