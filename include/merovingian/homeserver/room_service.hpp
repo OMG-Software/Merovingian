@@ -8,6 +8,16 @@
 #include "merovingian/federation/inbound_ingestion.hpp"
 #include "merovingian/federation/outbound_transaction.hpp"
 #include "merovingian/federation/third_party_invite.hpp"
+// PHASE-B: forwarding includes, removed when consumers include the new headers directly.
+#include "merovingian/homeserver/BoundedOutboundLimits.hpp"
+#include "merovingian/homeserver/CreateRoomOptions.hpp"
+#include "merovingian/homeserver/FetchRelationsRequest.hpp"
+#include "merovingian/homeserver/FetchThreadsRequest.hpp"
+#include "merovingian/homeserver/OutboundCallResult.hpp"
+#include "merovingian/homeserver/RemoteInviteResult.hpp"
+#include "merovingian/homeserver/SendJoinStateIngestResult.hpp"
+#include "merovingian/homeserver/ValidatedMakeJoinResponse.hpp"
+#include "merovingian/homeserver/ValidatedMakeLeaveResponse.hpp"
 #include "merovingian/homeserver/runtime.hpp"
 #include "merovingian/rooms/room_version_policy.hpp"
 #include "merovingian/sync/bundled_aggregations.hpp"
@@ -25,38 +35,6 @@
 
 namespace merovingian::homeserver
 {
-
-struct CreateRoomOptions final
-{
-    std::string room_version{"12"};
-    canonicaljson::Object creation_content{};
-    canonicaljson::Object power_level_content_override{};
-    std::vector<canonicaljson::Value> initial_state{};
-    std::vector<std::string> trusted_invitees{};
-    std::string preset{"private_chat"};
-    std::string name{};
-    std::string topic{};
-    std::string room_alias_name{};
-    std::vector<std::string> invitees{};
-    bool is_direct{false};
-    bool directory_public{false};
-};
-
-struct ValidatedMakeJoinResponse final
-{
-    bool ok{false};
-    std::string reason{};
-    std::string room_version{};
-    canonicaljson::Object event{};
-};
-
-struct ValidatedMakeLeaveResponse final
-{
-    bool ok{false};
-    std::string reason{};
-    std::string room_version{};
-    canonicaljson::Object event{};
-};
 
 [[nodiscard]] auto create_room(HomeserverRuntime& runtime, std::string_view access_token) -> OperationResult;
 [[nodiscard]] auto create_room(HomeserverRuntime& runtime, std::string_view access_token,
@@ -81,33 +59,6 @@ struct ValidatedMakeLeaveResponse final
 [[nodiscard]] auto invite_user(HomeserverRuntime& runtime, std::string_view access_token, std::string_view room_id,
                                std::string_view target_user_id, std::string_view reason = {},
                                std::string_view client_key = {}) -> OperationResult;
-
-// How the server of an invited user answered `PUT /_matrix/federation/v2/invite`.
-enum class RemoteInviteOutcome : std::uint8_t
-{
-    // It signed and returned the event, and the answer was checked: the same event, validly signed by
-    // that server (`cosigned_event_json`).
-    delivered,
-    // It said no (a 4xx other than 408 and 429), or a 2xx whose event is not the invite with that server's
-    // valid signature. `status` and `reason` are what to tell the client.
-    refused,
-    // It gave no usable answer; the invite should be queued for another attempt.
-    unreachable,
-};
-
-struct RemoteInviteResult final
-{
-    RemoteInviteOutcome outcome{RemoteInviteOutcome::unreachable};
-    std::uint16_t status{502U};
-    std::string reason{};
-    // Only for `delivered`: the event this server sent with the invited server's verified signatures
-    // merged into its `signatures` (nothing else of the event changed), and those signatures. This, not
-    // the event as first composed, is what is stored and sent to the room's other servers
-    // (Server-Server API, "Inviting to a room": "Once the event has been signed by both the inviting
-    // homeserver and the invited homeserver, it can be sent to all of the servers in the room").
-    std::string cosigned_event_json{};
-    std::vector<events::EventSignature> cosigned_signatures{};
-};
 
 // Sends the invite event to the invited user's server and waits for its answer. Called with
 // `runtime.mutex` held through `guard`: it is released for the exchange and held again on return, so
@@ -312,25 +263,6 @@ enum class OutboundAnswerTrust : std::uint8_t
                                                  std::string_view diagnostic_event, std::uint32_t deadline_seconds)
     -> std::pair<bool, std::string>;
 
-// The limits of a bounded call: one wall-clock deadline for discovery plus the
-// request, and the margin the federation-worker round trip may add to it.
-struct BoundedOutboundLimits final
-{
-    OutboundDeadline deadline;
-    std::chrono::seconds worker_margin;
-};
-
-// What one outbound federation call came to. `body` is the response body on
-// success and a reason otherwise; `remote_status` is the HTTP status the remote
-// server answered with, or 0 when no answer arrived (discovery, transport or
-// signing failure, deadline).
-struct OutboundCallResult final
-{
-    bool ok{false};
-    std::string body{};
-    std::uint16_t remote_status{0U};
-};
-
 // perform_bounded_outbound_call, keeping the remote's HTTP status for a caller whose answer depends on
 // it (a remote profile lookup relays the remote's 404 as its own). Same slot and deadline rules apply.
 [[nodiscard]] auto perform_bounded_outbound_call_with_status(HomeserverRuntime& runtime, OutboundAnswerTrust trust,
@@ -349,22 +281,6 @@ struct OutboundCallResult final
                                          std::string_view diagnostic_event, std::uint32_t timeout_seconds,
                                          std::uint64_t max_response_bytes,
                                          std::optional<BoundedOutboundLimits> const& bounded) -> OutboundCallResult;
-
-// ADR-0064 phase B1: joined_members is what callers used before (the user
-// IDs found with membership="join" among the ingested state entries);
-// state_entries is the full (event_type, state_key) -> event_id map of
-// every state event ingested — the room's state immediately BEFORE the
-// join event, used by join_room to seed a snapshot state group — with each
-// key once, since a state group holds a key at most once.
-// recorded_state_events counts every state event of the array that is now
-// stored, a repeat included: join_room compares it with the verified array
-// to tell a complete snapshot from a failed one.
-struct SendJoinStateIngestResult final
-{
-    std::vector<std::string> joined_members{};
-    std::vector<database::PersistentStateGroupStateEntry> state_entries{};
-    std::size_t recorded_state_events{0U};
-};
 
 // Ingests the `state` array from a send_join response for `room_id`, the room
 // being joined. Every event is stored in the persistent event graph, with
@@ -512,37 +428,11 @@ auto deliver_federation_push_notifications(HomeserverRuntime& runtime, federatio
                                              std::unordered_set<std::string> const& ignored_senders,
                                              bool enabled = true) -> sync::BundledAggregations;
 
-struct FetchRelationsRequest final
-{
-    std::string room_id{};
-    std::string event_id{};
-    std::optional<std::string> rel_type{};
-    std::optional<std::string> event_type{};
-    std::optional<std::string> dir{};
-    std::optional<std::string> from{};
-    std::optional<std::uint64_t> limit{};
-    std::optional<bool> recurse{};
-    std::optional<std::string> to{};
-};
-
 // Retrieve child events that relate to a given parent event, optionally
 // filtered by rel_type and event_type. Implements the three GET
 // /_matrix/client/v1/rooms/{roomId}/relations/... endpoints from Matrix v1.19.
 [[nodiscard]] auto fetch_relations(HomeserverRuntime const& runtime, std::string_view access_token,
                                    FetchRelationsRequest const& request) -> OperationResult;
-
-struct FetchThreadsRequest final
-{
-    std::string room_id{};
-    // "all" (default) or "participated". Any other value is rejected with 400
-    // rather than silently treated as "all".
-    std::optional<std::string> include{};
-    std::optional<std::string> from{};
-    std::optional<std::uint64_t> limit{};
-    // The most of the room's events the request may examine; `max_thread_events_examined` when
-    // unset. For a test to reach the bound without storing thousands of events.
-    std::optional<std::size_t> max_events_examined{};
-};
 
 // The most of a room's events one GET /threads request examines, newest first (ADR-0345). The
 // spec says to bound the request ("Servers should ... impose a maximum value to avoid resource
